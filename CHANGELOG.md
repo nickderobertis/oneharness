@@ -6,6 +6,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-08
+
+### Fixed
+
+- `run --cwd <dir>` now also sets `$PWD` to `<dir>` for each harness process,
+  mirroring a shell `cd`. `current_dir` alone only `chdir()`s the child and
+  leaves the inherited `$PWD` stale; Bun-based CLIs (e.g. OpenCode) trust `$PWD`
+  over `getcwd()` to locate the project, so a stale value sent their tool gate to
+  the wrong directory. An explicit `--env PWD=…` still wins.
+
 ## [0.1.0] - 2026-06-08
 
 ### Added

@@ -9,6 +9,8 @@
 //!   MOCK_EXIT       process exit code (default: 0)
 //!   MOCK_SLEEP_MS   milliseconds to sleep before exiting (to force a timeout)
 //!   MOCK_ARGV_FILE  if set, the received argv (one per line) is written here
+//!   MOCK_ECHO_PWD   if set, write `PWD=<the inherited $PWD>` to stdout and exit
+//!                   (used to assert that --cwd keeps $PWD consistent)
 
 use std::io::Write;
 
@@ -17,6 +19,13 @@ fn main() {
 
     if let Ok(path) = std::env::var("MOCK_ARGV_FILE") {
         let _ = std::fs::write(path, argv.join("\n"));
+    }
+
+    if std::env::var_os("MOCK_ECHO_PWD").is_some() {
+        let pwd = std::env::var("PWD").unwrap_or_default();
+        let _ = write!(std::io::stdout(), "PWD={pwd}");
+        let _ = std::io::stdout().flush();
+        std::process::exit(0);
     }
 
     if let Ok(ms) = std::env::var("MOCK_SLEEP_MS") {

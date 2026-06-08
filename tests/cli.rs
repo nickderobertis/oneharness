@@ -332,6 +332,41 @@ fn output_dir_writes_raw_streams_to_files() {
 }
 
 #[test]
+fn cwd_sets_pwd_env_for_the_child() {
+    // --cwd must keep $PWD consistent with the working directory (like a shell
+    // `cd`), not just chdir() and leave the inherited $PWD stale: Bun-based CLIs
+    // such as OpenCode trust $PWD to locate the project, so a stale value sends
+    // their gate to the wrong directory. Regression test for that.
+    let dir = std::env::temp_dir().join(format!("oneharness-pwd-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--cwd",
+            &dir.display().to_string(),
+            "--compact",
+        ],
+        &[("MOCK_ECHO_PWD", "1")],
+    );
+    assert!(output.status.success());
+    let report = json_stdout(&output);
+    let stdout = report["results"][0]["stdout"].as_str().unwrap_or("");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        stdout,
+        format!("PWD={}", dir.display()),
+        "child $PWD should match --cwd; got {stdout:?}"
+    );
+}
+
+#[test]
 fn no_selection_is_a_usage_error() {
     let output = run(&["run", "--prompt", "hi"], &[]);
     assert_eq!(output.status.code(), Some(2));

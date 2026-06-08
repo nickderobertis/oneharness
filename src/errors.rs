@@ -30,6 +30,13 @@ pub enum OneharnessError {
     #[error("invalid --env `{0}`: expected the form KEY=VALUE")]
     BadEnv(String),
 
+    #[error("could not write output to `{path}`: {source}")]
+    OutputDir {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("failed to write JSON output: {0}")]
     Serialize(#[from] serde_json::Error),
 }

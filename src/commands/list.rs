@@ -35,6 +35,7 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 prompt: "<PROMPT>",
                 model: None,
                 bypass: true,
+                output_format: spec.output_format,
             };
             HarnessInfo {
                 id: spec.id,

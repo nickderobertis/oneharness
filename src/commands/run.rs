@@ -6,7 +6,7 @@ use crate::cli::RunArgs;
 use crate::commands::{print_json, select_specs};
 use crate::domain::harness::{BuildCtx, HarnessSpec};
 use crate::domain::normalize;
-use crate::domain::report::{Capture, RunReport, RunResult, Status, SCHEMA_VERSION};
+use crate::domain::report::{Capture, OutputFormat, RunReport, RunResult, Status, SCHEMA_VERSION};
 use crate::errors::OneharnessError;
 use crate::io::detect::{self, BinOverrides};
 use crate::io::runner::{self, Job};
@@ -30,13 +30,16 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
 
     for spec in &specs {
         let resolved = detect::resolve(spec, &overrides);
+        let output_format = args.output_format.unwrap_or(spec.output_format);
         let ctx = BuildCtx {
             bin: &resolved.bin,
             prompt: &prompt,
             model,
             bypass,
+            output_format,
         };
-        let command = (spec.build_argv)(&ctx);
+        let mut command = (spec.build_argv)(&ctx);
+        command.extend(args.passthrough.iter().cloned());
 
         if args.print_command {
             plan.push(Plan::Ready(planned_result(
@@ -44,9 +47,15 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 &resolved.bin,
                 resolved.available,
                 command,
+                output_format,
             )));
         } else if !resolved.available {
-            plan.push(Plan::Ready(skipped_result(spec, &resolved.bin, command)));
+            plan.push(Plan::Ready(skipped_result(
+                spec,
+                &resolved.bin,
+                command,
+                output_format,
+            )));
         } else {
             let job_index = jobs.len();
             jobs.push(Job {
@@ -59,6 +68,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 spec,
                 bin: resolved.bin,
                 command,
+                output_format,
                 job_index,
             });
         }
@@ -79,10 +89,15 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 spec,
                 bin,
                 command,
+                output_format,
                 job_index,
-            } => executed_result(spec, bin, command, &captures[job_index]),
+            } => executed_result(spec, bin, command, output_format, &captures[job_index]),
         })
         .collect();
+
+    if let Some(dir) = &args.output_dir {
+        write_output_dir(dir, &results)?;
+    }
 
     let exit = exit_code(&results, args.require_available);
 
@@ -118,6 +133,7 @@ enum Plan {
         spec: &'static HarnessSpec,
         bin: String,
         command: Vec<String>,
+        output_format: OutputFormat,
         job_index: usize,
     },
 }
@@ -127,6 +143,7 @@ fn planned_result(
     bin: &str,
     available: bool,
     command: Vec<String>,
+    output_format: OutputFormat,
 ) -> RunResult {
     RunResult {
         harness: spec.id.to_string(),
@@ -136,7 +153,7 @@ fn planned_result(
         exit_code: None,
         duration_ms: None,
         command,
-        output_format: spec.output_format,
+        output_format,
         text: None,
         text_source: None,
         stdout: String::new(),
@@ -145,7 +162,12 @@ fn planned_result(
     }
 }
 
-fn skipped_result(spec: &HarnessSpec, bin: &str, command: Vec<String>) -> RunResult {
+fn skipped_result(
+    spec: &HarnessSpec,
+    bin: &str,
+    command: Vec<String>,
+    output_format: OutputFormat,
+) -> RunResult {
     RunResult {
         harness: spec.id.to_string(),
         bin: bin.to_string(),
@@ -154,7 +176,7 @@ fn skipped_result(spec: &HarnessSpec, bin: &str, command: Vec<String>) -> RunRes
         exit_code: None,
         duration_ms: None,
         command,
-        output_format: spec.output_format,
+        output_format,
         text: None,
         text_source: None,
         stdout: String::new(),
@@ -170,10 +192,11 @@ fn executed_result(
     spec: &HarnessSpec,
     bin: String,
     command: Vec<String>,
+    output_format: OutputFormat,
     capture: &Capture,
 ) -> RunResult {
     let extracted = match capture.status {
-        Status::Ok | Status::Nonzero => normalize::extract(&capture.stdout, spec.output_format),
+        Status::Ok | Status::Nonzero => normalize::extract(&capture.stdout, output_format),
         _ => None,
     };
     let (text, text_source) = match extracted {
@@ -188,7 +211,7 @@ fn executed_result(
         exit_code: capture.exit_code,
         duration_ms: capture.duration_ms,
         command,
-        output_format: spec.output_format,
+        output_format,
         text,
         text_source,
         stdout: capture.stdout.clone(),
@@ -238,6 +261,27 @@ fn resolve_prompt(args: &RunArgs) -> Result<String, OneharnessError> {
     args.prompt.clone().ok_or(OneharnessError::NoPrompt)
 }
 
+/// Write each result's raw stdout/stderr to `<dir>/<harness>.{stdout,stderr}`.
+/// Lets consumers (e.g. allowlister's e2e scripts) read the transcript from files
+/// without a JSON parser, preserving their existing `$stream`/`$stream.err`
+/// contract.
+fn write_output_dir(dir: &std::path::Path, results: &[RunResult]) -> Result<(), OneharnessError> {
+    std::fs::create_dir_all(dir).map_err(|source| OneharnessError::OutputDir {
+        path: dir.display().to_string(),
+        source,
+    })?;
+    for result in results {
+        for (suffix, contents) in [("stdout", &result.stdout), ("stderr", &result.stderr)] {
+            let path = dir.join(format!("{}.{suffix}", result.harness));
+            std::fs::write(&path, contents).map_err(|source| OneharnessError::OutputDir {
+                path: path.display().to_string(),
+                source,
+            })?;
+        }
+    }
+    Ok(())
+}
+
 fn parse_env(values: &[String]) -> Result<Vec<(String, String)>, OneharnessError> {
     values
         .iter()
@@ -253,7 +297,6 @@ fn parse_env(values: &[String]) -> Result<Vec<(String, String)>, OneharnessError
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::report::OutputFormat;
 
     fn result(status: Status, available: bool) -> RunResult {
         RunResult {

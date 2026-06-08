@@ -18,5 +18,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Copilot CLI, and Cursor, with `--all`/`--harness`/`--exclude` selection.
 - Binary overrides via `--bin ID=PATH` and `ONEHARNESS_BIN_<ID>`, a
   `--print-command` dry run, and `--no-bypass` to disable permission bypass.
+- `run --output-format <text|json|stream-json>` to override the per-harness
+  format (drives both the emitted flag and text extraction).
+- `run -- <args…>` to append verbatim arguments to each harness command.
+- `run --output-dir <dir>` to write each harness's raw stdout/stderr to files
+  (`<harness>.stdout`/`.stderr`), preserving a file-based transcript contract.
 - Hermetic, cross-platform e2e tests driven by a mock harness fixture, and a
   Linux/macOS/Windows CI gate.

@@ -228,6 +228,110 @@ fn model_flag_is_passed_through() {
 }
 
 #[test]
+fn output_format_override_is_emitted_and_drives_extraction() {
+    // The emitted flag changes...
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--output-format",
+            "stream-json",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    let value = json_stdout(&output);
+    let command = value["results"][0]["command"].to_string();
+    assert!(command.contains("stream-json"), "{command}");
+    assert!(!command.contains("\"json\""), "{command}");
+
+    // ...and so does extraction: forcing `text` returns the raw stdout verbatim.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--output-format",
+            "text",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"x"}"#)],
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["text"], r#"{"result":"x"}"#);
+    assert_eq!(value["results"][0]["text_source"], "raw");
+}
+
+#[test]
+fn passthrough_args_are_appended_verbatim() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--compact",
+            "--",
+            "--max-turns",
+            "6",
+            "--verbose",
+        ],
+        &[],
+    );
+    let value = json_stdout(&output);
+    let command: Vec<String> = value["results"][0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect();
+    let tail = &command[command.len() - 3..];
+    assert_eq!(tail, ["--max-turns", "6", "--verbose"]);
+}
+
+#[test]
+fn output_dir_writes_raw_streams_to_files() {
+    let dir = std::env::temp_dir().join(format!("oneharness-od-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--output-dir",
+            &dir.display().to_string(),
+            "--compact",
+        ],
+        &[
+            ("MOCK_STDOUT", "raw-stdout-bytes"),
+            ("MOCK_STDERR", "raw-stderr-bytes"),
+        ],
+    );
+    assert!(output.status.success());
+
+    let out = std::fs::read_to_string(dir.join("claude-code.stdout")).unwrap();
+    let err = std::fs::read_to_string(dir.join("claude-code.stderr")).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(out, "raw-stdout-bytes");
+    assert_eq!(err, "raw-stderr-bytes");
+}
+
+#[test]
 fn no_selection_is_a_usage_error() {
     let output = run(&["run", "--prompt", "hi"], &[]);
     assert_eq!(output.status.code(), Some(2));

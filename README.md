@@ -62,12 +62,18 @@ adapter builds.
 ## Install
 
 ```console
-cargo install --path .        # from a clone
-# or build the release binary
+# from a published release tag (reproducible)
+cargo install --git https://github.com/nickderobertis/oneharness --tag v0.1.0 --locked
+# or from a clone
+cargo install --path .
+# or just build the release binary
 just build-release            # -> target/release/oneharness
 ```
 
-Requires a stable Rust toolchain and [`just`](https://github.com/casey/just).
+Each tagged release also publishes prebuilt, checksummed binaries for Linux,
+macOS, and Windows on its [GitHub Releases](https://github.com/nickderobertis/oneharness/releases)
+page. Building from source requires a stable Rust toolchain and
+[`just`](https://github.com/casey/just).
 
 ## Usage
 
@@ -163,6 +169,22 @@ just run -- list # run the CLI through cargo
 Tests are hermetic: the subprocess path is exercised against a mock harness
 fixture (no network, no real CLI), and every adapter's command construction is
 pinned with `--print-command` assertions. See `AGENTS.md` and `tests/AGENTS.md`.
+
+## Releasing
+
+Releases are versioned by hand and built by CI. To cut one:
+
+```console
+# 1. bump the version + changelog, commit, and land on the default branch
+#    (edit Cargo.toml `version`, move CHANGELOG [Unreleased] to the new version)
+# 2. tag the release commit and push the tag
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the
+gate, creates the GitHub Release with generated notes, and attaches archived,
+sha256-checksummed binaries for Linux, macOS, and Windows. There is no
+crates.io publish step.
 
 ## License
 

@@ -21,6 +21,9 @@ Use the `just` recipes; do not hand-roll equivalents.
 - `just upgrade` — update dependencies, then re-run `just check`.
 - `just deps-check` — advisory/license audit (`cargo deny`); separate from the
   core gate because it needs a network-fetched advisory DB.
+- `just smoke` — hermetic end-to-end smoke of the built binary (part of `just
+  check` and CI). `just smoke-live` is the opt-in variant that hits installed,
+  authenticated harnesses with real model calls — never in the gate or CI.
 
 ## What this binary is
 
@@ -30,6 +33,33 @@ Use the `just` recipes; do not hand-roll equivalents.
 - `run` spawns the selected harnesses **in parallel**, each as a subprocess with
   a timeout, and emits one JSON report. `list` and `detect` describe and probe
   the registry. All three emit JSON to stdout by design.
+
+## How this repo was composed
+
+Assembled with the `create-repo` skill from one **product shape** (CLI), one
+**language** (Rust), and the **CI** cross-cutting reference. What the skill's
+catalog offered but this repo deliberately leaves out — recorded so the choices
+aren't re-litigated each session:
+
+- **No `rust-cli` intersection reference** — none exists yet. The overlap it
+  would cover (snapshot-testing a compiled binary, cross-platform release
+  artifacts) is handled inline by the `--print-command` argv assertions and the
+  `release.yml` matrix.
+- **No `cargo-dist` / `release-plz`** — the hand-versioned, tag-driven
+  `release.yml` already ships checksummed cross-platform binaries (see
+  *Releasing*); the automation isn't worth its moving parts yet (and
+  `release-plz` would need a PAT secret).
+- **No crates.io publish** — this is an end-user binary, distributed via GitHub
+  Releases and `cargo install --git`, not a library dependency.
+- **No pre-commit/lefthook, direnv, or `src/`-style layout** — template baggage
+  that doesn't fit a single-crate Rust CLI. The gate is `just check` plus CI, on
+  the standard Cargo layout.
+- **`.tool-versions` pins `just` only** (read by asdf/mise) so a clean clone can
+  resolve the command runner; the Rust toolchain stays on rustup, not asdf.
+- **Shell scripts are linted with shellcheck** — an external tool, handled like
+  `cargo-deny`: CI installs it and `just lint-sh` (part of `just check`) enforces
+  it; install it locally (`apt-get`/`brew install shellcheck`) to run the full
+  gate.
 
 ## Invariants (non-negotiable)
 
@@ -65,8 +95,10 @@ shape. When you add one:
 - Add a `--print-command` assertion in `tests/cli.rs` pinning its exact argv
   (this is the deterministic, network-free proof the adapter is correct).
 - Update the harness table in `README.md`.
-- Source the real invocation from a known-good driver (the allowlister
-  `scripts/e2e-*.sh` are the reference) rather than guessing flags.
+- Source the real invocation from a known-good driver — the
+  `nickderobertis/allowlister` repo's `run_agent()` / `e2e-*.sh` drivers are the
+  reference — rather than guessing flags. (`scripts/smoke.sh --live` here is the
+  fast way to confirm a real invocation actually works once installed.)
 
 ## Scripts and output are context
 
@@ -82,8 +114,14 @@ shape. When you add one:
   oneharness drives via a `--bin` override — no network, no real CLI, fully
   deterministic and cross-platform. Command construction is proven by
   `--print-command` argv assertions covering every harness.
-- A live cross-harness smoke against real CLIs is intentionally **out** of `just
-  check` and CI: it needs installed binaries, auth, and network. Keep it opt-in.
+- An end-to-end smoke of the *built* binary (`scripts/smoke.sh`, via `just
+  smoke`) is part of `just check` and CI: it drives the real artifact through
+  `list`/`detect`/`--print-command` plus one mock spawn, fully hermetically —
+  proving the shipped binary, not just the test-compiled crate.
+- A live cross-harness smoke against real CLIs (`just smoke-live`) is
+  deliberately **out** of `just check` and CI: it needs installed binaries, auth,
+  and network and makes real model calls. It stays opt-in and skips cleanly when
+  no harness is installed.
 - A user-visible change ships with a test that fails without it.
 
 ## Releasing

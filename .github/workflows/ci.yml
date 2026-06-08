@@ -30,10 +30,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: just,nextest
+          tool: just,nextest,shellcheck
       - name: Bootstrap
         run: just bootstrap
-      - name: Full gate (fmt, clippy, tests, build)
+      - name: Full gate (fmt, clippy, tests, build, smoke)
         run: just check
 
   # Advisory + license audit, on its own because it needs a network advisory DB.

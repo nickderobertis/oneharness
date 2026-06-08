@@ -161,14 +161,24 @@ skill-testing framework**: set up a sandbox, fire one prompt at every harness vi
 
 ```console
 just bootstrap   # toolchain components + fetch (works from a clean clone)
-just check       # full gate: fmt-check, clippy -D warnings, tests, build
+just check       # full gate: fmt-check, clippy -D warnings, shellcheck, tests, build, smoke
 just test        # tests only
+just smoke       # hermetic end-to-end smoke of the built binary
 just run -- list # run the CLI through cargo
 ```
 
+The gate uses [`just`](https://github.com/casey/just) (pinned in `.tool-versions`
+for asdf/mise users) and [`shellcheck`](https://github.com/koalaman/shellcheck)
+for the shell scripts; CI installs both, so install `shellcheck`
+(`apt-get`/`brew install shellcheck`) to run the full gate locally.
+
 Tests are hermetic: the subprocess path is exercised against a mock harness
 fixture (no network, no real CLI), and every adapter's command construction is
-pinned with `--print-command` assertions. See `AGENTS.md` and `tests/AGENTS.md`.
+pinned with `--print-command` assertions. `just check` also runs
+`scripts/smoke.sh`, an end-to-end smoke of the *built* binary. To exercise the
+real harnesses you have installed, run `just smoke-live` — it makes real model
+calls, skips any harness that isn't installed, and is intentionally never part
+of the gate or CI. See `AGENTS.md` and `tests/AGENTS.md`.
 
 ## Releasing
 

@@ -42,8 +42,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: just,nextest
+          tool: just,nextest,shellcheck
       - run: just lint
+      - run: just lint-sh
       - run: just test
 
   # Create the Release first so the matrix upload jobs only ever attach to it

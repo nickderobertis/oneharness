@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 
+use crate::domain::report::OutputFormat;
+
 const ABOUT: &str =
     "One CLI across many agentic coding harnesses. Emits JSON for programmatic consumers.";
 
@@ -59,6 +61,17 @@ pub struct RunArgs {
     #[arg(long)]
     pub model: Option<String>,
 
+    /// Override the output format requested from each harness (default: the
+    /// per-harness default; see `oneharness list`). Affects both the emitted
+    /// format flag and how `text` is extracted.
+    #[arg(long, value_enum)]
+    pub output_format: Option<OutputFormat>,
+
+    /// Write each harness's raw stdout/stderr to <DIR>/<harness>.stdout and
+    /// <DIR>/<harness>.stderr (in addition to the JSON report on stdout).
+    #[arg(long, value_name = "DIR")]
+    pub output_dir: Option<PathBuf>,
+
     /// Per-harness timeout in seconds.
     #[arg(long, default_value_t = 120)]
     pub timeout: u64,
@@ -95,6 +108,11 @@ pub struct RunArgs {
     /// Emit compact single-line JSON instead of pretty-printed.
     #[arg(long)]
     pub compact: bool,
+
+    /// Extra arguments appended verbatim to each harness command, after `--`.
+    /// Intended for single-harness runs (the flags differ per harness).
+    #[arg(last = true, value_name = "HARNESS_ARG")]
+    pub passthrough: Vec<String>,
 }
 
 #[derive(Args, Debug)]

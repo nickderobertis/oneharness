@@ -11,12 +11,24 @@
 use crate::domain::report::OutputFormat;
 
 /// Everything `build_argv` needs, with no I/O: the resolved binary, the prompt,
-/// the optional model, and whether to request the harness's "don't prompt" mode.
+/// the optional model, whether to request the harness's "don't prompt" mode, and
+/// the effective output format (the harness default, or a `--output-format`
+/// override) for harnesses that take a format flag.
 pub struct BuildCtx<'a> {
     pub bin: &'a str,
     pub prompt: &'a str,
     pub model: Option<&'a str>,
     pub bypass: bool,
+    pub output_format: OutputFormat,
+}
+
+/// The CLI token for a format, as the harnesses spell it.
+fn format_flag(format: OutputFormat) -> &'static str {
+    match format {
+        OutputFormat::Text => "text",
+        OutputFormat::Json => "json",
+        OutputFormat::StreamJson => "stream-json",
+    }
 }
 
 /// A single harness adapter.
@@ -134,7 +146,7 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
         a.push(m.into());
     }
     a.push("--output-format".into());
-    a.push("json".into());
+    a.push(format_flag(c.output_format).into());
     a
 }
 
@@ -162,7 +174,7 @@ fn argv_opencode(c: &BuildCtx) -> Vec<String> {
         a.push("--dangerously-skip-permissions".into());
     }
     a.push("--format".into());
-    a.push("json".into());
+    a.push(format_flag(c.output_format).into());
     if let Some(m) = c.model {
         a.push("-m".into());
         a.push(m.into());
@@ -238,7 +250,7 @@ fn argv_cursor(c: &BuildCtx) -> Vec<String> {
         a.push(m.into());
     }
     a.push("--output-format".into());
-    a.push("stream-json".into());
+    a.push(format_flag(c.output_format).into());
     a
 }
 
@@ -247,11 +259,21 @@ mod tests {
     use super::*;
 
     fn ctx<'a>(bin: &'a str, model: Option<&'a str>, bypass: bool) -> BuildCtx<'a> {
+        ctx_fmt(bin, model, bypass, OutputFormat::Json)
+    }
+
+    fn ctx_fmt<'a>(
+        bin: &'a str,
+        model: Option<&'a str>,
+        bypass: bool,
+        output_format: OutputFormat,
+    ) -> BuildCtx<'a> {
         BuildCtx {
             bin,
             prompt: "hi",
             model,
             bypass,
+            output_format,
         }
     }
 
@@ -331,6 +353,24 @@ mod tests {
         assert_eq!(
             with,
             vec!["goose", "run", "--with-builtin", "developer", "-t", "hi"]
+        );
+    }
+
+    #[test]
+    fn output_format_override_changes_the_emitted_flag() {
+        let spec = by_id("claude-code").unwrap();
+        let argv = (spec.build_argv)(&ctx_fmt("claude", None, true, OutputFormat::StreamJson));
+        assert!(
+            argv.windows(2)
+                .any(|w| w == ["--output-format", "stream-json"]),
+            "{argv:?}"
+        );
+        // opencode spells its flag `--format`.
+        let oc = by_id("opencode").unwrap();
+        let argv = (oc.build_argv)(&ctx_fmt("opencode", None, true, OutputFormat::Text));
+        assert!(
+            argv.windows(2).any(|w| w == ["--format", "text"]),
+            "{argv:?}"
         );
     }
 

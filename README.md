@@ -86,6 +86,14 @@ Useful `run` flags:
 - `--all` / `--harness <id,…>` / `--exclude <id,…>` — selection.
 - `--prompt <text>` or `--prompt-file <path|->` — the prompt (file or stdin).
 - `--model <m>` — passed to each harness that supports a model flag.
+- `--output-format <text|json|stream-json>` — override the format requested from
+  each harness (default: per-harness); affects the emitted flag and how `text` is
+  extracted.
+- `--output-dir <dir>` — also write each harness's raw stdout/stderr to
+  `<dir>/<harness>.stdout` and `<dir>/<harness>.stderr` (read transcripts from
+  files without a JSON parser).
+- `-- <args…>` — extra arguments appended verbatim to each harness command (for
+  single-harness runs, since flags differ per harness).
 - `--timeout <secs>` — per-harness timeout (default 120); a hang becomes a
   `timeout` result, not a stuck process.
 - `--cwd <dir>` / `--env KEY=VALUE` — run each harness in a directory / with extra

@@ -86,6 +86,16 @@ shape. When you add one:
   check` and CI: it needs installed binaries, auth, and network. Keep it opt-in.
 - A user-visible change ships with a test that fails without it.
 
+## Releasing
+
+- Versioning is by hand; CI builds the artifacts. Bump `version` in `Cargo.toml`,
+  move the `CHANGELOG.md` `[Unreleased]` entries under the new `vX.Y.Z`, land it on
+  the default branch, then push a matching `vX.Y.Z` tag. The tag triggers
+  `release.yml`, which gates on the test suite and publishes checksummed
+  cross-platform binaries. Never publish by editing a release by hand mid-flight.
+- The JSON `schema_version` is independent of the crate version: bump it only when
+  the report shape changes incompatibly, and document it in the changelog.
+
 ## Keeping the allowlist current
 
 - The agent command allowlist lives in `.claude/settings.json`; the tool enforces

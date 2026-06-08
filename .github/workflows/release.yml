@@ -1,0 +1,105 @@
+name: Release
+
+# Build, archive, checksum, and publish the cross-platform binaries for a tagged
+# release. Self-contained: pushing a `vX.Y.Z` tag is the only trigger.
+#
+#   * test           — the deterministic gate (clippy + tests), so untested
+#                       artifacts never publish.
+#   * create-release — create the GitHub Release for the tag (idempotent), with
+#                       notes generated from the commits since the last release.
+#   * upload         — build each target on a native runner and attach the
+#                       archive + sha256 checksum to the release.
+#
+# There is no release-plz here: versioning is by hand (bump Cargo.toml, then push
+# `v$version`). Conventional-commit automation can be layered on later, but it
+# needs a PAT secret (a tag/release made with GITHUB_TOKEN does not retrigger
+# workflows), so this manual path stays the dependency-free default.
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Gate the release on a passing run of the same checks CI enforces, so a tag
+  # can never publish an artifact that would not pass the gate.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,nextest
+      - run: just lint
+      - run: just test
+
+  # Create the Release first so the matrix upload jobs only ever attach to it
+  # (no create-or-get race across five concurrent runners).
+  create-release:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create the GitHub Release (idempotent)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; reusing it."
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --verify-tag --title "$TAG" --generate-notes
+          fi
+
+  upload:
+    name: upload (${{ matrix.target }})
+    needs: create-release
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native runners per target so nothing needs cross-compilation:
+          # arm64 Linux builds on a hosted arm64 runner; macOS cross-builds
+          # x86_64<->arm64 within the Apple toolchain (no emulation/Docker).
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build, archive, checksum, and upload
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: oneharness
+          target: ${{ matrix.target }}
+          archive: $bin-$tag-$target
+          checksum: sha256
+          include: README.md,LICENSE,CHANGELOG.md
+          token: ${{ secrets.GITHUB_TOKEN }}

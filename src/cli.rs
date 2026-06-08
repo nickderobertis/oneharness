@@ -28,7 +28,10 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Run a prompt across one or more harnesses in parallel; emit a JSON report.
-    Run(RunArgs),
+    ///
+    /// Boxed because `RunArgs` is far larger than the other variants; keeping the
+    /// enum small satisfies `clippy::large_enum_variant`.
+    Run(Box<RunArgs>),
     /// List the supported harnesses as JSON.
     List(ListArgs),
     /// Probe which harnesses are installed (binary + version) as JSON.

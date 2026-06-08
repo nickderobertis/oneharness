@@ -1,0 +1,149 @@
+//! Spawning harness subprocesses with timeouts and bounded parallelism.
+//!
+//! This layer only spawns and captures — it does no parsing, so the spawn path
+//! and the extraction path stay independently testable. stdout and stderr are
+//! drained on their own threads so a chatty harness can never deadlock the wait.
+
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use wait_timeout::ChildExt;
+
+use crate::domain::report::{Capture, Status};
+
+/// A fully-specified subprocess to run.
+pub struct Job {
+    pub argv: Vec<String>,
+    pub cwd: Option<PathBuf>,
+    pub env: Vec<(String, String)>,
+    pub timeout: Duration,
+}
+
+/// Run `jobs` concurrently, at most `max_parallel` at a time, preserving order.
+pub fn run_jobs(jobs: &[Job], max_parallel: usize) -> Vec<Capture> {
+    let n = jobs.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let workers = max_parallel.clamp(1, n);
+    let next = AtomicUsize::new(0);
+    let slots: Vec<Mutex<Option<Capture>>> = (0..n).map(|_| Mutex::new(None)).collect();
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                let i = next.fetch_add(1, Ordering::SeqCst);
+                if i >= n {
+                    break;
+                }
+                let capture = run_job(&jobs[i]);
+                *slots[i].lock().expect("slot mutex poisoned") = Some(capture);
+            });
+        }
+    });
+
+    slots
+        .into_iter()
+        .map(|m| {
+            m.into_inner()
+                .expect("slot mutex poisoned")
+                .expect("slot unfilled")
+        })
+        .collect()
+}
+
+/// Run a single job, returning its raw capture. Never panics on harness behavior.
+pub fn run_job(job: &Job) -> Capture {
+    let start = Instant::now();
+    let mut command = Command::new(&job.argv[0]);
+    command
+        .args(&job.argv[1..])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(cwd) = &job.cwd {
+        command.current_dir(cwd);
+    }
+    for (key, value) in &job.env {
+        command.env(key, value);
+    }
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            return Capture {
+                status: Status::SpawnError,
+                exit_code: None,
+                duration_ms: Some(start.elapsed().as_millis()),
+                stdout: String::new(),
+                stderr: String::new(),
+                error: Some(format!(
+                    "failed to spawn `{}`: {err}. Suggestion: check the binary exists and is executable (try `oneharness detect`)",
+                    job.argv[0]
+                )),
+            };
+        }
+    };
+
+    // Drain both pipes on their own threads so wait never blocks on a full buffer.
+    let mut out = child.stdout.take().expect("piped stdout");
+    let mut err = child.stderr.take().expect("piped stderr");
+    let out_reader = std::thread::spawn(move || read_all(&mut out));
+    let err_reader = std::thread::spawn(move || read_all(&mut err));
+
+    let (status, exit_code, timed_out) = match child.wait_timeout(job.timeout) {
+        Ok(Some(exit)) => {
+            let code = exit.code();
+            let status = if code == Some(0) {
+                Status::Ok
+            } else {
+                Status::Nonzero
+            };
+            (status, code, false)
+        }
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            (Status::Timeout, None, true)
+        }
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            (Status::SpawnError, None, false)
+        }
+    };
+
+    let stdout = out_reader.join().unwrap_or_default();
+    let stderr = err_reader.join().unwrap_or_default();
+    let duration_ms = Some(start.elapsed().as_millis());
+
+    let error = if timed_out {
+        Some(format!(
+            "`{}` exceeded the {}s timeout and was killed. Suggestion: raise --timeout or simplify the prompt",
+            job.argv[0],
+            job.timeout.as_secs()
+        ))
+    } else if status == Status::SpawnError {
+        Some(format!("`{}` could not be waited on", job.argv[0]))
+    } else {
+        None
+    };
+
+    Capture {
+        status,
+        exit_code,
+        duration_ms,
+        stdout,
+        stderr,
+        error,
+    }
+}
+
+fn read_all<R: std::io::Read>(reader: &mut R) -> String {
+    let mut buf = Vec::new();
+    let _ = std::io::Read::read_to_end(reader, &mut buf);
+    String::from_utf8_lossy(&buf).into_owned()
+}

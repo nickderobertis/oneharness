@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(just bootstrap)",
+      "Bash(just check)",
+      "Bash(just test)",
+      "Bash(just lint)",
+      "Bash(just format)",
+      "Bash(just upgrade)",
+      "Bash(just fmt-check)",
+      "Bash(just clippy)",
+      "Bash(just build)",
+      "Bash(just build-release)",
+      "Bash(just deps-check)",
+      "Bash(just e2e)",
+      "Bash(just doctor)",
+      "Bash(just run:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo nextest:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo fetch:*)",
+      "Bash(cargo update:*)",
+      "Bash(cargo tree:*)",
+      "Bash(cargo run:*)",
+      "Bash(cargo deny:*)",
+      "Bash(rustup component add:*)",
+      "Bash(rustup show:*)",
+      "Bash(git status)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git branch:*)",
+      "Bash(git checkout:*)"
+    ],
+    "deny": []
+  }
+}

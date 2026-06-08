@@ -1,0 +1,19 @@
+# cargo-deny config. Run via `just deps-check` and the dedicated CI job; kept out
+# of the core `just check` gate because the advisory database is network-fetched.
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[bans]
+multiple-versions = "allow"
+
+[licenses]
+version = 2
+# Permissive licenses compatible with shipping a binary.
+allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib"]
+confidence-threshold = 0.9
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

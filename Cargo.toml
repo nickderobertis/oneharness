@@ -1,0 +1,43 @@
+[package]
+name = "oneharness"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "One CLI to drive many agentic coding harnesses non-interactively and return uniform JSON."
+license = "MIT"
+repository = "https://github.com/nickderobertis/oneharness"
+readme = "README.md"
+keywords = ["cli", "agent", "claude", "codex", "harness"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "oneharness"
+path = "src/main.rs"
+
+# Test-only fixture: a fake harness binary the e2e tests drive via a `--bin`
+# override, so the spawn/parse/parallel path is proven hermetically and
+# cross-platform. Gated behind a feature so it never ships in `cargo install`.
+[[bin]]
+name = "oneharness-mock-harness"
+path = "tests/support/mock_harness.rs"
+required-features = ["mock-harness"]
+
+[features]
+# Builds the mock harness fixture. Enabled by `just test`/`just check` and CI.
+mock-harness = []
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+which = "7"
+wait-timeout = "0.2"
+
+# Integration tests drive the binaries directly via the cargo-provided
+# CARGO_BIN_EXE_* paths and parse JSON with serde_json (already a dependency),
+# so no extra test-only crates are needed.
+
+[profile.release]
+strip = true
+lto = "thin"

@@ -66,7 +66,21 @@ pub fn run_job(job: &Job) -> Capture {
         .stderr(Stdio::piped());
     if let Some(cwd) = &job.cwd {
         command.current_dir(cwd);
+        // Mirror a shell `cd`: keep $PWD consistent with the working directory.
+        // `current_dir` only chdir()s the child; the inherited $PWD stays stale.
+        // Some tools (e.g. Bun-based CLIs like OpenCode) trust $PWD over getcwd()
+        // to locate the project, so a stale $PWD points them at the wrong dir.
+        // Use the logical path (no symlink resolution), like `cd` does.
+        let pwd = if cwd.is_absolute() {
+            cwd.clone()
+        } else {
+            std::env::current_dir()
+                .map(|base| base.join(cwd))
+                .unwrap_or_else(|_| cwd.clone())
+        };
+        command.env("PWD", pwd);
     }
+    // Explicit --env entries win over the derived PWD above.
     for (key, value) in &job.env {
         command.env(key, value);
     }

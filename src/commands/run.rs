@@ -5,8 +5,9 @@ use std::time::Duration;
 use crate::cli::RunArgs;
 use crate::commands::{print_json, select_specs};
 use crate::domain::harness::{BuildCtx, HarnessSpec};
-use crate::domain::normalize;
 use crate::domain::report::{Capture, OutputFormat, RunReport, RunResult, Status, SCHEMA_VERSION};
+use crate::domain::signals::Usage;
+use crate::domain::{normalize, signals};
 use crate::errors::OneharnessError;
 use crate::io::detect::{self, BinOverrides};
 use crate::io::runner::{self, Job};
@@ -35,6 +36,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             bin: &resolved.bin,
             prompt: &prompt,
             model,
+            system: args.system.as_deref(),
             bypass,
             output_format,
         };
@@ -42,20 +44,20 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         command.extend(args.passthrough.iter().cloned());
 
         if args.print_command {
-            plan.push(Plan::Ready(planned_result(
+            plan.push(Plan::Ready(Box::new(planned_result(
                 spec,
                 &resolved.bin,
                 resolved.available,
                 command,
                 output_format,
-            )));
+            ))));
         } else if !resolved.available {
-            plan.push(Plan::Ready(skipped_result(
+            plan.push(Plan::Ready(Box::new(skipped_result(
                 spec,
                 &resolved.bin,
                 command,
                 output_format,
-            )));
+            ))));
         } else {
             let job_index = jobs.len();
             jobs.push(Job {
@@ -84,7 +86,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let results: Vec<RunResult> = plan
         .into_iter()
         .map(|entry| match entry {
-            Plan::Ready(result) => result,
+            Plan::Ready(result) => *result,
             Plan::Pending {
                 spec,
                 bin,
@@ -127,8 +129,9 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
 }
 
 /// A planned harness: either fully resolved (skipped/planned) or awaiting a job.
+/// `Ready` is boxed because `RunResult` is far larger than `Pending`'s fields.
 enum Plan {
-    Ready(RunResult),
+    Ready(Box<RunResult>),
     Pending {
         spec: &'static HarnessSpec,
         bin: String,
@@ -156,6 +159,11 @@ fn planned_result(
         output_format,
         text: None,
         text_source: None,
+        usage: Usage::default(),
+        usage_source: None,
+        session_id: None,
+        failure_kind: None,
+        failure_kind_source: None,
         stdout: String::new(),
         stderr: String::new(),
         error: None,
@@ -179,6 +187,11 @@ fn skipped_result(
         output_format,
         text: None,
         text_source: None,
+        usage: Usage::default(),
+        usage_source: None,
+        session_id: None,
+        failure_kind: None,
+        failure_kind_source: None,
         stdout: String::new(),
         stderr: String::new(),
         error: Some(format!(
@@ -195,12 +208,36 @@ fn executed_result(
     output_format: OutputFormat,
     capture: &Capture,
 ) -> RunResult {
+    // Best-effort signals are extracted only from a run that actually produced
+    // output (ok or non-zero), never fabricated for a timeout/spawn failure.
     let extracted = match capture.status {
         Status::Ok | Status::Nonzero => normalize::extract(&capture.stdout, output_format),
         _ => None,
     };
     let (text, text_source) = match extracted {
         Some(e) => (Some(e.text), Some(e.source)),
+        None => (None, None),
+    };
+    let usage_reading = match capture.status {
+        Status::Ok | Status::Nonzero => signals::extract_usage(&capture.stdout),
+        _ => None,
+    };
+    let (usage, usage_source) = match usage_reading {
+        Some(r) => (r.usage, Some(r.source)),
+        None => (Usage::default(), None),
+    };
+    let session_id = match capture.status {
+        Status::Ok | Status::Nonzero => signals::extract_session(&capture.stdout),
+        _ => None,
+    };
+    // Classify only an actual non-zero run: timeouts/spawn failures already carry
+    // a oneharness-generated `error`, and `status` explains them.
+    let failure = match capture.status {
+        Status::Nonzero => signals::classify_failure(&capture.stdout, &capture.stderr),
+        _ => None,
+    };
+    let (failure_kind, failure_kind_source) = match failure {
+        Some(f) => (Some(f.kind), Some(f.source)),
         None => (None, None),
     };
     RunResult {
@@ -214,6 +251,11 @@ fn executed_result(
         output_format,
         text,
         text_source,
+        usage,
+        usage_source,
+        session_id,
+        failure_kind,
+        failure_kind_source,
         stdout: capture.stdout.clone(),
         stderr: capture.stderr.clone(),
         error: capture.error.clone(),
@@ -310,6 +352,11 @@ mod tests {
             output_format: OutputFormat::Text,
             text: None,
             text_source: None,
+            usage: Usage::default(),
+            usage_source: None,
+            session_id: None,
+            failure_kind: None,
+            failure_kind_source: None,
             stdout: String::new(),
             stderr: String::new(),
             error: None,

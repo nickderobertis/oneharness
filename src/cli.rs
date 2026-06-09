@@ -64,6 +64,11 @@ pub struct RunArgs {
     #[arg(long)]
     pub model: Option<String>,
 
+    /// System prompt passed to each harness that supports one (e.g. Claude Code's
+    /// --append-system-prompt). Harnesses without such a flag ignore it.
+    #[arg(long, value_name = "TEXT")]
+    pub system: Option<String>,
+
     /// Override the output format requested from each harness (default: the
     /// per-harness default; see `oneharness list`). Affects both the emitted
     /// format flag and how `text` is extracted.

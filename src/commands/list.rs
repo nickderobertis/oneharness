@@ -34,6 +34,7 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 bin: spec.default_bin,
                 prompt: "<PROMPT>",
                 model: None,
+                system: None,
                 bypass: true,
                 output_format: spec.output_format,
             };

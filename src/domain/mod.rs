@@ -5,3 +5,4 @@
 pub mod harness;
 pub mod normalize;
 pub mod report;
+pub mod signals;

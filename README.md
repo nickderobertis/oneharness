@@ -34,6 +34,11 @@ $ oneharness run --all --prompt "Reply with the single word: pong" --model haiku
       "output_format": "json",
       "text": "pong",
       "text_source": "json:result",
+      "usage": { "input_tokens": 1234, "output_tokens": 8, "cost_usd": 0.0095 },
+      "usage_source": "json",
+      "session_id": "0f3c…",
+      "failure_kind": null,
+      "failure_kind_source": null,
       "stdout": "{\"type\":\"result\",\"result\":\"pong\"…}",
       "stderr": "",
       "error": null
@@ -92,6 +97,8 @@ Useful `run` flags:
 - `--all` / `--harness <id,…>` / `--exclude <id,…>` — selection.
 - `--prompt <text>` or `--prompt-file <path|->` — the prompt (file or stdin).
 - `--model <m>` — passed to each harness that supports a model flag.
+- `--system <text>` — system prompt for each harness that exposes one (e.g.
+  Claude Code's `--append-system-prompt`); harnesses without such a flag ignore it.
 - `--output-format <text|json|stream-json>` — override the format requested from
   each harness (default: per-harness); affects the emitted flag and how `text` is
   extracted.
@@ -117,14 +124,32 @@ Useful `run` flags:
   `--require-available`, was missing).
 - `2` — usage/configuration error (bad args, unknown harness, no prompt).
 
-### The result envelope vs. `text`
+### The result envelope vs. the normalized signals
 
 The execution envelope — `command`, `exit_code`, `duration_ms`, `status`,
-`stdout`, `stderr` — is **guaranteed and identical** across harnesses. The
-normalized `text` is a **best-effort** convenience whose extraction method is
-recorded in `text_source` (e.g. `json:result`, `raw`, `stream-json:result`); it
-is `null` when oneharness can't confidently extract a final message. Consumers
-that need certainty should parse `stdout` themselves.
+`stdout`, `stderr` — is **guaranteed and identical** across harnesses.
+
+Alongside it, oneharness lifts a few **best-effort** signals out of each
+harness's bespoke stdout so consumers don't have to parse it per harness. Each is
+`null`/empty when it can't be found, is **never fabricated**, and (where there's
+more than one possible method) records how it was found:
+
+- `text` / `text_source` — the final assistant message (`json:result`, `raw`,
+  `stream-json:result`, …).
+- `usage` / `usage_source` — `{ input_tokens, output_tokens, cost_usd }`, each
+  field independently `null` when the harness doesn't report it (cost is commonly
+  absent on subscription auth). The `usage` object is always present so the shape
+  is stable for cross-harness cost/latency tables.
+- `session_id` — the handle a harness exposes for continuation, surfaced for
+  consumers that drive multi-turn (oneharness does not yet consume it itself).
+- `failure_kind` / `failure_kind_source` — on a non-zero run, a coarse reason
+  (`auth`, `rate_limit`, `model_not_found`, `quota`) so a caller can tell a
+  retryable condition from a broken request. This is **distinct from `status`**,
+  which only records oneharness's relationship to the process.
+
+Coverage starts with the harnesses that emit a parseable shape (Claude Code's
+JSON first) and widens over time; an absent signal is the honest answer, not an
+error. Consumers that need certainty should parse `stdout` themselves.
 
 ### Safety note: bypass by default
 

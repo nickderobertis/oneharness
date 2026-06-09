@@ -116,13 +116,18 @@ n_run="$(count_matches "$out" '"harness":')"
   || fail "print-command planned $n_run harness(es) but list has $n_list" "$LAST_CMD" "$out"
 
 # 4. Real spawn + capture + extract, hermetically, via the mock-harness fixture.
+#    The mock emits a Claude-shaped result so this also proves the normalized
+#    envelope (text, usage, session_id) is lifted out of harness-specific stdout.
 mock="$(resolve_mock)"
-LAST_CMD="ONEHARNESS_BIN_CLAUDE_CODE=$mock MOCK_STDOUT={\"result\":\"pong\"} $oh run --harness claude-code --prompt <prompt> --compact"
-out="$(ONEHARNESS_BIN_CLAUDE_CODE="$mock" MOCK_STDOUT='{"type":"result","result":"pong"}' \
+mock_stdout='{"type":"result","result":"pong","session_id":"smoke-sess","total_cost_usd":0.0012,"usage":{"input_tokens":42,"output_tokens":1}}'
+LAST_CMD="ONEHARNESS_BIN_CLAUDE_CODE=$mock MOCK_STDOUT=<claude-json> $oh run --harness claude-code --prompt <prompt> --compact"
+out="$(ONEHARNESS_BIN_CLAUDE_CODE="$mock" MOCK_STDOUT="$mock_stdout" \
   "$oh" run --harness claude-code --prompt "$PROMPT" --compact)" \
   || fail "mock run exited non-zero" "$LAST_CMD"
 assert_contains "$out" '"status":"ok"' "the mock spawn/parse path is broken"
 assert_contains "$out" '"text":"pong"' "json:result extraction is broken"
+assert_contains "$out" '"usage_source":"json"' "usage normalization is broken"
+assert_contains "$out" '"session_id":"smoke-sess"' "session_id surfacing is broken"
 
 if [ "$LIVE" -eq 0 ]; then
   echo "smoke: ok (hermetic — list, detect, print-command, mock run)"

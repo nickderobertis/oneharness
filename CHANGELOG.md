@@ -8,6 +8,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Normalized best-effort signals on every `run` result, lifted out of each
+  harness's bespoke stdout (schema-compatible additions — no `schema_version`
+  bump):
+  - `usage` (`{ input_tokens, output_tokens, cost_usd }`, each field nullable)
+    and `usage_source`, so cross-harness cost/latency reporting is portable
+    instead of per-harness. Coverage starts with Claude Code's JSON.
+  - `session_id` — the continuation handle a harness exposes, surfaced for
+    multi-turn consumers (not yet consumed by oneharness itself).
+  - `failure_kind` (`auth`/`rate_limit`/`model_not_found`/`quota`) and
+    `failure_kind_source` on a non-zero run, distinct from `status`, so callers
+    can separate retryable conditions from a broken request.
+- `run --system <text>` — a portable system prompt mapped to each harness that
+  exposes one (Claude Code's `--append-system-prompt` to start); harnesses
+  without such a flag ignore it.
 - `scripts/smoke.sh` and the `just smoke` / `just smoke-live` recipes: an
   end-to-end smoke of the *built* binary. The hermetic mode (list, detect,
   `--print-command`, and one mock spawn) is part of `just check` and runs in CI

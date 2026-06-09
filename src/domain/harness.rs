@@ -18,6 +18,9 @@ pub struct BuildCtx<'a> {
     pub bin: &'a str,
     pub prompt: &'a str,
     pub model: Option<&'a str>,
+    /// System prompt to append, for harnesses that expose a flag for it. A
+    /// harness without one ignores it (like `model`/`bypass` on goose).
+    pub system: Option<&'a str>,
     pub bypass: bool,
     pub output_format: OutputFormat,
 }
@@ -129,7 +132,8 @@ static REGISTRY: &[HarnessSpec] = &[
     },
 ];
 
-/// `claude -p <prompt> --permission-mode <mode> [--model M] --output-format json`
+/// `claude -p <prompt> --permission-mode <mode> [--model M]
+/// [--append-system-prompt S] --output-format json`
 fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "-p".into(), c.prompt.into()];
     a.push("--permission-mode".into());
@@ -144,6 +148,10 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     if let Some(m) = c.model {
         a.push("--model".into());
         a.push(m.into());
+    }
+    if let Some(s) = c.system {
+        a.push("--append-system-prompt".into());
+        a.push(s.into());
     }
     a.push("--output-format".into());
     a.push(format_flag(c.output_format).into());
@@ -272,6 +280,7 @@ mod tests {
             bin,
             prompt: "hi",
             model,
+            system: None,
             bypass,
             output_format,
         }
@@ -372,6 +381,51 @@ mod tests {
             argv.windows(2).any(|w| w == ["--format", "text"]),
             "{argv:?}"
         );
+    }
+
+    #[test]
+    fn claude_maps_system_to_append_system_prompt() {
+        let spec = by_id("claude-code").unwrap();
+        let ctx = BuildCtx {
+            bin: "claude",
+            prompt: "hi",
+            model: None,
+            system: Some("be terse"),
+            bypass: true,
+            output_format: OutputFormat::Json,
+        };
+        let argv = (spec.build_argv)(&ctx);
+        assert!(
+            argv.windows(2)
+                .any(|w| w == ["--append-system-prompt", "be terse"]),
+            "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn harnesses_without_a_system_flag_ignore_it() {
+        // A harness with no append-system-prompt flag must build the same argv
+        // whether or not a system prompt is supplied (like goose ignores model).
+        for id in ["goose", "codex", "crush"] {
+            let spec = by_id(id).unwrap();
+            let without = (spec.build_argv)(&base_ctx(spec));
+            let with_system = (spec.build_argv)(&BuildCtx {
+                system: Some("be terse"),
+                ..base_ctx(spec)
+            });
+            assert_eq!(without, with_system, "harness {id} should ignore --system");
+        }
+    }
+
+    fn base_ctx(spec: &'static HarnessSpec) -> BuildCtx<'static> {
+        BuildCtx {
+            bin: spec.default_bin,
+            prompt: "hi",
+            model: None,
+            system: None,
+            bypass: true,
+            output_format: spec.output_format,
+        }
     }
 
     #[test]

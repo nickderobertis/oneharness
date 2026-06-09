@@ -6,6 +6,8 @@
 use clap::ValueEnum;
 use serde::Serialize;
 
+use crate::domain::signals::Usage;
+
 /// Bumped when the JSON shape changes in a way consumers must notice.
 pub const SCHEMA_VERSION: &str = "0.1";
 
@@ -76,6 +78,20 @@ pub struct RunResult {
     pub text: Option<String>,
     /// How `text` was extracted (e.g. `json:result`, `raw`); `null` when absent.
     pub text_source: Option<String>,
+    /// Best-effort token/cost accounting; every field is `null` when the harness
+    /// does not report it. Always present so consumers can read a stable shape.
+    pub usage: Usage,
+    /// How `usage` was read (e.g. `json`); `null` when nothing was found.
+    pub usage_source: Option<String>,
+    /// Best-effort harness session id for continuation; `null` when none is
+    /// exposed. (Surfaced only; oneharness does not yet consume it.)
+    pub session_id: Option<String>,
+    /// Best-effort failure reason (`auth`, `rate_limit`, `model_not_found`,
+    /// `quota`) for a non-zero run; `null` when unclassified. Distinct from
+    /// `status`, which records oneharness's relationship to the process.
+    pub failure_kind: Option<String>,
+    /// Where `failure_kind` was read (`stderr`/`stdout`); `null` when absent.
+    pub failure_kind_source: Option<String>,
     /// Raw captured stdout (empty for skipped/planned).
     pub stdout: String,
     /// Raw captured stderr (empty for skipped/planned).

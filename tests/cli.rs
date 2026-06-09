@@ -271,6 +271,146 @@ fn output_format_override_is_emitted_and_drives_extraction() {
 }
 
 #[test]
+fn system_prompt_maps_to_append_system_prompt_for_claude() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--system",
+            "be terse",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    let value = json_stdout(&output);
+    let command: Vec<String> = value["results"][0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        command
+            .windows(2)
+            .any(|w| w == ["--append-system-prompt", "be terse"]),
+        "{command:?}"
+    );
+}
+
+#[test]
+fn system_prompt_is_ignored_by_harness_without_a_flag() {
+    // goose has no append-system-prompt flag; --system must not alter its argv.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "goose",
+            "--prompt",
+            "hi",
+            "--system",
+            "be terse",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    let value = json_stdout(&output);
+    let command = value["results"][0]["command"].to_string();
+    assert!(!command.contains("be terse"), "{command}");
+    assert!(!command.contains("append-system-prompt"), "{command}");
+}
+
+#[test]
+fn normalizes_usage_and_session_id_from_claude_json() {
+    // A Claude-shaped result document carries cost, token usage, and a session id
+    // buried in stdout; oneharness lifts them into the envelope, best-effort.
+    let stdout = r#"{"type":"result","result":"pong","session_id":"sess-xyz",
+        "total_cost_usd":0.0095,"usage":{"input_tokens":1200,"output_tokens":8,
+        "cache_read_input_tokens":34}}"#;
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["usage"]["input_tokens"], 1200);
+    assert_eq!(result["usage"]["output_tokens"], 8);
+    assert_eq!(result["usage"]["cost_usd"], 0.0095);
+    assert_eq!(result["usage_source"], "json");
+    assert_eq!(result["session_id"], "sess-xyz");
+    // No failure on a clean run.
+    assert!(result["failure_kind"].is_null());
+}
+
+#[test]
+fn usage_fields_are_null_when_harness_reports_none() {
+    // A plain result with no usage/session still yields a stable, null-filled shape.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"hi"}"#)],
+    );
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert!(result["usage"]["cost_usd"].is_null());
+    assert!(result["usage"]["input_tokens"].is_null());
+    assert!(result["usage_source"].is_null());
+    assert!(result["session_id"].is_null());
+}
+
+#[test]
+fn classifies_failure_kind_on_nonzero_exit() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_EXIT", "1"),
+            (
+                "MOCK_STDERR",
+                "Error: 401 Unauthorized — please authenticate",
+            ),
+            ("MOCK_STDOUT", ""),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["status"], "nonzero");
+    assert_eq!(result["failure_kind"], "auth");
+    assert_eq!(result["failure_kind_source"], "stderr");
+}
+
+#[test]
 fn passthrough_args_are_appended_verbatim() {
     let output = run(
         &[

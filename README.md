@@ -51,20 +51,22 @@ $ oneharness run --all --prompt "Reply with the single word: pong" --model haiku
 
 ## Supported harnesses
 
-| id | CLI | default binary | bypass mode requested |
-|----|-----|----------------|-----------------------|
-| `claude-code` | Claude Code | `claude` | `--permission-mode bypassPermissions` |
-| `codex` | OpenAI Codex CLI | `codex` | `--sandbox danger-full-access -a never` |
-| `opencode` | OpenCode | `opencode` | `--dangerously-skip-permissions` |
-| `goose` | Goose | `goose` | (runs unattended) |
-| `qwen` | Qwen Code | `qwen` | `--yolo` |
-| `crush` | Crush | `crush` | `run -q` (non-interactive) |
-| `copilot` | GitHub Copilot CLI | `copilot` | `--allow-all-tools --allow-all-paths --no-ask-user` |
-| `cursor` | Cursor CLI | `cursor-agent` | `--force` |
+| id | CLI | default binary | bypass mode requested | `--resume` |
+|----|-----|----------------|-----------------------|:---------:|
+| `claude-code` | Claude Code | `claude` | `--permission-mode bypassPermissions` | `--resume` |
+| `codex` | OpenAI Codex CLI | `codex` | `--sandbox danger-full-access -a never` | — |
+| `opencode` | OpenCode | `opencode` | `--dangerously-skip-permissions` | `--session` |
+| `goose` | Goose | `goose` | (runs unattended) | — |
+| `qwen` | Qwen Code | `qwen` | `--yolo` | — |
+| `crush` | Crush | `crush` | `run -q` (non-interactive) | — |
+| `copilot` | GitHub Copilot CLI | `copilot` | `--allow-all-tools --allow-all-paths --no-ask-user` | — |
+| `cursor` | Cursor CLI | `cursor-agent` | `--force` | `--resume` |
 
 `oneharness list` prints this registry as JSON, including the exact command each
-adapter builds and a `supports_resume` flag (currently `claude-code` only — the
-capability `run --resume` requires).
+adapter builds and a `supports_resume` flag. The `--resume` column shows the flag
+each adapter maps `run --resume <session>` onto (Claude Code, OpenCode, and Cursor
+today); a `—` means the harness has no headless continuation flag, so `--resume`
+is rejected for it rather than silently starting fresh.
 
 ## Install
 
@@ -146,17 +148,23 @@ more than one possible method) records how it was found:
 - `usage` / `usage_source` — `{ input_tokens, output_tokens, cost_usd }`, each
   field independently `null` when the harness doesn't report it (cost is commonly
   absent on subscription auth). The `usage` object is always present so the shape
-  is stable for cross-harness cost/latency tables.
-- `session_id` — the handle a harness exposes for continuation; feed it back via
-  `run --resume <session>` (single-harness, supported harnesses only) to drive a
-  faithful multi-turn against the real agent.
+  is stable for cross-harness cost/latency tables. `usage_source` records the
+  method: `json` for a harness that reports a whole-run total in one event (Claude
+  Code), `json:summed-steps` for one that reports per-step usage that oneharness
+  sums (OpenCode). Cursor does not emit token usage today, so its `usage` stays
+  `null`.
+- `session_id` — the handle a harness exposes for continuation, read from either
+  the snake_case `session_id` (Claude Code, Cursor) or camelCase `sessionID`
+  (OpenCode); feed it back via `run --resume <session>` (single-harness, supported
+  harnesses only) to drive a faithful multi-turn against the real agent.
 - `failure_kind` / `failure_kind_source` — on a non-zero run, a coarse reason
   (`auth`, `rate_limit`, `model_not_found`, `quota`) so a caller can tell a
   retryable condition from a broken request. This is **distinct from `status`**,
   which only records oneharness's relationship to the process.
 
-Coverage starts with the harnesses that emit a parseable shape (Claude Code's
-JSON first) and widens over time; an absent signal is the honest answer, not an
+Coverage is keyed off each harness's documented output shape — Claude Code's
+`result` JSON, OpenCode's `step_finish` JSONL, Cursor's `stream-json` — and
+widens as more shapes are sourced; an absent signal is the honest answer, not an
 error. Consumers that need certainty should parse `stdout` themselves.
 
 ### Safety note: bypass by default

@@ -65,12 +65,24 @@ count_matches() {
   { printf '%s' "$1" | grep -oF -- "$2" || true; } | wc -l | tr -d '[:space:]'
 }
 
+# Resolve the oneharness binary to smoke. Prefer an explicit override, then the
+# *freshest* built binary (release vs debug, by mtime). Preferring the newer of
+# the two is deliberate: `just check` rebuilds debug right before smoke, so a
+# just-built debug must win over a stale release left in target/ — otherwise the
+# gate silently smokes an out-of-date artifact (the original footgun). Build
+# debug if neither exists.
 resolve_oneharness() {
   if [ -n "${ONEHARNESS_BIN:-}" ]; then printf '%s' "$ONEHARNESS_BIN"; return 0; fi
-  local c
-  for c in target/release/oneharness target/debug/oneharness; do
-    if p="$(exe_path "$c")"; then printf '%s' "$p"; return 0; fi
-  done
+  local rel deb
+  rel="$(exe_path target/release/oneharness || true)"
+  deb="$(exe_path target/debug/oneharness || true)"
+  if [ -n "$rel" ] && [ -n "$deb" ]; then
+    # `-nt`: POSIX file-newer-than test, portable across Linux/macOS/Git-Bash.
+    if [ "$rel" -nt "$deb" ]; then printf '%s' "$rel"; else printf '%s' "$deb"; fi
+    return 0
+  fi
+  [ -n "$rel" ] && { printf '%s' "$rel"; return 0; }
+  [ -n "$deb" ] && { printf '%s' "$deb"; return 0; }
   echo "smoke: building oneharness (debug)…" >&2
   cargo build --locked >&2
   exe_path target/debug/oneharness || fail "could not find oneharness after build" \
@@ -90,6 +102,17 @@ resolve_mock() {
 }
 
 oh="$(resolve_oneharness)"
+
+# Belt-and-suspenders against a stale artifact the freshest-binary pick can't
+# catch (e.g. a leftover release of a different version): the binary under test
+# must report the crate version. This is exactly the failure mode that motivated
+# the guard — a 0.1.0 release binary shadowing a 0.1.1 source tree.
+crate_ver="$(grep -m1 -E '^version[[:space:]]*=' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+bin_ver="$("$oh" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+if [ -n "$crate_ver" ] && [ -n "$bin_ver" ] && [ "$crate_ver" != "$bin_ver" ]; then
+  fail "binary under test is v$bin_ver but Cargo.toml is v$crate_ver (stale build)" \
+    "$oh --version" "" "rebuild with 'just build' (or 'just build-release'), then retry"
+fi
 
 # 1. `list` — the registry, with each adapter's example command.
 LAST_CMD="$oh list --compact"

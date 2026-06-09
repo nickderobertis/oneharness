@@ -45,10 +45,11 @@ aren't re-litigated each session:
   would cover (snapshot-testing a compiled binary, cross-platform release
   artifacts) is handled inline by the `--print-command` argv assertions and the
   `release.yml` matrix.
-- **No `cargo-dist` / `release-plz`** — the hand-versioned, tag-driven
-  `release.yml` already ships checksummed cross-platform binaries (see
-  *Releasing*); the automation isn't worth its moving parts yet (and
-  `release-plz` would need a PAT secret).
+- **No `cargo-dist`** — `release.yml`'s native build matrix already ships
+  checksummed cross-platform binaries; cargo-dist's generated pipeline isn't
+  worth replacing it. (`release-plz` *is* now used for conventional-commit
+  versioning — see *Releasing* — driven directly with a `RELEASE_PLZ_TOKEN` PAT,
+  reversing the earlier "hand-versioned only" choice.)
 - **No crates.io publish** — this is an end-user binary, distributed via GitHub
   Releases and `cargo install --git`, not a library dependency.
 - **No pre-commit/lefthook, direnv, or `src/`-style layout** — template baggage
@@ -126,11 +127,26 @@ shape. When you add one:
 
 ## Releasing
 
-- Versioning is by hand; CI builds the artifacts. Bump `version` in `Cargo.toml`,
-  move the `CHANGELOG.md` `[Unreleased]` entries under the new `vX.Y.Z`, land it on
-  the default branch, then push a matching `vX.Y.Z` tag. The tag triggers
-  `release.yml`, which gates on the test suite and publishes checksummed
-  cross-platform binaries. Never publish by editing a release by hand mid-flight.
+- Releases are automated from conventional commits by **release-plz**
+  (`release-plz.toml` + `.github/workflows/release-plz.yml`), mirroring
+  nickderobertis/allowlister. Land conventional commits on `main` (`feat` →
+  minor, `fix`/`perf` → patch, `!`/`BREAKING` → major; `docs`/`test`/`chore`/`ci`
+  do not release — so commit subjects are load-bearing for both the bump and the
+  generated `CHANGELOG.md`). release-plz opens a `release vX.Y.Z` PR that bumps
+  `Cargo.toml`/`Cargo.lock` and writes the changelog section, auto-merges it once
+  the required checks are green, then tags `vX.Y.Z` and cuts the GitHub Release.
+  That Release fires `release.yml`, which re-gates on the tests and attaches the
+  checksummed cross-platform binaries.
+- **Requires a PAT.** The automation runs only once a `RELEASE_PLZ_TOKEN` repo
+  secret exists (a classic or fine-grained PAT with `contents: write` +
+  `pull-requests: write`). A tag/Release made with the default `GITHUB_TOKEN`
+  would not retrigger `release.yml`, so the binaries would never build; until the
+  secret is set, the workflow's `guard` job no-ops cleanly. The crate version and
+  `CHANGELOG.md` are managed by release-plz — do not hand-bump them.
+- **Manual fallback.** Creating a GitHub Release by hand (the UI, or
+  `gh release create vX.Y.Z`) fires the same `release: published` event and builds
+  the binaries — use it only if the automation is wedged. Never publish by editing
+  a release by hand mid-flight.
 - The JSON `schema_version` is independent of the crate version: bump it only when
   the report shape changes incompatibly, and document it in the changelog.
 

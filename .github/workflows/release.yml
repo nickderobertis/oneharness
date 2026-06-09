@@ -1,23 +1,22 @@
 name: Release
 
-# Build, archive, checksum, and publish the cross-platform binaries for a tagged
-# release. Self-contained: pushing a `vX.Y.Z` tag is the only trigger.
+# Build, archive, checksum, and attach the cross-platform binaries for a
+# published GitHub Release.
 #
-#   * test           — the deterministic gate (clippy + tests), so untested
-#                       artifacts never publish.
-#   * create-release — create the GitHub Release for the tag (idempotent), with
-#                       notes generated from the commits since the last release.
-#   * upload         — build each target on a native runner and attach the
-#                       archive + sha256 checksum to the release.
+# The Release itself is created by release-plz (see release-plz.yml) when a
+# version-bump PR merges. Because release-plz uses a PAT, that Release fires the
+# `release: published` event below; this workflow then re-gates on the test suite
+# and uploads the archives + checksums. Creating a Release by hand in the GitHub
+# UI is the supported manual fallback — it triggers the same event.
 #
-# There is no release-plz here: versioning is by hand (bump Cargo.toml, then push
-# `v$version`). Conventional-commit automation can be layered on later, but it
-# needs a PAT secret (a tag/release made with GITHUB_TOKEN does not retrigger
-# workflows), so this manual path stays the dependency-free default.
+#   * test    — the deterministic gate (lint + shellcheck + tests), so untested
+#               artifacts never publish.
+#   * upload  — build each target on a native runner and attach the archive +
+#               sha256 checksum to the Release.
 
 on:
-  push:
-    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -47,32 +46,9 @@ jobs:
       - run: just lint-sh
       - run: just test
 
-  # Create the Release first so the matrix upload jobs only ever attach to it
-  # (no create-or-get race across five concurrent runners).
-  create-release:
-    needs: test
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-      - name: Create the GitHub Release (idempotent)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $TAG already exists; reusing it."
-          else
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --verify-tag --title "$TAG" --generate-notes
-          fi
-
   upload:
     name: upload (${{ matrix.target }})
-    needs: create-release
+    needs: test
     permissions:
       contents: write
     strategy:

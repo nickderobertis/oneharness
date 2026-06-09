@@ -107,6 +107,8 @@ pub struct RunReport {
     pub oneharness_version: &'static str,
     pub prompt: String,
     pub model: Option<String>,
+    /// The session id being continued, when `--resume` was passed; else `null`.
+    pub resume: Option<String>,
     pub bypass_permissions: bool,
     pub dry_run: bool,
     pub results: Vec<RunResult>,

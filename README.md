@@ -20,6 +20,7 @@ $ oneharness run --all --prompt "Reply with the single word: pong" --model haiku
   "oneharness_version": "0.1.0",
   "prompt": "Reply with the single word: pong",
   "model": "haiku",
+  "resume": null,
   "bypass_permissions": true,
   "dry_run": false,
   "results": [
@@ -62,7 +63,8 @@ $ oneharness run --all --prompt "Reply with the single word: pong" --model haiku
 | `cursor` | Cursor CLI | `cursor-agent` | `--force` |
 
 `oneharness list` prints this registry as JSON, including the exact command each
-adapter builds.
+adapter builds and a `supports_resume` flag (currently `claude-code` only — the
+capability `run --resume` requires).
 
 ## Install
 
@@ -99,6 +101,11 @@ Useful `run` flags:
 - `--model <m>` — passed to each harness that supports a model flag.
 - `--system <text>` — system prompt for each harness that exposes one (e.g.
   Claude Code's `--append-system-prompt`); harnesses without such a flag ignore it.
+- `--resume <session>` — continue a prior session, sending the prompt as its next
+  turn. **Single-harness only** (a session belongs to one harness) and only for
+  harnesses that support it (`supports_resume` in `oneharness list`); other
+  selections are a usage error rather than a silent fresh session. The continued
+  `session_id` is surfaced on each result (see below).
 - `--output-format <text|json|stream-json>` — override the format requested from
   each harness (default: per-harness); affects the emitted flag and how `text` is
   extracted.
@@ -140,8 +147,9 @@ more than one possible method) records how it was found:
   field independently `null` when the harness doesn't report it (cost is commonly
   absent on subscription auth). The `usage` object is always present so the shape
   is stable for cross-harness cost/latency tables.
-- `session_id` — the handle a harness exposes for continuation, surfaced for
-  consumers that drive multi-turn (oneharness does not yet consume it itself).
+- `session_id` — the handle a harness exposes for continuation; feed it back via
+  `run --resume <session>` (single-harness, supported harnesses only) to drive a
+  faithful multi-turn against the real agent.
 - `failure_kind` / `failure_kind_source` — on a non-zero run, a coarse reason
   (`auth`, `rate_limit`, `model_not_found`, `quota`) so a caller can tell a
   retryable condition from a broken request. This is **distinct from `status`**,

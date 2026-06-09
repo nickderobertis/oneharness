@@ -15,6 +15,8 @@ struct HarnessInfo {
     default_bin: &'static str,
     install_hint: &'static str,
     output_format: OutputFormat,
+    /// Whether `run --resume <session>` is supported for this harness.
+    supports_resume: bool,
     /// The argv oneharness would build, with placeholders, so the adapter's
     /// shape is visible without running anything.
     example_command: Vec<String>,
@@ -35,6 +37,7 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 prompt: "<PROMPT>",
                 model: None,
                 system: None,
+                resume: None,
                 bypass: true,
                 output_format: spec.output_format,
             };
@@ -44,6 +47,7 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 default_bin: spec.default_bin,
                 install_hint: spec.install_hint,
                 output_format: spec.output_format,
+                supports_resume: spec.supports_resume,
                 example_command: (spec.build_argv)(&ctx),
             }
         })

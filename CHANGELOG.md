@@ -15,13 +15,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     and `usage_source`, so cross-harness cost/latency reporting is portable
     instead of per-harness. Coverage starts with Claude Code's JSON.
   - `session_id` — the continuation handle a harness exposes, surfaced for
-    multi-turn consumers (not yet consumed by oneharness itself).
+    multi-turn consumers and consumed by the new `run --resume`.
   - `failure_kind` (`auth`/`rate_limit`/`model_not_found`/`quota`) and
     `failure_kind_source` on a non-zero run, distinct from `status`, so callers
     can separate retryable conditions from a broken request.
 - `run --system <text>` — a portable system prompt mapped to each harness that
   exposes one (Claude Code's `--append-system-prompt` to start); harnesses
   without such a flag ignore it.
+- `run --resume <session>` — continue a prior session, sending the prompt as its
+  next turn, for a faithful multi-turn against the real agent (pairs with the new
+  `session_id` signal). Single-harness only (a session belongs to one harness)
+  and only for harnesses that support it; any other selection is a usage error,
+  never a silent fresh session. `oneharness list` now reports a `supports_resume`
+  flag per harness (Claude Code to start).
 - `scripts/smoke.sh` and the `just smoke` / `just smoke-live` recipes: an
   end-to-end smoke of the *built* binary. The hermetic mode (list, detect,
   `--print-command`, and one mock spawn) is part of `just check` and runs in CI

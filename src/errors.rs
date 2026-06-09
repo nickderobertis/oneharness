@@ -17,6 +17,12 @@ pub enum OneharnessError {
     #[error("no prompt provided: pass --prompt <text> or --prompt-file <path>")]
     NoPrompt,
 
+    #[error("--resume needs exactly one harness (a session belongs to one harness), but {count} were selected: {selected}")]
+    ResumeMultipleHarnesses { count: usize, selected: String },
+
+    #[error("harness `{id}` does not support --resume. supported: {supported}")]
+    ResumeUnsupported { id: String, supported: String },
+
     #[error("could not read prompt file `{path}`: {source}")]
     PromptFile {
         path: String,

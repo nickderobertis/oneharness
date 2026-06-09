@@ -13,9 +13,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   bump):
   - `usage` (`{ input_tokens, output_tokens, cost_usd }`, each field nullable)
     and `usage_source`, so cross-harness cost/latency reporting is portable
-    instead of per-harness. Coverage starts with Claude Code's JSON.
-  - `session_id` — the continuation handle a harness exposes, surfaced for
-    multi-turn consumers and consumed by the new `run --resume`.
+    instead of per-harness. `usage_source` distinguishes the method: `json` for a
+    whole-run total in one event (Claude Code), `json:summed-steps` for per-step
+    usage summed across events (OpenCode's `step_finish` JSONL). Cursor does not
+    emit token usage today, so its `usage` stays null rather than fabricated.
+  - `session_id` — the continuation handle a harness exposes, read from both the
+    snake_case `session_id` (Claude Code, Cursor) and camelCase `sessionID`
+    (OpenCode), surfaced for multi-turn consumers and consumed by `run --resume`.
   - `failure_kind` (`auth`/`rate_limit`/`model_not_found`/`quota`) and
     `failure_kind_source` on a non-zero run, distinct from `status`, so callers
     can separate retryable conditions from a broken request.
@@ -26,8 +30,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   next turn, for a faithful multi-turn against the real agent (pairs with the new
   `session_id` signal). Single-harness only (a session belongs to one harness)
   and only for harnesses that support it; any other selection is a usage error,
-  never a silent fresh session. `oneharness list` now reports a `supports_resume`
-  flag per harness (Claude Code to start).
+  never a silent fresh session. Mapped per harness onto its real continuation
+  flag — Claude Code `--resume`, OpenCode `--session`, Cursor `--resume` — and
+  `oneharness list` reports a `supports_resume` flag for each.
 - `scripts/smoke.sh` and the `just smoke` / `just smoke-live` recipes: an
   end-to-end smoke of the *built* binary. The hermetic mode (list, detect,
   `--print-command`, and one mock spawn) is part of `just check` and runs in CI

@@ -498,6 +498,105 @@ fn list_exposes_resume_capability() {
     let codex = harnesses.iter().find(|h| h["id"] == "codex").unwrap();
     assert_eq!(claude["supports_resume"], true);
     assert_eq!(codex["supports_resume"], false);
+    let opencode = harnesses.iter().find(|h| h["id"] == "opencode").unwrap();
+    let cursor = harnesses.iter().find(|h| h["id"] == "cursor").unwrap();
+    assert_eq!(opencode["supports_resume"], true);
+    assert_eq!(cursor["supports_resume"], true);
+}
+
+#[test]
+fn resume_maps_to_session_flag_for_opencode() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "continue",
+            "--resume",
+            "ses_abc",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    let command: Vec<String> = value["results"][0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        command.windows(2).any(|w| w == ["--session", "ses_abc"]),
+        "{command:?}"
+    );
+}
+
+#[test]
+fn resume_maps_to_resume_flag_for_cursor() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "cursor",
+            "--prompt",
+            "continue",
+            "--resume",
+            "chat-9",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    let command: Vec<String> = value["results"][0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        command.windows(2).any(|w| w == ["--resume", "chat-9"]),
+        "{command:?}"
+    );
+}
+
+#[test]
+fn normalizes_usage_and_session_from_opencode_stream_json() {
+    // OpenCode emits JSONL step events: a camelCase sessionID and per-step
+    // tokens/cost under `part`, which oneharness sums into one usage reading and
+    // records the method as `json:summed-steps`.
+    let stdout = concat!(
+        "{\"type\":\"step_start\",\"sessionID\":\"ses_abc\",\"part\":{}}\n",
+        "{\"type\":\"step_finish\",\"sessionID\":\"ses_abc\",\"part\":{\"cost\":0.001,",
+        "\"tokens\":{\"input\":671,\"output\":8}}}\n",
+        "{\"type\":\"step_finish\",\"sessionID\":\"ses_abc\",\"part\":{\"cost\":0.002,",
+        "\"tokens\":{\"input\":12,\"output\":34}}}\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("opencode"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["usage"]["input_tokens"], 683);
+    assert_eq!(result["usage"]["output_tokens"], 42);
+    assert!((result["usage"]["cost_usd"].as_f64().unwrap() - 0.003).abs() < 1e-9);
+    assert_eq!(result["usage_source"], "json:summed-steps");
+    assert_eq!(result["session_id"], "ses_abc");
 }
 
 #[test]

@@ -99,7 +99,7 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "opencode",
         install_hint: "npm install -g opencode-ai",
         output_format: OutputFormat::Json,
-        supports_resume: false,
+        supports_resume: true,
         build_argv: argv_opencode,
     },
     HarnessSpec {
@@ -144,7 +144,7 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "cursor-agent",
         install_hint: "see https://docs.cursor.com/en/cli/overview",
         output_format: OutputFormat::StreamJson,
-        supports_resume: false,
+        supports_resume: true,
         build_argv: argv_cursor,
     },
 ];
@@ -196,7 +196,8 @@ fn argv_codex(c: &BuildCtx) -> Vec<String> {
     a
 }
 
-/// `opencode run [--dangerously-skip-permissions] --format json [-m M] <prompt>`
+/// `opencode run [--dangerously-skip-permissions] --format json [-m M]
+/// [--session SID] <prompt>` (OpenCode continues a session id with `--session`)
 fn argv_opencode(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "run".into()];
     if c.bypass {
@@ -207,6 +208,10 @@ fn argv_opencode(c: &BuildCtx) -> Vec<String> {
     if let Some(m) = c.model {
         a.push("-m".into());
         a.push(m.into());
+    }
+    if let Some(sid) = c.resume {
+        a.push("--session".into());
+        a.push(sid.into());
     }
     a.push(c.prompt.into());
     a
@@ -268,7 +273,8 @@ fn argv_copilot(c: &BuildCtx) -> Vec<String> {
     a
 }
 
-/// `cursor-agent -p <prompt> [--force] [--model M] --output-format stream-json`
+/// `cursor-agent -p <prompt> [--force] [--model M] [--resume SID]
+/// --output-format stream-json` (Cursor continues a chat id with `--resume`)
 fn argv_cursor(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "-p".into(), c.prompt.into()];
     if c.bypass {
@@ -277,6 +283,10 @@ fn argv_cursor(c: &BuildCtx) -> Vec<String> {
     if let Some(m) = c.model {
         a.push("--model".into());
         a.push(m.into());
+    }
+    if let Some(sid) = c.resume {
+        a.push("--resume".into());
+        a.push(sid.into());
     }
     a.push("--output-format".into());
     a.push(format_flag(c.output_format).into());
@@ -467,15 +477,45 @@ mod tests {
     }
 
     #[test]
-    fn only_claude_supports_resume_for_now() {
-        for h in all() {
-            assert_eq!(
-                h.supports_resume,
-                h.id == "claude-code",
-                "unexpected supports_resume for {}",
-                h.id
-            );
-        }
+    fn resume_supported_set_is_claude_opencode_cursor() {
+        let supported: std::collections::HashSet<&str> = all()
+            .iter()
+            .filter(|h| h.supports_resume)
+            .map(|h| h.id)
+            .collect();
+        assert_eq!(
+            supported,
+            ["claude-code", "opencode", "cursor"].into_iter().collect(),
+            "supports_resume set drifted"
+        );
+    }
+
+    #[test]
+    fn opencode_maps_resume_to_session_flag() {
+        let spec = by_id("opencode").unwrap();
+        assert!(spec.supports_resume);
+        let argv = (spec.build_argv)(&BuildCtx {
+            resume: Some("ses_abc"),
+            ..base_ctx(spec)
+        });
+        assert!(
+            argv.windows(2).any(|w| w == ["--session", "ses_abc"]),
+            "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn cursor_maps_resume_to_resume_flag() {
+        let spec = by_id("cursor").unwrap();
+        assert!(spec.supports_resume);
+        let argv = (spec.build_argv)(&BuildCtx {
+            resume: Some("chat-9"),
+            ..base_ctx(spec)
+        });
+        assert!(
+            argv.windows(2).any(|w| w == ["--resume", "chat-9"]),
+            "{argv:?}"
+        );
     }
 
     #[test]

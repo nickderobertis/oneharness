@@ -152,6 +152,21 @@ assert_contains "$out" '"text":"pong"' "json:result extraction is broken"
 assert_contains "$out" '"usage_source":"json"' "usage normalization is broken"
 assert_contains "$out" '"session_id":"smoke-sess"' "session_id surfacing is broken"
 
+# 4b. The other usage shape: OpenCode's JSONL reports per-step tokens/cost under
+#     `part` plus a camelCase `sessionID`, which oneharness sums (source
+#     `json:summed-steps`) and surfaces — a different code path than step 4's
+#     single-event Claude shape, so the built binary proves both.
+oc_stdout='{"type":"step_start","sessionID":"ses_smoke","part":{}}
+{"type":"step_finish","sessionID":"ses_smoke","part":{"cost":0.001,"tokens":{"input":40,"output":2}}}
+{"type":"step_finish","sessionID":"ses_smoke","part":{"cost":0.002,"tokens":{"input":3,"output":5}}}'
+LAST_CMD="ONEHARNESS_BIN_OPENCODE=$mock MOCK_STDOUT=<opencode-jsonl> $oh run --harness opencode --prompt <prompt> --compact"
+out="$(ONEHARNESS_BIN_OPENCODE="$mock" MOCK_STDOUT="$oc_stdout" \
+  "$oh" run --harness opencode --prompt "$PROMPT" --compact)" \
+  || fail "opencode mock run exited non-zero" "$LAST_CMD"
+assert_contains "$out" '"usage_source":"json:summed-steps"' "opencode per-step usage summing is broken"
+assert_contains "$out" '"input_tokens":43' "opencode token summing is broken"
+assert_contains "$out" '"session_id":"ses_smoke"' "camelCase sessionID surfacing is broken"
+
 if [ "$LIVE" -eq 0 ]; then
   echo "smoke: ok (hermetic — list, detect, print-command, mock run)"
   exit 0

@@ -27,6 +27,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `--print-command`, and one mock spawn) is part of `just check` and runs in CI
   on every platform; `smoke-live` opts in to real installed harnesses and is kept
   out of the gate.
+
+### Fixed
+
+- `scripts/smoke.sh` no longer silently smokes a stale artifact: it now resolves
+  the *freshest* of the release/debug binaries (so the debug build `just check`
+  produces wins over a leftover release), and hard-fails if the binary under test
+  reports a different version than `Cargo.toml`. Previously a stale release binary
+  shadowed the just-built one, masking changes from the gate.
 - `just lint-sh`: shellcheck over the shell scripts, wired into `just check` and
   installed in CI (and the release gate) on every platform.
 - `.tool-versions` pinning `just` so a clean clone resolves the command runner

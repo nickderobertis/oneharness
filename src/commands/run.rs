@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use crate::cli::RunArgs;
 use crate::commands::{print_json, select_specs};
-use crate::domain::harness::{BuildCtx, HarnessSpec};
+use crate::domain::harness::{self, BuildCtx, HarnessSpec};
 use crate::domain::report::{Capture, OutputFormat, RunReport, RunResult, Status, SCHEMA_VERSION};
 use crate::domain::signals::Usage;
 use crate::domain::{normalize, signals};
@@ -19,6 +19,8 @@ const EXIT_FAILURE: i32 = 1;
 pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let prompt = resolve_prompt(args)?;
     let specs = select_specs(args.all, &args.harness, &args.exclude)?;
+    let resume = args.resume.as_deref();
+    validate_resume(resume, &specs)?;
     let overrides = BinOverrides::parse(&args.bin)?;
     let env = parse_env(&args.env)?;
     let bypass = !args.no_bypass;
@@ -37,6 +39,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             prompt: &prompt,
             model,
             system: args.system.as_deref(),
+            resume,
             bypass,
             output_format,
         };
@@ -108,6 +111,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         oneharness_version: env!("CARGO_PKG_VERSION"),
         prompt,
         model: args.model.clone(),
+        resume: args.resume.clone(),
         bypass_permissions: bypass,
         dry_run: args.print_command,
         results,
@@ -324,6 +328,37 @@ fn write_output_dir(dir: &std::path::Path, results: &[RunResult]) -> Result<(), 
     Ok(())
 }
 
+/// Resume is stateful and single-session: it requires exactly one selected
+/// harness, and that harness must support continuation. Both are usage errors,
+/// caught before any process is spawned (`--all` is already excluded by clap).
+fn validate_resume(
+    resume: Option<&str>,
+    specs: &[&'static HarnessSpec],
+) -> Result<(), OneharnessError> {
+    if resume.is_none() {
+        return Ok(());
+    }
+    if specs.len() != 1 {
+        return Err(OneharnessError::ResumeMultipleHarnesses {
+            count: specs.len(),
+            selected: specs.iter().map(|s| s.id).collect::<Vec<_>>().join(", "),
+        });
+    }
+    let spec = specs[0];
+    if !spec.supports_resume {
+        return Err(OneharnessError::ResumeUnsupported {
+            id: spec.id.to_string(),
+            supported: harness::all()
+                .iter()
+                .filter(|s| s.supports_resume)
+                .map(|s| s.id)
+                .collect::<Vec<_>>()
+                .join(", "),
+        });
+    }
+    Ok(())
+}
+
 fn parse_env(values: &[String]) -> Result<Vec<(String, String)>, OneharnessError> {
     values
         .iter()
@@ -380,6 +415,32 @@ mod tests {
         let results = vec![result(Status::Skipped, false)];
         assert_eq!(exit_code(&results, true), EXIT_FAILURE);
         assert_eq!(exit_code(&results, false), EXIT_OK);
+    }
+
+    #[test]
+    fn validate_resume_ok_for_single_supported_harness() {
+        let claude = harness::by_id("claude-code").unwrap();
+        assert!(validate_resume(Some("sid"), &[claude]).is_ok());
+        // No --resume: anything goes.
+        assert!(validate_resume(None, &[claude, claude]).is_ok());
+    }
+
+    #[test]
+    fn validate_resume_rejects_multiple_harnesses() {
+        let claude = harness::by_id("claude-code").unwrap();
+        assert!(matches!(
+            validate_resume(Some("sid"), &[claude, claude]),
+            Err(OneharnessError::ResumeMultipleHarnesses { count: 2, .. })
+        ));
+    }
+
+    #[test]
+    fn validate_resume_rejects_unsupported_harness() {
+        let codex = harness::by_id("codex").unwrap();
+        assert!(matches!(
+            validate_resume(Some("sid"), &[codex]),
+            Err(OneharnessError::ResumeUnsupported { .. })
+        ));
     }
 
     #[test]

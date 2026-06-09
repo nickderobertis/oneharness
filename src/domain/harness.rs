@@ -21,6 +21,10 @@ pub struct BuildCtx<'a> {
     /// System prompt to append, for harnesses that expose a flag for it. A
     /// harness without one ignores it (like `model`/`bypass` on goose).
     pub system: Option<&'a str>,
+    /// Session id to continue, for harnesses that support resumption. Only set
+    /// after the command layer has verified the selected harness's
+    /// `supports_resume`, so an adapter that maps it can assume support.
+    pub resume: Option<&'a str>,
     pub bypass: bool,
     pub output_format: OutputFormat,
 }
@@ -46,6 +50,11 @@ pub struct HarnessSpec {
     pub install_hint: &'static str,
     /// The format the adapter requests, which drives text extraction.
     pub output_format: OutputFormat,
+    /// Whether this harness can continue a prior session (`run --resume`). When
+    /// false, the command layer rejects `--resume` for it rather than silently
+    /// starting a fresh session. Kept as data so the capability is introspectable
+    /// via `oneharness list`.
+    pub supports_resume: bool,
     /// Builds the full argv (argv[0] is the binary). Pure.
     pub build_argv: fn(&BuildCtx) -> Vec<String>,
 }
@@ -72,6 +81,7 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "claude",
         install_hint: "npm install -g @anthropic-ai/claude-code",
         output_format: OutputFormat::Json,
+        supports_resume: true,
         build_argv: argv_claude_code,
     },
     HarnessSpec {
@@ -80,6 +90,7 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "codex",
         install_hint: "npm install -g @openai/codex",
         output_format: OutputFormat::Text,
+        supports_resume: false,
         build_argv: argv_codex,
     },
     HarnessSpec {
@@ -88,6 +99,7 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "opencode",
         install_hint: "npm install -g opencode-ai",
         output_format: OutputFormat::Json,
+        supports_resume: false,
         build_argv: argv_opencode,
     },
     HarnessSpec {
@@ -96,6 +108,7 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "goose",
         install_hint: "see https://block.github.io/goose/docs/getting-started/installation",
         output_format: OutputFormat::Text,
+        supports_resume: false,
         build_argv: argv_goose,
     },
     HarnessSpec {
@@ -104,6 +117,7 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "qwen",
         install_hint: "npm install -g @qwen-code/qwen-code",
         output_format: OutputFormat::Text,
+        supports_resume: false,
         build_argv: argv_qwen,
     },
     HarnessSpec {
@@ -112,6 +126,7 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "crush",
         install_hint: "npm install -g @charmland/crush",
         output_format: OutputFormat::Text,
+        supports_resume: false,
         build_argv: argv_crush,
     },
     HarnessSpec {
@@ -120,6 +135,7 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "copilot",
         install_hint: "npm install -g @github/copilot",
         output_format: OutputFormat::Text,
+        supports_resume: false,
         build_argv: argv_copilot,
     },
     HarnessSpec {
@@ -128,6 +144,7 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "cursor-agent",
         install_hint: "see https://docs.cursor.com/en/cli/overview",
         output_format: OutputFormat::StreamJson,
+        supports_resume: false,
         build_argv: argv_cursor,
     },
 ];
@@ -152,6 +169,10 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     if let Some(s) = c.system {
         a.push("--append-system-prompt".into());
         a.push(s.into());
+    }
+    if let Some(sid) = c.resume {
+        a.push("--resume".into());
+        a.push(sid.into());
     }
     a.push("--output-format".into());
     a.push(format_flag(c.output_format).into());
@@ -281,6 +302,7 @@ mod tests {
             prompt: "hi",
             model,
             system: None,
+            resume: None,
             bypass,
             output_format,
         }
@@ -391,6 +413,7 @@ mod tests {
             prompt: "hi",
             model: None,
             system: Some("be terse"),
+            resume: None,
             bypass: true,
             output_format: OutputFormat::Json,
         };
@@ -423,8 +446,35 @@ mod tests {
             prompt: "hi",
             model: None,
             system: None,
+            resume: None,
             bypass: true,
             output_format: spec.output_format,
+        }
+    }
+
+    #[test]
+    fn claude_maps_resume_to_resume_flag() {
+        let spec = by_id("claude-code").unwrap();
+        assert!(spec.supports_resume);
+        let argv = (spec.build_argv)(&BuildCtx {
+            resume: Some("sess-123"),
+            ..base_ctx(spec)
+        });
+        assert!(
+            argv.windows(2).any(|w| w == ["--resume", "sess-123"]),
+            "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn only_claude_supports_resume_for_now() {
+        for h in all() {
+            assert_eq!(
+                h.supports_resume,
+                h.id == "claude-code",
+                "unexpected supports_resume for {}",
+                h.id
+            );
         }
     }
 

@@ -69,6 +69,12 @@ pub struct RunArgs {
     #[arg(long, value_name = "TEXT")]
     pub system: Option<String>,
 
+    /// Continue a prior session: send the prompt as the next turn of <SESSION>.
+    /// Single-harness only (a session belongs to one harness) and only for
+    /// harnesses that support it (see `supports_resume` in `oneharness list`).
+    #[arg(long, value_name = "SESSION", conflicts_with = "all")]
+    pub resume: Option<String>,
+
     /// Override the output format requested from each harness (default: the
     /// per-harness default; see `oneharness list`). Affects both the emitted
     /// format flag and how `text` is extracted.

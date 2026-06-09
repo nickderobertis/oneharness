@@ -411,6 +411,96 @@ fn classifies_failure_kind_on_nonzero_exit() {
 }
 
 #[test]
+fn resume_maps_to_resume_flag_and_echoes_session() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "continue please",
+            "--resume",
+            "sess-abc",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    assert_eq!(value["resume"], "sess-abc");
+    let command: Vec<String> = value["results"][0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        command.windows(2).any(|w| w == ["--resume", "sess-abc"]),
+        "{command:?}"
+    );
+}
+
+#[test]
+fn resume_on_unsupported_harness_is_a_usage_error() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "hi",
+            "--resume",
+            "sess-abc",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("does not support --resume"), "{stderr}");
+    assert!(stderr.contains("claude-code"), "{stderr}");
+}
+
+#[test]
+fn resume_with_multiple_harnesses_is_a_usage_error() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code,codex",
+            "--prompt",
+            "hi",
+            "--resume",
+            "sess-abc",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("exactly one harness"), "{stderr}");
+}
+
+#[test]
+fn resume_with_all_is_rejected_by_clap() {
+    let output = run(
+        &["run", "--all", "--prompt", "hi", "--resume", "sess-abc"],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn list_exposes_resume_capability() {
+    let output = run(&["list", "--compact"], &[]);
+    let value = json_stdout(&output);
+    let harnesses = value["harnesses"].as_array().unwrap();
+    let claude = harnesses.iter().find(|h| h["id"] == "claude-code").unwrap();
+    let codex = harnesses.iter().find(|h| h["id"] == "codex").unwrap();
+    assert_eq!(claude["supports_resume"], true);
+    assert_eq!(codex["supports_resume"], false);
+}
+
+#[test]
 fn passthrough_args_are_appended_verbatim() {
     let output = run(
         &[

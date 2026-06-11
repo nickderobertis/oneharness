@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/nickderobertis/oneharness/compare/v0.2.0...v0.2.1) - 2026-06-11
+
+### Fixed
+
+- *(harness)* deliver --system to every harness and modernize codex flags ([#12](https://github.com/nickderobertis/oneharness/pull/12))
+
 ## [0.2.0] - 2026-06-09
 
 ### Added

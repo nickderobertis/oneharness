@@ -54,7 +54,7 @@ $ oneharness run --all --prompt "Reply with the single word: pong" --model haiku
 | id | CLI | default binary | bypass mode requested | `--resume` |
 |----|-----|----------------|-----------------------|:---------:|
 | `claude-code` | Claude Code | `claude` | `--permission-mode bypassPermissions` | `--resume` |
-| `codex` | OpenAI Codex CLI | `codex` | `--sandbox danger-full-access -a never` | — |
+| `codex` | OpenAI Codex CLI | `codex` | `--dangerously-bypass-approvals-and-sandbox` | — |
 | `opencode` | OpenCode | `opencode` | `--dangerously-skip-permissions` | `--session` |
 | `goose` | Goose | `goose` | (runs unattended) | — |
 | `qwen` | Qwen Code | `qwen` | `--yolo` | — |
@@ -101,8 +101,10 @@ Useful `run` flags:
 - `--all` / `--harness <id,…>` / `--exclude <id,…>` — selection.
 - `--prompt <text>` or `--prompt-file <path|->` — the prompt (file or stdin).
 - `--model <m>` — passed to each harness that supports a model flag.
-- `--system <text>` — system prompt for each harness that exposes one (e.g.
-  Claude Code's `--append-system-prompt`); harnesses without such a flag ignore it.
+- `--system <text>` — portable system prompt for **every** harness: mapped to a
+  native flag where one exists (Claude Code's `--append-system-prompt`, Goose's
+  `--system`), and prepended to the prompt otherwise, so the instructions always
+  reach the model.
 - `--resume <session>` — continue a prior session, sending the prompt as its next
   turn. **Single-harness only** (a session belongs to one harness) and only for
   harnesses that support it (`supports_resume` in `oneharness list`); other
@@ -181,7 +183,8 @@ each harness's normal permission flow intact.
 verifies its policy engine against **every** real agent CLI. Each check had its
 own bash `run_agent()` — Claude wants `-p … --permission-mode bypassPermissions
 --output-format stream-json`, OpenCode wants `run --dangerously-skip-permissions
---format json`, Codex wants `exec --sandbox danger-full-access`, and so on — plus
+--format json`, Codex wants `exec --dangerously-bypass-approvals-and-sandbox`, and
+so on — plus
 its own timeout, output capture, and skip-if-missing logic.
 
 `oneharness` collapses that to one call per check:

@@ -18,8 +18,10 @@ pub struct BuildCtx<'a> {
     pub bin: &'a str,
     pub prompt: &'a str,
     pub model: Option<&'a str>,
-    /// System prompt to append, for harnesses that expose a flag for it. A
-    /// harness without one ignores it (like `model`/`bypass` on goose).
+    /// System prompt to apply. Adapters with a native system flag map it (Claude
+    /// Code's `--append-system-prompt`, Goose's `--system`); adapters without one
+    /// prepend it to the prompt via `prompt_with_system` so the instructions
+    /// still reach the model, rather than dropping it.
     pub system: Option<&'a str>,
     /// Session id to continue, for harnesses that support resumption. Only set
     /// after the command layer has verified the selected harness's
@@ -35,6 +37,19 @@ fn format_flag(format: OutputFormat) -> &'static str {
         OutputFormat::Text => "text",
         OutputFormat::Json => "json",
         OutputFormat::StreamJson => "stream-json",
+    }
+}
+
+/// The prompt an adapter should send, with the system instructions prepended when
+/// the harness has no native system flag. This is how `--system` reaches models
+/// on harnesses like Codex/OpenCode that expose no system-prompt option — without
+/// it the instructions would be silently dropped. A blank system prompt is a
+/// no-op. Adapters with a native flag (claude-code, goose) pass `c.prompt`
+/// directly and map `c.system` separately instead of calling this.
+fn prompt_with_system(c: &BuildCtx) -> String {
+    match c.system {
+        Some(s) if !s.is_empty() => format!("{s}\n\n{}", c.prompt),
+        _ => c.prompt.to_string(),
     }
 }
 
@@ -179,25 +194,30 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     a
 }
 
-/// `codex exec [--sandbox danger-full-access -a never] [--model M] <prompt>`
+/// `codex exec [--dangerously-bypass-approvals-and-sandbox] [--model M] <prompt>`
+///
+/// Codex exposes no system-prompt flag, so `--system` is prepended to the prompt.
+/// The single bypass flag replaces the older `--sandbox danger-full-access -a
+/// never`: codex-cli >= 0.135 removed `-a`, and this flag is the supported way to
+/// skip every approval prompt and the sandbox for a headless run.
 fn argv_codex(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "exec".into()];
     if c.bypass {
-        a.push("--sandbox".into());
-        a.push("danger-full-access".into());
-        a.push("-a".into());
-        a.push("never".into());
+        a.push("--dangerously-bypass-approvals-and-sandbox".into());
     }
     if let Some(m) = c.model {
         a.push("--model".into());
         a.push(m.into());
     }
-    a.push(c.prompt.into());
+    a.push(prompt_with_system(c));
     a
 }
 
 /// `opencode run [--dangerously-skip-permissions] --format json [-m M]
 /// [--session SID] <prompt>` (OpenCode continues a session id with `--session`)
+///
+/// OpenCode's `run` has no system-prompt flag, so `--system` is prepended to the
+/// prompt.
 fn argv_opencode(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "run".into()];
     if c.bypass {
@@ -213,26 +233,32 @@ fn argv_opencode(c: &BuildCtx) -> Vec<String> {
         a.push("--session".into());
         a.push(sid.into());
     }
-    a.push(c.prompt.into());
+    a.push(prompt_with_system(c));
     a
 }
 
-/// `goose run --with-builtin developer -t <prompt>`
+/// `goose run --with-builtin developer [--system S] -t <prompt>`
 ///
 /// Goose has no headless permission prompt and selects its model from its own
-/// config, so `bypass` and `model` are intentionally not mapped.
+/// config, so `bypass` and `model` are intentionally not mapped. It does expose a
+/// native `--system` flag, so `--system` maps to it rather than being prepended.
 fn argv_goose(c: &BuildCtx) -> Vec<String> {
-    vec![
+    let mut a = vec![
         c.bin.into(),
         "run".into(),
         "--with-builtin".into(),
         "developer".into(),
-        "-t".into(),
-        c.prompt.into(),
-    ]
+    ];
+    if let Some(s) = c.system {
+        a.push("--system".into());
+        a.push(s.into());
+    }
+    a.push("-t".into());
+    a.push(c.prompt.into());
+    a
 }
 
-/// `qwen [--yolo] [-m M] -p <prompt>`
+/// `qwen [--yolo] [-m M] -p <prompt>` (no system flag, so `--system` is prepended)
 fn argv_qwen(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into()];
     if c.bypass {
@@ -243,24 +269,26 @@ fn argv_qwen(c: &BuildCtx) -> Vec<String> {
         a.push(m.into());
     }
     a.push("-p".into());
-    a.push(c.prompt.into());
+    a.push(prompt_with_system(c));
     a
 }
 
-/// `crush run -q [-m M] <prompt>` (`run` is non-interactive; `-q` quiets it)
+/// `crush run -q [-m M] <prompt>` (`run` is non-interactive; `-q` quiets it; no
+/// system flag, so `--system` is prepended to the prompt)
 fn argv_crush(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "run".into(), "-q".into()];
     if let Some(m) = c.model {
         a.push("-m".into());
         a.push(m.into());
     }
-    a.push(c.prompt.into());
+    a.push(prompt_with_system(c));
     a
 }
 
-/// `copilot -p <prompt> [--allow-all-tools --allow-all-paths --no-ask-user] [--model M]`
+/// `copilot -p <prompt> [--allow-all-tools --allow-all-paths --no-ask-user]
+/// [--model M]` (no system flag, so `--system` is prepended to the prompt)
 fn argv_copilot(c: &BuildCtx) -> Vec<String> {
-    let mut a = vec![c.bin.into(), "-p".into(), c.prompt.into()];
+    let mut a = vec![c.bin.into(), "-p".into(), prompt_with_system(c)];
     if c.bypass {
         a.push("--allow-all-tools".into());
         a.push("--allow-all-paths".into());
@@ -274,9 +302,10 @@ fn argv_copilot(c: &BuildCtx) -> Vec<String> {
 }
 
 /// `cursor-agent -p <prompt> [--force] [--model M] [--resume SID]
-/// --output-format stream-json` (Cursor continues a chat id with `--resume`)
+/// --output-format stream-json` (Cursor continues a chat id with `--resume`; no
+/// system flag, so `--system` is prepended to the prompt)
 fn argv_cursor(c: &BuildCtx) -> Vec<String> {
-    let mut a = vec![c.bin.into(), "-p".into(), c.prompt.into()];
+    let mut a = vec![c.bin.into(), "-p".into(), prompt_with_system(c)];
     if c.bypass {
         a.push("--force".into());
     }
@@ -368,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_argv_uses_exec_and_sandbox() {
+    fn codex_argv_uses_exec_and_bypass_flag() {
         let spec = by_id("codex").unwrap();
         let argv = (spec.build_argv)(&ctx("codex", None, true));
         assert_eq!(
@@ -376,10 +405,7 @@ mod tests {
             vec![
                 "codex",
                 "exec",
-                "--sandbox",
-                "danger-full-access",
-                "-a",
-                "never",
+                "--dangerously-bypass-approvals-and-sandbox",
                 "hi"
             ]
         );
@@ -436,17 +462,60 @@ mod tests {
     }
 
     #[test]
-    fn harnesses_without_a_system_flag_ignore_it() {
-        // A harness with no append-system-prompt flag must build the same argv
-        // whether or not a system prompt is supplied (like goose ignores model).
-        for id in ["goose", "codex", "crush"] {
+    fn prompt_with_system_prefixes_only_when_present() {
+        let spec = by_id("codex").unwrap();
+        let none = BuildCtx {
+            system: None,
+            ..base_ctx(spec)
+        };
+        assert_eq!(prompt_with_system(&none), "hi");
+        let some = BuildCtx {
+            system: Some("rules"),
+            ..base_ctx(spec)
+        };
+        assert_eq!(prompt_with_system(&some), "rules\n\nhi");
+        // A blank system prompt is a no-op (no stray leading newlines).
+        let empty = BuildCtx {
+            system: Some(""),
+            ..base_ctx(spec)
+        };
+        assert_eq!(prompt_with_system(&empty), "hi");
+    }
+
+    #[test]
+    fn goose_maps_system_to_its_native_flag() {
+        let spec = by_id("goose").unwrap();
+        let argv = (spec.build_argv)(&BuildCtx {
+            system: Some("be terse"),
+            ..base_ctx(spec)
+        });
+        assert!(
+            argv.windows(2).any(|w| w == ["--system", "be terse"]),
+            "{argv:?}"
+        );
+        // The prompt is delivered via -t and left untouched (not prepended).
+        assert!(argv.windows(2).any(|w| w == ["-t", "hi"]), "{argv:?}");
+    }
+
+    #[test]
+    fn harnesses_without_a_system_flag_prepend_it_to_the_prompt() {
+        // Codex/OpenCode/Qwen/Crush/Copilot/Cursor expose no system-prompt flag,
+        // so `--system` must be prepended to the prompt — never silently dropped.
+        for id in ["codex", "opencode", "qwen", "crush", "copilot", "cursor"] {
             let spec = by_id(id).unwrap();
-            let without = (spec.build_argv)(&base_ctx(spec));
-            let with_system = (spec.build_argv)(&BuildCtx {
+            let argv = (spec.build_argv)(&BuildCtx {
                 system: Some("be terse"),
                 ..base_ctx(spec)
             });
-            assert_eq!(without, with_system, "harness {id} should ignore --system");
+            assert!(
+                argv.iter().any(|t| t == "be terse\n\nhi"),
+                "harness {id} should carry the prepended prompt; got {argv:?}"
+            );
+            // The un-prefixed prompt must not also be sent on its own.
+            assert!(
+                !argv.iter().any(|t| t == "hi"),
+                "harness {id} should not also send the bare prompt; got {argv:?}"
+            );
         }
     }
 

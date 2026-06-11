@@ -102,14 +102,7 @@ fn print_command_pins_argv_for_every_harness() {
         ),
         (
             "codex",
-            &[
-                "exec",
-                "--sandbox",
-                "danger-full-access",
-                "-a",
-                "never",
-                "hi",
-            ],
+            &["exec", "--dangerously-bypass-approvals-and-sandbox", "hi"],
         ),
         (
             "opencode",
@@ -302,8 +295,8 @@ fn system_prompt_maps_to_append_system_prompt_for_claude() {
 }
 
 #[test]
-fn system_prompt_is_ignored_by_harness_without_a_flag() {
-    // goose has no append-system-prompt flag; --system must not alter its argv.
+fn system_prompt_maps_to_gooses_native_system_flag() {
+    // Goose exposes its own `--system`, so `--system` maps to it (not prepended).
     let output = run(
         &[
             "run",
@@ -319,9 +312,79 @@ fn system_prompt_is_ignored_by_harness_without_a_flag() {
         &[],
     );
     let value = json_stdout(&output);
-    let command = value["results"][0]["command"].to_string();
-    assert!(!command.contains("be terse"), "{command}");
-    assert!(!command.contains("append-system-prompt"), "{command}");
+    let command: Vec<String> = value["results"][0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        command.windows(2).any(|w| w == ["--system", "be terse"]),
+        "{command:?}"
+    );
+    // The prompt is delivered via -t and left un-prefixed.
+    assert!(command.windows(2).any(|w| w == ["-t", "hi"]), "{command:?}");
+}
+
+#[test]
+fn system_prompt_is_prepended_for_harness_without_a_flag() {
+    // Codex has no system-prompt flag, so `--system` is prepended to the prompt
+    // (it must reach the model, not be dropped).
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "hi",
+            "--system",
+            "be terse",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    let value = json_stdout(&output);
+    let command: Vec<String> = value["results"][0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect();
+    assert!(command.iter().any(|t| t == "be terse\n\nhi"), "{command:?}");
+}
+
+#[test]
+fn hyphenated_system_and_prompt_values_are_accepted() {
+    // skilltest passes a skill as --system; a value that begins with `-`/`---`
+    // (YAML front matter) must be taken as the value, not parsed as a flag.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "--look-like-a-flag",
+            "--system",
+            "---\nname: x",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    let value = json_stdout(&output);
+    let command: Vec<String> = value["results"][0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        command
+            .iter()
+            .any(|t| t == "---\nname: x\n\n--look-like-a-flag"),
+        "{command:?}"
+    );
 }
 
 #[test]

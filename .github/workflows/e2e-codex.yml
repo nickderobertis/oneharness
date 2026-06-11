@@ -67,6 +67,14 @@ jobs:
           npm install -g @openai/codex
           codex --version
 
+      # Codex does not pick up OPENAI_API_KEY from the env for headless `exec`;
+      # the documented CI pattern is to write ~/.codex/auth.json from the key on
+      # stdin. Without this, codex hits the Responses API with no bearer (401).
+      - name: Authenticate Codex with the API key (headless)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: printenv OPENAI_API_KEY | codex login --with-api-key
+
       - name: Live e2e against the real CLI
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

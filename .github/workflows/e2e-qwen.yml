@@ -67,10 +67,13 @@ jobs:
           npm install -g @qwen-code/qwen-code
           qwen --version
 
+      # Qwen's default endpoint is DashScope; to drive it with OPENAI_API_KEY we
+      # point it at OpenAI explicitly and pick a model the key can call. Override
+      # either via repo variables (QWEN_OPENAI_BASE_URL / QWEN_E2E_MODEL).
       - name: Live e2e against the real CLI
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
-          OPENAI_MODEL: ${{ vars.QWEN_E2E_MODEL }}
-          QWEN_E2E_MODEL: ${{ vars.QWEN_E2E_MODEL }}
+          OPENAI_BASE_URL: ${{ vars.QWEN_OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
+          OPENAI_MODEL: ${{ vars.QWEN_E2E_MODEL || 'gpt-4o-mini' }}
+          QWEN_E2E_MODEL: ${{ vars.QWEN_E2E_MODEL || 'gpt-4o-mini' }}
         run: just live-qwen

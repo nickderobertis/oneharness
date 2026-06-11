@@ -663,6 +663,103 @@ fn normalizes_usage_and_session_from_opencode_stream_json() {
 }
 
 #[test]
+fn extracts_opencode_text_from_real_jsonl_transcript() {
+    // OpenCode requests `--format json` but emits line-delimited events, not one
+    // document — so naive single-document parsing left `text` null and consumers
+    // had to fall back to raw stdout. The fixture is a real `opencode run --format
+    // json` transcript (OpenCode 1.17.3); oneharness reconstructs the answer from
+    // its `text` parts and records the method as `json:opencode-parts`.
+    let stdout = include_str!("support/opencode_run.jsonl");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("opencode"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["text"], "PING-123");
+    assert_eq!(result["text_source"], "json:opencode-parts");
+}
+
+#[test]
+fn qwen_gets_yolo_suppression_env_injected() {
+    // oneharness injects the harness's declared `default_env` into the child, so
+    // qwen's startup YOLO warning is silenced without the caller doing anything.
+    // The mock echoes its inherited value of the named variable to stdout.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "qwen",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("qwen"),
+            "--compact",
+        ],
+        &[("MOCK_ECHO_ENV", "QWEN_CODE_SUPPRESS_YOLO_WARNING")],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    assert_eq!(
+        value["results"][0]["stdout"],
+        "QWEN_CODE_SUPPRESS_YOLO_WARNING=1"
+    );
+}
+
+#[test]
+fn default_env_is_per_harness_and_overridable_by_explicit_env() {
+    // A harness with no declared default sees the variable empty (no leakage)...
+    let without = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_ECHO_ENV", "QWEN_CODE_SUPPRESS_YOLO_WARNING")],
+    );
+    assert_eq!(
+        json_stdout(&without)["results"][0]["stdout"],
+        "QWEN_CODE_SUPPRESS_YOLO_WARNING="
+    );
+
+    // ...and an explicit `--env` wins over the harness default on a key collision.
+    let overridden = run(
+        &[
+            "run",
+            "--harness",
+            "qwen",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("qwen"),
+            "--env",
+            "QWEN_CODE_SUPPRESS_YOLO_WARNING=0",
+            "--compact",
+        ],
+        &[("MOCK_ECHO_ENV", "QWEN_CODE_SUPPRESS_YOLO_WARNING")],
+    );
+    assert_eq!(
+        json_stdout(&overridden)["results"][0]["stdout"],
+        "QWEN_CODE_SUPPRESS_YOLO_WARNING=0"
+    );
+}
+
+#[test]
 fn passthrough_args_are_appended_verbatim() {
     let output = run(
         &[

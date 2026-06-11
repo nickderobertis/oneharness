@@ -70,6 +70,12 @@ pub struct HarnessSpec {
     /// starting a fresh session. Kept as data so the capability is introspectable
     /// via `oneharness list`.
     pub supports_resume: bool,
+    /// Environment variables oneharness sets when spawning this harness, so a
+    /// headless run is clean without the caller knowing the harness's quirks
+    /// (e.g. silencing a startup warning that would otherwise litter `stderr`).
+    /// Pure data: the registry declares them; the command/io layer injects them,
+    /// and an explicit `--env` always wins over a default here. Empty for most.
+    pub default_env: &'static [(&'static str, &'static str)],
     /// Builds the full argv (argv[0] is the binary). Pure.
     pub build_argv: fn(&BuildCtx) -> Vec<String>,
 }
@@ -97,6 +103,7 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "npm install -g @anthropic-ai/claude-code",
         output_format: OutputFormat::Json,
         supports_resume: true,
+        default_env: &[],
         build_argv: argv_claude_code,
     },
     HarnessSpec {
@@ -106,6 +113,7 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "npm install -g @openai/codex",
         output_format: OutputFormat::Text,
         supports_resume: false,
+        default_env: &[],
         build_argv: argv_codex,
     },
     HarnessSpec {
@@ -115,6 +123,7 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "npm install -g opencode-ai",
         output_format: OutputFormat::Json,
         supports_resume: true,
+        default_env: &[],
         build_argv: argv_opencode,
     },
     HarnessSpec {
@@ -124,6 +133,7 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "see https://block.github.io/goose/docs/getting-started/installation",
         output_format: OutputFormat::Text,
         supports_resume: false,
+        default_env: &[],
         build_argv: argv_goose,
     },
     HarnessSpec {
@@ -133,6 +143,7 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "npm install -g @qwen-code/qwen-code",
         output_format: OutputFormat::Text,
         supports_resume: false,
+        default_env: &[("QWEN_CODE_SUPPRESS_YOLO_WARNING", "1")],
         build_argv: argv_qwen,
     },
     HarnessSpec {
@@ -142,6 +153,7 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "npm install -g @charmland/crush",
         output_format: OutputFormat::Text,
         supports_resume: false,
+        default_env: &[],
         build_argv: argv_crush,
     },
     HarnessSpec {
@@ -151,6 +163,7 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "npm install -g @github/copilot",
         output_format: OutputFormat::Text,
         supports_resume: false,
+        default_env: &[],
         build_argv: argv_copilot,
     },
     HarnessSpec {
@@ -160,6 +173,7 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "see https://docs.cursor.com/en/cli/overview",
         output_format: OutputFormat::StreamJson,
         supports_resume: true,
+        default_env: &[],
         build_argv: argv_cursor,
     },
 ];
@@ -585,6 +599,28 @@ mod tests {
             argv.windows(2).any(|w| w == ["--resume", "chat-9"]),
             "{argv:?}"
         );
+    }
+
+    #[test]
+    fn qwen_alone_declares_the_yolo_suppression_default_env() {
+        // Qwen prints a one-line YOLO/no-sandbox warning to stderr under `--yolo`;
+        // oneharness silences it so headless `stderr` stays clean. No other
+        // harness needs a default env today — guard that the set hasn't drifted.
+        for h in all() {
+            if h.id == "qwen" {
+                assert_eq!(
+                    h.default_env,
+                    &[("QWEN_CODE_SUPPRESS_YOLO_WARNING", "1")],
+                    "qwen should suppress its YOLO warning"
+                );
+            } else {
+                assert!(
+                    h.default_env.is_empty(),
+                    "harness {} unexpectedly declares default env",
+                    h.id
+                );
+            }
+        }
     }
 
     #[test]

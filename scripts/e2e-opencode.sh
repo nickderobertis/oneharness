@@ -14,4 +14,6 @@ need_env "OpenCode provider key" ANTHROPIC_API_KEY OPENAI_API_KEY
 export OH_MODEL="${OPENCODE_E2E_MODEL:-anthropic/claude-haiku-4-5}"
 marker="$(oh_marker)"
 oh_run opencode "$(oh_prompt "$marker")"
-oh_assert_echoed opencode "$marker"
+# OpenCode streams JSONL under `--format json`; oneharness must reconstruct the
+# answer from its `text` parts, so require that exact extraction method here.
+oh_assert_echoed opencode "$marker" "json:opencode-parts"

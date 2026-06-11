@@ -63,10 +63,19 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             ))));
         } else {
             let job_index = jobs.len();
+            // The harness's declared defaults go first; the user's explicit
+            // `--env` is appended so it wins on any key collision (the runner
+            // applies env in order, last-write-wins).
+            let mut job_env: Vec<(String, String)> = spec
+                .default_env
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            job_env.extend(env.iter().cloned());
             jobs.push(Job {
                 argv: command.clone(),
                 cwd: args.cwd.clone(),
-                env: env.clone(),
+                env: job_env,
                 timeout: Duration::from_secs(args.timeout),
             });
             plan.push(Plan::Pending {

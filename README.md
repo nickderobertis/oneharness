@@ -145,8 +145,14 @@ harness's bespoke stdout so consumers don't have to parse it per harness. Each i
 `null`/empty when it can't be found, is **never fabricated**, and (where there's
 more than one possible method) records how it was found:
 
-- `text` / `text_source` — the final assistant message (`json:result`, `raw`,
-  `stream-json:result`, …).
+- `text` / `text_source` — the final assistant message, normalized to one clean
+  string across harnesses (`json:result` for Claude Code's terminal event,
+  `json:opencode-parts` for OpenCode's JSONL text parts, `stream-json:result` for
+  Cursor, `raw` for a plain-text harness, …). **`text` is a convenience, not a
+  guarantee: it is `null` whenever extraction isn't possible, and `text_source`
+  is then `null` too.** A consumer that needs certainty reads the guaranteed
+  `stdout` — when `text` is `null`, `stdout` is the fallback that always carries
+  the harness's real output.
 - `usage` / `usage_source` — `{ input_tokens, output_tokens, cost_usd }`, each
   field independently `null` when the harness doesn't report it (cost is commonly
   absent on subscription auth). The `usage` object is always present so the shape
@@ -165,9 +171,10 @@ more than one possible method) records how it was found:
   which only records oneharness's relationship to the process.
 
 Coverage is keyed off each harness's documented output shape — Claude Code's
-`result` JSON, OpenCode's `step_finish` JSONL, Cursor's `stream-json` — and
-widens as more shapes are sourced; an absent signal is the honest answer, not an
-error. Consumers that need certainty should parse `stdout` themselves.
+`result` JSON, OpenCode's JSONL (`text` parts for the answer, `step_finish` for
+usage), Cursor's `stream-json` — and widens as more shapes are sourced; an absent
+signal is the honest answer, not an error. Consumers that need certainty should
+parse `stdout` themselves.
 
 ### Safety note: bypass by default
 
@@ -176,6 +183,12 @@ requests each harness's "don't prompt / allow everything" mode by default. That
 is the right default for automation but means the agent can take real actions —
 run it against throwaway sandboxes (see `--cwd`), or pass `--no-bypass` to leave
 each harness's normal permission flow intact.
+
+Relatedly, a harness can carry a small **default environment** so headless runs
+stay clean — e.g. oneharness sets `QWEN_CODE_SUPPRESS_YOLO_WARNING=1` for Qwen
+Code so its `--yolo`/no-sandbox startup warning doesn't litter `stderr`. These
+defaults are per-harness data in the registry, and an explicit `--env KEY=VALUE`
+always overrides them.
 
 ## Why it exists
 

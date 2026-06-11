@@ -128,8 +128,14 @@ oh_dump() {
 # The shared conclusion for every harness. Given the harness id and the marker
 # planted in the prompt, assert oneharness reported a clean run AND the marker
 # surfaced in the harness output. Treats an uninstalled harness as a SKIP.
+#
+# Optional third arg: an expected `text_source`. When given, the check is
+# strengthened from "marker surfaced in text-or-stdout" to "oneharness extracted
+# a normalized `text` via exactly this method, and the marker is in that `text`"
+# — i.e. the convenience field is proven, not just the raw-stdout fallback. Pass
+# it for a harness whose extraction we guarantee (e.g. opencode → json:opencode-parts).
 oh_assert_echoed() {
-    local id="$1" marker="$2"
+    local id="$1" marker="$2" expected_source="${3:-}"
     local status available exit_code source
 
     status="$(oh_field '.results[0].status')"
@@ -161,6 +167,22 @@ oh_assert_echoed() {
     else
         oh_dump
         fail "$id ran but the unique marker never surfaced — the model did not echo it back"
+    fi
+
+    # When the caller guarantees a normalized-text method for this harness, hold
+    # extraction to it: the right `text_source`, and the marker in `.text` itself
+    # (not merely in the raw stdout the previous block would also accept).
+    if [ -n "$expected_source" ]; then
+        if [ "$source" != "$expected_source" ]; then
+            oh_dump
+            fail "$id: expected text_source=$expected_source but got '$source' — normalized text extraction regressed"
+        fi
+        if ! printf '%s' "$OH_REPORT" | jq -e --arg m "$marker" \
+            '(.results[0].text // "") | contains($m)' >/dev/null; then
+            oh_dump
+            fail "$id: marker is absent from the normalized .text (only surfaced via raw stdout)"
+        fi
+        note "  confirmed: oneharness extracted .text via '$source' and the marker is in it"
     fi
 
     note "PASS: $id live e2e"

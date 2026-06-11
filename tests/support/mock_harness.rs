@@ -11,6 +11,8 @@
 //!   MOCK_ARGV_FILE  if set, the received argv (one per line) is written here
 //!   MOCK_ECHO_PWD   if set, write `PWD=<the inherited $PWD>` to stdout and exit
 //!                   (used to assert that --cwd keeps $PWD consistent)
+//!   MOCK_ECHO_ENV   if set to a variable NAME, write `NAME=<inherited value>`
+//!                   to stdout and exit (used to assert per-harness env injection)
 
 use std::io::Write;
 
@@ -24,6 +26,13 @@ fn main() {
     if std::env::var_os("MOCK_ECHO_PWD").is_some() {
         let pwd = std::env::var("PWD").unwrap_or_default();
         let _ = write!(std::io::stdout(), "PWD={pwd}");
+        let _ = std::io::stdout().flush();
+        std::process::exit(0);
+    }
+
+    if let Ok(name) = std::env::var("MOCK_ECHO_ENV") {
+        let value = std::env::var(&name).unwrap_or_default();
+        let _ = write!(std::io::stdout(), "{name}={value}");
         let _ = std::io::stdout().flush();
         std::process::exit(0);
     }

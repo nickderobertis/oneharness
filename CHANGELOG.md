@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.37](https://github.com/nickderobertis/oneharness/compare/v0.2.36...v0.2.37) - 2026-06-11
+
+### Added
+
+- extract OpenCode final text and inject per-harness default env ([#85](https://github.com/nickderobertis/oneharness/pull/85))
+
 ## [0.2.36](https://github.com/nickderobertis/oneharness/compare/v0.2.35...v0.2.36) - 2026-06-11
 
 ### Added

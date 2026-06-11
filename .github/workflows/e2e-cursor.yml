@@ -1,0 +1,81 @@
+name: E2E (Cursor)
+
+# Live end-to-end check: drive the real `cursor-agent` CLI through oneharness and
+# assert the JSON contract (scripts/e2e-cursor.sh). Unlike ci.yml this needs
+# network, a model call, and the CURSOR_API_KEY secret, so it lives in its own
+# workflow gated to trusted contexts only.
+#
+# Security: a secret must never be reachable by untrusted code. GitHub already
+# withholds secrets from fork pull requests; the job `if` below is defense in
+# depth — it runs only in the canonical repo and never for a PR whose head is a
+# fork, so this workflow can be edited in a fork PR without exposing the key.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-cursor-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  live:
+    name: cursor live e2e
+    if: >-
+      github.repository == 'nickderobertis/oneharness' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify the API key is present
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+        run: |
+          if [ -z "${CURSOR_API_KEY:-}" ]; then
+            echo "::error::CURSOR_API_KEY secret is not set. Generate a user key at https://cursor.com/dashboard/api, then sync it (just secrets-sync) or set it: gh secret set CURSOR_API_KEY --repo ${{ github.repository }}"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Build oneharness (drives the live check)
+        run: |
+          cargo build --release --locked
+          echo "ONEHARNESS_BIN=$PWD/target/release/oneharness" >> "$GITHUB_ENV"
+          ./target/release/oneharness --version
+
+      - name: Install Cursor CLI
+        run: |
+          curl https://cursor.com/install -fsS | bash
+          if [ -x "$HOME/.local/bin/cursor-agent" ]; then
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          else
+            dir="$(dirname "$(find "$HOME" -name cursor-agent -type f 2>/dev/null | head -1)")"
+            [ -n "$dir" ] && echo "$dir" >> "$GITHUB_PATH"
+          fi
+
+      # Fail the job (rather than letting the script skip) if the install did not
+      # put cursor-agent on PATH — a missing CLI must not read as a silent pass.
+      - name: Show cursor-agent version
+        run: cursor-agent --version
+
+      - name: Live e2e against the real CLI
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          CURSOR_E2E_MODEL: ${{ vars.CURSOR_E2E_MODEL }}
+        run: just live-cursor

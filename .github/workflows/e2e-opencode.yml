@@ -1,0 +1,74 @@
+name: E2E (OpenCode)
+
+# Live end-to-end check: drive the real OpenCode CLI through oneharness and
+# assert the JSON contract (scripts/e2e-opencode.sh). Unlike ci.yml this needs
+# network, a model call, and a provider key (ANTHROPIC_API_KEY), so it lives in
+# its own workflow gated to trusted contexts only.
+#
+# Security: a secret must never be reachable by untrusted code. GitHub already
+# withholds secrets from fork pull requests; the job `if` below is defense in
+# depth — it runs only in the canonical repo and never for a PR whose head is a
+# fork, so this workflow can be edited in a fork PR without exposing the key.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-opencode-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  live:
+    name: opencode live e2e
+    if: >-
+      github.repository == 'nickderobertis/oneharness' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify the provider key is present
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::error::ANTHROPIC_API_KEY secret is not set. Create a key at https://console.anthropic.com/, then sync it (just secrets-sync) or set it: gh secret set ANTHROPIC_API_KEY --repo ${{ github.repository }}"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Build oneharness (drives the live check)
+        run: |
+          cargo build --release --locked
+          echo "ONEHARNESS_BIN=$PWD/target/release/oneharness" >> "$GITHUB_ENV"
+          ./target/release/oneharness --version
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - name: Install OpenCode CLI
+        run: |
+          npm install -g opencode-ai
+          opencode --version
+
+      - name: Live e2e against the real CLI
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENCODE_E2E_MODEL: ${{ vars.OPENCODE_E2E_MODEL }}
+        run: just live-opencode

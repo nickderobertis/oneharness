@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Live e2e: drive the real Qwen Code CLI through oneharness and assert the JSON
+# contract. Qwen speaks an OpenAI-compatible API: set OPENAI_API_KEY (and
+# typically OPENAI_BASE_URL + OPENAI_MODEL for the provider you point it at).
+# Model: $QWEN_E2E_MODEL (default: the CLI's own default).
+set -euo pipefail
+# shellcheck source=scripts/e2e-lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
+
+note "== oneharness live e2e: qwen =="
+need jq
+need_env "Qwen (OpenAI-compatible) auth" OPENAI_API_KEY DASHSCOPE_API_KEY
+
+export OH_MODEL="${QWEN_E2E_MODEL:-}"
+marker="$(oh_marker)"
+oh_run qwen "$(oh_prompt "$marker")"
+oh_assert_echoed qwen "$marker"

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Live e2e: drive the real OpenCode CLI through oneharness and assert the JSON
+# contract. Auth: a provider key (ANTHROPIC_API_KEY or OPENAI_API_KEY). Model:
+# $OPENCODE_E2E_MODEL (default: anthropic/claude-haiku-4-5) — OpenCode needs a
+# fully-qualified provider/model id.
+set -euo pipefail
+# shellcheck source=scripts/e2e-lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
+
+note "== oneharness live e2e: opencode =="
+need jq
+need_env "OpenCode provider key" ANTHROPIC_API_KEY OPENAI_API_KEY
+
+export OH_MODEL="${OPENCODE_E2E_MODEL:-anthropic/claude-haiku-4-5}"
+marker="$(oh_marker)"
+oh_run opencode "$(oh_prompt "$marker")"
+oh_assert_echoed opencode "$marker"

@@ -1,3 +1,9 @@
 /target
 **/*.rs.bk
 *.pdb
+
+# Local secrets synced from Bitwarden (gh-secrets.json -> env_file destination)
+# and the manifest sync-state log. The manifest itself IS committed; these aren't.
+.env
+.env.local
+.gh-secrets-state.json

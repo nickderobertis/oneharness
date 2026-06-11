@@ -90,3 +90,64 @@ doctor:
 # Run the CLI through cargo, e.g. `just run -- list`.
 run *ARGS:
     cargo run --quiet -- {{ARGS}}
+
+# --- Per-harness live e2e against the real CLIs (opt-in) ---------------------
+#
+# `smoke-live` is the quick "does any installed harness work" check. These
+# `live-<harness>` recipes are the allowlister-style per-harness conformance
+# suite: each drives ONE real harness through oneharness with that provider's
+# model/auth and asserts the JSON contract (plant a marker, harness echoes it,
+# assert status==ok). A missing CLI or auth is a skip, never a failure. They are
+# OUT of `check`/CI's core gate; the `.github/workflows/e2e-*.yml` workflows run
+# them per harness, gated to the canonical repo. See scripts/e2e-lib.sh.
+
+ONEHARNESS_BIN := justfile_directory() / "target/release/oneharness"
+
+# Build the release binary the live scripts drive, so they never use a stale build.
+_live-build:
+    cargo build --release --locked
+
+live-claude: _live-build
+    ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-claude.sh
+
+live-codex: _live-build
+    ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-codex.sh
+
+live-opencode: _live-build
+    ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-opencode.sh
+
+live-goose: _live-build
+    ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-goose.sh
+
+live-qwen: _live-build
+    ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-qwen.sh
+
+live-crush: _live-build
+    ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-crush.sh
+
+live-copilot: _live-build
+    ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-copilot.sh
+
+live-cursor: _live-build
+    ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-cursor.sh
+
+# Run every per-harness live check; skips count as passes, only real failures fail.
+live-all: _live-build
+    #!/usr/bin/env bash
+    set -uo pipefail
+    export ONEHARNESS_BIN="{{ONEHARNESS_BIN}}"
+    fails=0
+    for h in claude codex opencode goose qwen crush copilot cursor; do
+        printf '\n=================== live: %s ===================\n' "$h"
+        bash "scripts/e2e-$h.sh" || fails=$((fails + 1))
+    done
+    printf '\nlive-all: %d harness check(s) failed\n' "$fails"
+    exit "$fails"
+
+# Reads the repo-local gh-secrets.json manifest. Needs `gh-secrets` plus its
+# stored Bitwarden + GitHub credentials (`gh-secrets auth ...`).
+#
+# Sync the e2e secrets from Bitwarden to .env + GitHub Actions (gh-secrets.json).
+secrets-sync:
+    if ! command -v gh-secrets >/dev/null 2>&1; then echo "gh-secrets not installed: see https://github.com/nickderobertis/github-secrets" >&2; exit 1; fi
+    gh-secrets manifest sync

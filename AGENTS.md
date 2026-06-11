@@ -100,6 +100,10 @@ shape. When you add one:
   `nickderobertis/allowlister` repo's `run_agent()` / `e2e-*.sh` drivers are the
   reference — rather than guessing flags. (`scripts/smoke.sh --live` here is the
   fast way to confirm a real invocation actually works once installed.)
+- Add the per-harness live counterpart: a `scripts/e2e-<id>.sh` (source
+  `e2e-lib.sh`; declare its auth env and any model/provider knobs), a `live-<id>`
+  just recipe, a `.github/workflows/e2e-<id>.yml` gated like the others, and — if
+  it needs a secret not already synced — an entry in `gh-secrets.json`.
 
 ## Scripts and output are context
 
@@ -123,6 +127,15 @@ shape. When you add one:
   deliberately **out** of `just check` and CI: it needs installed binaries, auth,
   and network and makes real model calls. It stays opt-in and skips cleanly when
   no harness is installed.
+- The allowlister-style **per-harness** live suite (`scripts/e2e-<id>.sh`,
+  `just live-<id>` / `live-all`, `.github/workflows/e2e-<id>.yml`) is the granular
+  counterpart to `smoke-live`: each check drives ONE real harness with its own
+  model/provider config and asserts the marker round-trips (status ok + marker
+  surfaced), so CI gets a per-harness pass/fail. Also out of the core gate; the
+  workflows are gated to the canonical repo and non-fork PRs. Auth comes from the
+  `gh-secrets.json` manifest (Bitwarden secure notes → `.env` + GitHub Actions
+  secrets via `just secrets-sync`); values never enter the repo and `.env` /
+  `.gh-secrets-state.json` are gitignored.
 - A user-visible change ships with a test that fails without it.
 
 ## Releasing

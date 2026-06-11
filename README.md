@@ -224,6 +224,55 @@ real harnesses you have installed, run `just smoke-live` — it makes real model
 calls, skips any harness that isn't installed, and is intentionally never part
 of the gate or CI. See `AGENTS.md` and `tests/AGENTS.md`.
 
+## Live end-to-end testing
+
+`just smoke-live` is the quick "does any installed harness work" check. The
+**per-harness** suite is the allowlister-style counterpart: each
+`scripts/e2e-<harness>.sh` drives one *real* harness through `oneharness` with
+that provider's model/auth and asserts the JSON contract end to end — it plants
+a high-entropy marker, asks the harness (via `oneharness run`) to echo exactly
+that marker, and asserts `status == ok`, `exit_code == 0`, and that the marker
+surfaced. So a pass means the model genuinely ran, not just that the process
+exited. A missing CLI or missing auth is a **skip**, never a failure.
+
+```console
+just live-claude     # one harness (builds the release binary, runs the live check)
+just live-all        # every harness in sequence; skips pass, only real failures fail
+```
+
+Each harness needs its CLI installed and that provider's auth in the environment:
+
+| harness | install | auth env var(s) |
+|---------|---------|-----------------|
+| `claude-code` | `npm i -g @anthropic-ai/claude-code` | `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`) |
+| `codex` | `npm i -g @openai/codex` | `OPENAI_API_KEY` |
+| `opencode` | `npm i -g opencode-ai` | `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY`) |
+| `goose` | [installer](https://block.github.io/goose/docs/getting-started/installation) | `OPENAI_API_KEY` + `GOOSE_PROVIDER`/`GOOSE_MODEL` |
+| `qwen` | `npm i -g @qwen-code/qwen-code` | `OPENAI_API_KEY` (+ optional `OPENAI_BASE_URL`) |
+| `crush` | `npm i -g @charmland/crush` | `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY`) |
+| `copilot` | `npm i -g @github/copilot` | `COPILOT_GITHUB_TOKEN` |
+| `cursor` | [installer](https://docs.cursor.com/en/cli/overview) | `CURSOR_API_KEY` |
+
+Per-harness CI workflows (`.github/workflows/e2e-*.yml`) run the same checks,
+each gated to the canonical repo and non-fork PRs so secrets are never exposed.
+A per-harness model can be overridden with `<HARNESS>_E2E_MODEL` (e.g.
+`CLAUDE_E2E_MODEL`, `OPENCODE_E2E_MODEL`).
+
+### Secrets
+
+The auth above is managed with [`gh-secrets`](https://github.com/nickderobertis/github-secrets):
+[`gh-secrets.json`](gh-secrets.json) is a committed manifest that pulls each
+secret from Bitwarden (secure notes) and pushes it to two destinations — a local
+`.env` (for `just live-*`) and the repo's GitHub Actions secrets (for the
+workflows). `COPILOT_GITHUB_TOKEN` is sourced from the `GH_TOKEN` vault item.
+
+```console
+just secrets-sync    # gh-secrets manifest sync: Bitwarden -> .env + GitHub Actions
+```
+
+The manifest names *which* secrets go *where*; the values never touch the repo.
+`.env` and the sync-state file are gitignored.
+
 ## Releasing
 
 Releases are versioned by hand and built by CI. To cut one:

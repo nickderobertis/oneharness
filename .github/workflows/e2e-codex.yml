@@ -1,0 +1,82 @@
+name: E2E (Codex)
+
+# Live end-to-end check: drive the real OpenAI Codex CLI through oneharness and
+# assert the JSON contract (scripts/e2e-codex.sh). Unlike ci.yml this needs
+# network, a model call, and the OPENAI_API_KEY secret, so it lives in its own
+# workflow gated to trusted contexts only.
+#
+# Security: a secret must never be reachable by untrusted code. GitHub already
+# withholds secrets from fork pull requests; the job `if` below is defense in
+# depth — it runs only in the canonical repo and never for a PR whose head is a
+# fork, so this workflow can be edited in a fork PR without exposing the key.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-codex-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  live:
+    name: codex live e2e
+    if: >-
+      github.repository == 'nickderobertis/oneharness' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify the API key is present
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "::error::OPENAI_API_KEY secret is not set. Create a key at https://platform.openai.com/api-keys, then sync it (just secrets-sync) or set it: gh secret set OPENAI_API_KEY --repo ${{ github.repository }}"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Build oneharness (drives the live check)
+        run: |
+          cargo build --release --locked
+          echo "ONEHARNESS_BIN=$PWD/target/release/oneharness" >> "$GITHUB_ENV"
+          ./target/release/oneharness --version
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - name: Install Codex CLI
+        run: |
+          npm install -g @openai/codex
+          codex --version
+
+      # Codex does not pick up OPENAI_API_KEY from the env for headless `exec`;
+      # the documented CI pattern is to write ~/.codex/auth.json from the key on
+      # stdin. Without this, codex hits the Responses API with no bearer (401).
+      - name: Authenticate Codex with the API key (headless)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: printenv OPENAI_API_KEY | codex login --with-api-key
+
+      - name: Live e2e against the real CLI
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_E2E_MODEL: ${{ vars.CODEX_E2E_MODEL }}
+        run: just live-codex

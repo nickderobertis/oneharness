@@ -53,7 +53,10 @@ pub struct RunArgs {
     pub exclude: Vec<String>,
 
     /// The prompt to send. Mutually exclusive with --prompt-file.
-    #[arg(long, conflicts_with = "prompt_file")]
+    ///
+    /// `allow_hyphen_values` so a prompt that begins with `-`/`--` (or YAML
+    /// front matter's `---`) is taken as the value rather than parsed as a flag.
+    #[arg(long, conflicts_with = "prompt_file", allow_hyphen_values = true)]
     pub prompt: Option<String>,
 
     /// Read the prompt from a file, or '-' for stdin.
@@ -64,9 +67,12 @@ pub struct RunArgs {
     #[arg(long)]
     pub model: Option<String>,
 
-    /// System prompt passed to each harness that supports one (e.g. Claude Code's
-    /// --append-system-prompt). Harnesses without such a flag ignore it.
-    #[arg(long, value_name = "TEXT")]
+    /// System prompt passed to every harness. Delivered via the harness's native
+    /// system flag where one exists (e.g. Claude Code's --append-system-prompt,
+    /// Goose's --system); for harnesses without one it is prepended to the prompt
+    /// so the instructions still reach the model. `allow_hyphen_values` so system
+    /// text beginning with `-`/`--` (or `---` front matter) is read as the value.
+    #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
     pub system: Option<String>,
 
     /// Continue a prior session: send the prompt as the next turn of <SESSION>.

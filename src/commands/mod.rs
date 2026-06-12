@@ -5,6 +5,7 @@ pub mod config;
 pub mod detect;
 pub mod list;
 pub mod run;
+pub mod sync;
 
 use serde::Serialize;
 

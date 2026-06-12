@@ -33,7 +33,10 @@ Use the `just` recipes; do not hand-roll equivalents.
 - `run` spawns the selected harnesses **in parallel**, each as a subprocess with
   a timeout, and emits one JSON report. `list` and `detect` describe and probe
   the registry; `config` shows the effective layered configuration with each
-  value's source. All four emit JSON to stdout by design.
+  value's source; `sync` merges the unified policy settings (allow/deny rules,
+  hooks, raw `settings` tables) into each harness's **own** project config file
+  so the policy also applies without oneharness in the loop. All five emit JSON
+  to stdout by design.
 
 ## How this repo was composed
 
@@ -109,10 +112,15 @@ shape. When you add one:
   columns (`model`, `system`, bypass, allow/deny rules, hooks, output format,
   `--resume`), which document how each unified setting reaches (or doesn't
   reach) the harness — and the `supports_*` capability fields in the registry.
-  Enforcement settings (`allowed_tools`/`denied_tools`/`hooks`) follow the
-  loud-absence rule: a harness that can't apply them through its headless
-  invocation must *refuse* them (parse-time for `[harness.<id>]`, run-time for
-  top-level/CLI against the selection), never silently run unprotected.
+  Policy settings (`allowed_tools`/`denied_tools`/`hooks`/`settings`) are
+  delivered by `oneharness sync` into the harness's own config file (the
+  `SyncSpec` in the registry — file path + key paths, sourced from that CLI's
+  docs, never guessed). They follow the loud-absence rule: no mapping means a
+  parse error for `[harness.<id>]` fields and an `unmapped` entry in the sync
+  report (plus a stderr warning) for top-level ones — never a silent drop. The
+  sync merge is non-destructive by contract: unrelated keys untouched, lists
+  unioned (idempotent re-sync), unparseable files refused and left intact,
+  writes atomic. Keep those properties test-pinned when touching it.
 - Source the real invocation from a known-good driver — the
   `nickderobertis/allowlister` repo's `run_agent()` / `e2e-*.sh` drivers are the
   reference — rather than guessing flags. (`scripts/smoke.sh --live` here is the

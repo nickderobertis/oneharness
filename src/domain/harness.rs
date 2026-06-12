@@ -27,18 +27,6 @@ pub struct BuildCtx<'a> {
     /// after the command layer has verified the selected harness's
     /// `supports_resume`, so an adapter that maps it can assume support.
     pub resume: Option<&'a str>,
-    /// Tool/permission rules, in the harness's native syntax (Claude Code's
-    /// `Bash(git log:*)`, Copilot's `shell(git)`, Qwen's tool names). Only set
-    /// after the command layer has verified `supports_allowed_tools` /
-    /// `supports_denied_tools` — enforcement settings are never dropped
-    /// silently, so an adapter that maps them can assume support.
-    pub allowed_tools: &'a [String],
-    pub denied_tools: &'a [String],
-    /// The `[harness.<id>.hooks]` table serialized to JSON, for harnesses that
-    /// accept lifecycle hooks via their invocation (Claude Code's `--settings`).
-    /// Verified against `supports_hooks` by the command layer. Pure data:
-    /// oneharness never interprets the hooks, it only delivers them.
-    pub hooks_json: Option<&'a str>,
     pub bypass: bool,
     pub output_format: OutputFormat,
 }
@@ -82,22 +70,15 @@ pub struct HarnessSpec {
     /// starting a fresh session. Kept as data so the capability is introspectable
     /// via `oneharness list`.
     pub supports_resume: bool,
-    /// Whether `allowed_tools` / `denied_tools` rules can be enforced through
-    /// this harness's headless invocation. When false, a configured rule for it
-    /// is a usage error — a permission rule that silently doesn't apply is a
-    /// security footgun, so absence is loud (mirrors `--resume`). Sourced from
-    /// each CLI's documented flags: Claude Code's `--allowedTools` /
-    /// `--disallowedTools`, Copilot's `--allow-tool` / `--deny-tool`, Qwen's
-    /// `--allowed-tools` (allow only). The rest gate permissions behind their
-    /// own config files (opencode.json, crush.json, Cursor's cli-config.json,
-    /// Codex/Goose sandbox-and-approval modes), which oneharness does not write.
-    pub supports_allowed_tools: bool,
-    pub supports_denied_tools: bool,
-    /// Whether lifecycle hooks can be delivered through the invocation (Claude
-    /// Code's `--settings` JSON). Harnesses whose hooks live only in config
-    /// files on disk (Copilot, Cursor, OpenCode plugins) are `false`: oneharness
-    /// wires invocations, it does not write into a project's config.
-    pub supports_hooks: bool,
+    /// Where this harness reads project-scoped configuration, and how the
+    /// unified enforcement settings (`allowed_tools` / `denied_tools` /
+    /// `hooks` / `settings`) map into that file. `None` means the harness has
+    /// no project-level config file oneharness knows how to write (Codex and
+    /// Goose read only user-global config; Copilot takes permission rules as
+    /// flags, deliverable via `[harness.copilot] args`) — configuring a sync
+    /// setting for it is then a loud usage error, never a silent no-op.
+    /// Consumed by `oneharness sync`; nothing here is passed on the argv.
+    pub sync: Option<SyncSpec>,
     /// Environment variables oneharness sets when spawning this harness, so a
     /// headless run is clean without the caller knowing the harness's quirks
     /// (e.g. silencing a startup warning that would otherwise litter `stderr`).
@@ -106,6 +87,28 @@ pub struct HarnessSpec {
     pub default_env: &'static [(&'static str, &'static str)],
     /// Builds the full argv (argv[0] is the binary). Pure.
     pub build_argv: fn(&BuildCtx) -> Vec<String>,
+}
+
+/// A harness's project-scoped config file and the key paths the unified
+/// settings merge into. All paths were sourced from each CLI's documentation —
+/// never guessed (see the README support matrix for the references).
+pub struct SyncSpec {
+    /// Project-relative path of the config file to create or merge into.
+    pub file: &'static str,
+    /// Alternative file names the harness reads with *higher* precedence;
+    /// when one exists, oneharness merges into it instead of `file` so it
+    /// never creates a second, shadowed config (e.g. crush's `.crush.json`).
+    pub alt_files: &'static [&'static str],
+    /// Key path `allowed_tools` rules land at (e.g. `permissions.allow`);
+    /// `None` rejects the unified list field for this harness (OpenCode's
+    /// `permission` is a policy map, not a list — use `settings` instead).
+    pub allow_path: Option<&'static [&'static str]>,
+    /// Key path `denied_tools` rules land at. For crush this is
+    /// `options.disabled_tools`: the tool is hidden from the agent entirely,
+    /// the strongest deny it offers.
+    pub deny_path: Option<&'static [&'static str]>,
+    /// Key path the `hooks` table lands at (Claude Code's top-level `hooks`).
+    pub hooks_path: Option<&'static [&'static str]>,
 }
 
 /// All supported harnesses, in a stable order.
@@ -131,9 +134,13 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "npm install -g @anthropic-ai/claude-code",
         output_format: OutputFormat::Json,
         supports_resume: true,
-        supports_allowed_tools: true,
-        supports_denied_tools: true,
-        supports_hooks: true,
+        sync: Some(SyncSpec {
+            file: ".claude/settings.json",
+            alt_files: &[],
+            allow_path: Some(&["permissions", "allow"]),
+            deny_path: Some(&["permissions", "deny"]),
+            hooks_path: Some(&["hooks"]),
+        }),
         default_env: &[],
         build_argv: argv_claude_code,
     },
@@ -144,9 +151,7 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "npm install -g @openai/codex",
         output_format: OutputFormat::Text,
         supports_resume: false,
-        supports_allowed_tools: false,
-        supports_denied_tools: false,
-        supports_hooks: false,
+        sync: None,
         default_env: &[],
         build_argv: argv_codex,
     },
@@ -157,9 +162,13 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "npm install -g opencode-ai",
         output_format: OutputFormat::Json,
         supports_resume: true,
-        supports_allowed_tools: false,
-        supports_denied_tools: false,
-        supports_hooks: false,
+        sync: Some(SyncSpec {
+            file: "opencode.json",
+            alt_files: &[],
+            allow_path: None,
+            deny_path: None,
+            hooks_path: None,
+        }),
         default_env: &[],
         build_argv: argv_opencode,
     },
@@ -170,9 +179,7 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "see https://block.github.io/goose/docs/getting-started/installation",
         output_format: OutputFormat::Text,
         supports_resume: false,
-        supports_allowed_tools: false,
-        supports_denied_tools: false,
-        supports_hooks: false,
+        sync: None,
         default_env: &[],
         build_argv: argv_goose,
     },
@@ -183,9 +190,13 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "npm install -g @qwen-code/qwen-code",
         output_format: OutputFormat::Text,
         supports_resume: false,
-        supports_allowed_tools: true,
-        supports_denied_tools: false,
-        supports_hooks: false,
+        sync: Some(SyncSpec {
+            file: ".qwen/settings.json",
+            alt_files: &[],
+            allow_path: Some(&["permissions", "allow"]),
+            deny_path: Some(&["permissions", "deny"]),
+            hooks_path: None,
+        }),
         default_env: &[("QWEN_CODE_SUPPRESS_YOLO_WARNING", "1")],
         build_argv: argv_qwen,
     },
@@ -196,9 +207,13 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "npm install -g @charmland/crush",
         output_format: OutputFormat::Text,
         supports_resume: false,
-        supports_allowed_tools: false,
-        supports_denied_tools: false,
-        supports_hooks: false,
+        sync: Some(SyncSpec {
+            file: "crush.json",
+            alt_files: &[".crush.json"],
+            allow_path: Some(&["permissions", "allowed_tools"]),
+            deny_path: Some(&["options", "disabled_tools"]),
+            hooks_path: None,
+        }),
         default_env: &[],
         build_argv: argv_crush,
     },
@@ -209,9 +224,7 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "npm install -g @github/copilot",
         output_format: OutputFormat::Text,
         supports_resume: false,
-        supports_allowed_tools: true,
-        supports_denied_tools: true,
-        supports_hooks: false,
+        sync: None,
         default_env: &[],
         build_argv: argv_copilot,
     },
@@ -222,16 +235,19 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "see https://docs.cursor.com/en/cli/overview",
         output_format: OutputFormat::StreamJson,
         supports_resume: true,
-        supports_allowed_tools: false,
-        supports_denied_tools: false,
-        supports_hooks: false,
+        sync: Some(SyncSpec {
+            file: ".cursor/cli.json",
+            alt_files: &[],
+            allow_path: Some(&["permissions", "allow"]),
+            deny_path: Some(&["permissions", "deny"]),
+            hooks_path: None,
+        }),
         default_env: &[],
         build_argv: argv_cursor,
     },
 ];
 
-/// `claude -p <prompt> --permission-mode <mode> [--allowedTools R…]
-/// [--disallowedTools R…] [--settings {"hooks":…}] [--model M]
+/// `claude -p <prompt> --permission-mode <mode> [--model M]
 /// [--append-system-prompt S] --output-format json`
 fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "-p".into(), c.prompt.into()];
@@ -244,22 +260,6 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
         }
         .into(),
     );
-    // `--allowedTools` / `--disallowedTools` are variadic: one flag, then each
-    // rule as its own argv token (the documented form). Rules never begin with
-    // `-`, so the next `--flag` ends the list.
-    if !c.allowed_tools.is_empty() {
-        a.push("--allowedTools".into());
-        a.extend(c.allowed_tools.iter().cloned());
-    }
-    if !c.denied_tools.is_empty() {
-        a.push("--disallowedTools".into());
-        a.extend(c.denied_tools.iter().cloned());
-    }
-    // Hooks travel as an inline session-scoped settings document.
-    if let Some(hooks) = c.hooks_json {
-        a.push("--settings".into());
-        a.push(format!("{{\"hooks\":{hooks}}}"));
-    }
     if let Some(m) = c.model {
         a.push("--model".into());
         a.push(m.into());
@@ -341,17 +341,11 @@ fn argv_goose(c: &BuildCtx) -> Vec<String> {
     a
 }
 
-/// `qwen [--yolo] [--allowed-tools R,R] [-m M] -p <prompt>` (no system flag, so
-/// `--system` is prepended; `--allowed-tools` takes one comma-separated list of
-/// tool names that bypass the confirmation dialog — qwen has no deny flag)
+/// `qwen [--yolo] [-m M] -p <prompt>` (no system flag, so `--system` is prepended)
 fn argv_qwen(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into()];
     if c.bypass {
         a.push("--yolo".into());
-    }
-    if !c.allowed_tools.is_empty() {
-        a.push("--allowed-tools".into());
-        a.push(c.allowed_tools.join(","));
     }
     if let Some(m) = c.model {
         a.push("-m".into());
@@ -375,22 +369,15 @@ fn argv_crush(c: &BuildCtx) -> Vec<String> {
 }
 
 /// `copilot -p <prompt> [--allow-all-tools --allow-all-paths --no-ask-user]
-/// [--allow-tool R]… [--deny-tool R]… [--model M]` (no system flag, so
-/// `--system` is prepended; allow/deny flags are repeatable, one rule each)
+/// [--model M]` (no system flag, so `--system` is prepended to the prompt;
+/// its `--allow-tool`/`--deny-tool` permission flags are not unified — Copilot
+/// has no project config file to sync, so rules go via `[harness.copilot] args`)
 fn argv_copilot(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "-p".into(), prompt_with_system(c)];
     if c.bypass {
         a.push("--allow-all-tools".into());
         a.push("--allow-all-paths".into());
         a.push("--no-ask-user".into());
-    }
-    for rule in c.allowed_tools {
-        a.push("--allow-tool".into());
-        a.push(rule.clone());
-    }
-    for rule in c.denied_tools {
-        a.push("--deny-tool".into());
-        a.push(rule.clone());
     }
     if let Some(m) = c.model {
         a.push("--model".into());
@@ -440,9 +427,6 @@ mod tests {
             model,
             system: None,
             resume: None,
-            allowed_tools: &[],
-            denied_tools: &[],
-            hooks_json: None,
             bypass,
             output_format,
         }
@@ -551,9 +535,6 @@ mod tests {
             model: None,
             system: Some("be terse"),
             resume: None,
-            allowed_tools: &[],
-            denied_tools: &[],
-            hooks_json: None,
             bypass: true,
             output_format: OutputFormat::Json,
         };
@@ -630,113 +611,9 @@ mod tests {
             model: None,
             system: None,
             resume: None,
-            allowed_tools: &[],
-            denied_tools: &[],
-            hooks_json: None,
             bypass: true,
             output_format: spec.output_format,
         }
-    }
-
-    #[test]
-    fn allow_deny_capability_sets_match_documented_flags() {
-        // claude-code (--allowedTools/--disallowedTools), copilot
-        // (--allow-tool/--deny-tool), and qwen (--allowed-tools, allow only)
-        // are the harnesses with documented headless permission flags. Guard
-        // the sets so a registry edit can't silently claim (or drop) support.
-        let allowed: std::collections::HashSet<&str> = all()
-            .iter()
-            .filter(|h| h.supports_allowed_tools)
-            .map(|h| h.id)
-            .collect();
-        assert_eq!(
-            allowed,
-            ["claude-code", "copilot", "qwen"].into_iter().collect()
-        );
-        let denied: std::collections::HashSet<&str> = all()
-            .iter()
-            .filter(|h| h.supports_denied_tools)
-            .map(|h| h.id)
-            .collect();
-        assert_eq!(denied, ["claude-code", "copilot"].into_iter().collect());
-        let hooks: Vec<&str> = all()
-            .iter()
-            .filter(|h| h.supports_hooks)
-            .map(|h| h.id)
-            .collect();
-        assert_eq!(hooks, ["claude-code"]);
-    }
-
-    #[test]
-    fn claude_maps_allow_deny_as_variadic_flags() {
-        let spec = by_id("claude-code").unwrap();
-        let allowed = vec!["Bash(git log:*)".to_string(), "Read".to_string()];
-        let denied = vec!["Bash(rm:*)".to_string()];
-        let argv = (spec.build_argv)(&BuildCtx {
-            allowed_tools: &allowed,
-            denied_tools: &denied,
-            ..base_ctx(spec)
-        });
-        assert!(
-            argv.windows(3)
-                .any(|w| w == ["--allowedTools", "Bash(git log:*)", "Read"]),
-            "{argv:?}"
-        );
-        assert!(
-            argv.windows(2)
-                .any(|w| w == ["--disallowedTools", "Bash(rm:*)"]),
-            "{argv:?}"
-        );
-    }
-
-    #[test]
-    fn claude_maps_hooks_into_inline_settings_json() {
-        let spec = by_id("claude-code").unwrap();
-        let argv = (spec.build_argv)(&BuildCtx {
-            hooks_json: Some(r#"{"PreToolUse":[]}"#),
-            ..base_ctx(spec)
-        });
-        assert!(
-            argv.windows(2)
-                .any(|w| w == ["--settings", r#"{"hooks":{"PreToolUse":[]}}"#]),
-            "{argv:?}"
-        );
-    }
-
-    #[test]
-    fn copilot_repeats_allow_and_deny_flags_per_rule() {
-        let spec = by_id("copilot").unwrap();
-        let allowed = vec!["shell(git)".to_string(), "write".to_string()];
-        let denied = vec!["shell(rm)".to_string()];
-        let argv = (spec.build_argv)(&BuildCtx {
-            allowed_tools: &allowed,
-            denied_tools: &denied,
-            ..base_ctx(spec)
-        });
-        assert!(
-            argv.windows(4)
-                .any(|w| w == ["--allow-tool", "shell(git)", "--allow-tool", "write"]),
-            "{argv:?}"
-        );
-        assert!(
-            argv.windows(2).any(|w| w == ["--deny-tool", "shell(rm)"]),
-            "{argv:?}"
-        );
-    }
-
-    #[test]
-    fn qwen_joins_allowed_tools_with_commas() {
-        let spec = by_id("qwen").unwrap();
-        let allowed = vec!["ShellTool(git status)".to_string(), "WebFetch".to_string()];
-        let argv = (spec.build_argv)(&BuildCtx {
-            allowed_tools: &allowed,
-            ..base_ctx(spec)
-        });
-        assert!(
-            argv.windows(2)
-                .any(|w| w == ["--allowed-tools", "ShellTool(git status),WebFetch"]),
-            "{argv:?}"
-        );
     }
 
     #[test]

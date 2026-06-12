@@ -2041,280 +2041,6 @@ fn detect_marks_missing_binary_unavailable() {
 }
 
 #[test]
-fn allowed_and_denied_tools_map_to_claude_variadic_flags() {
-    let output = run(
-        &[
-            "run",
-            "--harness",
-            "claude-code",
-            "--prompt",
-            "hi",
-            "--allowed-tools",
-            "Bash(git log:*)",
-            "--allowed-tools",
-            "Read",
-            "--denied-tools",
-            "Bash(rm:*)",
-            "--print-command",
-            "--compact",
-        ],
-        &[],
-    );
-    assert!(output.status.success());
-    let value = json_stdout(&output);
-    let command = command_of(&value, 0);
-    assert!(
-        command
-            .windows(3)
-            .any(|w| w == ["--allowedTools", "Bash(git log:*)", "Read"]),
-        "{command:?}"
-    );
-    assert!(
-        command
-            .windows(2)
-            .any(|w| w == ["--disallowedTools", "Bash(rm:*)"]),
-        "{command:?}"
-    );
-}
-
-#[test]
-fn allowed_and_denied_tools_map_to_copilot_repeatable_flags() {
-    let output = run(
-        &[
-            "run",
-            "--harness",
-            "copilot",
-            "--prompt",
-            "hi",
-            "--allowed-tools",
-            "shell(git)",
-            "--allowed-tools",
-            "write",
-            "--denied-tools",
-            "shell(rm)",
-            "--print-command",
-            "--compact",
-        ],
-        &[],
-    );
-    assert!(output.status.success());
-    let value = json_stdout(&output);
-    let command = command_of(&value, 0);
-    assert!(
-        command
-            .windows(4)
-            .any(|w| w == ["--allow-tool", "shell(git)", "--allow-tool", "write"]),
-        "{command:?}"
-    );
-    assert!(
-        command
-            .windows(2)
-            .any(|w| w == ["--deny-tool", "shell(rm)"]),
-        "{command:?}"
-    );
-}
-
-#[test]
-fn allowed_tools_map_to_qwen_comma_list_and_deny_is_rejected() {
-    let output = run(
-        &[
-            "run",
-            "--harness",
-            "qwen",
-            "--prompt",
-            "hi",
-            "--allowed-tools",
-            "ShellTool(git status)",
-            "--allowed-tools",
-            "WebFetch",
-            "--print-command",
-            "--compact",
-        ],
-        &[],
-    );
-    assert!(output.status.success());
-    let value = json_stdout(&output);
-    let command = command_of(&value, 0);
-    assert!(
-        command
-            .windows(2)
-            .any(|w| w == ["--allowed-tools", "ShellTool(git status),WebFetch"]),
-        "{command:?}"
-    );
-
-    // Qwen has no deny flag, so --denied-tools must refuse, not drop the rule.
-    let output = run(
-        &[
-            "run",
-            "--harness",
-            "qwen",
-            "--prompt",
-            "hi",
-            "--denied-tools",
-            "ShellTool",
-            "--print-command",
-        ],
-        &[],
-    );
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("cannot enforce"), "{stderr}");
-    assert!(stderr.contains("denied_tools"), "{stderr}");
-}
-
-#[test]
-fn allowed_tools_on_unsupporting_harness_is_a_usage_error() {
-    // codex cannot enforce an allowlist headlessly; a multi-harness selection
-    // that includes it must refuse rather than run codex unprotected.
-    let output = run(
-        &[
-            "run",
-            "--harness",
-            "claude-code,codex",
-            "--prompt",
-            "hi",
-            "--allowed-tools",
-            "Bash(git:*)",
-            "--print-command",
-        ],
-        &[],
-    );
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("codex"), "{stderr}");
-    assert!(stderr.contains("allowed_tools"), "{stderr}");
-    assert!(stderr.contains("claude-code"), "{stderr}"); // names who supports it
-}
-
-#[test]
-fn config_allowed_tools_top_level_and_per_harness_and_cli_override() {
-    let fx = ConfigFixture::new(
-        "allow",
-        concat!(
-            "allowed_tools = [\"Bash(git log:*)\"]\n",
-            "[harness.copilot]\n",
-            "allowed_tools = [\"shell(git log)\"]\n",
-        ),
-        "",
-    );
-    let base = [
-        "run",
-        "--harness",
-        "claude-code,copilot",
-        "--prompt",
-        "hi",
-        "--print-command",
-        "--compact",
-        "--cwd",
-    ];
-    let mut args: Vec<&str> = base.to_vec();
-    let cwd = fx.cwd();
-    args.push(&cwd);
-    let value = json_stdout(&run_with_config(&args, &[], &fx.user_config()));
-    // claude-code gets the top-level rule; copilot its per-harness override.
-    let claude = command_of(&value, 0);
-    let copilot = command_of(&value, 1);
-    assert!(
-        claude
-            .windows(2)
-            .any(|w| w == ["--allowedTools", "Bash(git log:*)"]),
-        "{claude:?}"
-    );
-    assert!(
-        copilot
-            .windows(2)
-            .any(|w| w == ["--allow-tool", "shell(git log)"]),
-        "{copilot:?}"
-    );
-
-    // A CLI --allowed-tools replaces both config levels.
-    args.push("--allowed-tools");
-    args.push("FromCli");
-    let value = json_stdout(&run_with_config(&args, &[], &fx.user_config()));
-    let claude = command_of(&value, 0);
-    let copilot = command_of(&value, 1);
-    assert!(
-        claude
-            .windows(2)
-            .any(|w| w == ["--allowedTools", "FromCli"]),
-        "{claude:?}"
-    );
-    assert!(!claude.iter().any(|t| t == "Bash(git log:*)"), "{claude:?}");
-    assert!(
-        copilot.windows(2).any(|w| w == ["--allow-tool", "FromCli"]),
-        "{copilot:?}"
-    );
-}
-
-#[test]
-fn config_top_level_allowed_tools_refuses_an_incapable_selection() {
-    // The rule comes from config, the selection from the CLI: still refused.
-    let fx = ConfigFixture::new("allow-refuse", "allowed_tools = [\"x\"]\n", "");
-    let output = run_with_config(
-        &[
-            "run",
-            "--harness",
-            "codex",
-            "--prompt",
-            "hi",
-            "--cwd",
-            &fx.cwd(),
-            "--print-command",
-        ],
-        &[],
-        &fx.user_config(),
-    );
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("cannot enforce"), "{stderr}");
-}
-
-#[test]
-fn config_hooks_reach_claude_as_inline_settings_json() {
-    let fx = ConfigFixture::new(
-        "hooks",
-        concat!(
-            "[harness.claude-code.hooks]\n",
-            "PreToolUse = [{ matcher = \"Bash\", hooks = [{ type = \"command\", command = \"./check.sh\" }] }]\n",
-        ),
-        "",
-    );
-    let output = run_with_config(
-        &[
-            "run",
-            "--harness",
-            "claude-code",
-            "--prompt",
-            "hi",
-            "--cwd",
-            &fx.cwd(),
-            "--print-command",
-            "--compact",
-        ],
-        &[],
-        &fx.user_config(),
-    );
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let value = json_stdout(&output);
-    let command = command_of(&value, 0);
-    let settings_pos = command
-        .iter()
-        .position(|t| t == "--settings")
-        .unwrap_or_else(|| panic!("no --settings in {command:?}"));
-    let settings: Value = serde_json::from_str(&command[settings_pos + 1])
-        .unwrap_or_else(|e| panic!("--settings not JSON: {e}"));
-    assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "Bash");
-    assert_eq!(
-        settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
-        "./check.sh"
-    );
-}
-
-#[test]
 fn config_hooks_on_incapable_harness_fail_at_parse() {
     let fx = ConfigFixture::new("hooks-bad", "[harness.codex.hooks]\nPreToolUse = []\n", "");
     let output = run_with_config(
@@ -2330,27 +2056,13 @@ fn config_hooks_on_incapable_harness_fail_at_parse() {
         &[],
         &fx.user_config(),
     );
-    // Loud even though codex isn't selected: the config itself is invalid.
+    // Loud even though codex isn't selected: the config itself is invalid
+    // (codex has no config file oneharness could sync hooks into).
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("hooks"), "{stderr}");
     assert!(stderr.contains("codex"), "{stderr}");
-}
-
-#[test]
-fn list_exposes_allow_deny_hook_capabilities() {
-    let output = run(&["list", "--compact"], &[]);
-    let value = json_stdout(&output);
-    let harnesses = value["harnesses"].as_array().unwrap();
-    let by_id = |id: &str| harnesses.iter().find(|h| h["id"] == id).unwrap();
-    assert_eq!(by_id("claude-code")["supports_allowed_tools"], true);
-    assert_eq!(by_id("claude-code")["supports_denied_tools"], true);
-    assert_eq!(by_id("claude-code")["supports_hooks"], true);
-    assert_eq!(by_id("qwen")["supports_allowed_tools"], true);
-    assert_eq!(by_id("qwen")["supports_denied_tools"], false);
-    assert_eq!(by_id("copilot")["supports_denied_tools"], true);
-    assert_eq!(by_id("copilot")["supports_hooks"], false);
-    assert_eq!(by_id("codex")["supports_allowed_tools"], false);
+    assert!(stderr.contains("cannot deliver"), "{stderr}");
 }
 
 #[test]
@@ -2381,4 +2093,296 @@ fn config_command_attributes_rules_and_hooks() {
         .unwrap()
         .ends_with("user-config.toml"));
     assert!(value["harness"]["claude-code"]["hooks"]["value"]["PreToolUse"].is_array());
+}
+
+/// The full-feature sync fixture: top-level rules, claude hooks, opencode raw
+/// settings — exercising every mapping kind at once.
+const SYNC_TOML: &str = concat!(
+    "allowed_tools = [\"Bash(git log:*)\", \"Read\"]\n",
+    "denied_tools = [\"Bash(rm:*)\"]\n",
+    "[harness.claude-code.hooks]\n",
+    "PreToolUse = [{ matcher = \"Bash\", hooks = [{ type = \"command\", command = \"./check.sh\" }] }]\n",
+    "[harness.opencode.settings.permission]\n",
+    "edit = \"deny\"\n",
+);
+
+fn read_json(path: &std::path::Path) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap_or_else(|e| {
+        panic!("could not read {}: {e}", path.display());
+    }))
+    .unwrap_or_else(|e| panic!("{} is not JSON: {e}", path.display()))
+}
+
+fn sync_result<'a>(value: &'a Value, id: &str) -> &'a Value {
+    value["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["harness"] == id)
+        .unwrap_or_else(|| panic!("no sync result for {id}"))
+}
+
+#[test]
+fn sync_materializes_every_harness_config_file() {
+    let fx = ConfigFixture::new("sync-all", SYNC_TOML, "");
+    let output = run_with_config(
+        &["sync", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["check"], false);
+
+    // claude-code: rules at permissions.allow/deny, hooks at the top level.
+    assert_eq!(sync_result(&value, "claude-code")["status"], "created");
+    let claude = read_json(&fx.dir.join(".claude/settings.json"));
+    assert_eq!(
+        claude["permissions"]["allow"],
+        serde_json::json!(["Bash(git log:*)", "Read"])
+    );
+    assert_eq!(
+        claude["permissions"]["deny"],
+        serde_json::json!(["Bash(rm:*)"])
+    );
+    assert_eq!(claude["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+    assert_eq!(
+        claude["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+        "./check.sh"
+    );
+
+    // qwen and cursor share the permissions.allow/deny shape.
+    let qwen = read_json(&fx.dir.join(".qwen/settings.json"));
+    assert_eq!(qwen["permissions"]["allow"][0], "Bash(git log:*)");
+    assert_eq!(qwen["permissions"]["deny"][0], "Bash(rm:*)");
+    let cursor = read_json(&fx.dir.join(".cursor/cli.json"));
+    assert_eq!(cursor["permissions"]["allow"][0], "Bash(git log:*)");
+
+    // crush: allow at permissions.allowed_tools, deny at options.disabled_tools.
+    let crush = read_json(&fx.dir.join("crush.json"));
+    assert_eq!(crush["permissions"]["allowed_tools"][0], "Bash(git log:*)");
+    assert_eq!(crush["options"]["disabled_tools"][0], "Bash(rm:*)");
+
+    // opencode: only the raw settings table (its permission shape is a map);
+    // the top-level rule lists are reported unmapped, loudly.
+    let opencode = read_json(&fx.dir.join("opencode.json"));
+    assert_eq!(opencode["permission"]["edit"], "deny");
+    let oc = sync_result(&value, "opencode");
+    assert_eq!(oc["status"], "created");
+    assert_eq!(
+        oc["unmapped"],
+        serde_json::json!(["allowed_tools", "denied_tools"])
+    );
+
+    // codex/goose/copilot: nothing to write, rules unmapped, warned on stderr.
+    for id in ["codex", "goose", "copilot"] {
+        let entry = sync_result(&value, id);
+        assert_eq!(entry["status"], "skipped", "{id}");
+        assert!(entry["file"].is_null(), "{id}");
+        assert_eq!(
+            entry["unmapped"],
+            serde_json::json!(["allowed_tools", "denied_tools"]),
+            "{id}"
+        );
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("NOT applied") && stderr.contains("codex"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn sync_merges_without_touching_unrelated_keys_and_is_idempotent() {
+    let fx = ConfigFixture::new(
+        "sync-merge",
+        "allowed_tools = [\"Bash(ls *)\", \"Edit\"]\n",
+        "",
+    );
+    let claude_dir = fx.dir.join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("settings.json"),
+        r#"{
+  "permissions": { "allow": ["Read", "Bash(ls *)"], "defaultMode": "plan" },
+  "env": { "FOO": "bar" },
+  "model": "opus"
+}"#,
+    )
+    .unwrap();
+
+    let args = ["sync", "--harness", "claude-code", "--cwd"];
+    let mut argv: Vec<&str> = args.to_vec();
+    let cwd = fx.cwd();
+    argv.push(&cwd);
+    argv.push("--compact");
+    let output = run_with_config(&argv, &[], &fx.user_config());
+    let value = json_stdout(&output);
+    assert_eq!(sync_result(&value, "claude-code")["status"], "updated");
+
+    let merged = read_json(&claude_dir.join("settings.json"));
+    // Union: existing entries keep their place, new ones are appended once.
+    assert_eq!(
+        merged["permissions"]["allow"],
+        serde_json::json!(["Read", "Bash(ls *)", "Edit"])
+    );
+    // Unrelated keys at every level are untouched.
+    assert_eq!(merged["permissions"]["defaultMode"], "plan");
+    assert_eq!(merged["env"]["FOO"], "bar");
+    assert_eq!(merged["model"], "opus");
+
+    // Re-syncing is a no-op.
+    let output = run_with_config(&argv, &[], &fx.user_config());
+    let value = json_stdout(&output);
+    assert_eq!(sync_result(&value, "claude-code")["status"], "unchanged");
+}
+
+#[test]
+fn sync_check_reports_and_writes_nothing() {
+    let fx = ConfigFixture::new("sync-check", "allowed_tools = [\"Read\"]\n", "");
+    let output = run_with_config(
+        &[
+            "sync",
+            "--harness",
+            "claude-code",
+            "--check",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    // Out of sync: exit 1, nothing written, status says what would happen.
+    assert_eq!(output.status.code(), Some(1));
+    let value = json_stdout(&output);
+    assert_eq!(value["check"], true);
+    assert_eq!(sync_result(&value, "claude-code")["status"], "created");
+    assert!(!fx.dir.join(".claude/settings.json").exists());
+
+    // After a real sync, --check passes with exit 0.
+    let output = run_with_config(
+        &["sync", "--harness", "claude-code", "--cwd", &fx.cwd()],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(output.status.success());
+    let output = run_with_config(
+        &[
+            "sync",
+            "--harness",
+            "claude-code",
+            "--check",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(0));
+    let value = json_stdout(&output);
+    assert_eq!(sync_result(&value, "claude-code")["status"], "unchanged");
+}
+
+#[test]
+fn sync_refuses_a_file_it_cannot_parse_and_leaves_it_alone() {
+    let fx = ConfigFixture::new("sync-jsonc", "allowed_tools = [\"Read\"]\n", "");
+    let claude_dir = fx.dir.join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    let original = "{ // hand-written, with comments\n  \"model\": \"opus\" }";
+    std::fs::write(claude_dir.join("settings.json"), original).unwrap();
+
+    let output = run_with_config(
+        &["sync", "--harness", "claude-code", "--cwd", &fx.cwd()],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not valid JSON"), "{stderr}");
+    assert!(stderr.contains("settings.json"), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(claude_dir.join("settings.json")).unwrap(),
+        original,
+        "the unparseable file must be left untouched"
+    );
+}
+
+#[test]
+fn sync_prefers_crushs_existing_dotted_config() {
+    let fx = ConfigFixture::new("sync-crush-alt", "allowed_tools = [\"bash\"]\n", "");
+    std::fs::write(fx.dir.join(".crush.json"), "{\"options\": {\"tui\": {}}}").unwrap();
+    let output = run_with_config(
+        &[
+            "sync",
+            "--harness",
+            "crush",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    let value = json_stdout(&output);
+    // `.crush.json` beats `crush.json` for crush, so oneharness merges into it
+    // rather than creating a second, shadowed file.
+    let entry = sync_result(&value, "crush");
+    assert_eq!(entry["status"], "updated");
+    assert!(
+        entry["file"].as_str().unwrap().ends_with(".crush.json"),
+        "{entry}"
+    );
+    assert!(!fx.dir.join("crush.json").exists());
+    let merged = read_json(&fx.dir.join(".crush.json"));
+    assert_eq!(merged["permissions"]["allowed_tools"][0], "bash");
+    assert!(merged["options"]["tui"].is_object(), "unrelated key kept");
+}
+
+#[test]
+fn sync_with_nothing_configured_skips_everything() {
+    let fx = ConfigFixture::new("sync-noop", "model = \"x\"\n", "");
+    let output = run_with_config(
+        &["sync", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    for entry in value["results"].as_array().unwrap() {
+        assert_eq!(entry["status"], "skipped", "{entry}");
+        assert!(entry["unmapped"].as_array().unwrap().is_empty(), "{entry}");
+    }
+    // And nothing was created.
+    assert!(!fx.dir.join(".claude").exists());
+    assert!(!fx.dir.join("opencode.json").exists());
+}
+
+#[test]
+fn list_exposes_sync_capabilities() {
+    let output = run(&["list", "--compact"], &[]);
+    let value = json_stdout(&output);
+    let harnesses = value["harnesses"].as_array().unwrap();
+    let by_id = |id: &str| harnesses.iter().find(|h| h["id"] == id).unwrap();
+    let claude = by_id("claude-code");
+    assert_eq!(claude["sync_file"], ".claude/settings.json");
+    assert_eq!(claude["supports_allowed_tools"], true);
+    assert_eq!(claude["supports_denied_tools"], true);
+    assert_eq!(claude["supports_hooks"], true);
+    // qwen and crush gained deny support via their files; opencode is
+    // settings-table only; codex/goose/copilot have no sync file at all.
+    assert_eq!(by_id("qwen")["supports_denied_tools"], true);
+    assert_eq!(by_id("crush")["supports_denied_tools"], true);
+    let opencode = by_id("opencode");
+    assert_eq!(opencode["sync_file"], "opencode.json");
+    assert_eq!(opencode["supports_allowed_tools"], false);
+    for id in ["codex", "goose", "copilot"] {
+        assert!(by_id(id)["sync_file"].is_null(), "{id}");
+        assert_eq!(by_id(id)["supports_allowed_tools"], false, "{id}");
+    }
 }

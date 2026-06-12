@@ -168,6 +168,22 @@ out="$(ONEHARNESS_NO_CONFIG='' ONEHARNESS_CONFIG="$cfg_dir/user.toml" \
   || fail "config command exited non-zero" "$LAST_CMD"
 assert_contains "$out" '"value":"smoke-model"' "config value reporting is broken"
 assert_contains "$out" 'oneharness.toml' "config source attribution is broken"
+
+# 3d. `sync` — materialize a permission rule into a harness's own config file
+#     (the file-based delivery for allow/deny/hooks), and prove idempotency.
+printf 'allowed_tools = ["Bash(echo *)"]\n' >> "$cfg_dir/oneharness.toml"
+LAST_CMD="ONEHARNESS_CONFIG=$cfg_dir/user.toml $oh sync --harness claude-code --cwd $cfg_dir --compact"
+out="$(ONEHARNESS_NO_CONFIG='' ONEHARNESS_CONFIG="$cfg_dir/user.toml" \
+  "$oh" sync --harness claude-code --cwd "$cfg_dir" --compact)" \
+  || fail "sync exited non-zero" "$LAST_CMD"
+assert_contains "$out" '"status":"created"' "sync did not create the harness config file"
+grep -qF 'Bash(echo *)' "$cfg_dir/.claude/settings.json" \
+  || fail "synced rule missing from .claude/settings.json" "$LAST_CMD" \
+       "$(cat "$cfg_dir/.claude/settings.json" 2>/dev/null || echo '<missing>')"
+out="$(ONEHARNESS_NO_CONFIG='' ONEHARNESS_CONFIG="$cfg_dir/user.toml" \
+  "$oh" sync --harness claude-code --cwd "$cfg_dir" --compact)" \
+  || fail "re-sync exited non-zero" "$LAST_CMD"
+assert_contains "$out" '"status":"unchanged"' "sync is not idempotent"
 rm -rf "$cfg_dir"
 
 # 4. Real spawn + capture + extract, hermetically, via the mock-harness fixture.
@@ -200,7 +216,7 @@ assert_contains "$out" '"input_tokens":43' "opencode token summing is broken"
 assert_contains "$out" '"session_id":"ses_smoke"' "camelCase sessionID surfacing is broken"
 
 if [ "$LIVE" -eq 0 ]; then
-  echo "smoke: ok (hermetic — list, detect, print-command, config, mock run)"
+  echo "smoke: ok (hermetic — list, detect, print-command, config, sync, mock run)"
   exit 0
 fi
 

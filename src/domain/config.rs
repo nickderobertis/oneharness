@@ -43,16 +43,16 @@ pub struct FileConfig {
     pub max_parallel: Option<usize>,
     /// Treat a missing harness as a failure (like `--require-available`).
     pub require_available: Option<bool>,
-    /// Tool/permission rules the harness may use without prompting (like
-    /// repeated `--allowed-tools`), in the harness's native rule syntax. Only
-    /// harnesses with a headless enforcement flag accept these (see
-    /// `supports_allowed_tools` in `oneharness list`); for any other selected
-    /// harness the run is refused rather than silently unprotected, so a
-    /// top-level value suits single-harness or claude/copilot/qwen-only runs —
-    /// otherwise scope rules under `[harness.<id>]`.
+    /// Tool/permission rules the harness may use without prompting, in each
+    /// harness's native rule syntax. Delivered by `oneharness sync`, which
+    /// merges them into the harness's own project config file (Claude Code's
+    /// `.claude/settings.json` `permissions.allow`, Cursor's `.cursor/cli.json`,
+    /// Qwen's `.qwen/settings.json`, crush's `crush.json`) so the policy also
+    /// applies outside oneharness. A harness with no mapping reports the rule
+    /// as `unmapped` in the sync report rather than dropping it silently.
     pub allowed_tools: Option<Vec<String>>,
-    /// Deny rules (like repeated `--denied-tools`); same contract as
-    /// `allowed_tools` (see `supports_denied_tools`).
+    /// Deny rules; synced like `allowed_tools` (for crush this lands in
+    /// `options.disabled_tools`, hiding the tool entirely).
     pub denied_tools: Option<Vec<String>>,
     /// Extra environment for every harness process (like repeated `--env`).
     #[serde(default)]
@@ -76,18 +76,22 @@ pub struct HarnessConfig {
     /// configurable counterpart of the CLI's trailing `-- <args…>`).
     pub args: Option<Vec<String>>,
     /// Allow rules for this harness only; beats the top-level `allowed_tools`.
-    /// Rejected at parse time for a harness without a headless enforcement
-    /// flag, so a rule that cannot apply fails loudly.
+    /// Rejected at parse time when the harness's config file has no allow-list
+    /// concept (`oneharness sync` could not deliver it), so a rule that cannot
+    /// apply fails loudly.
     pub allowed_tools: Option<Vec<String>>,
     /// Deny rules for this harness only; beats the top-level `denied_tools`.
     pub denied_tools: Option<Vec<String>>,
-    /// Lifecycle hooks delivered through the harness invocation, as an
-    /// uninterpreted table in the harness's own hooks schema (Claude Code:
-    /// serialized to JSON and passed via `--settings`). Only harnesses with
-    /// `supports_hooks` accept this; others reject it at parse time —
-    /// oneharness wires invocations, it does not write hook files into a
-    /// project's config directories.
+    /// Lifecycle hooks, as an uninterpreted table in the harness's own hooks
+    /// schema. Synced into the harness's config file (Claude Code's
+    /// `.claude/settings.json` `hooks` key); rejected at parse time for a
+    /// harness whose hooks oneharness has no file mapping for.
     pub hooks: Option<toml::Value>,
+    /// Raw settings merged verbatim into this harness's project config file by
+    /// `oneharness sync` — the escape hatch for config shapes the unified
+    /// fields don't model (e.g. OpenCode's `permission` policy map). Rejected
+    /// at parse time for a harness with no known project config file.
+    pub settings: Option<toml::Value>,
     /// Extra environment for this harness only; beats the top-level `[env]`.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
@@ -121,20 +125,26 @@ fn validate(config: &FileConfig) -> Result<(), String> {
             ));
         }
     }
-    // Enforcement settings scoped to a harness that cannot enforce them are
-    // rejected here, at parse time: a permission rule or hook that silently
-    // would not apply is worse than an error.
+    // Sync settings scoped to a harness whose config file (if any) has no
+    // place for them are rejected here, at parse time: a permission rule or
+    // hook that silently would not land is worse than an error.
     for (id, h) in &config.harness {
         let spec = harness::by_id(id).expect("ids validated above");
+        let sync = spec.sync.as_ref();
         let unsupported = [
-            (h.allowed_tools.is_some() && !spec.supports_allowed_tools).then_some("allowed_tools"),
-            (h.denied_tools.is_some() && !spec.supports_denied_tools).then_some("denied_tools"),
-            (h.hooks.is_some() && !spec.supports_hooks).then_some("hooks"),
+            (h.allowed_tools.is_some() && sync.and_then(|s| s.allow_path).is_none())
+                .then_some("allowed_tools"),
+            (h.denied_tools.is_some() && sync.and_then(|s| s.deny_path).is_none())
+                .then_some("denied_tools"),
+            (h.hooks.is_some() && sync.and_then(|s| s.hooks_path).is_none()).then_some("hooks"),
+            (h.settings.is_some() && sync.is_none()).then_some("settings"),
         ];
         if let Some(setting) = unsupported.into_iter().flatten().next() {
             return Err(format!(
-                "harness `{id}` cannot enforce `{setting}` through its headless \
-                 invocation; refusing the setting rather than silently dropping it"
+                "`oneharness sync` cannot deliver `{setting}` for harness `{id}`: its \
+                 config file has no mapping for it. Use `[harness.{id}.settings]` if the \
+                 harness has a config file (see `sync_file` in `oneharness list`), or \
+                 `[harness.{id}] args` for flag-based harnesses"
             ));
         }
     }
@@ -177,6 +187,7 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
             allowed_tools: o.allowed_tools.or(entry.allowed_tools.take()),
             denied_tools: o.denied_tools.or(entry.denied_tools.take()),
             hooks: o.hooks.or(entry.hooks.take()),
+            settings: o.settings.or(entry.settings.take()),
             env: merged_env,
         };
     }
@@ -245,6 +256,12 @@ impl FileConfig {
     /// hooks schemas are harness-specific, so there is no top-level form).
     pub fn hooks_for(&self, id: &str) -> Option<&toml::Value> {
         self.harness.get(id).and_then(|h| h.hooks.as_ref())
+    }
+
+    /// The raw settings table for one harness, if configured (per-harness
+    /// only: the shape is that harness's own config schema).
+    pub fn settings_for(&self, id: &str) -> Option<&toml::Value> {
+        self.harness.get(id).and_then(|h| h.settings.as_ref())
     }
 
     /// The configured environment for one harness, in application order:
@@ -336,6 +353,7 @@ pub struct HarnessReport {
     pub allowed_tools: Field<Vec<String>>,
     pub denied_tools: Field<Vec<String>>,
     pub hooks: Field<toml::Value>,
+    pub settings: Field<toml::Value>,
     pub env: BTreeMap<String, Field<String>>,
 }
 
@@ -423,6 +441,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                 allowed_tools: pick(layers, |c| section(c).and_then(|h| h.allowed_tools)),
                 denied_tools: pick(layers, |c| section(c).and_then(|h| h.denied_tools)),
                 hooks: pick(layers, |c| section(c).and_then(|h| h.hooks)),
+                settings: pick(layers, |c| section(c).and_then(|h| h.settings)),
                 env: h_env,
             },
         );
@@ -538,37 +557,59 @@ mod tests {
             allowed_tools = ["Bash(git log:*)"]
             denied_tools = ["Bash(rm:*)"]
 
-            [harness.copilot]
-            allowed_tools = ["shell(git)"]
+            [harness.cursor]
+            allowed_tools = ["Shell(git)"]
 
             [harness.claude-code.hooks]
             PreToolUse = [{ matcher = "Bash", hooks = [{ type = "command", command = "./check.sh" }] }]
             "#,
         );
         // Per-harness beats top-level; others fall through to the top level.
-        assert_eq!(c.allowed_tools_for("copilot"), ["shell(git)"]);
+        assert_eq!(c.allowed_tools_for("cursor"), ["Shell(git)"]);
         assert_eq!(c.allowed_tools_for("claude-code"), ["Bash(git log:*)"]);
         assert_eq!(c.denied_tools_for("claude-code"), ["Bash(rm:*)"]);
         assert!(c.hooks_for("claude-code").is_some());
-        assert!(c.hooks_for("copilot").is_none());
+        assert!(c.hooks_for("cursor").is_none());
     }
 
     #[test]
-    fn enforcement_settings_on_incapable_harnesses_are_rejected_at_parse() {
-        // codex has no headless allow flag; qwen has allow but no deny; only
-        // claude-code takes hooks via its invocation.
+    fn sync_settings_without_a_file_mapping_are_rejected_at_parse() {
+        // codex/goose/copilot have no project config file oneharness writes;
+        // opencode's permission shape is a map, not a list; only claude-code
+        // has a hooks mapping.
         for (text, what) in [
             ("[harness.codex]\nallowed_tools = [\"x\"]", "allowed_tools"),
-            ("[harness.qwen]\ndenied_tools = [\"x\"]", "denied_tools"),
+            (
+                "[harness.copilot]\nallowed_tools = [\"x\"]",
+                "allowed_tools",
+            ),
+            (
+                "[harness.opencode]\nallowed_tools = [\"x\"]",
+                "allowed_tools",
+            ),
+            ("[harness.crush]\nhooks = {}", "hooks"),
             ("[harness.cursor.hooks]\nbeforeShellExecution = []", "hooks"),
+            (
+                "[harness.goose.settings]\nGOOSE_MODE = \"auto\"",
+                "settings",
+            ),
         ] {
             let err = parse(text).unwrap_err();
             assert!(err.contains(what), "{text} -> {err}");
-            assert!(err.contains("cannot enforce"), "{text} -> {err}");
+            assert!(err.contains("cannot deliver"), "{text} -> {err}");
         }
-        // The same settings on capable harnesses parse fine.
-        assert!(parse("[harness.qwen]\nallowed_tools = [\"Shell\"]").is_ok());
-        assert!(parse("[harness.claude-code.hooks]\nPreToolUse = []").is_ok());
+        // The same settings parse fine where a mapping exists — including
+        // qwen deny (permissions.deny) and crush deny (options.disabled_tools),
+        // which file sync supports even though no CLI flag does.
+        for text in [
+            "[harness.qwen]\ndenied_tools = [\"Shell\"]",
+            "[harness.crush]\ndenied_tools = [\"bash\"]",
+            "[harness.cursor]\nallowed_tools = [\"Shell(ls)\"]",
+            "[harness.claude-code.hooks]\nPreToolUse = []",
+            "[harness.opencode.settings.permission]\nedit = \"deny\"",
+        ] {
+            assert!(parse(text).is_ok(), "{text} should parse");
+        }
     }
 
     #[test]

@@ -45,6 +45,11 @@ pub enum Command {
     /// Show the effective layered configuration as JSON: every field's value
     /// and which config file (or built-in default) it came from.
     Config(ConfigArgs),
+    /// Merge the unified settings (permission rules, hooks, raw settings
+    /// tables) into each harness's own project config file, so the policy
+    /// also applies when the tools are used directly, without oneharness.
+    /// Non-destructive: unrelated keys are preserved, lists are unioned.
+    Sync(SyncArgs),
 }
 
 #[derive(Args, Debug)]
@@ -83,21 +88,6 @@ pub struct RunArgs {
     /// text beginning with `-`/`--` (or `---` front matter) is read as the value.
     #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
     pub system: Option<String>,
-
-    /// Tool/permission rule the harness may use without prompting, in the
-    /// harness's native rule syntax (repeatable). Only for harnesses that can
-    /// enforce it headlessly — `supports_allowed_tools` in `oneharness list`;
-    /// selecting any other harness with this set is a usage error rather than
-    /// a silently unenforced rule. Mostly useful with --no-bypass, since
-    /// bypass mode already skips permission prompts.
-    #[arg(long = "allowed-tools", value_name = "RULE")]
-    pub allowed_tools: Vec<String>,
-
-    /// Tool/permission rule the harness must not use (repeatable), in the
-    /// harness's native rule syntax. Same contract as --allowed-tools
-    /// (`supports_denied_tools` in `oneharness list`).
-    #[arg(long = "denied-tools", value_name = "RULE")]
-    pub denied_tools: Vec<String>,
 
     /// Continue a prior session: send the prompt as the next turn of <SESSION>.
     /// Single-harness only (a session belongs to one harness) and only for
@@ -184,6 +174,37 @@ pub struct ConfigArgs {
     /// so the output shows exactly what a run there would load.
     #[arg(long, value_name = "DIR")]
     pub cwd: Option<PathBuf>,
+
+    /// Load configuration from this file only (skip user/project discovery).
+    #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
+    pub config: Option<PathBuf>,
+
+    /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
+    #[arg(long)]
+    pub no_config: bool,
+
+    /// Emit compact single-line JSON instead of pretty-printed.
+    #[arg(long)]
+    pub compact: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct SyncArgs {
+    /// Project directory whose harness config files are written (mirrors
+    /// `run --cwd`; defaults to the current directory). Project config
+    /// discovery also starts here.
+    #[arg(long, value_name = "DIR")]
+    pub cwd: Option<PathBuf>,
+
+    /// Harness id(s) to sync (default: every harness that has something to
+    /// sync). Repeatable, comma-separated.
+    #[arg(long, value_delimiter = ',', value_name = "ID")]
+    pub harness: Vec<String>,
+
+    /// Check only: report what would change and exit 1 if anything is out of
+    /// sync, writing nothing. For CI.
+    #[arg(long)]
+    pub check: bool,
 
     /// Load configuration from this file only (skip user/project discovery).
     #[arg(long, value_name = "PATH", conflicts_with = "no_config")]

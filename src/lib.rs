@@ -28,6 +28,7 @@ pub fn dispatch(cli: Cli) -> i32 {
         Command::List(args) => commands::list::run(&args),
         Command::Detect(args) => commands::detect::run(&args),
         Command::Config(args) => commands::config::run(&args),
+        Command::Sync(args) => commands::sync::run(&args),
     };
     match result {
         Ok(code) => code,

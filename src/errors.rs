@@ -23,11 +23,21 @@ pub enum OneharnessError {
     #[error("harness `{id}` does not support --resume. supported: {supported}")]
     ResumeUnsupported { id: String, supported: String },
 
-    #[error("harness `{id}` cannot enforce `{setting}` through its headless invocation, so the rule would not apply — refusing to run rather than silently dropping it. harnesses that support it: {supported}. (scope the setting under [harness.<id>] in oneharness.toml, or narrow the selection)")]
-    UnenforceableSetting {
-        id: String,
-        setting: &'static str,
-        supported: String,
+    #[error("could not read harness config `{path}`: {source}")]
+    HarnessConfigRead {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("cannot sync into `{path}`: {message} (oneharness only rewrites files it can parse, so it never destroys content it does not understand)")]
+    HarnessConfigUnmergeable { path: String, message: String },
+
+    #[error("could not write harness config `{path}`: {source}")]
+    HarnessConfigWrite {
+        path: String,
+        #[source]
+        source: std::io::Error,
     },
 
     #[error("could not read prompt file `{path}`: {source}")]

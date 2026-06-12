@@ -83,6 +83,21 @@ pub fn plan(cfg: &FileConfig, spec: &HarnessSpec) -> Result<SyncPlan, String> {
         }
     }
 
+    // Complete the schema for any top-level key the fragment touches (e.g.
+    // Cursor requires both permissions arrays); untouched keys stay unseeded.
+    if let Some(seed) = sync.schema_seed {
+        let seed: Value =
+            serde_json::from_str(seed).expect("registry schema_seed is valid JSON (test-pinned)");
+        if let Value::Object(seed_map) = seed {
+            for (key, seed_value) in seed_map {
+                if let Some(current) = root.get(&key) {
+                    let completed = deep_merge(&seed_value, current);
+                    root.insert(key, completed);
+                }
+            }
+        }
+    }
+
     if let Some(hooks) = cfg.hooks_for(spec.id) {
         // Parse-time validation guarantees hooks only appear where a path
         // exists, so this expect cannot fire on user input.
@@ -251,6 +266,45 @@ mod tests {
         let p = plan_for(text, "codex");
         assert!(p.fragment.is_none());
         assert_eq!(p.unmapped, ["allowed_tools", "denied_tools"]);
+    }
+
+    #[test]
+    fn every_registry_schema_seed_is_valid_json() {
+        for spec in harness::all() {
+            if let Some(seed) = spec.sync.as_ref().and_then(|s| s.schema_seed) {
+                let value: Value = serde_json::from_str(seed)
+                    .unwrap_or_else(|e| panic!("{}: schema_seed is not JSON: {e}", spec.id));
+                assert!(
+                    value.is_object(),
+                    "{}: schema_seed must be an object",
+                    spec.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cursor_allow_only_is_completed_with_an_empty_deny() {
+        // Cursor's CLI rejects a permissions block missing either array
+        // (observed live: "permissions.deny Required"), so a partial write
+        // must be seeded into a schema-valid shape.
+        let p = plan_for(
+            "[harness.cursor]\nallowed_tools = [\"Shell(touch)\"]",
+            "cursor",
+        );
+        assert_eq!(
+            p.fragment.unwrap(),
+            json!({ "permissions": { "allow": ["Shell(touch)"], "deny": [] } })
+        );
+        // And the seed never invents a permissions block out of nothing.
+        let p = plan_for(
+            "[harness.cursor.settings]\neditor = { vimMode = true }",
+            "cursor",
+        );
+        assert_eq!(
+            p.fragment.unwrap(),
+            json!({ "editor": { "vimMode": true } })
+        );
     }
 
     #[test]

@@ -109,6 +109,14 @@ pub struct SyncSpec {
     pub deny_path: Option<&'static [&'static str]>,
     /// Key path the `hooks` table lands at (Claude Code's top-level `hooks`).
     pub hooks_path: Option<&'static [&'static str]>,
+    /// JSON merged *beneath* any top-level key the fragment touches, so a
+    /// partial write still satisfies the harness's schema. Cursor's
+    /// `.cursor/cli.json` requires `permissions.allow` and `permissions.deny`
+    /// to both exist whenever `permissions` does (its CLI rejects the file
+    /// otherwise — caught by the live e2e), so writing only an allow list
+    /// must seed an empty deny. Keys the fragment doesn't touch are never
+    /// seeded, preserving the "only keys oneharness manages" contract.
+    pub schema_seed: Option<&'static str>,
 }
 
 /// All supported harnesses, in a stable order.
@@ -140,6 +148,7 @@ static REGISTRY: &[HarnessSpec] = &[
             allow_path: Some(&["permissions", "allow"]),
             deny_path: Some(&["permissions", "deny"]),
             hooks_path: Some(&["hooks"]),
+            schema_seed: None,
         }),
         default_env: &[],
         build_argv: argv_claude_code,
@@ -168,6 +177,7 @@ static REGISTRY: &[HarnessSpec] = &[
             allow_path: None,
             deny_path: None,
             hooks_path: None,
+            schema_seed: None,
         }),
         default_env: &[],
         build_argv: argv_opencode,
@@ -196,6 +206,7 @@ static REGISTRY: &[HarnessSpec] = &[
             allow_path: Some(&["permissions", "allow"]),
             deny_path: Some(&["permissions", "deny"]),
             hooks_path: None,
+            schema_seed: None,
         }),
         default_env: &[("QWEN_CODE_SUPPRESS_YOLO_WARNING", "1")],
         build_argv: argv_qwen,
@@ -213,6 +224,7 @@ static REGISTRY: &[HarnessSpec] = &[
             allow_path: Some(&["permissions", "allowed_tools"]),
             deny_path: Some(&["options", "disabled_tools"]),
             hooks_path: None,
+            schema_seed: None,
         }),
         default_env: &[],
         build_argv: argv_crush,
@@ -241,6 +253,7 @@ static REGISTRY: &[HarnessSpec] = &[
             allow_path: Some(&["permissions", "allow"]),
             deny_path: Some(&["permissions", "deny"]),
             hooks_path: None,
+            schema_seed: Some(r#"{"permissions":{"allow":[],"deny":[]}}"#),
         }),
         default_env: &[],
         build_argv: argv_cursor,

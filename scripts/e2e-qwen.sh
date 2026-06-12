@@ -17,13 +17,16 @@ oh_run qwen "$(oh_prompt "$marker")"
 oh_assert_echoed qwen "$marker"
 
 # Sync enforcement: a policy synced into .qwen/settings.json (permissions
-# allow/deny, Bash(...) rule syntax per Qwen's settings docs) must govern the
-# real CLI without --yolo: allowed runs, denied (and unapproved) does not.
+# allow/deny) must govern the real CLI without --yolo: the allowed command
+# runs, the denied (and unapproved) one does not. Rules use qwen's canonical
+# shell tool name run_shell_command(...) — in headless default mode the shell
+# tool is excluded entirely unless a rule makes it available, and the Bash()
+# alias did not do that (observed live).
 ok="$(oh_enforce_file ok)"
 blocked="$(oh_enforce_file blocked)"
 policy="[harness.qwen]
-allowed_tools = [\"Bash(touch $ok)\"]
-denied_tools = [\"Bash(touch $blocked)\"]"
+allowed_tools = [\"run_shell_command(touch $ok)\"]
+denied_tools = [\"run_shell_command(touch $blocked)\"]"
 oh_sync_enforce qwen "$policy" "$ok" present allow
 oh_sync_enforce qwen "$policy" "$blocked" absent deny
 note "PASS: qwen sync enforcement"

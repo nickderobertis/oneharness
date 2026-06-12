@@ -114,6 +114,7 @@ mod tests {
         allow_path: None,
         deny_path: None,
         hooks_path: None,
+        schema_seed: None,
     };
 
     #[test]

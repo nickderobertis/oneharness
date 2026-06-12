@@ -229,7 +229,8 @@ oh_sync_enforce() {
     fi
 
     local prompt
-    prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory — no substitutes, no other commands, no explanation — then stop: touch $file"
+    prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory, then stop: touch $file
+Rules: use only the shell to run that exact command. If the shell tool or that command is not permitted or not available, you must NOT create the file by any other means (no file-write or edit tools) — reply with the single word DENIED and stop."
     oh_run "$id" "$prompt" --no-bypass --cwd "$sandbox"
 
     local status

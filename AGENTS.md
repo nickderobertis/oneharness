@@ -83,6 +83,15 @@ aren't re-litigated each session:
   approval, so `run` requests each harness's "don't prompt" mode by default. This
   is documented in `--help`; `--no-bypass` opts out. Keep this explicit, never
   silent.
+- **Config is layered and loud.** Defaults come from `oneharness.toml` files —
+  user level (`$ONEHARNESS_CONFIG` or the platform config dir) under project
+  level (discovered upward from `--cwd`/cwd) under CLI flags; `[harness.<id>]`
+  beats top-level within a file. Unknown fields or harness ids are usage errors
+  (exit 2), never ignored. Parsing/merging is pure (`src/domain/config.rs`);
+  discovery/reading is I/O (`src/io/config.rs`). Anything that must be hermetic
+  (tests, `smoke.sh`, the e2e scripts) sets `ONEHARNESS_NO_CONFIG=1` so the
+  machine's real config can never reshape an assertion — keep that property
+  when adding tests or scripts.
 - Validate all external / IO inputs (args, stdin, env, subprocess output) at the
   boundary. Keep the artifact portable across Linux, macOS, and Windows.
 - Do not commit secrets, credentials, PII, or customer data.
@@ -95,7 +104,9 @@ shape. When you add one:
 
 - Add a `--print-command` assertion in `tests/cli.rs` pinning its exact argv
   (this is the deterministic, network-free proof the adapter is correct).
-- Update the harness table in `README.md`.
+- Update the harness table in `README.md` — including its config-support
+  columns (`model`, `system`, bypass, output format, `--resume`), which document
+  how each unified setting reaches (or doesn't reach) the harness.
 - Source the real invocation from a known-good driver — the
   `nickderobertis/allowlister` repo's `run_agent()` / `e2e-*.sh` drivers are the
   reference — rather than guessing flags. (`scripts/smoke.sh --live` here is the

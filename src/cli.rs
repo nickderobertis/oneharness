@@ -16,7 +16,13 @@ parallel and returning one stable JSON shape.
 
 All subcommands print JSON to stdout; diagnostics go to stderr. `run` requests
 each harness's permission-bypass mode by default because headless agent runs hang
-waiting for approval — pass --no-bypass to opt out.";
+waiting for approval — pass --no-bypass to opt out.
+
+Defaults come from layered config files: a user-level config.toml (the platform
+config dir, or $ONEHARNESS_CONFIG) under a project-level oneharness.toml /
+.oneharness.toml discovered upward from the working directory. CLI flags beat
+the project file, which beats the user file. --no-config (or
+ONEHARNESS_NO_CONFIG=1) ignores both; --config <path> loads exactly one file.";
 
 #[derive(Parser, Debug)]
 #[command(name = "oneharness", version, about = ABOUT, long_about = LONG_ABOUT)]
@@ -92,9 +98,9 @@ pub struct RunArgs {
     #[arg(long, value_name = "DIR")]
     pub output_dir: Option<PathBuf>,
 
-    /// Per-harness timeout in seconds.
-    #[arg(long, default_value_t = 120)]
-    pub timeout: u64,
+    /// Per-harness timeout in seconds (default 120, or `timeout` from config).
+    #[arg(long, value_name = "SECS")]
+    pub timeout: Option<u64>,
 
     /// Working directory each harness process runs in.
     #[arg(long, value_name = "DIR")]
@@ -107,6 +113,18 @@ pub struct RunArgs {
     /// Do NOT request each harness's bypass/yolo mode (headless runs may hang).
     #[arg(long)]
     pub no_bypass: bool,
+
+    /// Request bypass mode even when config sets `bypass = false`.
+    #[arg(long, conflicts_with = "no_bypass")]
+    pub bypass: bool,
+
+    /// Load configuration from this file only (skip user/project discovery).
+    #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
+    pub config: Option<PathBuf>,
+
+    /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
+    #[arg(long)]
+    pub no_config: bool,
 
     /// Maximum harnesses to run concurrently (default: all selected at once).
     #[arg(long, value_name = "N")]
@@ -159,6 +177,14 @@ pub struct DetectArgs {
     /// Override a harness binary: --bin ID=PATH (repeatable).
     #[arg(long = "bin", value_name = "ID=PATH")]
     pub bin: Vec<String>,
+
+    /// Load configuration from this file only (skip user/project discovery).
+    #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
+    pub config: Option<PathBuf>,
+
+    /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
+    #[arg(long)]
+    pub no_config: bool,
 
     /// Exit non-zero if any probed harness is not installed.
     #[arg(long)]

@@ -8,7 +8,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum OneharnessError {
-    #[error("no harness selected: pass --all or --harness <id> (see `oneharness list`)")]
+    #[error("no harness selected: pass --all or --harness <id>, or set `all`/`harnesses` in oneharness.toml (see `oneharness list`)")]
     NoSelection,
 
     #[error("unknown harness id `{id}`. valid ids: {valid}")]
@@ -29,6 +29,16 @@ pub enum OneharnessError {
         #[source]
         source: std::io::Error,
     },
+
+    #[error("could not read config file `{path}`: {source}")]
+    ConfigRead {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("invalid config file `{path}`: {message}")]
+    ConfigInvalid { path: String, message: String },
 
     #[error("invalid --bin override `{0}`: expected the form ID=PATH")]
     BadBinOverride(String),

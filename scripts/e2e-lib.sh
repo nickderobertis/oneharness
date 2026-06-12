@@ -96,7 +96,9 @@ oh_run() {
     local errf
     errf="$(mktemp)"
     note "  driving: $bin run --harness $id (timeout ${OH_TIMEOUT:-120}s${OH_MODEL:+, model $OH_MODEL})"
-    OH_REPORT="$("$bin" run --harness "$id" --prompt "$prompt" \
+    # ONEHARNESS_NO_CONFIG=1: a live check pins its own model/timeout; the
+    # machine's oneharness config files must not reshape the invocation.
+    OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --prompt "$prompt" \
         --timeout "${OH_TIMEOUT:-120}" --compact \
         "${model_args[@]+"${model_args[@]}"}" "$@" 2>"$errf")" || true
 

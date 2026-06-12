@@ -37,11 +37,69 @@ fn mock_bin() -> PathBuf {
 
 fn run(args: &[&str], envs: &[(&str, &str)]) -> Output {
     let mut cmd = Command::new(oneharness_bin());
+    // Hermetic by default: the developer's real user/project config files must
+    // never shape these assertions. Config behavior itself is tested through
+    // `run_with_config`, which opts back in.
+    cmd.env("ONEHARNESS_NO_CONFIG", "1");
     cmd.args(args);
     for (key, value) in envs {
         cmd.env(key, value);
     }
     cmd.output().expect("failed to run oneharness")
+}
+
+/// Run with config loading enabled but still hermetic: the user-level config is
+/// pinned to `user_config` via ONEHARNESS_CONFIG (so the developer's real one is
+/// never read), and project discovery is steered with `--cwd` by the caller.
+fn run_with_config(args: &[&str], envs: &[(&str, &str)], user_config: &std::path::Path) -> Output {
+    let mut cmd = Command::new(oneharness_bin());
+    cmd.env("ONEHARNESS_CONFIG", user_config);
+    cmd.args(args);
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    cmd.output().expect("failed to run oneharness")
+}
+
+/// A unique temp dir holding a project `oneharness.toml` plus an (empty unless
+/// stated) user-level config to pin ONEHARNESS_CONFIG to.
+struct ConfigFixture {
+    dir: PathBuf,
+}
+
+impl ConfigFixture {
+    fn new(tag: &str, project_toml: &str, user_toml: &str) -> Self {
+        let dir =
+            std::env::temp_dir().join(format!("oneharness-cfgtest-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("oneharness.toml"), project_toml).unwrap();
+        std::fs::write(dir.join("user-config.toml"), user_toml).unwrap();
+        Self { dir }
+    }
+
+    fn cwd(&self) -> String {
+        self.dir.display().to_string()
+    }
+
+    fn user_config(&self) -> PathBuf {
+        self.dir.join("user-config.toml")
+    }
+}
+
+impl Drop for ConfigFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn command_of(value: &Value, index: usize) -> Vec<String> {
+    value["results"][index]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect()
 }
 
 fn json_stdout(output: &Output) -> Value {
@@ -1040,6 +1098,461 @@ fn built_argv_actually_reaches_the_binary() {
     assert!(argv.contains(&"-p"), "argv: {argv:?}");
     assert!(argv.contains(&"unique-prompt-marker"), "argv: {argv:?}");
     assert!(argv.contains(&"bypassPermissions"), "argv: {argv:?}");
+}
+
+#[test]
+fn project_config_supplies_selection_model_and_is_reported() {
+    let fx = ConfigFixture::new(
+        "project",
+        "harnesses = [\"claude-code\"]\nmodel = \"cfg-model\"\n",
+        "",
+    );
+    // No --harness/--all and no --model: both come from the project file.
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["model"], "cfg-model");
+    let results = value["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1, "config selection should pick one harness");
+    assert_eq!(results[0]["harness"], "claude-code");
+    let command = command_of(&value, 0);
+    assert!(
+        command.windows(2).any(|w| w == ["--model", "cfg-model"]),
+        "{command:?}"
+    );
+    // The report records which files shaped the run (project file last).
+    let files = value["config_files"].as_array().unwrap();
+    assert!(
+        files
+            .last()
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .ends_with("oneharness.toml"),
+        "{files:?}"
+    );
+}
+
+#[test]
+fn user_config_applies_and_project_file_wins_per_field() {
+    let fx = ConfigFixture::new(
+        "layering",
+        "model = \"project-model\"\n",
+        "model = \"user-model\"\nsystem = \"from user\"\n",
+    );
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    let value = json_stdout(&output);
+    let command = command_of(&value, 0);
+    // The project file's model wins; the user file's system still applies.
+    assert!(
+        command
+            .windows(2)
+            .any(|w| w == ["--model", "project-model"]),
+        "{command:?}"
+    );
+    assert!(
+        command
+            .windows(2)
+            .any(|w| w == ["--append-system-prompt", "from user"]),
+        "{command:?}"
+    );
+}
+
+#[test]
+fn cli_flags_beat_config() {
+    let fx = ConfigFixture::new(
+        "cli-wins",
+        "model = \"cfg-model\"\nharnesses = [\"codex\"]\n",
+        "",
+    );
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--model",
+            "cli-model",
+            "--cwd",
+            &fx.cwd(),
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    let value = json_stdout(&output);
+    let results = value["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["harness"], "claude-code");
+    let command = command_of(&value, 0);
+    assert!(
+        command.windows(2).any(|w| w == ["--model", "cli-model"]),
+        "{command:?}"
+    );
+}
+
+#[test]
+fn per_harness_config_beats_top_level_and_appends_args() {
+    let fx = ConfigFixture::new(
+        "per-harness",
+        concat!(
+            "model = \"global-model\"\n",
+            "[harness.claude-code]\n",
+            "model = \"claude-model\"\n",
+            "args = [\"--max-turns\", \"6\"]\n",
+        ),
+        "",
+    );
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "claude-code,codex",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    let value = json_stdout(&output);
+    let claude = command_of(&value, 0);
+    let codex = command_of(&value, 1);
+    assert!(
+        claude.windows(2).any(|w| w == ["--model", "claude-model"]),
+        "{claude:?}"
+    );
+    // The per-harness args land on claude only, after the built argv.
+    assert_eq!(&claude[claude.len() - 2..], ["--max-turns", "6"]);
+    assert!(
+        codex.windows(2).any(|w| w == ["--model", "global-model"]),
+        "{codex:?}"
+    );
+    assert!(!codex.iter().any(|t| t == "--max-turns"), "{codex:?}");
+}
+
+#[test]
+fn config_bypass_false_applies_and_cli_bypass_reenables() {
+    let fx = ConfigFixture::new("bypass", "bypass = false\n", "");
+    let base = [
+        "run",
+        "--harness",
+        "claude-code",
+        "--prompt",
+        "hi",
+        "--print-command",
+        "--compact",
+        "--cwd",
+    ];
+    let mut args: Vec<&str> = base.to_vec();
+    let cwd = fx.cwd();
+    args.push(&cwd);
+    let output = run_with_config(&args, &[], &fx.user_config());
+    let value = json_stdout(&output);
+    assert_eq!(value["bypass_permissions"], false);
+    let command = command_of(&value, 0);
+    assert!(
+        command
+            .windows(2)
+            .any(|w| w == ["--permission-mode", "default"]),
+        "{command:?}"
+    );
+
+    // --bypass overrides the config back on.
+    args.push("--bypass");
+    let output = run_with_config(&args, &[], &fx.user_config());
+    let value = json_stdout(&output);
+    assert_eq!(value["bypass_permissions"], true);
+}
+
+#[test]
+fn config_env_reaches_the_child_and_explicit_env_wins() {
+    let fx = ConfigFixture::new(
+        "env",
+        concat!(
+            "[env]\n",
+            "ONEHARNESS_TEST_VAR = \"from-config\"\n",
+            "[harness.claude-code.env]\n",
+            "ONEHARNESS_TEST_VAR = \"from-harness-config\"\n",
+        ),
+        "",
+    );
+    let bin = bin_override("claude-code");
+    let base = [
+        "run",
+        "--harness",
+        "claude-code",
+        "--prompt",
+        "hi",
+        "--bin",
+        &bin,
+        "--compact",
+        "--cwd",
+    ];
+    let mut args: Vec<&str> = base.to_vec();
+    let cwd = fx.cwd();
+    args.push(&cwd);
+    let output = run_with_config(
+        &args,
+        &[("MOCK_ECHO_ENV", "ONEHARNESS_TEST_VAR")],
+        &fx.user_config(),
+    );
+    let value = json_stdout(&output);
+    // The per-harness [harness.<id>.env] beats the top-level [env]...
+    assert_eq!(
+        value["results"][0]["stdout"],
+        "ONEHARNESS_TEST_VAR=from-harness-config"
+    );
+
+    // ...and an explicit --env beats both.
+    args.push("--env");
+    args.push("ONEHARNESS_TEST_VAR=from-cli");
+    let output = run_with_config(
+        &args,
+        &[("MOCK_ECHO_ENV", "ONEHARNESS_TEST_VAR")],
+        &fx.user_config(),
+    );
+    let value = json_stdout(&output);
+    assert_eq!(
+        value["results"][0]["stdout"],
+        "ONEHARNESS_TEST_VAR=from-cli"
+    );
+}
+
+#[test]
+fn config_bin_override_is_used_to_execute() {
+    let fx = ConfigFixture::new(
+        "bin",
+        &format!("[harness.claude-code]\nbin = '{}'\n", mock_bin().display()),
+        "",
+    );
+    // No --bin: the configured binary is resolved and actually spawned.
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"via config bin"}"#)],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["status"], "ok");
+    assert_eq!(value["results"][0]["text"], "via config bin");
+}
+
+#[test]
+fn config_timeout_applies() {
+    let fx = ConfigFixture::new("timeout", "timeout = 1\n", "");
+    let bin = bin_override("claude-code");
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin,
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[("MOCK_SLEEP_MS", "5000")],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["status"], "timeout");
+}
+
+#[test]
+fn no_config_ignores_files_and_env_var_does_too() {
+    let fx = ConfigFixture::new(
+        "no-config",
+        "model = \"cfg-model\"\nharnesses = [\"claude-code\"]\n",
+        "",
+    );
+    // --no-config: the project file is ignored, so no selection exists.
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--no-config",
+            "--print-command",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no harness selected"), "{stderr}");
+
+    // ONEHARNESS_NO_CONFIG=1 behaves identically (this is what keeps wrapper
+    // scripts and this very test suite hermetic).
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--print-command",
+        ],
+        &[("ONEHARNESS_NO_CONFIG", "1")],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn explicit_config_flag_loads_exactly_that_file() {
+    let fx = ConfigFixture::new("explicit", "model = \"project-model\"\n", "");
+    let only = fx.dir.join("only.toml");
+    std::fs::write(&only, "model = \"explicit-model\"\n").unwrap();
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--config",
+            &only.display().to_string(),
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    let value = json_stdout(&output);
+    let command = command_of(&value, 0);
+    // The named file wins; the project file in --cwd is not even read.
+    assert!(
+        command
+            .windows(2)
+            .any(|w| w == ["--model", "explicit-model"]),
+        "{command:?}"
+    );
+    // And a missing explicit file is a loud usage error.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--config",
+            "/no/such/oneharness-config.toml",
+            "--no-config",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn invalid_config_is_a_usage_error_with_the_path() {
+    for (tag, toml, want) in [
+        ("syntax", "not = valid = toml", "invalid config file"),
+        ("typo", "modle = \"x\"", "modle"),
+        ("bad-id", "[harness.bogus]\nmodel = \"x\"", "bogus"),
+        (
+            "conflict",
+            "all = true\nharnesses = [\"codex\"]",
+            "mutually exclusive",
+        ),
+    ] {
+        let fx = ConfigFixture::new(tag, toml, "");
+        let output = run_with_config(
+            &[
+                "run",
+                "--prompt",
+                "hi",
+                "--harness",
+                "claude-code",
+                "--cwd",
+                &fx.cwd(),
+            ],
+            &[],
+            &fx.user_config(),
+        );
+        assert_eq!(output.status.code(), Some(2), "case {tag}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(want), "case {tag}: {stderr}");
+        assert!(stderr.contains("oneharness.toml"), "case {tag}: {stderr}");
+    }
+}
+
+#[test]
+fn detect_uses_configured_bin() {
+    let fx = ConfigFixture::new(
+        "detect-bin",
+        &format!("[harness.claude-code]\nbin = '{}'\n", mock_bin().display()),
+        "",
+    );
+    // detect discovers project config from its own cwd, so run it from there.
+    let mut cmd = Command::new(oneharness_bin());
+    cmd.current_dir(&fx.dir)
+        .env("ONEHARNESS_CONFIG", fx.user_config())
+        .env("MOCK_STDOUT", "mock-harness 9.9.9")
+        .args(["detect", "--harness", "claude-code", "--compact"]);
+    let output = cmd.output().expect("failed to run oneharness");
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    let entry = &value["detected"][0];
+    assert_eq!(entry["available"], true);
+    assert!(entry["version"].as_str().unwrap().contains("9.9.9"));
 }
 
 #[test]

@@ -23,6 +23,7 @@ $ oneharness run --all --prompt "Reply with the single word: pong" --model haiku
   "resume": null,
   "bypass_permissions": true,
   "dry_run": false,
+  "config_files": ["/home/me/.config/oneharness/config.toml"],
   "results": [
     {
       "harness": "claude-code",
@@ -51,22 +52,39 @@ $ oneharness run --all --prompt "Reply with the single word: pong" --model haiku
 
 ## Supported harnesses
 
-| id | CLI | default binary | bypass mode requested | `--resume` |
-|----|-----|----------------|-----------------------|:---------:|
-| `claude-code` | Claude Code | `claude` | `--permission-mode bypassPermissions` | `--resume` |
-| `codex` | OpenAI Codex CLI | `codex` | `--dangerously-bypass-approvals-and-sandbox` | — |
-| `opencode` | OpenCode | `opencode` | `--dangerously-skip-permissions` | `--session` |
-| `goose` | Goose | `goose` | (runs unattended) | — |
-| `qwen` | Qwen Code | `qwen` | `--yolo` | — |
-| `crush` | Crush | `crush` | `run -q` (non-interactive) | — |
-| `copilot` | GitHub Copilot CLI | `copilot` | `--allow-all-tools --allow-all-paths --no-ask-user` | — |
-| `cursor` | Cursor CLI | `cursor-agent` | `--force` | `--resume` |
+The table doubles as the **config support matrix**: each column after the
+binary is a unified setting (CLI flag and/or `oneharness.toml` field) and shows
+how — or whether — it reaches that harness.
 
-`oneharness list` prints this registry as JSON, including the exact command each
-adapter builds and a `supports_resume` flag. The `--resume` column shows the flag
-each adapter maps `run --resume <session>` onto (Claude Code, OpenCode, and Cursor
-today); a `—` means the harness has no headless continuation flag, so `--resume`
-is rejected for it rather than silently starting fresh.
+| id | CLI | default binary | `model` | `system` | bypass mode requested | output format | `--resume` |
+|----|-----|----------------|:-------:|----------|-----------------------|:-------------:|:---------:|
+| `claude-code` | Claude Code | `claude` | ✓ | native flag | `--permission-mode bypassPermissions` | ✓ | `--resume` |
+| `codex` | OpenAI Codex CLI | `codex` | ✓ | prepended | `--dangerously-bypass-approvals-and-sandbox` | — | — |
+| `opencode` | OpenCode | `opencode` | ✓ | prepended | `--dangerously-skip-permissions` | ✓ | `--session` |
+| `goose` | Goose | `goose` | — | native flag | (runs unattended) | — | — |
+| `qwen` | Qwen Code | `qwen` | ✓ | prepended | `--yolo` | — | — |
+| `crush` | Crush | `crush` | ✓ | prepended | `run -q` (non-interactive) | — | — |
+| `copilot` | GitHub Copilot CLI | `copilot` | ✓ | prepended | `--allow-all-tools --allow-all-paths --no-ask-user` | — | — |
+| `cursor` | Cursor CLI | `cursor-agent` | ✓ | prepended | `--force` | ✓ | `--resume` |
+
+- **`model`** — ✓ means the harness takes a model flag. Goose selects its model
+  from its own provider config, so `model` is intentionally not mapped for it.
+- **`system`** — "native flag" means the system prompt maps to a real flag
+  (Claude Code's `--append-system-prompt`, Goose's `--system`); "prepended"
+  means the harness has no such flag, so the text is prepended to the prompt —
+  it always reaches the model, never silently dropped.
+- **output format** — ✓ means the harness takes a format flag the
+  `output_format` setting maps onto; a `—` harness emits plain text and the
+  setting only changes how `text` is extracted.
+- **`--resume`** — the flag each adapter maps `run --resume <session>` onto
+  (Claude Code, OpenCode, and Cursor today); a `—` means the harness has no
+  headless continuation flag, so `--resume` is rejected for it rather than
+  silently starting fresh.
+
+The remaining unified settings — `timeout`, `env`, `bin`, per-harness `args`,
+`cwd`, selection — are enforced by oneharness itself, so they work for **every**
+harness. `oneharness list` prints this registry as JSON, including the exact
+command each adapter builds and a `supports_resume` flag.
 
 ## Install
 
@@ -123,10 +141,64 @@ Useful `run` flags:
 - `--cwd <dir>` / `--env KEY=VALUE` — run each harness in a directory / with extra
   env (useful for sandboxed e2e).
 - `--max-parallel <n>` — cap concurrency (default: all selected at once).
-- `--no-bypass` — do **not** request bypass mode (see the safety note below).
+- `--no-bypass` — do **not** request bypass mode (see the safety note below);
+  `--bypass` forces it back on over a config's `bypass = false`.
 - `--require-available` — treat a not-installed harness as a failure.
 - `--bin <id>=<path>` — override a harness binary (also via `ONEHARNESS_BIN_<ID>`).
+- `--config <path>` / `--no-config` — load exactly one config file / ignore all
+  config files (see below).
 - `--compact` — single-line JSON.
+
+### Configuration
+
+Most `run` flags have a persistent counterpart in **`oneharness.toml`**, so a
+project (or a user) states its defaults once instead of repeating flags. Two
+levels exist and layer per field, lowest precedence first:
+
+1. **Built-in defaults.**
+2. **User-level** — `~/.config/oneharness/config.toml` (honoring
+   `$XDG_CONFIG_HOME`; `%APPDATA%\oneharness\config.toml` on Windows), or the
+   file named by `$ONEHARNESS_CONFIG`.
+3. **Project-level** — the nearest `oneharness.toml` (or `.oneharness.toml`),
+   discovered by walking up from the directory the harnesses run in (`--cwd`,
+   else the current directory).
+4. **CLI flags** — always win.
+
+Within one file, a `[harness.<id>]` value beats the top-level value for that
+harness. Every field is optional, and an unknown field or harness id is a loud
+usage error (exit 2), never silently ignored. The run report's `config_files`
+array records exactly which files shaped a run.
+
+```toml
+# oneharness.toml — every field optional; shown with its CLI counterpart
+harnesses = ["claude-code", "codex"]  # --harness (or `all = true` for --all)
+exclude = ["cursor"]            # --exclude (applies to an `all` selection)
+model = "gpt-5"                 # --model
+system = "Be terse."            # --system
+bypass = true                   # `false` ≙ --no-bypass (default true)
+timeout = 120                   # --timeout, in seconds
+output_format = "json"          # --output-format
+max_parallel = 4                # --max-parallel
+require_available = false       # --require-available
+
+[env]                           # --env, for every harness
+RUST_LOG = "warn"
+
+[harness.claude-code]           # per-harness: beats the top level for this id
+model = "claude-sonnet-4-5"     # each harness can name its own model
+bin = "/opt/claude"             # like --bin (the flag and ONEHARNESS_BIN_* win)
+args = ["--max-turns", "6"]     # extra argv appended for this harness only
+env = { ANTHROPIC_LOG = "debug" }
+```
+
+To opt out: `--config <path>` loads exactly that file and skips discovery;
+`--no-config` (or `ONEHARNESS_NO_CONFIG=1` for wrappers and hermetic test
+suites) ignores every config file. `detect` honors the configured `bin`s too,
+so it probes the same binaries `run` would invoke.
+
+Which settings can reach which harness is the support table above: `model`,
+`system`, bypass, and output format are per-harness capabilities; `timeout`,
+`env`, `bin`, and `args` are enforced by oneharness and work everywhere.
 
 ### Exit codes
 

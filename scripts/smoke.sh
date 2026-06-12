@@ -30,6 +30,11 @@ esac
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+# Hermetic: the machine's real oneharness config (user-level or a project file
+# above the repo) must never shape these assertions. The config feature itself
+# is smoked in step 3b with explicitly planted files.
+export ONEHARNESS_NO_CONFIG=1
+
 PROMPT="oneharness smoke: reply with the single word pong"
 LAST_CMD=""
 
@@ -138,6 +143,24 @@ n_run="$(count_matches "$out" '"harness":')"
 [ "$n_run" = "$n_list" ] \
   || fail "print-command planned $n_run harness(es) but list has $n_list" "$LAST_CMD" "$out"
 
+# 3b. Unified config: a planted project oneharness.toml supplies the selection
+#     and model with no flags. ONEHARNESS_NO_CONFIG is suspended just for this
+#     step, and the user-level file is pinned to a planted empty one so the
+#     developer's real config never leaks in.
+cfg_dir="$(mktemp -d)"
+printf 'harnesses = ["claude-code"]\nmodel = "smoke-model"\n' > "$cfg_dir/oneharness.toml"
+: > "$cfg_dir/user.toml"
+LAST_CMD="ONEHARNESS_CONFIG=$cfg_dir/user.toml $oh run --prompt <prompt> --cwd $cfg_dir --print-command --compact"
+out="$(ONEHARNESS_NO_CONFIG='' ONEHARNESS_CONFIG="$cfg_dir/user.toml" \
+  "$oh" run --prompt "$PROMPT" --cwd "$cfg_dir" --print-command --compact)" \
+  || fail "config-driven dry run exited non-zero" "$LAST_CMD" "" \
+       "the oneharness.toml project config layer is broken"
+assert_contains "$out" '"--model","smoke-model"' "project config model was not applied"
+n_cfg="$(count_matches "$out" '"harness":')"
+[ "$n_cfg" = "1" ] \
+  || fail "config selection planned $n_cfg harness(es), expected 1 (claude-code)" "$LAST_CMD" "$out"
+rm -rf "$cfg_dir"
+
 # 4. Real spawn + capture + extract, hermetically, via the mock-harness fixture.
 #    The mock emits a Claude-shaped result so this also proves the normalized
 #    envelope (text, usage, session_id) is lifted out of harness-specific stdout.
@@ -168,7 +191,7 @@ assert_contains "$out" '"input_tokens":43' "opencode token summing is broken"
 assert_contains "$out" '"session_id":"ses_smoke"' "camelCase sessionID surfacing is broken"
 
 if [ "$LIVE" -eq 0 ]; then
-  echo "smoke: ok (hermetic — list, detect, print-command, mock run)"
+  echo "smoke: ok (hermetic — list, detect, print-command, config, mock run)"
   exit 0
 fi
 

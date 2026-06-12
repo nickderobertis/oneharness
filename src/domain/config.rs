@@ -147,6 +147,15 @@ fn validate(config: &FileConfig) -> Result<(), String> {
                  `[harness.{id}] args` for flag-based harnesses"
             ));
         }
+        // Both are merged into a JSON object, so anything but a table would
+        // corrupt the harness's config file — reject the shape up front.
+        for (name, value) in [("hooks", &h.hooks), ("settings", &h.settings)] {
+            if value.as_ref().is_some_and(|v| !v.is_table()) {
+                return Err(format!(
+                    "`{name}` for harness `{id}` must be a table (e.g. `[harness.{id}.{name}]`)"
+                ));
+            }
+        }
     }
     for key in config
         .env
@@ -610,6 +619,36 @@ mod tests {
         ] {
             assert!(parse(text).is_ok(), "{text} should parse");
         }
+    }
+
+    #[test]
+    fn non_table_hooks_and_settings_are_rejected_at_parse() {
+        // A scalar would be merged into the harness's JSON config as a bare
+        // value, corrupting it — the shape is validated before anything else.
+        for text in [
+            "[harness.claude-code]\nhooks = \"oops\"",
+            "[harness.claude-code]\nsettings = 3",
+            "[harness.opencode]\nsettings = [\"list\"]",
+        ] {
+            let err = parse(text).unwrap_err();
+            assert!(err.contains("must be a table"), "{text} -> {err}");
+        }
+    }
+
+    #[test]
+    fn merge_replaces_settings_tables_per_layer() {
+        // Like hooks, a project-level settings table replaces the user-level
+        // one wholesale (no deep merge across oneharness layers — the deep
+        // merge happens against the harness's own file, at sync time).
+        let base = parsed("[harness.opencode.settings.permission]\nedit = \"deny\"");
+        let over = parsed("[harness.opencode.settings.permission.bash]\n\"git *\" = \"allow\"");
+        let merged = merge(base, over);
+        let settings = merged.settings_for("opencode").unwrap();
+        assert!(settings.get("permission").unwrap().get("bash").is_some());
+        assert!(
+            settings.get("permission").unwrap().get("edit").is_none(),
+            "tables replace across layers, not merge"
+        );
     }
 
     #[test]

@@ -2386,3 +2386,195 @@ fn list_exposes_sync_capabilities() {
         assert_eq!(by_id(id)["supports_allowed_tools"], false, "{id}");
     }
 }
+
+#[test]
+fn run_never_emits_policy_flags_from_sync_settings() {
+    // The file-only guarantee: rules/hooks/settings are delivered by `sync`,
+    // never injected into a run's argv. A config full of policy must leave
+    // every built command untouched (and the run must not error).
+    let fx = ConfigFixture::new("run-clean", SYNC_TOML, "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "claude-code,opencode",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    for index in 0..2 {
+        let command = command_of(&value, index);
+        for token in &command {
+            assert!(
+                !token.contains("allowedTools")
+                    && !token.contains("allow-tool")
+                    && !token.contains("--settings")
+                    && !token.contains("hooks"),
+                "policy leaked into argv: {command:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn sync_is_add_only_across_config_edits() {
+    // Documented semantics: editing the unified config and re-syncing adds
+    // and updates, but never removes — the old rule survives in the file.
+    let fx = ConfigFixture::new("sync-edit", "allowed_tools = [\"RuleA\"]\n", "");
+    let argv = |cwd: &str| {
+        vec![
+            "sync".to_string(),
+            "--harness".to_string(),
+            "claude-code".to_string(),
+            "--cwd".to_string(),
+            cwd.to_string(),
+            "--compact".to_string(),
+        ]
+    };
+    let args: Vec<String> = argv(&fx.cwd());
+    let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = run_with_config(&args_ref, &[], &fx.user_config());
+    assert!(output.status.success());
+
+    // Edit the config: RuleA replaced by RuleB at the oneharness level...
+    std::fs::write(
+        fx.dir.join("oneharness.toml"),
+        "allowed_tools = [\"RuleB\"]\n",
+    )
+    .unwrap();
+    let output = run_with_config(&args_ref, &[], &fx.user_config());
+    let value = json_stdout(&output);
+    assert_eq!(sync_result(&value, "claude-code")["status"], "updated");
+
+    // ...but the harness file unions: RuleA is kept, RuleB appended.
+    let merged = read_json(&fx.dir.join(".claude/settings.json"));
+    assert_eq!(
+        merged["permissions"]["allow"],
+        serde_json::json!(["RuleA", "RuleB"])
+    );
+}
+
+#[test]
+fn sync_selection_edges_nothing_to_sync_and_unknown_id() {
+    // Naming a harness with nothing configured is a clean skip (exit 0)...
+    let fx = ConfigFixture::new("sync-edges", "model = \"x\"\n", "");
+    let output = run_with_config(
+        &[
+            "sync",
+            "--harness",
+            "codex",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    assert_eq!(value["results"].as_array().unwrap().len(), 1);
+    assert_eq!(sync_result(&value, "codex")["status"], "skipped");
+
+    // ...while an unknown id is the usual loud usage error.
+    let output = run_with_config(
+        &["sync", "--harness", "bogus", "--cwd", &fx.cwd()],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown harness"), "{stderr}");
+}
+
+#[test]
+fn sync_honors_no_config_and_writes_nothing() {
+    // ONEHARNESS_NO_CONFIG must neutralize sync exactly like run — a hermetic
+    // wrapper can never have its project files rewritten by ambient config.
+    let fx = ConfigFixture::new("sync-no-config", SYNC_TOML, "");
+    for extra in [&["--no-config"][..], &[][..]] {
+        let mut args = vec!["sync", "--cwd"];
+        let cwd = fx.cwd();
+        args.push(&cwd);
+        args.push("--compact");
+        args.extend_from_slice(extra);
+        let envs: &[(&str, &str)] = if extra.is_empty() {
+            &[("ONEHARNESS_NO_CONFIG", "1")]
+        } else {
+            &[]
+        };
+        let output = run_with_config(&args, envs, &fx.user_config());
+        assert!(output.status.success());
+        let value = json_stdout(&output);
+        assert!(value["config_files"].as_array().unwrap().is_empty());
+        for entry in value["results"].as_array().unwrap() {
+            assert_eq!(entry["status"], "skipped", "{entry}");
+        }
+        assert!(!fx.dir.join(".claude").exists());
+        assert!(!fx.dir.join("opencode.json").exists());
+    }
+}
+
+#[test]
+fn sync_defaults_to_the_current_directory() {
+    // Without --cwd, sync targets (and discovers config from) the process cwd.
+    let fx = ConfigFixture::new("sync-cwd", "allowed_tools = [\"Read\"]\n", "");
+    let mut cmd = Command::new(oneharness_bin());
+    cmd.current_dir(&fx.dir)
+        .env("ONEHARNESS_CONFIG", fx.user_config())
+        .args(["sync", "--harness", "claude-code", "--compact"]);
+    let output = cmd.output().expect("failed to run oneharness");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let merged = read_json(&fx.dir.join(".claude/settings.json"));
+    assert_eq!(merged["permissions"]["allow"][0], "Read");
+}
+
+#[test]
+fn non_table_hooks_or_settings_are_loud_parse_errors() {
+    for (tag, toml) in [
+        ("hooks-scalar", "[harness.claude-code]\nhooks = \"oops\"\n"),
+        ("settings-scalar", "[harness.opencode]\nsettings = 3\n"),
+    ] {
+        let fx = ConfigFixture::new(tag, toml, "");
+        let output = run_with_config(&["sync", "--cwd", &fx.cwd()], &[], &fx.user_config());
+        assert_eq!(output.status.code(), Some(2), "case {tag}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("must be a table"), "case {tag}: {stderr}");
+    }
+}
+
+#[test]
+fn config_command_attributes_settings_tables() {
+    let fx = ConfigFixture::new(
+        "cmd-settings",
+        "[harness.opencode.settings.permission]\nedit = \"deny\"\n",
+        "",
+    );
+    let output = run_with_config(
+        &["config", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    let value = json_stdout(&output);
+    let settings = &value["harness"]["opencode"]["settings"];
+    assert_eq!(settings["value"]["permission"]["edit"], "deny");
+    assert!(settings["source"]
+        .as_str()
+        .unwrap()
+        .ends_with("oneharness.toml"));
+}

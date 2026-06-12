@@ -15,3 +15,15 @@ export OH_MODEL="${QWEN_E2E_MODEL:-}"
 marker="$(oh_marker)"
 oh_run qwen "$(oh_prompt "$marker")"
 oh_assert_echoed qwen "$marker"
+
+# Sync enforcement: a policy synced into .qwen/settings.json (permissions
+# allow/deny, Bash(...) rule syntax per Qwen's settings docs) must govern the
+# real CLI without --yolo: allowed runs, denied (and unapproved) does not.
+ok="$(oh_enforce_file ok)"
+blocked="$(oh_enforce_file blocked)"
+policy="[harness.qwen]
+allowed_tools = [\"Bash(touch $ok)\"]
+denied_tools = [\"Bash(touch $blocked)\"]"
+oh_sync_enforce qwen "$policy" "$ok" present allow
+oh_sync_enforce qwen "$policy" "$blocked" absent deny
+note "PASS: qwen sync enforcement"

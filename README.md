@@ -406,6 +406,14 @@ that marker, and asserts `status == ok`, `exit_code == 0`, and that the marker
 surfaced. So a pass means the model genuinely ran, not just that the process
 exited. A missing CLI or missing auth is a **skip**, never a failure.
 
+For the sync-capable harnesses (Claude Code, OpenCode, Qwen, Crush, Cursor)
+the live check also proves **sync enforcement** end to end: it syncs an
+allow + deny policy into the harness's own config file, then drives the real
+CLI with `--no-bypass` — the allowed `touch` must execute (the positive
+control) and the denied one must not. This is the only tier that can prove a
+synced file is *honored*, not merely written; it doubles as the drift alarm
+for the encoded config formats.
+
 ```console
 just live-claude     # one harness (builds the release binary, runs the live check)
 just live-all        # every harness in sequence; skips pass, only real failures fail

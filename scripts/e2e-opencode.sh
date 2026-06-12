@@ -17,3 +17,16 @@ oh_run opencode "$(oh_prompt "$marker")"
 # OpenCode streams JSONL under `--format json`; oneharness must reconstruct the
 # answer from its `text` parts, so require that exact extraction method here.
 oh_assert_echoed opencode "$marker" "json:opencode-parts"
+
+# Sync enforcement: OpenCode has no list-shaped rules, so the policy goes via
+# the raw settings table into opencode.json's permission map. Without
+# --dangerously-skip-permissions the deny pattern must block the command, and
+# the explicit allow pattern is the positive control.
+ok="$(oh_enforce_file ok)"
+blocked="$(oh_enforce_file blocked)"
+policy="[harness.opencode.settings.permission.bash]
+\"touch $ok\" = \"allow\"
+\"touch $blocked\" = \"deny\""
+oh_sync_enforce opencode "$policy" "$ok" present allow
+oh_sync_enforce opencode "$policy" "$blocked" absent deny
+note "PASS: opencode sync enforcement"

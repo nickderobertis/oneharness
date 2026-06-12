@@ -29,7 +29,24 @@ pub struct LoadedConfig {
     pub files: Vec<String>,
 }
 
-/// Load the effective config for an invocation.
+/// Load the effective config for an invocation: [`load_layers`], folded with
+/// the domain's per-field merge.
+pub fn load(
+    explicit: Option<&Path>,
+    no_config: bool,
+    project_start: &Path,
+) -> Result<LoadedConfig, OneharnessError> {
+    let mut loaded = LoadedConfig::default();
+    for (path, layer) in load_layers(explicit, no_config, project_start)? {
+        loaded.config = config::merge(loaded.config, layer);
+        loaded.files.push(path);
+    }
+    Ok(loaded)
+}
+
+/// Locate and parse the config layers for an invocation, in layering order
+/// (user first, project last). `oneharness config` consumes the layers
+/// directly to attribute each value to its file; `run`/`detect` use [`load`].
 ///
 /// - `no_config` (or `ONEHARNESS_NO_CONFIG=1`) loads nothing.
 /// - `explicit` (`--config <path>`) loads exactly that file — no discovery —
@@ -38,41 +55,32 @@ pub struct LoadedConfig {
 ///   config dir) layered under the project-level file (`oneharness.toml` /
 ///   `.oneharness.toml`, walking up from `project_start`). A missing
 ///   discovered file is simply an absent layer, never an error.
-pub fn load(
+pub fn load_layers(
     explicit: Option<&Path>,
     no_config: bool,
     project_start: &Path,
-) -> Result<LoadedConfig, OneharnessError> {
+) -> Result<Vec<(String, FileConfig)>, OneharnessError> {
     if no_config || env_flag(NO_CONFIG_ENV) {
-        return Ok(LoadedConfig::default());
+        return Ok(Vec::new());
     }
 
     if let Some(path) = explicit {
         let config = read_required(path)?;
-        return Ok(LoadedConfig {
-            config,
-            files: vec![path.display().to_string()],
-        });
+        return Ok(vec![(path.display().to_string(), config)]);
     }
 
-    let mut config = FileConfig::default();
-    let mut files = Vec::new();
-
+    let mut layers = Vec::new();
     if let Some(path) = user_config_path()? {
         if let Some(user) = read_optional(&path)? {
-            config = user;
-            files.push(path.display().to_string());
+            layers.push((path.display().to_string(), user));
         }
     }
-
     if let Some(path) = find_project_file(project_start) {
         if let Some(project) = read_optional(&path)? {
-            config = config::merge(config, project);
-            files.push(path.display().to_string());
+            layers.push((path.display().to_string(), project));
         }
     }
-
-    Ok(LoadedConfig { config, files })
+    Ok(layers)
 }
 
 /// Truthy env flag: set and not `""`/`0`/`false`.

@@ -104,11 +104,12 @@ page. Building from source requires a stable Rust toolchain and
 
 ## Usage
 
-Three subcommands, all emitting JSON to **stdout**; diagnostics go to **stderr**.
+Four subcommands, all emitting JSON to **stdout**; diagnostics go to **stderr**.
 
 ```console
 oneharness list                                   # describe the registry
 oneharness detect --all                           # which harnesses are installed (+ versions)
+oneharness config                                 # effective layered config + where each value came from
 oneharness run --all --prompt "…"                 # run everywhere, in parallel
 oneharness run --harness claude-code,codex --prompt-file task.md
 oneharness run --all --print-command --prompt "…" # dry run: show commands, run nothing
@@ -195,6 +196,22 @@ To opt out: `--config <path>` loads exactly that file and skips discovery;
 `--no-config` (or `ONEHARNESS_NO_CONFIG=1` for wrappers and hermetic test
 suites) ignores every config file. `detect` honors the configured `bin`s too,
 so it probes the same binaries `run` would invoke.
+
+**`oneharness config`** is the debugging surface for the layering: it prints
+the effective configuration with every value's provenance — the config file
+path that supplied it, or `"default"` for a built-in — plus per-key attribution
+for `[env]` and per-field attribution for each `[harness.<id>]` section. It
+takes the same `--cwd`, `--config`, and `--no-config` as `run`, so it shows
+exactly what a run from that directory would load:
+
+```console
+$ oneharness config --cwd ~/proj | jq '{config_files, model, timeout}'
+{
+  "config_files": ["/home/me/.config/oneharness/config.toml", "/home/me/proj/oneharness.toml"],
+  "model": { "value": "gpt-5", "source": "/home/me/proj/oneharness.toml" },
+  "timeout": { "value": 30, "source": "/home/me/.config/oneharness/config.toml" }
+}
+```
 
 Which settings can reach which harness is the support table above: `model`,
 `system`, bypass, and output format are per-harness capabilities; `timeout`,

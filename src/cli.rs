@@ -42,6 +42,9 @@ pub enum Command {
     List(ListArgs),
     /// Probe which harnesses are installed (binary + version) as JSON.
     Detect(DetectArgs),
+    /// Show the effective layered configuration as JSON: every field's value
+    /// and which config file (or built-in default) it came from.
+    Config(ConfigArgs),
 }
 
 #[derive(Args, Debug)]
@@ -155,6 +158,26 @@ pub struct RunArgs {
 
 #[derive(Args, Debug)]
 pub struct ListArgs {
+    /// Emit compact single-line JSON instead of pretty-printed.
+    #[arg(long)]
+    pub compact: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ConfigArgs {
+    /// Discover the project config from this directory (mirrors `run --cwd`),
+    /// so the output shows exactly what a run there would load.
+    #[arg(long, value_name = "DIR")]
+    pub cwd: Option<PathBuf>,
+
+    /// Load configuration from this file only (skip user/project discovery).
+    #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
+    pub config: Option<PathBuf>,
+
+    /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
+    #[arg(long)]
+    pub no_config: bool,
+
     /// Emit compact single-line JSON instead of pretty-printed.
     #[arg(long)]
     pub compact: bool,

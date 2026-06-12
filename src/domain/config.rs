@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::domain::harness;
 use crate::domain::report::OutputFormat;
@@ -193,6 +193,180 @@ impl FileConfig {
     }
 }
 
+/// The `source` recorded for a value that comes from no file: the built-in
+/// default. File sources are paths, so the two can't collide.
+pub const DEFAULT_SOURCE: &str = "default";
+
+/// One resolved field in the `oneharness config` report: the effective value
+/// plus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both
+/// are `null` when the field is unset everywhere and has no built-in default.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Field<T> {
+    pub value: Option<T>,
+    pub source: Option<String>,
+}
+
+impl<T> Field<T> {
+    fn unset() -> Self {
+        Self {
+            value: None,
+            source: None,
+        }
+    }
+
+    fn default_value(value: T) -> Self {
+        Self {
+            value: Some(value),
+            source: Some(DEFAULT_SOURCE.to_string()),
+        }
+    }
+
+    fn or_default(self, value: T) -> Self {
+        if self.value.is_some() {
+            self
+        } else {
+            Self::default_value(value)
+        }
+    }
+}
+
+/// The `oneharness config` report: the fully layered configuration with the
+/// provenance of every value, so a consumer can see exactly which file (or
+/// default) shaped each setting of a run.
+#[derive(Debug, Serialize)]
+pub struct ConfigReport {
+    pub schema_version: &'static str,
+    /// The files consulted, in layering order (user first, project last).
+    pub config_files: Vec<String>,
+    pub all: Field<bool>,
+    pub harnesses: Field<Vec<String>>,
+    pub exclude: Field<Vec<String>>,
+    pub model: Field<String>,
+    pub system: Field<String>,
+    pub bypass: Field<bool>,
+    pub timeout: Field<u64>,
+    pub output_format: Field<OutputFormat>,
+    pub max_parallel: Field<usize>,
+    pub require_available: Field<bool>,
+    /// Per-key provenance for the top-level `[env]`.
+    pub env: BTreeMap<String, Field<String>>,
+    /// Per-harness overrides, with per-field provenance.
+    pub harness: BTreeMap<String, HarnessReport>,
+}
+
+/// One harness's `[harness.<id>]` overrides, with provenance.
+#[derive(Debug, Serialize)]
+pub struct HarnessReport {
+    pub model: Field<String>,
+    pub bin: Field<String>,
+    pub args: Field<Vec<String>>,
+    pub env: BTreeMap<String, Field<String>>,
+}
+
+/// The last layer that sets the field wins — the same precedence [`merge`]
+/// applies — but here the winning layer's path is recorded alongside.
+fn pick<T: Clone>(
+    layers: &[(String, FileConfig)],
+    get: impl Fn(&FileConfig) -> Option<T>,
+) -> Field<T> {
+    let mut field = Field::unset();
+    for (path, config) in layers {
+        if let Some(value) = get(config) {
+            field = Field {
+                value: Some(value),
+                source: Some(path.clone()),
+            };
+        }
+    }
+    field
+}
+
+/// Resolve the layers into a provenance report. Pure: `layers` are the parsed
+/// files in layering order (user first, project last), exactly as loaded by
+/// the io layer; built-in defaults are filled in with [`DEFAULT_SOURCE`].
+pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
+    // The selection moves as a unit (see `merge`): the last layer that states
+    // any selection supplies both `all` and `harnesses`, so the report can
+    // never show a contradictory mix of two files.
+    let (all, harnesses) = layers
+        .iter()
+        .rev()
+        .find(|(_, c)| c.all.is_some() || c.harnesses.is_some())
+        .map(|(path, c)| {
+            (
+                Field {
+                    source: c.all.is_some().then(|| path.clone()),
+                    value: c.all,
+                },
+                Field {
+                    source: c.harnesses.is_some().then(|| path.clone()),
+                    value: c.harnesses.clone(),
+                },
+            )
+        })
+        .unwrap_or((Field::unset(), Field::unset()));
+
+    let mut env: BTreeMap<String, Field<String>> = BTreeMap::new();
+    for (path, config) in layers {
+        for (key, value) in &config.env {
+            env.insert(
+                key.clone(),
+                Field {
+                    value: Some(value.clone()),
+                    source: Some(path.clone()),
+                },
+            );
+        }
+    }
+
+    let mut harness: BTreeMap<String, HarnessReport> = BTreeMap::new();
+    let ids: std::collections::BTreeSet<&String> =
+        layers.iter().flat_map(|(_, c)| c.harness.keys()).collect();
+    for id in ids {
+        let section = |c: &FileConfig| c.harness.get(id).cloned();
+        let mut h_env: BTreeMap<String, Field<String>> = BTreeMap::new();
+        for (path, config) in layers {
+            if let Some(h) = config.harness.get(id) {
+                for (key, value) in &h.env {
+                    h_env.insert(
+                        key.clone(),
+                        Field {
+                            value: Some(value.clone()),
+                            source: Some(path.clone()),
+                        },
+                    );
+                }
+            }
+        }
+        harness.insert(
+            id.clone(),
+            HarnessReport {
+                model: pick(layers, |c| section(c).and_then(|h| h.model)),
+                bin: pick(layers, |c| section(c).and_then(|h| h.bin)),
+                args: pick(layers, |c| section(c).and_then(|h| h.args)),
+                env: h_env,
+            },
+        );
+    }
+
+    ConfigReport {
+        schema_version: crate::domain::report::SCHEMA_VERSION,
+        config_files: layers.iter().map(|(path, _)| path.clone()).collect(),
+        all,
+        harnesses,
+        exclude: pick(layers, |c| c.exclude.clone()),
+        model: pick(layers, |c| c.model.clone()),
+        system: pick(layers, |c| c.system.clone()),
+        bypass: pick(layers, |c| c.bypass).or_default(true),
+        timeout: pick(layers, |c| c.timeout).or_default(120),
+        output_format: pick(layers, |c| c.output_format),
+        max_parallel: pick(layers, |c| c.max_parallel),
+        require_available: pick(layers, |c| c.require_available).or_default(false),
+        env,
+        harness,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,6 +492,64 @@ mod tests {
         let merged = merge(base, over);
         assert_eq!(merged.model_for("claude-code"), Some("project"));
         assert_eq!(merged.bin_for("claude-code"), Some("/usr/bin/claude"));
+    }
+
+    fn layers(user: &str, project: &str) -> Vec<(String, FileConfig)> {
+        vec![
+            ("/user.toml".to_string(), parsed(user)),
+            ("/project.toml".to_string(), parsed(project)),
+        ]
+    }
+
+    #[test]
+    fn explain_with_no_layers_shows_only_built_in_defaults() {
+        let report = explain(&[]);
+        assert!(report.config_files.is_empty());
+        assert_eq!(report.model, Field::unset());
+        assert_eq!(report.bypass, Field::default_value(true));
+        assert_eq!(report.timeout, Field::default_value(120));
+        assert_eq!(report.require_available, Field::default_value(false));
+        assert!(report.env.is_empty());
+        assert!(report.harness.is_empty());
+    }
+
+    #[test]
+    fn explain_attributes_each_field_to_its_winning_layer() {
+        let report = explain(&layers(
+            "model = \"user\"\ntimeout = 30",
+            "model = \"project\"",
+        ));
+        assert_eq!(report.config_files, ["/user.toml", "/project.toml"]);
+        assert_eq!(report.model.value.as_deref(), Some("project"));
+        assert_eq!(report.model.source.as_deref(), Some("/project.toml"));
+        assert_eq!(report.timeout.value, Some(30));
+        assert_eq!(report.timeout.source.as_deref(), Some("/user.toml"));
+        // Untouched fields fall to their defaults, attributed as such.
+        assert_eq!(report.bypass.source.as_deref(), Some(DEFAULT_SOURCE));
+    }
+
+    #[test]
+    fn explain_moves_selection_as_a_unit_like_merge() {
+        let report = explain(&layers("all = true", "harnesses = [\"codex\"]"));
+        assert_eq!(report.all, Field::unset());
+        assert_eq!(report.harnesses.value.as_deref().unwrap(), ["codex"]);
+        assert_eq!(report.harnesses.source.as_deref(), Some("/project.toml"));
+    }
+
+    #[test]
+    fn explain_tracks_env_per_key_and_harness_per_field() {
+        let report = explain(&layers(
+            "[env]\nA = \"user\"\nB = \"user\"\n[harness.claude-code]\nbin = \"/u/claude\"",
+            "[env]\nB = \"project\"\n[harness.claude-code]\nmodel = \"sonnet\"",
+        ));
+        assert_eq!(report.env["A"].source.as_deref(), Some("/user.toml"));
+        assert_eq!(report.env["B"].value.as_deref(), Some("project"));
+        assert_eq!(report.env["B"].source.as_deref(), Some("/project.toml"));
+        let claude = &report.harness["claude-code"];
+        assert_eq!(claude.bin.source.as_deref(), Some("/user.toml"));
+        assert_eq!(claude.model.value.as_deref(), Some("sonnet"));
+        assert_eq!(claude.model.source.as_deref(), Some("/project.toml"));
+        assert_eq!(claude.args, Field::unset());
     }
 
     #[test]

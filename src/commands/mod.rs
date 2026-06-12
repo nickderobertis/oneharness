@@ -1,6 +1,7 @@
 //! CLI verbs: each module orchestrates the domain + io layers for one command.
 //! Shared helpers (harness selection, JSON output) live here.
 
+pub mod config;
 pub mod detect;
 pub mod list;
 pub mod run;

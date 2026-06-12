@@ -32,7 +32,8 @@ Use the `just` recipes; do not hand-roll equivalents.
   pure functions — build the argv, and best-effort extract the final text.
 - `run` spawns the selected harnesses **in parallel**, each as a subprocess with
   a timeout, and emits one JSON report. `list` and `detect` describe and probe
-  the registry. All three emit JSON to stdout by design.
+  the registry; `config` shows the effective layered configuration with each
+  value's source. All four emit JSON to stdout by design.
 
 ## How this repo was composed
 

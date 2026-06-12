@@ -159,6 +159,15 @@ assert_contains "$out" '"--model","smoke-model"' "project config model was not a
 n_cfg="$(count_matches "$out" '"harness":')"
 [ "$n_cfg" = "1" ] \
   || fail "config selection planned $n_cfg harness(es), expected 1 (claude-code)" "$LAST_CMD" "$out"
+
+# 3c. `config` — the layering debug surface: the planted model must be shown
+#     with the project file attributed as its source.
+LAST_CMD="ONEHARNESS_CONFIG=$cfg_dir/user.toml $oh config --cwd $cfg_dir --compact"
+out="$(ONEHARNESS_NO_CONFIG='' ONEHARNESS_CONFIG="$cfg_dir/user.toml" \
+  "$oh" config --cwd "$cfg_dir" --compact)" \
+  || fail "config command exited non-zero" "$LAST_CMD"
+assert_contains "$out" '"value":"smoke-model"' "config value reporting is broken"
+assert_contains "$out" 'oneharness.toml' "config source attribution is broken"
 rm -rf "$cfg_dir"
 
 # 4. Real spawn + capture + extract, hermetically, via the mock-harness fixture.

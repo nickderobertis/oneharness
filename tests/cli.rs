@@ -2039,3 +2039,346 @@ fn detect_marks_missing_binary_unavailable() {
     assert_eq!(entry["available"], false);
     assert!(entry["version"].is_null());
 }
+
+#[test]
+fn allowed_and_denied_tools_map_to_claude_variadic_flags() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--allowed-tools",
+            "Bash(git log:*)",
+            "--allowed-tools",
+            "Read",
+            "--denied-tools",
+            "Bash(rm:*)",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    let command = command_of(&value, 0);
+    assert!(
+        command
+            .windows(3)
+            .any(|w| w == ["--allowedTools", "Bash(git log:*)", "Read"]),
+        "{command:?}"
+    );
+    assert!(
+        command
+            .windows(2)
+            .any(|w| w == ["--disallowedTools", "Bash(rm:*)"]),
+        "{command:?}"
+    );
+}
+
+#[test]
+fn allowed_and_denied_tools_map_to_copilot_repeatable_flags() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "copilot",
+            "--prompt",
+            "hi",
+            "--allowed-tools",
+            "shell(git)",
+            "--allowed-tools",
+            "write",
+            "--denied-tools",
+            "shell(rm)",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    let command = command_of(&value, 0);
+    assert!(
+        command
+            .windows(4)
+            .any(|w| w == ["--allow-tool", "shell(git)", "--allow-tool", "write"]),
+        "{command:?}"
+    );
+    assert!(
+        command
+            .windows(2)
+            .any(|w| w == ["--deny-tool", "shell(rm)"]),
+        "{command:?}"
+    );
+}
+
+#[test]
+fn allowed_tools_map_to_qwen_comma_list_and_deny_is_rejected() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "qwen",
+            "--prompt",
+            "hi",
+            "--allowed-tools",
+            "ShellTool(git status)",
+            "--allowed-tools",
+            "WebFetch",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    let command = command_of(&value, 0);
+    assert!(
+        command
+            .windows(2)
+            .any(|w| w == ["--allowed-tools", "ShellTool(git status),WebFetch"]),
+        "{command:?}"
+    );
+
+    // Qwen has no deny flag, so --denied-tools must refuse, not drop the rule.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "qwen",
+            "--prompt",
+            "hi",
+            "--denied-tools",
+            "ShellTool",
+            "--print-command",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cannot enforce"), "{stderr}");
+    assert!(stderr.contains("denied_tools"), "{stderr}");
+}
+
+#[test]
+fn allowed_tools_on_unsupporting_harness_is_a_usage_error() {
+    // codex cannot enforce an allowlist headlessly; a multi-harness selection
+    // that includes it must refuse rather than run codex unprotected.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code,codex",
+            "--prompt",
+            "hi",
+            "--allowed-tools",
+            "Bash(git:*)",
+            "--print-command",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("codex"), "{stderr}");
+    assert!(stderr.contains("allowed_tools"), "{stderr}");
+    assert!(stderr.contains("claude-code"), "{stderr}"); // names who supports it
+}
+
+#[test]
+fn config_allowed_tools_top_level_and_per_harness_and_cli_override() {
+    let fx = ConfigFixture::new(
+        "allow",
+        concat!(
+            "allowed_tools = [\"Bash(git log:*)\"]\n",
+            "[harness.copilot]\n",
+            "allowed_tools = [\"shell(git log)\"]\n",
+        ),
+        "",
+    );
+    let base = [
+        "run",
+        "--harness",
+        "claude-code,copilot",
+        "--prompt",
+        "hi",
+        "--print-command",
+        "--compact",
+        "--cwd",
+    ];
+    let mut args: Vec<&str> = base.to_vec();
+    let cwd = fx.cwd();
+    args.push(&cwd);
+    let value = json_stdout(&run_with_config(&args, &[], &fx.user_config()));
+    // claude-code gets the top-level rule; copilot its per-harness override.
+    let claude = command_of(&value, 0);
+    let copilot = command_of(&value, 1);
+    assert!(
+        claude
+            .windows(2)
+            .any(|w| w == ["--allowedTools", "Bash(git log:*)"]),
+        "{claude:?}"
+    );
+    assert!(
+        copilot
+            .windows(2)
+            .any(|w| w == ["--allow-tool", "shell(git log)"]),
+        "{copilot:?}"
+    );
+
+    // A CLI --allowed-tools replaces both config levels.
+    args.push("--allowed-tools");
+    args.push("FromCli");
+    let value = json_stdout(&run_with_config(&args, &[], &fx.user_config()));
+    let claude = command_of(&value, 0);
+    let copilot = command_of(&value, 1);
+    assert!(
+        claude
+            .windows(2)
+            .any(|w| w == ["--allowedTools", "FromCli"]),
+        "{claude:?}"
+    );
+    assert!(!claude.iter().any(|t| t == "Bash(git log:*)"), "{claude:?}");
+    assert!(
+        copilot.windows(2).any(|w| w == ["--allow-tool", "FromCli"]),
+        "{copilot:?}"
+    );
+}
+
+#[test]
+fn config_top_level_allowed_tools_refuses_an_incapable_selection() {
+    // The rule comes from config, the selection from the CLI: still refused.
+    let fx = ConfigFixture::new("allow-refuse", "allowed_tools = [\"x\"]\n", "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--print-command",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cannot enforce"), "{stderr}");
+}
+
+#[test]
+fn config_hooks_reach_claude_as_inline_settings_json() {
+    let fx = ConfigFixture::new(
+        "hooks",
+        concat!(
+            "[harness.claude-code.hooks]\n",
+            "PreToolUse = [{ matcher = \"Bash\", hooks = [{ type = \"command\", command = \"./check.sh\" }] }]\n",
+        ),
+        "",
+    );
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    let command = command_of(&value, 0);
+    let settings_pos = command
+        .iter()
+        .position(|t| t == "--settings")
+        .unwrap_or_else(|| panic!("no --settings in {command:?}"));
+    let settings: Value = serde_json::from_str(&command[settings_pos + 1])
+        .unwrap_or_else(|e| panic!("--settings not JSON: {e}"));
+    assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+    assert_eq!(
+        settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+        "./check.sh"
+    );
+}
+
+#[test]
+fn config_hooks_on_incapable_harness_fail_at_parse() {
+    let fx = ConfigFixture::new("hooks-bad", "[harness.codex.hooks]\nPreToolUse = []\n", "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    // Loud even though codex isn't selected: the config itself is invalid.
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("hooks"), "{stderr}");
+    assert!(stderr.contains("codex"), "{stderr}");
+}
+
+#[test]
+fn list_exposes_allow_deny_hook_capabilities() {
+    let output = run(&["list", "--compact"], &[]);
+    let value = json_stdout(&output);
+    let harnesses = value["harnesses"].as_array().unwrap();
+    let by_id = |id: &str| harnesses.iter().find(|h| h["id"] == id).unwrap();
+    assert_eq!(by_id("claude-code")["supports_allowed_tools"], true);
+    assert_eq!(by_id("claude-code")["supports_denied_tools"], true);
+    assert_eq!(by_id("claude-code")["supports_hooks"], true);
+    assert_eq!(by_id("qwen")["supports_allowed_tools"], true);
+    assert_eq!(by_id("qwen")["supports_denied_tools"], false);
+    assert_eq!(by_id("copilot")["supports_denied_tools"], true);
+    assert_eq!(by_id("copilot")["supports_hooks"], false);
+    assert_eq!(by_id("codex")["supports_allowed_tools"], false);
+}
+
+#[test]
+fn config_command_attributes_rules_and_hooks() {
+    let fx = ConfigFixture::new(
+        "cmd-rules",
+        concat!(
+            "allowed_tools = [\"Bash(git:*)\"]\n",
+            "[harness.claude-code.hooks]\n",
+            "PreToolUse = []\n",
+        ),
+        "denied_tools = [\"Bash(rm:*)\"]\n",
+    );
+    let output = run_with_config(
+        &["config", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["allowed_tools"]["value"][0], "Bash(git:*)");
+    assert!(value["allowed_tools"]["source"]
+        .as_str()
+        .unwrap()
+        .ends_with("oneharness.toml"));
+    assert_eq!(value["denied_tools"]["value"][0], "Bash(rm:*)");
+    assert!(value["denied_tools"]["source"]
+        .as_str()
+        .unwrap()
+        .ends_with("user-config.toml"));
+    assert!(value["harness"]["claude-code"]["hooks"]["value"]["PreToolUse"].is_array());
+}

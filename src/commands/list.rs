@@ -17,6 +17,11 @@ struct HarnessInfo {
     output_format: OutputFormat,
     /// Whether `run --resume <session>` is supported for this harness.
     supports_resume: bool,
+    /// Whether allow/deny permission rules and hooks can be enforced through
+    /// this harness's headless invocation (see the README support matrix).
+    supports_allowed_tools: bool,
+    supports_denied_tools: bool,
+    supports_hooks: bool,
     /// The argv oneharness would build, with placeholders, so the adapter's
     /// shape is visible without running anything.
     example_command: Vec<String>,
@@ -38,6 +43,9 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 model: None,
                 system: None,
                 resume: None,
+                allowed_tools: &[],
+                denied_tools: &[],
+                hooks_json: None,
                 bypass: true,
                 output_format: spec.output_format,
             };
@@ -48,6 +56,9 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 install_hint: spec.install_hint,
                 output_format: spec.output_format,
                 supports_resume: spec.supports_resume,
+                supports_allowed_tools: spec.supports_allowed_tools,
+                supports_denied_tools: spec.supports_denied_tools,
+                supports_hooks: spec.supports_hooks,
                 example_command: (spec.build_argv)(&ctx),
             }
         })

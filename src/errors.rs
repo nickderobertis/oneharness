@@ -23,6 +23,13 @@ pub enum OneharnessError {
     #[error("harness `{id}` does not support --resume. supported: {supported}")]
     ResumeUnsupported { id: String, supported: String },
 
+    #[error("harness `{id}` cannot enforce `{setting}` through its headless invocation, so the rule would not apply — refusing to run rather than silently dropping it. harnesses that support it: {supported}. (scope the setting under [harness.<id>] in oneharness.toml, or narrow the selection)")]
+    UnenforceableSetting {
+        id: String,
+        setting: &'static str,
+        supported: String,
+    },
+
     #[error("could not read prompt file `{path}`: {source}")]
     PromptFile {
         path: String,

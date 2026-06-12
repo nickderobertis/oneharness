@@ -47,6 +47,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let specs = select_specs(all, &include, &exclude)?;
     let resume = args.resume.as_deref();
     validate_resume(resume, &specs)?;
+    validate_enforceable(args, cfg, &specs)?;
     let config_bins: std::collections::HashMap<String, String> = cfg
         .harness
         .iter()
@@ -75,6 +76,12 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             .output_format
             .or(cfg.output_format)
             .unwrap_or(spec.output_format);
+        // Hooks are pure data: the TOML table is serialized to JSON here and
+        // delivered by the adapter (verified enforceable above).
+        let hooks_json = match cfg.hooks_for(spec.id) {
+            Some(table) => Some(serde_json::to_string(table)?),
+            None => None,
+        };
         let ctx = BuildCtx {
             bin: &resolved.bin,
             // A CLI --model beats config; within config, the harness's own
@@ -83,6 +90,9 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             prompt: &prompt,
             system,
             resume,
+            allowed_tools: effective_rules(&args.allowed_tools, cfg.allowed_tools_for(spec.id)),
+            denied_tools: effective_rules(&args.denied_tools, cfg.denied_tools_for(spec.id)),
+            hooks_json: hooks_json.as_deref(),
             bypass,
             output_format,
         };
@@ -412,6 +422,62 @@ fn validate_resume(
                 .collect::<Vec<_>>()
                 .join(", "),
         });
+    }
+    Ok(())
+}
+
+/// The rules a harness gets: an explicit CLI list replaces the config's
+/// (per-harness, else top-level) entirely — the usual CLI-beats-config rule.
+fn effective_rules<'a>(cli: &'a [String], config: &'a [String]) -> &'a [String] {
+    if cli.is_empty() {
+        config
+    } else {
+        cli
+    }
+}
+
+/// Permission rules and hooks are enforcement settings: a selected harness
+/// that cannot apply them through its invocation is a usage error, never a
+/// silently unprotected run (the same loud-absence stance as `--resume`).
+/// Per-harness config sections are already rejected at parse time; this guards
+/// the CLI flags and the top-level config fields against the actual selection.
+fn validate_enforceable(
+    args: &RunArgs,
+    cfg: &crate::domain::config::FileConfig,
+    specs: &[&'static HarnessSpec],
+) -> Result<(), OneharnessError> {
+    let supported = |pred: fn(&&'static HarnessSpec) -> bool| {
+        harness::all()
+            .iter()
+            .filter(pred)
+            .map(|s| s.id)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    for spec in specs {
+        let allowed = effective_rules(&args.allowed_tools, cfg.allowed_tools_for(spec.id));
+        if !allowed.is_empty() && !spec.supports_allowed_tools {
+            return Err(OneharnessError::UnenforceableSetting {
+                id: spec.id.to_string(),
+                setting: "allowed_tools",
+                supported: supported(|s| s.supports_allowed_tools),
+            });
+        }
+        let denied = effective_rules(&args.denied_tools, cfg.denied_tools_for(spec.id));
+        if !denied.is_empty() && !spec.supports_denied_tools {
+            return Err(OneharnessError::UnenforceableSetting {
+                id: spec.id.to_string(),
+                setting: "denied_tools",
+                supported: supported(|s| s.supports_denied_tools),
+            });
+        }
+        if cfg.hooks_for(spec.id).is_some() && !spec.supports_hooks {
+            return Err(OneharnessError::UnenforceableSetting {
+                id: spec.id.to_string(),
+                setting: "hooks",
+                supported: supported(|s| s.supports_hooks),
+            });
+        }
     }
     Ok(())
 }

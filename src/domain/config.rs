@@ -43,6 +43,17 @@ pub struct FileConfig {
     pub max_parallel: Option<usize>,
     /// Treat a missing harness as a failure (like `--require-available`).
     pub require_available: Option<bool>,
+    /// Tool/permission rules the harness may use without prompting (like
+    /// repeated `--allowed-tools`), in the harness's native rule syntax. Only
+    /// harnesses with a headless enforcement flag accept these (see
+    /// `supports_allowed_tools` in `oneharness list`); for any other selected
+    /// harness the run is refused rather than silently unprotected, so a
+    /// top-level value suits single-harness or claude/copilot/qwen-only runs —
+    /// otherwise scope rules under `[harness.<id>]`.
+    pub allowed_tools: Option<Vec<String>>,
+    /// Deny rules (like repeated `--denied-tools`); same contract as
+    /// `allowed_tools` (see `supports_denied_tools`).
+    pub denied_tools: Option<Vec<String>>,
     /// Extra environment for every harness process (like repeated `--env`).
     #[serde(default)]
     pub env: BTreeMap<String, String>,
@@ -64,6 +75,19 @@ pub struct HarnessConfig {
     /// Extra arguments appended verbatim to this harness's command (the
     /// configurable counterpart of the CLI's trailing `-- <args…>`).
     pub args: Option<Vec<String>>,
+    /// Allow rules for this harness only; beats the top-level `allowed_tools`.
+    /// Rejected at parse time for a harness without a headless enforcement
+    /// flag, so a rule that cannot apply fails loudly.
+    pub allowed_tools: Option<Vec<String>>,
+    /// Deny rules for this harness only; beats the top-level `denied_tools`.
+    pub denied_tools: Option<Vec<String>>,
+    /// Lifecycle hooks delivered through the harness invocation, as an
+    /// uninterpreted table in the harness's own hooks schema (Claude Code:
+    /// serialized to JSON and passed via `--settings`). Only harnesses with
+    /// `supports_hooks` accept this; others reject it at parse time —
+    /// oneharness wires invocations, it does not write hook files into a
+    /// project's config directories.
+    pub hooks: Option<toml::Value>,
     /// Extra environment for this harness only; beats the top-level `[env]`.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
@@ -94,6 +118,23 @@ fn validate(config: &FileConfig) -> Result<(), String> {
             return Err(format!(
                 "unknown harness id `{id}`. valid ids: {}",
                 harness::valid_ids()
+            ));
+        }
+    }
+    // Enforcement settings scoped to a harness that cannot enforce them are
+    // rejected here, at parse time: a permission rule or hook that silently
+    // would not apply is worse than an error.
+    for (id, h) in &config.harness {
+        let spec = harness::by_id(id).expect("ids validated above");
+        let unsupported = [
+            (h.allowed_tools.is_some() && !spec.supports_allowed_tools).then_some("allowed_tools"),
+            (h.denied_tools.is_some() && !spec.supports_denied_tools).then_some("denied_tools"),
+            (h.hooks.is_some() && !spec.supports_hooks).then_some("hooks"),
+        ];
+        if let Some(setting) = unsupported.into_iter().flatten().next() {
+            return Err(format!(
+                "harness `{id}` cannot enforce `{setting}` through its headless \
+                 invocation; refusing the setting rather than silently dropping it"
             ));
         }
     }
@@ -133,6 +174,9 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
             model: o.model.or(entry.model.take()),
             bin: o.bin.or(entry.bin.take()),
             args: o.args.or(entry.args.take()),
+            allowed_tools: o.allowed_tools.or(entry.allowed_tools.take()),
+            denied_tools: o.denied_tools.or(entry.denied_tools.take()),
+            hooks: o.hooks.or(entry.hooks.take()),
             env: merged_env,
         };
     }
@@ -148,6 +192,8 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
         output_format: over.output_format.or(base.output_format),
         max_parallel: over.max_parallel.or(base.max_parallel),
         require_available: over.require_available.or(base.require_available),
+        allowed_tools: over.allowed_tools.or(base.allowed_tools),
+        denied_tools: over.denied_tools.or(base.denied_tools),
         env,
         harness,
     }
@@ -174,6 +220,31 @@ impl FileConfig {
             .get(id)
             .and_then(|h| h.args.as_deref())
             .unwrap_or(&[])
+    }
+
+    /// Allow rules for one harness: its `[harness.<id>]` override, else the
+    /// top-level `allowed_tools`. (CLI `--allowed-tools` beats both.)
+    pub fn allowed_tools_for(&self, id: &str) -> &[String] {
+        self.harness
+            .get(id)
+            .and_then(|h| h.allowed_tools.as_deref())
+            .or(self.allowed_tools.as_deref())
+            .unwrap_or(&[])
+    }
+
+    /// Deny rules for one harness, resolved like [`Self::allowed_tools_for`].
+    pub fn denied_tools_for(&self, id: &str) -> &[String] {
+        self.harness
+            .get(id)
+            .and_then(|h| h.denied_tools.as_deref())
+            .or(self.denied_tools.as_deref())
+            .unwrap_or(&[])
+    }
+
+    /// The hooks table for one harness, if configured (per-harness only:
+    /// hooks schemas are harness-specific, so there is no top-level form).
+    pub fn hooks_for(&self, id: &str) -> Option<&toml::Value> {
+        self.harness.get(id).and_then(|h| h.hooks.as_ref())
     }
 
     /// The configured environment for one harness, in application order:
@@ -248,6 +319,8 @@ pub struct ConfigReport {
     pub output_format: Field<OutputFormat>,
     pub max_parallel: Field<usize>,
     pub require_available: Field<bool>,
+    pub allowed_tools: Field<Vec<String>>,
+    pub denied_tools: Field<Vec<String>>,
     /// Per-key provenance for the top-level `[env]`.
     pub env: BTreeMap<String, Field<String>>,
     /// Per-harness overrides, with per-field provenance.
@@ -260,6 +333,9 @@ pub struct HarnessReport {
     pub model: Field<String>,
     pub bin: Field<String>,
     pub args: Field<Vec<String>>,
+    pub allowed_tools: Field<Vec<String>>,
+    pub denied_tools: Field<Vec<String>>,
+    pub hooks: Field<toml::Value>,
     pub env: BTreeMap<String, Field<String>>,
 }
 
@@ -344,6 +420,9 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                 model: pick(layers, |c| section(c).and_then(|h| h.model)),
                 bin: pick(layers, |c| section(c).and_then(|h| h.bin)),
                 args: pick(layers, |c| section(c).and_then(|h| h.args)),
+                allowed_tools: pick(layers, |c| section(c).and_then(|h| h.allowed_tools)),
+                denied_tools: pick(layers, |c| section(c).and_then(|h| h.denied_tools)),
+                hooks: pick(layers, |c| section(c).and_then(|h| h.hooks)),
                 env: h_env,
             },
         );
@@ -362,6 +441,8 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         output_format: pick(layers, |c| c.output_format),
         max_parallel: pick(layers, |c| c.max_parallel),
         require_available: pick(layers, |c| c.require_available).or_default(false),
+        allowed_tools: pick(layers, |c| c.allowed_tools.clone()),
+        denied_tools: pick(layers, |c| c.denied_tools.clone()),
         env,
         harness,
     }
@@ -448,6 +529,85 @@ mod tests {
     fn all_and_harnesses_together_are_rejected() {
         let err = parse("all = true\nharnesses = [\"codex\"]").unwrap_err();
         assert!(err.contains("mutually exclusive"), "{err}");
+    }
+
+    #[test]
+    fn allow_deny_and_hooks_parse_at_both_levels() {
+        let c = parsed(
+            r#"
+            allowed_tools = ["Bash(git log:*)"]
+            denied_tools = ["Bash(rm:*)"]
+
+            [harness.copilot]
+            allowed_tools = ["shell(git)"]
+
+            [harness.claude-code.hooks]
+            PreToolUse = [{ matcher = "Bash", hooks = [{ type = "command", command = "./check.sh" }] }]
+            "#,
+        );
+        // Per-harness beats top-level; others fall through to the top level.
+        assert_eq!(c.allowed_tools_for("copilot"), ["shell(git)"]);
+        assert_eq!(c.allowed_tools_for("claude-code"), ["Bash(git log:*)"]);
+        assert_eq!(c.denied_tools_for("claude-code"), ["Bash(rm:*)"]);
+        assert!(c.hooks_for("claude-code").is_some());
+        assert!(c.hooks_for("copilot").is_none());
+    }
+
+    #[test]
+    fn enforcement_settings_on_incapable_harnesses_are_rejected_at_parse() {
+        // codex has no headless allow flag; qwen has allow but no deny; only
+        // claude-code takes hooks via its invocation.
+        for (text, what) in [
+            ("[harness.codex]\nallowed_tools = [\"x\"]", "allowed_tools"),
+            ("[harness.qwen]\ndenied_tools = [\"x\"]", "denied_tools"),
+            ("[harness.cursor.hooks]\nbeforeShellExecution = []", "hooks"),
+        ] {
+            let err = parse(text).unwrap_err();
+            assert!(err.contains(what), "{text} -> {err}");
+            assert!(err.contains("cannot enforce"), "{text} -> {err}");
+        }
+        // The same settings on capable harnesses parse fine.
+        assert!(parse("[harness.qwen]\nallowed_tools = [\"Shell\"]").is_ok());
+        assert!(parse("[harness.claude-code.hooks]\nPreToolUse = []").is_ok());
+    }
+
+    #[test]
+    fn merge_replaces_rule_lists_per_field() {
+        let base = parsed("allowed_tools = [\"user-rule\"]\ndenied_tools = [\"user-deny\"]");
+        let over = parsed("allowed_tools = [\"project-rule\"]");
+        let merged = merge(base, over);
+        assert_eq!(merged.allowed_tools.as_deref().unwrap(), ["project-rule"]);
+        assert_eq!(merged.denied_tools.as_deref().unwrap(), ["user-deny"]);
+
+        // Per-harness hooks: the project's table replaces the user's whole.
+        let base = parsed("[harness.claude-code.hooks]\nPreToolUse = []");
+        let over = parsed("[harness.claude-code.hooks]\nPostToolUse = []");
+        let merged = merge(base, over);
+        let hooks = merged.hooks_for("claude-code").unwrap();
+        assert!(hooks.get("PostToolUse").is_some());
+        assert!(
+            hooks.get("PreToolUse").is_none(),
+            "tables replace, not merge"
+        );
+    }
+
+    #[test]
+    fn explain_covers_rules_and_hooks() {
+        let report = explain(&layers(
+            "allowed_tools = [\"user-rule\"]",
+            "[harness.claude-code]\nallowed_tools = [\"claude-rule\"]\n[harness.claude-code.hooks]\nPreToolUse = []",
+        ));
+        assert_eq!(
+            report.allowed_tools.value.as_deref().unwrap(),
+            ["user-rule"]
+        );
+        assert_eq!(report.allowed_tools.source.as_deref(), Some("/user.toml"));
+        let claude = &report.harness["claude-code"];
+        assert_eq!(
+            claude.allowed_tools.source.as_deref(),
+            Some("/project.toml")
+        );
+        assert_eq!(claude.hooks.source.as_deref(), Some("/project.toml"));
     }
 
     #[test]

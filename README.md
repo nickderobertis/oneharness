@@ -56,16 +56,16 @@ The table doubles as the **config support matrix**: each column after the
 binary is a unified setting (CLI flag and/or `oneharness.toml` field) and shows
 how — or whether — it reaches that harness.
 
-| id | CLI | default binary | `model` | `system` | bypass mode requested | output format | `--resume` |
-|----|-----|----------------|:-------:|----------|-----------------------|:-------------:|:---------:|
-| `claude-code` | Claude Code | `claude` | ✓ | native flag | `--permission-mode bypassPermissions` | ✓ | `--resume` |
-| `codex` | OpenAI Codex CLI | `codex` | ✓ | prepended | `--dangerously-bypass-approvals-and-sandbox` | — | — |
-| `opencode` | OpenCode | `opencode` | ✓ | prepended | `--dangerously-skip-permissions` | ✓ | `--session` |
-| `goose` | Goose | `goose` | — | native flag | (runs unattended) | — | — |
-| `qwen` | Qwen Code | `qwen` | ✓ | prepended | `--yolo` | — | — |
-| `crush` | Crush | `crush` | ✓ | prepended | `run -q` (non-interactive) | — | — |
-| `copilot` | GitHub Copilot CLI | `copilot` | ✓ | prepended | `--allow-all-tools --allow-all-paths --no-ask-user` | — | — |
-| `cursor` | Cursor CLI | `cursor-agent` | ✓ | prepended | `--force` | ✓ | `--resume` |
+| id | CLI | default binary | `model` | `system` | bypass mode requested | allow / deny rules | hooks | output format | `--resume` |
+|----|-----|----------------|:-------:|----------|-----------------------|--------------------|:-----:|:-------------:|:---------:|
+| `claude-code` | Claude Code | `claude` | ✓ | native flag | `--permission-mode bypassPermissions` | `--allowedTools` / `--disallowedTools` | `--settings` | ✓ | `--resume` |
+| `codex` | OpenAI Codex CLI | `codex` | ✓ | prepended | `--dangerously-bypass-approvals-and-sandbox` | — | — | — | — |
+| `opencode` | OpenCode | `opencode` | ✓ | prepended | `--dangerously-skip-permissions` | — | — | ✓ | `--session` |
+| `goose` | Goose | `goose` | — | native flag | (runs unattended) | — | — | — | — |
+| `qwen` | Qwen Code | `qwen` | ✓ | prepended | `--yolo` | `--allowed-tools` (allow only) | — | — | — |
+| `crush` | Crush | `crush` | ✓ | prepended | `run -q` (non-interactive) | — | — | — | — |
+| `copilot` | GitHub Copilot CLI | `copilot` | ✓ | prepended | `--allow-all-tools --allow-all-paths --no-ask-user` | `--allow-tool` / `--deny-tool` | — | — | — |
+| `cursor` | Cursor CLI | `cursor-agent` | ✓ | prepended | `--force` | — | — | ✓ | `--resume` |
 
 - **`model`** — ✓ means the harness takes a model flag. Goose selects its model
   from its own provider config, so `model` is intentionally not mapped for it.
@@ -73,6 +73,18 @@ how — or whether — it reaches that harness.
   (Claude Code's `--append-system-prompt`, Goose's `--system`); "prepended"
   means the harness has no such flag, so the text is prepended to the prompt —
   it always reaches the model, never silently dropped.
+- **allow / deny rules** — the flags `allowed_tools` / `denied_tools` map onto,
+  in each harness's own rule syntax (Claude Code's `Bash(git log:*)`, Copilot's
+  `shell(git)`, Qwen's comma-separated tool names). A `—` harness gates
+  permissions behind its own config files (opencode.json, crush.json, Cursor's
+  `cli-config.json`, Codex/Goose sandbox-and-approval modes), which oneharness
+  does not write — so a rule aimed at one of them is a **usage error**, never a
+  silently unenforced rule. Rules matter most with `--no-bypass`, since bypass
+  mode already skips permission prompts.
+- **hooks** — whether lifecycle hooks can be delivered through the invocation
+  itself: Claude Code accepts them as an inline `--settings` JSON document.
+  Harnesses whose hooks live only in files on disk (Copilot's `.github/hooks/`,
+  Cursor's `hooks.json`, OpenCode plugins) are `—` for the same reason as above.
 - **output format** — ✓ means the harness takes a format flag the
   `output_format` setting maps onto; a `—` harness emits plain text and the
   setting only changes how `text` is extracted.
@@ -84,7 +96,8 @@ how — or whether — it reaches that harness.
 The remaining unified settings — `timeout`, `env`, `bin`, per-harness `args`,
 `cwd`, selection — are enforced by oneharness itself, so they work for **every**
 harness. `oneharness list` prints this registry as JSON, including the exact
-command each adapter builds and a `supports_resume` flag.
+command each adapter builds and `supports_resume` / `supports_allowed_tools` /
+`supports_denied_tools` / `supports_hooks` capability flags.
 
 ## Install
 
@@ -142,6 +155,11 @@ Useful `run` flags:
 - `--cwd <dir>` / `--env KEY=VALUE` — run each harness in a directory / with extra
   env (useful for sandboxed e2e).
 - `--max-parallel <n>` — cap concurrency (default: all selected at once).
+- `--allowed-tools <rule>` / `--denied-tools <rule>` — permission rules
+  (repeatable), in the harness's native rule syntax; see the allow/deny column
+  in the support table. Selecting a harness that cannot enforce them headlessly
+  is a usage error — never a silently unenforced rule. Most useful with
+  `--no-bypass`.
 - `--no-bypass` — do **not** request bypass mode (see the safety note below);
   `--bypass` forces it back on over a config's `bypass = false`.
 - `--require-available` — treat a not-installed harness as a failure.
@@ -181,6 +199,8 @@ timeout = 120                   # --timeout, in seconds
 output_format = "json"          # --output-format
 max_parallel = 4                # --max-parallel
 require_available = false       # --require-available
+allowed_tools = ["Bash(git log:*)"]  # --allowed-tools (only for harnesses that
+denied_tools = ["Bash(rm:*)"]        # --denied-tools   can enforce them; see matrix)
 
 [env]                           # --env, for every harness
 RUST_LOG = "warn"
@@ -189,8 +209,22 @@ RUST_LOG = "warn"
 model = "claude-sonnet-4-5"     # each harness can name its own model
 bin = "/opt/claude"             # like --bin (the flag and ONEHARNESS_BIN_* win)
 args = ["--max-turns", "6"]     # extra argv appended for this harness only
+allowed_tools = ["Bash(git:*)", "Read"]  # this harness's rule syntax
 env = { ANTHROPIC_LOG = "debug" }
+
+# Lifecycle hooks, delivered through the invocation (Claude Code only, via an
+# inline --settings JSON). The table is the harness's own hooks schema,
+# passed through uninterpreted.
+[harness.claude-code.hooks]
+PreToolUse = [{ matcher = "Bash", hooks = [{ type = "command", command = "./validate.sh" }] }]
 ```
+
+Permission rules and hooks are **enforcement settings**: aiming one at a
+harness that cannot apply it through its invocation (see the support matrix) is
+a loud usage error at parse time for `[harness.<id>]` settings, or at run time
+for the top level against the actual selection — never a silently unprotected
+run. Scope rules under `[harness.<id>]` (each harness has its own rule syntax
+anyway) when a top-level value would collide with a broader selection.
 
 To opt out: `--config <path>` loads exactly that file and skips discovery;
 `--no-config` (or `ONEHARNESS_NO_CONFIG=1` for wrappers and hermetic test

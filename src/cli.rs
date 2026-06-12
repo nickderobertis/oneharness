@@ -84,6 +84,21 @@ pub struct RunArgs {
     #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
     pub system: Option<String>,
 
+    /// Tool/permission rule the harness may use without prompting, in the
+    /// harness's native rule syntax (repeatable). Only for harnesses that can
+    /// enforce it headlessly — `supports_allowed_tools` in `oneharness list`;
+    /// selecting any other harness with this set is a usage error rather than
+    /// a silently unenforced rule. Mostly useful with --no-bypass, since
+    /// bypass mode already skips permission prompts.
+    #[arg(long = "allowed-tools", value_name = "RULE")]
+    pub allowed_tools: Vec<String>,
+
+    /// Tool/permission rule the harness must not use (repeatable), in the
+    /// harness's native rule syntax. Same contract as --allowed-tools
+    /// (`supports_denied_tools` in `oneharness list`).
+    #[arg(long = "denied-tools", value_name = "RULE")]
+    pub denied_tools: Vec<String>,
+
     /// Continue a prior session: send the prompt as the next turn of <SESSION>.
     /// Single-harness only (a session belongs to one harness) and only for
     /// harnesses that support it (see `supports_resume` in `oneharness list`).

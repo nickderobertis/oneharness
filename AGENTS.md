@@ -106,8 +106,13 @@ shape. When you add one:
 - Add a `--print-command` assertion in `tests/cli.rs` pinning its exact argv
   (this is the deterministic, network-free proof the adapter is correct).
 - Update the harness table in `README.md` — including its config-support
-  columns (`model`, `system`, bypass, output format, `--resume`), which document
-  how each unified setting reaches (or doesn't reach) the harness.
+  columns (`model`, `system`, bypass, allow/deny rules, hooks, output format,
+  `--resume`), which document how each unified setting reaches (or doesn't
+  reach) the harness — and the `supports_*` capability fields in the registry.
+  Enforcement settings (`allowed_tools`/`denied_tools`/`hooks`) follow the
+  loud-absence rule: a harness that can't apply them through its headless
+  invocation must *refuse* them (parse-time for `[harness.<id>]`, run-time for
+  top-level/CLI against the selection), never silently run unprotected.
 - Source the real invocation from a known-good driver — the
   `nickderobertis/allowlister` repo's `run_agent()` / `e2e-*.sh` drivers are the
   reference — rather than guessing flags. (`scripts/smoke.sh --live` here is the

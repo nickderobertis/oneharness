@@ -36,6 +36,12 @@ pub enum OneharnessError {
     #[error("harness `{id}` has no hook mapping, so oneharness cannot install a hook into it")]
     HookUnsupported { id: String },
 
+    #[error("harness `{id}` has no user-global hook location, so oneharness cannot install a global hook into it")]
+    HookGlobalUnsupported { id: String },
+
+    #[error("cannot resolve the user-global hook directory for `{id}`: {var} is not set")]
+    HookGlobalDirMissing { id: String, var: &'static str },
+
     #[error("could not write harness config `{path}`: {source}")]
     HarnessConfigWrite {
         path: String,

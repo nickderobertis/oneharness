@@ -108,7 +108,8 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
         // independent of the permission/settings fragment above.
         let mut hooks = Vec::new();
         for hook in cfg.hook_specs_for(spec.id) {
-            for write in hooks_io::install(&project_dir, spec, &hook, args.check)? {
+            let scope = hooks_io::Scope::Project(&project_dir);
+            for write in hooks_io::install(scope, spec, &hook, args.check)? {
                 let status = status_str(write.status);
                 pending_changes |= status != "unchanged";
                 hooks.push(HookFileResult {

@@ -86,6 +86,13 @@ pub struct HarnessSpec {
     /// harness oneharness cannot wire a hook into. Consumed by `oneharness sync`
     /// / `src/io/hooks.rs`; nothing here is passed on the argv.
     pub hooks: Option<HookBinding>,
+    /// Where this harness reads a *user-global* hook, for an `io::hooks::install`
+    /// at [`crate::io::hooks::Scope::Global`] (the project path lives in
+    /// [`HookBinding`]). The install strategy is identical to the project one;
+    /// only the anchor moves to a `$HOME`/`$XDG_CONFIG_HOME` location. `None` for
+    /// a harness with no user-global hook location oneharness knows. Sourced from
+    /// the allowlister adapters, never guessed.
+    pub global_hook: Option<GlobalHook>,
     /// Environment variables oneharness sets when spawning this harness, so a
     /// headless run is clean without the caller knowing the harness's quirks
     /// (e.g. silencing a startup warning that would otherwise litter `stderr`).
@@ -162,6 +169,30 @@ pub enum HookBinding {
         plugin_dir: &'static str,
         template: &'static str,
     },
+}
+
+/// The base directory a user-global hook anchors under. Resolved by the I/O
+/// layer from the environment; kept abstract here so the registry stays pure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookBase {
+    /// `$HOME`.
+    Home,
+    /// `$XDG_CONFIG_HOME`, falling back to `$HOME/.config` (Crush, OpenCode).
+    ConfigHome,
+}
+
+/// Where a harness reads a *user-global* hook. The install strategy is the
+/// matching [`HookBinding`] variant — only the anchor differs, because several
+/// harnesses place the global hook at a different relative path than the project
+/// one (Copilot's `.github/hooks` becomes `~/.copilot/hooks`; Crush and OpenCode
+/// move under the XDG config dir). `{name}` is the plugin identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlobalHook {
+    pub base: HookBase,
+    /// Anchor relative to `base`: the settings/hooks file for the JSON-merge
+    /// strategies, the `.js` shim for OpenCode, or the plugin directory for
+    /// Goose — i.e. the same thing the [`HookBinding`] anchors at under a project.
+    pub anchor: &'static str,
 }
 
 /// Goose plugin manifest, `{name}` filled with the plugin identity. Written once
@@ -260,6 +291,10 @@ static REGISTRY: &[HarnessSpec] = &[
             },
             path: &["hooks"],
         }),
+        global_hook: Some(GlobalHook {
+            base: HookBase::Home,
+            anchor: ".claude/settings.json",
+        }),
         default_env: &[],
         build_argv: argv_claude_code,
     },
@@ -279,6 +314,10 @@ static REGISTRY: &[HarnessSpec] = &[
             file: ".codex/hooks.json",
             path: &["hooks"],
             seed: None,
+        }),
+        global_hook: Some(GlobalHook {
+            base: HookBase::Home,
+            anchor: ".codex/hooks.json",
         }),
         default_env: &[],
         build_argv: argv_codex,
@@ -302,6 +341,10 @@ static REGISTRY: &[HarnessSpec] = &[
             plugin_dir: ".opencode/plugin",
             template: OPENCODE_PLUGIN_JS,
         }),
+        global_hook: Some(GlobalHook {
+            base: HookBase::ConfigHome,
+            anchor: "opencode/plugin/{name}.js",
+        }),
         default_env: &[],
         build_argv: argv_opencode,
     },
@@ -321,6 +364,10 @@ static REGISTRY: &[HarnessSpec] = &[
             plugins_dir: ".agents/plugins",
             manifest: GOOSE_MANIFEST,
             path: &["hooks"],
+        }),
+        global_hook: Some(GlobalHook {
+            base: HookBase::Home,
+            anchor: ".agents/plugins/{name}",
         }),
         default_env: &[],
         build_argv: argv_goose,
@@ -347,6 +394,10 @@ static REGISTRY: &[HarnessSpec] = &[
             },
             path: &["hooks"],
         }),
+        global_hook: Some(GlobalHook {
+            base: HookBase::Home,
+            anchor: ".qwen/settings.json",
+        }),
         default_env: &[("QWEN_CODE_SUPPRESS_YOLO_WARNING", "1")],
         build_argv: argv_qwen,
     },
@@ -371,6 +422,10 @@ static REGISTRY: &[HarnessSpec] = &[
             },
             path: &["hooks"],
         }),
+        global_hook: Some(GlobalHook {
+            base: HookBase::ConfigHome,
+            anchor: "crush/crush.json",
+        }),
         default_env: &[],
         build_argv: argv_crush,
     },
@@ -389,6 +444,10 @@ static REGISTRY: &[HarnessSpec] = &[
             file: ".github/hooks/{name}.json",
             path: &["hooks"],
             seed: Some(r#"{"version":1}"#),
+        }),
+        global_hook: Some(GlobalHook {
+            base: HookBase::Home,
+            anchor: ".copilot/hooks/{name}.json",
         }),
         default_env: &[],
         build_argv: argv_copilot,
@@ -419,6 +478,10 @@ static REGISTRY: &[HarnessSpec] = &[
             file: ".cursor/hooks.json",
             path: &["hooks"],
             seed: Some(r#"{"version":1}"#),
+        }),
+        global_hook: Some(GlobalHook {
+            base: HookBase::Home,
+            anchor: ".cursor/hooks.json",
         }),
         default_env: &[],
         build_argv: argv_cursor,

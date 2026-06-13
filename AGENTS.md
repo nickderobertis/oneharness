@@ -16,7 +16,8 @@ binary: the `clap` surface (`src/cli.rs`) and per-verb orchestration
 (`src/commands/`) over the core. The split exists so sibling tools (e.g.
 `nickderobertis/allowlister`) can depend on the engine — most of all
 `io::hooks::install`, which writes a normalized hook into any harness's native
-config — as a lean git dependency without pulling the CLI.
+config at either project or user-global scope — as a lean git dependency without
+pulling the CLI.
 
 > `CLAUDE.md` is a symlink to this file (`ln -s AGENTS.md CLAUDE.md`). Edit
 > `AGENTS.md` only; the two must never drift.

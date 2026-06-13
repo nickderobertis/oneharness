@@ -3,6 +3,7 @@
 //! I/O stays behind the `io` and `commands` boundaries.
 
 pub mod config;
+pub mod gate;
 pub mod harness;
 pub mod hooks;
 pub mod normalize;

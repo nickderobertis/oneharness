@@ -26,3 +26,9 @@ denied_tools = [\"Bash(touch $blocked)\"]"
 oh_sync_enforce claude-code "$policy" "$ok" present allow
 oh_sync_enforce claude-code "$policy" "$blocked" absent deny
 note "PASS: claude-code sync enforcement"
+
+# Hook enforcement: a synced `[[hooks]]` gate (oneharness gate claude-code) must
+# block a marked command and let an unmarked one through — the live proof the
+# installed hook file is honored by the real CLI.
+note "» hook enforcement: the synced gate must block a marked command"
+oh_hook_enforce claude-code

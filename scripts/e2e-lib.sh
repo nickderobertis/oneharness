@@ -268,3 +268,105 @@ Rules: you MUST actually invoke your shell tool with that exact command — neve
 
 # A shell-safe scratch file name for the enforcement phases.
 oh_enforce_file() { printf '%s-%s%s.txt' "$1" "${RANDOM}" "${RANDOM}"; }
+
+# --- hook enforcement --------------------------------------------------------
+
+# Live proof that a synced `[[hooks]]` gate is HONORED by the real harness — the
+# hook counterpart to `oh_sync_enforce`, and the only check that the installed
+# hook file is in a shape the real CLI loads and fires (the hermetic suite can
+# only prove the file was written correctly).
+#
+# It syncs a `[[hooks]]` entry whose command is `oneharness gate <id>` into the
+# harness's OWN config, then drives the harness (via `oneharness run`, under
+# bypass so the hook is the sole decider) through two commands:
+#   * deny  — a `touch` whose path carries a unique marker. The gate matches the
+#             marker and emits the harness's native deny verdict, so the file
+#             must be ABSENT.
+#   * allow — a `touch` with no marker (the positive control). The gate stays
+#             silent, so under bypass the command runs and the file is PRESENT —
+#             proving the deny was a real block, not the harness simply never
+#             executing anything headlessly.
+#
+# Excluded by design: Codex (`oneharness run` drives `codex exec`, which does not
+# load hooks — allowlister proves Codex hooks only via the TUI in a PTY) and
+# Copilot (project hooks are gated behind a real repo + a `trustedFolders` trust
+# file + prompt-mode scaffolding that belongs in allowlister's adapter e2e).
+#
+#   $1 harness id
+#   $2 scope: project (default) or global. Qwen only fires *user*-scoped hooks
+#      headlessly (project hooks sit behind folder trust), so it syncs --global
+#      into an isolated HOME that the run below also reads — which doubles as the
+#      live proof of `sync --global`.
+#
+# The gate command is whitespace-tokenized (OpenCode's shim splits argv on
+# spaces), so it carries no quoted arguments: the marker and the oneharness path
+# must be space-free.
+oh_hook_enforce() {
+    local id="$1" scope="${2:-project}"
+    local bin sandbox marker denyfile allowfile out status home
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    sandbox="$(mktemp -d)"
+    # A real repo: some harnesses only discover project-scoped hooks inside one.
+    git init -q "$sandbox" 2>/dev/null || true
+    marker="OHGATEBLOCK${RANDOM}${RANDOM}"
+    denyfile="$sandbox/$marker.txt"
+    allowfile="$sandbox/ohgate-allowed-${RANDOM}${RANDOM}.txt"
+
+    cat > "$sandbox/oneharness.toml" <<TOML
+[[hooks]]
+command = "$bin gate $id --deny-if-contains $marker"
+harnesses = ["$id"]
+plugin_name = "ohgate"
+TOML
+
+    # For a global sync, point HOME/XDG at the sandbox so the install lands where
+    # the run will read it; the same env is passed to the harness via --env.
+    local sync_vars=(ONEHARNESS_NO_CONFIG=) sync_global=() run_extra=()
+    if [ "$scope" = global ]; then
+        home="$sandbox/home"
+        mkdir -p "$home"
+        sync_vars+=("HOME=$home" "XDG_CONFIG_HOME=$sandbox/xdg")
+        sync_global=(--global)
+        run_extra=(--env "HOME=$home" --env "XDG_CONFIG_HOME=$sandbox/xdg")
+    fi
+
+    note "  hook-enforce: syncing a gate hook into $id's own config ($scope scope)"
+    if ! out="$(env "${sync_vars[@]}" "$bin" sync --harness "$id" "${sync_global[@]+"${sync_global[@]}"}" \
+        --cwd "$sandbox" --config "$sandbox/oneharness.toml" --compact 2>&1)"; then
+        printf '%s\n' "$out" >&2
+        rm -rf "$sandbox"
+        fail "$id: oneharness sync failed to install the gate hook"
+    fi
+
+    local rules='Rules: you MUST actually invoke your shell tool with that exact command — never decide on your own that it is not permitted; attempt it. Use only the shell tool, and do NOT create the file by any other means.'
+
+    note "  hook-enforce[deny]: the gate must block the marked command under bypass"
+    oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $denyfile
+$rules" --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}"
+    status="$(oh_field '.results[0].status')"
+    if [ "$status" = "skipped" ]; then
+        rm -rf "$sandbox"
+        skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+    fi
+    if [ -e "$denyfile" ]; then
+        oh_dump
+        rm -rf "$sandbox"
+        fail "$id: the gate did NOT block — $denyfile was created despite the deny marker, so the installed hook is not honored (or its file format drifted)"
+    fi
+    note "  ok[deny]: the gate blocked the marked command"
+
+    note "  hook-enforce[allow]: an unmarked command must run (positive control)"
+    oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $allowfile
+$rules" --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}"
+    if [ ! -e "$allowfile" ]; then
+        oh_dump
+        rm -rf "$sandbox"
+        fail "$id: the positive-control command never ran ($allowfile absent) — the deny phase cannot be trusted as a real block (does the harness run shell headlessly?)"
+    fi
+    note "  ok[allow]: the unmarked command ran"
+
+    rm -rf "$sandbox"
+    note "PASS: $id hook enforcement"
+}

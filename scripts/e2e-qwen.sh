@@ -38,3 +38,10 @@ oh_run qwen "$(oh_prompt "$marker")" --cwd "$sandbox"
 oh_assert_echoed qwen "$marker"
 rm -rf "$sandbox"
 note "PASS: qwen accepts the synced settings file (headless enforcement is flag-gated in qwen itself; see comments)"
+
+# Hook enforcement DOES hold headlessly — unlike permission rules. Qwen fires a
+# PreToolUse hook in every approval mode, but only a *user*-scoped one (project
+# hooks sit behind folder trust), so the gate is synced with `--global` into an
+# isolated HOME the run also reads. This is also the live proof of `sync --global`.
+note "» hook enforcement (global scope): the synced gate must block a marked command"
+oh_hook_enforce qwen global

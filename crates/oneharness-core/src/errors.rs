@@ -42,6 +42,14 @@ pub enum OneharnessError {
     #[error("cannot resolve the user-global hook directory for `{id}`: {var} is not set")]
     HookGlobalDirMissing { id: String, var: &'static str },
 
+    #[error("`oneharness sync --global` installs hooks only, but permission rules or `settings` are configured for `{id}` — those are project-scoped (sync them without --global, or remove them)")]
+    GlobalSyncOnlyHooks { id: String },
+
+    #[error(
+        "harness `{id}` has no pre-tool gate, so `oneharness gate {id}` cannot emit a verdict"
+    )]
+    GateUnsupported { id: String },
+
     #[error("could not write harness config `{path}`: {source}")]
     HarnessConfigWrite {
         path: String,

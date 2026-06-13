@@ -3,6 +3,7 @@
 
 pub mod config;
 pub mod detect;
+pub mod gate;
 pub mod list;
 pub mod run;
 pub mod sync;

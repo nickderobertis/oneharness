@@ -46,9 +46,15 @@ Use the `just` recipes; do not hand-roll equivalents.
   a timeout, and emits one JSON report. `list` and `detect` describe and probe
   the registry; `config` shows the effective layered configuration with each
   value's source; `sync` merges the unified policy settings (allow/deny rules,
-  hooks, raw `settings` tables) into each harness's **own** project config file
-  so the policy also applies without oneharness in the loop. All five emit JSON
-  to stdout by design.
+  hooks, raw `settings` tables) into each harness's **own** config file — project
+  by default, or the user-global location under `--global` (hooks only) — so the
+  policy also applies without oneharness in the loop. Those five emit JSON to
+  stdout by design. `gate <id>` is the odd one out: the runtime pre-tool gate an
+  installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
+  emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It
+  exists to prove a synced hook is *honored* end to end (the per-harness live
+  e2e drives a real harness through it), not to be a policy engine — that is the
+  sibling `allowlister`'s role, which consumes the `install` library.
 
 ## How this repo was composed
 
@@ -138,6 +144,12 @@ shape. When you add one:
   sync merge is non-destructive by contract: unrelated keys untouched, lists
   unioned (idempotent re-sync), unparseable files refused and left intact,
   writes atomic. Keep those properties test-pinned when touching it.
+- Give the harness its `global_hook` (the user-global hook location, for `sync
+  --global` / `install` at `Scope::Global`) and its `gate_deny` (how it expresses
+  a pre-tool deny when it runs `oneharness gate <id>`). Both are registry data
+  sourced from the allowlister adapters, never guessed; both are loud when absent
+  (a missing `gate_deny` makes `oneharness gate <id>` a usage error). Pin the new
+  deny shape with a `--print`-style assertion in `domain::gate`/`tests/cli.rs`.
 - Source the real invocation from a known-good driver — the
   `nickderobertis/allowlister` repo's `run_agent()` / `e2e-*.sh` drivers are the
   reference — rather than guessing flags. (`scripts/smoke.sh --live` here is the
@@ -148,7 +160,13 @@ shape. When you add one:
   it needs a secret not already synced — an entry in `gh-secrets.json`. If the
   harness has a `SyncSpec`, also add the `oh_sync_enforce` phases (allow rule
   executes under `--no-bypass`, deny rule doesn't): that live check is the only
-  proof the synced file is *honored* and the drift alarm for its format.
+  proof the synced file is *honored* and the drift alarm for its format. Unless
+  the harness can't load a hook through `oneharness run` (Codex's `codex exec`
+  ignores hooks) or needs bespoke trust scaffolding (Copilot), also add the
+  `oh_hook_enforce <id> [scope]` phase — it syncs a `oneharness gate <id>` hook
+  and proves the real CLI blocks a marked command and runs an unmarked one, the
+  honoring proof + drift alarm for the *hook* install (use `global` scope for a
+  harness, like Qwen, that only fires user-scoped hooks headlessly).
 
 ## Scripts and output are context
 

@@ -26,3 +26,6 @@ allowed_tools = [\"Shell(touch)\"]" "$ok" present allow
 oh_sync_enforce cursor "[harness.cursor]
 denied_tools = [\"Shell(touch)\"]" "$blocked" absent deny
 note "PASS: cursor sync enforcement"
+
+note "» hook enforcement: the synced gate must block a marked command"
+oh_hook_enforce cursor

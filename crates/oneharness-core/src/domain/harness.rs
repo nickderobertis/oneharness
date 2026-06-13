@@ -8,6 +8,7 @@
 //! to drive each real CLI headlessly (deny prompts, pick the model, request a
 //! parseable format). Source new flags from a working driver, not by guessing.
 
+use crate::domain::gate::DenyShape;
 use crate::domain::hooks::HookShape;
 use crate::domain::report::OutputFormat;
 
@@ -93,6 +94,11 @@ pub struct HarnessSpec {
     /// a harness with no user-global hook location oneharness knows. Sourced from
     /// the allowlister adapters, never guessed.
     pub global_hook: Option<GlobalHook>,
+    /// How this harness expresses a pre-tool *deny* when its installed hook runs
+    /// `oneharness gate <id>` — the runtime counterpart to [`HookBinding`]. `None`
+    /// for a harness with no gateable pre-tool hook. Consumed by the `gate`
+    /// command (`src/commands/gate.rs`); sourced from the allowlister adapters.
+    pub gate_deny: Option<DenyShape>,
     /// Environment variables oneharness sets when spawning this harness, so a
     /// headless run is clean without the caller knowing the harness's quirks
     /// (e.g. silencing a startup warning that would otherwise litter `stderr`).
@@ -295,6 +301,7 @@ static REGISTRY: &[HarnessSpec] = &[
             base: HookBase::Home,
             anchor: ".claude/settings.json",
         }),
+        gate_deny: Some(DenyShape::ClaudeNested),
         default_env: &[],
         build_argv: argv_claude_code,
     },
@@ -319,6 +326,7 @@ static REGISTRY: &[HarnessSpec] = &[
             base: HookBase::Home,
             anchor: ".codex/hooks.json",
         }),
+        gate_deny: Some(DenyShape::ClaudeNested),
         default_env: &[],
         build_argv: argv_codex,
     },
@@ -345,6 +353,7 @@ static REGISTRY: &[HarnessSpec] = &[
             base: HookBase::ConfigHome,
             anchor: "opencode/plugin/{name}.js",
         }),
+        gate_deny: Some(DenyShape::Decision("deny")),
         default_env: &[],
         build_argv: argv_opencode,
     },
@@ -369,6 +378,7 @@ static REGISTRY: &[HarnessSpec] = &[
             base: HookBase::Home,
             anchor: ".agents/plugins/{name}",
         }),
+        gate_deny: Some(DenyShape::Decision("block")),
         default_env: &[],
         build_argv: argv_goose,
     },
@@ -398,6 +408,7 @@ static REGISTRY: &[HarnessSpec] = &[
             base: HookBase::Home,
             anchor: ".qwen/settings.json",
         }),
+        gate_deny: Some(DenyShape::ClaudeNested),
         default_env: &[("QWEN_CODE_SUPPRESS_YOLO_WARNING", "1")],
         build_argv: argv_qwen,
     },
@@ -426,6 +437,7 @@ static REGISTRY: &[HarnessSpec] = &[
             base: HookBase::ConfigHome,
             anchor: "crush/crush.json",
         }),
+        gate_deny: Some(DenyShape::Decision("deny")),
         default_env: &[],
         build_argv: argv_crush,
     },
@@ -449,6 +461,7 @@ static REGISTRY: &[HarnessSpec] = &[
             base: HookBase::Home,
             anchor: ".copilot/hooks/{name}.json",
         }),
+        gate_deny: Some(DenyShape::CopilotFlat),
         default_env: &[],
         build_argv: argv_copilot,
     },
@@ -483,6 +496,7 @@ static REGISTRY: &[HarnessSpec] = &[
             base: HookBase::Home,
             anchor: ".cursor/hooks.json",
         }),
+        gate_deny: Some(DenyShape::CursorPermission),
         default_env: &[],
         build_argv: argv_cursor,
     },

@@ -62,6 +62,12 @@ pub enum Command {
     /// also applies when the tools are used directly, without oneharness.
     /// Non-destructive: unrelated keys are preserved, lists are unioned.
     Sync(SyncArgs),
+    /// Run the pre-tool gate for a harness: read that harness's hook event on
+    /// stdin and, when it matches, emit the harness's native *deny* verdict on
+    /// stdout (otherwise nothing — the call proceeds). This is what an installed
+    /// `[[hooks]]` hook invokes, so it is the runtime proof a synced hook is
+    /// honored. Always exits 0 (a gate never blocks on its own error).
+    Gate(GateArgs),
 }
 
 #[derive(Args, Debug)]
@@ -218,6 +224,13 @@ pub struct SyncArgs {
     #[arg(long)]
     pub check: bool,
 
+    /// Install hooks into the user-global config location (resolved from $HOME /
+    /// $XDG_CONFIG_HOME) instead of the project. Only `[[hooks]]` entries have a
+    /// global mapping; permission rules and raw `settings` are project-scoped, so
+    /// a config that sets them is a usage error under --global.
+    #[arg(long)]
+    pub global: bool,
+
     /// Load configuration from this file only (skip user/project discovery).
     #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
     pub config: Option<PathBuf>,
@@ -229,6 +242,27 @@ pub struct SyncArgs {
     /// Emit compact single-line JSON instead of pretty-printed.
     #[arg(long)]
     pub compact: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct GateArgs {
+    /// Harness id whose hook protocol to speak (see `oneharness list`).
+    #[arg(value_name = "ID")]
+    pub harness: String,
+
+    /// Block any tool call whose hook event (the JSON the harness pipes to
+    /// stdin) contains this substring; everything else is allowed (empty
+    /// stdout). Without it the gate allows everything — the inert default.
+    #[arg(long, value_name = "SUBSTR")]
+    pub deny_if_contains: Option<String>,
+
+    /// Reason surfaced to the model when a call is blocked.
+    #[arg(
+        long,
+        value_name = "TEXT",
+        default_value = "blocked by oneharness gate"
+    )]
+    pub reason: String,
 }
 
 #[derive(Args, Debug)]

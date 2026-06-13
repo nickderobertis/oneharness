@@ -2642,6 +2642,195 @@ fn non_table_hooks_or_settings_are_loud_parse_errors() {
     }
 }
 
+/// Pipe `stdin` into `oneharness <args>` and capture the output. Used for the
+/// `gate` verb, which reads the harness's hook event from stdin.
+fn run_with_stdin(args: &[&str], stdin: &str) -> Output {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn oneharness");
+    // Best-effort: a gate that exits before reading (e.g. unknown harness) closes
+    // the pipe, and that broken-pipe write is expected, not a test failure.
+    let _ = child.stdin.take().unwrap().write_all(stdin.as_bytes());
+    child
+        .wait_with_output()
+        .expect("failed to wait on oneharness")
+}
+
+#[test]
+fn gate_blocks_on_match_and_allows_otherwise() {
+    let event = r#"{"tool_name":"Bash","tool_input":{"command":"touch BLOCK-9.txt"}}"#;
+    // The marker is in the command -> the harness's native deny verdict.
+    let out = run_with_stdin(
+        &[
+            "gate",
+            "claude-code",
+            "--deny-if-contains",
+            "BLOCK-9",
+            "--reason",
+            "oneharness: nope",
+        ],
+        event,
+    );
+    assert!(out.status.success(), "gate must always exit 0");
+    let v = json_stdout(&out);
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert_eq!(
+        v["hookSpecificOutput"]["permissionDecisionReason"],
+        "oneharness: nope"
+    );
+
+    // Marker absent -> empty stdout (the universal fall-through, never a block).
+    let out = run_with_stdin(
+        &["gate", "claude-code", "--deny-if-contains", "BLOCK-9"],
+        r#"{"tool_input":{"command":"touch ok.txt"}}"#,
+    );
+    assert!(out.status.success());
+    assert!(
+        out.stdout.is_empty(),
+        "a non-match must emit nothing, got: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    // No deny marker at all -> the inert default allows everything.
+    let out = run_with_stdin(&["gate", "goose"], event);
+    assert!(out.status.success() && out.stdout.is_empty());
+}
+
+#[test]
+fn gate_renders_each_harness_native_verdict() {
+    // The marker appears in whichever field a harness reads (command / tool_input).
+    let event = r#"{"command":"BLOCKME","tool_input":{"command":"BLOCKME"}}"#;
+    let deny = |id: &str| {
+        json_stdout(&run_with_stdin(
+            &["gate", id, "--deny-if-contains", "BLOCKME"],
+            event,
+        ))
+    };
+
+    // Claude / Codex / Qwen: nested under hookSpecificOutput.
+    for id in ["claude-code", "codex", "qwen"] {
+        assert_eq!(
+            deny(id)["hookSpecificOutput"]["permissionDecision"],
+            "deny",
+            "{id}"
+        );
+    }
+    // Copilot: the same field, flat.
+    let copilot = deny("copilot");
+    assert_eq!(copilot["permissionDecision"], "deny");
+    assert!(copilot.get("hookSpecificOutput").is_none());
+    // Cursor: `permission`, carrying both message spellings.
+    let cursor = deny("cursor");
+    assert_eq!(cursor["permission"], "deny");
+    assert!(cursor["agentMessage"].is_string() && cursor["agent_message"].is_string());
+    // Crush / OpenCode: flat `decision: "deny"`; Goose: `decision: "block"`.
+    assert_eq!(deny("crush")["decision"], "deny");
+    assert_eq!(deny("opencode")["decision"], "deny");
+    assert_eq!(deny("goose")["decision"], "block");
+}
+
+#[test]
+fn gate_unknown_harness_is_a_usage_error() {
+    let out = run_with_stdin(&["gate", "nope", "--deny-if-contains", "x"], "{}");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown harness"));
+}
+
+/// `sync --global` installs `[[hooks]]` at each harness's user-global location
+/// (resolved from the injected HOME / XDG_CONFIG_HOME), not the project.
+#[test]
+fn sync_global_installs_hooks_at_user_locations() {
+    let dir = std::env::temp_dir().join(format!("oneharness-global-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = dir.join("oh.toml");
+    std::fs::write(
+        &cfg,
+        "[[hooks]]\ncommand = \"oneharness gate {harness} --deny-if-contains BLOCK\"\nplugin_name = \"ohg\"\n",
+    )
+    .unwrap();
+    let home = dir.join("home");
+    let xdg = dir.join("xdg");
+    let out = Command::new(oneharness_bin())
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", &xdg)
+        .args([
+            "sync",
+            "--harness",
+            "claude-code,opencode,copilot",
+            "--global",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--cwd",
+            dir.to_str().unwrap(),
+            "--compact",
+        ])
+        .output()
+        .expect("failed to run oneharness");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // HOME-anchored (claude, copilot's `.copilot/hooks`) and XDG-anchored (opencode).
+    assert!(
+        home.join(".claude/settings.json").is_file(),
+        "claude global"
+    );
+    assert!(
+        home.join(".copilot/hooks/ohg.json").is_file(),
+        "copilot global"
+    );
+    assert!(
+        xdg.join("opencode/plugin/ohg.js").is_file(),
+        "opencode global"
+    );
+    // Nothing leaked into the project directory.
+    assert!(!dir.join(".claude").exists(), "project must be untouched");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn sync_global_refuses_project_only_settings() {
+    let dir = std::env::temp_dir().join(format!("oneharness-global-bad-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = dir.join("oh.toml");
+    std::fs::write(
+        &cfg,
+        "[harness.claude-code]\nallowed_tools = [\"Bash(ls)\"]\n",
+    )
+    .unwrap();
+    let out = Command::new(oneharness_bin())
+        .env("HOME", dir.join("home"))
+        .args([
+            "sync",
+            "--harness",
+            "claude-code",
+            "--global",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--cwd",
+            dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run oneharness");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("installs hooks only"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn config_command_attributes_settings_tables() {
     let fx = ConfigFixture::new(

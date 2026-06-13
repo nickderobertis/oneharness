@@ -79,6 +79,10 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
     let mut results = Vec::with_capacity(specs.len());
     let mut pending_changes = false;
 
+    // Resolved once: the user-global base dirs a `--global` hook install anchors
+    // under. Unused (but harmless) for a project sync.
+    let global_dirs = hooks_io::GlobalDirs::from_env();
+
     for spec in specs {
         let plan = sync_domain::plan(cfg, spec).map_err(|message| {
             OneharnessError::HarnessConfigUnmergeable {
@@ -94,6 +98,12 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
         }
         let (file, status) = match plan.fragment {
             None => (None, "skipped"),
+            // A configured permission/settings fragment has no user-global
+            // mapping, so refuse it loudly rather than silently writing only the
+            // hooks and leaving the rules behind.
+            Some(_) if args.global => {
+                return Err(OneharnessError::GlobalSyncOnlyHooks { id: spec.id.into() })
+            }
             Some(fragment) => {
                 let sync_spec = spec.sync.as_ref().expect("fragment implies a sync target");
                 let (path, status) =
@@ -108,7 +118,11 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
         // independent of the permission/settings fragment above.
         let mut hooks = Vec::new();
         for hook in cfg.hook_specs_for(spec.id) {
-            let scope = hooks_io::Scope::Project(&project_dir);
+            let scope = if args.global {
+                hooks_io::Scope::Global(&global_dirs)
+            } else {
+                hooks_io::Scope::Project(&project_dir)
+            };
             for write in hooks_io::install(scope, spec, &hook, args.check)? {
                 let status = status_str(write.status);
                 pending_changes |= status != "unchanged";

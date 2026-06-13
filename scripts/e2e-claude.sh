@@ -14,3 +14,15 @@ export OH_MODEL="${CLAUDE_E2E_MODEL:-haiku}"
 marker="$(oh_marker)"
 oh_run claude-code "$(oh_prompt "$marker")"
 oh_assert_echoed claude-code "$marker"
+
+# Sync enforcement: a policy synced into .claude/settings.json must govern the
+# real CLI under --no-bypass — the allow rule lets the exact command run, the
+# deny rule (and headless default-deny) keeps the other from running.
+ok="$(oh_enforce_file ok)"
+blocked="$(oh_enforce_file blocked)"
+policy="[harness.claude-code]
+allowed_tools = [\"Bash(touch $ok)\"]
+denied_tools = [\"Bash(touch $blocked)\"]"
+oh_sync_enforce claude-code "$policy" "$ok" present allow
+oh_sync_enforce claude-code "$policy" "$blocked" absent deny
+note "PASS: claude-code sync enforcement"

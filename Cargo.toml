@@ -33,6 +33,7 @@ serde_json = "1"
 thiserror = "2"
 which = "7"
 wait-timeout = "0.2"
+toml = "1.0.7"
 
 # Integration tests drive the binaries directly via the cargo-provided
 # CARGO_BIN_EXE_* paths and parse JSON with serde_json (already a dependency),

@@ -5,6 +5,7 @@ use serde::Serialize;
 use crate::cli::DetectArgs;
 use crate::commands::{print_json, select_specs};
 use crate::errors::OneharnessError;
+use crate::io::config as config_io;
 use crate::io::detect::{self, BinOverrides};
 
 #[derive(Serialize)]
@@ -26,7 +27,18 @@ pub fn run(args: &DetectArgs) -> Result<i32, OneharnessError> {
     // Detection defaults to every harness; an explicit selection narrows it.
     let all = args.all || (args.harness.is_empty() && args.exclude.is_empty());
     let specs = select_specs(all, &args.harness, &args.exclude)?;
-    let overrides = BinOverrides::parse(&args.bin)?;
+    // Configured binaries apply to probing too, so `detect` reports the same
+    // binary `run` would invoke. Discovery starts from the current directory
+    // (detect has no --cwd).
+    let project_start = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let loaded = config_io::load(args.config.as_deref(), args.no_config, &project_start)?;
+    let config_bins: std::collections::HashMap<String, String> = loaded
+        .config
+        .harness
+        .iter()
+        .filter_map(|(id, h)| h.bin.clone().map(|bin| (id.clone(), bin)))
+        .collect();
+    let overrides = BinOverrides::parse(&args.bin)?.with_config_bins(config_bins);
 
     let detected: Vec<DetectInfo> = specs
         .iter()

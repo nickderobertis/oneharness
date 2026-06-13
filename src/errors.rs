@@ -8,7 +8,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum OneharnessError {
-    #[error("no harness selected: pass --all or --harness <id> (see `oneharness list`)")]
+    #[error("no harness selected: pass --all or --harness <id>, or set `all`/`harnesses` in oneharness.toml (see `oneharness list`)")]
     NoSelection,
 
     #[error("unknown harness id `{id}`. valid ids: {valid}")]
@@ -23,12 +23,39 @@ pub enum OneharnessError {
     #[error("harness `{id}` does not support --resume. supported: {supported}")]
     ResumeUnsupported { id: String, supported: String },
 
+    #[error("could not read harness config `{path}`: {source}")]
+    HarnessConfigRead {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("cannot sync into `{path}`: {message} (oneharness only rewrites files it can parse, so it never destroys content it does not understand)")]
+    HarnessConfigUnmergeable { path: String, message: String },
+
+    #[error("could not write harness config `{path}`: {source}")]
+    HarnessConfigWrite {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("could not read prompt file `{path}`: {source}")]
     PromptFile {
         path: String,
         #[source]
         source: std::io::Error,
     },
+
+    #[error("could not read config file `{path}`: {source}")]
+    ConfigRead {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("invalid config file `{path}`: {message}")]
+    ConfigInvalid { path: String, message: String },
 
     #[error("invalid --bin override `{0}`: expected the form ID=PATH")]
     BadBinOverride(String),

@@ -4,7 +4,7 @@
 //! are added, never repurposed or removed, without bumping the version.
 
 use clap::ValueEnum;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::domain::signals::Usage;
 
@@ -13,9 +13,10 @@ pub const SCHEMA_VERSION: &str = "0.1";
 
 /// How a harness emits its result, which decides how `text` is extracted.
 ///
-/// Also accepted as a CLI value (`--output-format`); `ValueEnum` is a parsing
-/// concern on this data type, not I/O, so it stays in the domain layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ValueEnum)]
+/// Also accepted as a CLI value (`--output-format`) and a config-file value
+/// (`output_format`); `ValueEnum`/`Deserialize` are parsing concerns on this
+/// data type, not I/O, so it stays in the domain layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum OutputFormat {
     /// Plain text on stdout; `text` is the trimmed stdout.
@@ -111,5 +112,8 @@ pub struct RunReport {
     pub resume: Option<String>,
     pub bypass_permissions: bool,
     pub dry_run: bool,
+    /// Config files that shaped this run, in layering order (user first,
+    /// project last); empty under `--no-config` or when none exist.
+    pub config_files: Vec<String>,
     pub results: Vec<RunResult>,
 }

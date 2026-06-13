@@ -70,6 +70,15 @@ pub struct HarnessSpec {
     /// starting a fresh session. Kept as data so the capability is introspectable
     /// via `oneharness list`.
     pub supports_resume: bool,
+    /// Where this harness reads project-scoped configuration, and how the
+    /// unified enforcement settings (`allowed_tools` / `denied_tools` /
+    /// `hooks` / `settings`) map into that file. `None` means the harness has
+    /// no project-level config file oneharness knows how to write (Codex and
+    /// Goose read only user-global config; Copilot takes permission rules as
+    /// flags, deliverable via `[harness.copilot] args`) — configuring a sync
+    /// setting for it is then a loud usage error, never a silent no-op.
+    /// Consumed by `oneharness sync`; nothing here is passed on the argv.
+    pub sync: Option<SyncSpec>,
     /// Environment variables oneharness sets when spawning this harness, so a
     /// headless run is clean without the caller knowing the harness's quirks
     /// (e.g. silencing a startup warning that would otherwise litter `stderr`).
@@ -78,6 +87,36 @@ pub struct HarnessSpec {
     pub default_env: &'static [(&'static str, &'static str)],
     /// Builds the full argv (argv[0] is the binary). Pure.
     pub build_argv: fn(&BuildCtx) -> Vec<String>,
+}
+
+/// A harness's project-scoped config file and the key paths the unified
+/// settings merge into. All paths were sourced from each CLI's documentation —
+/// never guessed (see the README support matrix for the references).
+pub struct SyncSpec {
+    /// Project-relative path of the config file to create or merge into.
+    pub file: &'static str,
+    /// Alternative file names the harness reads with *higher* precedence;
+    /// when one exists, oneharness merges into it instead of `file` so it
+    /// never creates a second, shadowed config (e.g. crush's `.crush.json`).
+    pub alt_files: &'static [&'static str],
+    /// Key path `allowed_tools` rules land at (e.g. `permissions.allow`);
+    /// `None` rejects the unified list field for this harness (OpenCode's
+    /// `permission` is a policy map, not a list — use `settings` instead).
+    pub allow_path: Option<&'static [&'static str]>,
+    /// Key path `denied_tools` rules land at. For crush this is
+    /// `options.disabled_tools`: the tool is hidden from the agent entirely,
+    /// the strongest deny it offers.
+    pub deny_path: Option<&'static [&'static str]>,
+    /// Key path the `hooks` table lands at (Claude Code's top-level `hooks`).
+    pub hooks_path: Option<&'static [&'static str]>,
+    /// JSON merged *beneath* any top-level key the fragment touches, so a
+    /// partial write still satisfies the harness's schema. Cursor's
+    /// `.cursor/cli.json` requires `permissions.allow` and `permissions.deny`
+    /// to both exist whenever `permissions` does (its CLI rejects the file
+    /// otherwise — caught by the live e2e), so writing only an allow list
+    /// must seed an empty deny. Keys the fragment doesn't touch are never
+    /// seeded, preserving the "only keys oneharness manages" contract.
+    pub schema_seed: Option<&'static str>,
 }
 
 /// All supported harnesses, in a stable order.
@@ -103,6 +142,14 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "npm install -g @anthropic-ai/claude-code",
         output_format: OutputFormat::Json,
         supports_resume: true,
+        sync: Some(SyncSpec {
+            file: ".claude/settings.json",
+            alt_files: &[],
+            allow_path: Some(&["permissions", "allow"]),
+            deny_path: Some(&["permissions", "deny"]),
+            hooks_path: Some(&["hooks"]),
+            schema_seed: None,
+        }),
         default_env: &[],
         build_argv: argv_claude_code,
     },
@@ -113,6 +160,7 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "npm install -g @openai/codex",
         output_format: OutputFormat::Text,
         supports_resume: false,
+        sync: None,
         default_env: &[],
         build_argv: argv_codex,
     },
@@ -123,6 +171,14 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "npm install -g opencode-ai",
         output_format: OutputFormat::Json,
         supports_resume: true,
+        sync: Some(SyncSpec {
+            file: "opencode.json",
+            alt_files: &[],
+            allow_path: None,
+            deny_path: None,
+            hooks_path: None,
+            schema_seed: None,
+        }),
         default_env: &[],
         build_argv: argv_opencode,
     },
@@ -133,6 +189,7 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "see https://block.github.io/goose/docs/getting-started/installation",
         output_format: OutputFormat::Text,
         supports_resume: false,
+        sync: None,
         default_env: &[],
         build_argv: argv_goose,
     },
@@ -143,6 +200,14 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "npm install -g @qwen-code/qwen-code",
         output_format: OutputFormat::Text,
         supports_resume: false,
+        sync: Some(SyncSpec {
+            file: ".qwen/settings.json",
+            alt_files: &[],
+            allow_path: Some(&["permissions", "allow"]),
+            deny_path: Some(&["permissions", "deny"]),
+            hooks_path: None,
+            schema_seed: None,
+        }),
         default_env: &[("QWEN_CODE_SUPPRESS_YOLO_WARNING", "1")],
         build_argv: argv_qwen,
     },
@@ -153,6 +218,14 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "npm install -g @charmland/crush",
         output_format: OutputFormat::Text,
         supports_resume: false,
+        sync: Some(SyncSpec {
+            file: "crush.json",
+            alt_files: &[".crush.json"],
+            allow_path: Some(&["permissions", "allowed_tools"]),
+            deny_path: Some(&["options", "disabled_tools"]),
+            hooks_path: None,
+            schema_seed: None,
+        }),
         default_env: &[],
         build_argv: argv_crush,
     },
@@ -163,6 +236,7 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "npm install -g @github/copilot",
         output_format: OutputFormat::Text,
         supports_resume: false,
+        sync: None,
         default_env: &[],
         build_argv: argv_copilot,
     },
@@ -173,6 +247,14 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "see https://docs.cursor.com/en/cli/overview",
         output_format: OutputFormat::StreamJson,
         supports_resume: true,
+        sync: Some(SyncSpec {
+            file: ".cursor/cli.json",
+            alt_files: &[],
+            allow_path: Some(&["permissions", "allow"]),
+            deny_path: Some(&["permissions", "deny"]),
+            hooks_path: None,
+            schema_seed: Some(r#"{"permissions":{"allow":[],"deny":[]}}"#),
+        }),
         default_env: &[],
         build_argv: argv_cursor,
     },
@@ -300,7 +382,9 @@ fn argv_crush(c: &BuildCtx) -> Vec<String> {
 }
 
 /// `copilot -p <prompt> [--allow-all-tools --allow-all-paths --no-ask-user]
-/// [--model M]` (no system flag, so `--system` is prepended to the prompt)
+/// [--model M]` (no system flag, so `--system` is prepended to the prompt;
+/// its `--allow-tool`/`--deny-tool` permission flags are not unified — Copilot
+/// has no project config file to sync, so rules go via `[harness.copilot] args`)
 fn argv_copilot(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "-p".into(), prompt_with_system(c)];
     if c.bypass {
@@ -315,13 +399,21 @@ fn argv_copilot(c: &BuildCtx) -> Vec<String> {
     a
 }
 
-/// `cursor-agent -p <prompt> [--force] [--model M] [--resume SID]
+/// `cursor-agent -p <prompt> [--force|--trust] [--model M] [--resume SID]
 /// --output-format stream-json` (Cursor continues a chat id with `--resume`; no
 /// system flag, so `--system` is prepended to the prompt)
 fn argv_cursor(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "-p".into(), prompt_with_system(c)];
     if c.bypass {
         a.push("--force".into());
+    } else {
+        // A headless run cannot answer Cursor's interactive workspace-trust
+        // prompt, and without trust the CLI refuses to run at all ("Workspace
+        // Trust Required", observed live). `--trust` trusts the directory the
+        // caller pointed oneharness at while leaving the permission system
+        // active — so --no-bypass still means "normal permission flow", not
+        // "cannot run".
+        a.push("--trust".into());
     }
     if let Some(m) = c.model {
         a.push("--model".into());
@@ -599,6 +691,21 @@ mod tests {
             argv.windows(2).any(|w| w == ["--resume", "chat-9"]),
             "{argv:?}"
         );
+    }
+
+    #[test]
+    fn cursor_no_bypass_trusts_the_workspace_without_force() {
+        let spec = by_id("cursor").unwrap();
+        let argv = (spec.build_argv)(&BuildCtx {
+            bypass: false,
+            ..base_ctx(spec)
+        });
+        assert!(argv.iter().any(|t| t == "--trust"), "{argv:?}");
+        assert!(!argv.iter().any(|t| t == "--force"), "{argv:?}");
+        // Bypass mode keeps the plain --force (which implies trust).
+        let argv = (spec.build_argv)(&base_ctx(spec));
+        assert!(argv.iter().any(|t| t == "--force"), "{argv:?}");
+        assert!(!argv.iter().any(|t| t == "--trust"), "{argv:?}");
     }
 
     #[test]

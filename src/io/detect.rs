@@ -11,10 +11,14 @@ use wait_timeout::ChildExt;
 use crate::domain::harness::HarnessSpec;
 use crate::errors::OneharnessError;
 
-/// Per-harness binary overrides, resolved from `--bin ID=PATH` then the
-/// `ONEHARNESS_BIN_<ID>` environment variable, falling back to the spec default.
+/// Per-harness binary overrides, resolved from `--bin ID=PATH`, then the
+/// `ONEHARNESS_BIN_<ID>` environment variable, then a config-file
+/// `[harness.<id>] bin`, falling back to the spec default.
 pub struct BinOverrides {
     map: HashMap<String, String>,
+    /// Config-file bins: the lowest-precedence override layer, since an
+    /// explicit flag or env var is more deliberate than a persisted default.
+    config: HashMap<String, String>,
 }
 
 impl BinOverrides {
@@ -30,10 +34,20 @@ impl BinOverrides {
             }
             map.insert(id.to_string(), path.to_string());
         }
-        Ok(Self { map })
+        Ok(Self {
+            map,
+            config: HashMap::new(),
+        })
     }
 
-    /// The binary to invoke for `id`: explicit override, then env var, then default.
+    /// Attach the config-file bins (`[harness.<id>] bin = "..."`) as fallbacks.
+    pub fn with_config_bins(mut self, bins: HashMap<String, String>) -> Self {
+        self.config = bins;
+        self
+    }
+
+    /// The binary to invoke for `id`: explicit override, then env var, then the
+    /// config-file bin, then default.
     fn binary_for(&self, id: &str, default_bin: &str) -> String {
         if let Some(path) = self.map.get(id) {
             return path.clone();
@@ -43,6 +57,9 @@ impl BinOverrides {
             if !value.is_empty() {
                 return value;
             }
+        }
+        if let Some(path) = self.config.get(id) {
+            return path.clone();
         }
         default_bin.to_string()
     }
@@ -118,6 +135,19 @@ mod tests {
     fn default_used_when_no_override() {
         let ov = BinOverrides::parse(&[]).unwrap();
         assert_eq!(ov.binary_for("codex", "codex"), "codex");
+    }
+
+    #[test]
+    fn config_bin_is_used_but_loses_to_an_explicit_flag() {
+        let bins = HashMap::from([("codex".to_string(), "/cfg/codex".to_string())]);
+        let ov = BinOverrides::parse(&[]).unwrap().with_config_bins(bins);
+        assert_eq!(ov.binary_for("codex", "codex"), "/cfg/codex");
+
+        let bins = HashMap::from([("codex".to_string(), "/cfg/codex".to_string())]);
+        let ov = BinOverrides::parse(&["codex=/flag/codex".to_string()])
+            .unwrap()
+            .with_config_bins(bins);
+        assert_eq!(ov.binary_for("codex", "codex"), "/flag/codex");
     }
 
     #[test]

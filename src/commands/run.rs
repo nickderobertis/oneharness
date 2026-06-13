@@ -9,6 +9,7 @@ use crate::domain::report::{Capture, OutputFormat, RunReport, RunResult, Status,
 use crate::domain::signals::Usage;
 use crate::domain::{normalize, signals};
 use crate::errors::OneharnessError;
+use crate::io::config as config_io;
 use crate::io::detect::{self, BinOverrides};
 use crate::io::runner::{self, Job};
 
@@ -17,14 +18,51 @@ const EXIT_OK: i32 = 0;
 const EXIT_FAILURE: i32 = 1;
 
 pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
+    // Project config is discovered from where the harnesses will run (--cwd,
+    // else the current directory): the project being operated on is the one
+    // whose config should apply.
+    let project_start = match &args.cwd {
+        Some(dir) => dir.clone(),
+        None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+    };
+    let loaded = config_io::load(args.config.as_deref(), args.no_config, &project_start)?;
+    let cfg = &loaded.config;
+
     let prompt = resolve_prompt(args)?;
-    let specs = select_specs(args.all, &args.harness, &args.exclude)?;
+    // A CLI selection (--all / --harness) replaces the config selection
+    // entirely; config `exclude` still applies unless --exclude is given.
+    let (all, include) = if args.all || !args.harness.is_empty() {
+        (args.all, args.harness.clone())
+    } else {
+        (
+            cfg.all.unwrap_or(false),
+            cfg.harnesses.clone().unwrap_or_default(),
+        )
+    };
+    let exclude = if args.exclude.is_empty() {
+        cfg.exclude.clone().unwrap_or_default()
+    } else {
+        args.exclude.clone()
+    };
+    let specs = select_specs(all, &include, &exclude)?;
     let resume = args.resume.as_deref();
     validate_resume(resume, &specs)?;
-    let overrides = BinOverrides::parse(&args.bin)?;
-    let env = parse_env(&args.env)?;
-    let bypass = !args.no_bypass;
-    let model = args.model.as_deref();
+    let config_bins: std::collections::HashMap<String, String> = cfg
+        .harness
+        .iter()
+        .filter_map(|(id, h)| h.bin.clone().map(|bin| (id.clone(), bin)))
+        .collect();
+    let overrides = BinOverrides::parse(&args.bin)?.with_config_bins(config_bins);
+    let cli_env = parse_env(&args.env)?;
+    let bypass = if args.no_bypass {
+        false
+    } else {
+        args.bypass || cfg.bypass.unwrap_or(true)
+    };
+    let model = args.model.as_deref().or(cfg.model.as_deref());
+    let system = args.system.as_deref().or(cfg.system.as_deref());
+    let timeout = args.timeout.or(cfg.timeout).unwrap_or(120);
+    let require_available = args.require_available || cfg.require_available.unwrap_or(false);
 
     // Build a plan entry for every selected harness; queue jobs only for the
     // ones that are available and actually being executed.
@@ -33,17 +71,23 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
 
     for spec in &specs {
         let resolved = detect::resolve(spec, &overrides);
-        let output_format = args.output_format.unwrap_or(spec.output_format);
+        let output_format = args
+            .output_format
+            .or(cfg.output_format)
+            .unwrap_or(spec.output_format);
         let ctx = BuildCtx {
             bin: &resolved.bin,
+            // A CLI --model beats config; within config, the harness's own
+            // [harness.<id>] model beats the top-level one.
+            model: args.model.as_deref().or_else(|| cfg.model_for(spec.id)),
             prompt: &prompt,
-            model,
-            system: args.system.as_deref(),
+            system,
             resume,
             bypass,
             output_format,
         };
         let mut command = (spec.build_argv)(&ctx);
+        command.extend(cfg.args_for(spec.id).iter().cloned());
         command.extend(args.passthrough.iter().cloned());
 
         if args.print_command {
@@ -63,20 +107,21 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             ))));
         } else {
             let job_index = jobs.len();
-            // The harness's declared defaults go first; the user's explicit
-            // `--env` is appended so it wins on any key collision (the runner
-            // applies env in order, last-write-wins).
+            // Env layers, applied in order (the runner is last-write-wins):
+            // the harness's declared defaults, then config ([env], then
+            // [harness.<id>.env]), then the explicit `--env`, which always wins.
             let mut job_env: Vec<(String, String)> = spec
                 .default_env
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect();
-            job_env.extend(env.iter().cloned());
+            job_env.extend(cfg.env_for(spec.id));
+            job_env.extend(cli_env.iter().cloned());
             jobs.push(Job {
                 argv: command.clone(),
                 cwd: args.cwd.clone(),
                 env: job_env,
-                timeout: Duration::from_secs(args.timeout),
+                timeout: Duration::from_secs(timeout),
             });
             plan.push(Plan::Pending {
                 spec,
@@ -91,7 +136,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let captures = if jobs.is_empty() {
         Vec::new()
     } else {
-        let max_parallel = args.max_parallel.unwrap_or(jobs.len());
+        let max_parallel = args.max_parallel.or(cfg.max_parallel).unwrap_or(jobs.len());
         runner::run_jobs(&jobs, max_parallel)
     };
 
@@ -113,16 +158,19 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         write_output_dir(dir, &results)?;
     }
 
-    let exit = exit_code(&results, args.require_available);
+    let exit = exit_code(&results, require_available);
 
     let report = RunReport {
         schema_version: SCHEMA_VERSION,
         oneharness_version: env!("CARGO_PKG_VERSION"),
         prompt,
-        model: args.model.clone(),
+        // The effective top-level model (CLI, else config); a per-harness
+        // config model is visible in that result's `command`.
+        model: model.map(str::to_string),
         resume: args.resume.clone(),
         bypass_permissions: bypass,
         dry_run: args.print_command,
+        config_files: loaded.files,
         results,
     };
     print_json(&report, args.compact)?;
@@ -131,7 +179,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         let failed = report
             .results
             .iter()
-            .filter(|r| is_failure(r.status, r.available, args.require_available))
+            .filter(|r| is_failure(r.status, r.available, require_available))
             .count();
         eprintln!(
             "oneharness: {failed}/{} harness run(s) did not succeed (see results[].status and results[].error)",

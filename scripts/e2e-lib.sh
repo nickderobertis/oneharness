@@ -96,7 +96,9 @@ oh_run() {
     local errf
     errf="$(mktemp)"
     note "  driving: $bin run --harness $id (timeout ${OH_TIMEOUT:-120}s${OH_MODEL:+, model $OH_MODEL})"
-    OH_REPORT="$("$bin" run --harness "$id" --prompt "$prompt" \
+    # ONEHARNESS_NO_CONFIG=1: a live check pins its own model/timeout; the
+    # machine's oneharness config files must not reshape the invocation.
+    OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --prompt "$prompt" \
         --timeout "${OH_TIMEOUT:-120}" --compact \
         "${model_args[@]+"${model_args[@]}"}" "$@" 2>"$errf")" || true
 
@@ -187,3 +189,82 @@ oh_assert_echoed() {
 
     note "PASS: $id live e2e"
 }
+
+# --- sync enforcement --------------------------------------------------------
+
+# One phase of the sync-enforcement check: plant a oneharness.toml in a fresh
+# sandbox, `oneharness sync` it into the harness's OWN config file, then ask
+# the harness (via `oneharness run --no-bypass`) to run `touch <file>` and
+# assert the file's presence or absence. This is the live proof that a synced
+# policy is actually honored by the real CLI — the hermetic suite can only
+# prove the file was written correctly.
+#
+#   $1 harness id   $2 oneharness.toml content   $3 file the prompt asks for
+#   $4 expectation: present|absent               $5 phase label (for logs)
+#
+# The `present` phase is the positive control: without it, `absent` would pass
+# vacuously on a harness that can't execute anything headlessly.
+oh_sync_enforce() {
+    local id="$1" toml="$2" file="$3" expect="$4" label="$5"
+    local bin sandbox out
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    sandbox="$(mktemp -d)"
+    printf '%s\n' "$toml" > "$sandbox/oneharness.toml"
+
+    note "  enforce[$label]: syncing policy into $id's own config file"
+    # --config pins the exact planted file (no discovery), and the explicit
+    # empty ONEHARNESS_NO_CONFIG guards against a hermetic wrapper's env.
+    if ! out="$(ONEHARNESS_NO_CONFIG='' "$bin" sync --harness "$id" \
+        --cwd "$sandbox" --config "$sandbox/oneharness.toml" --compact 2>&1)"; then
+        printf '%s\n' "$out" >&2
+        rm -rf "$sandbox"
+        fail "$id: oneharness sync failed ($label phase)"
+    fi
+    if ! printf '%s' "$out" | grep -qF '"status":"created"'; then
+        printf '%s\n' "$out" >&2
+        rm -rf "$sandbox"
+        fail "$id: sync did not create the harness config file ($label phase)"
+    fi
+
+    local prompt
+    prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory, then stop: touch $file
+Rules: you MUST actually invoke your shell tool with that exact command — never assume or decide on your own that it is not permitted; attempt it. Use only the shell tool. Only if that tool invocation itself fails or is rejected: do NOT create the file by any other means (no file-write or edit tools) — reply with the single word DENIED and stop."
+    oh_run "$id" "$prompt" --no-bypass --cwd "$sandbox"
+
+    local status
+    status="$(oh_field '.results[0].status')"
+    if [ "$status" = "skipped" ]; then
+        rm -rf "$sandbox"
+        skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+    fi
+
+    case "$expect" in
+        present)
+            if [ -e "$sandbox/$file" ]; then
+                note "  ok[$label]: the synced allow rule let the command run under --no-bypass"
+            else
+                oh_dump
+                rm -rf "$sandbox"
+                fail "$id: 'touch $file' did not run despite the synced allow rule (status=$status) — the $label phase is the positive control, so either the synced file is not honored or the rule syntax drifted"
+            fi
+            ;;
+        absent)
+            if [ -e "$sandbox/$file" ]; then
+                oh_dump
+                rm -rf "$sandbox"
+                fail "$id: 'touch $file' executed DESPITE the synced deny policy — enforcement is broken"
+            fi
+            note "  ok[$label]: the denied command did not execute"
+            ;;
+        *)
+            rm -rf "$sandbox"
+            fail "oh_sync_enforce: bad expectation '$expect' (use present|absent)"
+            ;;
+    esac
+    rm -rf "$sandbox"
+}
+
+# A shell-safe scratch file name for the enforcement phases.
+oh_enforce_file() { printf '%s-%s%s.txt' "$1" "${RANDOM}" "${RANDOM}"; }

@@ -17,6 +17,14 @@ struct HarnessInfo {
     output_format: OutputFormat,
     /// Whether `run --resume <session>` is supported for this harness.
     supports_resume: bool,
+    /// The project-scoped config file `oneharness sync` writes for this
+    /// harness; `null` when it has none (sync settings are then rejected).
+    sync_file: Option<&'static str>,
+    /// Whether the unified allow/deny rule lists and hooks table can be synced
+    /// into that file (see the README support matrix).
+    supports_allowed_tools: bool,
+    supports_denied_tools: bool,
+    supports_hooks: bool,
     /// The argv oneharness would build, with placeholders, so the adapter's
     /// shape is visible without running anything.
     example_command: Vec<String>,
@@ -41,6 +49,7 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 bypass: true,
                 output_format: spec.output_format,
             };
+            let sync = spec.sync.as_ref();
             HarnessInfo {
                 id: spec.id,
                 display: spec.display,
@@ -48,6 +57,10 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 install_hint: spec.install_hint,
                 output_format: spec.output_format,
                 supports_resume: spec.supports_resume,
+                sync_file: sync.map(|s| s.file),
+                supports_allowed_tools: sync.is_some_and(|s| s.allow_path.is_some()),
+                supports_denied_tools: sync.is_some_and(|s| s.deny_path.is_some()),
+                supports_hooks: sync.is_some_and(|s| s.hooks_path.is_some()),
                 example_command: (spec.build_argv)(&ctx),
             }
         })

@@ -15,3 +15,26 @@ export OH_MODEL="${QWEN_E2E_MODEL:-}"
 marker="$(oh_marker)"
 oh_run qwen "$(oh_prompt "$marker")"
 oh_assert_echoed qwen "$marker"
+
+# Sync enforcement is NOT provable headlessly for qwen — live findings:
+# without -y/--yolo on the CLI, qwen never auto-approves tools from settings.
+# permissions.allow rules left the tool excluded or the call waiting for an
+# approval that headless mode can't grant (one run hung until oneharness's
+# timeout killed it), and permissions.defaultMode = "yolo" did not unlock
+# execution either. The synced mapping (.qwen/settings.json
+# permissions.allow/deny) matches qwen's documented settings and governs
+# interactive approval; headless runs are gated by the CLI flag alone.
+#
+# What IS provable headlessly: the real CLI accepts the synced file — a
+# malformed write would break this run, so it is the format drift alarm.
+sandbox="$(mktemp -d)"
+printf '[harness.qwen]\nallowed_tools = ["run_shell_command(ls)"]\ndenied_tools = ["run_shell_command(rm)"]\n' \
+    > "$sandbox/oneharness.toml"
+ONEHARNESS_NO_CONFIG='' "$(oh_bin)" sync --harness qwen --cwd "$sandbox" \
+    --config "$sandbox/oneharness.toml" --compact >/dev/null \
+    || fail "qwen: oneharness sync failed"
+marker="$(oh_marker)"
+oh_run qwen "$(oh_prompt "$marker")" --cwd "$sandbox"
+oh_assert_echoed qwen "$marker"
+rm -rf "$sandbox"
+note "PASS: qwen accepts the synced settings file (headless enforcement is flag-gated in qwen itself; see comments)"

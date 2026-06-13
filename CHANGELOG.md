@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.38](https://github.com/nickderobertis/oneharness/compare/v0.2.37...v0.2.38) - 2026-06-13
+
+### Added
+
+- unified config management with file-synced policy across harnesses ([#87](https://github.com/nickderobertis/oneharness/pull/87))
+
 ## [0.2.37](https://github.com/nickderobertis/oneharness/compare/v0.2.36...v0.2.37) - 2026-06-11
 
 ### Added

@@ -31,16 +31,22 @@ pub struct HookSpec {
     /// by harnesses that merge into a shared config file. The delivery layer
     /// falls back to `oneharness` when this is `None`.
     pub plugin_name: Option<String>,
+    /// Human-facing description for the harnesses that carry plugin metadata
+    /// (currently Goose's `plugin.json`), so a consuming tool can brand its own
+    /// plugin rather than inherit oneharness's default text. `None` keeps the
+    /// default; ignored by harnesses whose hook carries no description field.
+    pub description: Option<String>,
 }
 
 impl HookSpec {
-    /// A bare command hook with no matcher, timeout, or explicit plugin name.
+    /// A bare command hook with no matcher, timeout, plugin name, or description.
     pub fn command(command: impl Into<String>) -> Self {
         Self {
             command: command.into(),
             matcher: None,
             timeout: None,
             plugin_name: None,
+            description: None,
         }
     }
 }
@@ -52,8 +58,9 @@ impl HookSpec {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HookShape {
     /// Claude Code / Qwen / Codex / Goose: an event maps to a list of groups,
-    /// each `{matcher?, hooks:[{type:"command", command, timeout?}]}`. Goose is
-    /// the only one whose schema carries a per-hook `timeout`.
+    /// each `{matcher?, hooks:[{type:"command", command, timeout?}]}`. `with_timeout`
+    /// flags the harnesses whose schema accepts the per-hook `timeout` (Claude
+    /// Code and Goose) — the key is still only emitted when the spec provides one.
     Nested {
         event: &'static str,
         with_timeout: bool,
@@ -137,15 +144,16 @@ fn event_map(events: &[&str], entries: Value) -> Value {
 mod tests {
     use super::*;
 
-    /// The nested `{matcher, hooks:[{type, command}]}` shape Claude Code, Qwen
-    /// and Codex all read — no timeout in their schema.
+    /// The nested `{matcher, hooks:[{type, command}]}` shape Codex and Qwen read —
+    /// no timeout in their schema, so a provided timeout is dropped.
     #[test]
-    fn nested_without_timeout_matches_claude_shape() {
+    fn nested_without_timeout_drops_timeout() {
         let spec = HookSpec {
-            command: "guard hook claude-code".into(),
+            command: "guard hook codex".into(),
             matcher: Some("Bash".into()),
             timeout: Some(10),
             plugin_name: None,
+            description: None,
         };
         let shape = HookShape::Nested {
             event: "PreToolUse",
@@ -157,7 +165,7 @@ mod tests {
                 "PreToolUse": [
                     {
                         "matcher": "Bash",
-                        "hooks": [ { "type": "command", "command": "guard hook claude-code" } ],
+                        "hooks": [ { "type": "command", "command": "guard hook codex" } ],
                     }
                 ]
             }),
@@ -165,14 +173,16 @@ mod tests {
         );
     }
 
-    /// Goose is the nested shape that *does* carry a per-hook timeout.
+    /// Claude Code and Goose are the nested shapes that *do* carry a per-hook
+    /// timeout, emitted when the spec provides one.
     #[test]
     fn nested_with_timeout_keeps_timeout() {
         let spec = HookSpec {
-            command: "guard hook goose".into(),
-            matcher: Some("^(shell|read)$".into()),
+            command: "guard hook claude-code".into(),
+            matcher: Some("Bash".into()),
             timeout: Some(10),
             plugin_name: None,
+            description: None,
         };
         let shape = HookShape::Nested {
             event: "PreToolUse",
@@ -183,9 +193,9 @@ mod tests {
             json!({
                 "PreToolUse": [
                     {
-                        "matcher": "^(shell|read)$",
+                        "matcher": "Bash",
                         "hooks": [
-                            { "type": "command", "command": "guard hook goose", "timeout": 10 }
+                            { "type": "command", "command": "guard hook claude-code", "timeout": 10 }
                         ],
                     }
                 ]
@@ -201,6 +211,7 @@ mod tests {
             matcher: Some("bash".into()),
             timeout: Some(10),
             plugin_name: None,
+            description: None,
         };
         assert_eq!(
             render(
@@ -297,6 +308,7 @@ mod tests {
             matcher: None,
             timeout: None,
             plugin_name: None,
+            description: None,
         };
         let rendered = render(
             &spec,

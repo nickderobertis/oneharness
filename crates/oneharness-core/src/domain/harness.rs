@@ -293,7 +293,10 @@ static REGISTRY: &[HarnessSpec] = &[
         hooks: Some(HookBinding::SameFile {
             shape: HookShape::Nested {
                 event: "PreToolUse",
-                with_timeout: false,
+                // Claude Code's PreToolUse hook object accepts a per-hook
+                // `timeout` (sourced from the allowlister adapter, which sets
+                // one); emit it when a `[[hooks]]` entry provides one.
+                with_timeout: true,
             },
             path: &["hooks"],
         }),

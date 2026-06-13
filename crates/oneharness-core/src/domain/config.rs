@@ -344,6 +344,7 @@ impl FileConfig {
                 matcher: entry.matcher.clone(),
                 timeout: entry.timeout,
                 plugin_name: entry.plugin_name.clone(),
+                description: None,
             })
             .collect()
     }

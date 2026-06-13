@@ -109,8 +109,13 @@ pub fn install(
             ..
         } => {
             // `anchor` is the plugin directory; the manifest and hooks file sit
-            // beneath it.
-            let manifest_json = parse_seed(&manifest.replace("{name}", name));
+            // beneath it. A caller-supplied description overrides the manifest's
+            // default text (set on the parsed value to avoid JSON-escaping the
+            // raw template).
+            let mut manifest_json = parse_seed(&manifest.replace("{name}", name));
+            if let (Some(desc), Value::Object(map)) = (&hook.description, &mut manifest_json) {
+                map.insert("description".into(), Value::String(desc.clone()));
+            }
             let manifest_write =
                 merge_json(&anchor.join("plugin.json"), &manifest_json, None, check)?;
             let fragment = wrap(path, render(hook, *shape));
@@ -362,6 +367,7 @@ mod tests {
             matcher: Some("Bash".into()),
             timeout: None,
             plugin_name: None,
+            description: None,
         };
         let writes = install_one(&dir, "claude-code", &hook);
         assert_eq!(writes.len(), 1);
@@ -450,6 +456,7 @@ mod tests {
             matcher: Some("^(shell|read)$".into()),
             timeout: Some(10),
             plugin_name: None,
+            description: None,
         };
         let writes = install_one(&dir, "goose", &hook);
         assert_eq!(writes.len(), 2);
@@ -474,6 +481,25 @@ mod tests {
                     ]
                 }
             }),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A caller-supplied description brands the Goose manifest, overriding the
+    /// default text — so a consumer (e.g. allowlister) keeps its own plugin
+    /// description instead of inheriting oneharness's.
+    #[test]
+    fn goose_manifest_honors_a_caller_description() {
+        let dir = temp_project("goose-desc");
+        let hook = HookSpec {
+            description: Some("Gate AI-agent shell commands through allowlister.".into()),
+            ..HookSpec::command("allowlister hook goose")
+        };
+        install_one(&dir, "goose", &hook);
+        let manifest = read_json(&dir.join(".agents/plugins/oneharness/plugin.json"));
+        assert_eq!(
+            manifest["description"],
+            "Gate AI-agent shell commands through allowlister."
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -519,6 +545,7 @@ mod tests {
                 matcher: Some("Bash".into()),
                 timeout: Some(10),
                 plugin_name: None,
+                description: None,
             };
             install_one(&dir, id, &hook);
             let second = install(

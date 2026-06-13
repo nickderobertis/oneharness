@@ -62,7 +62,7 @@ how — or whether — it reaches that harness.
 | `codex` | OpenAI Codex CLI | `codex` | ✓ | prepended | `--dangerously-bypass-approvals-and-sandbox` | — | — | — | — | — |
 | `opencode` | OpenCode | `opencode` | ✓ | prepended | `--dangerously-skip-permissions` | `opencode.json` | via `settings` | — | ✓ | `--session` |
 | `goose` | Goose | `goose` | — | native flag | (runs unattended) | — | — | — | — | — |
-| `qwen` | Qwen Code | `qwen` | ✓ | prepended | `--yolo` | `.qwen/settings.json` | ✓ / ✓ | — | — | — |
+| `qwen` | Qwen Code | `qwen` | ✓ | prepended | `--yolo` | `.qwen/settings.json` | ✓ / ✓ (interactive) | — | — | — |
 | `crush` | Crush | `crush` | ✓ | prepended | `run -q` (non-interactive) | `crush.json` | ✓ / ✓ | — | — | — |
 | `copilot` | GitHub Copilot CLI | `copilot` | ✓ | prepended | `--allow-all-tools --allow-all-paths --no-ask-user` | — | — | — | — | — |
 | `cursor` | Cursor CLI | `cursor-agent` | ✓ | prepended | `--force` (`--trust` under `--no-bypass`) | `.cursor/cli.json` | ✓ / ✓ | — | ✓ | `--resume` |
@@ -81,7 +81,11 @@ how — or whether — it reaches that harness.
   `[harness.copilot] args`), so they have no sync target.
 - **allow / deny** — whether `allowed_tools` / `denied_tools` lists have a
   place in that file, in each harness's own rule syntax: Claude Code, Qwen, and
-  Cursor use `permissions.allow` / `permissions.deny`; crush uses
+  Cursor use `permissions.allow` / `permissions.deny`. Qwen's rules govern its
+  *interactive* approval flow only — live testing showed its headless mode
+  never auto-approves from settings (only the `-y` CLI flag executes
+  approval-gated tools), so synced qwen rules protect regular usage, not
+  headless runs. Crush uses
   `permissions.allowed_tools`, with deny mapped to `options.disabled_tools`
   (the tool is hidden entirely — its strongest deny). OpenCode's `permission`
   is a policy map, not a list, so the lists are rejected for it — express it

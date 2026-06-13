@@ -30,3 +30,6 @@ policy="[harness.opencode.settings.permission.bash]
 oh_sync_enforce opencode "$policy" "$ok" present allow
 oh_sync_enforce opencode "$policy" "$blocked" absent deny
 note "PASS: opencode sync enforcement"
+
+note "» hook enforcement: the synced plugin gate must block a marked command"
+oh_hook_enforce opencode

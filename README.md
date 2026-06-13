@@ -128,16 +128,20 @@ page. Building from source requires a stable Rust toolchain and
 
 ## Usage
 
-Five subcommands, all emitting JSON to **stdout**; diagnostics go to **stderr**.
+Six subcommands; `list`/`detect`/`config`/`sync`/`run` emit JSON to **stdout**
+(diagnostics go to **stderr**), and `gate` speaks a harness's hook protocol on
+stdin/stdout.
 
 ```console
 oneharness list                                   # describe the registry
 oneharness detect --all                           # which harnesses are installed (+ versions)
 oneharness config                                 # effective layered config + where each value came from
 oneharness sync                                   # merge the unified settings into each harness's own config file
+oneharness sync --global                          # install [[hooks]] into the user-global config instead of the project
 oneharness run --all --prompt "…"                 # run everywhere, in parallel
 oneharness run --harness claude-code,codex --prompt-file task.md
 oneharness run --all --print-command --prompt "…" # dry run: show commands, run nothing
+oneharness gate claude-code --deny-if-contains X  # the pre-tool gate an installed hook invokes (reads stdin)
 ```
 
 Useful `run` flags:
@@ -209,6 +213,17 @@ require_available = false       # --require-available
 allowed_tools = ["Bash(git log:*)"]  # synced into each harness's config file
 denied_tools = ["Bash(rm:*)"]        # (see `oneharness sync` below)
 
+# A normalized pre-tool hook, fanned across every synced harness and rendered
+# into each one's native shape (a shared config file, a dedicated hooks file,
+# or a plugin). `{harness}` is replaced with the harness id. Unlike the
+# verbatim `[harness.<id>.hooks]` table below, this reaches ALL harnesses.
+[[hooks]]
+command = "mygate hook {harness}"   # required; {harness} → claude-code, codex, …
+matcher = "Bash"                    # optional tool-name matcher (harness dialect)
+timeout = 10                        # optional; honored where the schema has one
+# plugin_name = "mygate"            # optional identity for plugin/Copilot files
+# harnesses = ["claude-code"]       # optional; default = every synced harness
+
 [env]                           # --env, for every harness
 RUST_LOG = "warn"
 
@@ -234,19 +249,53 @@ bash = { "git *" = "allow" }
 
 ### Syncing harness configs
 
-`allowed_tools`, `denied_tools`, `hooks`, and `settings` are **sync settings**:
-instead of being passed on each invocation, **`oneharness sync`** merges them
-into each harness's *own* project config file (the *synced config file* column
-in the matrix). That makes oneharness a config-sync dev tool: state the policy
-once in `oneharness.toml`, run `sync`, and it governs Claude Code, Cursor,
-Qwen, crush, and OpenCode even when they're used directly — oneharness is not
-needed at run time.
+`allowed_tools`, `denied_tools`, `hooks`, `settings`, and the top-level
+`[[hooks]]` are **sync settings**: instead of being passed on each invocation,
+**`oneharness sync`** merges them into each harness's *own* project config file
+(the *synced config file* column in the matrix). That makes oneharness a
+config-sync dev tool: state the policy once in `oneharness.toml`, run `sync`,
+and it governs Claude Code, Cursor, Qwen, crush, and OpenCode even when they're
+used directly — oneharness is not needed at run time.
+
+Hooks come in two forms. A `[harness.<id>.hooks]` table is written *verbatim*
+in that harness's own hooks schema, so it only reaches harnesses whose hooks
+live in the config file oneharness already syncs (Claude Code). A top-level
+`[[hooks]]` entry is **normalized**: oneharness renders it into each harness's
+native shape and delivers it the right way for that harness — merged into a
+shared file (Claude Code, Qwen, crush), written to a dedicated hooks file
+(Codex, Cursor, Copilot), or installed as a plugin (Goose's manifest +
+`hooks.json`, OpenCode's JS shim). One `[[hooks]]` entry therefore installs the
+same gate into **all eight** harnesses. The per-harness install appears under a
+`hooks` array in each entry of the `sync` JSON report.
 
 ```console
 oneharness sync                  # write/merge the harness config files in this project
 oneharness sync --check          # CI mode: exit 1 (writing nothing) if out of sync
 oneharness sync --harness claude-code --cwd ~/proj
+oneharness sync --global         # install [[hooks]] into the user-global config (~ / $XDG_CONFIG_HOME)
 ```
+
+By default `sync` writes the **project** config files. `--global` instead
+installs the normalized `[[hooks]]` into each harness's **user-global** location
+(`~/.claude/settings.json`, `~/.codex/hooks.json`, `~/.copilot/hooks/…`,
+`$XDG_CONFIG_HOME/crush/crush.json`, `$XDG_CONFIG_HOME/opencode/plugin/…`, etc.),
+so the gate applies to every project. Permission rules and raw `settings` are
+project-scoped only, so configuring them under `--global` is a loud usage error
+rather than a silent half-write.
+
+#### The runtime gate (`oneharness gate`)
+
+A normalized `[[hooks]]` entry's `command` is what each harness runs before a
+tool call. **`oneharness gate <id>`** is a ready-made such command: it reads the
+harness's pre-tool hook event on **stdin**, and — when the event matches
+`--deny-if-contains <substr>` — emits that harness's native *deny* verdict on
+**stdout** (otherwise nothing, so the call proceeds). It always exits 0, so a
+gate never blocks a call on its own error. The per-harness deny shapes are
+sourced from each CLI's hook protocol. The decision is a deliberately trivial
+substring match: `gate` exists to prove a synced hook is honored end to end (the
+live e2e drives a real harness through it), not to be a policy engine — that is
+[allowlister](https://github.com/nickderobertis/allowlister)'s role, which
+consumes `oneharness-core`'s installer as a library.
 
 The merge is deliberately conservative:
 
@@ -417,6 +466,17 @@ CLI with `--no-bypass` — the allowed `touch` must execute (the positive
 control) and the denied one must not. This is the only tier that can prove a
 synced file is *honored*, not merely written; it doubles as the drift alarm
 for the encoded config formats.
+
+The live check also proves **hook enforcement** the same way: it syncs a
+`[[hooks]]` entry whose command is `oneharness gate <id>` into the harness's own
+config, then drives the real CLI under bypass (so the hook is the sole decider)
+through a marked command (the gate must block it) and an unmarked one (the gate
+must let it run). For **Qwen** the gate is synced with `--global` — Qwen only
+fires user-scoped hooks headlessly — which also exercises `sync --global` live.
+Two harnesses are excluded by design: **Codex** (`oneharness run` drives `codex
+exec`, which does not load hooks) and **Copilot** (its project hooks sit behind a
+trusted-folder + prompt-mode setup that belongs in allowlister's adapter e2e);
+both keep their hermetic install coverage.
 
 ```console
 just live-claude     # one harness (builds the release binary, runs the live check)

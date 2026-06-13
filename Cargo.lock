@@ -195,6 +195,15 @@ name = "oneharness"
 version = "0.2.38"
 dependencies = [
  "clap",
+ "oneharness-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "oneharness-core"
+version = "0.2.38"
+dependencies = [
  "serde",
  "serde_json",
  "thiserror",

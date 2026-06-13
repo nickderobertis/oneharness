@@ -4,5 +4,6 @@
 
 pub mod config;
 pub mod detect;
+pub mod hooks;
 pub mod runner;
 pub mod sync;

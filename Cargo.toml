@@ -1,3 +1,6 @@
+[workspace]
+members = ["crates/oneharness-core"]
+
 [package]
 name = "oneharness"
 version = "0.2.38"
@@ -27,13 +30,10 @@ required-features = ["mock-harness"]
 mock-harness = []
 
 [dependencies]
+oneharness-core = { path = "crates/oneharness-core" }
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-thiserror = "2"
-which = "7"
-wait-timeout = "0.2"
-toml = "1.0.7"
 
 # Integration tests drive the binaries directly via the cargo-provided
 # CARGO_BIN_EXE_* paths and parse JSON with serde_json (already a dependency),

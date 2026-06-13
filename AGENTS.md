@@ -1,11 +1,23 @@
 # AGENTS
 
-`oneharness` is a single Rust CLI that drives many agentic coding harnesses
+`oneharness` is a Rust CLI that drives many agentic coding harnesses
 (Claude Code, Codex, OpenCode, Goose, Qwen Code, Crush, Copilot CLI, Cursor)
 through one non-interactive interface and returns one stable JSON shape. Its
 consumers are programs, not humans: e2e suites that exercise a feature against
 every real harness, and (later) a cross-harness skill-testing framework that uses
 this CLI as its driver.
+
+It is a two-crate Cargo workspace: **`oneharness-core`**
+(`crates/oneharness-core`) is the reusable engine — the pure `domain` layer and
+the `io` boundary, including the harness registry, hook rendering/installation,
+config layering, and the sync merge — depending only on serde/toml/thiserror/
+which/wait-timeout (never `clap`). The root **`oneharness`** crate is the thin
+binary: the `clap` surface (`src/cli.rs`) and per-verb orchestration
+(`src/commands/`) over the core. The split exists so sibling tools (e.g.
+`nickderobertis/allowlister`) can depend on the engine — most of all
+`io::hooks::install`, which writes a normalized hook into any harness's native
+config at either project or user-global scope — as a lean git dependency without
+pulling the CLI.
 
 > `CLAUDE.md` is a symlink to this file (`ln -s AGENTS.md CLAUDE.md`). Edit
 > `AGENTS.md` only; the two must never drift.
@@ -34,9 +46,15 @@ Use the `just` recipes; do not hand-roll equivalents.
   a timeout, and emits one JSON report. `list` and `detect` describe and probe
   the registry; `config` shows the effective layered configuration with each
   value's source; `sync` merges the unified policy settings (allow/deny rules,
-  hooks, raw `settings` tables) into each harness's **own** project config file
-  so the policy also applies without oneharness in the loop. All five emit JSON
-  to stdout by design.
+  hooks, raw `settings` tables) into each harness's **own** config file — project
+  by default, or the user-global location under `--global` (hooks only) — so the
+  policy also applies without oneharness in the loop. Those five emit JSON to
+  stdout by design. `gate <id>` is the odd one out: the runtime pre-tool gate an
+  installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
+  emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It
+  exists to prove a synced hook is *honored* end to end (the per-harness live
+  e2e drives a real harness through it), not to be a policy engine — that is the
+  sibling `allowlister`'s role, which consumes the `install` library.
 
 ## How this repo was composed
 
@@ -54,11 +72,13 @@ aren't re-litigated each session:
   worth replacing it. (`release-plz` *is* now used for conventional-commit
   versioning — see *Releasing* — driven directly with a `RELEASE_PLZ_TOKEN` PAT,
   reversing the earlier "hand-versioned only" choice.)
-- **No crates.io publish** — this is an end-user binary, distributed via GitHub
-  Releases and `cargo install --git`, not a library dependency.
-- **No pre-commit/lefthook, direnv, or `src/`-style layout** — template baggage
-  that doesn't fit a single-crate Rust CLI. The gate is `just check` plus CI, on
-  the standard Cargo layout.
+- **No crates.io publish** — the binary is distributed via GitHub Releases and
+  `cargo install --git`; the `oneharness-core` library is consumed by sibling
+  tools as a git dependency, not from crates.io. release-plz versions/tags only
+  the binary (`oneharness-core` is `release = false`).
+- **No pre-commit/lefthook or direnv** — template baggage. The gate is `just
+  check` plus CI on the standard Cargo workspace layout (root binary crate +
+  `crates/oneharness-core` library).
 - **`.tool-versions` pins `just` only** (read by asdf/mise) so a clean clone can
   resolve the command runner; the Rust toolchain stays on rustup, not asdf.
 - **Shell scripts are linted with shellcheck** — an external tool, handled like
@@ -68,10 +88,11 @@ aren't re-litigated each session:
 
 ## Invariants (non-negotiable)
 
-- **The domain layer is pure.** `src/domain/` builds argv, parses output, and
-  shapes the report with no process / filesystem / env / clock I/O. All I/O lives
-  in `src/io/` (spawning, PATH resolution, version probing) and `src/commands/`.
-  Never hide I/O in a helper that looks pure.
+- **The domain layer is pure.** `crates/oneharness-core/src/domain/` builds
+  argv, parses output, and shapes the report with no process / filesystem / env
+  / clock I/O. All I/O lives in `crates/oneharness-core/src/io/` (spawning, PATH
+  resolution, version probing, config/hook file writes) and the binary's
+  `src/commands/`. Never hide I/O in a helper that looks pure.
 - **Output is a contract.** The JSON report on stdout carries a `schema_version`;
   it is the interface consumers depend on. Add fields; do not repurpose or remove
   them without bumping the version. Diagnostics go to stderr, never stdout.
@@ -91,8 +112,9 @@ aren't re-litigated each session:
   user level (`$ONEHARNESS_CONFIG` or the platform config dir) under project
   level (discovered upward from `--cwd`/cwd) under CLI flags; `[harness.<id>]`
   beats top-level within a file. Unknown fields or harness ids are usage errors
-  (exit 2), never ignored. Parsing/merging is pure (`src/domain/config.rs`);
-  discovery/reading is I/O (`src/io/config.rs`). Anything that must be hermetic
+  (exit 2), never ignored. Parsing/merging is pure
+  (`crates/oneharness-core/src/domain/config.rs`); discovery/reading is I/O
+  (`crates/oneharness-core/src/io/config.rs`). Anything that must be hermetic
   (tests, `smoke.sh`, the e2e scripts) sets `ONEHARNESS_NO_CONFIG=1` so the
   machine's real config can never reshape an assertion — keep that property
   when adding tests or scripts.
@@ -102,8 +124,9 @@ aren't re-litigated each session:
 
 ## Adding or changing a harness
 
-A new harness is a new entry in the registry (`src/domain/harness.rs`) plus its
-`build_argv`/`extract` functions — no changes to `run`, the runner, or the report
+A new harness is a new entry in the registry
+(`crates/oneharness-core/src/domain/harness.rs`) plus its `build_argv`/`extract`
+functions — no changes to `run`, the runner, or the report
 shape. When you add one:
 
 - Add a `--print-command` assertion in `tests/cli.rs` pinning its exact argv
@@ -121,6 +144,12 @@ shape. When you add one:
   sync merge is non-destructive by contract: unrelated keys untouched, lists
   unioned (idempotent re-sync), unparseable files refused and left intact,
   writes atomic. Keep those properties test-pinned when touching it.
+- Give the harness its `global_hook` (the user-global hook location, for `sync
+  --global` / `install` at `Scope::Global`) and its `gate_deny` (how it expresses
+  a pre-tool deny when it runs `oneharness gate <id>`). Both are registry data
+  sourced from the allowlister adapters, never guessed; both are loud when absent
+  (a missing `gate_deny` makes `oneharness gate <id>` a usage error). Pin the new
+  deny shape with a `--print`-style assertion in `domain::gate`/`tests/cli.rs`.
 - Source the real invocation from a known-good driver — the
   `nickderobertis/allowlister` repo's `run_agent()` / `e2e-*.sh` drivers are the
   reference — rather than guessing flags. (`scripts/smoke.sh --live` here is the
@@ -131,7 +160,13 @@ shape. When you add one:
   it needs a secret not already synced — an entry in `gh-secrets.json`. If the
   harness has a `SyncSpec`, also add the `oh_sync_enforce` phases (allow rule
   executes under `--no-bypass`, deny rule doesn't): that live check is the only
-  proof the synced file is *honored* and the drift alarm for its format.
+  proof the synced file is *honored* and the drift alarm for its format. Unless
+  the harness can't load a hook through `oneharness run` (Codex's `codex exec`
+  ignores hooks) or needs bespoke trust scaffolding (Copilot), also add the
+  `oh_hook_enforce <id> [scope]` phase — it syncs a `oneharness gate <id>` hook
+  and proves the real CLI blocks a marked command and runs an unmarked one, the
+  honoring proof + drift alarm for the *hook* install (use `global` scope for a
+  harness, like Qwen, that only fires user-scoped hooks headlessly).
 
 ## Scripts and output are context
 

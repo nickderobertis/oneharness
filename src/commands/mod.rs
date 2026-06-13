@@ -3,14 +3,15 @@
 
 pub mod config;
 pub mod detect;
+pub mod gate;
 pub mod list;
 pub mod run;
 pub mod sync;
 
 use serde::Serialize;
 
-use crate::domain::harness::{self, HarnessSpec};
-use crate::errors::OneharnessError;
+use oneharness_core::domain::harness::{self, HarnessSpec};
+use oneharness_core::errors::OneharnessError;
 
 /// Resolve a harness selection into specs, in registry order.
 ///

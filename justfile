@@ -31,9 +31,9 @@ fmt-check:
 format:
     cargo fmt --all
 
-# Lint with clippy; any warning is an error.
+# Lint with clippy across the workspace (core + binary); any warning is an error.
 lint:
-    cargo clippy --all-targets --features {{FEATURES}} -- -D warnings
+    cargo clippy --workspace --all-targets --features {{FEATURES}} -- -D warnings
 
 # Alias for `lint`.
 clippy: lint
@@ -45,9 +45,10 @@ lint-sh:
     if ! command -v shellcheck >/dev/null 2>&1; then echo "shellcheck not installed: 'apt-get install shellcheck' / 'brew install shellcheck' / https://github.com/koalaman/shellcheck#installing" >&2; exit 1; fi
     shellcheck scripts/*.sh
 
-# Run the test suite (prefers nextest; falls back to cargo test).
+# Run the test suite across the workspace (core unit tests + binary unit and
+# integration tests; prefers nextest, falls back to cargo test).
 test:
-    if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --features {{FEATURES}} --locked; else cargo test --features {{FEATURES}} --locked; fi
+    if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --workspace --features {{FEATURES}} --locked; else cargo test --workspace --features {{FEATURES}} --locked; fi
 
 # Run only the end-to-end CLI tests.
 e2e:

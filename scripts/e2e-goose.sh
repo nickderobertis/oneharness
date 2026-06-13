@@ -20,3 +20,9 @@ export OH_MODEL=""  # oneharness intentionally does not map --model for goose
 marker="$(oh_marker)"
 oh_run goose "$(oh_prompt "$marker")"
 oh_assert_echoed goose "$marker"
+
+# Hook enforcement: a synced `[[hooks]]` gate, installed as a Goose plugin, must
+# block a marked command and let an unmarked one through (Goose fires PreToolUse
+# hooks even under GOOSE_MODE=auto, which oneharness's bypass requests).
+note "» hook enforcement: the synced plugin gate must block a marked command"
+oh_hook_enforce goose

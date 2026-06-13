@@ -8,11 +8,12 @@ use serde::Serialize;
 
 use crate::cli::SyncArgs;
 use crate::commands::{print_json, select_specs};
-use crate::domain::report::SCHEMA_VERSION;
-use crate::domain::{harness, sync as sync_domain};
-use crate::errors::OneharnessError;
-use crate::io::config as config_io;
-use crate::io::sync::{self as sync_io, FileStatus};
+use oneharness_core::domain::report::SCHEMA_VERSION;
+use oneharness_core::domain::{harness, sync as sync_domain};
+use oneharness_core::errors::OneharnessError;
+use oneharness_core::io::config as config_io;
+use oneharness_core::io::hooks as hooks_io;
+use oneharness_core::io::sync::{self as sync_io, FileStatus};
 
 #[derive(Serialize)]
 struct SyncReport {
@@ -27,16 +28,34 @@ struct SyncReport {
 #[derive(Serialize)]
 struct SyncResult {
     harness: &'static str,
-    /// The harness config file written (or that would be written); `null`
-    /// when there was nothing to sync for this harness.
+    /// The permission/settings config file written (or that would be written);
+    /// `null` when nothing of that kind is configured for this harness.
     file: Option<String>,
-    /// `created` / `updated` / `unchanged`, or `skipped` when nothing is
-    /// configured for this harness.
+    /// `created` / `updated` / `unchanged` for `file`, or `skipped` when no
+    /// permission/settings fragment applies. Hook files carry their own status.
     status: &'static str,
+    /// Normalized `[[hooks]]` files installed into this harness (a Goose hook
+    /// writes two). Empty when no `[[hooks]]` entry targets it.
+    hooks: Vec<HookFileResult>,
     /// Top-level settings that have no mapping for this harness (e.g. a
     /// top-level `allowed_tools` while the harness has no allow-list concept)
     /// — visible here and warned on stderr, never silently dropped.
     unmapped: Vec<&'static str>,
+}
+
+#[derive(Serialize)]
+struct HookFileResult {
+    file: String,
+    status: &'static str,
+}
+
+/// The report token for a file status.
+fn status_str(status: FileStatus) -> &'static str {
+    match status {
+        FileStatus::Created => "created",
+        FileStatus::Updated => "updated",
+        FileStatus::Unchanged => "unchanged",
+    }
 }
 
 pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
@@ -60,6 +79,10 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
     let mut results = Vec::with_capacity(specs.len());
     let mut pending_changes = false;
 
+    // Resolved once: the user-global base dirs a `--global` hook install anchors
+    // under. Unused (but harmless) for a project sync.
+    let global_dirs = hooks_io::GlobalDirs::from_env();
+
     for spec in specs {
         let plan = sync_domain::plan(cfg, spec).map_err(|message| {
             OneharnessError::HarnessConfigUnmergeable {
@@ -73,32 +96,50 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
                 spec.id
             );
         }
-        let result = match plan.fragment {
-            None => SyncResult {
-                harness: spec.id,
-                file: None,
-                status: "skipped",
-                unmapped: plan.unmapped,
-            },
+        let (file, status) = match plan.fragment {
+            None => (None, "skipped"),
+            // A configured permission/settings fragment has no user-global
+            // mapping, so refuse it loudly rather than silently writing only the
+            // hooks and leaving the rules behind.
+            Some(_) if args.global => {
+                return Err(OneharnessError::GlobalSyncOnlyHooks { id: spec.id.into() })
+            }
             Some(fragment) => {
                 let sync_spec = spec.sync.as_ref().expect("fragment implies a sync target");
                 let (path, status) =
                     sync_io::apply(&project_dir, sync_spec, &fragment, args.check)?;
-                let status = match status {
-                    FileStatus::Created => "created",
-                    FileStatus::Updated => "updated",
-                    FileStatus::Unchanged => "unchanged",
-                };
+                let status = status_str(status);
                 pending_changes |= status != "unchanged";
-                SyncResult {
-                    harness: spec.id,
-                    file: Some(path.display().to_string()),
-                    status,
-                    unmapped: plan.unmapped,
-                }
+                (Some(path.display().to_string()), status)
             }
         };
-        results.push(result);
+
+        // Normalized `[[hooks]]` install into this harness's native shape,
+        // independent of the permission/settings fragment above.
+        let mut hooks = Vec::new();
+        for hook in cfg.hook_specs_for(spec.id) {
+            let scope = if args.global {
+                hooks_io::Scope::Global(&global_dirs)
+            } else {
+                hooks_io::Scope::Project(&project_dir)
+            };
+            for write in hooks_io::install(scope, spec, &hook, args.check)? {
+                let status = status_str(write.status);
+                pending_changes |= status != "unchanged";
+                hooks.push(HookFileResult {
+                    file: write.path.display().to_string(),
+                    status,
+                });
+            }
+        }
+
+        results.push(SyncResult {
+            harness: spec.id,
+            file,
+            status,
+            hooks,
+            unmapped: plan.unmapped,
+        });
     }
 
     let report = SyncReport {

@@ -1,21 +1,15 @@
 //! oneharness: one CLI across many agentic coding harnesses.
 //!
-//! Architecture (mirrored in the module tree):
-//! - `domain/` is pure — it builds argv, parses output, and shapes the report
-//!   with no process / filesystem / env / clock I/O.
-//! - `io/` performs the real I/O: PATH resolution, version probing, spawning.
-//! - `commands/` orchestrates the two for each CLI verb.
-//!
-//! `main` parses with clap and calls [`dispatch`].
+//! This crate is the thin CLI shell. The reusable engine — the pure `domain`
+//! layer and the `io` boundary — lives in the `oneharness-core` library crate;
+//! here we add only the clap surface (`cli`) and the per-verb orchestration
+//! (`commands`). `main` parses with clap and calls [`dispatch`].
 
 pub mod cli;
 pub mod commands;
-pub mod domain;
-pub mod errors;
-pub mod io;
 
 pub use cli::{Cli, Command};
-pub use errors::OneharnessError;
+pub use oneharness_core::errors::OneharnessError;
 
 /// Run the parsed command and return the process exit code.
 ///
@@ -29,6 +23,7 @@ pub fn dispatch(cli: Cli) -> i32 {
         Command::Detect(args) => commands::detect::run(&args),
         Command::Config(args) => commands::config::run(&args),
         Command::Sync(args) => commands::sync::run(&args),
+        Command::Gate(args) => commands::gate::run(&args),
     };
     match result {
         Ok(code) => code,

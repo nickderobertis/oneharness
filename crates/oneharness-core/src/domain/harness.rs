@@ -8,6 +8,8 @@
 //! to drive each real CLI headlessly (deny prompts, pick the model, request a
 //! parseable format). Source new flags from a working driver, not by guessing.
 
+use crate::domain::gate::DenyShape;
+use crate::domain::hooks::HookShape;
 use crate::domain::report::OutputFormat;
 
 /// Everything `build_argv` needs, with no I/O: the resolved binary, the prompt,
@@ -79,6 +81,24 @@ pub struct HarnessSpec {
     /// setting for it is then a loud usage error, never a silent no-op.
     /// Consumed by `oneharness sync`; nothing here is passed on the argv.
     pub sync: Option<SyncSpec>,
+    /// How a normalized pre-tool [`crate::domain::hooks::HookSpec`] is installed
+    /// into this harness — the shape its config expects and where the file lands
+    /// (a shared config file, a dedicated hooks file, or a plugin). `None` for a
+    /// harness oneharness cannot wire a hook into. Consumed by `oneharness sync`
+    /// / `src/io/hooks.rs`; nothing here is passed on the argv.
+    pub hooks: Option<HookBinding>,
+    /// Where this harness reads a *user-global* hook, for an `io::hooks::install`
+    /// at [`crate::io::hooks::Scope::Global`] (the project path lives in
+    /// [`HookBinding`]). The install strategy is identical to the project one;
+    /// only the anchor moves to a `$HOME`/`$XDG_CONFIG_HOME` location. `None` for
+    /// a harness with no user-global hook location oneharness knows. Sourced from
+    /// the allowlister adapters, never guessed.
+    pub global_hook: Option<GlobalHook>,
+    /// How this harness expresses a pre-tool *deny* when its installed hook runs
+    /// `oneharness gate <id>` — the runtime counterpart to [`HookBinding`]. `None`
+    /// for a harness with no gateable pre-tool hook. Consumed by the `gate`
+    /// command (`src/commands/gate.rs`); sourced from the allowlister adapters.
+    pub gate_deny: Option<DenyShape>,
     /// Environment variables oneharness sets when spawning this harness, so a
     /// headless run is clean without the caller knowing the harness's quirks
     /// (e.g. silencing a startup warning that would otherwise litter `stderr`).
@@ -119,6 +139,126 @@ pub struct SyncSpec {
     pub schema_seed: Option<&'static str>,
 }
 
+/// How a normalized hook reaches one harness. The [`HookShape`] (where present)
+/// is the JSON layout [`crate::domain::hooks::render`] produces; the variant is
+/// where that JSON — or, for OpenCode, a JS shim — is written. All eight
+/// harnesses gate the same pre-tool moment; only the file and the shape differ.
+pub enum HookBinding {
+    /// Merge the rendered hook under `path` in the harness's *existing* config
+    /// file (`SyncSpec.file`/`alt_files`) — hooks share the permissions file
+    /// (Claude Code, Qwen, Crush).
+    SameFile {
+        shape: HookShape,
+        path: &'static [&'static str],
+    },
+    /// Merge into a *dedicated* JSON file, created (seeded with `seed`) if
+    /// absent. `file` may contain `{name}` for the plugin identity (Copilot's
+    /// per-owner file). Codex, Cursor, Copilot.
+    File {
+        shape: HookShape,
+        file: &'static str,
+        path: &'static [&'static str],
+        seed: Option<&'static str>,
+    },
+    /// Goose plugin: a one-time `<plugins_dir>/<name>/plugin.json` manifest plus
+    /// the hook merged under `path` in `<plugins_dir>/<name>/hooks/hooks.json`.
+    GoosePlugin {
+        shape: HookShape,
+        plugins_dir: &'static str,
+        manifest: &'static str,
+        path: &'static [&'static str],
+    },
+    /// OpenCode can only block from an in-process plugin, so the hook is a JS
+    /// shim at `<plugin_dir>/<name>.js` that bridges to the command; rendered
+    /// from `template` (not a JSON shape).
+    JsPlugin {
+        plugin_dir: &'static str,
+        template: &'static str,
+    },
+}
+
+/// The base directory a user-global hook anchors under. Resolved by the I/O
+/// layer from the environment; kept abstract here so the registry stays pure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookBase {
+    /// `$HOME`.
+    Home,
+    /// `$XDG_CONFIG_HOME`, falling back to `$HOME/.config` (Crush, OpenCode).
+    ConfigHome,
+}
+
+/// Where a harness reads a *user-global* hook. The install strategy is the
+/// matching [`HookBinding`] variant — only the anchor differs, because several
+/// harnesses place the global hook at a different relative path than the project
+/// one (Copilot's `.github/hooks` becomes `~/.copilot/hooks`; Crush and OpenCode
+/// move under the XDG config dir). `{name}` is the plugin identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlobalHook {
+    pub base: HookBase,
+    /// Anchor relative to `base`: the settings/hooks file for the JSON-merge
+    /// strategies, the `.js` shim for OpenCode, or the plugin directory for
+    /// Goose — i.e. the same thing the [`HookBinding`] anchors at under a project.
+    pub anchor: &'static str,
+}
+
+/// Goose plugin manifest, `{name}` filled with the plugin identity. Written once
+/// and preserved; the merge is idempotent so re-syncing changes nothing.
+const GOOSE_MANIFEST: &str = r#"{
+  "name": "{name}",
+  "version": "0.1.0",
+  "description": "Pre-tool hook installed by oneharness."
+}"#;
+
+/// OpenCode plugin shim. `{export}` is a JS-identifier-safe plugin name,
+/// `{argv}` the command as a JSON argv array, `{name}` the display name. It
+/// spawns the command before every tool call, pipes `{tool_name, tool_input,
+/// cwd}` on stdin, and throws to block on a `{"decision":"deny"}` reply —
+/// failing open if the command cannot run. Mirrors the known-good allowlister
+/// shim; pinned in the `io::hooks` tests.
+const OPENCODE_PLUGIN_JS: &str = r#"// {name} OpenCode plugin — installed by oneharness.
+//
+// OpenCode can block a tool call only from an in-process plugin, so this shim
+// bridges to an external command: before any tool runs it spawns the command,
+// piping the tool name and arguments as JSON on stdin, and throws to block when
+// the command replies with {"decision":"deny"}. Re-running sync regenerates it.
+
+export const {export} = async ({ directory }) => ({
+  "tool.execute.before": async (input, output) => {
+    const tool_name = (input && input.tool) || "";
+    if (!tool_name) return;
+    const args = (output && output.args) || {};
+    const cwd = args.workdir || directory || ".";
+    const event = JSON.stringify({ tool_name, tool_input: args, cwd });
+
+    let stdout = "";
+    try {
+      const proc = Bun.spawn({argv}, {
+        cwd,
+        stdin: new TextEncoder().encode(event),
+        stdout: "pipe",
+        stderr: "ignore",
+      });
+      stdout = await new Response(proc.stdout).text();
+      await proc.exited;
+    } catch (_) {
+      return; // fail open: if the gate command cannot run, never block
+    }
+
+    const trimmed = stdout.trim();
+    if (trimmed.length === 0) return; // no objection — let it run
+    let decision;
+    try {
+      decision = JSON.parse(trimmed);
+    } catch (_) {
+      return; // unparseable output: fail open
+    }
+    if (decision && decision.decision === "deny") {
+      throw new Error(decision.reason || "Blocked by {name}");
+    }
+  },
+});
+"#;
+
 /// All supported harnesses, in a stable order.
 pub fn all() -> &'static [HarnessSpec] {
     REGISTRY
@@ -150,6 +290,18 @@ static REGISTRY: &[HarnessSpec] = &[
             hooks_path: Some(&["hooks"]),
             schema_seed: None,
         }),
+        hooks: Some(HookBinding::SameFile {
+            shape: HookShape::Nested {
+                event: "PreToolUse",
+                with_timeout: false,
+            },
+            path: &["hooks"],
+        }),
+        global_hook: Some(GlobalHook {
+            base: HookBase::Home,
+            anchor: ".claude/settings.json",
+        }),
+        gate_deny: Some(DenyShape::ClaudeNested),
         default_env: &[],
         build_argv: argv_claude_code,
     },
@@ -161,6 +313,20 @@ static REGISTRY: &[HarnessSpec] = &[
         output_format: OutputFormat::Text,
         supports_resume: false,
         sync: None,
+        hooks: Some(HookBinding::File {
+            shape: HookShape::Nested {
+                event: "PreToolUse",
+                with_timeout: false,
+            },
+            file: ".codex/hooks.json",
+            path: &["hooks"],
+            seed: None,
+        }),
+        global_hook: Some(GlobalHook {
+            base: HookBase::Home,
+            anchor: ".codex/hooks.json",
+        }),
+        gate_deny: Some(DenyShape::ClaudeNested),
         default_env: &[],
         build_argv: argv_codex,
     },
@@ -179,6 +345,15 @@ static REGISTRY: &[HarnessSpec] = &[
             hooks_path: None,
             schema_seed: None,
         }),
+        hooks: Some(HookBinding::JsPlugin {
+            plugin_dir: ".opencode/plugin",
+            template: OPENCODE_PLUGIN_JS,
+        }),
+        global_hook: Some(GlobalHook {
+            base: HookBase::ConfigHome,
+            anchor: "opencode/plugin/{name}.js",
+        }),
+        gate_deny: Some(DenyShape::Decision("deny")),
         default_env: &[],
         build_argv: argv_opencode,
     },
@@ -190,6 +365,20 @@ static REGISTRY: &[HarnessSpec] = &[
         output_format: OutputFormat::Text,
         supports_resume: false,
         sync: None,
+        hooks: Some(HookBinding::GoosePlugin {
+            shape: HookShape::Nested {
+                event: "PreToolUse",
+                with_timeout: true,
+            },
+            plugins_dir: ".agents/plugins",
+            manifest: GOOSE_MANIFEST,
+            path: &["hooks"],
+        }),
+        global_hook: Some(GlobalHook {
+            base: HookBase::Home,
+            anchor: ".agents/plugins/{name}",
+        }),
+        gate_deny: Some(DenyShape::Decision("block")),
         default_env: &[],
         build_argv: argv_goose,
     },
@@ -208,6 +397,18 @@ static REGISTRY: &[HarnessSpec] = &[
             hooks_path: None,
             schema_seed: None,
         }),
+        hooks: Some(HookBinding::SameFile {
+            shape: HookShape::Nested {
+                event: "PreToolUse",
+                with_timeout: false,
+            },
+            path: &["hooks"],
+        }),
+        global_hook: Some(GlobalHook {
+            base: HookBase::Home,
+            anchor: ".qwen/settings.json",
+        }),
+        gate_deny: Some(DenyShape::ClaudeNested),
         default_env: &[("QWEN_CODE_SUPPRESS_YOLO_WARNING", "1")],
         build_argv: argv_qwen,
     },
@@ -226,6 +427,17 @@ static REGISTRY: &[HarnessSpec] = &[
             hooks_path: None,
             schema_seed: None,
         }),
+        hooks: Some(HookBinding::SameFile {
+            shape: HookShape::Flat {
+                event: "PreToolUse",
+            },
+            path: &["hooks"],
+        }),
+        global_hook: Some(GlobalHook {
+            base: HookBase::ConfigHome,
+            anchor: "crush/crush.json",
+        }),
+        gate_deny: Some(DenyShape::Decision("deny")),
         default_env: &[],
         build_argv: argv_crush,
     },
@@ -237,6 +449,19 @@ static REGISTRY: &[HarnessSpec] = &[
         output_format: OutputFormat::Text,
         supports_resume: false,
         sync: None,
+        hooks: Some(HookBinding::File {
+            shape: HookShape::CrossShell {
+                event: "preToolUse",
+            },
+            file: ".github/hooks/{name}.json",
+            path: &["hooks"],
+            seed: Some(r#"{"version":1}"#),
+        }),
+        global_hook: Some(GlobalHook {
+            base: HookBase::Home,
+            anchor: ".copilot/hooks/{name}.json",
+        }),
+        gate_deny: Some(DenyShape::CopilotFlat),
         default_env: &[],
         build_argv: argv_copilot,
     },
@@ -255,6 +480,23 @@ static REGISTRY: &[HarnessSpec] = &[
             hooks_path: None,
             schema_seed: Some(r#"{"permissions":{"allow":[],"deny":[]}}"#),
         }),
+        hooks: Some(HookBinding::File {
+            shape: HookShape::CommandOnly {
+                events: &[
+                    "beforeShellExecution",
+                    "beforeReadFile",
+                    "beforeMCPExecution",
+                ],
+            },
+            file: ".cursor/hooks.json",
+            path: &["hooks"],
+            seed: Some(r#"{"version":1}"#),
+        }),
+        global_hook: Some(GlobalHook {
+            base: HookBase::Home,
+            anchor: ".cursor/hooks.json",
+        }),
+        gate_deny: Some(DenyShape::CursorPermission),
         default_env: &[],
         build_argv: argv_cursor,
     },

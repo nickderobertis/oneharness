@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::harness;
+use crate::domain::hooks::HookSpec;
 use crate::domain::report::OutputFormat;
 
 /// One config file, as written by the user. Every field is optional: an absent
@@ -54,6 +55,14 @@ pub struct FileConfig {
     /// Deny rules; synced like `allowed_tools` (for crush this lands in
     /// `options.disabled_tools`, hiding the tool entirely).
     pub denied_tools: Option<Vec<String>>,
+    /// Normalized pre-tool hooks, each fanned across the synced harnesses by
+    /// `oneharness sync` and rendered into every harness's native shape (a
+    /// shared config file, a dedicated hooks file, or a plugin). Unlike the
+    /// verbatim per-harness `[harness.<id>.hooks]` table — which is one
+    /// harness's own schema, limited to harnesses whose hooks share their
+    /// config file — a `[[hooks]]` entry is harness-agnostic and reaches all of
+    /// them. The two are independent and may both be set.
+    pub hooks: Option<Vec<HookEntry>>,
     /// Extra environment for every harness process (like repeated `--env`).
     #[serde(default)]
     pub env: BTreeMap<String, String>,
@@ -97,6 +106,30 @@ pub struct HarnessConfig {
     pub env: BTreeMap<String, String>,
 }
 
+/// One `[[hooks]]` entry: a pre-tool gate installed into each targeted harness.
+/// The `command` may contain `{harness}`, replaced with the harness id when the
+/// hook is built (so one entry can route `mygate hook {harness}` to every CLI).
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookEntry {
+    /// The command the harness runs before a tool call. `{harness}` is
+    /// substituted with the harness id. Required and non-empty.
+    pub command: String,
+    /// Tool-name matcher in the harness's dialect (most read it as a regex);
+    /// applied to every targeted harness as written. Absent means match-all.
+    pub matcher: Option<String>,
+    /// Timeout in seconds, for the harnesses whose hook schema carries one
+    /// (Goose, Crush); ignored by the others.
+    pub timeout: Option<u64>,
+    /// Identity for plugin-delivered harnesses (Goose, OpenCode) and Copilot's
+    /// per-owner file, so two tools' hooks never collide. Defaults to
+    /// `oneharness`.
+    pub plugin_name: Option<String>,
+    /// Restrict this entry to these harness ids; absent means every harness
+    /// being synced.
+    pub harnesses: Option<Vec<String>>,
+}
+
 /// Parse one config file's text. Pure: the caller supplies the text and
 /// attaches the path to any error. Rejects unknown fields, unknown harness
 /// ids, and a selection that sets both `all` and `harnesses`.
@@ -110,11 +143,17 @@ fn validate(config: &FileConfig) -> Result<(), String> {
     if config.all == Some(true) && config.harnesses.is_some() {
         return Err("`all = true` and `harnesses` are mutually exclusive".to_string());
     }
+    let hook_harnesses = config
+        .hooks
+        .iter()
+        .flatten()
+        .flat_map(|h| h.harnesses.iter().flatten());
     let named = config
         .harnesses
         .iter()
         .flatten()
         .chain(config.exclude.iter().flatten())
+        .chain(hook_harnesses)
         .map(String::as_str)
         .chain(config.harness.keys().map(String::as_str));
     for id in named {
@@ -123,6 +162,26 @@ fn validate(config: &FileConfig) -> Result<(), String> {
                 "unknown harness id `{id}`. valid ids: {}",
                 harness::valid_ids()
             ));
+        }
+    }
+    // A `[[hooks]]` entry must carry a command, and any harness it explicitly
+    // targets must be one oneharness can install a hook into — a hook that
+    // could never land is a loud error, not a silent drop.
+    for entry in config.hooks.iter().flatten() {
+        if entry.command.trim().is_empty() {
+            return Err("a `[[hooks]]` entry needs a non-empty `command`".to_string());
+        }
+        for id in entry.harnesses.iter().flatten() {
+            // ids are validated above; unwrap is safe here.
+            if harness::by_id(id)
+                .expect("hook harness id validated")
+                .hooks
+                .is_none()
+            {
+                return Err(format!(
+                    "`[[hooks]]` targets harness `{id}`, which oneharness cannot install a hook into"
+                ));
+            }
         }
     }
     // Sync settings scoped to a harness whose config file (if any) has no
@@ -214,6 +273,7 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
         require_available: over.require_available.or(base.require_available),
         allowed_tools: over.allowed_tools.or(base.allowed_tools),
         denied_tools: over.denied_tools.or(base.denied_tools),
+        hooks: over.hooks.or(base.hooks),
         env,
         harness,
     }
@@ -265,6 +325,27 @@ impl FileConfig {
     /// hooks schemas are harness-specific, so there is no top-level form).
     pub fn hooks_for(&self, id: &str) -> Option<&toml::Value> {
         self.harness.get(id).and_then(|h| h.hooks.as_ref())
+    }
+
+    /// The normalized `[[hooks]]` that apply to harness `id`, ready to install:
+    /// entries with no `harnesses` filter or one naming `id`, with `{harness}`
+    /// substituted in the command. Order follows the config (later entries
+    /// install after earlier ones).
+    pub fn hook_specs_for(&self, id: &str) -> Vec<HookSpec> {
+        self.hooks
+            .iter()
+            .flatten()
+            .filter(|entry| match &entry.harnesses {
+                Some(ids) => ids.iter().any(|h| h == id),
+                None => true,
+            })
+            .map(|entry| HookSpec {
+                command: entry.command.replace("{harness}", id),
+                matcher: entry.matcher.clone(),
+                timeout: entry.timeout,
+                plugin_name: entry.plugin_name.clone(),
+            })
+            .collect()
     }
 
     /// The raw settings table for one harness, if configured (per-harness
@@ -347,6 +428,7 @@ pub struct ConfigReport {
     pub require_available: Field<bool>,
     pub allowed_tools: Field<Vec<String>>,
     pub denied_tools: Field<Vec<String>>,
+    pub hooks: Field<Vec<HookEntry>>,
     /// Per-key provenance for the top-level `[env]`.
     pub env: BTreeMap<String, Field<String>>,
     /// Per-harness overrides, with per-field provenance.
@@ -471,6 +553,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         require_available: pick(layers, |c| c.require_available).or_default(false),
         allowed_tools: pick(layers, |c| c.allowed_tools.clone()),
         denied_tools: pick(layers, |c| c.denied_tools.clone()),
+        hooks: pick(layers, |c| c.hooks.clone()),
         env,
         harness,
     }
@@ -528,6 +611,56 @@ mod tests {
         assert_eq!(c.bin_for("claude-code"), Some("/opt/claude"));
         assert_eq!(c.args_for("claude-code"), ["--max-turns", "6"]);
         assert_eq!(c.args_for("codex"), Vec::<String>::new().as_slice());
+    }
+
+    #[test]
+    fn normalized_hooks_filter_and_substitute_per_harness() {
+        let c = parsed(
+            r#"
+            [[hooks]]
+            command = "mygate hook {harness}"
+            matcher = "Bash"
+            timeout = 10
+
+            [[hooks]]
+            command = "extra hook"
+            harnesses = ["codex"]
+            "#,
+        );
+        // The unfiltered entry applies everywhere with `{harness}` resolved; the
+        // filtered one only adds to codex.
+        let claude = c.hook_specs_for("claude-code");
+        assert_eq!(claude.len(), 1);
+        assert_eq!(claude[0].command, "mygate hook claude-code");
+        assert_eq!(claude[0].matcher.as_deref(), Some("Bash"));
+        assert_eq!(claude[0].timeout, Some(10));
+
+        let codex = c.hook_specs_for("codex");
+        assert_eq!(codex.len(), 2);
+        assert_eq!(codex[0].command, "mygate hook codex");
+        assert_eq!(codex[1].command, "extra hook");
+    }
+
+    #[test]
+    fn hooks_merge_replaces_the_list_per_layer() {
+        let base = parsed("[[hooks]]\ncommand = \"user gate\"");
+        let over = parsed("[[hooks]]\ncommand = \"project gate\"");
+        let merged = merge(base, over);
+        let specs = merged.hook_specs_for("claude-code");
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].command, "project gate");
+    }
+
+    #[test]
+    fn an_empty_hook_command_is_rejected() {
+        let err = parse("[[hooks]]\ncommand = \"  \"").unwrap_err();
+        assert!(err.contains("non-empty `command`"), "{err}");
+    }
+
+    #[test]
+    fn a_hook_targeting_an_unknown_harness_is_rejected() {
+        let err = parse("[[hooks]]\ncommand = \"x\"\nharnesses = [\"bogus\"]").unwrap_err();
+        assert!(err.contains("bogus"), "{err}");
     }
 
     #[test]

@@ -25,3 +25,6 @@ allowed_tools = [\"bash\"]" "$ok" present allow
 oh_sync_enforce crush "[harness.crush]
 denied_tools = [\"bash\"]" "$blocked" absent deny
 note "PASS: crush sync enforcement"
+
+note "» hook enforcement: the synced gate must block a marked command"
+oh_hook_enforce crush

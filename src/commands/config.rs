@@ -5,9 +5,9 @@
 
 use crate::cli::ConfigArgs;
 use crate::commands::print_json;
-use crate::domain::config as domain_config;
-use crate::errors::OneharnessError;
-use crate::io::config as config_io;
+use oneharness_core::domain::config as domain_config;
+use oneharness_core::errors::OneharnessError;
+use oneharness_core::io::config as config_io;
 
 pub fn run(args: &ConfigArgs) -> Result<i32, OneharnessError> {
     // Mirror `run`'s discovery exactly (--cwd, else the current directory) so

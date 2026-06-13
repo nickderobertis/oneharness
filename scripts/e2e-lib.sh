@@ -8,7 +8,7 @@
 # process envelope is reported, and `text` extraction lands.
 #
 # The contract under test is oneharness's own stdout report (see README and
-# src/domain/report.rs). A script:
+# crates/oneharness-core/src/domain/report.rs). A script:
 #   1. picks a high-entropy MARKER the model cannot reproduce from memory,
 #   2. asks the harness (via oneharness) to echo exactly that marker,
 #   3. asserts status=ok / exit_code=0 and that the marker surfaced in the

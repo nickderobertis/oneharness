@@ -2,9 +2,21 @@
 
 use std::path::PathBuf;
 
+use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Args, Parser, Subcommand};
 
-use crate::domain::report::OutputFormat;
+use oneharness_core::domain::report::OutputFormat;
+
+/// Parse `--output-format` into the core [`OutputFormat`], keeping the
+/// possible-value list (and its `--help` listing + validation error) here in
+/// the binary so `oneharness-core` need not depend on `clap`.
+fn output_format_parser() -> impl TypedValueParser<Value = OutputFormat> {
+    PossibleValuesParser::new(["text", "json", "stream-json"]).map(|s| match s.as_str() {
+        "text" => OutputFormat::Text,
+        "json" => OutputFormat::Json,
+        _ => OutputFormat::StreamJson,
+    })
+}
 
 const ABOUT: &str =
     "One CLI across many agentic coding harnesses. Emits JSON for programmatic consumers.";
@@ -98,7 +110,7 @@ pub struct RunArgs {
     /// Override the output format requested from each harness (default: the
     /// per-harness default; see `oneharness list`). Affects both the emitted
     /// format flag and how `text` is extracted.
-    #[arg(long, value_enum)]
+    #[arg(long, value_parser = output_format_parser())]
     pub output_format: Option<OutputFormat>,
 
     /// Write each harness's raw stdout/stderr to <DIR>/<harness>.stdout and

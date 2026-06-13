@@ -4,14 +4,16 @@ use std::time::Duration;
 
 use crate::cli::RunArgs;
 use crate::commands::{print_json, select_specs};
-use crate::domain::harness::{self, BuildCtx, HarnessSpec};
-use crate::domain::report::{Capture, OutputFormat, RunReport, RunResult, Status, SCHEMA_VERSION};
-use crate::domain::signals::Usage;
-use crate::domain::{normalize, signals};
-use crate::errors::OneharnessError;
-use crate::io::config as config_io;
-use crate::io::detect::{self, BinOverrides};
-use crate::io::runner::{self, Job};
+use oneharness_core::domain::harness::{self, BuildCtx, HarnessSpec};
+use oneharness_core::domain::report::{
+    Capture, OutputFormat, RunReport, RunResult, Status, SCHEMA_VERSION,
+};
+use oneharness_core::domain::signals::Usage;
+use oneharness_core::domain::{normalize, signals};
+use oneharness_core::errors::OneharnessError;
+use oneharness_core::io::config as config_io;
+use oneharness_core::io::detect::{self, BinOverrides};
+use oneharness_core::io::runner::{self, Job};
 
 /// Exit codes (clap uses 2 for argument errors).
 const EXIT_OK: i32 = 0;

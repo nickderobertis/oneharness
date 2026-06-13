@@ -4,9 +4,9 @@ use serde::Serialize;
 
 use crate::cli::ListArgs;
 use crate::commands::print_json;
-use crate::domain::harness::{self, BuildCtx};
-use crate::domain::report::OutputFormat;
-use crate::errors::OneharnessError;
+use oneharness_core::domain::harness::{self, BuildCtx};
+use oneharness_core::domain::report::OutputFormat;
+use oneharness_core::errors::OneharnessError;
 
 #[derive(Serialize)]
 struct HarnessInfo {
@@ -67,7 +67,7 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
         .collect();
 
     let report = ListReport {
-        schema_version: crate::domain::report::SCHEMA_VERSION,
+        schema_version: oneharness_core::domain::report::SCHEMA_VERSION,
         harnesses,
     };
     print_json(&report, args.compact)?;

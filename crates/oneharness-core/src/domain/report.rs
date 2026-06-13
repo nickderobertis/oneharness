@@ -3,7 +3,6 @@
 //! The JSON report carries a `schema_version`: consumers depend on it, so fields
 //! are added, never repurposed or removed, without bumping the version.
 
-use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::signals::Usage;
@@ -13,10 +12,10 @@ pub const SCHEMA_VERSION: &str = "0.1";
 
 /// How a harness emits its result, which decides how `text` is extracted.
 ///
-/// Also accepted as a CLI value (`--output-format`) and a config-file value
-/// (`output_format`); `ValueEnum`/`Deserialize` are parsing concerns on this
-/// data type, not I/O, so it stays in the domain layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+/// Also accepted as a CLI value (`--output-format`, parsed in the `oneharness`
+/// binary) and a config-file value (`output_format`, via `Deserialize`). The
+/// CLI parsing lives in the binary so this core crate stays free of `clap`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OutputFormat {
     /// Plain text on stdout; `text` is the trimmed stdout.

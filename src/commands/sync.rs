@@ -8,12 +8,12 @@ use serde::Serialize;
 
 use crate::cli::SyncArgs;
 use crate::commands::{print_json, select_specs};
-use crate::domain::report::SCHEMA_VERSION;
-use crate::domain::{harness, sync as sync_domain};
-use crate::errors::OneharnessError;
-use crate::io::config as config_io;
-use crate::io::hooks as hooks_io;
-use crate::io::sync::{self as sync_io, FileStatus};
+use oneharness_core::domain::report::SCHEMA_VERSION;
+use oneharness_core::domain::{harness, sync as sync_domain};
+use oneharness_core::errors::OneharnessError;
+use oneharness_core::io::config as config_io;
+use oneharness_core::io::hooks as hooks_io;
+use oneharness_core::io::sync::{self as sync_io, FileStatus};
 
 #[derive(Serialize)]
 struct SyncReport {

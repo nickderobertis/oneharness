@@ -23,9 +23,19 @@ publish = false
 # major). Re-enable once the gate can be enforced in CI.
 semver_check = false
 
-# Single binary crate: tag and name each release `vX.Y.Z`, matching v0.1.0..v0.2.0.
+# Tag and name each release `vX.Y.Z`, matching v0.1.0..v0.2.0. Only the
+# `oneharness` binary is released (see the per-package block below); the
+# `oneharness-core` library is internal — shipped inside the binary and consumed
+# as a git dependency by sibling tools — so one `vX.Y.Z` tag still means one thing.
 git_tag_name = "v{{ version }}"
 git_release_name = "v{{ version }}"
+
+# The reusable engine crate is never released, tagged, or changelogged on its
+# own. The binary depends on it by path with no version requirement, so the two
+# versions need not move together.
+[[package]]
+name = "oneharness-core"
+release = false
 
 # Keep-a-Changelog-style grouping. The version bump is computed from the
 # conventional-commit *type* (pre-1.0 follows Cargo's 0.x rules: feat/fix/perf ->

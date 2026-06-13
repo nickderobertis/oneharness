@@ -4,9 +4,9 @@ use serde::Serialize;
 
 use crate::cli::DetectArgs;
 use crate::commands::{print_json, select_specs};
-use crate::errors::OneharnessError;
-use crate::io::config as config_io;
-use crate::io::detect::{self, BinOverrides};
+use oneharness_core::errors::OneharnessError;
+use oneharness_core::io::config as config_io;
+use oneharness_core::io::detect::{self, BinOverrides};
 
 #[derive(Serialize)]
 struct DetectInfo {
@@ -62,7 +62,7 @@ pub fn run(args: &DetectArgs) -> Result<i32, OneharnessError> {
     let any_missing = detected.iter().any(|d| !d.available);
 
     let report = DetectReport {
-        schema_version: crate::domain::report::SCHEMA_VERSION,
+        schema_version: oneharness_core::domain::report::SCHEMA_VERSION,
         detected,
     };
     print_json(&report, args.compact)?;

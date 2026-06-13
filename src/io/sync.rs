@@ -80,7 +80,7 @@ pub fn apply(
 
 /// Pretty-print and write via a temp file + rename, so a crash mid-write can
 /// never leave a harness with a truncated config file.
-fn write_atomically(target: &Path, value: &Value) -> Result<(), OneharnessError> {
+pub(crate) fn write_atomically(target: &Path, value: &Value) -> Result<(), OneharnessError> {
     let write_err = |source: std::io::Error| OneharnessError::HarnessConfigWrite {
         path: target.display().to_string(),
         source,

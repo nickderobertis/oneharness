@@ -33,6 +33,9 @@ pub enum OneharnessError {
     #[error("cannot sync into `{path}`: {message} (oneharness only rewrites files it can parse, so it never destroys content it does not understand)")]
     HarnessConfigUnmergeable { path: String, message: String },
 
+    #[error("harness `{id}` has no hook mapping, so oneharness cannot install a hook into it")]
+    HookUnsupported { id: String },
+
     #[error("could not write harness config `{path}`: {source}")]
     HarnessConfigWrite {
         path: String,

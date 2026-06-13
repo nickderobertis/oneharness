@@ -25,15 +25,22 @@ pub struct HookSpec {
     pub command: String,
     pub matcher: Option<String>,
     pub timeout: Option<u64>,
+    /// Identity for the plugin-delivered harnesses (Goose, OpenCode): it names
+    /// the plugin directory/file/manifest and the dedicated Copilot hook file,
+    /// so two tools installing hooks never clobber each other's plugin. Ignored
+    /// by harnesses that merge into a shared config file. The delivery layer
+    /// falls back to `oneharness` when this is `None`.
+    pub plugin_name: Option<String>,
 }
 
 impl HookSpec {
-    /// A bare command hook with no matcher and no timeout.
+    /// A bare command hook with no matcher, timeout, or explicit plugin name.
     pub fn command(command: impl Into<String>) -> Self {
         Self {
             command: command.into(),
             matcher: None,
             timeout: None,
+            plugin_name: None,
         }
     }
 }
@@ -138,6 +145,7 @@ mod tests {
             command: "guard hook claude-code".into(),
             matcher: Some("Bash".into()),
             timeout: Some(10),
+            plugin_name: None,
         };
         let shape = HookShape::Nested {
             event: "PreToolUse",
@@ -164,6 +172,7 @@ mod tests {
             command: "guard hook goose".into(),
             matcher: Some("^(shell|read)$".into()),
             timeout: Some(10),
+            plugin_name: None,
         };
         let shape = HookShape::Nested {
             event: "PreToolUse",
@@ -191,6 +200,7 @@ mod tests {
             command: "guard hook crush".into(),
             matcher: Some("bash".into()),
             timeout: Some(10),
+            plugin_name: None,
         };
         assert_eq!(
             render(
@@ -286,6 +296,7 @@ mod tests {
             command: "guard hook goose".into(),
             matcher: None,
             timeout: None,
+            plugin_name: None,
         };
         let rendered = render(
             &spec,

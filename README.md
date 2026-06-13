@@ -209,6 +209,17 @@ require_available = false       # --require-available
 allowed_tools = ["Bash(git log:*)"]  # synced into each harness's config file
 denied_tools = ["Bash(rm:*)"]        # (see `oneharness sync` below)
 
+# A normalized pre-tool hook, fanned across every synced harness and rendered
+# into each one's native shape (a shared config file, a dedicated hooks file,
+# or a plugin). `{harness}` is replaced with the harness id. Unlike the
+# verbatim `[harness.<id>.hooks]` table below, this reaches ALL harnesses.
+[[hooks]]
+command = "mygate hook {harness}"   # required; {harness} → claude-code, codex, …
+matcher = "Bash"                    # optional tool-name matcher (harness dialect)
+timeout = 10                        # optional; honored where the schema has one
+# plugin_name = "mygate"            # optional identity for plugin/Copilot files
+# harnesses = ["claude-code"]       # optional; default = every synced harness
+
 [env]                           # --env, for every harness
 RUST_LOG = "warn"
 
@@ -234,13 +245,24 @@ bash = { "git *" = "allow" }
 
 ### Syncing harness configs
 
-`allowed_tools`, `denied_tools`, `hooks`, and `settings` are **sync settings**:
-instead of being passed on each invocation, **`oneharness sync`** merges them
-into each harness's *own* project config file (the *synced config file* column
-in the matrix). That makes oneharness a config-sync dev tool: state the policy
-once in `oneharness.toml`, run `sync`, and it governs Claude Code, Cursor,
-Qwen, crush, and OpenCode even when they're used directly — oneharness is not
-needed at run time.
+`allowed_tools`, `denied_tools`, `hooks`, `settings`, and the top-level
+`[[hooks]]` are **sync settings**: instead of being passed on each invocation,
+**`oneharness sync`** merges them into each harness's *own* project config file
+(the *synced config file* column in the matrix). That makes oneharness a
+config-sync dev tool: state the policy once in `oneharness.toml`, run `sync`,
+and it governs Claude Code, Cursor, Qwen, crush, and OpenCode even when they're
+used directly — oneharness is not needed at run time.
+
+Hooks come in two forms. A `[harness.<id>.hooks]` table is written *verbatim*
+in that harness's own hooks schema, so it only reaches harnesses whose hooks
+live in the config file oneharness already syncs (Claude Code). A top-level
+`[[hooks]]` entry is **normalized**: oneharness renders it into each harness's
+native shape and delivers it the right way for that harness — merged into a
+shared file (Claude Code, Qwen, crush), written to a dedicated hooks file
+(Codex, Cursor, Copilot), or installed as a plugin (Goose's manifest +
+`hooks.json`, OpenCode's JS shim). One `[[hooks]]` entry therefore installs the
+same gate into **all eight** harnesses. The per-harness install appears under a
+`hooks` array in each entry of the `sync` JSON report.
 
 ```console
 oneharness sync                  # write/merge the harness config files in this project

@@ -2364,6 +2364,90 @@ fn sync_with_nothing_configured_skips_everything() {
 }
 
 #[test]
+fn sync_installs_normalized_hooks_across_harness_shapes() {
+    // One `[[hooks]]` entry fans across harnesses with structurally different
+    // hook formats: a shared-file merge (claude-code), a dedicated file
+    // (codex), and a JS plugin shim (opencode). `{harness}` is substituted.
+    let project =
+        "[[hooks]]\ncommand = \"mygate hook {harness}\"\nmatcher = \"Bash\"\ntimeout = 10\n";
+    let fx = ConfigFixture::new("sync-hooks", project, "");
+    let output = run_with_config(
+        &[
+            "sync",
+            "--harness",
+            "claude-code",
+            "--harness",
+            "codex",
+            "--harness",
+            "opencode",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+
+    // claude-code: merged into its settings file, with `{harness}` resolved.
+    let claude = sync_result(&value, "claude-code");
+    assert_eq!(claude["hooks"][0]["status"], "created");
+    assert!(claude["hooks"][0]["file"]
+        .as_str()
+        .unwrap()
+        .ends_with(".claude/settings.json"));
+    let settings = read_json(&fx.dir.join(".claude/settings.json"));
+    assert_eq!(
+        settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+        "mygate hook claude-code"
+    );
+
+    // codex: a dedicated hooks file was created.
+    assert!(fx.dir.join(".codex/hooks.json").is_file());
+    assert_eq!(
+        read_json(&fx.dir.join(".codex/hooks.json"))["hooks"]["PreToolUse"][0]["hooks"][0]
+            ["command"],
+        "mygate hook codex"
+    );
+
+    // opencode: a JS shim with the command wired in as an argv array.
+    let shim = std::fs::read_to_string(fx.dir.join(".opencode/plugin/oneharness.js")).unwrap();
+    assert!(
+        shim.contains(r#"["mygate","hook","opencode"]"#),
+        "command must be wired into the shim:\n{shim}"
+    );
+
+    // Re-syncing changes nothing: --check passes with exit 0.
+    let output = run_with_config(
+        &[
+            "sync",
+            "--harness",
+            "claude-code",
+            "--harness",
+            "codex",
+            "--harness",
+            "opencode",
+            "--check",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "re-sync should be idempotent"
+    );
+}
+
+#[test]
 fn list_exposes_sync_capabilities() {
     let output = run(&["list", "--compact"], &[]);
     let value = json_stdout(&output);

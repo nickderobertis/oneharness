@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.39](https://github.com/nickderobertis/oneharness/compare/v0.2.38...v0.2.39) - 2026-06-13
+
+### Added
+
+- user-global hook install, runtime gate command, and live hook-enforcement e2e
+
 ## [0.2.38](https://github.com/nickderobertis/oneharness/compare/v0.2.37...v0.2.38) - 2026-06-13
 
 ### Added

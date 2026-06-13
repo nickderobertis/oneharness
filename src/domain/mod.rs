@@ -4,6 +4,7 @@
 
 pub mod config;
 pub mod harness;
+pub mod hooks;
 pub mod normalize;
 pub mod report;
 pub mod signals;

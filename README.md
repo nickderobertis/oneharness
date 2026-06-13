@@ -65,7 +65,7 @@ how — or whether — it reaches that harness.
 | `qwen` | Qwen Code | `qwen` | ✓ | prepended | `--yolo` | `.qwen/settings.json` | ✓ / ✓ | — | — | — |
 | `crush` | Crush | `crush` | ✓ | prepended | `run -q` (non-interactive) | `crush.json` | ✓ / ✓ | — | — | — |
 | `copilot` | GitHub Copilot CLI | `copilot` | ✓ | prepended | `--allow-all-tools --allow-all-paths --no-ask-user` | — | — | — | — | — |
-| `cursor` | Cursor CLI | `cursor-agent` | ✓ | prepended | `--force` | `.cursor/cli.json` | ✓ / ✓ | — | ✓ | `--resume` |
+| `cursor` | Cursor CLI | `cursor-agent` | ✓ | prepended | `--force` (`--trust` under `--no-bypass`) | `.cursor/cli.json` | ✓ / ✓ | — | ✓ | `--resume` |
 
 - **`model`** — ✓ means the harness takes a model flag. Goose selects its model
   from its own provider config, so `model` is intentionally not mapped for it.

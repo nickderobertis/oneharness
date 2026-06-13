@@ -399,13 +399,21 @@ fn argv_copilot(c: &BuildCtx) -> Vec<String> {
     a
 }
 
-/// `cursor-agent -p <prompt> [--force] [--model M] [--resume SID]
+/// `cursor-agent -p <prompt> [--force|--trust] [--model M] [--resume SID]
 /// --output-format stream-json` (Cursor continues a chat id with `--resume`; no
 /// system flag, so `--system` is prepended to the prompt)
 fn argv_cursor(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "-p".into(), prompt_with_system(c)];
     if c.bypass {
         a.push("--force".into());
+    } else {
+        // A headless run cannot answer Cursor's interactive workspace-trust
+        // prompt, and without trust the CLI refuses to run at all ("Workspace
+        // Trust Required", observed live). `--trust` trusts the directory the
+        // caller pointed oneharness at while leaving the permission system
+        // active — so --no-bypass still means "normal permission flow", not
+        // "cannot run".
+        a.push("--trust".into());
     }
     if let Some(m) = c.model {
         a.push("--model".into());
@@ -683,6 +691,21 @@ mod tests {
             argv.windows(2).any(|w| w == ["--resume", "chat-9"]),
             "{argv:?}"
         );
+    }
+
+    #[test]
+    fn cursor_no_bypass_trusts_the_workspace_without_force() {
+        let spec = by_id("cursor").unwrap();
+        let argv = (spec.build_argv)(&BuildCtx {
+            bypass: false,
+            ..base_ctx(spec)
+        });
+        assert!(argv.iter().any(|t| t == "--trust"), "{argv:?}");
+        assert!(!argv.iter().any(|t| t == "--force"), "{argv:?}");
+        // Bypass mode keeps the plain --force (which implies trust).
+        let argv = (spec.build_argv)(&base_ctx(spec));
+        assert!(argv.iter().any(|t| t == "--force"), "{argv:?}");
+        assert!(!argv.iter().any(|t| t == "--trust"), "{argv:?}");
     }
 
     #[test]

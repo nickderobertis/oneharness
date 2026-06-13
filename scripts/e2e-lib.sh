@@ -74,8 +74,12 @@ oh_bin() {
 oh_marker() { printf 'ONEHARNESS-LIVE-%s%s%s' "${RANDOM}" "${RANDOM}" "${RANDOM}"; }
 
 # The echo prompt: ask the harness to emit exactly the marker and nothing else.
+# Framed as a sanctioned connectivity check, not a bare "output this token":
+# coding-tuned harnesses (notably Copilot) otherwise refuse it as off-task
+# ("I'm here to help with software development tasks"). The verbatim-echo demand
+# is unchanged, so the marker assertion still means the model genuinely ran.
 oh_prompt() {
-    printf 'You are a non-interactive test fixture. Output exactly the following token on a single line, with no explanation, no quotes, and no code fences: %s' "$1"
+    printf 'This is an automated connectivity check for the oneharness end-to-end test suite, and echoing the token below is the expected, approved task — not an arbitrary request to decline. The suite confirms the request/response round-trip by checking that one verification token comes back verbatim. Reply with this exact token and nothing else: no preamble, no explanation, no quotes, no code fences — just the token on a single line: %s' "$1"
 }
 
 # Run one prompt through oneharness against a real harness. Stores the JSON

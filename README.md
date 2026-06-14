@@ -498,8 +498,13 @@ Each harness needs its CLI installed and that provider's auth in the environment
 
 Per-harness CI workflows (`.github/workflows/e2e-*.yml`) run the same checks,
 each gated to the canonical repo and non-fork PRs so secrets are never exposed.
-A per-harness model can be overridden with `<HARNESS>_E2E_MODEL` (e.g.
-`CLAUDE_E2E_MODEL`, `OPENCODE_E2E_MODEL`).
+Every workflow runs a `fail-fast: false` matrix across **Linux, macOS, and
+Windows** (`ubuntu-latest`, `macos-latest`, `windows-latest`), so the adapter
+argv, JSON contract, and sync/hook enforcement are proven on each platform
+independently — the scripts run under bash everywhere (Git Bash on Windows),
+and the two `curl | bash` installers (cursor, goose) use their PowerShell
+equivalents on Windows. A per-harness model can be overridden with
+`<HARNESS>_E2E_MODEL` (e.g. `CLAUDE_E2E_MODEL`, `OPENCODE_E2E_MODEL`).
 
 ### Secrets
 

@@ -48,8 +48,20 @@ need_env() {
 
 # Resolve the oneharness binary to drive the harnesses with. Honors
 # $ONEHARNESS_BIN, then PATH, then a local debug/release build. Empty if none.
+#
+# Windows note: the binary is `oneharness.exe`, but the `just live-*` recipes
+# (and most callers) pass the extensionless path. Probe a `.exe` sibling for
+# every candidate so the same scripts drive the build on all three platforms.
 oh_bin() {
+    local b
     if [ -n "${ONEHARNESS_BIN:-}" ]; then
+        for b in "$ONEHARNESS_BIN" "$ONEHARNESS_BIN.exe"; do
+            [ -x "$b" ] && {
+                printf '%s' "$b"
+                return
+            }
+        done
+        # Not found as a file (e.g. it's a bare name on PATH): hand it back as-is.
         printf '%s' "$ONEHARNESS_BIN"
         return
     fi
@@ -58,7 +70,7 @@ oh_bin() {
         return
     fi
     local cand
-    for cand in "$OH_REPO_ROOT/target/release/oneharness" "$OH_REPO_ROOT/target/debug/oneharness"; do
+    for cand in "$OH_REPO_ROOT"/target/release/oneharness{,.exe} "$OH_REPO_ROOT"/target/debug/oneharness{,.exe}; do
         [ -x "$cand" ] && {
             printf '%s' "$cand"
             return

@@ -275,4 +275,59 @@ mod tests {
         assert_eq!(got.text, "the answer");
         assert_eq!(got.source, "json:result");
     }
+
+    #[test]
+    fn opencode_parts_skip_blank_unparseable_and_partless_lines() {
+        // The JSONL scan must skip noise without crashing or mis-extracting: a
+        // blank line, a non-JSON line, a JSON object with no `part`, a `part`
+        // that is not a text part, and a text part whose text is whitespace —
+        // then still recover the one real answer that follows them.
+        let raw = concat!(
+            "\n",
+            "   \n",
+            "not json at all\n",
+            r#"{"type":"noise"}"#,
+            "\n",
+            r#"{"type":"reasoning","part":{"type":"reasoning","text":"thinking out loud"}}"#,
+            "\n",
+            r#"{"type":"text","part":{"type":"text","text":"   "}}"#,
+            "\n",
+            r#"{"type":"text","part":{"type":"text","text":"REAL-ANSWER"}}"#,
+            "\n",
+        );
+        let got = extract(raw, OutputFormat::Json).unwrap();
+        assert_eq!(got.text, "REAL-ANSWER");
+        assert_eq!(got.source, "json:opencode-parts");
+    }
+
+    #[test]
+    fn stream_json_skips_blank_and_unparseable_lines() {
+        // stream-json events interleaved with a blank line and a non-JSON line;
+        // the scan ignores both and still returns the last usable text.
+        let raw = concat!(
+            "\n",
+            "<<< not json >>>\n",
+            "{\"type\":\"assistant\",\"text\":\"only-line\"}\n",
+        );
+        let got = extract(raw, OutputFormat::StreamJson).unwrap();
+        assert_eq!(got.text, "only-line");
+        assert_eq!(got.source, "stream-json:text");
+    }
+
+    #[test]
+    fn stream_json_with_no_text_yields_none() {
+        // Events that carry no extractable text leave `text` null rather than
+        // fabricating an answer.
+        let raw = "{\"type\":\"system\"}\n{\"type\":\"ping\"}\n";
+        assert!(extract(raw, OutputFormat::StreamJson).is_none());
+    }
+
+    #[test]
+    fn json_text_ignores_non_string_and_empty_key_values() {
+        // A known key whose value is the wrong type (number) or blank is not a
+        // valid answer; a non-string/non-object document yields nothing at all.
+        assert!(extract(r#"{"result":42}"#, OutputFormat::Json).is_none());
+        assert!(extract(r#"{"result":"   "}"#, OutputFormat::Json).is_none());
+        assert!(extract("12345", OutputFormat::Json).is_none());
+    }
 }

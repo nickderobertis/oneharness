@@ -9,18 +9,26 @@ set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 # Feature that builds the test-only mock harness fixture the e2e tests drive.
 FEATURES := "mock-harness"
 
+# Minimum line coverage the gate enforces. The skill's default is 95%; see
+# AGENTS.md "Tests are context engineering" for why this is a hard gate.
+COVERAGE_MIN := "95"
+
 # List available recipes.
 default:
     @just --list
 
-# Set up from a clean clone: toolchain components + fetched dependencies.
+# Set up from a clean clone: toolchain components + fetched dependencies. The
+# `llvm-tools-preview` component is what `cargo llvm-cov` needs to instrument the
+# build for the coverage gate.
 bootstrap:
-    rustup component add rustfmt clippy
+    rustup component add rustfmt clippy llvm-tools-preview
     cargo fetch --locked
 
-# Full quality gate: format check, lint (Rust + shell), tests, build, artifact
-# smoke. Fails on any issue.
-check: fmt-check lint lint-sh test build smoke
+# Full quality gate: format check, lint (Rust + shell), tests *with enforced
+# coverage*, build, artifact smoke. Fails on any issue. `coverage` re-runs the
+# workspace suite under instrumentation and fails below {{COVERAGE_MIN}}% lines;
+# `test` stays in the gate as the fast, un-instrumented pass/fail signal.
+check: fmt-check lint lint-sh test coverage build smoke
     @echo "check: ok"
 
 # Verify formatting without modifying files.
@@ -49,6 +57,38 @@ lint-sh:
 # integration tests; prefers nextest, falls back to cargo test).
 test:
     if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --workspace --features {{FEATURES}} --locked; else cargo test --workspace --features {{FEATURES}} --locked; fi
+
+# Run the workspace suite under instrumentation and FAIL if line coverage drops
+# below {{COVERAGE_MIN}}%. This is the coverage gate (part of `just check` and
+# CI): a behavior the tests never execute is a hole, and the number makes it
+# visible. `--workspace` so the `oneharness-core` engine is measured alongside the
+# binary. Uses nextest when present (same runner as `test`), else `cargo test`.
+# `just coverage-html` writes a browsable report for finding the uncovered lines.
+#
+# Coverage is a platform-independent property of the test suite, so it is measured
+# on Linux/macOS where llvm-cov's instrumentation attributes subprocess-spawned
+# binary coverage reliably. On Windows that attribution is broken — the integration
+# tests in tests/cli.rs drive the *built* binary as a subprocess, and its profraw
+# data is not collected, so the binary crate reads as ~0% there (a tooling
+# limitation, not a real gap). The full functional gate (test/build/smoke) still
+# runs on Windows; only the coverage measurement is skipped, with a notice.
+coverage:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "${OS:-}" == "Windows_NT" ]]; then
+        echo "coverage: skipped on Windows (llvm-cov subprocess attribution under-reports; measured on Linux/macOS — see justfile)"
+        exit 0
+    fi
+    if command -v cargo-nextest >/dev/null 2>&1; then
+        cargo llvm-cov nextest --workspace --features {{FEATURES}} --locked --fail-under-lines {{COVERAGE_MIN}}
+    else
+        cargo llvm-cov --workspace --features {{FEATURES}} --locked --fail-under-lines {{COVERAGE_MIN}}
+    fi
+
+# Browsable coverage report (kept out of the gate; opens uncovered lines per file).
+coverage-html:
+    cargo llvm-cov --workspace --features {{FEATURES}} --locked --html
+    @echo "report: target/llvm-cov/html/index.html"
 
 # Run only the end-to-end CLI tests.
 e2e:

@@ -2851,3 +2851,91 @@ fn config_command_attributes_settings_tables() {
         .unwrap()
         .ends_with("oneharness.toml"));
 }
+
+#[test]
+fn prompt_file_reads_the_prompt_from_a_file() {
+    // `--prompt-file PATH` is the file-backed alternative to `--prompt`; the file
+    // contents become the prompt verbatim and reach the harness argv.
+    let dir = std::env::temp_dir().join(format!("oneharness-pf-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("prompt.txt");
+    std::fs::write(&file, "prompt-from-a-file").unwrap();
+
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt-file",
+            &file.display().to_string(),
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let command: Vec<String> = value["results"][0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        command.iter().any(|t| t == "prompt-from-a-file"),
+        "{command:?}"
+    );
+}
+
+#[test]
+fn prompt_file_dash_reads_the_prompt_from_stdin() {
+    // `--prompt-file -` reads the prompt from stdin (how a pipeline feeds a long
+    // or generated prompt without a temp file).
+    let output = run_with_stdin(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt-file",
+            "-",
+            "--print-command",
+            "--compact",
+        ],
+        "prompt-from-stdin",
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let command: Vec<String> = value["results"][0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        command.iter().any(|t| t == "prompt-from-stdin"),
+        "{command:?}"
+    );
+}
+
+#[test]
+fn prompt_file_missing_path_is_a_usage_error() {
+    // A `--prompt-file` pointing at a nonexistent path is a clean usage error
+    // (exit 2) with the path surfaced, not a panic.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt-file",
+            "/no/such/oneharness-prompt-file-xyz",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("oneharness-prompt-file-xyz"),
+        "stderr should name the bad path: {stderr}"
+    );
+}

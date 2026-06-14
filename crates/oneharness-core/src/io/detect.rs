@@ -124,6 +124,11 @@ fn first_line(bytes: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Serializes the env-mutating tests: the process environment is global, so
+    // concurrent set/remove from two tests in the same binary would race.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn override_takes_precedence_over_default() {
@@ -164,5 +169,48 @@ mod tests {
             Some("v1.2.3".to_string())
         );
         assert_eq!(first_line(b"   "), None);
+    }
+
+    #[test]
+    fn env_var_override_is_used_above_config_and_default() {
+        // With no `--bin` flag, the per-harness `ONEHARNESS_BIN_<ID>` env var
+        // (id upper-cased, `-`→`_`) selects the binary, ahead of any config-file
+        // bin and the spec default. A unique key keeps this independent of the
+        // ambient environment.
+        let _guard = ENV_LOCK.lock().unwrap();
+        let key = "ONEHARNESS_BIN_CLAUDE_CODE";
+        let prev = std::env::var(key).ok();
+
+        std::env::set_var(key, "/env/claude");
+        let bins = HashMap::from([("claude-code".to_string(), "/cfg/claude".to_string())]);
+        let ov = BinOverrides::parse(&[]).unwrap().with_config_bins(bins);
+        assert_eq!(ov.binary_for("claude-code", "claude"), "/env/claude");
+
+        // An empty env value is ignored — the next layer (config, then default)
+        // wins instead.
+        std::env::set_var(key, "");
+        assert_eq!(ov.binary_for("claude-code", "claude"), "/cfg/claude");
+
+        match prev {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn explicit_flag_beats_env_var() {
+        // A `--bin` flag takes precedence over the env var for the same id.
+        let _guard = ENV_LOCK.lock().unwrap();
+        let key = "ONEHARNESS_BIN_CODEX";
+        let prev = std::env::var(key).ok();
+        std::env::set_var(key, "/env/codex");
+
+        let ov = BinOverrides::parse(&["codex=/flag/codex".to_string()]).unwrap();
+        assert_eq!(ov.binary_for("codex", "codex"), "/flag/codex");
+
+        match prev {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
     }
 }

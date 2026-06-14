@@ -55,9 +55,13 @@ need_env() {
 oh_bin() {
     local b out=""
     if [ -n "${ONEHARNESS_BIN:-}" ]; then
-        # Default to the given path; prefer a `.exe` sibling if one exists.
+        # Prefer a `.exe` sibling when one exists. On Windows the synced gate hook
+        # embeds this path and a native harness (Go/Node) execs it as an explicit
+        # path — which, unlike Git Bash, is NOT auto-suffixed with `.exe`, so the
+        # hook silently fails to launch and stops blocking. A `.exe` path runs
+        # everywhere; on Unix the `.exe` candidate never matches.
         out="$ONEHARNESS_BIN"
-        for b in "$ONEHARNESS_BIN" "$ONEHARNESS_BIN.exe"; do
+        for b in "$ONEHARNESS_BIN.exe" "$ONEHARNESS_BIN"; do
             if [ -x "$b" ]; then
                 out="$b"
                 break
@@ -67,7 +71,7 @@ oh_bin() {
         out="oneharness"
     else
         local cand
-        for cand in "$OH_REPO_ROOT"/target/release/oneharness{,.exe} "$OH_REPO_ROOT"/target/debug/oneharness{,.exe}; do
+        for cand in "$OH_REPO_ROOT"/target/release/oneharness{.exe,} "$OH_REPO_ROOT"/target/debug/oneharness{.exe,}; do
             if [ -x "$cand" ]; then
                 out="$cand"
                 break
@@ -93,6 +97,37 @@ oh_native_path() {
     else
         printf '%s' "$1"
     fi
+}
+
+# Per-harness preparation of the enforcement scratch dir, run after it's created
+# and before the harness is driven. Claude gates project `.claude/settings.json`
+# (permissions AND hooks) behind a per-directory trust flag in ~/.claude.json;
+# headless on Windows there is no prompt to accept it, so the synced policy is
+# silently ignored and every tool call default-denies. Pre-accept trust for the
+# sandbox under each path spelling claude might canonicalize it to. Harmless and
+# non-destructive elsewhere (jq merge preserves existing config).
+oh_sandbox_prepare() {
+    local id="$1" dir="$2"
+    case "$id" in
+    claude-code)
+        command -v jq >/dev/null 2>&1 || return 0
+        local cfg="$HOME/.claude.json" k tmp existing
+        local keys=("$dir")
+        if command -v cygpath >/dev/null 2>&1; then
+            keys+=("$(cygpath -w "$dir")" "$(cygpath -wl "$dir" 2>/dev/null || cygpath -w "$dir")")
+        fi
+        for k in "${keys[@]}"; do
+            [ -f "$cfg" ] && existing="$(cat "$cfg" 2>/dev/null)" || existing=""
+            [ -n "$existing" ] || existing='{}'
+            tmp="$(mktemp)"
+            if printf '%s' "$existing" | jq --arg p "$k" '.projects[$p].hasTrustDialogAccepted = true' >"$tmp" 2>/dev/null; then
+                mv "$tmp" "$cfg"
+            else
+                rm -f "$tmp"
+            fi
+        done
+        ;;
+    esac
 }
 
 # --- driving a harness -----------------------------------------------------
@@ -244,6 +279,7 @@ oh_sync_enforce() {
 
     sandbox="$(mktemp -d)"
     sandbox="$(oh_native_path "$sandbox")"
+    oh_sandbox_prepare "$id" "$sandbox"
     printf '%s\n' "$toml" > "$sandbox/oneharness.toml"
 
     note "  enforce[$label]: syncing policy into $id's own config file"
@@ -344,6 +380,7 @@ oh_hook_enforce() {
 
     sandbox="$(mktemp -d)"
     sandbox="$(oh_native_path "$sandbox")"
+    oh_sandbox_prepare "$id" "$sandbox"
     # A real repo: some harnesses only discover project-scoped hooks inside one.
     git init -q "$sandbox" 2>/dev/null || true
     marker="OHGATEBLOCK${RANDOM}${RANDOM}"

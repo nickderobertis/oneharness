@@ -86,21 +86,36 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'
           irm 'https://cursor.com/install?win32=true' | iex
           # The installer only edits the *persistent* (registry) User PATH, which
-          # this already-running shell won't see, so locate cursor-agent.exe and
-          # put its dir on $GITHUB_PATH. The exact install root has moved between
-          # versions, so search the common roots and report where it landed.
-          $found = $null
-          foreach ($root in @($env:LOCALAPPDATA, $env:USERPROFILE, $env:APPDATA, $env:ProgramFiles) | Where-Object { $_ }) {
-            $found = Get-ChildItem -Path $root -Recurse -Filter 'cursor-agent.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($found) { break }
+          # this running shell won't see, so find the binary and put its dir on
+          # $GITHUB_PATH. The install root has moved between versions and the CLI
+          # ships as both cursor-agent.exe and an `agent.exe` alias, so search the
+          # common roots for either; if only agent.exe exists, alias it to the
+          # cursor-agent.exe name the harness invokes. Dump diagnostics on miss.
+          $roots = @($env:LOCALAPPDATA, $env:USERPROFILE, $env:APPDATA, $env:ProgramData, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:TEMP) | Where-Object { $_ } | Select-Object -Unique
+          $hits = foreach ($root in $roots) {
+            Get-ChildItem -Path $root -Recurse -Include 'cursor-agent.exe','agent.exe' -File -ErrorAction SilentlyContinue
           }
-          if ($found) {
-            Write-Host "cursor-agent found at $($found.FullName)"
-            Add-Content -Path $env:GITHUB_PATH -Value $found.DirectoryName
+          $hits | ForEach-Object { Write-Host "found: $($_.FullName)" }
+          $primary = $hits | Where-Object { $_.Name -eq 'cursor-agent.exe' } | Select-Object -First 1
+          if (-not $primary) {
+            $alias = $hits | Where-Object { $_.Name -eq 'agent.exe' } | Select-Object -First 1
+            if ($alias) {
+              $target = Join-Path $alias.DirectoryName 'cursor-agent.exe'
+              Copy-Item $alias.FullName $target -Force
+              Write-Host "aliased agent.exe -> $target"
+              $primary = Get-Item $target
+            }
+          }
+          if ($primary) {
+            Add-Content -Path $env:GITHUB_PATH -Value $primary.DirectoryName
+            Write-Host "added to PATH: $($primary.DirectoryName)"
           } else {
-            Write-Host "::warning::cursor-agent.exe not found under LOCALAPPDATA/USERPROFILE/APPDATA/ProgramFiles"
+            Write-Host "::warning::no cursor-agent.exe/agent.exe found; listing roots"
+            Get-ChildItem $env:LOCALAPPDATA -ErrorAction SilentlyContinue | Select-Object Name | Out-String | Write-Host
+            Get-ChildItem $env:USERPROFILE -ErrorAction SilentlyContinue | Select-Object Name | Out-String | Write-Host
           }
 
       # Fail the job (rather than letting the script skip) if the install did not

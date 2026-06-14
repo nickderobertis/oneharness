@@ -190,6 +190,39 @@ fn read_all<R: std::io::Read>(reader: &mut R) -> String {
 mod tests {
     use super::*;
 
+    fn job(argv: &[&str]) -> Job {
+        Job {
+            argv: argv.iter().map(|s| s.to_string()).collect(),
+            cwd: None,
+            env: Vec::new(),
+            timeout: Duration::from_secs(5),
+        }
+    }
+
+    #[test]
+    fn empty_jobs_returns_empty_without_spawning_workers() {
+        // The no-work fast path: no jobs means no captures and no threads.
+        assert!(run_jobs(&[], 4).is_empty());
+    }
+
+    #[test]
+    fn spawn_error_is_data_not_a_panic() {
+        // A binary that cannot be spawned must surface as a `SpawnError` capture
+        // with a helpful message — never a crash. Run it through `run_jobs` so the
+        // worker-pool path that fills the result slot is exercised too.
+        let jobs = [job(&["/no/such/oneharness-binary-xyz", "arg"])];
+        let captures = run_jobs(&jobs, 1);
+        assert_eq!(captures.len(), 1);
+        let cap = &captures[0];
+        assert_eq!(cap.status, Status::SpawnError);
+        assert!(cap.exit_code.is_none());
+        assert!(cap.stdout.is_empty());
+        assert!(cap.duration_ms.is_some());
+        let msg = cap.error.as_deref().unwrap_or_default();
+        assert!(msg.contains("failed to spawn"), "{msg}");
+        assert!(msg.contains("oneharness-binary-xyz"), "{msg}");
+    }
+
     #[test]
     fn resolve_program_falls_back_to_the_name_when_unresolvable() {
         // A name that PATH lookup cannot resolve must come back unchanged on every

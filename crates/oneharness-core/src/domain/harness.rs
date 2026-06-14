@@ -982,4 +982,34 @@ mod tests {
             assert_eq!(argv[0], "/custom/bin", "harness {}", h.id);
         }
     }
+
+    #[test]
+    fn model_flag_is_emitted_for_every_model_aware_harness() {
+        // Each harness that accepts a model spells the flag its own way; `--model`
+        // must reach the child via that spelling, never be dropped. Goose is the
+        // sole exception — it selects its model from its own config — so its argv
+        // is identical with and without a model (asserted separately).
+        let expected: &[(&str, &[&str])] = &[
+            ("claude-code", &["--model", "m"]),
+            ("codex", &["--model", "m"]),
+            ("opencode", &["-m", "m"]),
+            ("qwen", &["-m", "m"]),
+            ("crush", &["-m", "m"]),
+            ("copilot", &["--model", "m"]),
+            ("cursor", &["--model", "m"]),
+        ];
+        for (id, want) in expected {
+            let spec = by_id(id).unwrap();
+            let argv = (spec.build_argv)(&ctx(spec.default_bin, Some("m"), true));
+            assert!(
+                argv.windows(2).any(|w| w == *want),
+                "harness {id} should carry {want:?}; got {argv:?}"
+            );
+        }
+        // Goose deliberately ignores the model: argv is unchanged when one is set.
+        let goose = by_id("goose").unwrap();
+        let with = (goose.build_argv)(&ctx("goose", Some("m"), true));
+        let without = (goose.build_argv)(&ctx("goose", None, true));
+        assert_eq!(with, without, "goose should ignore --model");
+    }
 }

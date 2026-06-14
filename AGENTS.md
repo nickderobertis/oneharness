@@ -27,9 +27,12 @@ pulling the CLI.
 Use the `just` recipes; do not hand-roll equivalents.
 
 - `just bootstrap` — set up from a clean clone (toolchain components + fetch).
-- `just check` — full gate: format check, clippy (`-D warnings`), tests, build.
-  Must pass before any commit or PR.
+- `just check` — full gate: format check, clippy (`-D warnings`), tests, line
+  coverage (hard-gated at 95%), build, smoke. Must pass before any commit or PR.
 - `just test` / `just lint` / `just format` — individual gate steps.
+- `just coverage` — run the workspace suite under `cargo llvm-cov` and fail below
+  95% line coverage (the `COVERAGE_MIN` gate, also part of `just check` and CI).
+  `just coverage-html` writes a browsable report to find uncovered lines.
 - `just upgrade` — update dependencies, then re-run `just check`.
 - `just deps-check` — advisory/license audit (`cargo deny`); separate from the
   core gate because it needs a network-fetched advisory DB.
@@ -85,6 +88,23 @@ aren't re-litigated each session:
   `cargo-deny`: CI installs it and `just lint-sh` (part of `just check`) enforces
   it; install it locally (`apt-get`/`brew install shellcheck`) to run the full
   gate.
+- **Coverage is enforced at the skill default, 95% lines** (`COVERAGE_MIN` in the
+  justfile), via `cargo llvm-cov` — an external tool, handled like `cargo-deny`
+  and shellcheck: CI installs it (`cargo-llvm-cov` + the `llvm-tools-preview`
+  rustup component, added by `just bootstrap`) and `just coverage` (part of `just
+  check`) fails the gate below the bar. It measures the whole workspace
+  (`--workspace`), so the `oneharness-core` engine is gated alongside the binary.
+  The threshold is line coverage, not region/branch: the hermetic mock-harness
+  suite drives whole user journeys (high-leverage line coverage), and a few
+  I/O-failure arms in `crates/oneharness-core/src/io/runner.rs` (spawn/wait
+  errors) and `io/config.rs` are intentionally left ungated rather than faked with
+  brittle environment manipulation. Measured coverage sits above 95% lines; keep
+  new behavior covered rather than lowering `COVERAGE_MIN`. Coverage is a
+  platform-independent property of the suite, so it is enforced on Linux/macOS and
+  skipped on Windows, where llvm-cov does not attribute the integration tests'
+  subprocess-spawned binary coverage (a tooling limitation — the binary reads ~0%
+  there). The functional gate still runs on all three platforms; only the coverage
+  *measurement* is Linux/macOS.
 
 ## Invariants (non-negotiable)
 
@@ -181,6 +201,12 @@ shape. When you add one:
 ## Tests are context engineering
 
 - Tests are how you and future agents see this system behave; invest in them.
+- **Coverage is a hard gate at 95% lines** (`just coverage`, run inside `just
+  check` and CI, measuring the whole workspace). A user-visible change ships with
+  a test that fails without it, and the coverage number keeps a behavior the tests
+  never execute from slipping in unseen. Find the gaps with `just coverage-html`;
+  raise the tests, never lower `COVERAGE_MIN`. (Rationale and tooling notes: *How
+  this repo was composed*.)
 - The execution path is proven **hermetically** by a mock harness binary
   (`tests/support/mock_harness.rs`, built behind the `mock-harness` feature) that
   oneharness drives via a `--bin` override — no network, no real CLI, fully

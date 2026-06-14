@@ -383,4 +383,43 @@ mod tests {
     fn classify_none_when_no_signal() {
         assert!(classify_failure("just some output", "a normal error").is_none());
     }
+
+    #[test]
+    fn summed_usage_skips_partless_and_usageless_step_events() {
+        // The per-step sum must ignore events that carry no usage without
+        // mis-reading them: a bare JSON value (no object), a `step_finish` with no
+        // `part`, and a `step_finish` whose `part` has neither tokens nor cost.
+        // Only the final event contributes, so the sum equals exactly that event.
+        let raw = concat!(
+            "42\n",
+            "{\"type\":\"step_finish\",\"sessionID\":\"ses_1\"}\n",
+            "{\"type\":\"step_finish\",\"sessionID\":\"ses_1\",\"part\":{}}\n",
+            "{\"type\":\"step_finish\",\"sessionID\":\"ses_1\",\"part\":\
+             {\"cost\":0.005,\"tokens\":{\"input\":10,\"output\":2}}}\n",
+        );
+        let got = extract_usage(raw).unwrap();
+        assert_eq!(got.usage.input_tokens, Some(10));
+        assert_eq!(got.usage.output_tokens, Some(2));
+        assert!((got.usage.cost_usd.unwrap() - 0.005).abs() < 1e-9);
+        assert_eq!(got.source, "json:summed-steps");
+    }
+
+    #[test]
+    fn summed_usage_partial_step_reports_only_present_fields() {
+        // A `step_finish` whose `part` has a cost but no `tokens` object (and
+        // vice versa) yields a reading with the present field set and the absent
+        // one left null — `add_u64`/`add_f64` report "no number present" for the
+        // missing side rather than defaulting it to zero.
+        let cost_only = "{\"type\":\"step_finish\",\"part\":{\"cost\":0.02}}\n";
+        let got = extract_usage(cost_only).unwrap();
+        assert_eq!(got.usage.cost_usd, Some(0.02));
+        assert_eq!(got.usage.input_tokens, None);
+        assert_eq!(got.usage.output_tokens, None);
+
+        let tokens_only = "{\"type\":\"step_finish\",\"part\":{\"tokens\":{\"input\":5}}}\n";
+        let got = extract_usage(tokens_only).unwrap();
+        assert_eq!(got.usage.input_tokens, Some(5));
+        assert_eq!(got.usage.output_tokens, None);
+        assert_eq!(got.usage.cost_usd, None);
+    }
 }

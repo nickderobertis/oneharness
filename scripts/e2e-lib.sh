@@ -81,6 +81,20 @@ oh_bin() {
     printf '%s' "${out//\\//}"
 }
 
+# Render a path in a form a *native* (non-MSYS) process understands. On Windows
+# `mktemp -d` yields a POSIX path like /tmp/tmp.XXXX that a native harness (or
+# oneharness resolving its --cwd) cannot resolve, so a synced config lands where
+# the harness can't read it and absolute prompt paths don't exist. `cygpath -m`
+# gives a mixed C:/Users/.../tmp.XXXX path that BOTH Git Bash and Windows accept.
+# No-op on Linux/macOS, where cygpath is absent and paths are already native.
+oh_native_path() {
+    if command -v cygpath >/dev/null 2>&1; then
+        cygpath -m "$1"
+    else
+        printf '%s' "$1"
+    fi
+}
+
 # --- driving a harness -----------------------------------------------------
 
 # A high-entropy marker the model cannot reproduce from memory, so its presence
@@ -229,6 +243,7 @@ oh_sync_enforce() {
     [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
     sandbox="$(mktemp -d)"
+    sandbox="$(oh_native_path "$sandbox")"
     printf '%s\n' "$toml" > "$sandbox/oneharness.toml"
 
     note "  enforce[$label]: syncing policy into $id's own config file"
@@ -328,6 +343,7 @@ oh_hook_enforce() {
     [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
     sandbox="$(mktemp -d)"
+    sandbox="$(oh_native_path "$sandbox")"
     # A real repo: some harnesses only discover project-scoped hooks inside one.
     git init -q "$sandbox" 2>/dev/null || true
     marker="OHGATEBLOCK${RANDOM}${RANDOM}"

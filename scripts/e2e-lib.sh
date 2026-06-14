@@ -88,12 +88,18 @@ oh_bin() {
 # Render a path in a form a *native* (non-MSYS) process understands. On Windows
 # `mktemp -d` yields a POSIX path like /tmp/tmp.XXXX that a native harness (or
 # oneharness resolving its --cwd) cannot resolve, so a synced config lands where
-# the harness can't read it and absolute prompt paths don't exist. `cygpath -m`
-# gives a mixed C:/Users/.../tmp.XXXX path that BOTH Git Bash and Windows accept.
+# the harness can't read it and absolute prompt paths don't exist. `cygpath -ml`
+# gives a mixed C:/Users/.../tmp.XXXX path that BOTH Git Bash and Windows accept,
+# using the *long* (non-8.3) name: the runner's %TEMP% is a short name
+# (C:/Users/RUNNER~1/...), and Claude normalizes a cwd to POSIX form for settings
+# discovery/trust matching, where a short name fails to line up with the synced
+# .claude/settings.json — so its allow rules are silently ignored. The long name
+# is the canonical spelling and is harmless for the other harnesses. Fall back to
+# `-m` if `-l` can't resolve (e.g. the path doesn't exist yet).
 # No-op on Linux/macOS, where cygpath is absent and paths are already native.
 oh_native_path() {
     if command -v cygpath >/dev/null 2>&1; then
-        cygpath -m "$1"
+        cygpath -ml "$1" 2>/dev/null || cygpath -m "$1"
     else
         printf '%s' "$1"
     fi

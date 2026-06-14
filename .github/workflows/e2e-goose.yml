@@ -28,12 +28,19 @@ env:
 
 jobs:
   live:
-    name: goose live e2e
+    name: goose live e2e (${{ matrix.os }})
     if: >-
       github.repository == 'nickderobertis/oneharness' &&
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -56,13 +63,29 @@ jobs:
       - name: Build oneharness (drives the live check)
         run: |
           cargo build --release --locked
-          echo "ONEHARNESS_BIN=$PWD/target/release/oneharness" >> "$GITHUB_ENV"
-          ./target/release/oneharness --version
+          bin="$PWD/target/release/oneharness"
+          [ -x "$bin" ] || bin="$bin.exe"
+          echo "ONEHARNESS_BIN=$bin" >> "$GITHUB_ENV"
+          "$bin" --version
 
-      - name: Install Goose CLI
+      - name: Install Goose CLI (Unix)
+        if: runner.os != 'Windows'
         run: |
           curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Windows uses Goose's PowerShell installer (the parallel of download_cli.sh);
+      # it installs goose.exe under %USERPROFILE%\.local\bin.
+      - name: Install Goose CLI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:CONFIGURE = 'false'
+          # No .ps1 is published as a release asset (only download_cli.sh); the
+          # PowerShell installer lives in the repo tree.
+          irm 'https://raw.githubusercontent.com/block/goose/main/download_cli.ps1' | iex
+          $dir = Join-Path $env:USERPROFILE '.local\bin'
+          if (Test-Path $dir) { Add-Content -Path $env:GITHUB_PATH -Value $dir }
 
       - name: Live e2e against the real CLI
         env:

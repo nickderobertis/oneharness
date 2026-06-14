@@ -156,8 +156,12 @@ shape. When you add one:
   fast way to confirm a real invocation actually works once installed.)
 - Add the per-harness live counterpart: a `scripts/e2e-<id>.sh` (source
   `e2e-lib.sh`; declare its auth env and any model/provider knobs), a `live-<id>`
-  just recipe, a `.github/workflows/e2e-<id>.yml` gated like the others, and — if
-  it needs a secret not already synced — an entry in `gh-secrets.json`. If the
+  just recipe, a `.github/workflows/e2e-<id>.yml` gated like the others (a
+  `fail-fast: false` matrix over `ubuntu-latest`/`macos-latest`/`windows-latest`
+  with `defaults.run.shell: bash`, so the bash scripts run under Git Bash on
+  Windows; any `curl | bash` installer needs a PowerShell branch for the Windows
+  leg), and — if it needs a secret not already synced — an entry in
+  `gh-secrets.json`. If the
   harness has a `SyncSpec`, also add the `oh_sync_enforce` phases (allow rule
   executes under `--no-bypass`, deny rule doesn't): that live check is the only
   proof the synced file is *honored* and the drift alarm for its format. Unless

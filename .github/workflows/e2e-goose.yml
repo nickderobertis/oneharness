@@ -81,7 +81,9 @@ jobs:
         shell: pwsh
         run: |
           $env:CONFIGURE = 'false'
-          irm 'https://github.com/block/goose/releases/download/stable/download_cli.ps1' | iex
+          # No .ps1 is published as a release asset (only download_cli.sh); the
+          # PowerShell installer lives in the repo tree.
+          irm 'https://raw.githubusercontent.com/block/goose/main/download_cli.ps1' | iex
           $dir = Join-Path $env:USERPROFILE '.local\bin'
           if (Test-Path $dir) { Add-Content -Path $env:GITHUB_PATH -Value $dir }
 

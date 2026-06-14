@@ -87,11 +87,14 @@ jobs:
         shell: pwsh
         run: |
           irm 'https://cursor.com/install?win32=true' | iex
-          $dir = Join-Path $env:USERPROFILE '.local\bin'
+          # The installer drops cursor-agent.exe under %LOCALAPPDATA%\cursor-agent
+          # and only edits the *persistent* User PATH (registry), which this job's
+          # already-running shell won't see — so put the dir on $GITHUB_PATH here.
+          $dir = Join-Path $env:LOCALAPPDATA 'cursor-agent'
           if (Test-Path (Join-Path $dir 'cursor-agent.exe')) {
             Add-Content -Path $env:GITHUB_PATH -Value $dir
           } else {
-            $found = Get-ChildItem -Path $env:USERPROFILE -Recurse -Filter 'cursor-agent*' -ErrorAction SilentlyContinue | Select-Object -First 1
+            $found = Get-ChildItem -Path $env:LOCALAPPDATA -Recurse -Filter 'cursor-agent.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($found) { Add-Content -Path $env:GITHUB_PATH -Value $found.DirectoryName }
           }
 

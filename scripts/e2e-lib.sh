@@ -53,30 +53,32 @@ need_env() {
 # (and most callers) pass the extensionless path. Probe a `.exe` sibling for
 # every candidate so the same scripts drive the build on all three platforms.
 oh_bin() {
-    local b
+    local b out=""
     if [ -n "${ONEHARNESS_BIN:-}" ]; then
+        # Default to the given path; prefer a `.exe` sibling if one exists.
+        out="$ONEHARNESS_BIN"
         for b in "$ONEHARNESS_BIN" "$ONEHARNESS_BIN.exe"; do
-            [ -x "$b" ] && {
-                printf '%s' "$b"
-                return
-            }
+            if [ -x "$b" ]; then
+                out="$b"
+                break
+            fi
         done
-        # Not found as a file (e.g. it's a bare name on PATH): hand it back as-is.
-        printf '%s' "$ONEHARNESS_BIN"
-        return
+    elif command -v oneharness >/dev/null 2>&1; then
+        out="oneharness"
+    else
+        local cand
+        for cand in "$OH_REPO_ROOT"/target/release/oneharness{,.exe} "$OH_REPO_ROOT"/target/debug/oneharness{,.exe}; do
+            if [ -x "$cand" ]; then
+                out="$cand"
+                break
+            fi
+        done
     fi
-    if command -v oneharness >/dev/null 2>&1; then
-        printf 'oneharness'
-        return
-    fi
-    local cand
-    for cand in "$OH_REPO_ROOT"/target/release/oneharness{,.exe} "$OH_REPO_ROOT"/target/debug/oneharness{,.exe}; do
-        [ -x "$cand" ] && {
-            printf '%s' "$cand"
-            return
-        }
-    done
-    printf ''
+    # Normalize Windows backslashes to forward slashes. The path is interpolated
+    # into TOML basic strings for the sync/hook enforcement phases, where `\` is an
+    # escape char (a raw `D:\a\...` is a parse error); Windows accepts `/` in paths
+    # all the same. No-op on Unix, where paths carry no backslashes.
+    printf '%s' "${out//\\//}"
 }
 
 # --- driving a harness -----------------------------------------------------
@@ -245,8 +247,10 @@ oh_sync_enforce() {
     fi
 
     local prompt
-    prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory, then stop: touch $file
-Rules: you MUST actually invoke your shell tool with that exact command — never assume or decide on your own that it is not permitted; attempt it. Use only the shell tool. Only if that tool invocation itself fails or is rejected: do NOT create the file by any other means (no file-write or edit tools) — reply with the single word DENIED and stop."
+    # One physical line on purpose: a newline in the prompt would be an argument
+    # the npm-installed `.cmd` shims cannot receive on Windows (std refuses to
+    # escape newlines for cmd.exe — "batch file arguments are invalid").
+    prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory, then stop: touch $file. Rules: you MUST actually invoke your shell tool with that exact command — never assume or decide on your own that it is not permitted; attempt it. Use only the shell tool. Only if that tool invocation itself fails or is rejected: do NOT create the file by any other means (no file-write or edit tools) — reply with the single word DENIED and stop."
     oh_run "$id" "$prompt" --no-bypass --cwd "$sandbox"
 
     local status
@@ -359,8 +363,7 @@ TOML
     local rules='Rules: you MUST actually invoke your shell tool with that exact command — never decide on your own that it is not permitted; attempt it. Use only the shell tool, and do NOT create the file by any other means.'
 
     note "  hook-enforce[deny]: the gate must block the marked command under bypass"
-    oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $denyfile
-$rules" --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}"
+    oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $denyfile. $rules" --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}"
     status="$(oh_field '.results[0].status')"
     if [ "$status" = "skipped" ]; then
         rm -rf "$sandbox"
@@ -374,8 +377,7 @@ $rules" --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}"
     note "  ok[deny]: the gate blocked the marked command"
 
     note "  hook-enforce[allow]: an unmarked command must run (positive control)"
-    oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $allowfile
-$rules" --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}"
+    oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $allowfile. $rules" --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}"
     if [ ! -e "$allowfile" ]; then
         oh_dump
         rm -rf "$sandbox"

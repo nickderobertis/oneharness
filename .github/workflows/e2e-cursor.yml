@@ -87,15 +87,20 @@ jobs:
         shell: pwsh
         run: |
           irm 'https://cursor.com/install?win32=true' | iex
-          # The installer drops cursor-agent.exe under %LOCALAPPDATA%\cursor-agent
-          # and only edits the *persistent* User PATH (registry), which this job's
-          # already-running shell won't see — so put the dir on $GITHUB_PATH here.
-          $dir = Join-Path $env:LOCALAPPDATA 'cursor-agent'
-          if (Test-Path (Join-Path $dir 'cursor-agent.exe')) {
-            Add-Content -Path $env:GITHUB_PATH -Value $dir
+          # The installer only edits the *persistent* (registry) User PATH, which
+          # this already-running shell won't see, so locate cursor-agent.exe and
+          # put its dir on $GITHUB_PATH. The exact install root has moved between
+          # versions, so search the common roots and report where it landed.
+          $found = $null
+          foreach ($root in @($env:LOCALAPPDATA, $env:USERPROFILE, $env:APPDATA, $env:ProgramFiles) | Where-Object { $_ }) {
+            $found = Get-ChildItem -Path $root -Recurse -Filter 'cursor-agent.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { break }
+          }
+          if ($found) {
+            Write-Host "cursor-agent found at $($found.FullName)"
+            Add-Content -Path $env:GITHUB_PATH -Value $found.DirectoryName
           } else {
-            $found = Get-ChildItem -Path $env:LOCALAPPDATA -Recurse -Filter 'cursor-agent.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($found) { Add-Content -Path $env:GITHUB_PATH -Value $found.DirectoryName }
+            Write-Host "::warning::cursor-agent.exe not found under LOCALAPPDATA/USERPROFILE/APPDATA/ProgramFiles"
           }
 
       # Fail the job (rather than letting the script skip) if the install did not

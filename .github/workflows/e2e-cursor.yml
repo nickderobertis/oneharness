@@ -114,10 +114,17 @@ jobs:
             Get-ChildItem $env:LOCALAPPDATA -ErrorAction SilentlyContinue | Select-Object Name | Out-String | Write-Host
           }
 
-      # Fail the job (rather than letting the script skip) if the install did not
-      # put cursor-agent on PATH — a missing CLI must not read as a silent pass.
+      # Fail loudly if the CLI isn't runnable — a missing CLI must not read as a
+      # silent pass. On Windows the launcher is cursor-agent.cmd; bash won't
+      # resolve a bare name to a .cmd, but oneharness does (PATHEXT-aware `which`)
+      # when it spawns it, so verify the .cmd explicitly here.
       - name: Show cursor-agent version
-        run: cursor-agent --version
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            cursor-agent.cmd --version
+          else
+            cursor-agent --version
+          fi
 
       - name: Live e2e against the real CLI
         env:

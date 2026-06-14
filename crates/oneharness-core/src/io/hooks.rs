@@ -45,11 +45,37 @@ pub struct GlobalDirs {
 }
 
 impl GlobalDirs {
-    /// Read `HOME` and `XDG_CONFIG_HOME` from the process environment.
+    /// Read `HOME` and `XDG_CONFIG_HOME` from the process environment (and, on
+    /// Windows, `USERPROFILE`).
     pub fn from_env() -> Self {
+        Self::from_vars(
+            std::env::var_os("HOME"),
+            std::env::var_os("XDG_CONFIG_HOME"),
+            std::env::var_os("USERPROFILE"),
+        )
+    }
+
+    /// Pure resolution of the directories from raw env values, so the
+    /// platform-specific home selection stays testable. On Windows the user home
+    /// is `%USERPROFILE%` — what Node-based CLIs (`os.homedir()`) and most tools
+    /// anchor `~` to — whereas `$HOME` is often unset or an MSYS path (e.g. Git
+    /// Bash's `/c/Users/...`), which a native harness can't resolve. Preferring
+    /// `USERPROFILE` there keeps a `--global` hook install landing where the
+    /// harness actually reads it. Unix is unchanged: `HOME` only.
+    fn from_vars(
+        home: Option<std::ffi::OsString>,
+        config_home: Option<std::ffi::OsString>,
+        userprofile: Option<std::ffi::OsString>,
+    ) -> Self {
+        let home = if cfg!(windows) {
+            userprofile.or(home)
+        } else {
+            let _ = userprofile;
+            home
+        };
         Self {
-            home: std::env::var_os("HOME").map(PathBuf::from),
-            config_home: std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+            home: home.map(PathBuf::from),
+            config_home: config_home.map(PathBuf::from),
         }
     }
 
@@ -325,6 +351,18 @@ mod tests {
     use super::*;
     use crate::domain::harness;
     use serde_json::json;
+
+    #[test]
+    fn global_home_prefers_userprofile_on_windows_only() {
+        // A `--global` hook must land where the (often Node-based) harness reads
+        // `~`: %USERPROFILE% on Windows, $HOME elsewhere.
+        let dirs = GlobalDirs::from_vars(Some("/home/u".into()), None, Some(r"C:\Users\u".into()));
+        if cfg!(windows) {
+            assert_eq!(dirs.home, Some(PathBuf::from(r"C:\Users\u")));
+        } else {
+            assert_eq!(dirs.home, Some(PathBuf::from("/home/u")));
+        }
+    }
 
     fn temp_project(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

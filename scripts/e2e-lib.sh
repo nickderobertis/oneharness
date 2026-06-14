@@ -296,6 +296,7 @@ oh_sync_enforce() {
         rm -rf "$sandbox"
         fail "$id: sync did not create the harness config file ($label phase)"
     fi
+    note "  sync wrote: $out"
 
     local prompt
     # One physical line on purpose: a newline in the prompt would be an argument
@@ -317,6 +318,13 @@ oh_sync_enforce() {
                 note "  ok[$label]: the synced allow rule let the command run under --no-bypass"
             else
                 oh_dump
+                # Show the synced config the harness should have honored, so a
+                # Windows "not honored" failure reveals write-location vs matching.
+                local cf
+                while IFS= read -r cf; do
+                    note "  (debug) $cf:"
+                    sed 's/^/    /' "$cf" >&2 2>/dev/null || true
+                done < <(find "$sandbox" -type f -name '*.json' 2>/dev/null)
                 rm -rf "$sandbox"
                 fail "$id: 'touch $file' did not run despite the synced allow rule (status=$status) — the $label phase is the positive control, so either the synced file is not honored or the rule syntax drifted"
             fi

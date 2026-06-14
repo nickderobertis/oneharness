@@ -28,12 +28,19 @@ env:
 
 jobs:
   live:
-    name: codex live e2e
+    name: codex live e2e (${{ matrix.os }})
     if: >-
       github.repository == 'nickderobertis/oneharness' &&
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -56,8 +63,10 @@ jobs:
       - name: Build oneharness (drives the live check)
         run: |
           cargo build --release --locked
-          echo "ONEHARNESS_BIN=$PWD/target/release/oneharness" >> "$GITHUB_ENV"
-          ./target/release/oneharness --version
+          bin="$PWD/target/release/oneharness"
+          [ -x "$bin" ] || bin="$bin.exe"
+          echo "ONEHARNESS_BIN=$bin" >> "$GITHUB_ENV"
+          "$bin" --version
 
       - uses: actions/setup-node@v4
         with:

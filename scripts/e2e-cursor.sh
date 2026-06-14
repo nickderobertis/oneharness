@@ -27,5 +27,18 @@ oh_sync_enforce cursor "[harness.cursor]
 denied_tools = [\"Shell(touch)\"]" "$blocked" absent deny
 note "PASS: cursor sync enforcement"
 
-note "» hook enforcement: the synced gate must block a marked command"
-oh_hook_enforce cursor
+# Hook enforcement is skipped on Windows: cursor-agent mis-runs the hook command
+# there — it builds a PowerShell wrapper to pipe the payload, then executes it via
+# bash (Git Bash on PATH), so the wrapper dies with a syntax error and cursor
+# blocks every command. This is an acknowledged cursor-agent bug with no shell
+# flag/config/env lever ($SHELL and $COMSPEC are both ignored); the only known
+# workaround is WSL, which doesn't apply to a native-Windows runner. Echo and sync
+# enforcement (above) DO work on Windows, and hooks are still proven on
+# Linux/macOS. See the README support matrix.
+# https://forum.cursor.com/t/agent-cli-on-windows-no-way-to-configure-shell-hardcoded-to-powershell-no-shell-flag-or-config-option/151858
+if [ "${OS:-}" = "Windows_NT" ]; then
+    note "» hook enforcement: SKIPPED on windows-latest (cursor-agent hook-shell bug; see README)"
+else
+    note "» hook enforcement: the synced gate must block a marked command"
+    oh_hook_enforce cursor
+fi

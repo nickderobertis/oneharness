@@ -2760,6 +2760,9 @@ fn sync_global_installs_hooks_at_user_locations() {
     let xdg = dir.join("xdg");
     let out = Command::new(oneharness_bin())
         .env("HOME", &home)
+        // On Windows the home base resolves from USERPROFILE (HOME is a Git Bash
+        // ism), so set it too to keep this hermetic on every platform.
+        .env("USERPROFILE", &home)
         .env("XDG_CONFIG_HOME", &xdg)
         .args([
             "sync",

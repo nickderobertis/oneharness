@@ -48,23 +48,92 @@ need_env() {
 
 # Resolve the oneharness binary to drive the harnesses with. Honors
 # $ONEHARNESS_BIN, then PATH, then a local debug/release build. Empty if none.
+#
+# Windows note: the binary is `oneharness.exe`, but the `just live-*` recipes
+# (and most callers) pass the extensionless path. Probe a `.exe` sibling for
+# every candidate so the same scripts drive the build on all three platforms.
 oh_bin() {
+    local b out=""
     if [ -n "${ONEHARNESS_BIN:-}" ]; then
-        printf '%s' "$ONEHARNESS_BIN"
-        return
+        # Prefer a `.exe` sibling when one exists. On Windows the synced gate hook
+        # embeds this path and a native harness (Go/Node) execs it as an explicit
+        # path — which, unlike Git Bash, is NOT auto-suffixed with `.exe`, so the
+        # hook silently fails to launch and stops blocking. A `.exe` path runs
+        # everywhere; on Unix the `.exe` candidate never matches.
+        out="$ONEHARNESS_BIN"
+        for b in "$ONEHARNESS_BIN.exe" "$ONEHARNESS_BIN"; do
+            if [ -x "$b" ]; then
+                out="$b"
+                break
+            fi
+        done
+    elif command -v oneharness >/dev/null 2>&1; then
+        out="oneharness"
+    else
+        local cand
+        for cand in "$OH_REPO_ROOT"/target/release/oneharness{.exe,} "$OH_REPO_ROOT"/target/debug/oneharness{.exe,}; do
+            if [ -x "$cand" ]; then
+                out="$cand"
+                break
+            fi
+        done
     fi
-    if command -v oneharness >/dev/null 2>&1; then
-        printf 'oneharness'
-        return
+    # Normalize Windows backslashes to forward slashes. The path is interpolated
+    # into TOML basic strings for the sync/hook enforcement phases, where `\` is an
+    # escape char (a raw `D:\a\...` is a parse error); Windows accepts `/` in paths
+    # all the same. No-op on Unix, where paths carry no backslashes.
+    printf '%s' "${out//\\//}"
+}
+
+# Render a path in a form a *native* (non-MSYS) process understands. On Windows
+# `mktemp -d` yields a POSIX path like /tmp/tmp.XXXX that a native harness (or
+# oneharness resolving its --cwd) cannot resolve, so a synced config lands where
+# the harness can't read it and absolute prompt paths don't exist. `cygpath -ml`
+# gives a mixed C:/Users/.../tmp.XXXX path that BOTH Git Bash and Windows accept,
+# using the *long* (non-8.3) name: the runner's %TEMP% is a short name
+# (C:/Users/RUNNER~1/...), and Claude normalizes a cwd to POSIX form for settings
+# discovery/trust matching, where a short name fails to line up with the synced
+# .claude/settings.json — so its allow rules are silently ignored. The long name
+# is the canonical spelling and is harmless for the other harnesses. Fall back to
+# `-m` if `-l` can't resolve (e.g. the path doesn't exist yet).
+# No-op on Linux/macOS, where cygpath is absent and paths are already native.
+oh_native_path() {
+    if command -v cygpath >/dev/null 2>&1; then
+        cygpath -ml "$1" 2>/dev/null || cygpath -m "$1"
+    else
+        printf '%s' "$1"
     fi
-    local cand
-    for cand in "$OH_REPO_ROOT/target/release/oneharness" "$OH_REPO_ROOT/target/debug/oneharness"; do
-        [ -x "$cand" ] && {
-            printf '%s' "$cand"
-            return
-        }
-    done
-    printf ''
+}
+
+# Per-harness preparation of the enforcement scratch dir, run after it's created
+# and before the harness is driven. Claude gates project `.claude/settings.json`
+# (permissions AND hooks) behind a per-directory trust flag in ~/.claude.json;
+# headless on Windows there is no prompt to accept it, so the synced policy is
+# silently ignored and every tool call default-denies. Pre-accept trust for the
+# sandbox under each path spelling claude might canonicalize it to. Harmless and
+# non-destructive elsewhere (jq merge preserves existing config).
+oh_sandbox_prepare() {
+    local id="$1" dir="$2"
+    case "$id" in
+    claude-code)
+        command -v jq >/dev/null 2>&1 || return 0
+        local cfg="$HOME/.claude.json" k tmp existing
+        local keys=("$dir")
+        if command -v cygpath >/dev/null 2>&1; then
+            keys+=("$(cygpath -w "$dir")" "$(cygpath -wl "$dir" 2>/dev/null || cygpath -w "$dir")")
+        fi
+        for k in "${keys[@]}"; do
+            [ -f "$cfg" ] && existing="$(cat "$cfg" 2>/dev/null)" || existing=""
+            [ -n "$existing" ] || existing='{}'
+            tmp="$(mktemp)"
+            if printf '%s' "$existing" | jq --arg p "$k" '.projects[$p].hasTrustDialogAccepted = true' >"$tmp" 2>/dev/null; then
+                mv "$tmp" "$cfg"
+            else
+                rm -f "$tmp"
+            fi
+        done
+        ;;
+    esac
 }
 
 # --- driving a harness -----------------------------------------------------
@@ -215,6 +284,8 @@ oh_sync_enforce() {
     [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
     sandbox="$(mktemp -d)"
+    sandbox="$(oh_native_path "$sandbox")"
+    oh_sandbox_prepare "$id" "$sandbox"
     printf '%s\n' "$toml" > "$sandbox/oneharness.toml"
 
     note "  enforce[$label]: syncing policy into $id's own config file"
@@ -231,10 +302,13 @@ oh_sync_enforce() {
         rm -rf "$sandbox"
         fail "$id: sync did not create the harness config file ($label phase)"
     fi
+    note "  sync wrote: $out"
 
     local prompt
-    prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory, then stop: touch $file
-Rules: you MUST actually invoke your shell tool with that exact command — never assume or decide on your own that it is not permitted; attempt it. Use only the shell tool. Only if that tool invocation itself fails or is rejected: do NOT create the file by any other means (no file-write or edit tools) — reply with the single word DENIED and stop."
+    # One physical line on purpose: a newline in the prompt would be an argument
+    # the npm-installed `.cmd` shims cannot receive on Windows (std refuses to
+    # escape newlines for cmd.exe — "batch file arguments are invalid").
+    prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory, then stop: touch $file. Rules: you MUST actually invoke your shell tool with that exact command — never assume or decide on your own that it is not permitted; attempt it. Use only the shell tool. Only if that tool invocation itself fails or is rejected: do NOT create the file by any other means (no file-write or edit tools) — reply with the single word DENIED and stop."
     oh_run "$id" "$prompt" --no-bypass --cwd "$sandbox"
 
     local status
@@ -250,6 +324,13 @@ Rules: you MUST actually invoke your shell tool with that exact command — neve
                 note "  ok[$label]: the synced allow rule let the command run under --no-bypass"
             else
                 oh_dump
+                # Show the synced config the harness should have honored, so a
+                # Windows "not honored" failure reveals write-location vs matching.
+                local cf
+                while IFS= read -r cf; do
+                    note "  (debug) $cf:"
+                    sed 's/^/    /' "$cf" >&2 2>/dev/null || true
+                done < <(find "$sandbox" -type f -name '*.json' 2>/dev/null)
                 rm -rf "$sandbox"
                 fail "$id: 'touch $file' did not run despite the synced allow rule (status=$status) — the $label phase is the positive control, so either the synced file is not honored or the rule syntax drifted"
             fi
@@ -312,6 +393,8 @@ oh_hook_enforce() {
     [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
     sandbox="$(mktemp -d)"
+    sandbox="$(oh_native_path "$sandbox")"
+    oh_sandbox_prepare "$id" "$sandbox"
     # A real repo: some harnesses only discover project-scoped hooks inside one.
     git init -q "$sandbox" 2>/dev/null || true
     marker="OHGATEBLOCK${RANDOM}${RANDOM}"
@@ -347,8 +430,7 @@ TOML
     local rules='Rules: you MUST actually invoke your shell tool with that exact command — never decide on your own that it is not permitted; attempt it. Use only the shell tool, and do NOT create the file by any other means.'
 
     note "  hook-enforce[deny]: the gate must block the marked command under bypass"
-    oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $denyfile
-$rules" --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}"
+    oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $denyfile. $rules" --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}"
     status="$(oh_field '.results[0].status')"
     if [ "$status" = "skipped" ]; then
         rm -rf "$sandbox"
@@ -362,8 +444,7 @@ $rules" --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}"
     note "  ok[deny]: the gate blocked the marked command"
 
     note "  hook-enforce[allow]: an unmarked command must run (positive control)"
-    oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $allowfile
-$rules" --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}"
+    oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $allowfile. $rules" --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}"
     if [ ! -e "$allowfile" ]; then
         oh_dump
         rm -rf "$sandbox"

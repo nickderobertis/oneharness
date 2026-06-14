@@ -87,35 +87,31 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          irm 'https://cursor.com/install?win32=true' | iex
-          # The installer only edits the *persistent* (registry) User PATH, which
-          # this running shell won't see, so find the binary and put its dir on
-          # $GITHUB_PATH. The install root has moved between versions and the CLI
-          # ships as both cursor-agent.exe and an `agent.exe` alias, so search the
-          # common roots for either; if only agent.exe exists, alias it to the
-          # cursor-agent.exe name the harness invokes. Dump diagnostics on miss.
-          $roots = @($env:LOCALAPPDATA, $env:USERPROFILE, $env:APPDATA, $env:ProgramData, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:TEMP) | Where-Object { $_ } | Select-Object -Unique
-          $hits = foreach ($root in $roots) {
-            Get-ChildItem -Path $root -Recurse -Include 'cursor-agent.exe','agent.exe' -File -ErrorAction SilentlyContinue
-          }
-          $hits | ForEach-Object { Write-Host "found: $($_.FullName)" }
-          $primary = $hits | Where-Object { $_.Name -eq 'cursor-agent.exe' } | Select-Object -First 1
-          if (-not $primary) {
-            $alias = $hits | Where-Object { $_.Name -eq 'agent.exe' } | Select-Object -First 1
-            if ($alias) {
-              $target = Join-Path $alias.DirectoryName 'cursor-agent.exe'
-              Copy-Item $alias.FullName $target -Force
-              Write-Host "aliased agent.exe -> $target"
-              $primary = Get-Item $target
-            }
-          }
-          if ($primary) {
-            Add-Content -Path $env:GITHUB_PATH -Value $primary.DirectoryName
-            Write-Host "added to PATH: $($primary.DirectoryName)"
+          # Capture the installer's own output/errors: it prints "Happy coding!"
+          # even when it lays down no binary, so run it visibly and inspect the
+          # documented install root (%LOCALAPPDATA%\cursor-agent) directly.
+          $script = irm 'https://cursor.com/install?win32=true'
+          Write-Host "=== installer script: $($script.Length) chars; head ==="
+          Write-Host ($script.Substring(0, [Math]::Min(800, $script.Length)))
+          Write-Host "=== running installer ==="
+          try { Invoke-Expression $script 2>&1 | Out-String | Write-Host } catch { Write-Host "installer threw: $_" }
+          Write-Host "LASTEXITCODE=$LASTEXITCODE"
+          $base = Join-Path $env:LOCALAPPDATA 'cursor-agent'
+          Write-Host "=== tree of $base ==="
+          if (Test-Path $base) {
+            Get-ChildItem -Recurse $base -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+          } else { Write-Host "$base MISSING" }
+          # Pick up the launcher wherever it landed (.exe, or a .cmd/.ps1 shim,
+          # or the agent.exe alias). oneharness resolves and spawns a .cmd shim.
+          $hit = Get-ChildItem -Path $env:LOCALAPPDATA, $env:USERPROFILE -Recurse `
+            -Include 'cursor-agent.exe','cursor-agent.cmd','cursor-agent','agent.exe' -File `
+            -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($hit) {
+            Write-Host "binary: $($hit.FullName)"
+            Add-Content -Path $env:GITHUB_PATH -Value $hit.DirectoryName
           } else {
-            Write-Host "::warning::no cursor-agent.exe/agent.exe found; listing roots"
+            Write-Host "::warning::no cursor-agent launcher found after install; listing roots"
             Get-ChildItem $env:LOCALAPPDATA -ErrorAction SilentlyContinue | Select-Object Name | Out-String | Write-Host
-            Get-ChildItem $env:USERPROFILE -ErrorAction SilentlyContinue | Select-Object Name | Out-String | Write-Host
           }
 
       # Fail the job (rather than letting the script skip) if the install did not

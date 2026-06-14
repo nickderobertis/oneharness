@@ -418,14 +418,6 @@ TOML
         sync_global=(--global)
         run_extra=(--env "HOME=$home" --env "XDG_CONFIG_HOME=$sandbox/xdg")
     fi
-    # Cursor on Windows builds a PowerShell hook wrapper but executes it through
-    # $SHELL; Git Bash exports SHELL=/usr/bin/bash, so the PowerShell wrapper is
-    # eval'd by bash, dies on a syntax error, and cursor treats the failed hook
-    # as a block — failing every command. Blank SHELL so cursor falls back to its
-    # native-Windows execution path for the wrapper.
-    if [ "$id" = cursor ] && [ "${OS:-}" = "Windows_NT" ]; then
-        run_extra+=(--env "SHELL=")
-    fi
 
     note "  hook-enforce: syncing a gate hook into $id's own config ($scope scope)"
     if ! out="$(env "${sync_vars[@]}" "$bin" sync --harness "$id" "${sync_global[@]+"${sync_global[@]}"}" \

@@ -506,6 +506,18 @@ and the two `curl | bash` installers (cursor, goose) use their PowerShell
 equivalents on Windows. A per-harness model can be overridden with
 `<HARNESS>_E2E_MODEL` (e.g. `CLAUDE_E2E_MODEL`, `OPENCODE_E2E_MODEL`).
 
+The one per-platform gap is **cursor hook enforcement on Windows**: cursor-agent
+builds its hook command as a PowerShell wrapper but executes it through bash
+(Git Bash on `PATH`), so the wrapper dies on a syntax error and cursor blocks
+every command. This is an [acknowledged cursor-agent bug][cursor-shell-bug] with
+no shell flag, config field, or env lever (`$SHELL` and `$COMSPEC` are ignored;
+the only workaround is WSL), so that single phase is skipped on `windows-latest`.
+Cursor's echo and sync enforcement still run on Windows, and hook enforcement is
+still proven on Linux and macOS. Every other harness's hook enforcement runs on
+all three platforms.
+
+[cursor-shell-bug]: https://forum.cursor.com/t/agent-cli-on-windows-no-way-to-configure-shell-hardcoded-to-powershell-no-shell-flag-or-config-option/151858
+
 ### Secrets
 
 The auth above is managed with [`gh-secrets`](https://github.com/nickderobertis/github-secrets):

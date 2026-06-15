@@ -6,6 +6,26 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.189](https://github.com/nickderobertis/oneharness/compare/v0.2.188...v0.2.189) - 2026-06-15
+
+### Added
+
+- user-global hook install, runtime gate command, and live hook-enforcement e2e
+- unified config management with file-synced policy across harnesses ([#87](https://github.com/nickderobertis/oneharness/pull/87))
+- extract OpenCode final text and inject per-harness default env ([#85](https://github.com/nickderobertis/oneharness/pull/85))
+- *(signals)* widen usage/session/resume coverage to OpenCode and Cursor ([#9](https://github.com/nickderobertis/oneharness/pull/9))
+- *(run)* --resume to continue a harness session (single-harness) ([#8](https://github.com/nickderobertis/oneharness/pull/8))
+- *(run)* normalize usage/session/failure signals and add --system ([#6](https://github.com/nickderobertis/oneharness/pull/6))
+- *(run)* --output-format, -- passthrough, and --output-dir ([#1](https://github.com/nickderobertis/oneharness/pull/1))
+- initial oneharness CLI for cross-harness agent runs
+
+### Fixed
+
+- *(hooks)* honor Claude hook timeout and make the Goose manifest description caller-brandable
+- *(harness)* deliver --system to every harness and modernize codex flags ([#12](https://github.com/nickderobertis/oneharness/pull/12))
+- *(smoke)* test the freshest binary and reject a stale build ([#7](https://github.com/nickderobertis/oneharness/pull/7))
+- *(run)* set $PWD to match --cwd for each harness ([#3](https://github.com/nickderobertis/oneharness/pull/3))
+
 ## [0.2.188](https://github.com/nickderobertis/oneharness/compare/v0.2.187...v0.2.188) - 2026-06-15
 
 ### Added

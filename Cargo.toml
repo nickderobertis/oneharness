@@ -3,7 +3,7 @@ members = ["crates/oneharness-core"]
 
 [package]
 name = "oneharness"
-version = "0.2.101"
+version = "0.2.102"
 edition = "2021"
 rust-version = "1.82"
 description = "One CLI to drive many agentic coding harnesses non-interactively and return uniform JSON."

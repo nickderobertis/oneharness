@@ -22,6 +22,28 @@ pulling the CLI.
 > `CLAUDE.md` is a symlink to this file (`ln -s AGENTS.md CLAUDE.md`). Edit
 > `AGENTS.md` only; the two must never drift.
 
+## Two standing goals on every task
+
+The user drives product features and their request is the priority — but carry
+two goals into *every* task. When either is the lowest-error path to what the
+user asked, fold it into the same task without asking first; surface the rest as
+follow-ups (see "After the main task").
+
+1. **Engineer the context for next time.** Make the next agent (and you) see
+   more for less: realistic end-to-end tests that exercise what consumers
+   actually observe — especially when a bug existing tests missed surfaces (the
+   suite is this repo's only QA loop, see "Tests are context engineering") —
+   scripts and skills that automate repetitive steps and shrink their output to
+   signal, and terse `AGENTS.md` notes capturing what the code doesn't make
+   obvious.
+2. **Engineer the codebase and environment.** Be the engineer the user isn't:
+   prioritize the technical initiatives that keep the codebase clean,
+   maintainable, and repeatable, and keep setup automated and consistent
+   (`just bootstrap` from a clean clone). Strict quality gates plus local/CI
+   parity make results repeatable (here, `just check` on the pinned toolchain).
+   A clean base and a reproducible environment are usually how the user's
+   feature ships with a low error rate.
+
 ## Command surface
 
 Use the `just` recipes; do not hand-roll equivalents.

@@ -23,10 +23,9 @@ name: Release-plz
 #
 # Why the binary is driven directly (not release-plz/action): this crate is not
 # published to crates.io, so release-plz has no registry baseline to compute the
-# next version from — left alone it just mirrors Cargo.toml and never bumps.
-# `--registry-manifest-path` points it at a checkout of the last release tag as
-# the baseline, restoring conventional-commit versioning from git history. The
-# action does not expose that flag.
+# next version from. `--registry-manifest-path` points it at a checkout of the
+# last release tag as the baseline, restoring conventional-commit versioning
+# from git history. The action does not expose that flag.
 
 on:
   push:
@@ -101,10 +100,9 @@ jobs:
             echo "No release tag yet; the first release uses the current version."
           fi
 
-      # `release` only ever publishes the version already in Cargo.toml, and
-      # decides whether to by checking for its git tag — so it needs no version
-      # baseline (and does not accept --registry-manifest-path). Only the bump
-      # computation in `release-pr` does.
+      # `release` publishes only after the release PR has merged. Normal pushes
+      # may create/update the release PR below, but release-plz.toml sets
+      # `release_always = false` so they do not tag immediately.
       - name: Tag and publish a merged version bump
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}

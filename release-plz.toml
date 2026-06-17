@@ -17,6 +17,16 @@
 # changelogs, tags, and cuts the GitHub Release — it never runs `cargo publish`.
 publish = false
 
+# Only release on release-worthy conventional commits. Without this, release-plz
+# treats every commit as eligible, so generated `chore(...): release v...`
+# commits can open the next release PR and create an auto-merge loop.
+release_commits = "(?s)^(feat|fix|perf)(\\([^)]+\\))?!?:|BREAKING CHANGE:"
+
+# The workflow intentionally gates releases through the generated release PR.
+# Normal pushes may open/update that PR, but only merging it should tag and
+# publish the GitHub Release.
+release_always = false
+
 # API breaking-change detection (cargo-semver-checks) needs an extra tool and
 # would block releases on any surface change; rely on review and the
 # conventional-commit type instead (a `!` or `BREAKING CHANGE:` still bumps
@@ -53,5 +63,5 @@ commit_parsers = [
   { message = "^chore", skip = true },
   { message = "^build", skip = true },
   { message = "^style", skip = true },
-  { body = ".*", group = "Other" },
+  { message = ".*", skip = true },
 ]

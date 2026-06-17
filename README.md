@@ -113,7 +113,12 @@ capability flags.
 ## Install
 
 ```console
-# from a published release tag (reproducible)
+# latest prebuilt release for your platform
+curl -fsSL https://raw.githubusercontent.com/nickderobertis/oneharness/main/scripts/install.sh | sh
+# or pin a release tag / install directory
+curl -fsSL https://raw.githubusercontent.com/nickderobertis/oneharness/main/scripts/install.sh \
+  | sh -s -- --version v0.1.0 --to ~/.local/bin
+# or build from a published release tag
 cargo install --git https://github.com/nickderobertis/oneharness --tag v0.1.0 --locked
 # or from a clone
 cargo install --path .
@@ -125,6 +130,9 @@ Each tagged release also publishes prebuilt, checksummed binaries for Linux,
 macOS, and Windows on its [GitHub Releases](https://github.com/nickderobertis/oneharness/releases)
 page. Building from source requires a stable Rust toolchain and
 [`just`](https://github.com/casey/just).
+The installer honors `ONEHARNESS_VERSION`, `ONEHARNESS_INSTALL_DIR`, and
+`GITHUB_TOKEN` (for higher GitHub API rate limits when resolving the latest
+release), and refuses to install an archive whose checksum does not match.
 
 ## Usage
 
@@ -443,10 +451,12 @@ for the shell scripts; CI installs both, so install `shellcheck`
 Tests are hermetic: the subprocess path is exercised against a mock harness
 fixture (no network, no real CLI), and every adapter's command construction is
 pinned with `--print-command` assertions. `just check` also runs
-`scripts/smoke.sh`, an end-to-end smoke of the *built* binary. To exercise the
-real harnesses you have installed, run `just smoke-live` — it makes real model
-calls, skips any harness that isn't installed, and is intentionally never part
-of the gate or CI. See `AGENTS.md` and `tests/AGENTS.md`.
+`scripts/smoke.sh`, an end-to-end smoke of the *built* binary, including a
+local-release installer check that drives `scripts/install.sh` without network.
+To exercise the real harnesses you have installed, run `just smoke-live` — it
+makes real model calls, skips any harness that isn't installed, and is
+intentionally never part of the gate or CI. See `AGENTS.md` and
+`tests/AGENTS.md`.
 
 ## Live end-to-end testing
 
@@ -479,7 +489,7 @@ trusted-folder + prompt-mode setup that belongs in allowlister's adapter e2e);
 both keep their hermetic install coverage.
 
 ```console
-just live-claude     # one harness (builds the release binary, runs the live check)
+just live-claude     # one harness (installs the release binary, runs the live check)
 just live-all        # every harness in sequence; skips pass, only real failures fail
 ```
 

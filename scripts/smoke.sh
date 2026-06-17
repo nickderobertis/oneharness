@@ -119,6 +119,26 @@ if [ -n "$crate_ver" ] && [ -n "$bin_ver" ] && [ "$crate_ver" != "$bin_ver" ]; t
     "$oh --version" "" "rebuild with 'just build' (or 'just build-release'), then retry"
 fi
 
+# 0. Installer e2e: package the binary under test as a release-shaped archive,
+#    install it through scripts/install.sh from a local URL, and prove the
+#    installed binary runs. This keeps the installer covered in `just check`
+#    without touching the network or depending on an already-published release.
+install_dir="$(mktemp -d)"
+LAST_CMD="bash scripts/install-e2e.sh <oneharness-bin> <install-dir>"
+if ! out="$(bash scripts/install-e2e.sh "$oh" "$install_dir" 2>&1)"; then
+  fail "installer e2e failed" "$LAST_CMD" "$out" \
+    "inspect scripts/install.sh and scripts/install-e2e.sh"
+fi
+if ! installed="$(exe_path "$install_dir/oneharness")"; then
+  fail "installer did not create an executable oneharness" "$LAST_CMD" "$out"
+fi
+installed_ver="$("$installed" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+if [ -n "$crate_ver" ] && [ -n "$installed_ver" ] && [ "$crate_ver" != "$installed_ver" ]; then
+  fail "installed binary is v$installed_ver but Cargo.toml is v$crate_ver" \
+    "$installed --version" "$out"
+fi
+rm -rf "$install_dir"
+
 # 1. `list` — the registry, with each adapter's example command.
 LAST_CMD="$oh list --compact"
 out="$($oh list --compact)" || fail "list exited non-zero" "$LAST_CMD"
@@ -216,7 +236,7 @@ assert_contains "$out" '"input_tokens":43' "opencode token summing is broken"
 assert_contains "$out" '"session_id":"ses_smoke"' "camelCase sessionID surfacing is broken"
 
 if [ "$LIVE" -eq 0 ]; then
-  echo "smoke: ok (hermetic — list, detect, print-command, config, sync, mock run)"
+  echo "smoke: ok (hermetic — install, list, detect, print-command, config, sync, mock run)"
   exit 0
 fi
 

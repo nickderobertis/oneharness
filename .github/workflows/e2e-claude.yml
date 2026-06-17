@@ -60,14 +60,6 @@ jobs:
         with:
           tool: just
 
-      - name: Build oneharness (drives the live check)
-        run: |
-          cargo build --release --locked
-          bin="$PWD/target/release/oneharness"
-          [ -x "$bin" ] || bin="$bin.exe"
-          echo "ONEHARNESS_BIN=$bin" >> "$GITHUB_ENV"
-          "$bin" --version
-
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*

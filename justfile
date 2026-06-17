@@ -142,38 +142,41 @@ run *ARGS:
 # OUT of `check`/CI's core gate; the `.github/workflows/e2e-*.yml` workflows run
 # them per harness, gated to the canonical repo. See scripts/e2e-lib.sh.
 
-ONEHARNESS_BIN := justfile_directory() / "target/release/oneharness"
+ONEHARNESS_LIVE_INSTALL_DIR := justfile_directory() / "target/e2e-install/bin"
+ONEHARNESS_BIN := ONEHARNESS_LIVE_INSTALL_DIR / "oneharness"
 
-# Build the release binary the live scripts drive, so they never use a stale build.
-_live-build:
+# Build and install the release binary through scripts/install.sh, so the live
+# scripts drive the same installed shape users get from a GitHub Release.
+_live-install:
     cargo build --release --locked
+    bash scripts/install-e2e.sh "target/release/oneharness" "{{ONEHARNESS_LIVE_INSTALL_DIR}}"
 
-live-claude: _live-build
+live-claude: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-claude.sh
 
-live-codex: _live-build
+live-codex: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-codex.sh
 
-live-opencode: _live-build
+live-opencode: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-opencode.sh
 
-live-goose: _live-build
+live-goose: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-goose.sh
 
-live-qwen: _live-build
+live-qwen: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-qwen.sh
 
-live-crush: _live-build
+live-crush: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-crush.sh
 
-live-copilot: _live-build
+live-copilot: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-copilot.sh
 
-live-cursor: _live-build
+live-cursor: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-cursor.sh
 
 # Run every per-harness live check; skips count as passes, only real failures fail.
-live-all: _live-build
+live-all: _live-install
     #!/usr/bin/env bash
     set -uo pipefail
     export ONEHARNESS_BIN="{{ONEHARNESS_BIN}}"

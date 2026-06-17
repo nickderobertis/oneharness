@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.527](https://github.com/nickderobertis/oneharness/compare/v0.2.526...v0.2.527) - 2026-06-17
+
+### Fixed
+
+- *(release)* stop release-plz PR loop
+
 ## [0.2.525](https://github.com/nickderobertis/oneharness/compare/v0.2.524...v0.2.525) - 2026-06-17
 
 ### Added

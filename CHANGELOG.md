@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.528](https://github.com/nickderobertis/oneharness/compare/v0.2.527...v0.2.528) - 2026-06-20
+
+### Added
+
+- *(opencode)* forward session id from the plugin shim ([#1070](https://github.com/nickderobertis/oneharness/pull/1070))
+
 ## [0.2.527](https://github.com/nickderobertis/oneharness/compare/v0.2.526...v0.2.527) - 2026-06-17
 
 ### Fixed

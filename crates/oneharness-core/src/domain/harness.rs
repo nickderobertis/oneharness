@@ -212,9 +212,10 @@ const GOOSE_MANIFEST: &str = r#"{
 /// OpenCode plugin shim. `{export}` is a JS-identifier-safe plugin name,
 /// `{argv}` the command as a JSON argv array, `{name}` the display name. It
 /// spawns the command before every tool call, pipes `{tool_name, tool_input,
-/// cwd}` on stdin, and throws to block on a `{"decision":"deny"}` reply —
-/// failing open if the command cannot run. Mirrors the known-good allowlister
-/// shim; pinned in the `io::hooks` tests.
+/// cwd, session_id}` on stdin (the camelCase `input.sessionID` normalized to
+/// snake_case, omitted when absent), and throws to block on a
+/// `{"decision":"deny"}` reply — failing open if the command cannot run.
+/// Mirrors the known-good allowlister shim; pinned in the `io::hooks` tests.
 const OPENCODE_PLUGIN_JS: &str = r#"// {name} OpenCode plugin — installed by oneharness.
 //
 // OpenCode can block a tool call only from an in-process plugin, so this shim
@@ -228,7 +229,8 @@ export const {export} = async ({ directory }) => ({
     if (!tool_name) return;
     const args = (output && output.args) || {};
     const cwd = args.workdir || directory || ".";
-    const event = JSON.stringify({ tool_name, tool_input: args, cwd });
+    const session_id = (input && input.sessionID) || undefined;
+    const event = JSON.stringify({ tool_name, tool_input: args, cwd, session_id });
 
     let stdout = "";
     try {

@@ -562,6 +562,16 @@ mod tests {
             shim.contains("export const guard ="),
             "export uses the plugin identity:\n{shim}"
         );
+        // The shim forwards OpenCode's camelCase `input.sessionID`, normalized to
+        // the snake_case `session_id` every adapter feeds the engine.
+        assert!(
+            shim.contains("const session_id = (input && input.sessionID) || undefined;"),
+            "session id must be read from input.sessionID:\n{shim}"
+        );
+        assert!(
+            shim.contains("JSON.stringify({ tool_name, tool_input: args, cwd, session_id })"),
+            "session_id must be on the stdin payload:\n{shim}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.529](https://github.com/nickderobertis/oneharness/compare/v0.2.528...v0.2.529) - 2026-06-23
+
+### Added
+
+- structured output (JSON Schema) for run ([#1072](https://github.com/nickderobertis/oneharness/pull/1072))
+
 ## [0.2.528](https://github.com/nickderobertis/oneharness/compare/v0.2.527...v0.2.528) - 2026-06-20
 
 ### Added

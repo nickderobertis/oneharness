@@ -4,6 +4,7 @@
 //! are added, never repurposed or removed, without bumping the version.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::domain::signals::Usage;
 
@@ -86,6 +87,24 @@ pub struct RunResult {
     /// Best-effort harness session id for continuation; `null` when none is
     /// exposed. (Surfaced only; oneharness does not yet consume it.)
     pub session_id: Option<String>,
+    /// Structured-output run only: the JSON value extracted from the final
+    /// answer and validated against the requested schema. `null` when no schema
+    /// was requested, or when no JSON value could be extracted. Carries the
+    /// last-attempted value even when it failed validation, so a consumer can
+    /// see what the harness produced.
+    pub structured: Option<Value>,
+    /// Structured-output run only: whether `structured` conformed to the schema
+    /// on the final attempt. `null` when no schema was requested (or the harness
+    /// did not run); `false` when a schema was requested but the result never
+    /// conformed (including "no JSON found").
+    pub schema_valid: Option<bool>,
+    /// Structured-output run only: how many times this harness was invoked under
+    /// the validate/retry loop (1 + retries). `null` when no schema was
+    /// requested or the harness did not run.
+    pub schema_attempts: Option<u32>,
+    /// Structured-output run only: the validation errors from the final attempt,
+    /// joined for display; `null` when valid or no schema was requested.
+    pub schema_error: Option<String>,
     /// Best-effort failure reason (`auth`, `rate_limit`, `model_not_found`,
     /// `quota`) for a non-zero run; `null` when unclassified. Distinct from
     /// `status`, which records oneharness's relationship to the process.
@@ -111,6 +130,13 @@ pub struct RunReport {
     pub resume: Option<String>,
     pub bypass_permissions: bool,
     pub dry_run: bool,
+    /// The JSON Schema applied to this run (structured output), or `null` when
+    /// none was requested. Echoed so a consumer sees the exact constraint each
+    /// result was validated against.
+    pub schema: Option<Value>,
+    /// Maximum retries allowed per harness under the validate/retry loop; `null`
+    /// when no schema was requested.
+    pub schema_max_retries: Option<u32>,
     /// Config files that shaped this run, in layering order (user first,
     /// project last); empty under `--no-config` or when none exist.
     pub config_files: Vec<String>,

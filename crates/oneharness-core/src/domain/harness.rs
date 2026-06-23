@@ -11,6 +11,7 @@
 use crate::domain::gate::DenyShape;
 use crate::domain::hooks::HookShape;
 use crate::domain::report::OutputFormat;
+use crate::domain::structured::NativeSchema;
 
 /// Everything `build_argv` needs, with no I/O: the resolved binary, the prompt,
 /// the optional model, whether to request the harness's "don't prompt" mode, and
@@ -31,6 +32,12 @@ pub struct BuildCtx<'a> {
     pub resume: Option<&'a str>,
     pub bypass: bool,
     pub output_format: OutputFormat,
+    /// Inline JSON-Schema text to deliver through the harness's *native*
+    /// structured-output flag, set only for an adapter with a
+    /// [`HarnessSpec::native_schema`] when a schema run is requested. Adapters
+    /// without native support ignore it — the command layer instead appends the
+    /// schema instruction to the prompt — so it is never silently dropped.
+    pub schema: Option<&'a str>,
 }
 
 /// The CLI token for a format, as the harnesses spell it.
@@ -105,6 +112,13 @@ pub struct HarnessSpec {
     /// Pure data: the registry declares them; the command/io layer injects them,
     /// and an explicit `--env` always wins over a default here. Empty for most.
     pub default_env: &'static [(&'static str, &'static str)],
+    /// How this harness accepts a JSON Schema *natively*, when it does — the
+    /// schema is delivered through its own CLI flag and the conforming value
+    /// read from a known field, rather than appended to the prompt. `None` means
+    /// structured-output runs fall back to the portable prompt-based path (which
+    /// works for every harness). Either way oneharness validates the result
+    /// itself, so a native flag the harness ignores is still caught.
+    pub native_schema: Option<NativeSchema>,
     /// Builds the full argv (argv[0] is the binary). Pure.
     pub build_argv: fn(&BuildCtx) -> Vec<String>,
 }
@@ -308,6 +322,7 @@ static REGISTRY: &[HarnessSpec] = &[
         }),
         gate_deny: Some(DenyShape::ClaudeNested),
         default_env: &[],
+        native_schema: Some(NativeSchema::ClaudeJsonSchema),
         build_argv: argv_claude_code,
     },
     HarnessSpec {
@@ -333,6 +348,7 @@ static REGISTRY: &[HarnessSpec] = &[
         }),
         gate_deny: Some(DenyShape::ClaudeNested),
         default_env: &[],
+        native_schema: None,
         build_argv: argv_codex,
     },
     HarnessSpec {
@@ -360,6 +376,7 @@ static REGISTRY: &[HarnessSpec] = &[
         }),
         gate_deny: Some(DenyShape::Decision("deny")),
         default_env: &[],
+        native_schema: None,
         build_argv: argv_opencode,
     },
     HarnessSpec {
@@ -385,6 +402,7 @@ static REGISTRY: &[HarnessSpec] = &[
         }),
         gate_deny: Some(DenyShape::Decision("block")),
         default_env: &[],
+        native_schema: None,
         build_argv: argv_goose,
     },
     HarnessSpec {
@@ -415,6 +433,7 @@ static REGISTRY: &[HarnessSpec] = &[
         }),
         gate_deny: Some(DenyShape::ClaudeNested),
         default_env: &[("QWEN_CODE_SUPPRESS_YOLO_WARNING", "1")],
+        native_schema: None,
         build_argv: argv_qwen,
     },
     HarnessSpec {
@@ -444,6 +463,7 @@ static REGISTRY: &[HarnessSpec] = &[
         }),
         gate_deny: Some(DenyShape::Decision("deny")),
         default_env: &[],
+        native_schema: None,
         build_argv: argv_crush,
     },
     HarnessSpec {
@@ -468,6 +488,7 @@ static REGISTRY: &[HarnessSpec] = &[
         }),
         gate_deny: Some(DenyShape::CopilotFlat),
         default_env: &[],
+        native_schema: None,
         build_argv: argv_copilot,
     },
     HarnessSpec {
@@ -503,6 +524,7 @@ static REGISTRY: &[HarnessSpec] = &[
         }),
         gate_deny: Some(DenyShape::CursorPermission),
         default_env: &[],
+        native_schema: None,
         build_argv: argv_cursor,
     },
 ];
@@ -534,6 +556,14 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     }
     a.push("--output-format".into());
     a.push(format_flag(c.output_format).into());
+    // Native structured output: `--json-schema <inline>` makes Claude Code return
+    // the conforming value in the result document's `structured_output` field
+    // (it requires `--output-format json`, already emitted above). Sourced from
+    // the headless docs; only set when a schema run selected this adapter.
+    if let Some(schema) = c.schema {
+        a.push("--json-schema".into());
+        a.push(schema.into());
+    }
     a
 }
 
@@ -697,6 +727,7 @@ mod tests {
             resume: None,
             bypass,
             output_format,
+            schema: None,
         }
     }
 
@@ -805,6 +836,7 @@ mod tests {
             resume: None,
             bypass: true,
             output_format: OutputFormat::Json,
+            schema: None,
         };
         let argv = (spec.build_argv)(&ctx);
         assert!(
@@ -881,7 +913,33 @@ mod tests {
             resume: None,
             bypass: true,
             output_format: spec.output_format,
+            schema: None,
         }
+    }
+
+    #[test]
+    fn claude_native_schema_appends_json_schema_flag() {
+        // The native structured-output path: claude-code carries the inline
+        // schema on `--json-schema`, after `--output-format json`. Only this
+        // adapter declares native support today.
+        let spec = by_id("claude-code").unwrap();
+        assert_eq!(spec.native_schema, Some(NativeSchema::ClaudeJsonSchema));
+        let argv = (spec.build_argv)(&BuildCtx {
+            schema: Some(r#"{"type":"object"}"#),
+            ..base_ctx(spec)
+        });
+        assert!(
+            argv.windows(2)
+                .any(|w| w == ["--json-schema", r#"{"type":"object"}"#]),
+            "{argv:?}"
+        );
+        assert!(
+            argv.windows(2).any(|w| w == ["--output-format", "json"]),
+            "native schema requires json output: {argv:?}"
+        );
+        // Without a schema the flag is absent.
+        let argv = (spec.build_argv)(&base_ctx(spec));
+        assert!(!argv.iter().any(|t| t == "--json-schema"), "{argv:?}");
     }
 
     #[test]

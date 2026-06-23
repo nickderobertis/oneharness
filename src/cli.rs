@@ -119,6 +119,20 @@ pub struct RunArgs {
     #[arg(long, value_parser = output_format_parser())]
     pub output_format: Option<OutputFormat>,
 
+    /// Constrain each harness's final answer to this JSON Schema file
+    /// (structured output). The schema is delivered natively where the harness
+    /// supports it (Claude Code's --json-schema) and via the prompt otherwise;
+    /// the response is validated and, on failure, re-prompted up to
+    /// --schema-max-retries times. Each result gains `structured`,
+    /// `schema_valid`, `schema_attempts`, and `schema_error`.
+    #[arg(long, value_name = "PATH")]
+    pub schema: Option<PathBuf>,
+
+    /// Max retries when a response fails schema validation (default 2; only with
+    /// --schema). The harness is invoked at most 1 + N times per run.
+    #[arg(long, value_name = "N")]
+    pub schema_max_retries: Option<u32>,
+
     /// Write each harness's raw stdout/stderr to <DIR>/<harness>.stdout and
     /// <DIR>/<harness>.stderr (in addition to the JSON report on stdout).
     #[arg(long, value_name = "DIR")]

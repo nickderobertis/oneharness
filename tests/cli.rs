@@ -2942,3 +2942,329 @@ fn prompt_file_missing_path_is_a_usage_error() {
         "stderr should name the bad path: {stderr}"
     );
 }
+
+// --- Structured output (--schema): validate the final answer against a JSON
+// Schema, delivering it natively where supported (Claude Code) or via the
+// prompt otherwise, and re-prompting on a validation failure. All hermetic
+// through the mock fixture.
+
+const PERSON_SCHEMA: &str = r#"{"type":"object",
+    "properties":{"name":{"type":"string"},"age":{"type":"integer"}},
+    "required":["name","age"],"additionalProperties":false}"#;
+
+/// Write `contents` to a unique temp file and return its path (string). Temp
+/// files are fine to leave behind; the OS reclaims them.
+fn temp_file(tag: &str, contents: &str) -> String {
+    let path = std::env::temp_dir().join(format!(
+        "oneharness-{tag}-{}-{}.json",
+        std::process::id(),
+        tag
+    ));
+    std::fs::write(&path, contents).unwrap();
+    path.display().to_string()
+}
+
+/// A fresh, nonexistent counter path for MOCK_ATTEMPT_FILE.
+fn temp_counter(tag: &str) -> String {
+    let path =
+        std::env::temp_dir().join(format!("oneharness-counter-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    path.display().to_string()
+}
+
+#[test]
+fn schema_prompt_based_validates_and_appends_instruction() {
+    // A non-native harness (crush): the schema is appended to the prompt, and the
+    // mock returns a conforming JSON object that oneharness validates.
+    let schema = temp_file("schema-pb", PERSON_SCHEMA);
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "crush",
+            "--prompt",
+            "describe ada",
+            "--schema",
+            &schema,
+            "--bin",
+            &bin_override("crush"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"name":"Ada","age":36}"#)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["schema_valid"], true);
+    assert_eq!(result["schema_attempts"], 1);
+    assert!(result["schema_error"].is_null());
+    assert_eq!(result["structured"]["name"], "Ada");
+    assert_eq!(result["structured"]["age"], 36);
+    // The schema instruction reached the prompt (non-native delivery).
+    let command = command_of(&value, 0);
+    assert!(
+        command.iter().any(|a| a.contains("JSON Schema")),
+        "prompt should carry the schema instruction: {command:?}"
+    );
+    // The report echoes the applied schema and retry budget.
+    assert_eq!(value["schema"]["required"][0], "name");
+    assert_eq!(value["schema_max_retries"], 2);
+}
+
+#[test]
+fn schema_native_claude_reads_structured_output_field() {
+    // Claude Code's native path: `--json-schema` on the argv, the value read from
+    // the result document's `structured_output`, and the prompt left untouched.
+    let schema = temp_file("schema-native", PERSON_SCHEMA);
+    let stdout = r#"{"type":"result","result":"Here is Ada.",
+        "structured_output":{"name":"Ada","age":36}}"#;
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "describe ada",
+            "--schema",
+            &schema,
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["schema_valid"], true);
+    assert_eq!(result["structured"]["age"], 36);
+    let command = command_of(&value, 0);
+    assert!(
+        command.iter().any(|a| a == "--json-schema"),
+        "native schema flag missing: {command:?}"
+    );
+    assert!(
+        command.windows(2).any(|w| w == ["--output-format", "json"]),
+        "native schema forces json output: {command:?}"
+    );
+    // Native delivery does NOT augment the prompt.
+    assert!(
+        !command.iter().any(|a| a.contains("JSON Schema")),
+        "native delivery should not touch the prompt: {command:?}"
+    );
+}
+
+#[test]
+fn schema_retry_loop_recovers_on_a_later_attempt() {
+    // First response misses `age` (invalid); the retry returns a conforming one.
+    let schema = temp_file("schema-retry", PERSON_SCHEMA);
+    let counter = temp_counter("retry");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "crush",
+            "--prompt",
+            "describe ada",
+            "--schema",
+            &schema,
+            "--schema-max-retries",
+            "3",
+            "--bin",
+            &bin_override("crush"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_ATTEMPT_FILE", &counter),
+            ("MOCK_STDOUT_1", r#"{"name":"Ada"}"#),
+            ("MOCK_STDOUT_2", r#"{"name":"Ada","age":36}"#),
+        ],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["schema_valid"], true);
+    assert_eq!(
+        result["schema_attempts"], 2,
+        "should have retried exactly once"
+    );
+    assert_eq!(result["structured"]["age"], 36);
+}
+
+#[test]
+fn schema_invalid_after_retries_is_a_failure() {
+    // Every attempt misses `age`; after the budget is spent the run fails with the
+    // last invalid value and a validation error surfaced.
+    let schema = temp_file("schema-fail", PERSON_SCHEMA);
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "crush",
+            "--prompt",
+            "describe ada",
+            "--schema",
+            &schema,
+            "--schema-max-retries",
+            "1",
+            "--bin",
+            &bin_override("crush"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"name":"Ada"}"#)],
+    );
+    // A structured-output run that never conforms is a failure (exit 1).
+    assert_eq!(output.status.code(), Some(1));
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["schema_valid"], false);
+    assert_eq!(result["schema_attempts"], 2, "1 initial + 1 retry");
+    assert!(!result["schema_error"].as_str().unwrap().is_empty());
+    // The non-conforming value is still surfaced for inspection.
+    assert_eq!(result["structured"]["name"], "Ada");
+}
+
+#[test]
+fn schema_no_json_in_response_is_invalid() {
+    // A response with no extractable JSON is invalid (not a fabricated value), and
+    // with zero retries it fails on the first attempt.
+    let schema = temp_file("schema-nojson", PERSON_SCHEMA);
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "crush",
+            "--prompt",
+            "describe ada",
+            "--schema",
+            &schema,
+            "--schema-max-retries",
+            "0",
+            "--bin",
+            &bin_override("crush"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", "I cannot help with that.")],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["schema_valid"], false);
+    assert_eq!(result["schema_attempts"], 1);
+    assert!(result["structured"].is_null());
+    assert!(result["schema_error"].as_str().unwrap().contains("no JSON"));
+}
+
+#[test]
+fn schema_fields_are_null_without_a_schema() {
+    // A normal run carries the schema fields as nulls, so the shape is stable.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"hi"}"#)],
+    );
+    let value = json_stdout(&output);
+    assert!(value["schema"].is_null());
+    assert!(value["schema_max_retries"].is_null());
+    let result = &value["results"][0];
+    assert!(result["schema_valid"].is_null());
+    assert!(result["structured"].is_null());
+    assert!(result["schema_attempts"].is_null());
+}
+
+#[test]
+fn missing_schema_file_is_a_usage_error() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--schema",
+            "/no/such/oneharness-schema-xyz.json",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("could not read schema file"),
+        "stderr should explain the missing schema: {stderr}"
+    );
+}
+
+#[test]
+fn invalid_schema_is_a_usage_error() {
+    // A file that parses as JSON but is not a valid schema fails loudly before any
+    // harness runs.
+    let schema = temp_file("schema-bad", r#"{"type": 5}"#);
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--schema",
+            &schema,
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid --schema"),
+        "stderr should reject the bad schema: {stderr}"
+    );
+}
+
+#[test]
+fn schema_file_from_config_is_loaded_relative_to_the_project() {
+    // The schema path can come from `oneharness.toml` (resolved against the
+    // project dir), not just `--schema`.
+    let project = "harnesses = [\"crush\"]\nschema_file = \"person.json\"\n";
+    let fx = ConfigFixture::new("schemacfg", project, "");
+    std::fs::write(
+        std::path::Path::new(&fx.cwd()).join("person.json"),
+        PERSON_SCHEMA,
+    )
+    .unwrap();
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--bin",
+            &bin_override("crush"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"name":"Ada","age":36}"#)],
+        &fx.user_config(),
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["schema_valid"], true);
+    assert_eq!(value["schema_max_retries"], 2);
+}
+
+#[test]
+fn list_exposes_native_schema_capability() {
+    let output = run(&["list", "--compact"], &[]);
+    let value = json_stdout(&output);
+    let harnesses = value["harnesses"].as_array().unwrap();
+    let claude = harnesses.iter().find(|h| h["id"] == "claude-code").unwrap();
+    assert_eq!(claude["supports_native_schema"], true);
+    let crush = harnesses.iter().find(|h| h["id"] == "crush").unwrap();
+    assert_eq!(crush["supports_native_schema"], false);
+}

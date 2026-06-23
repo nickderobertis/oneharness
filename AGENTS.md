@@ -80,6 +80,22 @@ Use the `just` recipes; do not hand-roll equivalents.
   exists to prove a synced hook is *honored* end to end (the per-harness live
   e2e drives a real harness through it), not to be a policy engine — that is the
   sibling `allowlister`'s role, which consumes the `install` library.
+- **Structured output** (`run --schema <file>`): constrain each harness's final
+  answer to a JSON Schema, validate it (the `jsonschema` crate, pinned
+  `default-features = false` so it stays offline), and re-prompt on failure up to
+  `--schema-max-retries` (default 2). Two deliveries, per `HarnessSpec.native_schema`:
+  *native* where the CLI has a schema flag (only Claude Code's `--json-schema`
+  today, value read from `structured_output`), *prompt-based* for the rest (the
+  schema is appended to the prompt, the value recovered from the answer text).
+  oneharness validates either way, so a native flag the harness ignores is still
+  caught. The validate/retry loop lives in the runner as `run_jobs_with` (a pure
+  domain closure decides re-runs; the runner owns spawning), so it stays parallel
+  across harnesses. Pure logic — schema compile/validate, JSON extraction,
+  instruction text, the shared `check` used by both the loop and the report — is
+  in `domain::structured`. Like every normalized signal, the structured value is
+  **never fabricated**: no extractable JSON is "invalid", not a guess. Codex's
+  native `--output-schema` is deliberately *not* wired yet (file-based + ignored
+  once tools run); adding it is one registry line plus a `build_argv` arm.
 
 ## How this repo was composed
 
@@ -186,6 +202,12 @@ shape. When you add one:
   sync merge is non-destructive by contract: unrelated keys untouched, lists
   unioned (idempotent re-sync), unparseable files refused and left intact,
   writes atomic. Keep those properties test-pinned when touching it.
+- Set its `native_schema` only if the CLI has a real schema flag, sourced from
+  that CLI's docs (never guessed) — and pin the injected argv with a
+  `--print-command`/`build_argv` assertion. `None` is the right default: the
+  prompt-based structured-output path already works for every harness, and
+  oneharness validates the result regardless. If a harness reports its conforming
+  value somewhere other than the answer text, extend `structured::extract_value`.
 - Give the harness its `global_hook` (the user-global hook location, for `sync
   --global` / `install` at `Scope::Global`) and its `gate_deny` (how it expresses
   a pre-tool deny when it runs `oneharness gate <id>`). Both are registry data

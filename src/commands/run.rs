@@ -9,6 +9,7 @@ use oneharness_core::domain::report::{
     Capture, OutputFormat, RunReport, RunResult, Status, SCHEMA_VERSION,
 };
 use oneharness_core::domain::signals::Usage;
+use oneharness_core::domain::structured::{self, Schema};
 use oneharness_core::domain::{normalize, signals};
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::config as config_io;
@@ -31,6 +32,14 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let cfg = &loaded.config;
 
     let prompt = resolve_prompt(args)?;
+    // Structured output: an optional compiled schema and the per-harness retry
+    // budget. Compiling here (once) turns an invalid schema into a loud usage
+    // error before any harness is spawned.
+    let schema = load_schema(args, cfg, &project_start)?;
+    let max_retries = args
+        .schema_max_retries
+        .or(cfg.schema_max_retries)
+        .unwrap_or(2);
     // A CLI selection (--all / --harness) replaces the config selection
     // entirely; config `exclude` still applies unless --exclude is given.
     let (all, include) = if args.all || !args.harness.is_empty() {
@@ -67,30 +76,49 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let require_available = args.require_available || cfg.require_available.unwrap_or(false);
 
     // Build a plan entry for every selected harness; queue jobs only for the
-    // ones that are available and actually being executed.
+    // ones that are available and actually being executed. `job_plans` parallels
+    // `jobs` and retains what the structured-output retry loop needs to rebuild
+    // a harness's argv with a feedback prompt.
     let mut plan: Vec<Plan> = Vec::with_capacity(specs.len());
     let mut jobs: Vec<Job> = Vec::new();
+    let mut job_plans: Vec<HarnessPlan> = Vec::new();
 
     for spec in &specs {
         let resolved = detect::resolve(spec, &overrides);
-        let output_format = args
+        let chosen_format = args
             .output_format
             .or(cfg.output_format)
             .unwrap_or(spec.output_format);
-        let ctx = BuildCtx {
-            bin: &resolved.bin,
+        // A native-schema harness must receive its schema as JSON; force the
+        // format so the conforming value lands where we read it (Claude Code's
+        // `structured_output`, which needs `--output-format json`).
+        let native = schema.is_some() && spec.native_schema.is_some();
+        let output_format = if native {
+            OutputFormat::Json
+        } else {
+            chosen_format
+        };
+        let mut extra = cfg.args_for(spec.id).to_vec();
+        extra.extend(args.passthrough.iter().cloned());
+        let harness_plan = HarnessPlan {
+            spec,
+            bin: resolved.bin.clone(),
             // A CLI --model beats config; within config, the harness's own
             // [harness.<id>] model beats the top-level one.
-            model: args.model.as_deref().or_else(|| cfg.model_for(spec.id)),
-            prompt: &prompt,
-            system,
-            resume,
+            model: args
+                .model
+                .as_deref()
+                .or_else(|| cfg.model_for(spec.id))
+                .map(str::to_string),
+            system: system.map(str::to_string),
+            resume: resume.map(str::to_string),
             bypass,
             output_format,
+            native,
+            base_prompt: prompt.clone(),
+            extra,
         };
-        let mut command = (spec.build_argv)(&ctx);
-        command.extend(cfg.args_for(spec.id).iter().cloned());
-        command.extend(args.passthrough.iter().cloned());
+        let command = harness_plan.argv(schema.as_ref(), None);
 
         if args.print_command {
             plan.push(Plan::Ready(Box::new(planned_result(
@@ -132,14 +160,23 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 output_format,
                 job_index,
             });
+            job_plans.push(harness_plan);
         }
     }
 
-    let captures = if jobs.is_empty() {
+    let outcomes = if jobs.is_empty() {
         Vec::new()
     } else {
         let max_parallel = args.max_parallel.or(cfg.max_parallel).unwrap_or(jobs.len());
-        runner::run_jobs(&jobs, max_parallel)
+        match schema.as_ref() {
+            // Structured output: after each run, validate and (if it failed and
+            // retries remain) re-run with a feedback prompt. The closure is pure
+            // domain validation; the runner owns the spawning.
+            Some(sch) => runner::run_jobs_with(&jobs, max_parallel, |i, attempt, capture| {
+                retry_decision(&job_plans[i], sch, attempt, max_retries, capture)
+            }),
+            None => runner::run_jobs_with(&jobs, max_parallel, |_, _, _| None),
+        }
     };
 
     let results: Vec<RunResult> = plan
@@ -152,7 +189,18 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 command,
                 output_format,
                 job_index,
-            } => executed_result(spec, bin, command, output_format, &captures[job_index]),
+            } => {
+                let outcome = &outcomes[job_index];
+                executed_result(
+                    spec,
+                    bin,
+                    command,
+                    output_format,
+                    &outcome.capture,
+                    schema.as_ref(),
+                    outcome.attempts,
+                )
+            }
         })
         .collect();
 
@@ -172,6 +220,8 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         resume: args.resume.clone(),
         bypass_permissions: bypass,
         dry_run: args.print_command,
+        schema: schema.as_ref().map(|s| s.as_value().clone()),
+        schema_max_retries: schema.as_ref().map(|_| max_retries),
         config_files: loaded.files,
         results,
     };
@@ -181,7 +231,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         let failed = report
             .results
             .iter()
-            .filter(|r| is_failure(r.status, r.available, require_available))
+            .filter(|r| is_failure(r.status, r.available, require_available, r.schema_valid))
             .count();
         eprintln!(
             "oneharness: {failed}/{} harness run(s) did not succeed (see results[].status and results[].error)",
@@ -225,6 +275,10 @@ fn planned_result(
         usage: Usage::default(),
         usage_source: None,
         session_id: None,
+        structured: None,
+        schema_valid: None,
+        schema_attempts: None,
+        schema_error: None,
         failure_kind: None,
         failure_kind_source: None,
         stdout: String::new(),
@@ -253,6 +307,10 @@ fn skipped_result(
         usage: Usage::default(),
         usage_source: None,
         session_id: None,
+        structured: None,
+        schema_valid: None,
+        schema_attempts: None,
+        schema_error: None,
         failure_kind: None,
         failure_kind_source: None,
         stdout: String::new(),
@@ -270,6 +328,8 @@ fn executed_result(
     command: Vec<String>,
     output_format: OutputFormat,
     capture: &Capture,
+    schema: Option<&Schema>,
+    attempts: u32,
 ) -> RunResult {
     // Best-effort signals are extracted only from a run that actually produced
     // output (ok or non-zero), never fabricated for a timeout/spawn failure.
@@ -277,9 +337,32 @@ fn executed_result(
         Status::Ok | Status::Nonzero => normalize::extract(&capture.stdout, output_format),
         _ => None,
     };
-    let (text, text_source) = match extracted {
-        Some(e) => (Some(e.text), Some(e.source)),
+    let (text, text_source) = match &extracted {
+        Some(e) => (Some(e.text.clone()), Some(e.source.clone())),
         None => (None, None),
+    };
+    // Structured output: re-derive the validated value for the final capture so
+    // the report and the retry loop share one source of truth. Null fields when
+    // no schema was requested, or when the run produced nothing to validate.
+    let (structured, schema_valid, schema_attempts, schema_error) = match schema {
+        Some(sch) if matches!(capture.status, Status::Ok | Status::Nonzero) => {
+            let answer = extracted.as_ref().map(|e| e.text.as_str()).unwrap_or("");
+            let check = structured::check(sch, spec.native_schema, answer, &capture.stdout);
+            if check.is_valid() {
+                (check.value, Some(true), Some(attempts), None)
+            } else {
+                (
+                    check.value,
+                    Some(false),
+                    Some(attempts),
+                    Some(check.errors.join("; ")),
+                )
+            }
+        }
+        // Ran under a schema but timed out / could not be spawned: nothing to
+        // validate, but the attempt count is still meaningful.
+        Some(_) => (None, None, Some(attempts), None),
+        None => (None, None, None, None),
     };
     let usage_reading = match capture.status {
         Status::Ok | Status::Nonzero => signals::extract_usage(&capture.stdout),
@@ -317,6 +400,10 @@ fn executed_result(
         usage,
         usage_source,
         session_id,
+        structured,
+        schema_valid,
+        schema_attempts,
+        schema_error,
         failure_kind,
         failure_kind_source,
         stdout: capture.stdout.clone(),
@@ -325,9 +412,139 @@ fn executed_result(
     }
 }
 
+/// Everything needed to (re)build one harness's argv, retained so the
+/// structured-output loop can re-run it with a feedback prompt. Holds owned
+/// data because the retry closure runs on the runner's worker threads.
+struct HarnessPlan {
+    spec: &'static HarnessSpec,
+    bin: String,
+    model: Option<String>,
+    system: Option<String>,
+    resume: Option<String>,
+    bypass: bool,
+    output_format: OutputFormat,
+    /// The harness takes the schema through a native flag (so the prompt is left
+    /// alone); otherwise the schema instruction is appended to the prompt.
+    native: bool,
+    base_prompt: String,
+    /// Config `args` + CLI passthrough, appended verbatim after the built argv.
+    extra: Vec<String>,
+}
+
+impl HarnessPlan {
+    /// Build the argv for one attempt. `schema` drives structured output:
+    /// non-native harnesses get the schema instruction appended to the prompt,
+    /// native ones get it on the flag. `feedback` (the prior answer + validation
+    /// errors) is appended on a retry so the model can correct itself.
+    fn argv(&self, schema: Option<&Schema>, feedback: Option<(&str, &[String])>) -> Vec<String> {
+        let mut prompt = self.base_prompt.clone();
+        if let Some(sch) = schema {
+            if !self.native {
+                prompt.push_str("\n\n");
+                prompt.push_str(&structured::prompt_instruction(sch.as_text()));
+            }
+            if let Some((previous, errors)) = feedback {
+                prompt.push_str("\n\n");
+                prompt.push_str(&structured::retry_instruction(
+                    sch.as_text(),
+                    previous,
+                    errors,
+                ));
+            }
+        }
+        let ctx = BuildCtx {
+            bin: &self.bin,
+            prompt: &prompt,
+            model: self.model.as_deref(),
+            system: self.system.as_deref(),
+            resume: self.resume.as_deref(),
+            bypass: self.bypass,
+            output_format: self.output_format,
+            schema: if self.native {
+                schema.map(Schema::as_text)
+            } else {
+                None
+            },
+        };
+        let mut argv = (self.spec.build_argv)(&ctx);
+        argv.extend(self.extra.iter().cloned());
+        argv
+    }
+}
+
+/// Decide whether to re-run one harness under the structured-output loop. Returns
+/// the next attempt's argv when the response failed validation and retries
+/// remain, else `None`. `attempt` is the number of runs completed so far.
+fn retry_decision(
+    plan: &HarnessPlan,
+    schema: &Schema,
+    attempt: u32,
+    max_retries: u32,
+    capture: &Capture,
+) -> Option<Vec<String>> {
+    // Only a run that produced output can be validated; a timeout / spawn error
+    // is not a validation failure and re-running it would just burn the budget.
+    if !matches!(capture.status, Status::Ok | Status::Nonzero) {
+        return None;
+    }
+    let answer = normalize::extract(&capture.stdout, plan.output_format).map(|e| e.text);
+    let check = structured::check(
+        schema,
+        plan.spec.native_schema,
+        answer.as_deref().unwrap_or(""),
+        &capture.stdout,
+    );
+    if check.is_valid() || attempt > max_retries {
+        return None;
+    }
+    // Feed back what the harness actually said (its extracted answer, else the
+    // raw stdout) so the correction prompt is grounded in its own output.
+    let previous = match &answer {
+        Some(text) if !text.is_empty() => text.clone(),
+        _ => capture.stdout.trim().to_string(),
+    };
+    Some(plan.argv(Some(schema), Some((&previous, &check.errors))))
+}
+
+/// Load and compile the structured-output schema, if one was requested. A
+/// `--schema` path is relative to the process's working directory; a config
+/// `schema_file` is relative to the project directory (where config was
+/// discovered), mirroring how each source is written.
+fn load_schema(
+    args: &RunArgs,
+    cfg: &oneharness_core::domain::config::FileConfig,
+    project_start: &std::path::Path,
+) -> Result<Option<Schema>, OneharnessError> {
+    let path = if let Some(p) = &args.schema {
+        p.clone()
+    } else if let Some(rel) = &cfg.schema_file {
+        project_start.join(rel)
+    } else {
+        return Ok(None);
+    };
+    let text = std::fs::read_to_string(&path).map_err(|source| OneharnessError::SchemaFile {
+        path: path.display().to_string(),
+        source,
+    })?;
+    Schema::compile(&text)
+        .map(Some)
+        .map_err(OneharnessError::Schema)
+}
+
 /// A harness "failed" when it ran and did not exit cleanly, when it could not be
-/// spawned, or — under `--require-available` — when it was skipped as missing.
-fn is_failure(status: Status, available: bool, require_available: bool) -> bool {
+/// spawned, when — under `--require-available` — it was skipped as missing, or
+/// when a structured-output run never produced a schema-conforming answer (a
+/// run you asked for JSON from and didn't get is a failure, regardless of exit
+/// code).
+fn is_failure(
+    status: Status,
+    available: bool,
+    require_available: bool,
+    schema_valid: Option<bool>,
+) -> bool {
+    if schema_valid == Some(false) {
+        return true;
+    }
     match status {
         Status::Nonzero | Status::Timeout | Status::SpawnError => true,
         Status::Skipped => require_available && !available,
@@ -338,7 +555,7 @@ fn is_failure(status: Status, available: bool, require_available: bool) -> bool 
 fn exit_code(results: &[RunResult], require_available: bool) -> i32 {
     let failed = results
         .iter()
-        .any(|r| is_failure(r.status, r.available, require_available));
+        .any(|r| is_failure(r.status, r.available, require_available, r.schema_valid));
     if failed {
         EXIT_FAILURE
     } else {
@@ -449,12 +666,121 @@ mod tests {
             usage: Usage::default(),
             usage_source: None,
             session_id: None,
+            structured: None,
+            schema_valid: None,
+            schema_attempts: None,
+            schema_error: None,
             failure_kind: None,
             failure_kind_source: None,
             stdout: String::new(),
             stderr: String::new(),
             error: None,
         }
+    }
+
+    fn crush_plan() -> HarnessPlan {
+        HarnessPlan {
+            spec: harness::by_id("crush").unwrap(),
+            bin: "crush".into(),
+            model: None,
+            system: None,
+            resume: None,
+            bypass: true,
+            output_format: OutputFormat::Text,
+            native: false,
+            base_prompt: "p".into(),
+            extra: Vec::new(),
+        }
+    }
+
+    fn capture(status: Status, stdout: &str) -> Capture {
+        Capture {
+            status,
+            exit_code: None,
+            duration_ms: Some(1),
+            stdout: stdout.into(),
+            stderr: String::new(),
+            error: None,
+        }
+    }
+
+    #[test]
+    fn retry_decision_covers_valid_invalid_exhausted_and_timeout() {
+        let schema = Schema::compile(
+            r#"{"type":"object","required":["a"],"properties":{"a":{"type":"integer"}}}"#,
+        )
+        .unwrap();
+        let plan = crush_plan();
+        // Conforming → stop.
+        assert!(retry_decision(&plan, &schema, 1, 2, &capture(Status::Ok, r#"{"a":1}"#)).is_none());
+        // Non-conforming with budget left → re-run with a feedback prompt.
+        let next = retry_decision(&plan, &schema, 1, 2, &capture(Status::Ok, r#"{"a":"x"}"#))
+            .expect("should retry");
+        assert!(next.iter().any(|a| a.contains("did not conform")));
+        // Budget spent → stop even though still invalid.
+        assert!(retry_decision(&plan, &schema, 3, 2, &capture(Status::Ok, "{}")).is_none());
+        // A timeout is not a validation failure, so it is never retried.
+        assert!(retry_decision(&plan, &schema, 1, 2, &capture(Status::Timeout, "")).is_none());
+        // No extractable answer falls back to the raw stdout in the feedback.
+        assert!(retry_decision(&plan, &schema, 1, 2, &capture(Status::Ok, "  ")).is_some());
+    }
+
+    #[test]
+    fn executed_result_fills_schema_fields_per_status() {
+        let schema = Schema::compile(r#"{"type":"object","required":["a"]}"#).unwrap();
+        let spec = harness::by_id("crush").unwrap();
+        // A conforming ok run: valid, with the value and attempt count.
+        let ok = capture(Status::Ok, r#"{"a":1}"#);
+        let r = executed_result(
+            spec,
+            "crush".into(),
+            vec!["crush".into()],
+            OutputFormat::Text,
+            &ok,
+            Some(&schema),
+            1,
+        );
+        assert_eq!(r.schema_valid, Some(true));
+        assert_eq!(r.schema_attempts, Some(1));
+        assert!(r.structured.is_some());
+        // Timed out under a schema: nothing to validate, attempts still recorded.
+        let to = capture(Status::Timeout, "");
+        let r = executed_result(
+            spec,
+            "crush".into(),
+            vec![],
+            OutputFormat::Text,
+            &to,
+            Some(&schema),
+            1,
+        );
+        assert!(r.schema_valid.is_none());
+        assert_eq!(r.schema_attempts, Some(1));
+        // No schema requested: every structured field is null.
+        let r = executed_result(
+            spec,
+            "crush".into(),
+            vec![],
+            OutputFormat::Text,
+            &ok,
+            None,
+            1,
+        );
+        assert!(r.schema_valid.is_none());
+        assert!(r.schema_attempts.is_none());
+        assert!(r.structured.is_none());
+    }
+
+    #[test]
+    fn schema_invalid_result_is_a_failure_even_when_status_ok() {
+        // A structured-output run that exited cleanly but never conformed is a
+        // failure (non-zero exit), so a consumer can gate on it.
+        let mut r = result(Status::Ok, true);
+        r.schema_valid = Some(false);
+        assert_eq!(exit_code(std::slice::from_ref(&r), false), EXIT_FAILURE);
+        // A conforming (or schema-less) ok run still passes.
+        r.schema_valid = Some(true);
+        assert_eq!(exit_code(std::slice::from_ref(&r), false), EXIT_OK);
     }
 
     #[test]

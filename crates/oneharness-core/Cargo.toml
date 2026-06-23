@@ -14,3 +14,9 @@ thiserror = "2"
 which = "7"
 wait-timeout = "0.2"
 toml = "1.0.7"
+# JSON Schema validation for structured-output runs. `default-features = false`
+# drops the optional `resolve-http`/`resolve-file` reference resolvers (and the
+# `reqwest` they pull), keeping the engine offline and portable — in-document
+# `$ref`s still resolve. Pinned to a 0.33.x line whose MSRV (1.71) stays at or
+# below the crate's declared `rust-version`.
+jsonschema = { version = "0.33", default-features = false }

@@ -235,8 +235,25 @@ assert_contains "$out" '"usage_source":"json:summed-steps"' "opencode per-step u
 assert_contains "$out" '"input_tokens":43' "opencode token summing is broken"
 assert_contains "$out" '"session_id":"ses_smoke"' "camelCase sessionID surfacing is broken"
 
+# 5. Structured output: constrain the final answer to a JSON Schema, validate it,
+#    and surface the parsed value. Prompt-based delivery (crush) proves the
+#    portable path that works for every harness; the mock returns a conforming
+#    object so the validator passes and `structured`/`schema_valid` are emitted.
+schema_dir="$(mktemp -d)"
+printf '{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"}},"required":["name","age"],"additionalProperties":false}' > "$schema_dir/person.json"
+LAST_CMD="ONEHARNESS_BIN_CRUSH=$mock MOCK_STDOUT=<conforming-json> $oh run --harness crush --prompt <prompt> --schema $schema_dir/person.json --compact"
+out="$(ONEHARNESS_BIN_CRUSH="$mock" MOCK_STDOUT='{"name":"Ada","age":36}' \
+  "$oh" run --harness crush --prompt "$PROMPT" --schema "$schema_dir/person.json" --compact)" \
+  || fail "structured-output run exited non-zero" "$LAST_CMD" "$out" \
+       "the --schema validate path is broken"
+assert_contains "$out" '"schema_valid":true' "schema validation is broken"
+# serde_json serializes object keys sorted, so `age` precedes `name`.
+assert_contains "$out" '"structured":{"age":36,"name":"Ada"}' "structured value extraction is broken"
+assert_contains "$out" '"schema_attempts":1' "schema attempt count is broken"
+rm -rf "$schema_dir"
+
 if [ "$LIVE" -eq 0 ]; then
-  echo "smoke: ok (hermetic — install, list, detect, print-command, config, sync, mock run)"
+  echo "smoke: ok (hermetic — install, list, detect, print-command, config, sync, mock run, schema)"
   exit 0
 fi
 

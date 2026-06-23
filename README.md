@@ -105,10 +105,11 @@ how — or whether — it reaches that harness.
 
 The remaining unified settings — `timeout`, `env`, `bin`, per-harness `args`,
 `cwd`, selection — are enforced by oneharness itself at run time, so they work
-for **every** harness. `oneharness list` prints this registry as JSON,
-including each adapter's exact command, its `sync_file`, and `supports_resume`
-/ `supports_allowed_tools` / `supports_denied_tools` / `supports_hooks`
-capability flags.
+for **every** harness — as does `--schema` ([structured output](#structured-output),
+prompt-based where a harness has no native schema flag). `oneharness list` prints
+this registry as JSON, including each adapter's exact command, its `sync_file`,
+and `supports_resume` / `supports_native_schema` / `supports_allowed_tools` /
+`supports_denied_tools` / `supports_hooks` capability flags.
 
 ## Install
 
@@ -169,6 +170,9 @@ Useful `run` flags:
 - `--output-format <text|json|stream-json>` — override the format requested from
   each harness (default: per-harness); affects the emitted flag and how `text` is
   extracted.
+- `--schema <path>` / `--schema-max-retries <n>` — **structured output**:
+  constrain each harness's final answer to a JSON Schema, validate it, and
+  re-prompt on failure. See [Structured output](#structured-output) below.
 - `--output-dir <dir>` — also write each harness's raw stdout/stderr to
   `<dir>/<harness>.stdout` and `<dir>/<harness>.stderr` (read transcripts from
   files without a JSON parser).
@@ -216,6 +220,8 @@ system = "Be terse."            # --system
 bypass = true                   # `false` ≙ --no-bypass (default true)
 timeout = 120                   # --timeout, in seconds
 output_format = "json"          # --output-format
+schema_file = "person.json"     # --schema (structured output; relative to project)
+schema_max_retries = 2          # --schema-max-retries (default 2)
 max_parallel = 4                # --max-parallel
 require_available = false       # --require-available
 allowed_tools = ["Bash(git log:*)"]  # synced into each harness's config file
@@ -351,8 +357,10 @@ Which settings can reach which harness is the support table above: `model`,
 
 - `0` — every selected harness was `ok` or `skipped` (or it was a dry run).
 - `1` — at least one harness `nonzero`/`timeout`/`spawn-error`ed (or, under
-  `--require-available`, was missing).
-- `2` — usage/configuration error (bad args, unknown harness, no prompt).
+  `--require-available`, was missing; or, under `--schema`, never produced a
+  schema-conforming answer).
+- `2` — usage/configuration error (bad args, unknown harness, no prompt, an
+  unreadable or invalid `--schema` file).
 
 ### The result envelope vs. the normalized signals
 
@@ -394,6 +402,59 @@ Coverage is keyed off each harness's documented output shape — Claude Code's
 usage), Cursor's `stream-json` — and widens as more shapes are sourced; an absent
 signal is the honest answer, not an error. Consumers that need certainty should
 parse `stdout` themselves.
+
+### Structured output
+
+`run --schema <path>` constrains each harness's final answer to a [JSON
+Schema](https://json-schema.org/) and validates it, so a programmatic consumer
+gets a checked JSON value instead of prose to parse. The schema is delivered two
+ways, chosen per harness:
+
+- **Native** where the CLI supports it — Claude Code's `--json-schema` (with
+  `--output-format json`), which returns the conforming value in its result
+  document's `structured_output` field. `supports_native_schema` in `oneharness
+  list` flags these.
+- **Prompt-based** for every other harness — the schema is appended to the
+  prompt as an instruction to emit only a conforming JSON value, which oneharness
+  then recovers from the final text (unwrapping a ```` ```json ```` fence or an
+  object embedded in prose).
+
+Either way oneharness **validates the result itself** (with the
+[`jsonschema`](https://crates.io/crates/jsonschema) crate), so a native flag the
+harness ignores is still caught. On a validation failure it re-prompts the
+harness with the prior answer and the exact errors, up to `--schema-max-retries`
+times (default 2 — so at most `1 + N` invocations per harness). The loop runs
+**per harness, in parallel**, so a `--schema` run across many harnesses is still
+concurrent.
+
+> Codex CLI also has a native `--output-schema`, but it takes a schema *file*
+> and is [reportedly ignored once the agent uses tools](https://github.com/openai/codex/issues/15451),
+> so oneharness uses the more reliable prompt-based path for it today. The
+> registry's `native_schema` hook makes adding more native deliveries a
+> one-line, well-tested change.
+
+Each result gains four fields (all `null` when no `--schema` was given):
+
+- `structured` — the JSON value extracted from the answer and validated. Carries
+  the **last-attempted** value even when it failed, so you can see what the
+  harness produced; `null` only when no JSON could be extracted at all (never
+  fabricated).
+- `schema_valid` — `true`/`false` for the final attempt. A `false` here makes the
+  run a failure (exit `1`), so you can gate on "did I actually get conforming
+  output".
+- `schema_attempts` — how many times the harness was invoked under the loop
+  (`1 + retries`).
+- `schema_error` — the validation errors from the final attempt, joined for
+  display; `null` when valid.
+
+The top-level report echoes the applied `schema` and `schema_max_retries`. Both
+the schema path and the retry budget are also configurable
+(`schema_file` / `schema_max_retries` in `oneharness.toml`).
+
+```console
+oneharness run --harness claude-code --prompt "extract the person from auth.py" \
+  --schema person.json --compact | jq '.results[0].structured'
+```
 
 ### Safety note: bypass by default
 

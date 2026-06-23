@@ -3000,11 +3000,17 @@ fn schema_prompt_based_validates_and_appends_instruction() {
     assert!(result["schema_error"].is_null());
     assert_eq!(result["structured"]["name"], "Ada");
     assert_eq!(result["structured"]["age"], 36);
-    // The schema instruction reached the prompt (non-native delivery).
+    // The schema instruction reached the prompt (non-native delivery)...
     let command = command_of(&value, 0);
     assert!(
         command.iter().any(|a| a.contains("JSON Schema")),
         "prompt should carry the schema instruction: {command:?}"
+    );
+    // ...and it stays newline-free, so the prompt argument survives being passed
+    // to a `.cmd` harness shim on Windows.
+    assert!(
+        command.iter().all(|a| !a.contains('\n')),
+        "schema prompt must be newline-free: {command:?}"
     );
     // The report echoes the applied schema and retry budget.
     assert_eq!(value["schema"]["required"][0], "name");

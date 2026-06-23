@@ -439,12 +439,16 @@ impl HarnessPlan {
     fn argv(&self, schema: Option<&Schema>, feedback: Option<(&str, &[String])>) -> Vec<String> {
         let mut prompt = self.base_prompt.clone();
         if let Some(sch) = schema {
+            // Join with a space, not a newline: the structured-output additions
+            // must keep the prompt argument newline-free so it can still be passed
+            // to a `.bat`/`.cmd` harness shim on Windows (Rust's std rejects an
+            // argument with `\n`/`\r` there — see `structured::prompt_instruction`).
             if !self.native {
-                prompt.push_str("\n\n");
+                prompt.push(' ');
                 prompt.push_str(&structured::prompt_instruction(sch.as_text()));
             }
             if let Some((previous, errors)) = feedback {
-                prompt.push_str("\n\n");
+                prompt.push(' ');
                 prompt.push_str(&structured::retry_instruction(
                     sch.as_text(),
                     previous,
@@ -702,6 +706,38 @@ mod tests {
             stderr: String::new(),
             error: None,
         }
+    }
+
+    #[test]
+    fn schema_argv_prompt_stays_newline_free_including_on_retry() {
+        // Windows passes the prompt as one argv element to a `.cmd` harness shim,
+        // which Rust's std refuses if it contains `\n`/`\r`. The structured-output
+        // additions (instruction + retry feedback, even with a multi-line prior
+        // answer) must never introduce one.
+        let schema = Schema::compile(r#"{"type":"object"}"#).unwrap();
+        // Prompt-based (non-native): first attempt appends the instruction.
+        let plan = crush_plan();
+        let argv = plan.argv(Some(&schema), None);
+        assert!(argv.iter().all(|a| !a.contains('\n')), "{argv:?}");
+        // ... and a retry with a multi-line prior answer + errors.
+        let argv = plan.argv(
+            Some(&schema),
+            Some((
+                "multi\nline\r\nanswer",
+                &["e1".to_string(), "e2".to_string()],
+            )),
+        );
+        assert!(
+            argv.iter().all(|a| !a.contains('\n') && !a.contains('\r')),
+            "{argv:?}"
+        );
+        // Native (claude) retry: schema rides the flag, feedback rides the prompt.
+        let mut native = crush_plan();
+        native.spec = harness::by_id("claude-code").unwrap();
+        native.native = true;
+        native.output_format = OutputFormat::Json;
+        let argv = native.argv(Some(&schema), Some(("multi\nline", &["e".to_string()])));
+        assert!(argv.iter().all(|a| !a.contains('\n')), "{argv:?}");
     }
 
     #[test]

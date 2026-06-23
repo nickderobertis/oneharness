@@ -195,33 +195,46 @@ fn first_json_value(s: &str) -> Option<Value> {
 
 /// The instruction appended to a prompt for prompt-based delivery: emit a single
 /// conforming JSON value and nothing else.
+///
+/// Deliberately **single-line** (no newlines). The command layer appends it to
+/// the prompt, which becomes one argv element; Rust's std refuses to pass an
+/// argument containing `\n`/`\r` to a `.bat`/`.cmd` shim ("batch file arguments
+/// are invalid"), which is how every npm-installed harness lands on Windows. A
+/// newline here would make prompt-based `--schema` unspawnable there. The schema
+/// text is already compact JSON, so the whole instruction stays one line.
 pub fn prompt_instruction(schema_text: &str) -> String {
     format!(
         "You must respond with a single JSON value that strictly conforms to the \
          following JSON Schema. Output ONLY that JSON value — no prose, no \
-         explanation, and no Markdown code fences.\n\nJSON Schema:\n{schema_text}"
+         explanation, and no Markdown code fences. JSON Schema: {schema_text}"
     )
 }
 
 /// The feedback prompt for a retry: restate the schema, show the prior
 /// (non-conforming) answer and the exact validation errors, and ask again for a
-/// conforming JSON value only.
+/// conforming JSON value only. Single-line for the same cross-platform reason as
+/// [`prompt_instruction`]; the prior answer (which may itself span lines) is
+/// flattened to spaces so it never reintroduces a newline.
 pub fn retry_instruction(schema_text: &str, previous: &str, errors: &[String]) -> String {
     let errors = if errors.is_empty() {
-        "- (no JSON value could be extracted from the response)".to_string()
+        "(no JSON value could be extracted from the response)".to_string()
     } else {
-        errors
-            .iter()
-            .map(|e| format!("- {e}"))
-            .collect::<Vec<_>>()
-            .join("\n")
+        errors.join("; ")
     };
+    let previous = flatten_whitespace(previous);
     format!(
-        "Your previous response did not conform to the required JSON Schema.\n\n\
-         Previous response:\n{previous}\n\nValidation errors:\n{errors}\n\n\
+        "Your previous response did not conform to the required JSON Schema. \
+         Previous response: {previous} -- Validation errors: {errors}. \
          Respond again with ONLY a single JSON value that strictly conforms to \
-         this JSON Schema (no prose, no code fences):\n{schema_text}"
+         this JSON Schema (no prose, no code fences): {schema_text}"
     )
+}
+
+/// Collapse every run of whitespace (including newlines) to a single space, so a
+/// multi-line model answer can be embedded in a single-line retry prompt without
+/// reintroducing a `\n` (see [`prompt_instruction`] for why that matters).
+fn flatten_whitespace(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
@@ -377,6 +390,26 @@ mod tests {
         // listing an empty error block.
         let retry = retry_instruction("{}", "prose", &[]);
         assert!(retry.contains("no JSON value could be extracted"));
+    }
+
+    #[test]
+    fn instructions_are_single_line_for_cmd_shim_safety() {
+        // The structured-output prompt additions must contain no newline, or the
+        // prompt argument cannot be passed to a `.bat`/`.cmd` harness shim on
+        // Windows ("batch file arguments are invalid"). A multi-line prior answer
+        // must be flattened, not embedded verbatim.
+        let instr = prompt_instruction("{\"type\":\"object\"}");
+        assert!(!instr.contains('\n'), "prompt_instruction must be one line");
+        let retry = retry_instruction(
+            "{\"type\":\"object\"}",
+            "line one\nline two\r\nline three",
+            &["err a".to_string(), "err b".to_string()],
+        );
+        assert!(!retry.contains('\n'), "retry_instruction must be one line");
+        assert!(!retry.contains('\r'), "retry_instruction must be one line");
+        // The flattened prior answer keeps its words, just not its newlines.
+        assert!(retry.contains("line one line two line three"), "{retry}");
+        assert!(retry.contains("err a; err b"));
     }
 
     #[test]

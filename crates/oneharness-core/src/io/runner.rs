@@ -22,15 +22,44 @@ pub struct Job {
     pub timeout: Duration,
 }
 
+/// One job's final result plus how many times it was invoked. `attempts` is 1
+/// for a plain run, and more when a retry policy re-ran it (structured output).
+pub struct Outcome {
+    pub capture: Capture,
+    pub attempts: u32,
+}
+
 /// Run `jobs` concurrently, at most `max_parallel` at a time, preserving order.
 pub fn run_jobs(jobs: &[Job], max_parallel: usize) -> Vec<Capture> {
+    run_jobs_with(jobs, max_parallel, |_, _, _| None)
+        .into_iter()
+        .map(|o| o.capture)
+        .collect()
+}
+
+/// Like [`run_jobs`], but after each run consults `retry` to decide whether to
+/// re-run the same job with a new argv. `retry(job_index, attempt, &capture)`
+/// returns `Some(next_argv)` to run again (e.g. structured-output validation
+/// failed, so re-prompt) or `None` to stop. `attempt` is the number of runs
+/// completed so far (1 after the first), and the policy is responsible for its
+/// own bound — the loop runs until it returns `None`. Only the argv changes
+/// across attempts; cwd/env/timeout are reused. Returns each job's final capture
+/// and total attempt count, in input order.
+///
+/// `retry` is `Sync` because it is shared across worker threads; the domain
+/// validation it performs is pure, keeping this layer free of parsing logic.
+pub fn run_jobs_with<F>(jobs: &[Job], max_parallel: usize, retry: F) -> Vec<Outcome>
+where
+    F: Fn(usize, u32, &Capture) -> Option<Vec<String>> + Sync,
+{
     let n = jobs.len();
     if n == 0 {
         return Vec::new();
     }
     let workers = max_parallel.clamp(1, n);
     let next = AtomicUsize::new(0);
-    let slots: Vec<Mutex<Option<Capture>>> = (0..n).map(|_| Mutex::new(None)).collect();
+    let slots: Vec<Mutex<Option<Outcome>>> = (0..n).map(|_| Mutex::new(None)).collect();
+    let retry = &retry;
 
     std::thread::scope(|scope| {
         for _ in 0..workers {
@@ -39,8 +68,8 @@ pub fn run_jobs(jobs: &[Job], max_parallel: usize) -> Vec<Capture> {
                 if i >= n {
                     break;
                 }
-                let capture = run_job(&jobs[i]);
-                *slots[i].lock().expect("slot mutex poisoned") = Some(capture);
+                let outcome = run_job_with_retry(&jobs[i], i, retry);
+                *slots[i].lock().expect("slot mutex poisoned") = Some(outcome);
             });
         }
     });
@@ -53,6 +82,26 @@ pub fn run_jobs(jobs: &[Job], max_parallel: usize) -> Vec<Capture> {
                 .expect("slot unfilled")
         })
         .collect()
+}
+
+/// Run one job, then loop while `retry` asks for another attempt with a new argv.
+fn run_job_with_retry<F>(job: &Job, index: usize, retry: &F) -> Outcome
+where
+    F: Fn(usize, u32, &Capture) -> Option<Vec<String>>,
+{
+    let mut capture = run_job(job);
+    let mut attempts = 1u32;
+    while let Some(next_argv) = retry(index, attempts, &capture) {
+        let next = Job {
+            argv: next_argv,
+            cwd: job.cwd.clone(),
+            env: job.env.clone(),
+            timeout: job.timeout,
+        };
+        capture = run_job(&next);
+        attempts += 1;
+    }
+    Outcome { capture, attempts }
 }
 
 /// Resolve a program name to the binary actually spawned.
@@ -221,6 +270,36 @@ mod tests {
         let msg = cap.error.as_deref().unwrap_or_default();
         assert!(msg.contains("failed to spawn"), "{msg}");
         assert!(msg.contains("oneharness-binary-xyz"), "{msg}");
+    }
+
+    #[test]
+    fn run_jobs_with_retries_until_the_policy_stops() {
+        // The structured-output loop in disguise: re-run with a fresh argv until
+        // the policy returns None. Uses unspawnable binaries so it stays portable
+        // and process-free, asserting on the attempt count and that the *final*
+        // capture came from the last retry's argv (its error names that binary).
+        let jobs = [job(&["/no/such/first"])];
+        let outcomes = run_jobs_with(&jobs, 1, |i, attempt, cap| {
+            assert_eq!(i, 0);
+            assert_eq!(cap.status, Status::SpawnError);
+            (attempt < 3).then(|| vec![format!("/no/such/retry-{attempt}")])
+        });
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].attempts, 3);
+        let err = outcomes[0].capture.error.as_deref().unwrap_or_default();
+        assert!(
+            err.contains("retry-2"),
+            "final capture should be last retry: {err}"
+        );
+    }
+
+    #[test]
+    fn run_jobs_with_a_no_op_policy_runs_once() {
+        let jobs = [job(&["/no/such/binary"])];
+        let outcomes = run_jobs_with(&jobs, 1, |_, _, _| None);
+        assert_eq!(outcomes[0].attempts, 1);
+        // Empty input is still the no-work fast path.
+        assert!(run_jobs_with(&[], 4, |_, _, _| None).is_empty());
     }
 
     #[test]

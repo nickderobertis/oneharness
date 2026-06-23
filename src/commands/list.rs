@@ -17,6 +17,11 @@ struct HarnessInfo {
     output_format: OutputFormat,
     /// Whether `run --resume <session>` is supported for this harness.
     supports_resume: bool,
+    /// Whether `run --schema` is delivered through a native structured-output
+    /// flag for this harness (Claude Code's `--json-schema`). `false` means the
+    /// portable prompt-based path is used — structured output works either way;
+    /// oneharness always validates and retries.
+    supports_native_schema: bool,
     /// The project-scoped config file `oneharness sync` writes for this
     /// harness; `null` when it has none (sync settings are then rejected).
     sync_file: Option<&'static str>,
@@ -48,6 +53,7 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 resume: None,
                 bypass: true,
                 output_format: spec.output_format,
+                schema: None,
             };
             let sync = spec.sync.as_ref();
             HarnessInfo {
@@ -57,6 +63,7 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 install_hint: spec.install_hint,
                 output_format: spec.output_format,
                 supports_resume: spec.supports_resume,
+                supports_native_schema: spec.native_schema.is_some(),
                 sync_file: sync.map(|s| s.file),
                 supports_allowed_tools: sync.is_some_and(|s| s.allow_path.is_some()),
                 supports_denied_tools: sync.is_some_and(|s| s.deny_path.is_some()),

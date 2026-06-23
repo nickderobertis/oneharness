@@ -175,13 +175,20 @@ live-copilot: _live-install
 live-cursor: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-cursor.sh
 
-# Run every per-harness live check; skips count as passes, only real failures fail.
+# Per-FEATURE live check (not a harness): drive a real harness through
+# `run --schema` and assert a schema-valid structured round-trip — the drift
+# alarm for Claude Code's native `--json-schema` delivery. See scripts/e2e-schema.sh.
+live-schema: _live-install
+    ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-schema.sh
+
+# Run every per-harness live check plus the per-feature ones; skips count as
+# passes, only real failures fail.
 live-all: _live-install
     #!/usr/bin/env bash
     set -uo pipefail
     export ONEHARNESS_BIN="{{ONEHARNESS_BIN}}"
     fails=0
-    for h in claude codex opencode goose qwen crush copilot cursor; do
+    for h in claude codex opencode goose qwen crush copilot cursor schema; do
         printf '\n=================== live: %s ===================\n' "$h"
         bash "scripts/e2e-$h.sh" || fails=$((fails + 1))
     done

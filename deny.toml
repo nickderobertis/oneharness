@@ -10,8 +10,10 @@ multiple-versions = "allow"
 
 [licenses]
 version = 2
-# Permissive licenses compatible with shipping a binary.
-allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib"]
+# Permissive licenses compatible with shipping a binary. MIT-0 (MIT No
+# Attribution — strictly more permissive than MIT) arrives via `borrow-or-share`,
+# a transitive dependency of the `jsonschema` validator used for structured output.
+allow = ["MIT", "MIT-0", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib"]
 confidence-threshold = 0.9
 
 [sources]

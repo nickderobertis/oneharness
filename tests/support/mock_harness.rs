@@ -13,6 +13,11 @@
 //!                   (used to assert that --cwd keeps $PWD consistent)
 //!   MOCK_ECHO_ENV   if set to a variable NAME, write `NAME=<inherited value>`
 //!                   to stdout and exit (used to assert per-harness env injection)
+//!   MOCK_ATTEMPT_FILE  if set, a counter file: each invocation reads the prior
+//!                   count, increments it, writes it back, and (when
+//!                   MOCK_STDOUT_<n> is set for that 1-based attempt) emits that
+//!                   instead of MOCK_STDOUT — used to script the structured-output
+//!                   retry loop, where attempt 1 is invalid and a later one valid.
 
 use std::io::Write;
 
@@ -47,8 +52,22 @@ fn main() {
         let _ = write!(std::io::stderr(), "{text}");
     }
 
-    let stdout =
-        std::env::var("MOCK_STDOUT").unwrap_or_else(|_| "{\"result\":\"mock ok\"}".to_string());
+    // Per-attempt scripting: with MOCK_ATTEMPT_FILE set, increment a counter and
+    // prefer MOCK_STDOUT_<attempt> when present, so a test can make the first
+    // response invalid and a later one valid to exercise the retry loop.
+    let attempt = std::env::var("MOCK_ATTEMPT_FILE").ok().map(|path| {
+        let prior = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        let n = prior + 1;
+        let _ = std::fs::write(&path, n.to_string());
+        n
+    });
+    let attempt_stdout = attempt.and_then(|n| std::env::var(format!("MOCK_STDOUT_{n}")).ok());
+    let stdout = attempt_stdout
+        .or_else(|| std::env::var("MOCK_STDOUT").ok())
+        .unwrap_or_else(|| "{\"result\":\"mock ok\"}".to_string());
     let _ = write!(std::io::stdout(), "{stdout}");
     let _ = std::io::stdout().flush();
 

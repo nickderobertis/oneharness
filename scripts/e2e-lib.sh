@@ -455,3 +455,78 @@ TOML
     rm -rf "$sandbox"
     note "PASS: $id hook enforcement"
 }
+
+# --- structured output enforcement -------------------------------------------
+
+# Live proof that `oneharness run --schema` produces a schema-VALID structured
+# answer end to end — the counterpart of oh_sync_enforce/oh_hook_enforce for the
+# structured-output feature, and the only check that catches drift in a harness's
+# NATIVE schema delivery (the hermetic suite mocks the flag and its output
+# field). It writes a small JSON Schema, asks the harness (via oneharness, with
+# `--schema`) for an object whose `token` field is a high-entropy marker, then
+# asserts oneharness reported `schema_valid: true` and round-tripped the marker
+# into `.structured.token` — so a pass means the schema actually reached the
+# model and the conforming value was extracted and validated, not merely that the
+# process exited cleanly.
+#
+# Generic over the harness id: claude-code exercises the native `--json-schema`
+# path (value read from `structured_output`); any other id exercises the portable
+# prompt-based path. A missing harness is a SKIP, like every other live check.
+#
+#   $1 harness id
+oh_schema_enforce() {
+    local id="$1"
+    local bin sandbox schema marker status valid token attempts
+
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    sandbox="$(mktemp -d)"
+    sandbox="$(oh_native_path "$sandbox")"
+    marker="OHSCHEMA${RANDOM}${RANDOM}${RANDOM}"
+    schema="$sandbox/schema.json"
+    # additionalProperties:false + required keeps the constraint tight, so a
+    # passing validation is a real conformance, not a vacuous match.
+    printf '%s' '{"type":"object","properties":{"token":{"type":"string"},"ok":{"type":"boolean"}},"required":["token","ok"],"additionalProperties":false}' > "$schema"
+
+    # One physical line, and NO embedded double quotes: an npm-installed harness
+    # is a `.cmd` shim on Windows, and cmd.exe's `%*` forwarding mangles a
+    # quote-containing argument (truncating it) — the same discipline the other
+    # e2e prompts follow. (The quote-heavy schema itself rides `--json-schema`,
+    # which is why the live schema check is scoped to Linux/macOS; see e2e-schema.yml.)
+    local prompt="This is an automated structured-output check for the oneharness end-to-end test suite. Reply with a JSON object that has a token field set to exactly $marker and an ok field set to the boolean true. Output only that JSON object: no preamble, no explanation, no code fences."
+    oh_run "$id" "$prompt" --schema "$schema"
+
+    status="$(oh_field '.results[0].status')"
+    if [ "$status" = "skipped" ] || [ "$(oh_field '.results[0].available')" != "true" ]; then
+        rm -rf "$sandbox"
+        skip "$id is not installed (oneharness reported status=$status); nothing to verify"
+    fi
+
+    valid="$(oh_field '.results[0].schema_valid')"
+    attempts="$(oh_field '.results[0].schema_attempts')"
+    if [ "$status" != "ok" ] || [ "$valid" != "true" ]; then
+        oh_dump
+        note "  schema_valid:  $valid"
+        note "  schema_error:  $(oh_field '.results[0].schema_error // "null"')"
+        note "  structured:    $(printf '%s' "$OH_REPORT" | jq -c '.results[0].structured // "null"')"
+        rm -rf "$sandbox"
+        fail "$id: --schema run did not yield a schema-valid result (status=$status, schema_valid=$valid, attempts=$attempts)"
+    fi
+    note "  ok: $id returned schema-valid structured output (attempts=$attempts)"
+
+    # The marker must round-trip into the validated value, proving the schema
+    # reached the model and the right object was extracted — not a lucky empty
+    # object that happened to validate.
+    token="$(oh_field '.results[0].structured.token? // ""')"
+    if [ "$token" != "$marker" ]; then
+        oh_dump
+        note "  structured:    $(printf '%s' "$OH_REPORT" | jq -c '.results[0].structured // "null"')"
+        rm -rf "$sandbox"
+        fail "$id: the marker did not round-trip into .structured.token (got '$token')"
+    fi
+    note "  confirmed: the marker round-tripped into .structured.token"
+
+    rm -rf "$sandbox"
+    note "PASS: $id schema enforcement"
+}

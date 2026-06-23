@@ -9,4 +9,5 @@ pub mod hooks;
 pub mod normalize;
 pub mod report;
 pub mod signals;
+pub mod structured;
 pub mod sync;

@@ -64,6 +64,16 @@ pub enum OneharnessError {
         source: std::io::Error,
     },
 
+    #[error("could not read schema file `{path}`: {source}")]
+    SchemaFile {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("invalid --schema: {0}")]
+    Schema(String),
+
     #[error("could not read config file `{path}`: {source}")]
     ConfigRead {
         path: String,

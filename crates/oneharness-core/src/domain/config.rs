@@ -40,6 +40,15 @@ pub struct FileConfig {
     pub timeout: Option<u64>,
     /// Output format override (like `--output-format`).
     pub output_format: Option<OutputFormat>,
+    /// Path to a JSON Schema file constraining each harness's final answer
+    /// (like `--schema`). Resolved relative to the working directory. Turns the
+    /// run into a structured-output run: the schema is delivered to the harness
+    /// (natively where supported, else via the prompt), the result is validated,
+    /// and a failure is re-prompted up to `schema_max_retries` times.
+    pub schema_file: Option<String>,
+    /// Maximum retries per harness when a response fails schema validation
+    /// (like `--schema-max-retries`; default 2). Only meaningful with a schema.
+    pub schema_max_retries: Option<u32>,
     /// Concurrency cap (like `--max-parallel`).
     pub max_parallel: Option<usize>,
     /// Treat a missing harness as a failure (like `--require-available`).
@@ -269,6 +278,8 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
         bypass: over.bypass.or(base.bypass),
         timeout: over.timeout.or(base.timeout),
         output_format: over.output_format.or(base.output_format),
+        schema_file: over.schema_file.or(base.schema_file),
+        schema_max_retries: over.schema_max_retries.or(base.schema_max_retries),
         max_parallel: over.max_parallel.or(base.max_parallel),
         require_available: over.require_available.or(base.require_available),
         allowed_tools: over.allowed_tools.or(base.allowed_tools),
@@ -425,6 +436,8 @@ pub struct ConfigReport {
     pub bypass: Field<bool>,
     pub timeout: Field<u64>,
     pub output_format: Field<OutputFormat>,
+    pub schema_file: Field<String>,
+    pub schema_max_retries: Field<u32>,
     pub max_parallel: Field<usize>,
     pub require_available: Field<bool>,
     pub allowed_tools: Field<Vec<String>>,
@@ -550,6 +563,8 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         bypass: pick(layers, |c| c.bypass).or_default(true),
         timeout: pick(layers, |c| c.timeout).or_default(120),
         output_format: pick(layers, |c| c.output_format),
+        schema_file: pick(layers, |c| c.schema_file.clone()),
+        schema_max_retries: pick(layers, |c| c.schema_max_retries),
         max_parallel: pick(layers, |c| c.max_parallel),
         require_available: pick(layers, |c| c.require_available).or_default(false),
         allowed_tools: pick(layers, |c| c.allowed_tools.clone()),
@@ -585,6 +600,8 @@ mod tests {
             bypass = false
             timeout = 90
             output_format = "stream-json"
+            schema_file = "schema.json"
+            schema_max_retries = 4
             max_parallel = 2
             require_available = true
 
@@ -604,6 +621,8 @@ mod tests {
         assert_eq!(c.bypass, Some(false));
         assert_eq!(c.timeout, Some(90));
         assert_eq!(c.output_format, Some(OutputFormat::StreamJson));
+        assert_eq!(c.schema_file.as_deref(), Some("schema.json"));
+        assert_eq!(c.schema_max_retries, Some(4));
         assert_eq!(c.max_parallel, Some(2));
         assert_eq!(c.require_available, Some(true));
         assert_eq!(c.env["FOO"], "bar");
@@ -847,6 +866,30 @@ mod tests {
         let merged = merge(parsed("harnesses = [\"codex\"]"), parsed("all = true"));
         assert_eq!(merged.all, Some(true));
         assert_eq!(merged.harnesses, None);
+    }
+
+    #[test]
+    fn schema_fields_layer_and_explain_per_field() {
+        // schema_file/schema_max_retries layer like any scalar, and `explain`
+        // attributes each to its winning file.
+        let merged = merge(
+            parsed("schema_file = \"user.json\"\nschema_max_retries = 1"),
+            parsed("schema_max_retries = 5"),
+        );
+        assert_eq!(merged.schema_file.as_deref(), Some("user.json"));
+        assert_eq!(merged.schema_max_retries, Some(5));
+
+        let report = explain(&layers(
+            "schema_file = \"user.json\"",
+            "schema_file = \"proj.json\"\nschema_max_retries = 3",
+        ));
+        assert_eq!(report.schema_file.value.as_deref(), Some("proj.json"));
+        assert_eq!(report.schema_file.source.as_deref(), Some("/project.toml"));
+        assert_eq!(report.schema_max_retries.value, Some(3));
+        // Unset everywhere stays null (no built-in default).
+        let report = explain(&[]);
+        assert_eq!(report.schema_max_retries, Field::unset());
+        assert_eq!(report.schema_file, Field::unset());
     }
 
     #[test]

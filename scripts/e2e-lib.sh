@@ -489,8 +489,12 @@ oh_schema_enforce() {
     # passing validation is a real conformance, not a vacuous match.
     printf '%s' '{"type":"object","properties":{"token":{"type":"string"},"ok":{"type":"boolean"}},"required":["token","ok"],"additionalProperties":false}' > "$schema"
 
-    # One physical line (Windows .cmd shims cannot receive newline args).
-    local prompt="This is an automated structured-output check for the oneharness end-to-end test suite. Respond with a single JSON object that conforms to the provided JSON Schema: set the \"token\" field to exactly $marker and the \"ok\" field to true. Output only that JSON object — no preamble, no explanation."
+    # One physical line, and NO embedded double quotes: an npm-installed harness
+    # is a `.cmd` shim on Windows, and cmd.exe's `%*` forwarding mangles a
+    # quote-containing argument (truncating it) — the same discipline the other
+    # e2e prompts follow. (The quote-heavy schema itself rides `--json-schema`,
+    # which is why the live schema check is scoped to Linux/macOS; see e2e-schema.yml.)
+    local prompt="This is an automated structured-output check for the oneharness end-to-end test suite. Reply with a JSON object that has a token field set to exactly $marker and an ok field set to the boolean true. Output only that JSON object: no preamble, no explanation, no code fences."
     oh_run "$id" "$prompt" --schema "$schema"
 
     status="$(oh_field '.results[0].status')"

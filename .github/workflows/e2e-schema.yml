@@ -37,7 +37,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Linux + macOS only. The native delivery passes the schema as a
+        # quote-heavy JSON argument (`--json-schema '{...}'`), and an npm-installed
+        # harness is a `.cmd` shim on Windows where cmd.exe's `%*` forwarding
+        # mangles quote-containing arguments — a platform limitation, not a
+        # oneharness bug. The hermetic `check` job (ci.yml) still exercises the
+        # full structured-output argv + validation path on windows-latest.
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     defaults:
       run:

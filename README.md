@@ -456,6 +456,14 @@ oneharness run --harness claude-code --prompt "extract the person from auth.py" 
   --schema person.json --compact | jq '.results[0].structured'
 ```
 
+**Windows note.** A JSON Schema is quote-heavy, and a harness installed as an npm
+`.cmd` shim receives its arguments through cmd.exe's `%*` forwarding, which
+mangles quote-containing arguments. So on Windows the native `--json-schema`
+delivery (and a schema appended to the prompt) may not reach a `.cmd`-shim
+harness intact — structured output is most reliable on Linux/macOS, or on Windows
+against a real `.exe` harness. oneharness's own argv construction and validation
+are exercised on Windows by the hermetic test suite regardless.
+
 ### Safety note: bypass by default
 
 A headless agent run hangs waiting for a human to approve tool calls, so `run`

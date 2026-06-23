@@ -101,7 +101,13 @@ Use the `just` recipes; do not hand-roll equivalents.
   *per-feature* live e2e (`scripts/e2e-schema.sh` / `just live-schema` /
   `e2e-schema.yml`, helper `oh_schema_enforce`) drives real claude-code through
   `--schema` and asserts a schema-valid round-trip — the drift alarm for the
-  native `--json-schema` flag the hermetic suite can only mock.
+  native `--json-schema` flag the hermetic suite can only mock. That live check
+  is Linux/macOS-only: a JSON Schema is quote-heavy and npm `.cmd` shims mangle
+  quote-containing argv via cmd.exe `%*` on Windows (so structured output is
+  unreliable against a `.cmd`-shim harness there — documented in the README; the
+  hermetic `check` job still covers the Windows argv/validation path). The
+  structured-output prompt additions are kept **newline-free** for the same
+  class of `.cmd`-arg limitation (multi-line args are rejected outright).
 
 ## How this repo was composed
 

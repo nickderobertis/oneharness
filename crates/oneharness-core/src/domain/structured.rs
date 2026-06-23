@@ -29,6 +29,11 @@ pub enum NativeSchema {
     /// json`. The conforming value is returned under the result document's
     /// top-level `structured_output` field (sourced from the headless docs).
     ClaudeJsonSchema,
+    // Codex `exec --output-schema <file>` is the next candidate, but its flag is
+    // file-based and reportedly ignored once tools run
+    // (https://github.com/openai/codex/issues/15451), so it stays prompt-based for
+    // now. Adding it: a `CodexOutputSchema` variant here, wired in the codex
+    // registry entry + `argv_codex`, with `extract_value` taught its output shape.
 }
 
 /// A compiled JSON Schema plus its canonical text, used to instruct a harness,

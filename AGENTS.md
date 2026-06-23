@@ -95,7 +95,13 @@ Use the `just` recipes; do not hand-roll equivalents.
   in `domain::structured`. Like every normalized signal, the structured value is
   **never fabricated**: no extractable JSON is "invalid", not a guess. Codex's
   native `--output-schema` is deliberately *not* wired yet (file-based + ignored
-  once tools run); adding it is one registry line plus a `build_argv` arm.
+  once tools run, https://github.com/openai/codex/issues/15451); adding it is one
+  registry line plus a `build_argv` arm (the pointer comments at the codex
+  registry entry and `structured::NativeSchema` say exactly what to change). The
+  *per-feature* live e2e (`scripts/e2e-schema.sh` / `just live-schema` /
+  `e2e-schema.yml`, helper `oh_schema_enforce`) drives real claude-code through
+  `--schema` and asserts a schema-valid round-trip — the drift alarm for the
+  native `--json-schema` flag the hermetic suite can only mock.
 
 ## How this repo was composed
 

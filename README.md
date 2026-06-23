@@ -549,9 +549,21 @@ exec`, which does not load hooks) and **Copilot** (its project hooks sit behind 
 trusted-folder + prompt-mode setup that belongs in allowlister's adapter e2e);
 both keep their hermetic install coverage.
 
+Alongside the per-harness checks there is a **per-feature** one for structured
+output: `scripts/e2e-schema.sh` (`just live-schema`) drives the real Claude Code
+CLI through `oneharness run --schema` and asserts a schema-**valid** round-trip —
+it plants a marker, asks for a conforming JSON object carrying it, and checks
+`schema_valid == true` with the marker in `.structured`. claude-code is chosen
+because it is the one with *native* delivery (`--json-schema` →
+`structured_output`); this is the live drift alarm for that flag and field, which
+the hermetic suite can only mock. (The portable prompt-based path is harness-
+agnostic; any per-harness script can add a live leg by calling
+`oh_schema_enforce <id>`.)
+
 ```console
 just live-claude     # one harness (installs the release binary, runs the live check)
-just live-all        # every harness in sequence; skips pass, only real failures fail
+just live-schema     # the structured-output feature (drives claude-code via --schema)
+just live-all        # every harness + feature in sequence; skips pass, only real failures fail
 ```
 
 Each harness needs its CLI installed and that provider's auth in the environment:
@@ -569,6 +581,8 @@ Each harness needs its CLI installed and that provider's auth in the environment
 
 Per-harness CI workflows (`.github/workflows/e2e-*.yml`) run the same checks,
 each gated to the canonical repo and non-fork PRs so secrets are never exposed.
+The structured-output feature has its own (`e2e-schema.yml`), reusing the Claude
+auth secret.
 Every workflow runs a `fail-fast: false` matrix across **Linux, macOS, and
 Windows** (`ubuntu-latest`, `macos-latest`, `windows-latest`), so the adapter
 argv, JSON contract, and sync/hook enforcement are proven on each platform

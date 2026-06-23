@@ -348,6 +348,15 @@ static REGISTRY: &[HarnessSpec] = &[
         }),
         gate_deny: Some(DenyShape::ClaudeNested),
         default_env: &[],
+        // Codex `exec` *does* have a native schema flag (`--output-schema <file>`),
+        // but it takes a schema FILE (not inline) and is reportedly ignored once
+        // the agent uses tools: https://github.com/openai/codex/issues/15451 — so
+        // structured output uses the more reliable prompt-based path for it today.
+        // To wire it up once that's resolved: add a `CodexOutputSchema` variant to
+        // `structured::NativeSchema`, set it here, add a `--output-schema` arm to
+        // `argv_codex` (the command layer must materialize the schema to a temp
+        // file and pass its path via `BuildCtx.schema`), and teach
+        // `structured::extract_value` where Codex reports the conforming value.
         native_schema: None,
         build_argv: argv_codex,
     },

@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.530](https://github.com/nickderobertis/oneharness/compare/v0.2.529...v0.2.530) - 2026-06-24
+
+### Fixed
+
+- spawn multi-line args against Windows .cmd-shim harnesses ([#1075](https://github.com/nickderobertis/oneharness/pull/1075))
+
 ## [0.2.529](https://github.com/nickderobertis/oneharness/compare/v0.2.528...v0.2.529) - 2026-06-23
 
 ### Added

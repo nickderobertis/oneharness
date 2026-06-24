@@ -136,9 +136,11 @@ fn resolve_program(program: &str) -> std::ffi::OsString {
 /// escape for cmd.exe — a newline is the trigger. npm installs every JS harness
 /// as a `claude.cmd` shim, so a multi-line argument (a rendered `--system`)
 /// fails to spawn. When that exact situation is detected — a resolved `.cmd`/
-/// `.bat` *and* a multi-line argument — parse the npm shim and invoke its
-/// underlying interpreter (node) and script directly; node is a real `.exe`, so
-/// std's ordinary argument encoding carries the newline through. Anything else
+/// `.bat` *and* a multi-line argument — parse the npm shim and invoke its real
+/// target directly: a node interpreter plus script, or — as for claude-code,
+/// whose bin is `bin/claude.exe` — the wrapped executable itself. That target is
+/// a real `.exe`, so std's ordinary argument encoding carries the newline
+/// through (only a `.cmd`/`.bat` goes through cmd.exe). Anything else
 /// (single-line args, an unparseable shim, a non-shim `.cmd`) falls through
 /// unchanged, so the established spawn path — and its error reporting — is byte
 /// for byte what it was. The function is platform-shaped on purpose: the rewrite

@@ -109,7 +109,8 @@ Use the `just` recipes; do not hand-roll equivalents.
   structured-output prompt additions stay **single-line** by convention; this is
   not a spawn constraint — `io::runner` now spawns a multi-line argument against
   a `.cmd`-shim harness by bypassing the shim (`domain::shim::parse_cmd_shim`
-  rewrites it to the underlying `node <cli.js>`) — but the cmd.exe `%*`
+  rewrites it to the shim's real target: `node <cli.js>`, or the wrapped `.exe`
+  directly, as for claude-code whose bin is `bin/claude.exe`) — but the cmd.exe `%*`
   quote-mangling above is a *separate* limitation the bypass does not touch
   (a quote-heavy schema is single-line, so it never triggers the bypass).
 

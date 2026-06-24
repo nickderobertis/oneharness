@@ -11,17 +11,21 @@
 //! interpreter (node) and script directly: node is a real `.exe`, so std uses the
 //! ordinary `CreateProcess` argument encoding, which carries newlines fine.
 //!
-//! npm's `cmd-shim` emits a small, stable batch file. Two layouts exist in the
-//! wild and both are handled: the older one references the script through `%~dp0`
-//! directly, the newer one captures `%~dp0` into a `dp0` variable and uses
-//! `%dp0%`. Either way the interpreter is named by a `SET "_prog=…"` line and the
-//! script (plus any interpreter flags) sits on the final `"%_prog%" … %*` line.
+//! npm's `cmd-shim` emits a small, stable batch file, and two target shapes
+//! occur: a **node script** target (`"%_prog%" "…\cli.js" %*`, interpreter named
+//! by a `SET "_prog=…"` line) and a **native exe** target — `@anthropic-ai/
+//! claude-code`'s bin is `bin/claude.exe`, so its shim forwards straight to that
+//! exe (`"%dp0%\…\claude.exe" %*`, no `_prog`, no script). Both are handled: the
+//! rewrite spawns the named program (node, or the exe itself) with the shim's own
+//! prefix arguments — which is empty for the exe case — ahead of the caller's.
 
 /// How to invoke a shim's underlying program directly, sidestepping the batch
 /// wrapper. `interpreter` is the program to spawn — a bare name to resolve on
-/// `PATH` (e.g. `node`) or an absolute path. `prefix_args` are the arguments the
-/// shim passes ahead of the caller's own: the target script path, plus any
-/// interpreter flags, with `%dp0%`/`%~dp0` already expanded to the shim's
+/// `PATH` (e.g. `node`) or an absolute path (a colocated `node.exe`, or the
+/// target `.exe` a native-bin shim wraps). `prefix_args` are the arguments the
+/// shim passes ahead of the caller's own: for a node-script shim the target
+/// script path plus any interpreter flags; for a native-exe shim it is **empty**
+/// (the exe stands alone). `%dp0%`/`%~dp0` are already expanded to the shim's
 /// directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShimTarget {
@@ -41,10 +45,48 @@ pub fn parse_cmd_shim(contents: &str, shim_dir: &str) -> Option<ShimTarget> {
     let dir = shim_dir.trim_end_matches(['\\', '/']);
     let expand = |s: &str| s.replace("%~dp0", dir).replace("%dp0%", dir);
 
-    // The interpreter: a `SET "_prog=VALUE"` line names it. Prefer a bare name
-    // (resolved on PATH, the shim's own ELSE fallback) over the colocated
-    // `%dp0%\node.exe` form — the bare name spawns without assuming node sits
-    // beside the shim, which it does not for a normal global npm install.
+    // The exec line forwards the caller's arguments with `%*`; everything before
+    // it names the program (and, for a node shim, the script + flags).
+    let exec = contents.lines().find(|l| l.contains("%*"))?;
+    let before_star = exec.split("%*").next().unwrap_or("");
+
+    if before_star.contains("%_prog%") {
+        // Node-script shim: the program is the `_prog` variable, set elsewhere to
+        // a bare name (preferred — resolved on PATH) or a colocated `node.exe`.
+        let interpreter = prog_from_set_lines(contents, &expand)?;
+        // Drop the closing quote of `"%_prog%"`, then the script + flags remain.
+        let after = before_star.split("%_prog%").nth(1)?.trim_start();
+        let middle = after.strip_prefix('"').unwrap_or(after);
+        let prefix_args: Vec<String> = tokenize(middle).into_iter().map(|t| expand(&t)).collect();
+        // A bare interpreter (node) needs a script to run; a `.exe` target stands
+        // alone. An empty prefix with a bare interpreter is not a shim we trust.
+        if prefix_args.is_empty() && !interpreter.to_ascii_lowercase().ends_with(".exe") {
+            return None;
+        }
+        return Some(ShimTarget {
+            interpreter,
+            prefix_args,
+        });
+    }
+
+    // Native-exe shim: the exec line quotes the target program inline, e.g.
+    // `"%dp0%\…\claude.exe"  %*`. The first token is the program; any remaining
+    // tokens are its fixed arguments (usually none). A leading `@` (echo-off
+    // prefix) is stripped so it never fuses onto the path.
+    let trimmed = before_star.trim_start();
+    let inline = trimmed.strip_prefix('@').unwrap_or(trimmed);
+    let mut tokens = tokenize(inline).into_iter().map(|t| expand(&t));
+    let interpreter = tokens.next()?;
+    Some(ShimTarget {
+        interpreter,
+        prefix_args: tokens.collect(),
+    })
+}
+
+/// Resolve the `_prog` interpreter from a shim's `SET "_prog=VALUE"` lines:
+/// prefer a bare name (the shim's own PATH fallback) over the colocated
+/// `%dp0%\node.exe` form, which assumes node sits beside the shim.
+fn prog_from_set_lines(contents: &str, expand: &impl Fn(&str) -> String) -> Option<String> {
     let mut bare: Option<String> = None;
     let mut colocated: Option<String> = None;
     for line in contents.lines() {
@@ -56,29 +98,7 @@ pub fn parse_cmd_shim(contents: &str, shim_dir: &str) -> Option<ShimTarget> {
             }
         }
     }
-    let interpreter = bare.or(colocated)?;
-
-    // The exec line carries the script path and any interpreter flags between
-    // `"%_prog%"` and the `%*` that forwards the caller's own arguments.
-    let exec = contents
-        .lines()
-        .find(|l| l.contains("%_prog%") && l.contains("%*"))?;
-    let after_prog = exec.split("%_prog%").nth(1)?;
-    // Drop the closing quote of `"%_prog%"`, then take everything up to `%*`.
-    let middle = after_prog
-        .trim_start()
-        .strip_prefix('"')
-        .unwrap_or(after_prog)
-        .split("%*")
-        .next()?;
-    let prefix_args: Vec<String> = tokenize(middle).into_iter().map(|t| expand(&t)).collect();
-    if prefix_args.is_empty() {
-        return None;
-    }
-    Some(ShimTarget {
-        interpreter,
-        prefix_args,
-    })
+    bare.or(colocated)
 }
 
 /// Extract `VALUE` from a `SET "_prog=VALUE"` batch line (case-insensitive `SET`,
@@ -162,6 +182,19 @@ endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\node_
 "%_prog%"  "%~dp0\..\@anthropic-ai\claude-code\cli.js" %*
 "#;
 
+    // The native-exe layout: `@anthropic-ai/claude-code`'s bin is `bin/claude.exe`,
+    // so npm's shim forwards straight to that exe — no `_prog`, no script.
+    const EXE: &str = r#"@ECHO off
+GOTO start
+:find_dp0
+SET dp0=%~dp0
+EXIT /b
+:start
+SETLOCAL
+CALL :find_dp0
+"%dp0%\node_modules\@anthropic-ai\claude-code\bin\claude.exe"   %*
+"#;
+
     #[test]
     fn parses_newer_layout_to_node_and_expanded_script() {
         let t = parse_cmd_shim(NEWER, r"C:\npm").unwrap();
@@ -210,8 +243,28 @@ endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\node_
     }
 
     #[test]
+    fn parses_native_exe_layout_with_empty_prefix() {
+        // The real claude shim: spawn `claude.exe` directly, no prepended script.
+        let t = parse_cmd_shim(EXE, r"C:\npm").unwrap();
+        assert_eq!(
+            t.interpreter,
+            r"C:\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe"
+        );
+        assert!(t.prefix_args.is_empty(), "{:?}", t.prefix_args);
+    }
+
+    #[test]
+    fn parses_inline_exe_with_leading_at_and_no_find_dp0() {
+        // A minimal one-line exe shim: leading `@`, `%~dp0`, no `_prog` block.
+        let shim = "@\"%~dp0\\node_modules\\pkg\\tool.exe\" %*\r\n";
+        let t = parse_cmd_shim(shim, r"C:\g").unwrap();
+        assert_eq!(t.interpreter, r"C:\g\node_modules\pkg\tool.exe");
+        assert!(t.prefix_args.is_empty());
+    }
+
+    #[test]
     fn non_shim_text_returns_none() {
-        // No `_prog`, no exec line: not something we can safely rewrite.
+        // No exec line (`%*`): nothing to forward, not something we can rewrite.
         assert!(parse_cmd_shim("echo hello\nexit /b 0\n", r"C:\x").is_none());
     }
 
@@ -222,8 +275,9 @@ endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\node_
     }
 
     #[test]
-    fn empty_prefix_args_returns_none() {
-        // `"%_prog%" %*` with no script between is not a rewritable shim.
+    fn node_prog_without_a_script_returns_none() {
+        // `"%_prog%" %*` resolving to bare `node` would spawn a REPL — not a shim
+        // we trust, so it falls back to spawning the `.cmd` (which errors loudly).
         let shim = "SET \"_prog=node\"\n\"%_prog%\" %*\n";
         assert!(parse_cmd_shim(shim, r"C:\x").is_none());
     }

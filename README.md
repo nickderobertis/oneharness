@@ -590,7 +590,13 @@ Each harness needs its CLI installed and that provider's auth in the environment
 Per-harness CI workflows (`.github/workflows/e2e-*.yml`) run the same checks,
 each gated to the canonical repo and non-fork PRs so secrets are never exposed.
 The structured-output feature has its own (`e2e-schema.yml`), reusing the Claude
-auth secret.
+auth secret. Locally a missing CLI or auth is a clean **skip**, but those
+workflows set `OH_E2E_NO_SKIP=1`, which turns any skip into a hard **failure**:
+in CI the harness is installed and auth verified up front, so a skip there can
+only mean detection/install/spawn silently broke (classically an unresolved npm
+`.cmd` shim on Windows) and the job would otherwise go green having run zero
+model calls. A genuine per-platform gap is therefore expressed as a matrix
+exclude or an `if`-guarded phase, never a runtime skip.
 Every workflow runs a `fail-fast: false` matrix across **Linux, macOS, and
 Windows** (`ubuntu-latest`, `macos-latest`, `windows-latest`), so the adapter
 argv, JSON contract, and sync/hook enforcement are proven on each platform

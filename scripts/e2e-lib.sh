@@ -16,7 +16,11 @@
 #      not merely that the process exited cleanly.
 #
 # A missing harness or a missing oneharness binary is a SKIP, never a failure —
-# the same "absence is data, not a crash" stance the tool itself takes.
+# the same "absence is data, not a crash" stance the tool itself takes. That
+# leniency is for developer boxes; in CI it would let a job go green having tested
+# nothing, so the workflows set OH_E2E_NO_SKIP=1 to make any skip a hard failure
+# (see skip() below). Per-platform exclusions must use an `if`/`note` that
+# continues, or a matrix exclude — never skip().
 #
 # Sourced by each script AFTER it sets `set -euo pipefail`. Requires `jq`.
 
@@ -27,7 +31,29 @@ OH_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 note() { printf '%s\n' "$*" >&2; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
-skip() { printf 'SKIP: %s\n' "$*" >&2; exit 0; }
+
+# A skip is "something that should be present is absent" — the right stance on a
+# developer box (no harness installed, no auth, no jq). But in CI every e2e
+# workflow installs its one harness and verifies auth up front, so a skip THERE
+# means detection/install/spawn silently broke and the job would otherwise go
+# GREEN having tested nothing. The classic trap is Windows: an npm `.cmd` shim
+# oneharness fails to resolve makes it report status=skipped, every assertion
+# bails to `skip`, and the windows-latest leg looks supported while running zero
+# model calls. Set OH_E2E_NO_SKIP=1 (the e2e workflows do) to turn any skip into
+# a hard failure, so a vanished harness is RED, not a false pass.
+#
+# Intentional per-platform exclusions must NOT use skip() — guard them with an
+# `if`/`note` that continues (see e2e-cursor.sh's Windows hook branch) or exclude
+# the platform at the matrix level (see e2e-schema.yml). skip() is reserved for
+# absences that are never expected in CI.
+skip() {
+    if [ -n "${OH_E2E_NO_SKIP:-}" ]; then
+        printf 'ERROR: skip disallowed (OH_E2E_NO_SKIP set), failing instead: %s\n' "$*" >&2
+        exit 1
+    fi
+    printf 'SKIP: %s\n' "$*" >&2
+    exit 0
+}
 
 # A required tool's absence is a SKIP, not a failure (e.g. no jq on the box).
 need() { command -v "$1" >/dev/null 2>&1 || skip "required tool not found: $1"; }

@@ -25,6 +25,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # In CI the harness is installed and auth verified up front, so any e2e skip
+  # means detection/install/spawn broke (e.g. an unresolved .cmd shim on Windows)
+  # — fail instead of going green having tested nothing. See scripts/e2e-lib.sh.
+  OH_E2E_NO_SKIP: 1
 
 jobs:
   live:

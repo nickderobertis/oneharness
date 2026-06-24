@@ -22,16 +22,6 @@ oh_assert_echoed claude-code "$marker"
 # through a genuinely multi-line `--system` (the echo instruction lives there)
 # and assert it still round-trips, proving the multi-line spawn path on every OS.
 note "» multi-line --system must spawn and round-trip (Windows .cmd-shim regression)"
-# (debug, temporary) Dump the real `claude` shim(s) so domain::shim::parse_cmd_shim
-# can be matched to their exact layout — the multi-line spawn bypass depends on it.
-if command -v cygpath >/dev/null 2>&1 && command -v where >/dev/null 2>&1; then
-    note "(debug) resolving claude shim files via where:"
-    where claude 2>/dev/null | tr -d '\r' | while IFS= read -r winp; do
-        up="$(cygpath -u "$winp" 2>/dev/null || printf '%s' "$winp")"
-        note "(debug) === $winp ==="
-        if [ -f "$up" ]; then sed 's/^/(debug)   | /' "$up" >&2 2>/dev/null || true; fi
-    done || true
-fi
 sysmarker="$(oh_marker)"
 multiline_system="$(printf 'You are a connectivity-check fixture.\nFollow the next instruction exactly.\nReply with this single token verbatim and nothing else: %s' "$sysmarker")"
 oh_run claude-code "Follow your system instructions." --system "$multiline_system"

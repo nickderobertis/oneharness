@@ -1100,6 +1100,71 @@ fn built_argv_actually_reaches_the_binary() {
     assert!(argv.contains(&"bypassPermissions"), "argv: {argv:?}");
 }
 
+#[cfg(windows)]
+#[test]
+fn cmd_shim_spawns_with_a_multiline_argument() {
+    // Regression (Windows): oneharness resolves an npm harness to a `claude.cmd`
+    // shim, and since Rust 1.77 std refuses to spawn a `.cmd` with a multi-line
+    // argument ("batch file arguments are invalid"). oneharness must bypass the
+    // shim and invoke its interpreter directly. Stand in a real npm-style `.cmd`
+    // shim whose `_prog` is the mock harness exe, drive a multi-line `--system`
+    // through it, and assert it spawned cleanly AND the multi-line value reached
+    // the child intact. The hermetic suite's other harnesses are real `.exe`s, so
+    // only this `.cmd`-shim path exercises the rewrite end to end.
+    let dir = std::env::temp_dir().join(format!("oneharness-cmdshim-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cmd_path = dir.join("claude.cmd");
+    // npm-style shim: name the interpreter via `_prog`, invoke it with a `%dp0%`
+    // script ahead of the forwarded `%*`. Here `_prog` is the mock exe and the
+    // script is an arg it ignores, so a successful run proves the bypass spawned.
+    let shim = format!(
+        "SET \"_prog={}\"\r\n\"%_prog%\" \"%dp0%\\ignored.js\" %*\r\n",
+        mock_bin().display()
+    );
+    std::fs::write(&cmd_path, shim).unwrap();
+
+    let argv_file = dir.join("argv.txt");
+    let system = "line-a\nline-b\nline-c";
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--system",
+            system,
+            "--bin",
+            &format!("claude-code={}", cmd_path.display()),
+            "--compact",
+        ],
+        &[("MOCK_ARGV_FILE", &argv_file.display().to_string())],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(
+        value["results"][0]["status"], "ok",
+        "the `.cmd` shim should spawn despite the multi-line arg: {value}"
+    );
+
+    let received =
+        std::fs::read_to_string(&argv_file).expect("mock recorded no argv — the spawn failed");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        received.contains("--append-system-prompt"),
+        "argv: {received:?}"
+    );
+    assert!(
+        received.contains(system),
+        "the multi-line --system value must reach the child intact: {received:?}"
+    );
+}
+
 #[test]
 fn project_config_supplies_selection_model_and_is_reported() {
     let fx = ConfigFixture::new(

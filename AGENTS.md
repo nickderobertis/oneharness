@@ -106,8 +106,13 @@ Use the `just` recipes; do not hand-roll equivalents.
   quote-containing argv via cmd.exe `%*` on Windows (so structured output is
   unreliable against a `.cmd`-shim harness there — documented in the README; the
   hermetic `check` job still covers the Windows argv/validation path). The
-  structured-output prompt additions are kept **newline-free** for the same
-  class of `.cmd`-arg limitation (multi-line args are rejected outright).
+  structured-output prompt additions stay **single-line** by convention; this is
+  not a spawn constraint — `io::runner` now spawns a multi-line argument against
+  a `.cmd`-shim harness by bypassing the shim (`domain::shim::parse_cmd_shim`
+  rewrites it to the shim's real target: `node <cli.js>`, or the wrapped `.exe`
+  directly, as for claude-code whose bin is `bin/claude.exe`) — but the cmd.exe `%*`
+  quote-mangling above is a *separate* limitation the bypass does not touch
+  (a quote-heavy schema is single-line, so it never triggers the bypass).
 
 ## How this repo was composed
 

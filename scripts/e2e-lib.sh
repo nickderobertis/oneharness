@@ -331,9 +331,11 @@ oh_sync_enforce() {
     note "  sync wrote: $out"
 
     local prompt
-    # One physical line on purpose: a newline in the prompt would be an argument
-    # the npm-installed `.cmd` shims cannot receive on Windows (std refuses to
-    # escape newlines for cmd.exe — "batch file arguments are invalid").
+    # Kept to one physical line for simplicity. oneharness now spawns a multi-line
+    # argument on Windows too (it bypasses the npm `.cmd` shim — see
+    # crates/oneharness-core/src/domain/shim.rs; e2e-claude.sh proves it live), so
+    # this is no longer a hard constraint, but a single line keeps the fixture
+    # prompt trivially quoting-safe across all shells.
     prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory, then stop: touch $file. Rules: you MUST actually invoke your shell tool with that exact command — never assume or decide on your own that it is not permitted; attempt it. Use only the shell tool. Only if that tool invocation itself fails or is rejected: do NOT create the file by any other means (no file-write or edit tools) — reply with the single word DENIED and stop."
     oh_run "$id" "$prompt" --no-bypass --cwd "$sandbox"
 

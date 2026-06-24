@@ -8,6 +8,7 @@ pub mod harness;
 pub mod hooks;
 pub mod normalize;
 pub mod report;
+pub mod shim;
 pub mod signals;
 pub mod structured;
 pub mod sync;

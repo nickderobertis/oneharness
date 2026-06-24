@@ -128,12 +128,67 @@ fn resolve_program(program: &str) -> std::ffi::OsString {
     program.into()
 }
 
+/// Decide the program and argument list to actually spawn for `argv`.
+///
+/// Normally this is just the [`resolve_program`]'d binary plus `argv[1..]`. On
+/// Windows there is one rewrite: since Rust 1.77, `Command` runs a `.cmd`/`.bat`
+/// through cmd.exe but refuses (with `InvalidInput`) any argument it cannot
+/// escape for cmd.exe — a newline is the trigger. npm installs every JS harness
+/// as a `claude.cmd` shim, so a multi-line argument (a rendered `--system`)
+/// fails to spawn. When that exact situation is detected — a resolved `.cmd`/
+/// `.bat` *and* a multi-line argument — parse the npm shim and invoke its real
+/// target directly: a node interpreter plus script, or — as for claude-code,
+/// whose bin is `bin/claude.exe` — the wrapped executable itself. That target is
+/// a real `.exe`, so std's ordinary argument encoding carries the newline
+/// through (only a `.cmd`/`.bat` goes through cmd.exe). Anything else
+/// (single-line args, an unparseable shim, a non-shim `.cmd`) falls through
+/// unchanged, so the established spawn path — and its error reporting — is byte
+/// for byte what it was. The function is platform-shaped on purpose: the rewrite
+/// only exists on Windows, and the pure shim parsing it relies on is tested on
+/// every platform in `domain::shim`.
+fn spawn_target(argv: &[String]) -> (std::ffi::OsString, Vec<String>) {
+    let resolved = resolve_program(&argv[0]);
+    let rest = argv[1..].to_vec();
+    #[cfg(windows)]
+    {
+        if let Some(plan) = windows_shim_plan(std::path::Path::new(&resolved), &rest) {
+            return plan;
+        }
+    }
+    (resolved, rest)
+}
+
+/// The Windows shim rewrite for [`spawn_target`]: `Some((interpreter, args))`
+/// when `resolved` is a `.cmd`/`.bat`, some argument is multi-line, and the file
+/// parses as an npm shim; `None` (fall through to the `.cmd`) otherwise.
+#[cfg(windows)]
+fn windows_shim_plan(
+    resolved: &std::path::Path,
+    args: &[String],
+) -> Option<(std::ffi::OsString, Vec<String>)> {
+    // Only act when std would actually refuse the spawn: a multi-line argument.
+    if !args.iter().any(|a| a.contains('\n') || a.contains('\r')) {
+        return None;
+    }
+    let ext = resolved.extension()?.to_str()?.to_ascii_lowercase();
+    if ext != "cmd" && ext != "bat" {
+        return None;
+    }
+    let contents = std::fs::read_to_string(resolved).ok()?;
+    let dir = resolved.parent()?.to_str()?;
+    let target = crate::domain::shim::parse_cmd_shim(&contents, dir)?;
+    let mut full = target.prefix_args;
+    full.extend_from_slice(args);
+    Some((resolve_program(&target.interpreter), full))
+}
+
 /// Run a single job, returning its raw capture. Never panics on harness behavior.
 pub fn run_job(job: &Job) -> Capture {
     let start = Instant::now();
-    let mut command = Command::new(resolve_program(&job.argv[0]));
+    let (program, args) = spawn_target(&job.argv);
+    let mut command = Command::new(program);
     command
-        .args(&job.argv[1..])
+        .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -308,6 +363,57 @@ mod tests {
         // platform, so the spawn attempt — and its error message — stay accurate.
         let name = "oneharness-no-such-binary-zzz";
         assert_eq!(resolve_program(name), std::ffi::OsString::from(name));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_shim_plan_rewrites_a_cmd_only_for_multiline_args() {
+        use std::io::Write;
+
+        // A minimal npm-style `.cmd` shim written to a real temp file, so the
+        // plan reads it the way `run_job` would.
+        let dir = std::env::temp_dir().join(format!("oh-shim-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cmd_path = dir.join("claude.cmd");
+        let mut f = std::fs::File::create(&cmd_path).unwrap();
+        write!(
+            f,
+            "SET \"_prog=node\"\r\n\"%_prog%\" \"%dp0%\\cli.js\" %*\r\n"
+        )
+        .unwrap();
+        drop(f);
+
+        let dir_str = dir.to_str().unwrap();
+        let script = format!("{dir_str}\\cli.js");
+
+        // A multi-line argument triggers the rewrite: node + script + the args.
+        let multiline = vec!["-p".to_string(), "a\nb\nc".to_string()];
+        let (prog, args) = windows_shim_plan(&cmd_path, &multiline).expect("multiline → rewrite");
+        // `node` resolves to a real path ending in node.exe.
+        assert!(
+            std::path::Path::new(&prog)
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .ends_with("node.exe"),
+            "interpreter should resolve to node.exe, got {prog:?}"
+        );
+        assert_eq!(args, vec![script, "-p".to_string(), "a\nb\nc".to_string()]);
+
+        // A single-line argument must NOT be rewritten — the `.cmd` spawns fine.
+        let single = vec!["-p".to_string(), "hello".to_string()];
+        assert!(windows_shim_plan(&cmd_path, &single).is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_shim_plan_ignores_non_batch_programs() {
+        // A real `.exe` (or anything not `.cmd`/`.bat`) is never rewritten, even
+        // with a multi-line argument — std spawns it directly without cmd.exe.
+        let exe = resolve_program("where");
+        let multiline = vec!["x\ny".to_string()];
+        assert!(windows_shim_plan(std::path::Path::new(&exe), &multiline).is_none());
     }
 
     #[cfg(windows)]

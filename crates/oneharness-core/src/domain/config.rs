@@ -2,11 +2,12 @@
 //! parse / validate / merge logic. Discovery and reading of the actual files
 //! is I/O and lives in `src/io/config.rs`.
 //!
-//! Two levels exist — a user-level file and a project-level file — and they
-//! layer per field: CLI flags beat the project file, which beats the user
+//! The sources layer per field: CLI flags beat the `ONEHARNESS_*` environment
+//! overrides ([`from_env`]), which beat the project file, which beats the user
 //! file, which beats the built-in defaults. Within one resolved config, a
 //! `[harness.<id>]` value beats the top-level value for that harness. The
-//! layering is resolved here, with no I/O, so it is unit-testable.
+//! layering — and the env layer's parsing — is resolved here, with no I/O (the
+//! env reader is injected), so it is unit-testable.
 
 use std::collections::BTreeMap;
 
@@ -235,6 +236,119 @@ fn validate(config: &FileConfig) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The `source` recorded for a value that comes from an `ONEHARNESS_*`
+/// environment override rather than a config file or a built-in default. It is
+/// not a path, so it never collides with a file source or [`DEFAULT_SOURCE`].
+pub const ENV_SOURCE: &str = "environment";
+
+/// Build a config layer from the `ONEHARNESS_*` environment overrides, reading
+/// each variable through `get` (kept a parameter so this stays pure and
+/// unit-testable — the io layer passes `std::env::var`). Returns `Ok(None)` when
+/// no override is set (so no layer is added), `Ok(Some(_))` otherwise, and an
+/// `Err` for a value that cannot be parsed (a bad boolean/integer/output format,
+/// or a selection that names an unknown harness or sets both `all` and
+/// `harnesses`) — a malformed override fails loudly, exactly like a malformed
+/// file.
+///
+/// Every name mirrors its config field and CLI flag: `ONEHARNESS_<FIELD>` in
+/// upper snake case (`model` → `ONEHARNESS_MODEL`, `schema_max_retries` →
+/// `ONEHARNESS_SCHEMA_MAX_RETRIES`). List fields are comma-separated like the
+/// repeatable `--harness` / `--exclude` flags. An empty value counts as unset,
+/// matching `ONEHARNESS_CONFIG` / `ONEHARNESS_BIN_<ID>`. Only the top-level
+/// fields with a `run` flag are mapped; the sync-policy fields
+/// (`allowed_tools` / `denied_tools` / `hooks` / `settings`), the `[env]` table,
+/// and the `[harness.<id>]` overrides have no env form by design.
+pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Option<FileConfig>, String> {
+    let read = |name: &str| get(name).filter(|v| !v.is_empty());
+
+    let config = FileConfig {
+        all: env_bool(&read, "ONEHARNESS_ALL")?,
+        harnesses: env_list(&read, "ONEHARNESS_HARNESSES"),
+        exclude: env_list(&read, "ONEHARNESS_EXCLUDE"),
+        model: read("ONEHARNESS_MODEL"),
+        system: read("ONEHARNESS_SYSTEM"),
+        bypass: env_bool(&read, "ONEHARNESS_BYPASS")?,
+        timeout: env_num(&read, "ONEHARNESS_TIMEOUT", "a non-negative integer")?,
+        output_format: env_output_format(&read)?,
+        schema_file: read("ONEHARNESS_SCHEMA_FILE"),
+        schema_max_retries: env_num(
+            &read,
+            "ONEHARNESS_SCHEMA_MAX_RETRIES",
+            "a non-negative integer",
+        )?,
+        max_parallel: env_num(&read, "ONEHARNESS_MAX_PARALLEL", "a non-negative integer")?,
+        require_available: env_bool(&read, "ONEHARNESS_REQUIRE_AVAILABLE")?,
+        ..FileConfig::default()
+    };
+
+    // No override touched anything: contribute no layer at all, so the report's
+    // `config_files` and provenance only mention `environment` when it matters.
+    if config == FileConfig::default() {
+        return Ok(None);
+    }
+    validate(&config)?;
+    Ok(Some(config))
+}
+
+/// Read an `ONEHARNESS_*` boolean: `true`/`false` (case-insensitive) or `1`/`0`.
+fn env_bool<F: Fn(&str) -> Option<String>>(read: &F, name: &str) -> Result<Option<bool>, String> {
+    match read(name) {
+        None => Ok(None),
+        Some(v) => match v.to_ascii_lowercase().as_str() {
+            "true" | "1" => Ok(Some(true)),
+            "false" | "0" => Ok(Some(false)),
+            _ => Err(format!("`{name}` must be `true` or `false`, got `{v}`")),
+        },
+    }
+}
+
+/// Read an `ONEHARNESS_*` value that parses via [`std::str::FromStr`] (the
+/// numeric fields), attaching the variable name to any parse failure.
+fn env_num<T, F>(read: &F, name: &str, what: &str) -> Result<Option<T>, String>
+where
+    T: std::str::FromStr,
+    F: Fn(&str) -> Option<String>,
+{
+    match read(name) {
+        None => Ok(None),
+        Some(v) => v
+            .parse::<T>()
+            .map(Some)
+            .map_err(|_| format!("`{name}` must be {what}, got `{v}`")),
+    }
+}
+
+/// Read a comma-separated `ONEHARNESS_*` list (the selection fields), trimming
+/// each entry and dropping empties, mirroring the `--harness` / `--exclude`
+/// delimiter behavior.
+fn env_list<F: Fn(&str) -> Option<String>>(read: &F, name: &str) -> Option<Vec<String>> {
+    read(name).map(|v| {
+        v.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
+}
+
+/// Read `ONEHARNESS_OUTPUT_FORMAT`, accepting the same tokens as the CLI flag.
+fn env_output_format<F: Fn(&str) -> Option<String>>(
+    read: &F,
+) -> Result<Option<OutputFormat>, String> {
+    let name = "ONEHARNESS_OUTPUT_FORMAT";
+    match read(name) {
+        None => Ok(None),
+        Some(v) => match v.as_str() {
+            "text" => Ok(Some(OutputFormat::Text)),
+            "json" => Ok(Some(OutputFormat::Json)),
+            "stream-json" => Ok(Some(OutputFormat::StreamJson)),
+            _ => Err(format!(
+                "`{name}` must be one of `text`, `json`, `stream-json`, got `{v}`"
+            )),
+        },
+    }
 }
 
 /// Layer `over` (e.g. the project file) on top of `base` (e.g. the user file):
@@ -987,5 +1101,111 @@ mod tests {
                 ("B".to_string(), "global".to_string()),
             ]
         );
+    }
+
+    /// Build a getter over a fixed set of name→value pairs, the pure stand-in
+    /// for the process environment.
+    fn env_get<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name: &str| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| v.to_string())
+        }
+    }
+
+    #[test]
+    fn from_env_unset_contributes_no_layer() {
+        assert_eq!(from_env(env_get(&[])).unwrap(), None);
+        // An empty value counts as unset, like ONEHARNESS_CONFIG / _BIN_*.
+        assert_eq!(
+            from_env(env_get(&[("ONEHARNESS_MODEL", "")])).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn from_env_maps_every_field_with_standard_names() {
+        let c = from_env(env_get(&[
+            ("ONEHARNESS_HARNESSES", "claude-code, codex"),
+            ("ONEHARNESS_EXCLUDE", "cursor"),
+            ("ONEHARNESS_MODEL", "haiku"),
+            ("ONEHARNESS_SYSTEM", "be terse"),
+            ("ONEHARNESS_BYPASS", "false"),
+            ("ONEHARNESS_TIMEOUT", "90"),
+            ("ONEHARNESS_OUTPUT_FORMAT", "stream-json"),
+            ("ONEHARNESS_SCHEMA_FILE", "schema.json"),
+            ("ONEHARNESS_SCHEMA_MAX_RETRIES", "4"),
+            ("ONEHARNESS_MAX_PARALLEL", "2"),
+            ("ONEHARNESS_REQUIRE_AVAILABLE", "1"),
+        ]))
+        .unwrap()
+        .unwrap();
+        assert_eq!(c.harnesses.as_deref().unwrap(), ["claude-code", "codex"]);
+        assert_eq!(c.exclude.as_deref().unwrap(), ["cursor"]);
+        assert_eq!(c.model.as_deref(), Some("haiku"));
+        assert_eq!(c.system.as_deref(), Some("be terse"));
+        assert_eq!(c.bypass, Some(false));
+        assert_eq!(c.timeout, Some(90));
+        assert_eq!(c.output_format, Some(OutputFormat::StreamJson));
+        assert_eq!(c.schema_file.as_deref(), Some("schema.json"));
+        assert_eq!(c.schema_max_retries, Some(4));
+        assert_eq!(c.max_parallel, Some(2));
+        assert_eq!(c.require_available, Some(true));
+    }
+
+    #[test]
+    fn from_env_all_true_selects_everything() {
+        let c = from_env(env_get(&[("ONEHARNESS_ALL", "true")]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(c.all, Some(true));
+    }
+
+    #[test]
+    fn from_env_rejects_malformed_values() {
+        for (pairs, needle) in [
+            (vec![("ONEHARNESS_BYPASS", "maybe")], "`true` or `false`"),
+            (vec![("ONEHARNESS_TIMEOUT", "soon")], "non-negative integer"),
+            (
+                vec![("ONEHARNESS_MAX_PARALLEL", "-1")],
+                "non-negative integer",
+            ),
+            (vec![("ONEHARNESS_OUTPUT_FORMAT", "yaml")], "text"),
+        ] {
+            let err = from_env(env_get(&pairs)).unwrap_err();
+            assert!(err.contains(needle), "{pairs:?} -> {err}");
+        }
+    }
+
+    #[test]
+    fn from_env_runs_the_same_validation_as_a_file() {
+        // Unknown harness id and the all/harnesses conflict are rejected here too.
+        let err = from_env(env_get(&[("ONEHARNESS_HARNESSES", "bogus")])).unwrap_err();
+        assert!(err.contains("bogus"), "{err}");
+        let err = from_env(env_get(&[
+            ("ONEHARNESS_ALL", "true"),
+            ("ONEHARNESS_HARNESSES", "codex"),
+        ]))
+        .unwrap_err();
+        assert!(err.contains("mutually exclusive"), "{err}");
+    }
+
+    #[test]
+    fn from_env_layer_explains_with_environment_source() {
+        // The env layer flows through `explain` like any other, attributed to
+        // ENV_SOURCE, and a later env layer beats an earlier file layer.
+        let env = from_env(env_get(&[("ONEHARNESS_MODEL", "env-model")]))
+            .unwrap()
+            .unwrap();
+        let report = explain(&[
+            (
+                "/project.toml".to_string(),
+                parsed("model = \"file-model\""),
+            ),
+            (ENV_SOURCE.to_string(), env),
+        ]);
+        assert_eq!(report.model.value.as_deref(), Some("env-model"));
+        assert_eq!(report.model.source.as_deref(), Some(ENV_SOURCE));
     }
 }

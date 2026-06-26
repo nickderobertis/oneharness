@@ -32,9 +32,12 @@ waiting for approval — pass --no-bypass to opt out.
 
 Defaults come from layered config files: a user-level config.toml (the platform
 config dir, or $ONEHARNESS_CONFIG) under a project-level oneharness.toml /
-.oneharness.toml discovered upward from the working directory. CLI flags beat
-the project file, which beats the user file. --no-config (or
-ONEHARNESS_NO_CONFIG=1) ignores both; --config <path> loads exactly one file.";
+.oneharness.toml discovered upward from the working directory. Each field also
+has an ONEHARNESS_<FIELD> environment override (e.g. ONEHARNESS_MODEL,
+ONEHARNESS_TIMEOUT, ONEHARNESS_HARNESSES) that beats the files. Full precedence,
+lowest first: built-in defaults < user file < project file < environment < CLI
+flags. --no-config (or ONEHARNESS_NO_CONFIG=1) ignores files AND env overrides;
+--config <path> loads exactly one file (the env overrides still apply on top).";
 
 #[derive(Parser, Debug)]
 #[command(name = "oneharness", version, about = ABOUT, long_about = LONG_ABOUT)]

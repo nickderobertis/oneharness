@@ -185,14 +185,24 @@ aren't re-litigated each session:
   silent.
 - **Config is layered and loud.** Defaults come from `oneharness.toml` files —
   user level (`$ONEHARNESS_CONFIG` or the platform config dir) under project
-  level (discovered upward from `--cwd`/cwd) under CLI flags; `[harness.<id>]`
-  beats top-level within a file. Unknown fields or harness ids are usage errors
-  (exit 2), never ignored. Parsing/merging is pure
-  (`crates/oneharness-core/src/domain/config.rs`); discovery/reading is I/O
-  (`crates/oneharness-core/src/io/config.rs`). Anything that must be hermetic
-  (tests, `smoke.sh`, the e2e scripts) sets `ONEHARNESS_NO_CONFIG=1` so the
-  machine's real config can never reshape an assertion — keep that property
-  when adding tests or scripts.
+  level (discovered upward from `--cwd`/cwd) under the `ONEHARNESS_<FIELD>`
+  environment overrides under CLI flags; `[harness.<id>]` beats top-level within
+  a file. The env overrides are not handled per-command: `domain::config::from_env`
+  parses them into a `FileConfig` layer (pure — it takes a getter closure;
+  `io::config` passes `std::env::var`) appended after the files in `load_layers`,
+  so they flow through `run`/`detect`/`sync` *and* `config`'s provenance (source
+  `"environment"`) for free, and CLI-beats-config already makes CLI beat env.
+  Keep the trio in sync: a new top-level field with a `run` flag wants a
+  matching `ONEHARNESS_<FIELD>` arm in `from_env` (sync-policy fields,
+  `[env]`, and `[harness.<id>]` deliberately have none). Unknown fields, bad
+  values, or unknown harness ids are usage errors (exit 2), never ignored.
+  Parsing/merging is pure (`crates/oneharness-core/src/domain/config.rs`);
+  discovery/reading is I/O (`crates/oneharness-core/src/io/config.rs`). Anything
+  that must be hermetic (tests, `smoke.sh`, the e2e scripts) sets
+  `ONEHARNESS_NO_CONFIG=1`, which disables the env overrides too, so the
+  machine's real config — files *or* `ONEHARNESS_*` — can never reshape an
+  assertion. The `tests/cli.rs` config helper also strips ambient overrides;
+  keep that property when adding tests or scripts.
 - Validate all external / IO inputs (args, stdin, env, subprocess output) at the
   boundary. Keep the artifact portable across Linux, macOS, and Windows.
 - Do not commit secrets, credentials, PII, or customer data.

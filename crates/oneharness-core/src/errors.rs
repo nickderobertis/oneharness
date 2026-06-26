@@ -84,6 +84,9 @@ pub enum OneharnessError {
     #[error("invalid config file `{path}`: {message}")]
     ConfigInvalid { path: String, message: String },
 
+    #[error("invalid environment-variable config override: {0}")]
+    EnvConfigInvalid(String),
+
     #[error("invalid --bin override `{0}`: expected the form ID=PATH")]
     BadBinOverride(String),
 

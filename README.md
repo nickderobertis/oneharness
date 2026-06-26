@@ -194,8 +194,8 @@ Useful `run` flags:
 ### Configuration
 
 Most `run` flags have a persistent counterpart in **`oneharness.toml`**, so a
-project (or a user) states its defaults once instead of repeating flags. Two
-levels exist and layer per field, lowest precedence first:
+project (or a user) states its defaults once instead of repeating flags. Several
+sources layer per field, lowest precedence first:
 
 1. **Built-in defaults.**
 2. **User-level** — `~/.config/oneharness/config.toml` (honoring
@@ -204,7 +204,25 @@ levels exist and layer per field, lowest precedence first:
 3. **Project-level** — the nearest `oneharness.toml` (or `.oneharness.toml`),
    discovered by walking up from the directory the harnesses run in (`--cwd`,
    else the current directory).
-4. **CLI flags** — always win.
+4. **Environment overrides** — `ONEHARNESS_<FIELD>` variables (see below); beat
+   every config file.
+5. **CLI flags** — always win.
+
+Every top-level field with a `run` flag also has a standard
+**`ONEHARNESS_<FIELD>`** environment override, the field name upper-snake-cased
+so the env var, config key, and flag stay in sync (`model` → `ONEHARNESS_MODEL`,
+`schema_max_retries` → `ONEHARNESS_SCHEMA_MAX_RETRIES`). List fields are
+comma-separated like their repeatable flags (`ONEHARNESS_HARNESSES=claude-code,codex`),
+booleans take `true`/`false` (or `1`/`0`), and an empty value counts as unset. A
+malformed value (bad boolean/integer/format, unknown harness id) is the same
+loud usage error a file would raise. The sync-policy fields (`allowed_tools`,
+`denied_tools`, `hooks`, `settings`), the `[env]` table, and the
+`[harness.<id>]` overrides have no env form by design.
+
+```console
+ONEHARNESS_MODEL=gpt-5 ONEHARNESS_TIMEOUT=300 oneharness run --harness codex --prompt hi
+ONEHARNESS_HARNESSES=claude-code,codex oneharness run --prompt hi   # selection from the env
+```
 
 Within one file, a `[harness.<id>]` value beats the top-level value for that
 harness. Every field is optional, and an unknown field or harness id is a loud
@@ -328,14 +346,17 @@ The merge is deliberately conservative:
   a parse error (per-harness fields) or surfaced as `unmapped` in the JSON
   report plus a stderr warning (top-level fields).
 
-To opt out: `--config <path>` loads exactly that file and skips discovery;
-`--no-config` (or `ONEHARNESS_NO_CONFIG=1` for wrappers and hermetic test
-suites) ignores every config file. `detect` honors the configured `bin`s too,
-so it probes the same binaries `run` would invoke.
+To opt out: `--config <path>` loads exactly that file and skips discovery (the
+`ONEHARNESS_<FIELD>` overrides still apply on top); `--no-config` (or
+`ONEHARNESS_NO_CONFIG=1` for wrappers and hermetic test suites) ignores every
+config file **and** the env overrides, leaving only flags and defaults. `detect`
+honors the configured `bin`s too, so it probes the same binaries `run` would
+invoke.
 
 **`oneharness config`** is the debugging surface for the layering: it prints
 the effective configuration with every value's provenance — the config file
-path that supplied it, or `"default"` for a built-in — plus per-key attribution
+path that supplied it, `"environment"` for an `ONEHARNESS_*` override, or
+`"default"` for a built-in — plus per-key attribution
 for `[env]` and per-field attribution for each `[harness.<id>]` section. It
 takes the same `--cwd`, `--config`, and `--no-config` as `run`, so it shows
 exactly what a run from that directory would load:

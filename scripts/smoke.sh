@@ -180,6 +180,15 @@ n_cfg="$(count_matches "$out" '"harness":')"
 [ "$n_cfg" = "1" ] \
   || fail "config selection planned $n_cfg harness(es), expected 1 (claude-code)" "$LAST_CMD" "$out"
 
+# 3b-env. The ONEHARNESS_<FIELD> environment overrides layer above the files and
+#     below the flags: ONEHARNESS_MODEL must beat the planted project model.
+LAST_CMD="ONEHARNESS_CONFIG=$cfg_dir/user.toml ONEHARNESS_MODEL=env-model $oh run --harness claude-code --prompt <prompt> --cwd $cfg_dir --print-command --compact"
+out="$(ONEHARNESS_NO_CONFIG='' ONEHARNESS_CONFIG="$cfg_dir/user.toml" ONEHARNESS_MODEL="env-model" \
+  "$oh" run --harness claude-code --prompt "$PROMPT" --cwd "$cfg_dir" --print-command --compact)" \
+  || fail "env-override dry run exited non-zero" "$LAST_CMD" "" \
+       "the ONEHARNESS_* environment override layer is broken"
+assert_contains "$out" '"--model","env-model"' "ONEHARNESS_MODEL did not override the project config model"
+
 # 3c. `config` — the layering debug surface: the planted model must be shown
 #     with the project file attributed as its source.
 LAST_CMD="ONEHARNESS_CONFIG=$cfg_dir/user.toml $oh config --cwd $cfg_dir --compact"

@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.531](https://github.com/nickderobertis/oneharness/compare/v0.2.530...v0.2.531) - 2026-06-26
+
+### Added
+
+- ONEHARNESS_&lt;FIELD&gt; environment config overrides ([#1077](https://github.com/nickderobertis/oneharness/pull/1077))
+
 ## [0.2.530](https://github.com/nickderobertis/oneharness/compare/v0.2.529...v0.2.530) - 2026-06-24
 
 ### Fixed

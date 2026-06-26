@@ -48,12 +48,34 @@ fn run(args: &[&str], envs: &[(&str, &str)]) -> Output {
     cmd.output().expect("failed to run oneharness")
 }
 
+/// The `ONEHARNESS_*` env overrides recognized as a config layer. Cleared in
+/// `run_with_config` so a developer's ambient value can never reshape a
+/// config-layering assertion; a test that wants one passes it via `envs`.
+const ENV_OVERRIDE_VARS: &[&str] = &[
+    "ONEHARNESS_ALL",
+    "ONEHARNESS_HARNESSES",
+    "ONEHARNESS_EXCLUDE",
+    "ONEHARNESS_MODEL",
+    "ONEHARNESS_SYSTEM",
+    "ONEHARNESS_BYPASS",
+    "ONEHARNESS_TIMEOUT",
+    "ONEHARNESS_OUTPUT_FORMAT",
+    "ONEHARNESS_SCHEMA_FILE",
+    "ONEHARNESS_SCHEMA_MAX_RETRIES",
+    "ONEHARNESS_MAX_PARALLEL",
+    "ONEHARNESS_REQUIRE_AVAILABLE",
+];
+
 /// Run with config loading enabled but still hermetic: the user-level config is
 /// pinned to `user_config` via ONEHARNESS_CONFIG (so the developer's real one is
-/// never read), and project discovery is steered with `--cwd` by the caller.
+/// never read), ambient `ONEHARNESS_*` overrides are stripped, and project
+/// discovery is steered with `--cwd` by the caller.
 fn run_with_config(args: &[&str], envs: &[(&str, &str)], user_config: &std::path::Path) -> Output {
     let mut cmd = Command::new(oneharness_bin());
     cmd.env("ONEHARNESS_CONFIG", user_config);
+    for var in ENV_OVERRIDE_VARS {
+        cmd.env_remove(var);
+    }
     cmd.args(args);
     for (key, value) in envs {
         cmd.env(key, value);
@@ -1575,6 +1597,165 @@ fn no_config_ignores_files_and_env_var_does_too() {
         &fx.user_config(),
     );
     assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn env_override_beats_config_file_and_cli_beats_env() {
+    // The standard `ONEHARNESS_<FIELD>` override sits between the config files
+    // and the CLI flags: it beats a project `model`, and `--model` beats it.
+    let fx = ConfigFixture::new("env-precedence", "model = \"cfg-model\"\n", "");
+    let cwd = fx.cwd();
+    let base = [
+        "run",
+        "--harness",
+        "claude-code",
+        "--prompt",
+        "hi",
+        "--print-command",
+        "--compact",
+        "--cwd",
+        &cwd,
+    ];
+    // No --model: the env override wins over the project file.
+    let output = run_with_config(
+        &base,
+        &[("ONEHARNESS_MODEL", "env-model")],
+        &fx.user_config(),
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["model"], "env-model");
+    assert!(
+        command_of(&value, 0)
+            .windows(2)
+            .any(|w| w == ["--model", "env-model"]),
+        "{:?}",
+        command_of(&value, 0)
+    );
+
+    // --model on the CLI beats the env override.
+    let mut args: Vec<&str> = base.to_vec();
+    args.extend(["--model", "cli-model"]);
+    let output = run_with_config(
+        &args,
+        &[("ONEHARNESS_MODEL", "env-model")],
+        &fx.user_config(),
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["model"], "cli-model");
+}
+
+#[test]
+fn env_override_supplies_selection_bypass_and_timeout() {
+    // Selection, a boolean, and a number all flow from the environment with no
+    // CLI flag or file in play (the user file is empty, no --harness given).
+    let fx = ConfigFixture::new("env-misc", "", "");
+    let cwd = fx.cwd();
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--compact",
+            "--cwd",
+            &cwd,
+        ],
+        &[
+            ("ONEHARNESS_HARNESSES", "claude-code"),
+            ("ONEHARNESS_BYPASS", "false"),
+            ("ONEHARNESS_TIMEOUT", "45"),
+        ],
+        &fx.user_config(),
+    );
+    let value = json_stdout(&output);
+    let results = value["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1, "env selection should pick one harness");
+    assert_eq!(results[0]["harness"], "claude-code");
+    assert_eq!(value["bypass_permissions"], false);
+    // bypass=false from the env reaches the built command.
+    assert!(
+        command_of(&value, 0)
+            .windows(2)
+            .any(|w| w == ["--permission-mode", "default"]),
+        "{:?}",
+        command_of(&value, 0)
+    );
+}
+
+#[test]
+fn env_override_is_ignored_under_no_config() {
+    // --no-config (and ONEHARNESS_NO_CONFIG) must disable the env overrides too,
+    // or the hermetic guarantee the suite relies on would leak. A selection set
+    // only via the environment therefore does not apply.
+    let fx = ConfigFixture::new("env-nocfg", "", "");
+    let cwd = fx.cwd();
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--no-config",
+            "--print-command",
+            "--cwd",
+            &cwd,
+        ],
+        &[("ONEHARNESS_HARNESSES", "claude-code")],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no harness selected"), "{stderr}");
+}
+
+#[test]
+fn invalid_env_override_is_a_usage_error() {
+    let fx = ConfigFixture::new("env-bad", "", "");
+    let cwd = fx.cwd();
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--cwd",
+            &cwd,
+        ],
+        &[("ONEHARNESS_TIMEOUT", "soon")],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("ONEHARNESS_TIMEOUT") && stderr.contains("environment"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn config_command_attributes_env_overrides() {
+    // The `config` provenance surface shows an env-sourced value as coming from
+    // `environment`, beating the file it overrides.
+    let fx = ConfigFixture::new("env-config-cmd", "model = \"cfg-model\"\n", "");
+    let cwd = fx.cwd();
+    let output = run_with_config(
+        &["config", "--cwd", &cwd, "--compact"],
+        &[("ONEHARNESS_MODEL", "env-model")],
+        &fx.user_config(),
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["model"]["value"], "env-model");
+    assert_eq!(value["model"]["source"], "environment");
+    assert!(
+        value["config_files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f == "environment"),
+        "{:?}",
+        value["config_files"]
+    );
 }
 
 #[test]

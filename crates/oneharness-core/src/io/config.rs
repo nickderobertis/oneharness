@@ -48,13 +48,20 @@ pub fn load(
 /// (user first, project last). `oneharness config` consumes the layers
 /// directly to attribute each value to its file; `run`/`detect` use [`load`].
 ///
-/// - `no_config` (or `ONEHARNESS_NO_CONFIG=1`) loads nothing.
+/// - `no_config` (or `ONEHARNESS_NO_CONFIG=1`) loads nothing — neither files
+///   nor the `ONEHARNESS_*` environment overrides — so a hermetic run sees only
+///   CLI flags and built-in defaults.
 /// - `explicit` (`--config <path>`) loads exactly that file — no discovery —
 ///   and a missing file is an error, since the user named it.
 /// - Otherwise: the user-level file (`$ONEHARNESS_CONFIG`, else the platform
 ///   config dir) layered under the project-level file (`oneharness.toml` /
 ///   `.oneharness.toml`, walking up from `project_start`). A missing
 ///   discovered file is simply an absent layer, never an error.
+///
+/// The `ONEHARNESS_*` environment overrides ([`config::from_env`]) are appended
+/// as a final layer in every non-`no_config` case, so they beat every config
+/// file (an explicit `--config` included). CLI flags, applied by each command
+/// after this, still beat them — giving CLI > env > files > defaults.
 pub fn load_layers(
     explicit: Option<&Path>,
     no_config: bool,
@@ -64,21 +71,25 @@ pub fn load_layers(
         return Ok(Vec::new());
     }
 
-    if let Some(path) = explicit {
-        let config = read_required(path)?;
-        return Ok(vec![(path.display().to_string(), config)]);
-    }
-
     let mut layers = Vec::new();
-    if let Some(path) = user_config_path()? {
-        if let Some(user) = read_optional(&path)? {
-            layers.push((path.display().to_string(), user));
+    if let Some(path) = explicit {
+        layers.push((path.display().to_string(), read_required(path)?));
+    } else {
+        if let Some(path) = user_config_path()? {
+            if let Some(user) = read_optional(&path)? {
+                layers.push((path.display().to_string(), user));
+            }
+        }
+        if let Some(path) = find_project_file(project_start) {
+            if let Some(project) = read_optional(&path)? {
+                layers.push((path.display().to_string(), project));
+            }
         }
     }
-    if let Some(path) = find_project_file(project_start) {
-        if let Some(project) = read_optional(&path)? {
-            layers.push((path.display().to_string(), project));
-        }
+    if let Some(env) = config::from_env(|name| std::env::var(name).ok())
+        .map_err(OneharnessError::EnvConfigInvalid)?
+    {
+        layers.push((config::ENV_SOURCE.to_string(), env));
     }
     Ok(layers)
 }

@@ -1759,6 +1759,97 @@ fn config_command_attributes_env_overrides() {
 }
 
 #[test]
+fn env_override_beats_an_explicit_config_file() {
+    // `--config <path>` skips discovery but the env overrides still layer on
+    // top, so the explicit file's model loses to ONEHARNESS_MODEL — and both
+    // the file and `environment` show up as sources.
+    let fx = ConfigFixture::new("env-explicit", "model = \"file-model\"\n", "");
+    let explicit = fx.dir.join("oneharness.toml").display().to_string();
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--config",
+            &explicit,
+            "--print-command",
+            "--compact",
+        ],
+        &[("ONEHARNESS_MODEL", "env-model")],
+        &fx.user_config(),
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["model"], "env-model");
+    let files = value["config_files"].as_array().unwrap();
+    assert!(files.iter().any(|f| f == "environment"), "{files:?}");
+    assert!(
+        files
+            .iter()
+            .any(|f| f.as_str().unwrap().ends_with("oneharness.toml")),
+        "{files:?}"
+    );
+}
+
+#[test]
+fn oneharness_no_config_env_disables_env_overrides() {
+    // The env form of --no-config must suppress the ONEHARNESS_* overrides too,
+    // not just the files — the property the whole suite's hermeticity rests on.
+    // A selection set only via ONEHARNESS_HARNESSES therefore does not apply.
+    let fx = ConfigFixture::new("noconfig-disables-env", "", "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--print-command",
+        ],
+        &[
+            ("ONEHARNESS_NO_CONFIG", "1"),
+            ("ONEHARNESS_HARNESSES", "claude-code"),
+        ],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no harness selected"), "{stderr}");
+}
+
+#[test]
+fn env_override_sets_output_format() {
+    // A non-default field (output_format) flows from the env into the result
+    // envelope (claude-code's default is json; the override forces stream-json).
+    let fx = ConfigFixture::new("env-format", "", "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--print-command",
+            "--compact",
+        ],
+        &[("ONEHARNESS_OUTPUT_FORMAT", "stream-json")],
+        &fx.user_config(),
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["output_format"], "stream-json");
+    assert!(
+        command_of(&value, 0)
+            .windows(2)
+            .any(|w| w == ["--output-format", "stream-json"]),
+        "{:?}",
+        command_of(&value, 0)
+    );
+}
+
+#[test]
 fn explicit_config_flag_loads_exactly_that_file() {
     let fx = ConfigFixture::new("explicit", "model = \"project-model\"\n", "");
     let only = fx.dir.join("only.toml");

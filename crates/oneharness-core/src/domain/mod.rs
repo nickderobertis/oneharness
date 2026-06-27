@@ -6,6 +6,7 @@ pub mod config;
 pub mod gate;
 pub mod harness;
 pub mod hooks;
+pub mod mode;
 pub mod normalize;
 pub mod report;
 pub mod shim;

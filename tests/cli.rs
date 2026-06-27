@@ -196,7 +196,7 @@ fn print_command_pins_argv_for_every_harness() {
         ),
         ("goose", &["run", "--with-builtin", "developer", "-t", "hi"]),
         ("qwen", &["--yolo", "-p", "hi"]),
-        ("crush", &["run", "-q", "hi"]),
+        ("crush", &["run", "-q", "--yolo", "hi"]),
         (
             "copilot",
             &[
@@ -265,9 +265,88 @@ fn no_bypass_switches_claude_to_default_mode() {
     assert!(output.status.success());
     let value = json_stdout(&output);
     let command = value["results"][0]["command"].to_string();
-    assert!(command.contains("default"), "{command}");
+    // --no-bypass is shorthand for `--mode default`, which Claude expresses as
+    // `dontAsk` (deny-and-continue) so a headless run never aborts on a prompt.
+    assert!(command.contains("dontAsk"), "{command}");
     assert!(!command.contains("bypassPermissions"), "{command}");
     assert_eq!(value["bypass_permissions"], false);
+    assert_eq!(value["permission_mode"], "default");
+}
+
+#[test]
+fn mode_flag_selects_a_permission_mode() {
+    // `--mode plan` reaches the harness's native plan flag and is echoed.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--mode",
+            "plan",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    assert_eq!(value["permission_mode"], "plan");
+    assert_eq!(value["bypass_permissions"], false);
+    let command = value["results"][0]["command"].to_string();
+    assert!(command.contains("plan"), "{command}");
+}
+
+#[test]
+fn unsupported_mode_for_a_harness_is_refused() {
+    // crush has no plan mode; asking for it is a loud usage error, not a run.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "crush",
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--mode",
+            "plan",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("does not support"), "{stderr}");
+    assert!(stderr.contains("crush"), "{stderr}");
+}
+
+#[test]
+fn hang_prone_mode_is_refused_but_permit_prompts_allows_it() {
+    // cursor's `default` would block on an approval prompt headlessly, so it is
+    // refused up front — turning a hang into an immediate error.
+    let base = [
+        "run",
+        "--harness",
+        "cursor",
+        "--prompt",
+        "hi",
+        "--print-command",
+        "--mode",
+        "default",
+        "--compact",
+    ];
+    let output = run(&base, &[]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("block on an interactive"), "{stderr}");
+    // --permit-prompts opts back in (e.g. once allow-rules are synced).
+    let mut with_permit = base.to_vec();
+    with_permit.push("--permit-prompts");
+    let output = run(&with_permit, &[]);
+    assert!(output.status.success(), "should run with --permit-prompts");
+    let value = json_stdout(&output);
+    assert_eq!(value["permission_mode"], "default");
 }
 
 #[test]
@@ -1435,7 +1514,7 @@ fn config_bypass_false_applies_and_cli_bypass_reenables() {
     assert!(
         command
             .windows(2)
-            .any(|w| w == ["--permission-mode", "default"]),
+            .any(|w| w == ["--permission-mode", "dontAsk"]),
         "{command:?}"
     );
 
@@ -1672,11 +1751,11 @@ fn env_override_supplies_selection_bypass_and_timeout() {
     assert_eq!(results.len(), 1, "env selection should pick one harness");
     assert_eq!(results[0]["harness"], "claude-code");
     assert_eq!(value["bypass_permissions"], false);
-    // bypass=false from the env reaches the built command.
+    // bypass=false from the env reaches the built command (mapped to dontAsk).
     assert!(
         command_of(&value, 0)
             .windows(2)
-            .any(|w| w == ["--permission-mode", "default"]),
+            .any(|w| w == ["--permission-mode", "dontAsk"]),
         "{:?}",
         command_of(&value, 0)
     );
@@ -2317,6 +2396,9 @@ fn config_command_shows_values_with_sources() {
     // ...untouched fields fall to their built-in defaults...
     assert_eq!(value["bypass"]["value"], true);
     assert_eq!(value["bypass"]["source"], "default");
+    // `mode` has no built-in default (it derives from `bypass` when unset).
+    assert!(value["mode"]["value"].is_null());
+    assert!(value["mode"]["source"].is_null());
     assert!(value["system"]["value"].is_null());
     assert!(value["system"]["source"].is_null());
     // ...and per-harness overrides are attributed too.

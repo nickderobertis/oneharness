@@ -23,6 +23,16 @@ pub enum OneharnessError {
     #[error("harness `{id}` does not support --resume. supported: {supported}")]
     ResumeUnsupported { id: String, supported: String },
 
+    #[error("harness `{id}` does not support `--mode {mode}`. supported modes: {supported}")]
+    ModeUnsupported {
+        id: String,
+        mode: String,
+        supported: String,
+    },
+
+    #[error("`--mode {mode}` would block on an interactive approval prompt for harness `{id}` in a headless run, so oneharness refused it instead of hanging. Choose `--mode bypass` or `--mode plan`, sync allow-rules and pass --permit-prompts, or run the harness interactively.")]
+    ModeMayHang { id: String, mode: String },
+
     #[error("could not read harness config `{path}`: {source}")]
     HarnessConfigRead {
         path: String,

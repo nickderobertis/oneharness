@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::harness;
 use crate::domain::hooks::HookSpec;
+use crate::domain::mode::PermissionMode;
 use crate::domain::report::OutputFormat;
 
 /// One config file, as written by the user. Every field is optional: an absent
@@ -35,8 +36,14 @@ pub struct FileConfig {
     /// Portable system prompt (like `--system`).
     pub system: Option<String>,
     /// Request each harness's bypass mode (default true; like `--no-bypass`
-    /// when false). The CLI's `--bypass` / `--no-bypass` always win.
+    /// when false). The CLI's `--bypass` / `--no-bypass` always win. Superseded
+    /// by `mode` when both are set (`mode` is the richer spelling; `bypass =
+    /// false` is exactly `mode = "default"`).
     pub bypass: Option<bool>,
+    /// The normalized approval mode (like `--mode`): `plan` / `default` / `edit`
+    /// / `auto` / `bypass`. Beats `bypass` when both are set. The CLI's `--mode`
+    /// (and `--bypass` / `--no-bypass`) always win.
+    pub mode: Option<PermissionMode>,
     /// Per-harness timeout in seconds (like `--timeout`).
     pub timeout: Option<u64>,
     /// Output format override (like `--output-format`).
@@ -270,6 +277,7 @@ pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Option<FileConfi
         model: read("ONEHARNESS_MODEL"),
         system: read("ONEHARNESS_SYSTEM"),
         bypass: env_bool(&read, "ONEHARNESS_BYPASS")?,
+        mode: env_mode(&read)?,
         timeout: env_num(&read, "ONEHARNESS_TIMEOUT", "a non-negative integer")?,
         output_format: env_output_format(&read)?,
         schema_file: read("ONEHARNESS_SCHEMA_FILE"),
@@ -333,6 +341,17 @@ fn env_list<F: Fn(&str) -> Option<String>>(read: &F, name: &str) -> Option<Vec<S
     })
 }
 
+/// Read `ONEHARNESS_MODE`, accepting the same tokens as the `--mode` flag.
+fn env_mode<F: Fn(&str) -> Option<String>>(read: &F) -> Result<Option<PermissionMode>, String> {
+    let name = "ONEHARNESS_MODE";
+    match read(name) {
+        None => Ok(None),
+        Some(v) => PermissionMode::parse(&v)
+            .map(Some)
+            .map_err(|e| format!("`{name}` {e}")),
+    }
+}
+
 /// Read `ONEHARNESS_OUTPUT_FORMAT`, accepting the same tokens as the CLI flag.
 fn env_output_format<F: Fn(&str) -> Option<String>>(
     read: &F,
@@ -390,6 +409,7 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
         model: over.model.or(base.model),
         system: over.system.or(base.system),
         bypass: over.bypass.or(base.bypass),
+        mode: over.mode.or(base.mode),
         timeout: over.timeout.or(base.timeout),
         output_format: over.output_format.or(base.output_format),
         schema_file: over.schema_file.or(base.schema_file),
@@ -548,6 +568,9 @@ pub struct ConfigReport {
     pub model: Field<String>,
     pub system: Field<String>,
     pub bypass: Field<bool>,
+    /// The configured `mode`, if any. Unset when only the legacy `bypass` field
+    /// (or neither) is set — the effective mode then derives from `bypass`.
+    pub mode: Field<PermissionMode>,
     pub timeout: Field<u64>,
     pub output_format: Field<OutputFormat>,
     pub schema_file: Field<String>,
@@ -675,6 +698,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         model: pick(layers, |c| c.model.clone()),
         system: pick(layers, |c| c.system.clone()),
         bypass: pick(layers, |c| c.bypass).or_default(true),
+        mode: pick(layers, |c| c.mode),
         timeout: pick(layers, |c| c.timeout).or_default(120),
         output_format: pick(layers, |c| c.output_format),
         schema_file: pick(layers, |c| c.schema_file.clone()),
@@ -712,6 +736,7 @@ mod tests {
             model = "haiku"
             system = "be terse"
             bypass = false
+            mode = "plan"
             timeout = 90
             output_format = "stream-json"
             schema_file = "schema.json"
@@ -733,6 +758,7 @@ mod tests {
         assert_eq!(c.exclude.as_deref().unwrap(), ["cursor"]);
         assert_eq!(c.model.as_deref(), Some("haiku"));
         assert_eq!(c.bypass, Some(false));
+        assert_eq!(c.mode, Some(PermissionMode::Plan));
         assert_eq!(c.timeout, Some(90));
         assert_eq!(c.output_format, Some(OutputFormat::StreamJson));
         assert_eq!(c.schema_file.as_deref(), Some("schema.json"));
@@ -1132,6 +1158,7 @@ mod tests {
             ("ONEHARNESS_MODEL", "haiku"),
             ("ONEHARNESS_SYSTEM", "be terse"),
             ("ONEHARNESS_BYPASS", "false"),
+            ("ONEHARNESS_MODE", "plan"),
             ("ONEHARNESS_TIMEOUT", "90"),
             ("ONEHARNESS_OUTPUT_FORMAT", "stream-json"),
             ("ONEHARNESS_SCHEMA_FILE", "schema.json"),
@@ -1146,6 +1173,7 @@ mod tests {
         assert_eq!(c.model.as_deref(), Some("haiku"));
         assert_eq!(c.system.as_deref(), Some("be terse"));
         assert_eq!(c.bypass, Some(false));
+        assert_eq!(c.mode, Some(PermissionMode::Plan));
         assert_eq!(c.timeout, Some(90));
         assert_eq!(c.output_format, Some(OutputFormat::StreamJson));
         assert_eq!(c.schema_file.as_deref(), Some("schema.json"));
@@ -1172,10 +1200,24 @@ mod tests {
                 "non-negative integer",
             ),
             (vec![("ONEHARNESS_OUTPUT_FORMAT", "yaml")], "text"),
+            (vec![("ONEHARNESS_MODE", "yolo")], "bypass"),
         ] {
             let err = from_env(env_get(&pairs)).unwrap_err();
             assert!(err.contains(needle), "{pairs:?} -> {err}");
         }
+    }
+
+    #[test]
+    fn mode_layers_and_explains_per_field() {
+        // `mode` layers like any scalar; a project value beats the user one and
+        // `explain` attributes it to the winning file. Unset stays null (the
+        // effective mode then derives from `bypass`).
+        let merged = merge(parsed("mode = \"plan\""), parsed("mode = \"bypass\""));
+        assert_eq!(merged.mode, Some(PermissionMode::Bypass));
+        let report = explain(&layers("mode = \"plan\"", "mode = \"edit\""));
+        assert_eq!(report.mode.value, Some(PermissionMode::Edit));
+        assert_eq!(report.mode.source.as_deref(), Some("/project.toml"));
+        assert_eq!(explain(&[]).mode, Field::unset());
     }
 
     #[test]

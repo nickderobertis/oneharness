@@ -5,6 +5,7 @@ use std::time::Duration;
 use crate::cli::RunArgs;
 use crate::commands::{print_json, select_specs};
 use oneharness_core::domain::harness::{self, BuildCtx, HarnessSpec};
+use oneharness_core::domain::mode::{ModeHeadless, PermissionMode};
 use oneharness_core::domain::report::{
     Capture, OutputFormat, RunReport, RunResult, Status, SCHEMA_VERSION,
 };
@@ -58,6 +59,12 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let specs = select_specs(all, &include, &exclude)?;
     let resume = args.resume.as_deref();
     validate_resume(resume, &specs)?;
+    // Resolve the approval mode (CLI --mode > --bypass/--no-bypass > config
+    // `mode` > config `bypass` > the bypass default), then refuse — before
+    // spawning — any harness that can't express it or would hang on it. This is
+    // the loud, immediate alternative to a headless hang.
+    let mode = resolve_mode(args, cfg);
+    validate_modes(mode, &specs, args.permit_prompts)?;
     let config_bins: std::collections::HashMap<String, String> = cfg
         .harness
         .iter()
@@ -65,11 +72,6 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         .collect();
     let overrides = BinOverrides::parse(&args.bin)?.with_config_bins(config_bins);
     let cli_env = parse_env(&args.env)?;
-    let bypass = if args.no_bypass {
-        false
-    } else {
-        args.bypass || cfg.bypass.unwrap_or(true)
-    };
     let model = args.model.as_deref().or(cfg.model.as_deref());
     let system = args.system.as_deref().or(cfg.system.as_deref());
     let timeout = args.timeout.or(cfg.timeout).unwrap_or(120);
@@ -112,7 +114,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 .map(str::to_string),
             system: system.map(str::to_string),
             resume: resume.map(str::to_string),
-            bypass,
+            mode,
             output_format,
             native,
             base_prompt: prompt.clone(),
@@ -138,13 +140,17 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         } else {
             let job_index = jobs.len();
             // Env layers, applied in order (the runner is last-write-wins):
-            // the harness's declared defaults, then config ([env], then
+            // the harness's declared defaults, then any env that delivers the
+            // approval mode (Goose's GOOSE_MODE), then config ([env], then
             // [harness.<id>.env]), then the explicit `--env`, which always wins.
             let mut job_env: Vec<(String, String)> = spec
                 .default_env
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect();
+            if let Some(ms) = spec.mode(mode) {
+                job_env.extend(ms.env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+            }
             job_env.extend(cfg.env_for(spec.id));
             job_env.extend(cli_env.iter().cloned());
             jobs.push(Job {
@@ -218,7 +224,8 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         // config model is visible in that result's `command`.
         model: model.map(str::to_string),
         resume: args.resume.clone(),
-        bypass_permissions: bypass,
+        permission_mode: mode,
+        bypass_permissions: mode.is_bypass(),
         dry_run: args.print_command,
         schema: schema.as_ref().map(|s| s.as_value().clone()),
         schema_max_retries: schema.as_ref().map(|_| max_retries),
@@ -421,7 +428,7 @@ struct HarnessPlan {
     model: Option<String>,
     system: Option<String>,
     resume: Option<String>,
-    bypass: bool,
+    mode: PermissionMode,
     output_format: OutputFormat,
     /// The harness takes the schema through a native flag (so the prompt is left
     /// alone); otherwise the schema instruction is appended to the prompt.
@@ -462,7 +469,7 @@ impl HarnessPlan {
             model: self.model.as_deref(),
             system: self.system.as_deref(),
             resume: self.resume.as_deref(),
-            bypass: self.bypass,
+            mode: self.mode,
             output_format: self.output_format,
             schema: if self.native {
                 schema.map(Schema::as_text)
@@ -639,6 +646,63 @@ fn validate_resume(
     Ok(())
 }
 
+/// Resolve the effective approval mode. Precedence, highest first: CLI `--mode`,
+/// then the CLI `--bypass` / `--no-bypass` shorthands, then config `mode`, then
+/// the legacy config `bypass` boolean, then the built-in default (bypass).
+fn resolve_mode(
+    args: &RunArgs,
+    cfg: &oneharness_core::domain::config::FileConfig,
+) -> PermissionMode {
+    if let Some(m) = args.mode {
+        m
+    } else if args.bypass {
+        PermissionMode::Bypass
+    } else if args.no_bypass {
+        PermissionMode::Default
+    } else if let Some(m) = cfg.mode {
+        m
+    } else {
+        PermissionMode::from_bypass(cfg.bypass.unwrap_or(true))
+    }
+}
+
+/// Refuse — before any process is spawned — a mode a selected harness cannot
+/// honor headlessly: one it cannot express at all ([`OneharnessError::ModeUnsupported`]),
+/// or one that would block on an interactive prompt ([`OneharnessError::ModeMayHang`],
+/// unless `--permit-prompts`). This turns a silent hang (or a wrong silent
+/// downgrade) into a loud, immediate usage error. Reports the first offending
+/// harness, mirroring `validate_resume`.
+fn validate_modes(
+    mode: PermissionMode,
+    specs: &[&'static HarnessSpec],
+    permit_prompts: bool,
+) -> Result<(), OneharnessError> {
+    for spec in specs {
+        match spec.mode(mode) {
+            None => {
+                return Err(OneharnessError::ModeUnsupported {
+                    id: spec.id.to_string(),
+                    mode: mode.as_str().to_string(),
+                    supported: spec
+                        .modes
+                        .iter()
+                        .map(|m| m.mode.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                });
+            }
+            Some(ms) if ms.headless == ModeHeadless::Hangs && !permit_prompts => {
+                return Err(OneharnessError::ModeMayHang {
+                    id: spec.id.to_string(),
+                    mode: mode.as_str().to_string(),
+                });
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
 fn parse_env(values: &[String]) -> Result<Vec<(String, String)>, OneharnessError> {
     values
         .iter()
@@ -689,7 +753,7 @@ mod tests {
             model: None,
             system: None,
             resume: None,
-            bypass: true,
+            mode: PermissionMode::Bypass,
             output_format: OutputFormat::Text,
             native: false,
             base_prompt: "p".into(),
@@ -862,6 +926,87 @@ mod tests {
             validate_resume(Some("sid"), &[codex]),
             Err(OneharnessError::ResumeUnsupported { .. })
         ));
+    }
+
+    fn run_args() -> RunArgs {
+        // A minimal RunArgs with only the mode-relevant flags set; the rest are
+        // their clap defaults. Built via the parser so it stays in sync.
+        use clap::Parser;
+        let cli = crate::cli::Cli::parse_from(["oneharness", "run", "--prompt", "hi"]);
+        match cli.command {
+            crate::cli::Command::Run(args) => *args,
+            _ => unreachable!(),
+        }
+    }
+
+    fn cfg_with(
+        mode: Option<PermissionMode>,
+        bypass: Option<bool>,
+    ) -> oneharness_core::domain::config::FileConfig {
+        oneharness_core::domain::config::FileConfig {
+            mode,
+            bypass,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolve_mode_precedence() {
+        let empty = cfg_with(None, None);
+        // Built-in default is bypass.
+        assert_eq!(resolve_mode(&run_args(), &empty), PermissionMode::Bypass);
+        // Config bypass=false → default; config mode beats config bypass.
+        assert_eq!(
+            resolve_mode(&run_args(), &cfg_with(None, Some(false))),
+            PermissionMode::Default
+        );
+        assert_eq!(
+            resolve_mode(
+                &run_args(),
+                &cfg_with(Some(PermissionMode::Plan), Some(true))
+            ),
+            PermissionMode::Plan
+        );
+        // CLI --mode beats config; --bypass / --no-bypass are the shorthands.
+        let mut a = run_args();
+        a.mode = Some(PermissionMode::Edit);
+        assert_eq!(
+            resolve_mode(&a, &cfg_with(Some(PermissionMode::Plan), None)),
+            PermissionMode::Edit
+        );
+        let mut a = run_args();
+        a.no_bypass = true;
+        assert_eq!(
+            resolve_mode(&a, &cfg_with(Some(PermissionMode::Plan), None)),
+            PermissionMode::Default
+        );
+        let mut a = run_args();
+        a.bypass = true;
+        assert_eq!(
+            resolve_mode(&a, &cfg_with(None, Some(false))),
+            PermissionMode::Bypass
+        );
+    }
+
+    #[test]
+    fn validate_modes_refuses_unsupported_and_hangs() {
+        let crush = harness::by_id("crush").unwrap();
+        let cursor = harness::by_id("cursor").unwrap();
+        let claude = harness::by_id("claude-code").unwrap();
+        // crush has no plan mode → unsupported.
+        assert!(matches!(
+            validate_modes(PermissionMode::Plan, &[crush], false),
+            Err(OneharnessError::ModeUnsupported { .. })
+        ));
+        // cursor default would hang → refused, unless --permit-prompts.
+        assert!(matches!(
+            validate_modes(PermissionMode::Default, &[cursor], false),
+            Err(OneharnessError::ModeMayHang { .. })
+        ));
+        assert!(validate_modes(PermissionMode::Default, &[cursor], true).is_ok());
+        // Supported clean modes pass.
+        assert!(validate_modes(PermissionMode::Plan, &[claude], false).is_ok());
+        assert!(validate_modes(PermissionMode::Bypass, &[crush, cursor, claude], false).is_ok());
     }
 
     #[test]

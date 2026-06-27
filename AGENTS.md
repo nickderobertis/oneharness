@@ -180,9 +180,18 @@ aren't re-litigated each session:
   non-zero exit is `nonzero`, a hang is `timeout` — all are data in the report,
   not a crash. Only true usage/config errors abort with a non-zero process exit.
 - **Bypass-by-default is deliberate.** Headless agent runs hang waiting for
-  approval, so `run` requests each harness's "don't prompt" mode by default. This
-  is documented in `--help`; `--no-bypass` opts out. Keep this explicit, never
-  silent.
+  approval, so `run` requests each harness's "don't prompt" mode (`--mode
+  bypass`) by default. This is documented in `--help`; `--mode <m>` (and the
+  `--no-bypass`/`--bypass` shorthands) opts to another point on the spectrum.
+  Keep this explicit, never silent. The normalized spectrum lives in
+  `domain::mode` (`plan` < `default` < `edit` < `auto` < `bypass`); each harness
+  declares which it can express and whether each is headless-`clean` or would
+  `hangs` (`HarnessSpec.modes` / `ModeSpec`). The command layer refuses an
+  unsupported mode, and a `hangs` one without `--permit-prompts`, *before*
+  spawning — turning a silent hang into a loud, immediate error rather than ever
+  silently downgrading. `default` maps to each harness's cleanest
+  non-interactive variant (Claude's `dontAsk`, not `default`), never an
+  interactive prompt.
 - **Config is layered and loud.** Defaults come from `oneharness.toml` files —
   user level (`$ONEHARNESS_CONFIG` or the platform config dir) under project
   level (discovered upward from `--cwd`/cwd) under the `ONEHARNESS_<FIELD>`
@@ -216,6 +225,14 @@ shape. When you add one:
 
 - Add a `--print-command` assertion in `tests/cli.rs` pinning its exact argv
   (this is the deterministic, network-free proof the adapter is correct).
+- Declare its `modes` (`HarnessSpec.modes`): one `ModeSpec` per
+  [`PermissionMode`] the CLI can express, each tagged `clean` or `hangs`
+  headless, sourced from that CLI's docs/behavior — never guessed. Every harness
+  lists `bypass` and `default`. Map each in `build_argv` (or, when the mode is an
+  environment variable like Goose's `GOOSE_MODE`, in `ModeSpec.env`), and prefer
+  the cleanest non-interactive variant for `default` (e.g. a deny-and-continue,
+  not an interactive prompt). Pin the mode→flag mapping with a `build_argv`
+  assertion, and update the *Approval modes* table in `README.md`.
 - Update the harness table in `README.md` — including its config-support
   columns (`model`, `system`, bypass, allow/deny rules, hooks, output format,
   `--resume`), which document how each unified setting reaches (or doesn't

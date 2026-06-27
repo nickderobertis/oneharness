@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::domain::mode::PermissionMode;
 use crate::domain::signals::Usage;
 
 /// Bumped when the JSON shape changes in a way consumers must notice.
@@ -128,6 +129,12 @@ pub struct RunReport {
     pub model: Option<String>,
     /// The session id being continued, when `--resume` was passed; else `null`.
     pub resume: Option<String>,
+    /// The normalized approval mode requested for this run (see the README
+    /// support matrix). Each harness maps it to its own mechanism.
+    pub permission_mode: PermissionMode,
+    /// Back-compat convenience: `true` exactly when `permission_mode` is
+    /// `bypass`. Retained so existing consumers keep working; new consumers
+    /// should read `permission_mode`.
     pub bypass_permissions: bool,
     pub dry_run: bool,
     /// The JSON Schema applied to this run (structured output), or `null` when

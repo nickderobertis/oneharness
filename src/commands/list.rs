@@ -5,8 +5,20 @@ use serde::Serialize;
 use crate::cli::ListArgs;
 use crate::commands::print_json;
 use oneharness_core::domain::harness::{self, BuildCtx};
+use oneharness_core::domain::mode::{ModeHeadless, PermissionMode};
 use oneharness_core::domain::report::OutputFormat;
 use oneharness_core::errors::OneharnessError;
+
+/// One supported approval mode for a harness, with its headless behavior, in
+/// `oneharness list`. A [`PermissionMode`] absent from a harness's array is
+/// unsupported for it (a `--mode` request would be refused).
+#[derive(Serialize)]
+struct ModeInfo {
+    mode: &'static str,
+    /// `"clean"` (never blocks headless) or `"hangs"` (would block on an
+    /// approval prompt; refused without --permit-prompts).
+    headless: &'static str,
+}
 
 #[derive(Serialize)]
 struct HarnessInfo {
@@ -17,6 +29,9 @@ struct HarnessInfo {
     output_format: OutputFormat,
     /// Whether `run --resume <session>` is supported for this harness.
     supports_resume: bool,
+    /// The approval modes (`--mode`) this harness can express, each with its
+    /// headless behavior. Modes not listed are unsupported for the harness.
+    modes: Vec<ModeInfo>,
     /// Whether `run --schema` is delivered through a native structured-output
     /// flag for this harness (Claude Code's `--json-schema`). `false` means the
     /// portable prompt-based path is used — structured output works either way;
@@ -51,7 +66,7 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 model: None,
                 system: None,
                 resume: None,
-                bypass: true,
+                mode: PermissionMode::Bypass,
                 output_format: spec.output_format,
                 schema: None,
             };
@@ -63,6 +78,17 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 install_hint: spec.install_hint,
                 output_format: spec.output_format,
                 supports_resume: spec.supports_resume,
+                modes: spec
+                    .modes
+                    .iter()
+                    .map(|m| ModeInfo {
+                        mode: m.mode.as_str(),
+                        headless: match m.headless {
+                            ModeHeadless::Clean => "clean",
+                            ModeHeadless::Hangs => "hangs",
+                        },
+                    })
+                    .collect(),
                 supports_native_schema: spec.native_schema.is_some(),
                 sync_file: sync.map(|s| s.file),
                 supports_allowed_tools: sync.is_some_and(|s| s.allow_path.is_some()),

@@ -337,7 +337,11 @@ oh_sync_enforce() {
     # this is no longer a hard constraint, but a single line keeps the fixture
     # prompt trivially quoting-safe across all shells.
     prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory, then stop: touch $file. Rules: you MUST actually invoke your shell tool with that exact command — never assume or decide on your own that it is not permitted; attempt it. Use only the shell tool. Only if that tool invocation itself fails or is rejected: do NOT create the file by any other means (no file-write or edit tools) — reply with the single word DENIED and stop."
-    oh_run "$id" "$prompt" --no-bypass --cwd "$sandbox"
+    # --no-bypass is `--mode default`, which oneharness refuses for harnesses
+    # whose default ask flow would hang headlessly (opencode/cursor). Here the
+    # synced allow rule is exactly what stops the prompt from firing, so opt in
+    # with --permit-prompts; the per-harness timeout still bounds any hang.
+    oh_run "$id" "$prompt" --no-bypass --permit-prompts --cwd "$sandbox"
 
     local status
     status="$(oh_field '.results[0].status')"

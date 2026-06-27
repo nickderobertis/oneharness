@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Args, Parser, Subcommand};
 
+use oneharness_core::domain::mode::PermissionMode;
 use oneharness_core::domain::report::OutputFormat;
 
 /// Parse `--output-format` into the core [`OutputFormat`], keeping the
@@ -18,6 +19,14 @@ fn output_format_parser() -> impl TypedValueParser<Value = OutputFormat> {
     })
 }
 
+/// Parse `--mode` into the core [`PermissionMode`], keeping the possible-value
+/// list (and its `--help` listing + validation error) in the binary so
+/// `oneharness-core` need not depend on `clap`.
+fn mode_parser() -> impl TypedValueParser<Value = PermissionMode> {
+    PossibleValuesParser::new(PermissionMode::ALL.map(|m| m.as_str()))
+        .map(|s| PermissionMode::parse(&s).expect("clap restricts to valid mode tokens"))
+}
+
 const ABOUT: &str =
     "One CLI across many agentic coding harnesses. Emits JSON for programmatic consumers.";
 
@@ -28,7 +37,8 @@ parallel and returning one stable JSON shape.
 
 All subcommands print JSON to stdout; diagnostics go to stderr. `run` requests
 each harness's permission-bypass mode by default because headless agent runs hang
-waiting for approval — pass --no-bypass to opt out.
+waiting for approval — pass --mode <plan|default|edit|auto|bypass> to choose a
+different approval mode (or --no-bypass, shorthand for --mode default).
 
 Defaults come from layered config files: a user-level config.toml (the platform
 config dir, or $ONEHARNESS_CONFIG) under a project-level oneharness.toml /
@@ -153,13 +163,31 @@ pub struct RunArgs {
     #[arg(long = "env", value_name = "KEY=VALUE")]
     pub env: Vec<String>,
 
+    /// Approval mode requested from each harness: plan, default, edit, auto, or
+    /// bypass (default: bypass — headless runs otherwise hang on approval). Each
+    /// harness maps it to its native mechanism; `oneharness list` shows which
+    /// modes each supports. A mode a selected harness can't express, or one that
+    /// would block on a prompt headlessly, is refused up front (see
+    /// --permit-prompts). Supersedes --bypass / --no-bypass.
+    #[arg(long, value_parser = mode_parser(), conflicts_with_all = ["bypass", "no_bypass"])]
+    pub mode: Option<PermissionMode>,
+
     /// Do NOT request each harness's bypass/yolo mode (headless runs may hang).
+    /// Shorthand for `--mode default`.
     #[arg(long)]
     pub no_bypass: bool,
 
-    /// Request bypass mode even when config sets `bypass = false`.
+    /// Request bypass mode even when config sets `bypass`/`mode`. Shorthand for
+    /// `--mode bypass`.
     #[arg(long, conflicts_with = "no_bypass")]
     pub bypass: bool,
+
+    /// Run even when the chosen mode would block on an interactive approval
+    /// prompt for a selected harness (otherwise such a combination is refused
+    /// before spawning). Use when allow-rules have been synced so the prompt
+    /// never fires; the per-harness --timeout still bounds any residual hang.
+    #[arg(long)]
+    pub permit_prompts: bool,
 
     /// Load configuration from this file only (skip user/project discovery).
     #[arg(long, value_name = "PATH", conflicts_with = "no_config")]

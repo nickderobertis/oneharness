@@ -53,3 +53,8 @@ oh_hook_enforce qwen global
 note "» read-only / plan enforcement: each must block a write"
 oh_mode_enforce qwen read-only
 oh_mode_enforce qwen plan
+
+# Edit enforcement: `--mode edit` (--approval-mode auto-edit) auto-approves a
+# file edit that `default` would deny-continue — the edit must apply.
+note "» edit enforcement: a file edit is auto-approved under --mode edit"
+oh_edit_enforce qwen

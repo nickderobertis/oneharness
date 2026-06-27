@@ -465,6 +465,55 @@ oh_mode_enforce() {
     note "PASS: $id $mode enforcement"
 }
 
+# Live proof that `--mode edit` AUTO-APPROVES file edits — the reliably-testable
+# half of edit's "auto-approve edits, gate shell" contract. The agent is asked to
+# create a file with ONLY its file-writing/editing tool; under `--mode edit` that
+# file must EXIST, because edit mode auto-approves an edit the harness would
+# otherwise gate (copilot's `-p` auto-denies an un-allowed `write`; qwen's
+# `default` deny-continues a write) — so its presence proves the edit mapping is
+# honored live, not just that the harness can write.
+#
+# The "gate shell" half is deliberately NOT asserted live: it is not reliably
+# testable. Told to create a file via shell, the model treats a gated shell as an
+# obstacle and routes around it through whatever path the harness still allows —
+# copilot auto-approves "safe" shell (`echo > file`), opencode delegates to a
+# `task` subagent that runs the command, qwen's auto-edit ran it outright — so
+# "file absent" is not a proxy for "shell blocked". That half stays argv/env-pinned
+# hermetically (see `domain::harness` tests). Call only for a harness whose `edit`
+# would otherwise gate the write (copilot/qwen); opencode's default permission is
+# already `allow`, so the check can't distinguish its env mapping and it is omitted
+# (its `OPENCODE_CONFIG_CONTENT` injection is pinned hermetically instead). $1 id.
+oh_edit_enforce() {
+    local id="$1"
+    local bin sandbox editfile status
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    sandbox="$(mktemp -d)"
+    sandbox="$(oh_native_path "$sandbox")"
+    oh_sandbox_prepare "$id" "$sandbox"
+    editfile="$(oh_enforce_file edited)"
+    local prompt
+    prompt="You are a non-interactive test fixture in a scratch directory. Using your file-writing/editing tool (do NOT use the shell), create a file named $editfile containing the single word ok, then stop. If that tool call is rejected, reply with the single word DENIED and stop — do not use the shell or any other tool or workaround."
+
+    note "  edit-enforce: a file edit must be auto-approved under --mode edit"
+    oh_run "$id" "$prompt" --mode edit --cwd "$sandbox"
+    status="$(oh_field '.results[0].status')"
+    if [ "$status" = "skipped" ]; then
+        rm -rf "$sandbox"
+        skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+    fi
+    if [ ! -e "$sandbox/$editfile" ]; then
+        oh_dump
+        rm -rf "$sandbox"
+        fail "$id: --mode edit did NOT auto-approve the file edit ($editfile absent) — edit mode must auto-approve edits (its argv/env mapping may have drifted)"
+    fi
+    note "  ok[edit]: the file edit was auto-approved"
+
+    rm -rf "$sandbox"
+    note "PASS: $id edit enforcement"
+}
+
 # --- hook enforcement --------------------------------------------------------
 
 # Live proof that a synced `[[hooks]]` gate is HONORED by the real harness — the

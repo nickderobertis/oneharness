@@ -536,30 +536,33 @@ synced so the prompt never fires.
 |------------|:-----------:|:-----:|:--------:|:-----:|:----:|:-----:|:-------:|:------:|
 | `read-only`| ✓ᵈ | ✓ˢ | ✓ᵖ | — | ✓ᵖ | — | ✓ᵈ | ✓ |
 | `plan`     | ✓ | — | ✓ | — | ✓ | — | ✓ | ✓ |
-| `default`  | ✓ | ✓ | ⚠ | ✓ | ⚠ | ✓¹ | ✓ | ⚠ |
-| `edit`     | ✓ | — | — | — | ⚠ | — | ✓ | — |
-| `auto`     | ✓ | ✓ | — | ✓ | ⚠ | — | — | — |
+| `default`  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓¹ | ✓ | ⚠ |
+| `edit`     | ✓ | — | ✓ᵉ | — | ✓ | — | ✓ | — |
+| `auto`     | ✓ | ✓ | — | ✓ | ✓ | — | — | — |
 | `bypass`   | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 ✓ supported & clean headless · ⚠ supported but may block on a prompt headlessly
 (warns + runs; `--timeout` backstops, `--permit-prompts` silences the warning) ·
-— unsupported (refused). `read-only` is **enforced** where
-marked — ˢ Codex's read-only sandbox (OS-enforced), ᵈ deny rules (Claude's
-`--disallowedTools Bash Edit Write NotebookEdit`, Copilot's `--deny-tool
-shell/write` — deny beats allow) — and ᵖ behavioral where its only mechanism is
-the plan agent (OpenCode `--agent plan`, Qwen `--approval-mode plan`, so
-`read-only` and `plan` coincide there). Cursor's `read-only` is native
-`--mode ask`. Codex/Goose have no plan workflow (use `read-only`); Goose's only
-no-mutation option (`chat`) disables reads too, so it offers neither; Crush's
-`run` can't gate, so it offers neither (¹ it auto-approves the whole session, so
-`default` ≈ `bypass`). `default` maps to each harness's cleanest non-interactive
-variant — Claude Code's `dontAsk` (deny-and-continue), Goose's fail-closed
-`approve`, Copilot's auto-deny — so it doesn't hang where a clean variant exists.
-Modes are delivered on the argv except for Goose, which carries the mode in
-`GOOSE_MODE`. Copilot's `edit` is a composed `--allow-tool write --allow-tool
-read` list (shell omitted, so it is auto-denied); `edit`/`auto` for
-OpenCode/Cursor are a `permission` config concern (`oneharness sync`), not
-`--mode`.
+— unsupported (refused). `read-only` is **enforced** where marked — ˢ Codex's
+read-only sandbox (OS-enforced), ᵈ deny rules (Claude's `--disallowedTools Bash
+Edit Write NotebookEdit`, Copilot's `--deny-tool shell/write` — deny beats
+allow) — and ᵖ behavioral where its only mechanism is the plan agent (OpenCode
+`--agent plan`, Qwen `--approval-mode plan`, so `read-only` and `plan` coincide
+there). Cursor's `read-only` is native `--mode ask`. Codex/Goose have no plan
+workflow (use `read-only`); Goose's only no-mutation option (`chat`) disables
+reads too, so it offers neither plan nor read-only; Crush's `run` can't gate, so
+it supports only `default`/`bypass` (¹ it auto-approves the whole session, so the
+two are identical). Only **Cursor's `default`** can still block on a prompt (no
+fail-fast deny) — every other harness's `default` is clean: it maps to that
+harness's cleanest non-interactive variant — Claude Code's `dontAsk`
+(deny-and-continue), Codex's read-only exec, Goose's fail-closed `approve`,
+Copilot's auto-deny, and OpenCode/Qwen auto-*reject* gated tools and continue
+rather than hang. Modes ride the argv except: Goose carries the whole spectrum in
+`GOOSE_MODE`, and OpenCode's `edit` (ᵉ) rides the inline-config env var
+`OPENCODE_CONFIG_CONTENT` (its per-tool `permission` map has no argv flag).
+Copilot's `edit` is a composed `--allow-tool write --allow-tool read` list (shell
+omitted → auto-denied); `edit`/`auto` for Cursor remain a `permission` config
+concern (`oneharness sync`), not `--mode`.
 
 Relatedly, a harness can carry a small **default environment** so headless runs
 stay clean — e.g. oneharness sets `QWEN_CODE_SUPPRESS_YOLO_WARNING=1` for Qwen

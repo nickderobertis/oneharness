@@ -43,7 +43,8 @@ else
     oh_hook_enforce cursor
 fi
 
-# Approval-mode enforcement: `--mode read-only` is Cursor's native `--mode ask`
-# (read-only Q&A) — a write must be blocked that `--mode bypass` allows.
-note "» read-only enforcement: --mode read-only (--mode ask) must block a write"
-oh_mode_enforce cursor
+# Approval-mode enforcement: `read-only` is Cursor's native `--mode ask` and
+# `plan` is `--mode plan` — each must block a write that `--mode bypass` allows.
+note "» read-only / plan enforcement: each must block a write"
+oh_mode_enforce cursor read-only
+oh_mode_enforce cursor plan

@@ -16,6 +16,7 @@ oh_run codex "$(oh_prompt "$marker")"
 oh_assert_echoed codex "$marker"
 
 # Approval-mode enforcement: `--mode read-only` is Codex's OS-enforced read-only
-# sandbox — a write must be blocked that `--mode bypass` allows.
+# sandbox — a write must be blocked that `--mode bypass` allows. (Codex has no
+# plan workflow, so only read-only is exercised.)
 note "» read-only enforcement: --mode read-only (sandbox) must block a write"
-oh_mode_enforce codex
+oh_mode_enforce codex read-only

@@ -46,9 +46,10 @@ note "PASS: qwen accepts the synced settings file (headless enforcement is flag-
 note "» hook enforcement (global scope): the synced gate must block a marked command"
 oh_hook_enforce qwen global
 
-# Approval-mode enforcement: qwen's `--mode read-only` is its plan approval-mode
-# (read-only — no execution), so a write must be blocked that `--mode bypass`
-# (`--yolo`) allows. This is also the live proof qwen's read-only flag is honored
-# headlessly (its allow/deny rules are not — see above).
-note "» read-only enforcement: --mode read-only (--approval-mode plan) must block a write"
-oh_mode_enforce qwen
+# Approval-mode enforcement: qwen's `read-only` and `plan` both map to
+# `--approval-mode plan` (read-only — no execution), so a write must be blocked
+# that `--mode bypass` (`--yolo`) allows. This is also the live proof qwen's
+# approval-mode flag is honored headlessly (its allow/deny rules are not — above).
+note "» read-only / plan enforcement: each must block a write"
+oh_mode_enforce qwen read-only
+oh_mode_enforce qwen plan

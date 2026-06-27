@@ -367,6 +367,52 @@ fn read_only_is_distinct_from_plan_and_enforced_where_possible() {
 }
 
 #[test]
+fn mode_delivered_via_env_reaches_the_child() {
+    // OpenCode's `edit` mode has no argv flag — it rides the OPENCODE_CONFIG_CONTENT
+    // inline-config env var, which must reach the spawned harness.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--mode",
+            "edit",
+            "--bin",
+            &bin_override("opencode"),
+            "--compact",
+        ],
+        &[("MOCK_ECHO_ENV", "OPENCODE_CONFIG_CONTENT")],
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    assert_eq!(value["permission_mode"], "edit");
+    // The mock echoes the requested env var as `NAME=value`.
+    assert_eq!(
+        value["results"][0]["stdout"],
+        r#"OPENCODE_CONFIG_CONTENT={"permission":{"edit":"allow","bash":"deny"}}"#
+    );
+    // Goose carries the whole spectrum in GOOSE_MODE; bypass = auto.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "goose",
+            "--prompt",
+            "hi",
+            "--mode",
+            "bypass",
+            "--bin",
+            &bin_override("goose"),
+            "--compact",
+        ],
+        &[("MOCK_ECHO_ENV", "GOOSE_MODE")],
+    );
+    assert_eq!(json_stdout(&output)["results"][0]["stdout"], "GOOSE_MODE=auto");
+}
+
+#[test]
 fn unsupported_mode_for_a_harness_is_refused() {
     // crush has no plan mode; asking for it is a loud usage error, not a run.
     let output = run(

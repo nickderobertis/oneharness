@@ -457,15 +457,26 @@ static REGISTRY: &[HarnessSpec] = &[
         default_env: &[],
         native_schema: None,
         // The built-in `plan` agent is read-only, so `plan` and `read-only` both
-        // map to it (OpenCode has no separate non-plan read-only mechanism on the
-        // argv). Bypass auto-approves all but explicit denies. There is no
-        // headless ask: a `permission: ask` blocks on a pipe (no clean
-        // non-interactive variant), so `default` is `Hangs`. `edit`/`auto` need
-        // the per-tool `permission` map, delivered via `oneharness sync`.
+        // map to it. `default` is clean headless: OpenCode's out-of-box default
+        // is `allow`, and even an `ask` permission *auto-rejects* (deny-and-
+        // continue) under `opencode run` rather than blocking — it never hangs.
+        // `edit` (auto-approve edits, gate bash) is delivered per-run through the
+        // inline-config env var `OPENCODE_CONFIG_CONTENT` (highest-precedence
+        // config, set without touching `opencode.json`) — no argv flag exists.
+        // Bypass auto-approves all but explicit denies. There is no classifier
+        // `auto`.
         modes: &[
             mode(PermissionMode::ReadOnly, ModeHeadless::Clean),
             mode(PermissionMode::Plan, ModeHeadless::Clean),
-            mode(PermissionMode::Default, ModeHeadless::Hangs),
+            mode(PermissionMode::Default, ModeHeadless::Clean),
+            ModeSpec {
+                mode: PermissionMode::Edit,
+                headless: ModeHeadless::Clean,
+                env: &[(
+                    "OPENCODE_CONFIG_CONTENT",
+                    r#"{"permission":{"edit":"allow","bash":"deny"}}"#,
+                )],
+            },
             mode(PermissionMode::Bypass, ModeHeadless::Clean),
         ],
         build_argv: argv_opencode,
@@ -551,19 +562,20 @@ static REGISTRY: &[HarnessSpec] = &[
         gate_deny: Some(DenyShape::ClaudeNested),
         default_env: &[("QWEN_CODE_SUPPRESS_YOLO_WARNING", "1")],
         native_schema: None,
-        // `--approval-mode` spans the spectrum, but live testing showed Qwen's
-        // headless mode never auto-approves from settings: only `--yolo` actually
-        // executes gated tools. So `default`/`edit`/`auto` all stall (or error on
-        // patched builds) the moment a tool needs approval — classified `Hangs`.
-        // Only `plan` and `bypass` (`--yolo`) run cleanly headless. Qwen's only
-        // read-only mechanism is its plan mode, so `read-only` coincides with
-        // `plan` (both → `--approval-mode plan`).
+        // `--approval-mode` spans the whole spectrum, all clean headless: current
+        // qwen-code *deny-and-continues* a gated tool in non-interactive mode
+        // (auto-deny + the agent loop proceeds, process exits 0) rather than
+        // hanging. So `default` denies gated tools and continues; `auto-edit`
+        // genuinely auto-applies edits while denying shell; `auto` runs the
+        // classifier; none block. Qwen's only read-only mechanism is its plan
+        // mode, so `read-only` coincides with `plan` (both → `--approval-mode
+        // plan`).
         modes: &[
             mode(PermissionMode::ReadOnly, ModeHeadless::Clean),
             mode(PermissionMode::Plan, ModeHeadless::Clean),
-            mode(PermissionMode::Default, ModeHeadless::Hangs),
-            mode(PermissionMode::Edit, ModeHeadless::Hangs),
-            mode(PermissionMode::Auto, ModeHeadless::Hangs),
+            mode(PermissionMode::Default, ModeHeadless::Clean),
+            mode(PermissionMode::Edit, ModeHeadless::Clean),
+            mode(PermissionMode::Auto, ModeHeadless::Clean),
             mode(PermissionMode::Bypass, ModeHeadless::Clean),
         ],
         build_argv: argv_qwen,
@@ -1193,12 +1205,29 @@ mod tests {
             goose.mode(PermissionMode::Default).unwrap().env,
             &[("GOOSE_MODE", "approve")]
         );
+        // OpenCode delivers `edit` through the inline-config env var (no argv
+        // flag exists for its per-tool permission map).
+        assert_eq!(
+            by_id("opencode")
+                .unwrap()
+                .mode(PermissionMode::Edit)
+                .unwrap()
+                .env,
+            &[(
+                "OPENCODE_CONFIG_CONTENT",
+                r#"{"permission":{"edit":"allow","bash":"deny"}}"#
+            )]
+        );
+        // Every other (harness, mode) expresses itself on the argv, not env.
         for h in all() {
-            if h.id != "goose" {
+            for m in h.modes {
+                let env_ok = h.id == "goose"
+                    || (h.id == "opencode" && m.mode == PermissionMode::Edit)
+                    || m.env.is_empty();
                 assert!(
-                    h.modes.iter().all(|m| m.env.is_empty()),
-                    "harness {} should express modes on the argv, not env",
-                    h.id
+                    env_ok,
+                    "harness {} mode {:?} unexpectedly carries env",
+                    h.id, m.mode
                 );
             }
         }

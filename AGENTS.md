@@ -236,10 +236,13 @@ shape. When you add one:
   environment variable like Goose's `GOOSE_MODE`, in `ModeSpec.env`), and prefer
   the cleanest non-interactive variant for `default` (e.g. a deny-and-continue,
   not an interactive prompt). Pin the mode→flag mapping with a `build_argv`
-  assertion, and update the *Approval modes* table in `README.md`. If the harness
-  supports `read-only`, add an `oh_mode_enforce <id>` phase to its `e2e-<id>.sh`
-  (writes blocked under `--mode read-only`, allowed under `--mode bypass`) — the
-  live proof the read-only mapping is honored and its drift alarm.
+  assertion, and update the *Approval modes* table in `README.md`. For each
+  no-mutation mode the harness supports (`read-only`, `plan`), add an
+  `oh_mode_enforce <id> <mode>` phase to its `e2e-<id>.sh` (a write blocked under
+  `--mode <mode>`, allowed under `--mode bypass`) — the live proof the mapping is
+  honored and its drift alarm. A mode delivered by environment (Goose's
+  `GOOSE_MODE`, OpenCode's `OPENCODE_CONFIG_CONTENT`) is pinned hermetically via
+  the mock harness's `MOCK_ECHO_ENV` instead.
 - Update the harness table in `README.md` — including its config-support
   columns (`model`, `system`, bypass, allow/deny rules, hooks, output format,
   `--resume`), which document how each unified setting reaches (or doesn't

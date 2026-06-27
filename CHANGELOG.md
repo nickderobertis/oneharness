@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/nickderobertis/oneharness/compare/v0.2.531...v0.3.0) - 2026-06-27
+
+### Added
+
+- [**breaking**] normalized --mode approval modes across all harnesses ([#1079](https://github.com/nickderobertis/oneharness/pull/1079))
+
 ## [0.2.531](https://github.com/nickderobertis/oneharness/compare/v0.2.530...v0.2.531) - 2026-06-26
 
 ### Added

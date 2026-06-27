@@ -629,15 +629,16 @@ static REGISTRY: &[HarnessSpec] = &[
         default_env: &[],
         native_schema: None,
         // `--mode plan` is a real read-only plan mode; `read-only` is allow-all
-        // with `write`/`shell` denied (deny beats allow), enforced and distinct
-        // from the plan workflow; bypass is the allow-all trio. Without any,
-        // `-p` auto-denies gated tools and continues (never hangs), so `default`
-        // is `Clean`. `edit` is only a composed `--allow-tool` list, not a single
-        // mode, and there is no classifier `auto` — both absent.
+        // with `write`/`shell` denied (deny beats allow); `edit` allows
+        // `write`/`read` but not `shell`, so edits run and shell is auto-denied
+        // (the headless form of "gate shell"); bypass is the allow-all trio.
+        // Without any, `-p` auto-denies gated tools and continues (never hangs),
+        // so `default` is `Clean`. No classifier `auto`, so it is absent.
         modes: &[
             mode(PermissionMode::ReadOnly, ModeHeadless::Clean),
             mode(PermissionMode::Plan, ModeHeadless::Clean),
             mode(PermissionMode::Default, ModeHeadless::Clean),
+            mode(PermissionMode::Edit, ModeHeadless::Clean),
             mode(PermissionMode::Bypass, ModeHeadless::Clean),
         ],
         build_argv: argv_copilot,
@@ -910,6 +911,16 @@ fn argv_copilot(c: &BuildCtx) -> Vec<String> {
             a.push("write".into());
             a.push("--no-ask-user".into());
         }
+        PermissionMode::Edit => {
+            // Allow file edits and reads, but not shell — an un-allowed `shell`
+            // is auto-denied under `-p`, so edits run and commands are gated.
+            a.push("--allow-tool".into());
+            a.push("write".into());
+            a.push("--allow-tool".into());
+            a.push("read".into());
+            a.push("--allow-all-paths".into());
+            a.push("--no-ask-user".into());
+        }
         PermissionMode::Plan => {
             a.push("--mode".into());
             a.push("plan".into());
@@ -1119,6 +1130,7 @@ mod tests {
                 PermissionMode::ReadOnly,
                 &["--deny-tool", "write"],
             ),
+            ("copilot", PermissionMode::Edit, &["--allow-tool", "write"]),
             ("cursor", PermissionMode::Plan, &["--mode", "plan"]),
             ("cursor", PermissionMode::ReadOnly, &["--mode", "ask"]),
         ];
@@ -1130,6 +1142,14 @@ mod tests {
                 "harness {id} mode {mode:?} should emit {want:?}; got {argv:?}"
             );
         }
+        // copilot `edit` must NOT blanket-allow tools, or shell wouldn't be
+        // gated — it allows only write/read, leaving shell to be auto-denied.
+        let copilot_edit =
+            (by_id("copilot").unwrap().build_argv)(&ctx("copilot", None, PermissionMode::Edit));
+        assert!(
+            !copilot_edit.iter().any(|t| t == "--allow-all-tools"),
+            "copilot edit must gate shell, not allow-all: {copilot_edit:?}"
+        );
         // codex/goose reject plan (no plan workflow); use read-only instead.
         assert!(by_id("codex").unwrap().mode(PermissionMode::Plan).is_none());
         assert!(by_id("goose").unwrap().mode(PermissionMode::Plan).is_none());

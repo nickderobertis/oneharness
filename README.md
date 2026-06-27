@@ -537,7 +537,7 @@ synced so the prompt never fires.
 | `read-only`| ✓ᵈ | ✓ˢ | ✓ᵖ | — | ✓ᵖ | — | ✓ᵈ | ✓ |
 | `plan`     | ✓ | — | ✓ | — | ✓ | — | ✓ | ✓ |
 | `default`  | ✓ | ✓ | ⚠ | ✓ | ⚠ | ✓¹ | ✓ | ⚠ |
-| `edit`     | ✓ | — | — | — | ⚠ | — | — | — |
+| `edit`     | ✓ | — | — | — | ⚠ | — | ✓ | — |
 | `auto`     | ✓ | ✓ | — | ✓ | ⚠ | — | — | — |
 | `bypass`   | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
@@ -556,8 +556,10 @@ no-mutation option (`chat`) disables reads too, so it offers neither; Crush's
 variant — Claude Code's `dontAsk` (deny-and-continue), Goose's fail-closed
 `approve`, Copilot's auto-deny — so it doesn't hang where a clean variant exists.
 Modes are delivered on the argv except for Goose, which carries the mode in
-`GOOSE_MODE`; `edit`/`auto` for OpenCode/Cursor are a `permission` config concern
-(`oneharness sync`), not `--mode`.
+`GOOSE_MODE`. Copilot's `edit` is a composed `--allow-tool write --allow-tool
+read` list (shell omitted, so it is auto-denied); `edit`/`auto` for
+OpenCode/Cursor are a `permission` config concern (`oneharness sync`), not
+`--mode`.
 
 Relatedly, a harness can carry a small **default environment** so headless runs
 stay clean — e.g. oneharness sets `QWEN_CODE_SUPPRESS_YOLO_WARNING=1` for Qwen

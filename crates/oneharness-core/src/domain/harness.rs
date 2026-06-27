@@ -10,6 +10,7 @@
 
 use crate::domain::gate::DenyShape;
 use crate::domain::hooks::HookShape;
+use crate::domain::mode::{ModeHeadless, PermissionMode};
 use crate::domain::report::OutputFormat;
 use crate::domain::structured::NativeSchema;
 
@@ -30,7 +31,12 @@ pub struct BuildCtx<'a> {
     /// after the command layer has verified the selected harness's
     /// `supports_resume`, so an adapter that maps it can assume support.
     pub resume: Option<&'a str>,
-    pub bypass: bool,
+    /// The normalized approval mode to request. Each adapter maps it to its
+    /// harness's native mechanism (argv flags here; any environment via the
+    /// matching [`ModeSpec`]). The command layer guarantees the selected harness
+    /// actually supports `mode` before calling `build_argv`, so an adapter only
+    /// needs correct output for the modes in its [`HarnessSpec::modes`].
+    pub mode: PermissionMode,
     pub output_format: OutputFormat,
     /// Inline JSON-Schema text to deliver through the harness's *native*
     /// structured-output flag, set only for an adapter with a
@@ -119,8 +125,59 @@ pub struct HarnessSpec {
     /// works for every harness). Either way oneharness validates the result
     /// itself, so a native flag the harness ignores is still caught.
     pub native_schema: Option<NativeSchema>,
+    /// The approval modes this harness can express, each with how it behaves in
+    /// a headless run. A [`PermissionMode`] absent from this list is unsupported
+    /// for the harness — the command layer turns a request for it into a loud
+    /// usage error rather than silently downgrading. Every harness lists
+    /// [`PermissionMode::Bypass`] (the headless default) and
+    /// [`PermissionMode::Default`]. Sourced from each CLI's docs/behavior, never
+    /// guessed (see the README support matrix and `AGENTS.md`).
+    pub modes: &'static [ModeSpec],
     /// Builds the full argv (argv[0] is the binary). Pure.
     pub build_argv: fn(&BuildCtx) -> Vec<String>,
+}
+
+impl HarnessSpec {
+    /// The [`ModeSpec`] for `mode`, or `None` when this harness cannot express
+    /// it. The lookup the command layer uses to gate a run and to inject any
+    /// per-mode environment.
+    pub fn mode(&self, mode: PermissionMode) -> Option<&'static ModeSpec> {
+        self.modes.iter().find(|m| m.mode == mode)
+    }
+}
+
+/// One approval mode a harness supports: its headless behavior and any
+/// environment that delivers it. Most modes are expressed on the argv by
+/// `build_argv`; a few harnesses (Goose) carry the mode in the environment
+/// instead, declared here so the command layer injects it when spawning.
+pub struct ModeSpec {
+    pub mode: PermissionMode,
+    /// Whether this mode blocks on an interactive prompt headlessly.
+    pub headless: ModeHeadless,
+    /// Environment variables that select this mode (Goose's `GOOSE_MODE`,
+    /// OpenCode's `OPENCODE_CONFIG_CONTENT`). Empty when `build_argv` expresses
+    /// the mode on the argv. Injected like the harness's `default_env` (so a
+    /// config / `--env` value still wins).
+    pub env: &'static [(&'static str, &'static str)],
+    /// A per-run instruction prepended to the prompt to induce a *behavioral*
+    /// mode the harness can't express natively, paired with the enforcement that
+    /// `build_argv`/`env` provides. Used for Codex's `plan`: the read-only
+    /// sandbox enforces no-mutation and this instruction induces the planning
+    /// behavior (mirroring Codex's own interactive Plan-mode template). `None`
+    /// for modes a harness expresses natively (their own plan/agent mode already
+    /// carries the behavior). Prepended by the command layer; kept single-line.
+    pub instruction: Option<&'static str>,
+}
+
+/// Shorthand for an argv-expressed mode (no environment, no instruction): the
+/// common case.
+const fn mode(mode: PermissionMode, headless: ModeHeadless) -> ModeSpec {
+    ModeSpec {
+        mode,
+        headless,
+        env: &[],
+        instruction: None,
+    }
 }
 
 /// A harness's project-scoped config file and the key paths the unified
@@ -214,6 +271,14 @@ pub struct GlobalHook {
     /// Goose — i.e. the same thing the [`HookBinding`] anchors at under a project.
     pub anchor: &'static str,
 }
+
+/// The plan instruction synthesized for Codex, whose `exec` has no native plan
+/// mode: the read-only sandbox (`build_argv`) enforces no-mutation and this
+/// induces the planning behavior, together reproducing Codex's own interactive
+/// Plan mode (which is exactly a read-only sandbox + a plan template). Mirrors
+/// the semantics of that template (`codex-rs/.../templates/plan.md`). Kept on a
+/// single line — the command layer prepends it to the prompt.
+const CODEX_PLAN_INSTRUCTION: &str = "PLAN MODE: research the task and produce an implementation plan only — do not edit or create files and do not run mutating commands (reading and searching files, configs, and docs is allowed); even if asked to execute, treat it as a request to plan the execution. Reply with a short intent paragraph, explicit in-scope vs out-of-scope, then a 6-10 item ordered checklist (discovery, changes, tests, rollout). The task to plan:";
 
 /// Goose plugin manifest, `{name}` filled with the plugin identity. Written once
 /// and preserved; the merge is idempotent so re-syncing changes nothing.
@@ -323,6 +388,19 @@ static REGISTRY: &[HarnessSpec] = &[
         gate_deny: Some(DenyShape::ClaudeNested),
         default_env: &[],
         native_schema: Some(NativeSchema::ClaudeJsonSchema),
+        // `--permission-mode` covers the whole spectrum, all honored under `-p`.
+        // `default` maps to `dontAsk` (deny-and-continue), not `default` (which
+        // aborts on an un-allowed tool), so the ask flow never hangs headless.
+        // `read-only` is `bypassPermissions` with the mutating tools denied (deny
+        // rules win even under bypass), distinct from `plan`'s plan workflow.
+        modes: &[
+            mode(PermissionMode::ReadOnly, ModeHeadless::Clean),
+            mode(PermissionMode::Plan, ModeHeadless::Clean),
+            mode(PermissionMode::Default, ModeHeadless::Clean),
+            mode(PermissionMode::Edit, ModeHeadless::Clean),
+            mode(PermissionMode::Auto, ModeHeadless::Clean),
+            mode(PermissionMode::Bypass, ModeHeadless::Clean),
+        ],
         build_argv: argv_claude_code,
     },
     HarnessSpec {
@@ -358,6 +436,25 @@ static REGISTRY: &[HarnessSpec] = &[
         // file and pass its path via `BuildCtx.schema`), and teach
         // `structured::extract_value` where Codex reports the conforming value.
         native_schema: None,
+        // `codex exec` gates by sandbox, not by op-type, and downgrades approval
+        // to `never` (it never hangs — out-of-sandbox actions fail closed and the
+        // agent continues). `read-only` is the (OS-enforced) read-only sandbox,
+        // `auto` is `workspace-write`. Codex has no *native* plan mode in `exec`
+        // (its TUI Plan mode = read-only sandbox + a plan instruction, both
+        // reproducible here), so `plan` is synthesized: same read-only sandbox
+        // plus the `instruction` below. No edit-vs-shell split, so no `edit`.
+        modes: &[
+            mode(PermissionMode::ReadOnly, ModeHeadless::Clean),
+            ModeSpec {
+                mode: PermissionMode::Plan,
+                headless: ModeHeadless::Clean,
+                env: &[],
+                instruction: Some(CODEX_PLAN_INSTRUCTION),
+            },
+            mode(PermissionMode::Default, ModeHeadless::Clean),
+            mode(PermissionMode::Auto, ModeHeadless::Clean),
+            mode(PermissionMode::Bypass, ModeHeadless::Clean),
+        ],
         build_argv: argv_codex,
     },
     HarnessSpec {
@@ -386,6 +483,30 @@ static REGISTRY: &[HarnessSpec] = &[
         gate_deny: Some(DenyShape::Decision("deny")),
         default_env: &[],
         native_schema: None,
+        // The built-in `plan` agent is read-only, so `plan` and `read-only` both
+        // map to it. `default` is clean headless: OpenCode's out-of-box default
+        // is `allow`, and even an `ask` permission *auto-rejects* (deny-and-
+        // continue) under `opencode run` rather than blocking — it never hangs.
+        // `edit` (auto-approve edits, gate bash) is delivered per-run through the
+        // inline-config env var `OPENCODE_CONFIG_CONTENT` (highest-precedence
+        // config, set without touching `opencode.json`) — no argv flag exists.
+        // Bypass auto-approves all but explicit denies. There is no classifier
+        // `auto`.
+        modes: &[
+            mode(PermissionMode::ReadOnly, ModeHeadless::Clean),
+            mode(PermissionMode::Plan, ModeHeadless::Clean),
+            mode(PermissionMode::Default, ModeHeadless::Clean),
+            ModeSpec {
+                mode: PermissionMode::Edit,
+                headless: ModeHeadless::Clean,
+                env: &[(
+                    "OPENCODE_CONFIG_CONTENT",
+                    r#"{"permission":{"edit":"allow","bash":"deny"}}"#,
+                )],
+                instruction: None,
+            },
+            mode(PermissionMode::Bypass, ModeHeadless::Clean),
+        ],
         build_argv: argv_opencode,
     },
     HarnessSpec {
@@ -412,6 +533,35 @@ static REGISTRY: &[HarnessSpec] = &[
         gate_deny: Some(DenyShape::Decision("block")),
         default_env: &[],
         native_schema: None,
+        // Goose has no mode flag on `goose run`; the mode is the `GOOSE_MODE`
+        // environment variable (highest precedence over its config.yaml). None of
+        // these hang headlessly: `approve`/`smart_approve` fail *closed* with an
+        // error when a tool needs approval (exit non-zero rather than block),
+        // `auto` approves everything. Goose has no headless plan workflow and no
+        // per-run read-only-with-reads (its `chat` mode disables *all* tools,
+        // reads included, so it is neither) — `plan`/`read-only`/`edit` are
+        // absent. Bypass MUST set `GOOSE_MODE=auto` explicitly: leaving it unset
+        // would inherit the user's config, which may be a fail-closed mode.
+        modes: &[
+            ModeSpec {
+                mode: PermissionMode::Default,
+                headless: ModeHeadless::Clean,
+                env: &[("GOOSE_MODE", "approve")],
+                instruction: None,
+            },
+            ModeSpec {
+                mode: PermissionMode::Auto,
+                headless: ModeHeadless::Clean,
+                env: &[("GOOSE_MODE", "smart_approve")],
+                instruction: None,
+            },
+            ModeSpec {
+                mode: PermissionMode::Bypass,
+                headless: ModeHeadless::Clean,
+                env: &[("GOOSE_MODE", "auto")],
+                instruction: None,
+            },
+        ],
         build_argv: argv_goose,
     },
     HarnessSpec {
@@ -443,6 +593,22 @@ static REGISTRY: &[HarnessSpec] = &[
         gate_deny: Some(DenyShape::ClaudeNested),
         default_env: &[("QWEN_CODE_SUPPRESS_YOLO_WARNING", "1")],
         native_schema: None,
+        // `--approval-mode` spans the whole spectrum, all clean headless: current
+        // qwen-code *deny-and-continues* a gated tool in non-interactive mode
+        // (auto-deny + the agent loop proceeds, process exits 0) rather than
+        // hanging. So `default` denies gated tools and continues; `auto-edit`
+        // genuinely auto-applies edits while denying shell; `auto` runs the
+        // classifier; none block. Qwen's only read-only mechanism is its plan
+        // mode, so `read-only` coincides with `plan` (both → `--approval-mode
+        // plan`).
+        modes: &[
+            mode(PermissionMode::ReadOnly, ModeHeadless::Clean),
+            mode(PermissionMode::Plan, ModeHeadless::Clean),
+            mode(PermissionMode::Default, ModeHeadless::Clean),
+            mode(PermissionMode::Edit, ModeHeadless::Clean),
+            mode(PermissionMode::Auto, ModeHeadless::Clean),
+            mode(PermissionMode::Bypass, ModeHeadless::Clean),
+        ],
         build_argv: argv_qwen,
     },
     HarnessSpec {
@@ -473,6 +639,13 @@ static REGISTRY: &[HarnessSpec] = &[
         gate_deny: Some(DenyShape::Decision("deny")),
         default_env: &[],
         native_schema: None,
+        // `crush run` auto-approves the whole session, so it never hangs — but it
+        // also cannot gate, so `default` and `bypass` behave the same (bypass
+        // adds the explicit `--yolo`). There is no plan/edit/auto mode on `run`.
+        modes: &[
+            mode(PermissionMode::Default, ModeHeadless::Clean),
+            mode(PermissionMode::Bypass, ModeHeadless::Clean),
+        ],
         build_argv: argv_crush,
     },
     HarnessSpec {
@@ -498,6 +671,19 @@ static REGISTRY: &[HarnessSpec] = &[
         gate_deny: Some(DenyShape::CopilotFlat),
         default_env: &[],
         native_schema: None,
+        // `--mode plan` is a real read-only plan mode; `read-only` is allow-all
+        // with `write`/`shell` denied (deny beats allow); `edit` allows
+        // `write`/`read` but not `shell`, so edits run and shell is auto-denied
+        // (the headless form of "gate shell"); bypass is the allow-all trio.
+        // Without any, `-p` auto-denies gated tools and continues (never hangs),
+        // so `default` is `Clean`. No classifier `auto`, so it is absent.
+        modes: &[
+            mode(PermissionMode::ReadOnly, ModeHeadless::Clean),
+            mode(PermissionMode::Plan, ModeHeadless::Clean),
+            mode(PermissionMode::Default, ModeHeadless::Clean),
+            mode(PermissionMode::Edit, ModeHeadless::Clean),
+            mode(PermissionMode::Bypass, ModeHeadless::Clean),
+        ],
         build_argv: argv_copilot,
     },
     HarnessSpec {
@@ -534,23 +720,52 @@ static REGISTRY: &[HarnessSpec] = &[
         gate_deny: Some(DenyShape::CursorPermission),
         default_env: &[],
         native_schema: None,
+        // `--mode plan` is the read-only plan mode; `--mode ask` is read-only
+        // Q&A (no plan workflow) → `read-only`; `--force` is bypass. Without
+        // `--force` a gated tool stalls (Cursor proposes-not-applies, with no
+        // fail-fast deny flag), so `default` (`--trust` only) is `Hangs`.
+        // Edit/shell gating is a `permissions` config concern (synced).
+        modes: &[
+            mode(PermissionMode::ReadOnly, ModeHeadless::Clean),
+            mode(PermissionMode::Plan, ModeHeadless::Clean),
+            mode(PermissionMode::Default, ModeHeadless::Hangs),
+            mode(PermissionMode::Bypass, ModeHeadless::Clean),
+        ],
         build_argv: argv_cursor,
     },
 ];
 
-/// `claude -p <prompt> --permission-mode <mode> [--model M]
+/// Claude Code's `--permission-mode` token for each normalized mode. `Default`
+/// maps to `dontAsk` (deny any un-allowed tool and continue) rather than
+/// `default` (which *aborts* the `-p` run on an un-allowed tool): the ask flow
+/// then completes headlessly instead of failing on the first prompt. `ReadOnly`
+/// rides `bypassPermissions` (allow-all, no prompts) with the mutating tools
+/// denied separately — deny rules take precedence even under bypass.
+fn claude_permission_mode(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::Plan => "plan",
+        PermissionMode::ReadOnly => "bypassPermissions",
+        PermissionMode::Default => "dontAsk",
+        PermissionMode::Edit => "acceptEdits",
+        PermissionMode::Auto => "auto",
+        PermissionMode::Bypass => "bypassPermissions",
+    }
+}
+
+/// `claude -p <prompt> --permission-mode <mode> [--disallowedTools …] [--model M]
 /// [--append-system-prompt S] --output-format json`
 fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "-p".into(), c.prompt.into()];
     a.push("--permission-mode".into());
-    a.push(
-        if c.bypass {
-            "bypassPermissions"
-        } else {
-            "default"
+    a.push(claude_permission_mode(c.mode).into());
+    // read-only: deny the mutating tools (Bash covers destructive shell; reads
+    // still run via Read/Grep/Glob). A bare name removes the tool entirely.
+    if c.mode == PermissionMode::ReadOnly {
+        a.push("--disallowedTools".into());
+        for tool in ["Bash", "Edit", "Write", "NotebookEdit"] {
+            a.push(tool.into());
         }
-        .into(),
-    );
+    }
     if let Some(m) = c.model {
         a.push("--model".into());
         a.push(m.into());
@@ -584,8 +799,26 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
 /// skip every approval prompt and the sandbox for a headless run.
 fn argv_codex(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "exec".into()];
-    if c.bypass {
-        a.push("--dangerously-bypass-approvals-and-sandbox".into());
+    // The sandbox is the real control surface under `exec` (approval downgrades
+    // to `never`). `Default` keeps the exec default (read-only). `Edit` is not a
+    // supported mode for codex, so it is never reached.
+    match c.mode {
+        PermissionMode::Bypass => {
+            a.push("--dangerously-bypass-approvals-and-sandbox".into());
+        }
+        // `plan` is the read-only sandbox too (enforcement half); its plan
+        // instruction is prepended to the prompt by the command layer.
+        PermissionMode::ReadOnly | PermissionMode::Plan => {
+            a.push("--sandbox".into());
+            a.push("read-only".into());
+        }
+        PermissionMode::Auto => {
+            a.push("--sandbox".into());
+            a.push("workspace-write".into());
+        }
+        // `default` keeps the exec default; `edit` is unsupported for codex and
+        // never reaches here.
+        PermissionMode::Default | PermissionMode::Edit => {}
     }
     if let Some(m) = c.model {
         a.push("--model".into());
@@ -602,8 +835,15 @@ fn argv_codex(c: &BuildCtx) -> Vec<String> {
 /// prompt.
 fn argv_opencode(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "run".into()];
-    if c.bypass {
-        a.push("--dangerously-skip-permissions".into());
+    // `plan`/`read-only` both select the built-in read-only `plan` agent; bypass
+    // auto-approves. Other modes are unsupported and never reach here.
+    match c.mode {
+        PermissionMode::Bypass => a.push("--dangerously-skip-permissions".into()),
+        PermissionMode::Plan | PermissionMode::ReadOnly => {
+            a.push("--agent".into());
+            a.push("plan".into());
+        }
+        _ => {}
     }
     a.push("--format".into());
     a.push(format_flag(c.output_format).into());
@@ -621,9 +861,11 @@ fn argv_opencode(c: &BuildCtx) -> Vec<String> {
 
 /// `goose run --with-builtin developer [--system S] -t <prompt>`
 ///
-/// Goose has no headless permission prompt and selects its model from its own
-/// config, so `bypass` and `model` are intentionally not mapped. It does expose a
-/// native `--system` flag, so `--system` maps to it rather than being prepended.
+/// Goose selects its model from its own config, so `model` is not mapped, and the
+/// approval mode is delivered through the `GOOSE_MODE` environment variable (the
+/// matching [`ModeSpec::env`]), not the argv — so `c.mode` is intentionally not
+/// read here. It does expose a native `--system` flag, so `--system` maps to it
+/// rather than being prepended.
 fn argv_goose(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![
         c.bin.into(),
@@ -640,11 +882,30 @@ fn argv_goose(c: &BuildCtx) -> Vec<String> {
     a
 }
 
-/// `qwen [--yolo] [-m M] -p <prompt>` (no system flag, so `--system` is prepended)
+/// `qwen [--yolo | --approval-mode <m>] [-m M] -p <prompt>` (no system flag, so
+/// `--system` is prepended). Bypass uses the dedicated `--yolo`; the other modes
+/// use `--approval-mode` (only `plan` and `bypass` run cleanly headless — see the
+/// `modes` table — but the flag is mapped for every supported mode).
 fn argv_qwen(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into()];
-    if c.bypass {
-        a.push("--yolo".into());
+    match c.mode {
+        PermissionMode::Bypass => a.push("--yolo".into()),
+        PermissionMode::Plan | PermissionMode::ReadOnly => {
+            a.push("--approval-mode".into());
+            a.push("plan".into());
+        }
+        PermissionMode::Default => {
+            a.push("--approval-mode".into());
+            a.push("default".into());
+        }
+        PermissionMode::Edit => {
+            a.push("--approval-mode".into());
+            a.push("auto-edit".into());
+        }
+        PermissionMode::Auto => {
+            a.push("--approval-mode".into());
+            a.push("auto".into());
+        }
     }
     if let Some(m) = c.model {
         a.push("-m".into());
@@ -656,7 +917,10 @@ fn argv_qwen(c: &BuildCtx) -> Vec<String> {
 }
 
 /// `crush run -q [-m M] <prompt>` (`run` is non-interactive; `-q` quiets it; no
-/// system flag, so `--system` is prepended to the prompt)
+/// system flag, so `--system` is prepended). `crush run` already auto-approves
+/// the whole session (verified live), so `default` and `bypass` are identical —
+/// crush has no per-run permission flag (`--yolo` is rejected on `run` as of
+/// v0.80.0), so the mode is not expressed on the argv.
 fn argv_crush(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "run".into(), "-q".into()];
     if let Some(m) = c.model {
@@ -673,10 +937,40 @@ fn argv_crush(c: &BuildCtx) -> Vec<String> {
 /// has no project config file to sync, so rules go via `[harness.copilot] args`)
 fn argv_copilot(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "-p".into(), prompt_with_system(c)];
-    if c.bypass {
-        a.push("--allow-all-tools".into());
-        a.push("--allow-all-paths".into());
-        a.push("--no-ask-user".into());
+    // Bypass is the allow-all trio; `plan` is the read-only plan mode;
+    // `read-only` is allow-all with `write`/`shell` denied (deny beats allow).
+    // Without any, `-p` auto-denies gated tools and continues. Unsupported modes
+    // never reach here.
+    match c.mode {
+        PermissionMode::Bypass => {
+            a.push("--allow-all-tools".into());
+            a.push("--allow-all-paths".into());
+            a.push("--no-ask-user".into());
+        }
+        PermissionMode::ReadOnly => {
+            a.push("--allow-all-tools".into());
+            a.push("--allow-all-paths".into());
+            a.push("--deny-tool".into());
+            a.push("shell".into());
+            a.push("--deny-tool".into());
+            a.push("write".into());
+            a.push("--no-ask-user".into());
+        }
+        PermissionMode::Edit => {
+            // Allow file edits and reads, but not shell — an un-allowed `shell`
+            // is auto-denied under `-p`, so edits run and commands are gated.
+            a.push("--allow-tool".into());
+            a.push("write".into());
+            a.push("--allow-tool".into());
+            a.push("read".into());
+            a.push("--allow-all-paths".into());
+            a.push("--no-ask-user".into());
+        }
+        PermissionMode::Plan => {
+            a.push("--mode".into());
+            a.push("plan".into());
+        }
+        _ => {}
     }
     if let Some(m) = c.model {
         a.push("--model".into());
@@ -690,16 +984,25 @@ fn argv_copilot(c: &BuildCtx) -> Vec<String> {
 /// system flag, so `--system` is prepended to the prompt)
 fn argv_cursor(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "-p".into(), prompt_with_system(c)];
-    if c.bypass {
+    // `--force` is bypass (it also implies trust). Otherwise a headless run still
+    // needs `--trust` — Cursor refuses to run an untrusted workspace ("Workspace
+    // Trust Required", observed live) — while leaving the permission system
+    // active. `plan` additionally selects the read-only `--mode plan`.
+    if c.mode.is_bypass() {
         a.push("--force".into());
     } else {
-        // A headless run cannot answer Cursor's interactive workspace-trust
-        // prompt, and without trust the CLI refuses to run at all ("Workspace
-        // Trust Required", observed live). `--trust` trusts the directory the
-        // caller pointed oneharness at while leaving the permission system
-        // active — so --no-bypass still means "normal permission flow", not
-        // "cannot run".
         a.push("--trust".into());
+        match c.mode {
+            PermissionMode::Plan => {
+                a.push("--mode".into());
+                a.push("plan".into());
+            }
+            PermissionMode::ReadOnly => {
+                a.push("--mode".into());
+                a.push("ask".into());
+            }
+            _ => {}
+        }
     }
     if let Some(m) = c.model {
         a.push("--model".into());
@@ -718,14 +1021,14 @@ fn argv_cursor(c: &BuildCtx) -> Vec<String> {
 mod tests {
     use super::*;
 
-    fn ctx<'a>(bin: &'a str, model: Option<&'a str>, bypass: bool) -> BuildCtx<'a> {
-        ctx_fmt(bin, model, bypass, OutputFormat::Json)
+    fn ctx<'a>(bin: &'a str, model: Option<&'a str>, mode: PermissionMode) -> BuildCtx<'a> {
+        ctx_fmt(bin, model, mode, OutputFormat::Json)
     }
 
     fn ctx_fmt<'a>(
         bin: &'a str,
         model: Option<&'a str>,
-        bypass: bool,
+        mode: PermissionMode,
         output_format: OutputFormat,
     ) -> BuildCtx<'a> {
         BuildCtx {
@@ -734,7 +1037,7 @@ mod tests {
             model,
             system: None,
             resume: None,
-            bypass,
+            mode,
             output_format,
             schema: None,
         }
@@ -754,7 +1057,7 @@ mod tests {
     #[test]
     fn claude_argv_bypass_on() {
         let spec = by_id("claude-code").unwrap();
-        let argv = (spec.build_argv)(&ctx("claude", None, true));
+        let argv = (spec.build_argv)(&ctx("claude", None, PermissionMode::Bypass));
         assert_eq!(
             argv,
             vec![
@@ -770,9 +1073,12 @@ mod tests {
     }
 
     #[test]
-    fn claude_argv_no_bypass_uses_default_mode() {
+    fn claude_argv_default_mode_maps_to_dont_ask() {
+        // The normalized `default` ask flow maps to `dontAsk` (deny un-allowed
+        // tools and continue), not `--permission-mode default` (which aborts the
+        // `-p` run on the first un-allowed tool) — so it never hangs/aborts.
         let spec = by_id("claude-code").unwrap();
-        let argv = (spec.build_argv)(&ctx("claude", Some("haiku"), false));
+        let argv = (spec.build_argv)(&ctx("claude", Some("haiku"), PermissionMode::Default));
         assert_eq!(
             argv,
             vec![
@@ -780,7 +1086,7 @@ mod tests {
                 "-p",
                 "hi",
                 "--permission-mode",
-                "default",
+                "dontAsk",
                 "--model",
                 "haiku",
                 "--output-format",
@@ -790,9 +1096,198 @@ mod tests {
     }
 
     #[test]
+    fn claude_maps_each_mode_to_its_permission_mode_token() {
+        let spec = by_id("claude-code").unwrap();
+        for (mode, token) in [
+            (PermissionMode::Plan, "plan"),
+            (PermissionMode::ReadOnly, "bypassPermissions"),
+            (PermissionMode::Default, "dontAsk"),
+            (PermissionMode::Edit, "acceptEdits"),
+            (PermissionMode::Auto, "auto"),
+            (PermissionMode::Bypass, "bypassPermissions"),
+        ] {
+            let argv = (spec.build_argv)(&ctx("claude", None, mode));
+            assert!(
+                argv.windows(2).any(|w| w == ["--permission-mode", token]),
+                "mode {mode:?} should emit {token}: {argv:?}"
+            );
+        }
+        // read-only additionally denies the mutating tools (and only read-only
+        // does — plan/bypass leave them available to the permission system).
+        let ro = (spec.build_argv)(&ctx("claude", None, PermissionMode::ReadOnly));
+        assert!(
+            ro.windows(2).any(|w| w == ["--disallowedTools", "Bash"]),
+            "read-only should deny Bash: {ro:?}"
+        );
+        for tool in ["Edit", "Write", "NotebookEdit"] {
+            assert!(
+                ro.iter().any(|t| t == tool),
+                "read-only denies {tool}: {ro:?}"
+            );
+        }
+        assert!(
+            !(spec.build_argv)(&ctx("claude", None, PermissionMode::Plan))
+                .iter()
+                .any(|t| t == "--disallowedTools"),
+            "plan should not deny tools"
+        );
+    }
+
+    #[test]
+    fn mode_native_flags_per_harness() {
+        // Pin the mode→flag mapping for the harnesses that express it on the argv
+        // (Goose carries it in the environment, asserted via `modes` env below).
+        let cases: &[(&str, PermissionMode, &[&str])] = &[
+            // read-only: enforced where possible (codex sandbox, copilot/cursor
+            // native), coinciding with plan where it's the only mechanism.
+            (
+                "codex",
+                PermissionMode::ReadOnly,
+                &["--sandbox", "read-only"],
+            ),
+            (
+                "codex",
+                PermissionMode::Auto,
+                &["--sandbox", "workspace-write"],
+            ),
+            ("opencode", PermissionMode::Plan, &["--agent", "plan"]),
+            ("opencode", PermissionMode::ReadOnly, &["--agent", "plan"]),
+            ("qwen", PermissionMode::Plan, &["--approval-mode", "plan"]),
+            (
+                "qwen",
+                PermissionMode::ReadOnly,
+                &["--approval-mode", "plan"],
+            ),
+            (
+                "qwen",
+                PermissionMode::Edit,
+                &["--approval-mode", "auto-edit"],
+            ),
+            ("qwen", PermissionMode::Auto, &["--approval-mode", "auto"]),
+            ("copilot", PermissionMode::Plan, &["--mode", "plan"]),
+            (
+                "copilot",
+                PermissionMode::ReadOnly,
+                &["--deny-tool", "shell"],
+            ),
+            (
+                "copilot",
+                PermissionMode::ReadOnly,
+                &["--deny-tool", "write"],
+            ),
+            ("copilot", PermissionMode::Edit, &["--allow-tool", "write"]),
+            ("cursor", PermissionMode::Plan, &["--mode", "plan"]),
+            ("cursor", PermissionMode::ReadOnly, &["--mode", "ask"]),
+        ];
+        for (id, mode, want) in cases {
+            let spec = by_id(id).unwrap();
+            let argv = (spec.build_argv)(&ctx(spec.default_bin, None, *mode));
+            assert!(
+                argv.windows(want.len()).any(|w| w == *want),
+                "harness {id} mode {mode:?} should emit {want:?}; got {argv:?}"
+            );
+        }
+        // copilot `edit` must NOT blanket-allow tools, or shell wouldn't be
+        // gated — it allows only write/read, leaving shell to be auto-denied.
+        let copilot_edit =
+            (by_id("copilot").unwrap().build_argv)(&ctx("copilot", None, PermissionMode::Edit));
+        assert!(
+            !copilot_edit.iter().any(|t| t == "--allow-all-tools"),
+            "copilot edit must gate shell, not allow-all: {copilot_edit:?}"
+        );
+        // Codex `plan` is synthesized: read-only sandbox (enforcement) + a plan
+        // instruction prepended to the prompt (no native exec plan mode).
+        let codex_plan = by_id("codex").unwrap().mode(PermissionMode::Plan);
+        assert!(
+            codex_plan.is_some(),
+            "codex should support synthesized plan"
+        );
+        assert!(
+            codex_plan.unwrap().instruction.is_some(),
+            "codex plan must carry a plan instruction"
+        );
+        let codex_plan_argv =
+            (by_id("codex").unwrap().build_argv)(&ctx("codex", None, PermissionMode::Plan));
+        assert!(
+            codex_plan_argv
+                .windows(2)
+                .any(|w| w == ["--sandbox", "read-only"]),
+            "codex plan must enforce read-only: {codex_plan_argv:?}"
+        );
+        // Goose rejects plan (no plan workflow, and no read-only to enforce it).
+        assert!(by_id("goose").unwrap().mode(PermissionMode::Plan).is_none());
+        assert!(by_id("goose")
+            .unwrap()
+            .mode(PermissionMode::ReadOnly)
+            .is_none());
+        // Crush supports neither plan nor read-only, and has no per-run
+        // permission flag (`crush run` auto-approves), so bypass == default.
+        let crush = by_id("crush").unwrap();
+        assert!(crush.mode(PermissionMode::Plan).is_none());
+        assert!(crush.mode(PermissionMode::ReadOnly).is_none());
+        let bypass = (crush.build_argv)(&ctx("crush", None, PermissionMode::Bypass));
+        let default = (crush.build_argv)(&ctx("crush", None, PermissionMode::Default));
+        assert_eq!(bypass, default, "crush has no per-run mode flag");
+        assert!(!bypass.iter().any(|t| t == "--yolo"), "{bypass:?}");
+    }
+
+    #[test]
+    fn every_harness_supports_bypass_and_default_and_goose_carries_mode_env() {
+        for h in all() {
+            assert!(
+                h.mode(PermissionMode::Bypass).is_some(),
+                "harness {} must support bypass (the headless default)",
+                h.id
+            );
+            assert!(
+                h.mode(PermissionMode::Default).is_some(),
+                "harness {} must support the default ask flow",
+                h.id
+            );
+        }
+        // Goose delivers the mode via GOOSE_MODE, so every supported mode carries
+        // an env mapping (and no other harness does).
+        let goose = by_id("goose").unwrap();
+        assert_eq!(
+            goose.mode(PermissionMode::Bypass).unwrap().env,
+            &[("GOOSE_MODE", "auto")]
+        );
+        assert_eq!(
+            goose.mode(PermissionMode::Default).unwrap().env,
+            &[("GOOSE_MODE", "approve")]
+        );
+        // OpenCode delivers `edit` through the inline-config env var (no argv
+        // flag exists for its per-tool permission map).
+        assert_eq!(
+            by_id("opencode")
+                .unwrap()
+                .mode(PermissionMode::Edit)
+                .unwrap()
+                .env,
+            &[(
+                "OPENCODE_CONFIG_CONTENT",
+                r#"{"permission":{"edit":"allow","bash":"deny"}}"#
+            )]
+        );
+        // Every other (harness, mode) expresses itself on the argv, not env.
+        for h in all() {
+            for m in h.modes {
+                let env_ok = h.id == "goose"
+                    || (h.id == "opencode" && m.mode == PermissionMode::Edit)
+                    || m.env.is_empty();
+                assert!(
+                    env_ok,
+                    "harness {} mode {:?} unexpectedly carries env",
+                    h.id, m.mode
+                );
+            }
+        }
+    }
+
+    #[test]
     fn codex_argv_uses_exec_and_bypass_flag() {
         let spec = by_id("codex").unwrap();
-        let argv = (spec.build_argv)(&ctx("codex", None, true));
+        let argv = (spec.build_argv)(&ctx("codex", None, PermissionMode::Bypass));
         assert_eq!(
             argv,
             vec![
@@ -807,8 +1302,8 @@ mod tests {
     #[test]
     fn goose_ignores_model_and_bypass() {
         let spec = by_id("goose").unwrap();
-        let with = (spec.build_argv)(&ctx("goose", Some("gpt"), true));
-        let without = (spec.build_argv)(&ctx("goose", None, false));
+        let with = (spec.build_argv)(&ctx("goose", Some("gpt"), PermissionMode::Bypass));
+        let without = (spec.build_argv)(&ctx("goose", None, PermissionMode::Default));
         assert_eq!(with, without);
         assert_eq!(
             with,
@@ -819,7 +1314,12 @@ mod tests {
     #[test]
     fn output_format_override_changes_the_emitted_flag() {
         let spec = by_id("claude-code").unwrap();
-        let argv = (spec.build_argv)(&ctx_fmt("claude", None, true, OutputFormat::StreamJson));
+        let argv = (spec.build_argv)(&ctx_fmt(
+            "claude",
+            None,
+            PermissionMode::Bypass,
+            OutputFormat::StreamJson,
+        ));
         assert!(
             argv.windows(2)
                 .any(|w| w == ["--output-format", "stream-json"]),
@@ -827,7 +1327,12 @@ mod tests {
         );
         // opencode spells its flag `--format`.
         let oc = by_id("opencode").unwrap();
-        let argv = (oc.build_argv)(&ctx_fmt("opencode", None, true, OutputFormat::Text));
+        let argv = (oc.build_argv)(&ctx_fmt(
+            "opencode",
+            None,
+            PermissionMode::Bypass,
+            OutputFormat::Text,
+        ));
         assert!(
             argv.windows(2).any(|w| w == ["--format", "text"]),
             "{argv:?}"
@@ -843,7 +1348,7 @@ mod tests {
             model: None,
             system: Some("be terse"),
             resume: None,
-            bypass: true,
+            mode: PermissionMode::Bypass,
             output_format: OutputFormat::Json,
             schema: None,
         };
@@ -920,7 +1425,7 @@ mod tests {
             model: None,
             system: None,
             resume: None,
-            bypass: true,
+            mode: PermissionMode::Bypass,
             output_format: spec.output_format,
             schema: None,
         }
@@ -1011,7 +1516,7 @@ mod tests {
     fn cursor_no_bypass_trusts_the_workspace_without_force() {
         let spec = by_id("cursor").unwrap();
         let argv = (spec.build_argv)(&BuildCtx {
-            bypass: false,
+            mode: PermissionMode::Default,
             ..base_ctx(spec)
         });
         assert!(argv.iter().any(|t| t == "--trust"), "{argv:?}");
@@ -1047,7 +1552,7 @@ mod tests {
     #[test]
     fn bin_override_lands_at_argv0_for_every_harness() {
         for h in all() {
-            let argv = (h.build_argv)(&ctx("/custom/bin", None, true));
+            let argv = (h.build_argv)(&ctx("/custom/bin", None, PermissionMode::Bypass));
             assert_eq!(argv[0], "/custom/bin", "harness {}", h.id);
         }
     }
@@ -1069,7 +1574,7 @@ mod tests {
         ];
         for (id, want) in expected {
             let spec = by_id(id).unwrap();
-            let argv = (spec.build_argv)(&ctx(spec.default_bin, Some("m"), true));
+            let argv = (spec.build_argv)(&ctx(spec.default_bin, Some("m"), PermissionMode::Bypass));
             assert!(
                 argv.windows(2).any(|w| w == *want),
                 "harness {id} should carry {want:?}; got {argv:?}"
@@ -1077,8 +1582,8 @@ mod tests {
         }
         // Goose deliberately ignores the model: argv is unchanged when one is set.
         let goose = by_id("goose").unwrap();
-        let with = (goose.build_argv)(&ctx("goose", Some("m"), true));
-        let without = (goose.build_argv)(&ctx("goose", None, true));
+        let with = (goose.build_argv)(&ctx("goose", Some("m"), PermissionMode::Bypass));
+        let without = (goose.build_argv)(&ctx("goose", None, PermissionMode::Bypass));
         assert_eq!(with, without, "goose should ignore --model");
     }
 }

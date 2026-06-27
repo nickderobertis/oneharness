@@ -23,6 +23,13 @@ pub enum OneharnessError {
     #[error("harness `{id}` does not support --resume. supported: {supported}")]
     ResumeUnsupported { id: String, supported: String },
 
+    #[error("harness `{id}` does not support `--mode {mode}`. supported modes: {supported}")]
+    ModeUnsupported {
+        id: String,
+        mode: String,
+        supported: String,
+    },
+
     #[error("could not read harness config `{path}`: {source}")]
     HarnessConfigRead {
         path: String,

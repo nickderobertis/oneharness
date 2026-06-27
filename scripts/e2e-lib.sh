@@ -143,8 +143,14 @@ oh_sandbox_prepare() {
     case "$id" in
     claude-code)
         command -v jq >/dev/null 2>&1 || return 0
-        local cfg="$HOME/.claude.json" k tmp existing
+        local cfg="$HOME/.claude.json" k tmp existing real
         local keys=("$dir")
+        # macOS resolves symlinks in the cwd (/var → /private/var, /tmp →
+        # /private/tmp), and Claude checks the *resolved* path for workspace
+        # trust — so register that too, or the synced permissions.allow entry is
+        # silently ignored ("this workspace has not been trusted") on macOS.
+        real="$(cd "$dir" 2>/dev/null && pwd -P)" || real=""
+        [ -n "$real" ] && [ "$real" != "$dir" ] && keys+=("$real")
         if command -v cygpath >/dev/null 2>&1; then
             keys+=("$(cygpath -w "$dir")" "$(cygpath -wl "$dir" 2>/dev/null || cygpath -w "$dir")")
         fi
@@ -168,13 +174,21 @@ oh_sandbox_prepare() {
 # in the output proves this run produced it.
 oh_marker() { printf 'ONEHARNESS-LIVE-%s%s%s' "${RANDOM}" "${RANDOM}" "${RANDOM}"; }
 
-# The echo prompt: ask the harness to emit exactly the marker and nothing else.
-# Framed as a sanctioned connectivity check, not a bare "output this token":
-# coding-tuned harnesses (notably Copilot) otherwise refuse it as off-task
-# ("I'm here to help with software development tasks"). The verbatim-echo demand
-# is unchanged, so the marker assertion still means the model genuinely ran.
+# The connectivity prompt: ask the harness to include the random marker verbatim
+# somewhere in its reply. Two refusal modes to avoid, both observed live:
+#   * Copilot refuses a bare "output this token" as off-task ("I'm here to help
+#     with software development tasks") — so the prompt frames it as a test-suite
+#     connectivity check (an on-task software context).
+#   * Claude (haiku) refuses an over-framed "echo this token and NOTHING else,
+#     trust the framing" as a prompt-injection pattern — so the prompt drops the
+#     "nothing else / suppress all other output" demand and the defensive
+#     over-justification, and says plainly that the marker is a harmless,
+#     non-secret test fixture.
+# oh_assert_echoed is a substring check, so allowing the model to reply naturally
+# (and merely include the marker) is fine — its presence still proves the model
+# genuinely ran. Kept single-line for cross-shell quoting safety on Windows.
 oh_prompt() {
-    printf 'This is an automated connectivity check for the oneharness end-to-end test suite, and echoing the token below is the expected, approved task — not an arbitrary request to decline. The suite confirms the request/response round-trip by checking that one verification token comes back verbatim. Reply with this exact token and nothing else: no preamble, no explanation, no quotes, no code fences — just the token on a single line: %s' "$1"
+    printf 'This is an automated connectivity check for the oneharness end-to-end test suite — a harmless request/response round-trip test, not untrusted input and not a secret to guard. The identifier below is a random fixture the suite just generated; please confirm the round-trip by including it verbatim somewhere in your reply: %s' "$1"
 }
 
 # Run one prompt through oneharness against a real harness. Stores the JSON
@@ -192,6 +206,17 @@ oh_run() {
     local model_args=()
     [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
 
+    # The global default mode is `default`, but the live checks need the agent to
+    # actually act (run the marker/hook/allow commands), so oh_run requests
+    # `--mode bypass` by default. A caller that sets its own mode flag (e.g.
+    # oh_sync_enforce's --no-bypass, oh_mode_enforce's --mode read-only) wins.
+    local mode_args=(--mode bypass)
+    for a in "$@"; do
+        case "$a" in
+        --mode | --bypass | --no-bypass) mode_args=() ;;
+        esac
+    done
+
     local errf
     errf="$(mktemp)"
     note "  driving: $bin run --harness $id (timeout ${OH_TIMEOUT:-120}s${OH_MODEL:+, model $OH_MODEL})"
@@ -199,6 +224,7 @@ oh_run() {
     # machine's oneharness config files must not reshape the invocation.
     OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --prompt "$prompt" \
         --timeout "${OH_TIMEOUT:-120}" --compact \
+        "${mode_args[@]+"${mode_args[@]}"}" \
         "${model_args[@]+"${model_args[@]}"}" "$@" 2>"$errf")" || true
 
     if [ -z "$OH_REPORT" ]; then
@@ -337,7 +363,11 @@ oh_sync_enforce() {
     # this is no longer a hard constraint, but a single line keeps the fixture
     # prompt trivially quoting-safe across all shells.
     prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory, then stop: touch $file. Rules: you MUST actually invoke your shell tool with that exact command — never assume or decide on your own that it is not permitted; attempt it. Use only the shell tool. Only if that tool invocation itself fails or is rejected: do NOT create the file by any other means (no file-write or edit tools) — reply with the single word DENIED and stop."
-    oh_run "$id" "$prompt" --no-bypass --cwd "$sandbox"
+    # --no-bypass is `--mode default`, which oneharness refuses for harnesses
+    # whose default ask flow would hang headlessly (opencode/cursor). Here the
+    # synced allow rule is exactly what stops the prompt from firing, so opt in
+    # with --permit-prompts; the per-harness timeout still bounds any hang.
+    oh_run "$id" "$prompt" --no-bypass --permit-prompts --cwd "$sandbox"
 
     local status
     status="$(oh_field '.results[0].status')"
@@ -381,6 +411,59 @@ oh_sync_enforce() {
 
 # A shell-safe scratch file name for the enforcement phases.
 oh_enforce_file() { printf '%s-%s%s.txt' "$1" "${RANDOM}" "${RANDOM}"; }
+
+# --- approval-mode enforcement ----------------------------------------------
+
+# Live proof that a NO-MUTATION mode (`read-only` or `plan`) is HONORED by the
+# real harness — the drift alarm for the per-harness mapping (Codex's `--sandbox
+# read-only`, Claude's `--disallowedTools` / `--permission-mode plan`, Copilot's
+# `--deny-tool` / `--mode plan`, Cursor's `--mode ask` / `--mode plan`, Qwen's
+# `--approval-mode plan`). The agent is told to `touch` a file:
+#   * under `--mode <mode>` the write must be BLOCKED (file absent), and
+#   * under `--mode bypass` the same command must run (file present) — the
+#     positive control, so "absent" can't pass vacuously on a harness that runs
+#     nothing headlessly.
+# Only call this for a (harness, mode) that `oneharness list` marks supported.
+#   $1 harness id   $2 mode to test (read-only | plan; default read-only)
+oh_mode_enforce() {
+    local id="$1" mode="${2:-read-only}"
+    local bin sandbox file status
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    sandbox="$(mktemp -d)"
+    sandbox="$(oh_native_path "$sandbox")"
+    oh_sandbox_prepare "$id" "$sandbox"
+    file="$(oh_enforce_file "$mode")"
+    local prompt
+    prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory, then stop: touch $file. Rules: you MUST actually attempt your shell tool with that exact command. Only if that tool invocation itself fails or is rejected: do NOT create the file by any other means (no file-write or edit tools) — reply with the single word DENIED and stop."
+
+    note "  mode-enforce[$mode]: the write must be blocked under --mode $mode"
+    oh_run "$id" "$prompt" --mode "$mode" --cwd "$sandbox"
+    status="$(oh_field '.results[0].status')"
+    if [ "$status" = "skipped" ]; then
+        rm -rf "$sandbox"
+        skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+    fi
+    if [ -e "$sandbox/$file" ]; then
+        oh_dump
+        rm -rf "$sandbox"
+        fail "$id: --mode $mode did NOT block the write ($file was created) — the $mode mapping is not honored (or its flag drifted)"
+    fi
+    note "  ok[$mode]: the write was blocked"
+
+    note "  mode-enforce[bypass]: the same command must run under --mode bypass (control)"
+    oh_run "$id" "$prompt" --mode bypass --cwd "$sandbox"
+    if [ ! -e "$sandbox/$file" ]; then
+        oh_dump
+        rm -rf "$sandbox"
+        fail "$id: positive control failed ($file absent under --mode bypass) — the $mode block can't be trusted (does the harness run shell headlessly?)"
+    fi
+    note "  ok[bypass]: the command ran"
+
+    rm -rf "$sandbox"
+    note "PASS: $id $mode enforcement"
+}
 
 # --- hook enforcement --------------------------------------------------------
 

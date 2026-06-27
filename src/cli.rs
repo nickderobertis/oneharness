@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Args, Parser, Subcommand};
 
+use oneharness_core::domain::mode::PermissionMode;
 use oneharness_core::domain::report::OutputFormat;
 
 /// Parse `--output-format` into the core [`OutputFormat`], keeping the
@@ -18,6 +19,14 @@ fn output_format_parser() -> impl TypedValueParser<Value = OutputFormat> {
     })
 }
 
+/// Parse `--mode` into the core [`PermissionMode`], keeping the possible-value
+/// list (and its `--help` listing + validation error) in the binary so
+/// `oneharness-core` need not depend on `clap`.
+fn mode_parser() -> impl TypedValueParser<Value = PermissionMode> {
+    PossibleValuesParser::new(PermissionMode::ALL.map(|m| m.as_str()))
+        .map(|s| PermissionMode::parse(&s).expect("clap restricts to valid mode tokens"))
+}
+
 const ABOUT: &str =
     "One CLI across many agentic coding harnesses. Emits JSON for programmatic consumers.";
 
@@ -26,9 +35,11 @@ oneharness drives Claude Code, Codex, OpenCode, Goose, Qwen Code, Crush, Copilot
 CLI, and Cursor through a single non-interactive interface, running them in
 parallel and returning one stable JSON shape.
 
-All subcommands print JSON to stdout; diagnostics go to stderr. `run` requests
-each harness's permission-bypass mode by default because headless agent runs hang
-waiting for approval — pass --no-bypass to opt out.
+All subcommands print JSON to stdout; diagnostics go to stderr. `run` uses the
+`default` approval mode (each harness's normal posture, mapped to its cleanest
+non-interactive variant) unless told otherwise — pass --mode
+<read-only|plan|default|edit|auto|bypass> to choose another (or --bypass,
+shorthand for --mode bypass, to approve everything).
 
 Defaults come from layered config files: a user-level config.toml (the platform
 config dir, or $ONEHARNESS_CONFIG) under a project-level oneharness.toml /
@@ -153,13 +164,30 @@ pub struct RunArgs {
     #[arg(long = "env", value_name = "KEY=VALUE")]
     pub env: Vec<String>,
 
-    /// Do NOT request each harness's bypass/yolo mode (headless runs may hang).
+    /// Approval mode requested from each harness: read-only, plan, default, edit,
+    /// auto, or bypass (default: default). Each harness maps it to its native
+    /// mechanism; `oneharness list` shows which modes each supports. A mode a
+    /// selected harness can't express is refused up front; one that may block on
+    /// a prompt headlessly is warned about and run, with --timeout as the
+    /// backstop. Supersedes --bypass / --no-bypass.
+    #[arg(long, value_parser = mode_parser(), conflicts_with_all = ["bypass", "no_bypass"])]
+    pub mode: Option<PermissionMode>,
+
+    /// Do NOT request each harness's bypass/yolo mode. Shorthand for `--mode
+    /// default`.
     #[arg(long)]
     pub no_bypass: bool,
 
-    /// Request bypass mode even when config sets `bypass = false`.
+    /// Request bypass mode even when config sets `bypass`/`mode`. Shorthand for
+    /// `--mode bypass`.
     #[arg(long, conflicts_with = "no_bypass")]
     pub bypass: bool,
+
+    /// Silence the warning that the chosen mode may block on an approval prompt
+    /// for a selected harness (the run proceeds either way). Use when allow-rules
+    /// have been synced so the prompt never fires.
+    #[arg(long)]
+    pub permit_prompts: bool,
 
     /// Load configuration from this file only (skip user/project discovery).
     #[arg(long, value_name = "PATH", conflicts_with = "no_config")]

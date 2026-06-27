@@ -220,6 +220,11 @@ fn print_command_pins_argv_for_every_harness() {
             "--prompt",
             "hi",
             "--print-command",
+            // Pin the bypass argvs explicitly (the global default is now
+            // `default`); each harness's default-mode argv is unit-pinned in
+            // `domain::harness`.
+            "--mode",
+            "bypass",
             "--compact",
         ],
         &[],
@@ -227,6 +232,7 @@ fn print_command_pins_argv_for_every_harness() {
     assert!(output.status.success());
     let value = json_stdout(&output);
     assert_eq!(value["dry_run"], true);
+    assert_eq!(value["permission_mode"], "bypass");
 
     let results = value["results"].as_array().unwrap();
     assert_eq!(results.len(), ALL_IDS.len());
@@ -265,9 +271,256 @@ fn no_bypass_switches_claude_to_default_mode() {
     assert!(output.status.success());
     let value = json_stdout(&output);
     let command = value["results"][0]["command"].to_string();
-    assert!(command.contains("default"), "{command}");
+    // --no-bypass is shorthand for `--mode default`, which Claude expresses as
+    // `dontAsk` (deny-and-continue) so a headless run never aborts on a prompt.
+    assert!(command.contains("dontAsk"), "{command}");
     assert!(!command.contains("bypassPermissions"), "{command}");
     assert_eq!(value["bypass_permissions"], false);
+    assert_eq!(value["permission_mode"], "default");
+}
+
+#[test]
+fn mode_flag_selects_a_permission_mode() {
+    // `--mode plan` reaches the harness's native plan flag and is echoed.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--mode",
+            "plan",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    assert_eq!(value["permission_mode"], "plan");
+    assert_eq!(value["bypass_permissions"], false);
+    let command = value["results"][0]["command"].to_string();
+    assert!(command.contains("plan"), "{command}");
+}
+
+#[test]
+fn read_only_is_distinct_from_plan_and_enforced_where_possible() {
+    // read-only on codex is the OS-enforced read-only sandbox; codex has no plan
+    // workflow, so `--mode plan` is refused for it (use read-only instead).
+    let ro = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--mode",
+            "read-only",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(ro.status.success());
+    let value = json_stdout(&ro);
+    assert_eq!(value["permission_mode"], "read-only");
+    assert_eq!(value["bypass_permissions"], false);
+    let command = value["results"][0]["command"].to_string();
+    assert!(command.contains("read-only"), "{command}");
+    // Codex read-only is the bare sandbox — no plan instruction (that's what
+    // distinguishes it from `plan`, which adds the instruction).
+    assert!(
+        !command.contains("PLAN MODE"),
+        "read-only must not plan: {command}"
+    );
+
+    // On Claude, read-only and plan are genuinely different invocations.
+    let claude_ro = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--mode",
+            "read-only",
+            "--compact",
+        ],
+        &[],
+    );
+    let c = json_stdout(&claude_ro)["results"][0]["command"].to_string();
+    assert!(c.contains("disallowedTools"), "{c}");
+}
+
+#[test]
+fn mode_delivered_via_env_reaches_the_child() {
+    // OpenCode's `edit` mode has no argv flag — it rides the OPENCODE_CONFIG_CONTENT
+    // inline-config env var, which must reach the spawned harness.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--mode",
+            "edit",
+            "--bin",
+            &bin_override("opencode"),
+            "--compact",
+        ],
+        &[("MOCK_ECHO_ENV", "OPENCODE_CONFIG_CONTENT")],
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    assert_eq!(value["permission_mode"], "edit");
+    // The mock echoes the requested env var as `NAME=value`.
+    assert_eq!(
+        value["results"][0]["stdout"],
+        r#"OPENCODE_CONFIG_CONTENT={"permission":{"edit":"allow","bash":"deny"}}"#
+    );
+    // Goose carries the whole spectrum in GOOSE_MODE; bypass = auto.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "goose",
+            "--prompt",
+            "hi",
+            "--mode",
+            "bypass",
+            "--bin",
+            &bin_override("goose"),
+            "--compact",
+        ],
+        &[("MOCK_ECHO_ENV", "GOOSE_MODE")],
+    );
+    assert_eq!(
+        json_stdout(&output)["results"][0]["stdout"],
+        "GOOSE_MODE=auto"
+    );
+}
+
+#[test]
+fn codex_plan_is_read_only_sandbox_plus_a_plan_instruction() {
+    // Codex has no native exec plan mode; oneharness synthesizes it as the
+    // read-only sandbox (enforcement) + a plan instruction prepended to the
+    // prompt (behavior) — reproducing Codex's interactive Plan mode.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "refactor auth",
+            "--mode",
+            "plan",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    assert_eq!(value["permission_mode"], "plan");
+    let command: Vec<&str> = value["results"][0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap())
+        .collect();
+    assert!(
+        command.windows(2).any(|w| w == ["--sandbox", "read-only"]),
+        "{command:?}"
+    );
+    let joined = command.join(" ");
+    assert!(
+        joined.contains("PLAN MODE"),
+        "plan instruction missing: {joined}"
+    );
+    assert!(joined.contains("refactor auth"), "task missing: {joined}");
+}
+
+#[test]
+fn unsupported_mode_for_a_harness_is_refused() {
+    // crush has no plan mode; asking for it is a loud usage error, not a run.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "crush",
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--mode",
+            "plan",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("does not support"), "{stderr}");
+    assert!(stderr.contains("crush"), "{stderr}");
+}
+
+#[test]
+fn hang_prone_mode_warns_but_runs_and_permit_prompts_silences_it() {
+    // cursor's `default` could block on an approval prompt headlessly, so
+    // oneharness warns — but still runs it (the --timeout is the backstop),
+    // rather than refusing. `--permit-prompts` silences the warning.
+    let base = [
+        "run",
+        "--harness",
+        "cursor",
+        "--prompt",
+        "hi",
+        "--print-command",
+        "--mode",
+        "default",
+        "--compact",
+    ];
+    let output = run(&base, &[]);
+    assert!(output.status.success(), "hang-prone mode should still run");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("may block on an interactive"), "{stderr}");
+    assert_eq!(json_stdout(&output)["permission_mode"], "default");
+    // --permit-prompts silences the warning.
+    let mut with_permit = base.to_vec();
+    with_permit.push("--permit-prompts");
+    let output = run(&with_permit, &[]);
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("may block"),
+        "warning should be silenced: {stderr}"
+    );
+}
+
+#[test]
+fn default_is_the_global_default_mode() {
+    // With no --mode/--bypass, the resolved mode is `default` (not bypass).
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    assert_eq!(value["permission_mode"], "default");
+    assert_eq!(value["bypass_permissions"], false);
+    // Claude's `default` is `dontAsk` (deny-and-continue), not bypass.
+    let command = value["results"][0]["command"].to_string();
+    assert!(command.contains("dontAsk"), "{command}");
 }
 
 #[test]
@@ -1106,6 +1359,8 @@ fn built_argv_actually_reaches_the_binary() {
             "claude-code",
             "--prompt",
             "unique-prompt-marker",
+            "--mode",
+            "bypass",
             "--bin",
             &bin_override("claude-code"),
             "--compact",
@@ -1435,7 +1690,7 @@ fn config_bypass_false_applies_and_cli_bypass_reenables() {
     assert!(
         command
             .windows(2)
-            .any(|w| w == ["--permission-mode", "default"]),
+            .any(|w| w == ["--permission-mode", "dontAsk"]),
         "{command:?}"
     );
 
@@ -1672,11 +1927,11 @@ fn env_override_supplies_selection_bypass_and_timeout() {
     assert_eq!(results.len(), 1, "env selection should pick one harness");
     assert_eq!(results[0]["harness"], "claude-code");
     assert_eq!(value["bypass_permissions"], false);
-    // bypass=false from the env reaches the built command.
+    // bypass=false from the env reaches the built command (mapped to dontAsk).
     assert!(
         command_of(&value, 0)
             .windows(2)
-            .any(|w| w == ["--permission-mode", "default"]),
+            .any(|w| w == ["--permission-mode", "dontAsk"]),
         "{:?}",
         command_of(&value, 0)
     );
@@ -2315,8 +2570,11 @@ fn config_command_shows_values_with_sources() {
     assert!(timeout_src.ends_with("user-config.toml"), "{timeout_src}");
     assert_eq!(value["env"]["FOO"]["value"], "bar");
     // ...untouched fields fall to their built-in defaults...
-    assert_eq!(value["bypass"]["value"], true);
+    assert_eq!(value["bypass"]["value"], false);
     assert_eq!(value["bypass"]["source"], "default");
+    // `mode` has no built-in default (it derives from `bypass` when unset).
+    assert!(value["mode"]["value"].is_null());
+    assert!(value["mode"]["source"].is_null());
     assert!(value["system"]["value"].is_null());
     assert!(value["system"]["source"].is_null());
     // ...and per-harness overrides are attributed too.

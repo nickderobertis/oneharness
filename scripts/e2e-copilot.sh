@@ -15,3 +15,10 @@ export OH_MODEL="${COPILOT_E2E_MODEL:-}"
 marker="$(oh_marker)"
 oh_run copilot "$(oh_prompt "$marker")"
 oh_assert_echoed copilot "$marker"
+
+# Approval-mode enforcement: `read-only` denies the `shell`/`write` tools (deny
+# beats allow-all) and `plan` is `--mode plan` — each must block a write that
+# `--mode bypass` allows.
+note "» read-only / plan enforcement: each must block a write"
+oh_mode_enforce copilot read-only
+oh_mode_enforce copilot plan

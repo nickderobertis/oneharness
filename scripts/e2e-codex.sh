@@ -14,3 +14,10 @@ export OH_MODEL="${CODEX_E2E_MODEL:-}"
 marker="$(oh_marker)"
 oh_run codex "$(oh_prompt "$marker")"
 oh_assert_echoed codex "$marker"
+
+# Approval-mode enforcement: `read-only` is Codex's OS-enforced read-only
+# sandbox, and `plan` is that same sandbox plus a prepended plan instruction —
+# each must block a write that `--mode bypass` allows.
+note "» read-only / plan enforcement: each must block a write"
+oh_mode_enforce codex read-only
+oh_mode_enforce codex plan

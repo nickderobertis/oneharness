@@ -870,16 +870,13 @@ fn argv_qwen(c: &BuildCtx) -> Vec<String> {
     a
 }
 
-/// `crush run -q [--yolo] [-m M] <prompt>` (`run` is non-interactive; `-q` quiets
-/// it; no system flag, so `--system` is prepended). `crush run` already
-/// auto-approves the whole session, so `default` and `bypass` behave alike;
-/// bypass adds the explicit `--yolo` to state the intent (and guard against a
-/// future `run` that gates).
+/// `crush run -q [-m M] <prompt>` (`run` is non-interactive; `-q` quiets it; no
+/// system flag, so `--system` is prepended). `crush run` already auto-approves
+/// the whole session (verified live), so `default` and `bypass` are identical —
+/// crush has no per-run permission flag (`--yolo` is rejected on `run` as of
+/// v0.80.0), so the mode is not expressed on the argv.
 fn argv_crush(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "run".into(), "-q".into()];
-    if c.mode.is_bypass() {
-        a.push("--yolo".into());
-    }
     if let Some(m) = c.model {
         a.push("-m".into());
         a.push(m.into());
@@ -1140,14 +1137,15 @@ mod tests {
             .unwrap()
             .mode(PermissionMode::ReadOnly)
             .is_none());
-        // Crush supports neither plan nor read-only; bypass wires `--yolo`.
+        // Crush supports neither plan nor read-only, and has no per-run
+        // permission flag (`crush run` auto-approves), so bypass == default.
         let crush = by_id("crush").unwrap();
         assert!(crush.mode(PermissionMode::Plan).is_none());
         assert!(crush.mode(PermissionMode::ReadOnly).is_none());
         let bypass = (crush.build_argv)(&ctx("crush", None, PermissionMode::Bypass));
-        assert!(bypass.iter().any(|t| t == "--yolo"), "{bypass:?}");
         let default = (crush.build_argv)(&ctx("crush", None, PermissionMode::Default));
-        assert!(!default.iter().any(|t| t == "--yolo"), "{default:?}");
+        assert_eq!(bypass, default, "crush has no per-run mode flag");
+        assert!(!bypass.iter().any(|t| t == "--yolo"), "{bypass:?}");
     }
 
     #[test]

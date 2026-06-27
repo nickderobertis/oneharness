@@ -143,8 +143,14 @@ oh_sandbox_prepare() {
     case "$id" in
     claude-code)
         command -v jq >/dev/null 2>&1 || return 0
-        local cfg="$HOME/.claude.json" k tmp existing
+        local cfg="$HOME/.claude.json" k tmp existing real
         local keys=("$dir")
+        # macOS resolves symlinks in the cwd (/var → /private/var, /tmp →
+        # /private/tmp), and Claude checks the *resolved* path for workspace
+        # trust — so register that too, or the synced permissions.allow entry is
+        # silently ignored ("this workspace has not been trusted") on macOS.
+        real="$(cd "$dir" 2>/dev/null && pwd -P)" || real=""
+        [ -n "$real" ] && [ "$real" != "$dir" ] && keys+=("$real")
         if command -v cygpath >/dev/null 2>&1; then
             keys+=("$(cygpath -w "$dir")" "$(cygpath -wl "$dir" 2>/dev/null || cygpath -w "$dir")")
         fi

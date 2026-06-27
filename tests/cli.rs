@@ -196,7 +196,7 @@ fn print_command_pins_argv_for_every_harness() {
         ),
         ("goose", &["run", "--with-builtin", "developer", "-t", "hi"]),
         ("qwen", &["--yolo", "-p", "hi"]),
-        ("crush", &["run", "-q", "--yolo", "hi"]),
+        ("crush", &["run", "-q", "hi"]),
         (
             "copilot",
             &[

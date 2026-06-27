@@ -409,7 +409,10 @@ fn mode_delivered_via_env_reaches_the_child() {
         ],
         &[("MOCK_ECHO_ENV", "GOOSE_MODE")],
     );
-    assert_eq!(json_stdout(&output)["results"][0]["stdout"], "GOOSE_MODE=auto");
+    assert_eq!(
+        json_stdout(&output)["results"][0]["stdout"],
+        "GOOSE_MODE=auto"
+    );
 }
 
 #[test]

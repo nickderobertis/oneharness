@@ -697,7 +697,9 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         exclude: pick(layers, |c| c.exclude.clone()),
         model: pick(layers, |c| c.model.clone()),
         system: pick(layers, |c| c.system.clone()),
-        bypass: pick(layers, |c| c.bypass).or_default(true),
+        // Legacy `bypass` is opt-in now (the default mode is `default`), so its
+        // built-in default is false; `mode` is the richer field.
+        bypass: pick(layers, |c| c.bypass).or_default(false),
         mode: pick(layers, |c| c.mode),
         timeout: pick(layers, |c| c.timeout).or_default(120),
         output_format: pick(layers, |c| c.output_format),
@@ -1063,7 +1065,7 @@ mod tests {
         let report = explain(&[]);
         assert!(report.config_files.is_empty());
         assert_eq!(report.model, Field::unset());
-        assert_eq!(report.bypass, Field::default_value(true));
+        assert_eq!(report.bypass, Field::default_value(false));
         assert_eq!(report.timeout, Field::default_value(120));
         assert_eq!(report.require_available, Field::default_value(false));
         assert!(report.env.is_empty());

@@ -220,6 +220,11 @@ fn print_command_pins_argv_for_every_harness() {
             "--prompt",
             "hi",
             "--print-command",
+            // Pin the bypass argvs explicitly (the global default is now
+            // `default`); each harness's default-mode argv is unit-pinned in
+            // `domain::harness`.
+            "--mode",
+            "bypass",
             "--compact",
         ],
         &[],
@@ -227,6 +232,7 @@ fn print_command_pins_argv_for_every_harness() {
     assert!(output.status.success());
     let value = json_stdout(&output);
     assert_eq!(value["dry_run"], true);
+    assert_eq!(value["permission_mode"], "bypass");
 
     let results = value["results"].as_array().unwrap();
     assert_eq!(results.len(), ALL_IDS.len());
@@ -384,9 +390,10 @@ fn unsupported_mode_for_a_harness_is_refused() {
 }
 
 #[test]
-fn hang_prone_mode_is_refused_but_permit_prompts_allows_it() {
-    // cursor's `default` would block on an approval prompt headlessly, so it is
-    // refused up front — turning a hang into an immediate error.
+fn hang_prone_mode_warns_but_runs_and_permit_prompts_silences_it() {
+    // cursor's `default` could block on an approval prompt headlessly, so
+    // oneharness warns — but still runs it (the --timeout is the backstop),
+    // rather than refusing. `--permit-prompts` silences the warning.
     let base = [
         "run",
         "--harness",
@@ -399,16 +406,44 @@ fn hang_prone_mode_is_refused_but_permit_prompts_allows_it() {
         "--compact",
     ];
     let output = run(&base, &[]);
-    assert!(!output.status.success());
+    assert!(output.status.success(), "hang-prone mode should still run");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("block on an interactive"), "{stderr}");
-    // --permit-prompts opts back in (e.g. once allow-rules are synced).
+    assert!(stderr.contains("may block on an interactive"), "{stderr}");
+    assert_eq!(json_stdout(&output)["permission_mode"], "default");
+    // --permit-prompts silences the warning.
     let mut with_permit = base.to_vec();
     with_permit.push("--permit-prompts");
     let output = run(&with_permit, &[]);
-    assert!(output.status.success(), "should run with --permit-prompts");
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("may block"),
+        "warning should be silenced: {stderr}"
+    );
+}
+
+#[test]
+fn default_is_the_global_default_mode() {
+    // With no --mode/--bypass, the resolved mode is `default` (not bypass).
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
     let value = json_stdout(&output);
     assert_eq!(value["permission_mode"], "default");
+    assert_eq!(value["bypass_permissions"], false);
+    // Claude's `default` is `dontAsk` (deny-and-continue), not bypass.
+    let command = value["results"][0]["command"].to_string();
+    assert!(command.contains("dontAsk"), "{command}");
 }
 
 #[test]
@@ -1247,6 +1282,8 @@ fn built_argv_actually_reaches_the_binary() {
             "claude-code",
             "--prompt",
             "unique-prompt-marker",
+            "--mode",
+            "bypass",
             "--bin",
             &bin_override("claude-code"),
             "--compact",
@@ -2456,7 +2493,7 @@ fn config_command_shows_values_with_sources() {
     assert!(timeout_src.ends_with("user-config.toml"), "{timeout_src}");
     assert_eq!(value["env"]["FOO"]["value"], "bar");
     // ...untouched fields fall to their built-in defaults...
-    assert_eq!(value["bypass"]["value"], true);
+    assert_eq!(value["bypass"]["value"], false);
     assert_eq!(value["bypass"]["source"], "default");
     // `mode` has no built-in default (it derives from `bypass` when unset).
     assert!(value["mode"]["value"].is_null());

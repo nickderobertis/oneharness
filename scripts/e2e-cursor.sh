@@ -42,3 +42,8 @@ else
     note "» hook enforcement: the synced gate must block a marked command"
     oh_hook_enforce cursor
 fi
+
+# Approval-mode enforcement: `--mode read-only` is Cursor's native `--mode ask`
+# (read-only Q&A) — a write must be blocked that `--mode bypass` allows.
+note "» read-only enforcement: --mode read-only (--mode ask) must block a write"
+oh_mode_enforce cursor

@@ -183,16 +183,15 @@ Useful `run` flags:
 - `--cwd <dir>` / `--env KEY=VALUE` — run each harness in a directory / with extra
   env (useful for sandboxed e2e).
 - `--max-parallel <n>` — cap concurrency (default: all selected at once).
-- `--mode <plan|default|edit|auto|bypass>` — the approval mode requested from
-  each harness (default `bypass`; see *Approval modes* below). A mode a selected
-  harness can't express, or one that would block on a prompt headlessly, is a
-  loud usage error before anything spawns.
-- `--no-bypass` / `--bypass` — shorthands for `--mode default` / `--mode bypass`
-  (see the safety note below); `--bypass` forces bypass back on over a config's
-  `bypass = false` / `mode`.
-- `--permit-prompts` — run even when the chosen mode would block on an approval
-  prompt for a selected harness (use once allow-rules are synced; `--timeout`
-  still bounds any residual hang).
+- `--mode <read-only|plan|default|edit|auto|bypass>` — the approval mode
+  requested from each harness (default `default`; see *Approval modes* below). A
+  mode a selected harness **can't express** is a loud usage error before anything
+  spawns; one that **may block on a prompt** headlessly is warned about and run,
+  with `--timeout` as the backstop.
+- `--no-bypass` / `--bypass` — shorthands for `--mode default` / `--mode bypass`;
+  `--bypass` forces bypass on over a config's `mode` / `bypass`.
+- `--permit-prompts` — silence the "may block on a prompt" warning for the chosen
+  mode (use once allow-rules are synced so the prompt never fires).
 - `--require-available` — treat a not-installed harness as a failure.
 - `--bin <id>=<path>` — override a harness binary (also via `ONEHARNESS_BIN_<ID>`).
 - `--config <path>` / `--no-config` — load exactly one config file / ignore all
@@ -243,8 +242,8 @@ harnesses = ["claude-code", "codex"]  # --harness (or `all = true` for --all)
 exclude = ["cursor"]            # --exclude (applies to an `all` selection)
 model = "gpt-5"                 # --model
 system = "Be terse."            # --system
-bypass = true                   # `false` ≙ --no-bypass (default true)
-mode = "bypass"                 # --mode; beats `bypass` (default-derived from it)
+bypass = true                   # legacy --bypass toggle (opt-in; default false)
+mode = "default"                # --mode; beats `bypass` (default: "default")
 timeout = 120                   # --timeout, in seconds
 output_format = "json"          # --output-format
 schema_file = "person.json"     # --schema (structured output; relative to project)
@@ -496,11 +495,14 @@ are exercised on Windows by the hermetic test suite regardless.
 
 ### Safety note: bypass by default
 
-A headless agent run hangs waiting for a human to approve tool calls, so `run`
-requests each harness's "don't prompt / allow everything" mode by default. That
-is the right default for automation but means the agent can take real actions —
-run it against throwaway sandboxes (see `--cwd`), or pass `--mode` (below) to
-leave each harness's normal permission flow intact.
+A headless agent run hangs waiting for a human to approve tool calls. `run`'s
+default mode (`default`) maps each harness to its cleanest *non-interactive*
+variant — deny-and-continue, fail-closed, or auto-deny — so it neither hangs nor
+blanket-approves; an agent in `default` mode can read and answer but is denied
+the tools it would otherwise prompt for. To let it take real actions, pass
+`--mode bypass` (or `--bypass`) — the "allow everything" mode — ideally against a
+throwaway sandbox (see `--cwd`). `--mode` (below) selects any other point on the
+spectrum.
 
 ### Approval modes
 
@@ -520,13 +522,15 @@ most autonomy:
 - **`auto`** — auto-approve what the harness deems safe.
 - **`bypass`** — approve everything (the default).
 
-Each is mapped to the harness's own mechanism; `oneharness list` shows the
-per-harness `modes` (each tagged `clean` or `hangs`), and the report echoes
-`permission_mode`. A harness that **can't express** a requested mode, or whose
-ask flow would **block on a prompt** headlessly, is a loud usage error *before*
-anything spawns — so a non-bypass run fails fast instead of hanging.
-`--permit-prompts` opts back in to a `hangs` combination (e.g. once allow-rules
-are synced so the prompt never fires); the `--timeout` still bounds any hang.
+The default when nothing is passed is **`default`**. Each mode is mapped to the
+harness's own mechanism; `oneharness list` shows the per-harness `modes` (each
+tagged `clean` or `hangs`), and the report echoes `permission_mode`. A harness
+that **can't express** a requested mode is a loud usage error *before* anything
+spawns (there's no command to build). A mode that **may block on a prompt**
+headlessly (a `hangs` tag) is warned about on stderr but still run, with the
+`--timeout` as the backstop (a real hang becomes a `timeout` result, never an
+infinite stall); `--permit-prompts` silences that warning once allow-rules are
+synced so the prompt never fires.
 
 | `--mode` | claude-code | codex | opencode | goose | qwen | crush | copilot | cursor |
 |------------|:-----------:|:-----:|:--------:|:-----:|:----:|:-----:|:-------:|:------:|
@@ -537,8 +541,9 @@ are synced so the prompt never fires); the `--timeout` still bounds any hang.
 | `auto`     | ✓ | ✓ | — | ✓ | ⚠ | — | — | — |
 | `bypass`   | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
-✓ supported & clean headless · ⚠ supported but would hang (needs
-`--permit-prompts`) · — unsupported (refused). `read-only` is **enforced** where
+✓ supported & clean headless · ⚠ supported but may block on a prompt headlessly
+(warns + runs; `--timeout` backstops, `--permit-prompts` silences the warning) ·
+— unsupported (refused). `read-only` is **enforced** where
 marked — ˢ Codex's read-only sandbox (OS-enforced), ᵈ deny rules (Claude's
 `--disallowedTools Bash Edit Write NotebookEdit`, Copilot's `--deny-tool
 shell/write` — deny beats allow) — and ᵖ behavioral where its only mechanism is

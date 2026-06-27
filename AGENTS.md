@@ -179,21 +179,23 @@ aren't re-litigated each session:
 - **Never panic on a harness's behavior.** A missing binary is `skipped`, a
   non-zero exit is `nonzero`, a hang is `timeout` — all are data in the report,
   not a crash. Only true usage/config errors abort with a non-zero process exit.
-- **Bypass-by-default is deliberate.** Headless agent runs hang waiting for
-  approval, so `run` requests each harness's "don't prompt" mode (`--mode
-  bypass`) by default. This is documented in `--help`; `--mode <m>` (and the
-  `--no-bypass`/`--bypass` shorthands) opts to another point on the spectrum.
-  Keep this explicit, never silent. The normalized spectrum lives in
-  `domain::mode` (`read-only` < `plan` < `default` < `edit` < `auto` < `bypass`;
-  `read-only` is no-mutation enforcement without the plan workflow, `plan` adds
-  it); each harness declares which it can express and whether each is
-  headless-`clean` or would
-  `hangs` (`HarnessSpec.modes` / `ModeSpec`). The command layer refuses an
-  unsupported mode, and a `hangs` one without `--permit-prompts`, *before*
-  spawning — turning a silent hang into a loud, immediate error rather than ever
-  silently downgrading. `default` maps to each harness's cleanest
-  non-interactive variant (Claude's `dontAsk`, not `default`), never an
-  interactive prompt.
+- **Approval mode is explicit; the default is `default`, not bypass.** The
+  normalized spectrum lives in `domain::mode` (`read-only` < `plan` < `default` <
+  `edit` < `auto` < `bypass`; `read-only` is no-mutation enforcement without the
+  plan workflow, `plan` adds it). The built-in default is `default` — each
+  harness's normal posture mapped to its cleanest *non-interactive* variant
+  (Claude's `dontAsk` deny-and-continue, Goose's fail-closed `approve`, Copilot's
+  auto-deny), so it neither hangs nor blanket-approves; `bypass` ("allow
+  everything") is the opt-in (`--mode bypass` / `--bypass`). Each harness
+  declares which modes it can express and whether each is headless-`clean` or
+  would `hangs` (`HarnessSpec.modes` / `ModeSpec`). The command layer refuses an
+  *unsupported* mode before spawning (no command to build — a loud usage error,
+  never a silent downgrade); a *supported-but-`hangs`* mode is warned about on
+  stderr and still run, with the per-harness `--timeout` as the backstop (a hang
+  becomes a `timeout` result, per "never panic on a harness's behavior"), and
+  `--permit-prompts` silences the warning. The per-harness `read-only`/`plan`
+  mapping is drift-alarmed live by `oh_mode_enforce` (writes blocked under
+  read-only, allowed under bypass).
 - **Config is layered and loud.** Defaults come from `oneharness.toml` files —
   user level (`$ONEHARNESS_CONFIG` or the platform config dir) under project
   level (discovered upward from `--cwd`/cwd) under the `ONEHARNESS_<FIELD>`
@@ -234,7 +236,10 @@ shape. When you add one:
   environment variable like Goose's `GOOSE_MODE`, in `ModeSpec.env`), and prefer
   the cleanest non-interactive variant for `default` (e.g. a deny-and-continue,
   not an interactive prompt). Pin the mode→flag mapping with a `build_argv`
-  assertion, and update the *Approval modes* table in `README.md`.
+  assertion, and update the *Approval modes* table in `README.md`. If the harness
+  supports `read-only`, add an `oh_mode_enforce <id>` phase to its `e2e-<id>.sh`
+  (writes blocked under `--mode read-only`, allowed under `--mode bypass`) — the
+  live proof the read-only mapping is honored and its drift alarm.
 - Update the harness table in `README.md` — including its config-support
   columns (`model`, `system`, bypass, allow/deny rules, hooks, output format,
   `--resume`), which document how each unified setting reaches (or doesn't

@@ -44,3 +44,8 @@ note "PASS: claude-code sync enforcement"
 # installed hook file is honored by the real CLI.
 note "» hook enforcement: the synced gate must block a marked command"
 oh_hook_enforce claude-code
+
+# Approval-mode enforcement: `--mode read-only` (bypassPermissions with the
+# mutating tools denied) must block a write that `--mode bypass` allows.
+note "» read-only enforcement: --mode read-only must block a write"
+oh_mode_enforce claude-code

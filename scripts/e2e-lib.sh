@@ -192,6 +192,17 @@ oh_run() {
     local model_args=()
     [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
 
+    # The global default mode is `default`, but the live checks need the agent to
+    # actually act (run the marker/hook/allow commands), so oh_run requests
+    # `--mode bypass` by default. A caller that sets its own mode flag (e.g.
+    # oh_sync_enforce's --no-bypass, oh_mode_enforce's --mode read-only) wins.
+    local mode_args=(--mode bypass)
+    for a in "$@"; do
+        case "$a" in
+        --mode | --bypass | --no-bypass) mode_args=() ;;
+        esac
+    done
+
     local errf
     errf="$(mktemp)"
     note "  driving: $bin run --harness $id (timeout ${OH_TIMEOUT:-120}s${OH_MODEL:+, model $OH_MODEL})"
@@ -199,6 +210,7 @@ oh_run() {
     # machine's oneharness config files must not reshape the invocation.
     OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --prompt "$prompt" \
         --timeout "${OH_TIMEOUT:-120}" --compact \
+        "${mode_args[@]+"${mode_args[@]}"}" \
         "${model_args[@]+"${model_args[@]}"}" "$@" 2>"$errf")" || true
 
     if [ -z "$OH_REPORT" ]; then
@@ -385,6 +397,58 @@ oh_sync_enforce() {
 
 # A shell-safe scratch file name for the enforcement phases.
 oh_enforce_file() { printf '%s-%s%s.txt' "$1" "${RANDOM}" "${RANDOM}"; }
+
+# --- approval-mode enforcement ----------------------------------------------
+
+# Live proof that `--mode read-only` is HONORED by the real harness — the drift
+# alarm for the per-harness read-only mapping (Codex's `--sandbox read-only`,
+# Claude's `--disallowedTools`, Copilot's `--deny-tool`, Cursor's `--mode ask`,
+# the plan-agent read-only for Qwen). The agent is told to `touch` a file:
+#   * under `--mode read-only` the write must be BLOCKED (file absent), and
+#   * under `--mode bypass` the same command must run (file present) — the
+#     positive control, so "absent" can't pass vacuously on a harness that runs
+#     nothing headlessly.
+# Only call this for a harness whose `oneharness list` marks `read-only`
+# supported. $1 harness id.
+oh_mode_enforce() {
+    local id="$1"
+    local bin sandbox file status
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    sandbox="$(mktemp -d)"
+    sandbox="$(oh_native_path "$sandbox")"
+    oh_sandbox_prepare "$id" "$sandbox"
+    file="$(oh_enforce_file readonly)"
+    local prompt
+    prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory, then stop: touch $file. Rules: you MUST actually attempt your shell tool with that exact command. Only if that tool invocation itself fails or is rejected: do NOT create the file by any other means (no file-write or edit tools) — reply with the single word DENIED and stop."
+
+    note "  mode-enforce[read-only]: the write must be blocked under --mode read-only"
+    oh_run "$id" "$prompt" --mode read-only --cwd "$sandbox"
+    status="$(oh_field '.results[0].status')"
+    if [ "$status" = "skipped" ]; then
+        rm -rf "$sandbox"
+        skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+    fi
+    if [ -e "$sandbox/$file" ]; then
+        oh_dump
+        rm -rf "$sandbox"
+        fail "$id: --mode read-only did NOT block the write ($file was created) — the read-only mapping is not honored (or its flag drifted)"
+    fi
+    note "  ok[read-only]: the write was blocked"
+
+    note "  mode-enforce[bypass]: the same command must run under --mode bypass (control)"
+    oh_run "$id" "$prompt" --mode bypass --cwd "$sandbox"
+    if [ ! -e "$sandbox/$file" ]; then
+        oh_dump
+        rm -rf "$sandbox"
+        fail "$id: positive control failed ($file absent under --mode bypass) — the read-only block can't be trusted (does the harness run shell headlessly?)"
+    fi
+    note "  ok[bypass]: the command ran"
+
+    rm -rf "$sandbox"
+    note "PASS: $id read-only enforcement"
+}
 
 # --- hook enforcement --------------------------------------------------------
 

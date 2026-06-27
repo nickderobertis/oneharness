@@ -60,11 +60,23 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let resume = args.resume.as_deref();
     validate_resume(resume, &specs)?;
     // Resolve the approval mode (CLI --mode > --bypass/--no-bypass > config
-    // `mode` > config `bypass` > the bypass default), then refuse — before
-    // spawning — any harness that can't express it or would hang on it. This is
-    // the loud, immediate alternative to a headless hang.
+    // `mode` > config `bypass` > the built-in default, which is `default`). A
+    // mode a selected harness *cannot express* is refused here (a command can't
+    // be built); a mode that *might block on a prompt* is warned about but still
+    // run, with the per-harness `--timeout` as the backstop (a hang becomes a
+    // `timeout` result, never an infinite stall).
     let mode = resolve_mode(args, cfg);
-    validate_modes(mode, &specs, args.permit_prompts)?;
+    validate_modes(mode, &specs)?;
+    if !args.permit_prompts {
+        for id in hang_prone(mode, &specs) {
+            eprintln!(
+                "oneharness: warning: `--mode {}` may block on an interactive approval prompt for \
+                 harness `{id}` headlessly; relying on --timeout. Sync allow-rules (and pass \
+                 --permit-prompts to silence this), or use --mode bypass / read-only.",
+                mode.as_str()
+            );
+        }
+    }
     let config_bins: std::collections::HashMap<String, String> = cfg
         .harness
         .iter()
@@ -648,7 +660,9 @@ fn validate_resume(
 
 /// Resolve the effective approval mode. Precedence, highest first: CLI `--mode`,
 /// then the CLI `--bypass` / `--no-bypass` shorthands, then config `mode`, then
-/// the legacy config `bypass` boolean, then the built-in default (bypass).
+/// the legacy config `bypass` boolean, then the built-in default — `default`
+/// (the harness's normal permission posture, mapped to its cleanest
+/// non-interactive variant), *not* bypass: bypass is the opt-in.
 fn resolve_mode(
     args: &RunArgs,
     cfg: &oneharness_core::domain::config::FileConfig,
@@ -662,45 +676,53 @@ fn resolve_mode(
     } else if let Some(m) = cfg.mode {
         m
     } else {
-        PermissionMode::from_bypass(cfg.bypass.unwrap_or(true))
+        // Legacy `bypass = true/false` maps to bypass/default; unset → default.
+        cfg.bypass
+            .map(PermissionMode::from_bypass)
+            .unwrap_or(PermissionMode::Default)
     }
 }
 
-/// Refuse — before any process is spawned — a mode a selected harness cannot
-/// honor headlessly: one it cannot express at all ([`OneharnessError::ModeUnsupported`]),
-/// or one that would block on an interactive prompt ([`OneharnessError::ModeMayHang`],
-/// unless `--permit-prompts`). This turns a silent hang (or a wrong silent
-/// downgrade) into a loud, immediate usage error. Reports the first offending
-/// harness, mirroring `validate_resume`.
+/// Refuse — before any process is spawned — a mode a selected harness *cannot
+/// express*: there is no command to build for it, so it is a loud usage error
+/// ([`OneharnessError::ModeUnsupported`]) rather than a silent downgrade. A mode
+/// that is supported but might *block on a prompt* headlessly is not refused
+/// here — see [`hang_prone`] (it is warned about and run, with `--timeout` as
+/// the backstop). Reports the first offending harness, mirroring `validate_resume`.
 fn validate_modes(
     mode: PermissionMode,
     specs: &[&'static HarnessSpec],
-    permit_prompts: bool,
 ) -> Result<(), OneharnessError> {
     for spec in specs {
-        match spec.mode(mode) {
-            None => {
-                return Err(OneharnessError::ModeUnsupported {
-                    id: spec.id.to_string(),
-                    mode: mode.as_str().to_string(),
-                    supported: spec
-                        .modes
-                        .iter()
-                        .map(|m| m.mode.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                });
-            }
-            Some(ms) if ms.headless == ModeHeadless::Hangs && !permit_prompts => {
-                return Err(OneharnessError::ModeMayHang {
-                    id: spec.id.to_string(),
-                    mode: mode.as_str().to_string(),
-                });
-            }
-            Some(_) => {}
+        if spec.mode(mode).is_none() {
+            return Err(OneharnessError::ModeUnsupported {
+                id: spec.id.to_string(),
+                mode: mode.as_str().to_string(),
+                supported: spec
+                    .modes
+                    .iter()
+                    .map(|m| m.mode.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            });
         }
     }
     Ok(())
+}
+
+/// The selected harnesses for which `mode` is supported but would block on an
+/// interactive approval prompt headlessly (`ModeHeadless::Hangs`). The caller
+/// warns about each (unless `--permit-prompts`) but still runs them — the
+/// per-harness `--timeout` turns any real hang into a `timeout` result.
+fn hang_prone(mode: PermissionMode, specs: &[&'static HarnessSpec]) -> Vec<&'static str> {
+    specs
+        .iter()
+        .filter(|spec| {
+            spec.mode(mode)
+                .is_some_and(|m| m.headless == ModeHeadless::Hangs)
+        })
+        .map(|spec| spec.id)
+        .collect()
 }
 
 fn parse_env(values: &[String]) -> Result<Vec<(String, String)>, OneharnessError> {
@@ -953,13 +975,18 @@ mod tests {
     #[test]
     fn resolve_mode_precedence() {
         let empty = cfg_with(None, None);
-        // Built-in default is bypass.
-        assert_eq!(resolve_mode(&run_args(), &empty), PermissionMode::Bypass);
-        // Config bypass=false → default; config mode beats config bypass.
+        // Built-in default is `default`, not bypass.
+        assert_eq!(resolve_mode(&run_args(), &empty), PermissionMode::Default);
+        // Legacy config bypass=true → bypass; bypass=false → default.
+        assert_eq!(
+            resolve_mode(&run_args(), &cfg_with(None, Some(true))),
+            PermissionMode::Bypass
+        );
         assert_eq!(
             resolve_mode(&run_args(), &cfg_with(None, Some(false))),
             PermissionMode::Default
         );
+        // config mode beats config bypass.
         assert_eq!(
             resolve_mode(
                 &run_args(),
@@ -989,24 +1016,33 @@ mod tests {
     }
 
     #[test]
-    fn validate_modes_refuses_unsupported_and_hangs() {
+    fn validate_modes_refuses_only_unsupported() {
         let crush = harness::by_id("crush").unwrap();
         let cursor = harness::by_id("cursor").unwrap();
         let claude = harness::by_id("claude-code").unwrap();
-        // crush has no plan mode → unsupported.
+        // crush has no plan mode → unsupported (hard error, no command to build).
         assert!(matches!(
-            validate_modes(PermissionMode::Plan, &[crush], false),
+            validate_modes(PermissionMode::Plan, &[crush]),
             Err(OneharnessError::ModeUnsupported { .. })
         ));
-        // cursor default would hang → refused, unless --permit-prompts.
-        assert!(matches!(
-            validate_modes(PermissionMode::Default, &[cursor], false),
-            Err(OneharnessError::ModeMayHang { .. })
-        ));
-        assert!(validate_modes(PermissionMode::Default, &[cursor], true).is_ok());
-        // Supported clean modes pass.
-        assert!(validate_modes(PermissionMode::Plan, &[claude], false).is_ok());
-        assert!(validate_modes(PermissionMode::Bypass, &[crush, cursor, claude], false).is_ok());
+        // A supported-but-hang-prone mode is NOT refused — it runs (with a
+        // warning + timeout backstop). cursor `default` is hang-prone but valid.
+        assert!(validate_modes(PermissionMode::Default, &[cursor]).is_ok());
+        assert!(validate_modes(PermissionMode::Plan, &[claude]).is_ok());
+        assert!(validate_modes(PermissionMode::Bypass, &[crush, cursor, claude]).is_ok());
+    }
+
+    #[test]
+    fn hang_prone_lists_only_supported_hang_modes() {
+        let cursor = harness::by_id("cursor").unwrap();
+        let claude = harness::by_id("claude-code").unwrap();
+        let crush = harness::by_id("crush").unwrap();
+        // cursor `default` hangs; claude `default` is clean; crush doesn't support
+        // plan at all (so it's not "hang-prone", it's unsupported → not listed).
+        assert_eq!(hang_prone(PermissionMode::Default, &[cursor]), ["cursor"]);
+        assert!(hang_prone(PermissionMode::Default, &[claude]).is_empty());
+        assert!(hang_prone(PermissionMode::Plan, &[crush]).is_empty());
+        assert!(hang_prone(PermissionMode::Bypass, &[cursor, claude]).is_empty());
     }
 
     #[test]

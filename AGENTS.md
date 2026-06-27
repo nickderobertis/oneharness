@@ -235,7 +235,13 @@ shape. When you add one:
   lists `bypass` and `default`. Map each in `build_argv` (or, when the mode is an
   environment variable like Goose's `GOOSE_MODE`, in `ModeSpec.env`), and prefer
   the cleanest non-interactive variant for `default` (e.g. a deny-and-continue,
-  not an interactive prompt). Pin the mode→flag mapping with a `build_argv`
+  not an interactive prompt). A *behavioral* mode a harness can't express
+  natively can be synthesized from **enforcement + an instruction**: set
+  `ModeSpec.instruction` (prepended to the prompt by the command layer) and pair
+  it with the enforcement `build_argv`/`env` provides — this is how Codex's
+  `plan` works (read-only sandbox + a plan instruction). Only do this when the
+  enforcement half exists (a plan instruction without read-only enforcement
+  wouldn't stop the agent acting). Pin the mode→flag mapping with a `build_argv`
   assertion, and update the *Approval modes* table in `README.md`. For each
   no-mutation mode the harness supports (`read-only`, `plan`), add an
   `oh_mode_enforce <id> <mode>` phase to its `e2e-<id>.sh` (a write blocked under

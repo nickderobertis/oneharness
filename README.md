@@ -535,7 +535,7 @@ synced so the prompt never fires.
 | `--mode` | claude-code | codex | opencode | goose | qwen | crush | copilot | cursor |
 |------------|:-----------:|:-----:|:--------:|:-----:|:----:|:-----:|:-------:|:------:|
 | `read-only`| ✓ᵈ | ✓ˢ | ✓ᵖ | — | ✓ᵖ | — | ✓ᵈ | ✓ |
-| `plan`     | ✓ | — | ✓ | — | ✓ | — | ✓ | ✓ |
+| `plan`     | ✓ | ✓ⁱ | ✓ | — | ✓ | — | ✓ | ✓ |
 | `default`  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓¹ | ✓ | ⚠ |
 | `edit`     | ✓ | — | ✓ᵉ | — | ✓ | — | ✓ | — |
 | `auto`     | ✓ | ✓ | — | ✓ | ✓ | — | — | — |
@@ -548,9 +548,14 @@ read-only sandbox (OS-enforced), ᵈ deny rules (Claude's `--disallowedTools Bas
 Edit Write NotebookEdit`, Copilot's `--deny-tool shell/write` — deny beats
 allow) — and ᵖ behavioral where its only mechanism is the plan agent (OpenCode
 `--agent plan`, Qwen `--approval-mode plan`, so `read-only` and `plan` coincide
-there). Cursor's `read-only` is native `--mode ask`. Codex/Goose have no plan
-workflow (use `read-only`); Goose's only no-mutation option (`chat`) disables
-reads too, so it offers neither plan nor read-only; Crush's `run` can't gate, so
+there). Cursor's `read-only` is native `--mode ask`. Codex has no *native* plan
+mode in `exec`, so `plan` (ⁱ) is synthesized — the read-only sandbox enforces
+no-mutation and a plan instruction is prepended to the prompt, reproducing
+Codex's own interactive Plan mode (= read-only sandbox + a plan template). Goose
+has no plan workflow and its only no-mutation option (`chat`) disables reads too,
+so it offers neither plan nor read-only (a plan *instruction* alone can't help —
+it has no read-only *enforcement* to stop the agent acting); Crush's `run` can't
+gate, so
 it supports only `default`/`bypass` (¹ it auto-approves the whole session, so the
 two are identical). Only **Cursor's `default`** can still block on a prompt (no
 fail-fast deny) — every other harness's `default` is clean: it maps to that

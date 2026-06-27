@@ -328,24 +328,12 @@ fn read_only_is_distinct_from_plan_and_enforced_where_possible() {
     assert_eq!(value["bypass_permissions"], false);
     let command = value["results"][0]["command"].to_string();
     assert!(command.contains("read-only"), "{command}");
-
-    let plan = run(
-        &[
-            "run",
-            "--harness",
-            "codex",
-            "--prompt",
-            "hi",
-            "--print-command",
-            "--mode",
-            "plan",
-            "--compact",
-        ],
-        &[],
+    // Codex read-only is the bare sandbox — no plan instruction (that's what
+    // distinguishes it from `plan`, which adds the instruction).
+    assert!(
+        !command.contains("PLAN MODE"),
+        "read-only must not plan: {command}"
     );
-    assert!(!plan.status.success());
-    let stderr = String::from_utf8_lossy(&plan.stderr);
-    assert!(stderr.contains("does not support"), "{stderr}");
 
     // On Claude, read-only and plan are genuinely different invocations.
     let claude_ro = run(
@@ -413,6 +401,46 @@ fn mode_delivered_via_env_reaches_the_child() {
         json_stdout(&output)["results"][0]["stdout"],
         "GOOSE_MODE=auto"
     );
+}
+
+#[test]
+fn codex_plan_is_read_only_sandbox_plus_a_plan_instruction() {
+    // Codex has no native exec plan mode; oneharness synthesizes it as the
+    // read-only sandbox (enforcement) + a plan instruction prepended to the
+    // prompt (behavior) — reproducing Codex's interactive Plan mode.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "refactor auth",
+            "--mode",
+            "plan",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    assert_eq!(value["permission_mode"], "plan");
+    let command: Vec<&str> = value["results"][0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap())
+        .collect();
+    assert!(
+        command.windows(2).any(|w| w == ["--sandbox", "read-only"]),
+        "{command:?}"
+    );
+    let joined = command.join(" ");
+    assert!(
+        joined.contains("PLAN MODE"),
+        "plan instruction missing: {joined}"
+    );
+    assert!(joined.contains("refactor auth"), "task missing: {joined}");
 }
 
 #[test]

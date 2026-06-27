@@ -457,6 +457,13 @@ impl HarnessPlan {
     /// errors) is appended on a retry so the model can correct itself.
     fn argv(&self, schema: Option<&Schema>, feedback: Option<(&str, &[String])>) -> Vec<String> {
         let mut prompt = self.base_prompt.clone();
+        // A mode that synthesizes a behavioral posture from an instruction
+        // (Codex's `plan`) prepends it so it frames the task. Single-line +
+        // space-joined, matching the structured-output convention, so the prompt
+        // argument stays newline-free for a `.cmd`-shim harness on Windows.
+        if let Some(instruction) = self.spec.mode(self.mode).and_then(|m| m.instruction) {
+            prompt = format!("{instruction} {prompt}");
+        }
         if let Some(sch) = schema {
             // Join with a space, not a newline: the structured-output additions
             // must keep the prompt argument newline-free so it can still be passed

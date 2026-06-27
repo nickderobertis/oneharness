@@ -154,18 +154,29 @@ pub struct ModeSpec {
     pub mode: PermissionMode,
     /// Whether this mode blocks on an interactive prompt headlessly.
     pub headless: ModeHeadless,
-    /// Environment variables that select this mode (Goose's `GOOSE_MODE`).
-    /// Empty when `build_argv` expresses the mode on the argv. Injected like the
-    /// harness's `default_env` (so a config / `--env` value still wins).
+    /// Environment variables that select this mode (Goose's `GOOSE_MODE`,
+    /// OpenCode's `OPENCODE_CONFIG_CONTENT`). Empty when `build_argv` expresses
+    /// the mode on the argv. Injected like the harness's `default_env` (so a
+    /// config / `--env` value still wins).
     pub env: &'static [(&'static str, &'static str)],
+    /// A per-run instruction prepended to the prompt to induce a *behavioral*
+    /// mode the harness can't express natively, paired with the enforcement that
+    /// `build_argv`/`env` provides. Used for Codex's `plan`: the read-only
+    /// sandbox enforces no-mutation and this instruction induces the planning
+    /// behavior (mirroring Codex's own interactive Plan-mode template). `None`
+    /// for modes a harness expresses natively (their own plan/agent mode already
+    /// carries the behavior). Prepended by the command layer; kept single-line.
+    pub instruction: Option<&'static str>,
 }
 
-/// Shorthand for an argv-expressed mode (no environment): the common case.
+/// Shorthand for an argv-expressed mode (no environment, no instruction): the
+/// common case.
 const fn mode(mode: PermissionMode, headless: ModeHeadless) -> ModeSpec {
     ModeSpec {
         mode,
         headless,
         env: &[],
+        instruction: None,
     }
 }
 
@@ -260,6 +271,14 @@ pub struct GlobalHook {
     /// Goose — i.e. the same thing the [`HookBinding`] anchors at under a project.
     pub anchor: &'static str,
 }
+
+/// The plan instruction synthesized for Codex, whose `exec` has no native plan
+/// mode: the read-only sandbox (`build_argv`) enforces no-mutation and this
+/// induces the planning behavior, together reproducing Codex's own interactive
+/// Plan mode (which is exactly a read-only sandbox + a plan template). Mirrors
+/// the semantics of that template (`codex-rs/.../templates/plan.md`). Kept on a
+/// single line — the command layer prepends it to the prompt.
+const CODEX_PLAN_INSTRUCTION: &str = "PLAN MODE: research the task and produce an implementation plan only — do not edit or create files and do not run mutating commands (reading and searching files, configs, and docs is allowed); even if asked to execute, treat it as a request to plan the execution. Reply with a short intent paragraph, explicit in-scope vs out-of-scope, then a 6-10 item ordered checklist (discovery, changes, tests, rollout). The task to plan:";
 
 /// Goose plugin manifest, `{name}` filled with the plugin identity. Written once
 /// and preserved; the merge is idempotent so re-syncing changes nothing.
@@ -420,10 +439,18 @@ static REGISTRY: &[HarnessSpec] = &[
         // `codex exec` gates by sandbox, not by op-type, and downgrades approval
         // to `never` (it never hangs — out-of-sandbox actions fail closed and the
         // agent continues). `read-only` is the (OS-enforced) read-only sandbox,
-        // `auto` is `workspace-write`. Codex has no plan workflow (`plan` is
-        // rejected — use `read-only`) and no edit-vs-shell split (no `edit`).
+        // `auto` is `workspace-write`. Codex has no *native* plan mode in `exec`
+        // (its TUI Plan mode = read-only sandbox + a plan instruction, both
+        // reproducible here), so `plan` is synthesized: same read-only sandbox
+        // plus the `instruction` below. No edit-vs-shell split, so no `edit`.
         modes: &[
             mode(PermissionMode::ReadOnly, ModeHeadless::Clean),
+            ModeSpec {
+                mode: PermissionMode::Plan,
+                headless: ModeHeadless::Clean,
+                env: &[],
+                instruction: Some(CODEX_PLAN_INSTRUCTION),
+            },
             mode(PermissionMode::Default, ModeHeadless::Clean),
             mode(PermissionMode::Auto, ModeHeadless::Clean),
             mode(PermissionMode::Bypass, ModeHeadless::Clean),
@@ -476,6 +503,7 @@ static REGISTRY: &[HarnessSpec] = &[
                     "OPENCODE_CONFIG_CONTENT",
                     r#"{"permission":{"edit":"allow","bash":"deny"}}"#,
                 )],
+                instruction: None,
             },
             mode(PermissionMode::Bypass, ModeHeadless::Clean),
         ],
@@ -519,16 +547,19 @@ static REGISTRY: &[HarnessSpec] = &[
                 mode: PermissionMode::Default,
                 headless: ModeHeadless::Clean,
                 env: &[("GOOSE_MODE", "approve")],
+                instruction: None,
             },
             ModeSpec {
                 mode: PermissionMode::Auto,
                 headless: ModeHeadless::Clean,
                 env: &[("GOOSE_MODE", "smart_approve")],
+                instruction: None,
             },
             ModeSpec {
                 mode: PermissionMode::Bypass,
                 headless: ModeHeadless::Clean,
                 env: &[("GOOSE_MODE", "auto")],
+                instruction: None,
             },
         ],
         build_argv: argv_goose,
@@ -775,7 +806,9 @@ fn argv_codex(c: &BuildCtx) -> Vec<String> {
         PermissionMode::Bypass => {
             a.push("--dangerously-bypass-approvals-and-sandbox".into());
         }
-        PermissionMode::ReadOnly => {
+        // `plan` is the read-only sandbox too (enforcement half); its plan
+        // instruction is prepended to the prompt by the command layer.
+        PermissionMode::ReadOnly | PermissionMode::Plan => {
             a.push("--sandbox".into());
             a.push("read-only".into());
         }
@@ -783,9 +816,9 @@ fn argv_codex(c: &BuildCtx) -> Vec<String> {
             a.push("--sandbox".into());
             a.push("workspace-write".into());
         }
-        // `default` keeps the exec default (read-only); plan/edit are unsupported
-        // for codex and never reach here.
-        PermissionMode::Default | PermissionMode::Plan | PermissionMode::Edit => {}
+        // `default` keeps the exec default; `edit` is unsupported for codex and
+        // never reaches here.
+        PermissionMode::Default | PermissionMode::Edit => {}
     }
     if let Some(m) = c.model {
         a.push("--model".into());
@@ -1162,8 +1195,26 @@ mod tests {
             !copilot_edit.iter().any(|t| t == "--allow-all-tools"),
             "copilot edit must gate shell, not allow-all: {copilot_edit:?}"
         );
-        // codex/goose reject plan (no plan workflow); use read-only instead.
-        assert!(by_id("codex").unwrap().mode(PermissionMode::Plan).is_none());
+        // Codex `plan` is synthesized: read-only sandbox (enforcement) + a plan
+        // instruction prepended to the prompt (no native exec plan mode).
+        let codex_plan = by_id("codex").unwrap().mode(PermissionMode::Plan);
+        assert!(
+            codex_plan.is_some(),
+            "codex should support synthesized plan"
+        );
+        assert!(
+            codex_plan.unwrap().instruction.is_some(),
+            "codex plan must carry a plan instruction"
+        );
+        let codex_plan_argv =
+            (by_id("codex").unwrap().build_argv)(&ctx("codex", None, PermissionMode::Plan));
+        assert!(
+            codex_plan_argv
+                .windows(2)
+                .any(|w| w == ["--sandbox", "read-only"]),
+            "codex plan must enforce read-only: {codex_plan_argv:?}"
+        );
+        // Goose rejects plan (no plan workflow, and no read-only to enforce it).
         assert!(by_id("goose").unwrap().mode(PermissionMode::Plan).is_none());
         assert!(by_id("goose")
             .unwrap()

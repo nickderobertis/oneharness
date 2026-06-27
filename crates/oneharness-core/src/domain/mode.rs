@@ -19,9 +19,17 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PermissionMode {
-    /// Read and propose only — no file edits, no commands. The agent researches
-    /// and plans; it never mutates. (Claude/Qwen/Copilot/Cursor native plan
-    /// modes, Codex's read-only sandbox, OpenCode's `plan` agent.)
+    /// No mutations — the agent may read but not edit files or run commands —
+    /// *without* the plan workflow: it just does whatever read-only work the task
+    /// allows. Mapped to each harness's strongest per-run no-mutation enforcement
+    /// (Codex's read-only sandbox, Claude's deny rules, Copilot's `--deny-tool`,
+    /// Cursor's `ask` mode). The enforced counterpart to [`Self::Plan`].
+    ReadOnly,
+    /// Read and propose only — like [`Self::ReadOnly`], but additionally engages
+    /// the harness's *plan* workflow: research the task and write a plan rather
+    /// than act. Supported only where a native plan mode exists (Claude/Qwen/
+    /// Cursor/Copilot, OpenCode's `plan` agent); harnesses with no plan workflow
+    /// (Codex, Goose, Crush) reject it — use [`Self::ReadOnly`] for those.
     Plan,
     /// The harness's normal ask flow, mapped to its cleanest *non-interactive*
     /// variant so a headless run never blocks waiting for input (Claude's
@@ -45,7 +53,8 @@ pub enum PermissionMode {
 impl PermissionMode {
     /// Every mode, in spectrum order. The source of truth for `--help`, the
     /// `--mode` value parser, and `oneharness list`.
-    pub const ALL: [PermissionMode; 5] = [
+    pub const ALL: [PermissionMode; 6] = [
+        PermissionMode::ReadOnly,
         PermissionMode::Plan,
         PermissionMode::Default,
         PermissionMode::Edit,
@@ -56,6 +65,7 @@ impl PermissionMode {
     /// The CLI / JSON token for this mode (kebab-case, matching `Serialize`).
     pub fn as_str(self) -> &'static str {
         match self {
+            PermissionMode::ReadOnly => "read-only",
             PermissionMode::Plan => "plan",
             PermissionMode::Default => "default",
             PermissionMode::Edit => "edit",

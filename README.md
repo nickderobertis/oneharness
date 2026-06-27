@@ -507,37 +507,52 @@ leave each harness's normal permission flow intact.
 Every harness has its own approval vocabulary (Claude Code's `--permission-mode`,
 Codex's `--sandbox`, Qwen's `--approval-mode`, Goose's `GOOSE_MODE`, …).
 `--mode <m>` is oneharness's single spectrum across all of them, from least to
-most autonomy: **`plan`** (read & propose, no mutations) < **`default`** (the
-harness's ask flow, mapped to its cleanest non-interactive variant) < **`edit`**
-(auto-approve edits, gate commands) < **`auto`** (auto-approve what the harness
-deems safe) < **`bypass`** (approve everything; the default). Each is mapped to
-the harness's own mechanism; `oneharness list` shows the per-harness `modes`
-(each tagged `clean` or `hangs`), and the report echoes `permission_mode`.
+most autonomy:
 
-A harness that **can't express** a requested mode, or whose ask flow would
-**block on a prompt** headlessly, is a loud usage error *before* anything spawns
-— so a non-bypass run fails fast instead of hanging. `--permit-prompts` opts back
-in to a `hangs` combination (e.g. once allow-rules are synced so the prompt never
-fires); the `--timeout` still bounds any residual hang.
+- **`read-only`** — no mutations; the agent may read but not edit files or run
+  commands. *No* plan workflow — it just does whatever read-only work the task
+  allows. Mapped to each harness's strongest per-run no-mutation enforcement.
+- **`plan`** — like `read-only`, but additionally engages the harness's native
+  *plan* workflow (research the task, write a plan, don't act).
+- **`default`** — the harness's ask flow, mapped to its cleanest non-interactive
+  variant.
+- **`edit`** — auto-approve edits, gate commands.
+- **`auto`** — auto-approve what the harness deems safe.
+- **`bypass`** — approve everything (the default).
+
+Each is mapped to the harness's own mechanism; `oneharness list` shows the
+per-harness `modes` (each tagged `clean` or `hangs`), and the report echoes
+`permission_mode`. A harness that **can't express** a requested mode, or whose
+ask flow would **block on a prompt** headlessly, is a loud usage error *before*
+anything spawns — so a non-bypass run fails fast instead of hanging.
+`--permit-prompts` opts back in to a `hangs` combination (e.g. once allow-rules
+are synced so the prompt never fires); the `--timeout` still bounds any hang.
 
 | `--mode` | claude-code | codex | opencode | goose | qwen | crush | copilot | cursor |
-|----------|:-----------:|:-----:|:--------:|:-----:|:----:|:-----:|:-------:|:------:|
-| `plan`    | ✓ | ✓¹ | ✓ | ◑² | ✓ | — | ✓ | ✓ |
-| `default` | ✓ | ✓ | ⚠ | ✓ | ⚠ | ✓³ | ✓ | ⚠ |
-| `edit`    | ✓ | — | — | — | ⚠ | — | — | — |
-| `auto`    | ✓ | ✓ | — | ✓ | ⚠ | — | — | — |
-| `bypass`  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+|------------|:-----------:|:-----:|:--------:|:-----:|:----:|:-----:|:-------:|:------:|
+| `read-only`| ✓ᵈ | ✓ˢ | ✓ᵖ | — | ✓ᵖ | — | ✓ᵈ | ✓ |
+| `plan`     | ✓ | — | ✓ | — | ✓ | — | ✓ | ✓ |
+| `default`  | ✓ | ✓ | ⚠ | ✓ | ⚠ | ✓¹ | ✓ | ⚠ |
+| `edit`     | ✓ | — | — | — | ⚠ | — | — | — |
+| `auto`     | ✓ | ✓ | — | ✓ | ⚠ | — | — | — |
+| `bypass`   | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 ✓ supported & clean headless · ⚠ supported but would hang (needs
-`--permit-prompts`) · — unsupported (refused). ¹ Codex's read-only sandbox (no
-distinct plan workflow). ² Goose's `chat` (tools disabled — the nearest
-read-only behavior). ³ `crush run` auto-approves the whole session, so `default`
-and `bypass` behave alike. `default` maps to each harness's cleanest
-non-interactive variant — Claude Code's `dontAsk` (deny-and-continue), Goose's
-fail-closed `approve`, Copilot's auto-deny — so it doesn't hang where a clean
-variant exists. Modes beyond plan/bypass are delivered on the argv except for
-Goose, which carries the mode in `GOOSE_MODE`; `edit`/`auto` for OpenCode/Cursor
-are a `permission` config concern, delivered via `oneharness sync`, not `--mode`.
+`--permit-prompts`) · — unsupported (refused). `read-only` is **enforced** where
+marked — ˢ Codex's read-only sandbox (OS-enforced), ᵈ deny rules (Claude's
+`--disallowedTools Bash Edit Write NotebookEdit`, Copilot's `--deny-tool
+shell/write` — deny beats allow) — and ᵖ behavioral where its only mechanism is
+the plan agent (OpenCode `--agent plan`, Qwen `--approval-mode plan`, so
+`read-only` and `plan` coincide there). Cursor's `read-only` is native
+`--mode ask`. Codex/Goose have no plan workflow (use `read-only`); Goose's only
+no-mutation option (`chat`) disables reads too, so it offers neither; Crush's
+`run` can't gate, so it offers neither (¹ it auto-approves the whole session, so
+`default` ≈ `bypass`). `default` maps to each harness's cleanest non-interactive
+variant — Claude Code's `dontAsk` (deny-and-continue), Goose's fail-closed
+`approve`, Copilot's auto-deny — so it doesn't hang where a clean variant exists.
+Modes are delivered on the argv except for Goose, which carries the mode in
+`GOOSE_MODE`; `edit`/`auto` for OpenCode/Cursor are a `permission` config concern
+(`oneharness sync`), not `--mode`.
 
 Relatedly, a harness can carry a small **default environment** so headless runs
 stay clean — e.g. oneharness sets `QWEN_CODE_SUPPRESS_YOLO_WARNING=1` for Qwen

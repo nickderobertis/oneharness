@@ -184,8 +184,10 @@ aren't re-litigated each session:
   bypass`) by default. This is documented in `--help`; `--mode <m>` (and the
   `--no-bypass`/`--bypass` shorthands) opts to another point on the spectrum.
   Keep this explicit, never silent. The normalized spectrum lives in
-  `domain::mode` (`plan` < `default` < `edit` < `auto` < `bypass`); each harness
-  declares which it can express and whether each is headless-`clean` or would
+  `domain::mode` (`read-only` < `plan` < `default` < `edit` < `auto` < `bypass`;
+  `read-only` is no-mutation enforcement without the plan workflow, `plan` adds
+  it); each harness declares which it can express and whether each is
+  headless-`clean` or would
   `hangs` (`HarnessSpec.modes` / `ModeSpec`). The command layer refuses an
   unsupported mode, and a `hangs` one without `--permit-prompts`, *before*
   spawning — turning a silent hang into a loud, immediate error rather than ever

@@ -299,6 +299,68 @@ fn mode_flag_selects_a_permission_mode() {
 }
 
 #[test]
+fn read_only_is_distinct_from_plan_and_enforced_where_possible() {
+    // read-only on codex is the OS-enforced read-only sandbox; codex has no plan
+    // workflow, so `--mode plan` is refused for it (use read-only instead).
+    let ro = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--mode",
+            "read-only",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(ro.status.success());
+    let value = json_stdout(&ro);
+    assert_eq!(value["permission_mode"], "read-only");
+    assert_eq!(value["bypass_permissions"], false);
+    let command = value["results"][0]["command"].to_string();
+    assert!(command.contains("read-only"), "{command}");
+
+    let plan = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--mode",
+            "plan",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(!plan.status.success());
+    let stderr = String::from_utf8_lossy(&plan.stderr);
+    assert!(stderr.contains("does not support"), "{stderr}");
+
+    // On Claude, read-only and plan are genuinely different invocations.
+    let claude_ro = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--mode",
+            "read-only",
+            "--compact",
+        ],
+        &[],
+    );
+    let c = json_stdout(&claude_ro)["results"][0]["command"].to_string();
+    assert!(c.contains("disallowedTools"), "{c}");
+}
+
+#[test]
 fn unsupported_mode_for_a_harness_is_refused() {
     // crush has no plan mode; asking for it is a loud usage error, not a run.
     let output = run(

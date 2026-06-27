@@ -31,6 +31,14 @@ pub struct BuildCtx<'a> {
     /// after the command layer has verified the selected harness's
     /// `supports_resume`, so an adapter that maps it can assume support.
     pub resume: Option<&'a str>,
+    /// When resuming, branch a *new* session from the resumed one instead of
+    /// appending to it — so the original (and its cached prefix) is untouched and
+    /// can seed independent follow-ups. Only honored alongside `resume`, and only
+    /// set after the command layer has verified `supports_fork`; an adapter maps it
+    /// to its native fork flag (Claude Code's `--fork-session`, OpenCode's
+    /// `--fork`). Ignored by adapters that cannot fork (they are never selected
+    /// with it).
+    pub fork: bool,
     /// The normalized approval mode to request. Each adapter maps it to its
     /// harness's native mechanism (argv flags here; any environment via the
     /// matching [`ModeSpec`]). The command layer guarantees the selected harness
@@ -85,6 +93,15 @@ pub struct HarnessSpec {
     /// starting a fresh session. Kept as data so the capability is introspectable
     /// via `oneharness list`.
     pub supports_resume: bool,
+    /// Whether this harness can *fork* a session when resuming (`run --resume
+    /// <id> --fork`): branch a new session id from the resumed one, leaving the
+    /// original untouched so its cached prefix seeds independent follow-ups. Only
+    /// two CLIs expose a headless fork flag (Claude Code's `--fork-session`,
+    /// OpenCode's `--fork`); the rest resume linearly (append in place). When
+    /// false, `--fork` is a loud usage error for the harness, never a silent
+    /// linear resume. Implies `supports_resume`. Introspectable via `oneharness
+    /// list`.
+    pub supports_fork: bool,
     /// Where this harness reads project-scoped configuration, and how the
     /// unified enforcement settings (`allowed_tools` / `denied_tools` /
     /// `hooks` / `settings`) map into that file. `None` means the harness has
@@ -363,6 +380,7 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "npm install -g @anthropic-ai/claude-code",
         output_format: OutputFormat::Json,
         supports_resume: true,
+        supports_fork: true,
         sync: Some(SyncSpec {
             file: ".claude/settings.json",
             alt_files: &[],
@@ -409,7 +427,8 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "codex",
         install_hint: "npm install -g @openai/codex",
         output_format: OutputFormat::Text,
-        supports_resume: false,
+        supports_resume: true,
+        supports_fork: false,
         sync: None,
         hooks: Some(HookBinding::File {
             shape: HookShape::Nested {
@@ -464,6 +483,7 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "npm install -g opencode-ai",
         output_format: OutputFormat::Json,
         supports_resume: true,
+        supports_fork: true,
         sync: Some(SyncSpec {
             file: "opencode.json",
             alt_files: &[],
@@ -515,7 +535,8 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "goose",
         install_hint: "see https://block.github.io/goose/docs/getting-started/installation",
         output_format: OutputFormat::Text,
-        supports_resume: false,
+        supports_resume: true,
+        supports_fork: false,
         sync: None,
         hooks: Some(HookBinding::GoosePlugin {
             shape: HookShape::Nested {
@@ -570,7 +591,8 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "qwen",
         install_hint: "npm install -g @qwen-code/qwen-code",
         output_format: OutputFormat::Text,
-        supports_resume: false,
+        supports_resume: true,
+        supports_fork: false,
         sync: Some(SyncSpec {
             file: ".qwen/settings.json",
             alt_files: &[],
@@ -617,7 +639,8 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "crush",
         install_hint: "npm install -g @charmland/crush",
         output_format: OutputFormat::Text,
-        supports_resume: false,
+        supports_resume: true,
+        supports_fork: false,
         sync: Some(SyncSpec {
             file: "crush.json",
             alt_files: &[".crush.json"],
@@ -654,7 +677,8 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "copilot",
         install_hint: "npm install -g @github/copilot",
         output_format: OutputFormat::Text,
-        supports_resume: false,
+        supports_resume: true,
+        supports_fork: false,
         sync: None,
         hooks: Some(HookBinding::File {
             shape: HookShape::CrossShell {
@@ -693,6 +717,7 @@ static REGISTRY: &[HarnessSpec] = &[
         install_hint: "see https://docs.cursor.com/en/cli/overview",
         output_format: OutputFormat::StreamJson,
         supports_resume: true,
+        supports_fork: false,
         sync: Some(SyncSpec {
             file: ".cursor/cli.json",
             alt_files: &[],
@@ -753,7 +778,10 @@ fn claude_permission_mode(mode: PermissionMode) -> &'static str {
 }
 
 /// `claude -p <prompt> --permission-mode <mode> [--disallowedTools …] [--model M]
-/// [--append-system-prompt S] --output-format json`
+/// [--append-system-prompt S] [--resume <id> [--fork-session]] --output-format json`
+/// (`--resume` continues a session by id; `--fork-session` branches a new session
+/// from it instead of appending — the session id is read from the result JSON's
+/// `session_id`).
 fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "-p".into(), c.prompt.into()];
     a.push("--permission-mode".into());
@@ -777,6 +805,13 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     if let Some(sid) = c.resume {
         a.push("--resume".into());
         a.push(sid.into());
+        // Fork instead of appending: a new session id branches off `sid`, leaving
+        // the original (and its cached prefix) untouched. Only meaningful with
+        // `--resume`; the command layer only sets `fork` for this verified-capable
+        // adapter.
+        if c.fork {
+            a.push("--fork-session".into());
+        }
     }
     a.push("--output-format".into());
     a.push(format_flag(c.output_format).into());
@@ -791,14 +826,24 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     a
 }
 
-/// `codex exec [--dangerously-bypass-approvals-and-sandbox] [--model M] <prompt>`
+/// `codex exec [resume <id>] [--dangerously-bypass-approvals-and-sandbox]
+/// [--model M] <prompt>`
 ///
 /// Codex exposes no system-prompt flag, so `--system` is prepended to the prompt.
 /// The single bypass flag replaces the older `--sandbox danger-full-access -a
 /// never`: codex-cli >= 0.135 removed `-a`, and this flag is the supported way to
 /// skip every approval prompt and the sandbox for a headless run.
+///
+/// Continuation is a *subcommand*, not a flag: `codex exec resume <SESSION_ID>
+/// <prompt>` replays the stored thread and appends the new turn (linear; Codex's
+/// `exec` has no headless fork — `codex fork` is TUI-only, openai/codex#11750). The
+/// session handle is the `thread_id` Codex emits under `--json`; oneharness reads
+/// it via [`crate::domain::signals::extract_session`].
 fn argv_codex(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "exec".into()];
+    if c.resume.is_some() {
+        a.push("resume".into());
+    }
     // The sandbox is the real control surface under `exec` (approval downgrades
     // to `never`). `Default` keeps the exec default (read-only). `Edit` is not a
     // supported mode for codex, so it is never reached.
@@ -823,6 +868,11 @@ fn argv_codex(c: &BuildCtx) -> Vec<String> {
     if let Some(m) = c.model {
         a.push("--model".into());
         a.push(m.into());
+    }
+    // The resumed thread's id is the positional that precedes the prompt for
+    // `codex exec resume <id> <prompt>` (the `resume` token was pushed above).
+    if let Some(sid) = c.resume {
+        a.push(sid.into());
     }
     a.push(prompt_with_system(c));
     a
@@ -854,12 +904,19 @@ fn argv_opencode(c: &BuildCtx) -> Vec<String> {
     if let Some(sid) = c.resume {
         a.push("--session".into());
         a.push(sid.into());
+        // Branch a new session from `sid` rather than appending in place, so the
+        // original's cached prefix can seed independent follow-ups. Only set for
+        // this verified-capable adapter, and only alongside `--session`.
+        if c.fork {
+            a.push("--fork".into());
+        }
     }
     a.push(prompt_with_system(c));
     a
 }
 
-/// `goose run --with-builtin developer [--system S] -t <prompt>`
+/// `goose run --with-builtin developer [--system S] [--resume --name <name>]
+/// -t <prompt>`
 ///
 /// Goose selects its model from its own config, so `model` is not mapped, and the
 /// approval mode is delivered through the `GOOSE_MODE` environment variable (the
@@ -877,15 +934,28 @@ fn argv_goose(c: &BuildCtx) -> Vec<String> {
         a.push("--system".into());
         a.push(s.into());
     }
+    // Goose emits no session id to stdout headlessly, so continuation rides a
+    // caller-chosen *name*: `--resume --name <name>` resumes that named session
+    // (and a fresh `--name <name>` run creates it — create-or-resume). The
+    // `--resume` value oneharness forwards is therefore the name. `session_id`
+    // stays null for Goose (nothing to extract); the caller owns the handle.
+    if let Some(name) = c.resume {
+        a.push("--resume".into());
+        a.push("--name".into());
+        a.push(name.into());
+    }
     a.push("-t".into());
     a.push(c.prompt.into());
     a
 }
 
-/// `qwen [--yolo | --approval-mode <m>] [-m M] -p <prompt>` (no system flag, so
-/// `--system` is prepended). Bypass uses the dedicated `--yolo`; the other modes
-/// use `--approval-mode` (only `plan` and `bypass` run cleanly headless — see the
-/// `modes` table — but the flag is mapped for every supported mode).
+/// `qwen [--yolo | --approval-mode <m>] [-m M] [--resume <id>] -p <prompt>` (no
+/// system flag, so `--system` is prepended). Bypass uses the dedicated `--yolo`;
+/// the other modes use `--approval-mode` (only `plan` and `bypass` run cleanly
+/// headless — see the `modes` table — but the flag is mapped for every supported
+/// mode). `--resume <id>` continues a prior session by UUID (linear append; no
+/// headless fork). The id is the `session_id` Qwen reports under
+/// `--output-format json`.
 fn argv_qwen(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into()];
     match c.mode {
@@ -911,18 +981,28 @@ fn argv_qwen(c: &BuildCtx) -> Vec<String> {
         a.push("-m".into());
         a.push(m.into());
     }
+    if let Some(sid) = c.resume {
+        a.push("--resume".into());
+        a.push(sid.into());
+    }
     a.push("-p".into());
     a.push(prompt_with_system(c));
     a
 }
 
-/// `crush run -q [-m M] <prompt>` (`run` is non-interactive; `-q` quiets it; no
-/// system flag, so `--system` is prepended). `crush run` already auto-approves
-/// the whole session (verified live), so `default` and `bypass` are identical —
-/// crush has no per-run permission flag (`--yolo` is rejected on `run` as of
-/// v0.80.0), so the mode is not expressed on the argv.
+/// `crush run -q [--session <id>] [-m M] <prompt>` (`run` is non-interactive; `-q`
+/// quiets it; no system flag, so `--system` is prepended). `crush run` already
+/// auto-approves the whole session (verified live), so `default` and `bypass` are
+/// identical — crush has no per-run permission flag (`--yolo` is rejected on `run`
+/// as of v0.80.0), so the mode is not expressed on the argv. `--session <id>`
+/// continues a stored session by id (linear append; no headless fork). The id is
+/// the `session_id` crush reports under `--format json`.
 fn argv_crush(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "run".into(), "-q".into()];
+    if let Some(sid) = c.resume {
+        a.push("--session".into());
+        a.push(sid.into());
+    }
     if let Some(m) = c.model {
         a.push("-m".into());
         a.push(m.into());
@@ -932,9 +1012,13 @@ fn argv_crush(c: &BuildCtx) -> Vec<String> {
 }
 
 /// `copilot -p <prompt> [--allow-all-tools --allow-all-paths --no-ask-user]
-/// [--model M]` (no system flag, so `--system` is prepended to the prompt;
-/// its `--allow-tool`/`--deny-tool` permission flags are not unified — Copilot
-/// has no project config file to sync, so rules go via `[harness.copilot] args`)
+/// [--model M] [--resume <id>]` (no system flag, so `--system` is prepended to the
+/// prompt; its `--allow-tool`/`--deny-tool` permission flags are not unified —
+/// Copilot has no project config file to sync, so rules go via `[harness.copilot]
+/// args`). `--resume <id>` continues a session by UUID (linear append; no headless
+/// fork). Copilot emits no session id headlessly, and `--resume <uuid>` *creates*
+/// the session when the id is new (create-or-resume) — so the caller mints and
+/// reuses a UUID; `session_id` stays null (nothing to extract).
 fn argv_copilot(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "-p".into(), prompt_with_system(c)];
     // Bypass is the allow-all trio; `plan` is the read-only plan mode;
@@ -975,6 +1059,10 @@ fn argv_copilot(c: &BuildCtx) -> Vec<String> {
     if let Some(m) = c.model {
         a.push("--model".into());
         a.push(m.into());
+    }
+    if let Some(sid) = c.resume {
+        a.push("--resume".into());
+        a.push(sid.into());
     }
     a
 }
@@ -1037,6 +1125,7 @@ mod tests {
             model,
             system: None,
             resume: None,
+            fork: false,
             mode,
             output_format,
             schema: None,
@@ -1348,6 +1437,7 @@ mod tests {
             model: None,
             system: Some("be terse"),
             resume: None,
+            fork: false,
             mode: PermissionMode::Bypass,
             output_format: OutputFormat::Json,
             schema: None,
@@ -1425,6 +1515,7 @@ mod tests {
             model: None,
             system: None,
             resume: None,
+            fork: false,
             mode: PermissionMode::Bypass,
             output_format: spec.output_format,
             schema: None,
@@ -1471,16 +1562,157 @@ mod tests {
     }
 
     #[test]
-    fn resume_supported_set_is_claude_opencode_cursor() {
+    fn every_harness_supports_resume() {
+        // All eight CLIs expose a headless continuation flag (sourced per-adapter
+        // from their docs); a new harness without one must flip this expectation
+        // deliberately rather than silently start a fresh session.
+        let unsupported: Vec<&str> = all()
+            .iter()
+            .filter(|h| !h.supports_resume)
+            .map(|h| h.id)
+            .collect();
+        assert!(
+            unsupported.is_empty(),
+            "resume gaps drifted: {unsupported:?}"
+        );
+    }
+
+    #[test]
+    fn fork_supported_set_is_claude_and_opencode() {
+        // Only Claude Code (`--fork-session`) and OpenCode (`--fork`) expose a
+        // headless session fork; the rest resume linearly. A drift alarm for the
+        // capability the fork feature depends on.
         let supported: std::collections::HashSet<&str> = all()
             .iter()
-            .filter(|h| h.supports_resume)
+            .filter(|h| h.supports_fork)
             .map(|h| h.id)
             .collect();
         assert_eq!(
             supported,
-            ["claude-code", "opencode", "cursor"].into_iter().collect(),
-            "supports_resume set drifted"
+            ["claude-code", "opencode"].into_iter().collect(),
+            "supports_fork set drifted"
+        );
+        // Fork implies resume: nothing forks that cannot also resume.
+        assert!(all().iter().all(|h| !h.supports_fork || h.supports_resume));
+    }
+
+    #[test]
+    fn claude_maps_fork_to_fork_session_flag() {
+        let spec = by_id("claude-code").unwrap();
+        assert!(spec.supports_fork);
+        let argv = (spec.build_argv)(&BuildCtx {
+            resume: Some("sess-123"),
+            fork: true,
+            ..base_ctx(spec)
+        });
+        assert!(
+            argv.windows(2).any(|w| w == ["--resume", "sess-123"]),
+            "{argv:?}"
+        );
+        assert!(argv.iter().any(|t| t == "--fork-session"), "{argv:?}");
+        // Without --fork the flag is absent (plain resume appends in place).
+        let argv = (spec.build_argv)(&BuildCtx {
+            resume: Some("sess-123"),
+            ..base_ctx(spec)
+        });
+        assert!(!argv.iter().any(|t| t == "--fork-session"), "{argv:?}");
+    }
+
+    #[test]
+    fn opencode_maps_fork_to_fork_flag() {
+        let spec = by_id("opencode").unwrap();
+        assert!(spec.supports_fork);
+        let argv = (spec.build_argv)(&BuildCtx {
+            resume: Some("ses_abc"),
+            fork: true,
+            ..base_ctx(spec)
+        });
+        assert!(
+            argv.windows(2).any(|w| w == ["--session", "ses_abc"]),
+            "{argv:?}"
+        );
+        assert!(argv.iter().any(|t| t == "--fork"), "{argv:?}");
+    }
+
+    #[test]
+    fn codex_maps_resume_to_resume_subcommand_before_prompt() {
+        // `codex exec resume <id> <prompt>`: the `resume` token follows `exec`,
+        // and the id is the positional immediately before the prompt.
+        let spec = by_id("codex").unwrap();
+        assert!(spec.supports_resume && !spec.supports_fork);
+        let argv = (spec.build_argv)(&BuildCtx {
+            resume: Some("0199-thread"),
+            ..base_ctx(spec)
+        });
+        assert!(
+            argv.windows(2).any(|w| w == ["exec", "resume"]),
+            "resume is a subcommand after exec: {argv:?}"
+        );
+        // id directly precedes the prompt positional.
+        assert!(
+            argv.windows(2).any(|w| w == ["0199-thread", "hi"]),
+            "{argv:?}"
+        );
+        // No fork token for codex.
+        assert!(!argv.iter().any(|t| t == "--fork"), "{argv:?}");
+    }
+
+    #[test]
+    fn goose_maps_resume_to_named_session() {
+        // Goose emits no id headlessly; continuation rides a caller-chosen name:
+        // `--resume --name <name>`.
+        let spec = by_id("goose").unwrap();
+        assert!(spec.supports_resume);
+        let argv = (spec.build_argv)(&BuildCtx {
+            resume: Some("my-session"),
+            ..base_ctx(spec)
+        });
+        assert!(argv.iter().any(|t| t == "--resume"), "{argv:?}");
+        assert!(
+            argv.windows(2).any(|w| w == ["--name", "my-session"]),
+            "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn qwen_maps_resume_to_resume_flag() {
+        let spec = by_id("qwen").unwrap();
+        assert!(spec.supports_resume);
+        let argv = (spec.build_argv)(&BuildCtx {
+            resume: Some("uuid-1"),
+            ..base_ctx(spec)
+        });
+        assert!(
+            argv.windows(2).any(|w| w == ["--resume", "uuid-1"]),
+            "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn crush_maps_resume_to_session_flag() {
+        let spec = by_id("crush").unwrap();
+        assert!(spec.supports_resume);
+        let argv = (spec.build_argv)(&BuildCtx {
+            resume: Some("sess-9"),
+            ..base_ctx(spec)
+        });
+        assert!(
+            argv.windows(2).any(|w| w == ["--session", "sess-9"]),
+            "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn copilot_maps_resume_to_resume_flag() {
+        let spec = by_id("copilot").unwrap();
+        assert!(spec.supports_resume);
+        let argv = (spec.build_argv)(&BuildCtx {
+            resume: Some("uuid-c"),
+            ..base_ctx(spec)
+        });
+        assert!(
+            argv.windows(2).any(|w| w == ["--resume", "uuid-c"]),
+            "{argv:?}"
         );
     }
 

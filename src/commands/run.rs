@@ -59,6 +59,9 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let specs = select_specs(all, &include, &exclude)?;
     let resume = args.resume.as_deref();
     validate_resume(resume, &specs)?;
+    // `--fork` (clap-guaranteed to imply `--resume`) branches a new session
+    // instead of appending; refused before spawning for a harness that can't fork.
+    validate_fork(args.fork, &specs)?;
     // Resolve the approval mode (CLI --mode > --bypass/--no-bypass > config
     // `mode` > config `bypass` > the built-in default, which is `default`). A
     // mode a selected harness *cannot express* is refused here (a command can't
@@ -126,6 +129,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 .map(str::to_string),
             system: system.map(str::to_string),
             resume: resume.map(str::to_string),
+            fork: args.fork,
             mode,
             output_format,
             native,
@@ -236,6 +240,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         // config model is visible in that result's `command`.
         model: model.map(str::to_string),
         resume: args.resume.clone(),
+        fork: args.fork,
         permission_mode: mode,
         bypass_permissions: mode.is_bypass(),
         dry_run: args.print_command,
@@ -440,6 +445,7 @@ struct HarnessPlan {
     model: Option<String>,
     system: Option<String>,
     resume: Option<String>,
+    fork: bool,
     mode: PermissionMode,
     output_format: OutputFormat,
     /// The harness takes the schema through a native flag (so the prompt is left
@@ -488,6 +494,7 @@ impl HarnessPlan {
             model: self.model.as_deref(),
             system: self.system.as_deref(),
             resume: self.resume.as_deref(),
+            fork: self.fork,
             mode: self.mode,
             output_format: self.output_format,
             schema: if self.native {
@@ -665,6 +672,34 @@ fn validate_resume(
     Ok(())
 }
 
+/// `--fork` branches a new session from the resumed one instead of appending. It
+/// implies `--resume` (clap-enforced), so the single-harness constraint is already
+/// guaranteed by [`validate_resume`]; the only extra check is that the selected
+/// harness can actually fork — otherwise it is a usage error, never a silent
+/// linear resume. Caught before any process is spawned.
+fn validate_fork(fork: bool, specs: &[&'static HarnessSpec]) -> Result<(), OneharnessError> {
+    if !fork {
+        return Ok(());
+    }
+    // clap guarantees `--fork` implies `--resume`, and `validate_resume` already
+    // proved exactly one harness; guard defensively all the same.
+    let Some(spec) = specs.first() else {
+        return Ok(());
+    };
+    if !spec.supports_fork {
+        return Err(OneharnessError::ForkUnsupported {
+            id: spec.id.to_string(),
+            supported: harness::all()
+                .iter()
+                .filter(|s| s.supports_fork)
+                .map(|s| s.id)
+                .collect::<Vec<_>>()
+                .join(", "),
+        });
+    }
+    Ok(())
+}
+
 /// Resolve the effective approval mode. Precedence, highest first: CLI `--mode`,
 /// then the CLI `--bypass` / `--no-bypass` shorthands, then config `mode`, then
 /// the legacy config `bypass` boolean, then the built-in default — `default`
@@ -782,6 +817,7 @@ mod tests {
             model: None,
             system: None,
             resume: None,
+            fork: false,
             mode: PermissionMode::Bypass,
             output_format: OutputFormat::Text,
             native: false,
@@ -948,12 +984,61 @@ mod tests {
         ));
     }
 
+    /// A no-op argv builder, for the synthetic spec below.
+    fn noop_argv(_: &BuildCtx) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// A synthetic harness that supports neither resume nor fork, to exercise the
+    /// capability guards. Every real harness now supports resume (and two support
+    /// fork), so the rejection branches have no real-spec witness; this stands in
+    /// without weakening the guard. Promoted to `'static` (all-const fields).
+    fn unsupported_spec() -> &'static HarnessSpec {
+        &HarnessSpec {
+            id: "test-unsupported",
+            display: "Test Unsupported",
+            default_bin: "test-unsupported",
+            install_hint: "",
+            output_format: OutputFormat::Text,
+            supports_resume: false,
+            supports_fork: false,
+            sync: None,
+            hooks: None,
+            global_hook: None,
+            gate_deny: None,
+            default_env: &[],
+            native_schema: None,
+            modes: &[],
+            build_argv: noop_argv,
+        }
+    }
+
     #[test]
     fn validate_resume_rejects_unsupported_harness() {
+        assert!(matches!(
+            validate_resume(Some("sid"), &[unsupported_spec()]),
+            Err(OneharnessError::ResumeUnsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn validate_fork_ok_for_capable_harness_and_noop_without_fork() {
+        let claude = harness::by_id("claude-code").unwrap();
+        assert!(validate_fork(true, &[claude]).is_ok());
+        // Without --fork, any selection passes (the flag wasn't requested).
+        let codex = harness::by_id("codex").unwrap();
+        assert!(validate_fork(false, &[codex]).is_ok());
+        // Defensive empty-selection guard (clap prevents this in practice).
+        assert!(validate_fork(true, &[]).is_ok());
+    }
+
+    #[test]
+    fn validate_fork_rejects_resume_only_harness() {
+        // Codex supports --resume but resumes linearly (no fork).
         let codex = harness::by_id("codex").unwrap();
         assert!(matches!(
-            validate_resume(Some("sid"), &[codex]),
-            Err(OneharnessError::ResumeUnsupported { .. })
+            validate_fork(true, &[codex]),
+            Err(OneharnessError::ForkUnsupported { .. })
         ));
     }
 

@@ -145,13 +145,17 @@ fn add_f64(acc: &mut Option<f64>, value: Option<&Value>) -> bool {
 
 /// Best-effort harness session id from stdout (the handle a harness exposes for
 /// `--resume`-style continuation). Reads the first non-empty session id string
-/// found in the emitted JSON, accepting both the snake_case `session_id` (Claude
-/// Code, Cursor) and camelCase `sessionID` (OpenCode); `None` when absent.
+/// found in the emitted JSON, accepting the snake_case `session_id` (Claude Code,
+/// Cursor, Qwen), the camelCase `sessionID` (OpenCode), and Codex's `thread_id`
+/// (emitted on its `thread.started` event under `--json`); `None` when absent. A
+/// harness that emits no id headlessly (Goose, Copilot) yields `None` — its
+/// continuation handle is caller-supplied, never scraped.
 pub fn extract_session(stdout: &str) -> Option<String> {
     json_candidates(stdout).into_iter().find_map(|value| {
         let obj = value.as_object()?;
         obj.get("session_id")
             .or_else(|| obj.get("sessionID"))
+            .or_else(|| obj.get("thread_id"))
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
             .map(str::to_string)
@@ -301,6 +305,20 @@ mod tests {
         );
         assert_eq!(extract_session(r#"{"result":"x"}"#), None);
         assert_eq!(extract_session(r#"{"session_id":""}"#), None);
+    }
+
+    #[test]
+    fn session_id_read_from_camelcase_and_codex_thread_id() {
+        // OpenCode's camelCase handle.
+        assert_eq!(
+            extract_session(r#"{"sessionID":"ses_abc","type":"text"}"#),
+            Some("ses_abc".to_string())
+        );
+        // Codex's `thread.started` event under `--json` carries `thread_id`.
+        assert_eq!(
+            extract_session(r#"{"type":"thread.started","thread_id":"0199-xyz"}"#),
+            Some("0199-xyz".to_string())
+        );
     }
 
     #[test]

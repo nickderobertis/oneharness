@@ -129,6 +129,9 @@ pub struct RunReport {
     pub model: Option<String>,
     /// The session id being continued, when `--resume` was passed; else `null`.
     pub resume: Option<String>,
+    /// Whether the resumed session was forked (`--fork`) rather than appended to.
+    /// `false` unless `--resume` was given with `--fork`.
+    pub fork: bool,
     /// The normalized approval mode requested for this run (see the README
     /// support matrix). Each harness maps it to its own mechanism.
     pub permission_mode: PermissionMode,

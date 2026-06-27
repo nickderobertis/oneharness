@@ -272,6 +272,21 @@ shape. When you add one:
   sync merge is non-destructive by contract: unrelated keys untouched, lists
   unioned (idempotent re-sync), unparseable files refused and left intact,
   writes atomic. Keep those properties test-pinned when touching it.
+- Declare `supports_resume` / `supports_fork` and map them in `build_argv`,
+  sourced from that CLI's headless docs (never guessed). *Resume* is the
+  continuation flag (`--resume`, `--session`, or a subcommand like Codex's `exec
+  resume <id>`); all current harnesses support it, so `supports_resume` is a
+  drift-alarm for a future one that doesn't — when false, the command layer
+  rejects `--resume` rather than silently starting fresh. *Fork* (`run --resume
+  <id> --fork`) branches a new session from the resumed one and is rare — only
+  Claude Code (`--fork-session`) and OpenCode (`--fork`) express it headlessly;
+  the rest resume linearly, and `--fork` is a loud usage error for them (`fork`
+  implies `resume`, clap-enforced). Pin each mapping with a `build_argv`/`--print-
+  command` assertion, and remember the session-id round-trip: if the harness emits
+  an id headlessly, teach `signals::extract_session` its field (Codex's
+  `thread_id`); if it emits none (Goose, Copilot), the continuation handle is
+  caller-supplied (a `--name` / minted UUID) and `session_id` stays `null` — never
+  fabricate one. Update the `--resume` column in `README.md`.
 - Set its `native_schema` only if the CLI has a real schema flag, sourced from
   that CLI's docs (never guessed) — and pin the injected argv with a
   `--print-command`/`build_argv` assertion. `None` is the right default: the

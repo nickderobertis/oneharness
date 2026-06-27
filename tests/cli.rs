@@ -837,8 +837,58 @@ fn resume_maps_to_resume_flag_and_echoes_session() {
     );
 }
 
+/// Build a `--print-command` argv for one harness with the given extra args, and
+/// return its `results[0].command` as a Vec<String>.
+fn print_command_for(extra: &[&str]) -> Vec<String> {
+    let mut argv = vec!["run", "--prompt", "go", "--print-command", "--compact"];
+    argv.extend_from_slice(extra);
+    let output = run(&argv, &[]);
+    assert!(output.status.success(), "{:?}", output);
+    let value = json_stdout(&output);
+    value["results"][0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect()
+}
+
 #[test]
-fn resume_on_unsupported_harness_is_a_usage_error() {
+fn resume_maps_for_the_text_output_harnesses() {
+    // codex: `exec resume <id> <prompt>` (subcommand, id before prompt).
+    let codex = print_command_for(&["--harness", "codex", "--resume", "th-1"]);
+    assert!(
+        codex.windows(2).any(|w| w == ["exec", "resume"]),
+        "{codex:?}"
+    );
+    assert!(codex.iter().any(|t| t == "th-1"), "{codex:?}");
+    // goose: caller-named session via `--resume --name <name>`.
+    let goose = print_command_for(&["--harness", "goose", "--resume", "my-name"]);
+    assert!(goose.iter().any(|t| t == "--resume"), "{goose:?}");
+    assert!(
+        goose.windows(2).any(|w| w == ["--name", "my-name"]),
+        "{goose:?}"
+    );
+    // qwen / copilot: `--resume <id>`.
+    for id in ["qwen", "copilot"] {
+        let argv = print_command_for(&["--harness", id, "--resume", "uuid-x"]);
+        assert!(
+            argv.windows(2).any(|w| w == ["--resume", "uuid-x"]),
+            "{id}: {argv:?}"
+        );
+    }
+    // crush: `--session <id>`.
+    let crush = print_command_for(&["--harness", "crush", "--resume", "s-9"]);
+    assert!(
+        crush.windows(2).any(|w| w == ["--session", "s-9"]),
+        "{crush:?}"
+    );
+}
+
+#[test]
+fn fork_on_a_resume_only_harness_is_a_usage_error() {
+    // Codex supports --resume but resumes linearly; --fork is a loud error, not a
+    // silent linear resume.
     let output = run(
         &[
             "run",
@@ -847,14 +897,69 @@ fn resume_on_unsupported_harness_is_a_usage_error() {
             "--prompt",
             "hi",
             "--resume",
-            "sess-abc",
+            "th-1",
+            "--fork",
         ],
         &[],
     );
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("does not support --resume"), "{stderr}");
+    assert!(stderr.contains("does not support --fork"), "{stderr}");
     assert!(stderr.contains("claude-code"), "{stderr}");
+}
+
+#[test]
+fn fork_without_resume_is_rejected_by_clap() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--fork",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn fork_maps_to_native_flag_and_is_echoed() {
+    // claude-code: `--resume <id> --fork-session`, with the report echoing fork.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "go",
+            "--resume",
+            "sess-abc",
+            "--fork",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    assert_eq!(value["resume"], "sess-abc");
+    assert_eq!(value["fork"], true);
+    let command: Vec<String> = value["results"][0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        command.windows(2).any(|w| w == ["--resume", "sess-abc"]),
+        "{command:?}"
+    );
+    assert!(command.iter().any(|t| t == "--fork-session"), "{command:?}");
+    // opencode forks with `--fork`.
+    let opencode = print_command_for(&["--harness", "opencode", "--resume", "ses_x", "--fork"]);
+    assert!(opencode.iter().any(|t| t == "--fork"), "{opencode:?}");
 }
 
 #[test]
@@ -886,18 +991,25 @@ fn resume_with_all_is_rejected_by_clap() {
 }
 
 #[test]
-fn list_exposes_resume_capability() {
+fn list_exposes_resume_and_fork_capabilities() {
     let output = run(&["list", "--compact"], &[]);
     let value = json_stdout(&output);
     let harnesses = value["harnesses"].as_array().unwrap();
-    let claude = harnesses.iter().find(|h| h["id"] == "claude-code").unwrap();
-    let codex = harnesses.iter().find(|h| h["id"] == "codex").unwrap();
-    assert_eq!(claude["supports_resume"], true);
-    assert_eq!(codex["supports_resume"], false);
-    let opencode = harnesses.iter().find(|h| h["id"] == "opencode").unwrap();
-    let cursor = harnesses.iter().find(|h| h["id"] == "cursor").unwrap();
-    assert_eq!(opencode["supports_resume"], true);
-    assert_eq!(cursor["supports_resume"], true);
+    // Every harness now exposes a headless continuation flag.
+    for h in harnesses {
+        assert_eq!(h["supports_resume"], true, "{} resume", h["id"]);
+    }
+    let fork = |id: &str| {
+        harnesses.iter().find(|h| h["id"] == id).unwrap()["supports_fork"]
+            .as_bool()
+            .unwrap()
+    };
+    // Fork is claude-code + opencode only; the rest resume linearly.
+    assert!(fork("claude-code"));
+    assert!(fork("opencode"));
+    assert!(!fork("codex"));
+    assert!(!fork("cursor"));
+    assert!(!fork("goose"));
 }
 
 #[test]

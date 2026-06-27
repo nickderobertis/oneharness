@@ -21,6 +21,7 @@ $ oneharness run --all --prompt "Reply with the single word: pong" --model haiku
   "prompt": "Reply with the single word: pong",
   "model": "haiku",
   "resume": null,
+  "fork": false,
   "bypass_permissions": true,
   "dry_run": false,
   "config_files": ["/home/me/.config/oneharness/config.toml"],
@@ -56,16 +57,26 @@ The table doubles as the **config support matrix**: each column after the
 binary is a unified setting (CLI flag and/or `oneharness.toml` field) and shows
 how — or whether — it reaches that harness.
 
-| id | CLI | default binary | `model` | `system` | bypass mode requested | synced config file | allow / deny | hooks | output format | `--resume` |
+| id | CLI | default binary | `model` | `system` | bypass mode requested | synced config file | allow / deny | hooks | output format | `--resume` (continue / fork) |
 |----|-----|----------------|:-------:|----------|-----------------------|--------------------|:------------:|:-----:|:-------------:|:---------:|
-| `claude-code` | Claude Code | `claude` | ✓ | native flag | `--permission-mode bypassPermissions` | `.claude/settings.json` | ✓ / ✓ | ✓ | ✓ | `--resume` |
-| `codex` | OpenAI Codex CLI | `codex` | ✓ | prepended | `--dangerously-bypass-approvals-and-sandbox` | — | — | — | — | — |
-| `opencode` | OpenCode | `opencode` | ✓ | prepended | `--dangerously-skip-permissions` | `opencode.json` | via `settings` | — | ✓ | `--session` |
-| `goose` | Goose | `goose` | — | native flag | (runs unattended) | — | — | — | — | — |
-| `qwen` | Qwen Code | `qwen` | ✓ | prepended | `--yolo` | `.qwen/settings.json` | ✓ / ✓ (interactive) | — | — | — |
-| `crush` | Crush | `crush` | ✓ | prepended | `run -q` (non-interactive) | `crush.json` | ✓ / ✓ | — | — | — |
-| `copilot` | GitHub Copilot CLI | `copilot` | ✓ | prepended | `--allow-all-tools --allow-all-paths --no-ask-user` | — | — | — | — | — |
-| `cursor` | Cursor CLI | `cursor-agent` | ✓ | prepended | `--force` (`--trust` under `--no-bypass`) | `.cursor/cli.json` | ✓ / ✓ | — | ✓ | `--resume` |
+| `claude-code` | Claude Code | `claude` | ✓ | native flag | `--permission-mode bypassPermissions` | `.claude/settings.json` | ✓ / ✓ | ✓ | ✓ | `--resume` + `--fork-session` |
+| `codex` | OpenAI Codex CLI | `codex` | ✓ | prepended | `--dangerously-bypass-approvals-and-sandbox` | — | — | — | — | `exec resume <id>` (linear) |
+| `opencode` | OpenCode | `opencode` | ✓ | prepended | `--dangerously-skip-permissions` | `opencode.json` | via `settings` | — | ✓ | `--session` + `--fork` |
+| `goose` | Goose | `goose` | — | native flag | (runs unattended) | — | — | — | — | `--resume --name` (linear)¹ |
+| `qwen` | Qwen Code | `qwen` | ✓ | prepended | `--yolo` | `.qwen/settings.json` | ✓ / ✓ (interactive) | — | — | `--resume` (linear) |
+| `crush` | Crush | `crush` | ✓ | prepended | `run -q` (non-interactive) | `crush.json` | ✓ / ✓ | — | — | `--session` (linear) |
+| `copilot` | GitHub Copilot CLI | `copilot` | ✓ | prepended | `--allow-all-tools --allow-all-paths --no-ask-user` | — | — | — | — | `--resume` (linear)¹ |
+| `cursor` | Cursor CLI | `cursor-agent` | ✓ | prepended | `--force` (`--trust` under `--no-bypass`) | `.cursor/cli.json` | ✓ / ✓ | — | ✓ | `--resume` (linear) |
+
+The `--resume` column shows each harness's headless continuation flag and whether
+it can **fork** (`run --resume <id> --fork`: branch a new session from the resumed
+one, leaving the original — and its cached prefix — untouched). Only Claude Code
+(`--fork-session`) and OpenCode (`--fork`) fork headlessly; the rest *resume
+linearly* (append in place), and `--fork` is a usage error for them, never a
+silent linear resume. ¹ Goose and Copilot emit no session id to stdout headlessly,
+so their continuation handle is **caller-supplied** (a `--name`, or a minted UUID
+respectively) and reused on the next run — `session_id` stays `null` for them
+(nothing to extract); every other harness reports an id oneharness captures.
 
 - **`model`** — ✓ means the harness takes a model flag. Goose selects its model
   from its own provider config, so `model` is intentionally not mapped for it.
@@ -99,17 +110,19 @@ how — or whether — it reaches that harness.
   `output_format` setting maps onto; a `—` harness emits plain text and the
   setting only changes how `text` is extracted.
 - **`--resume`** — the flag each adapter maps `run --resume <session>` onto
-  (Claude Code, OpenCode, and Cursor today); a `—` means the harness has no
-  headless continuation flag, so `--resume` is rejected for it rather than
-  silently starting fresh.
+  (every harness supports headless continuation). The cell also shows whether the
+  harness can **fork** (`--fork`): Claude Code and OpenCode branch a new session
+  from the resumed one; the rest *resume linearly* (append in place), so `--fork`
+  is a usage error for them, never a silent linear resume.
 
 The remaining unified settings — `timeout`, `env`, `bin`, per-harness `args`,
 `cwd`, selection — are enforced by oneharness itself at run time, so they work
 for **every** harness — as does `--schema` ([structured output](#structured-output),
 prompt-based where a harness has no native schema flag). `oneharness list` prints
 this registry as JSON, including each adapter's exact command, its `sync_file`,
-and `supports_resume` / `supports_native_schema` / `supports_allowed_tools` /
-`supports_denied_tools` / `supports_hooks` capability flags.
+and `supports_resume` / `supports_fork` / `supports_native_schema` /
+`supports_allowed_tools` / `supports_denied_tools` / `supports_hooks` capability
+flags.
 
 ## Install
 
@@ -163,10 +176,18 @@ Useful `run` flags:
   `--system`), and prepended to the prompt otherwise, so the instructions always
   reach the model.
 - `--resume <session>` — continue a prior session, sending the prompt as its next
-  turn. **Single-harness only** (a session belongs to one harness) and only for
-  harnesses that support it (`supports_resume` in `oneharness list`); other
-  selections are a usage error rather than a silent fresh session. The continued
-  `session_id` is surfaced on each result (see below).
+  turn. **Single-harness only** (a session belongs to one harness); every harness
+  supports it, but multi-harness selections are still a usage error. The continued
+  `session_id` is surfaced on each result (see below). Harnesses that emit no id
+  headlessly (Goose, Copilot) take a **caller-supplied** handle you reuse across
+  runs (a `--name`, or a minted UUID).
+- `--fork` — with `--resume`, branch a **new** session from the resumed one
+  instead of appending to it, leaving the original (and its cached prefix)
+  untouched — so one expensive initial prompt can seed many independent follow-ups
+  that each reuse the cached prefix. Only Claude Code (`--fork-session`) and
+  OpenCode (`--fork`) fork headlessly (`supports_fork` in `oneharness list`);
+  requesting it for any other harness is a usage error, never a silent linear
+  resume. Requires `--resume`.
 - `--output-format <text|json|stream-json>` — override the format requested from
   each harness (default: per-harness); affects the emitted flag and how `text` is
   extracted.
@@ -417,10 +438,13 @@ more than one possible method) records how it was found:
   Code), `json:summed-steps` for one that reports per-step usage that oneharness
   sums (OpenCode). Cursor does not emit token usage today, so its `usage` stays
   `null`.
-- `session_id` — the handle a harness exposes for continuation, read from either
-  the snake_case `session_id` (Claude Code, Cursor) or camelCase `sessionID`
-  (OpenCode); feed it back via `run --resume <session>` (single-harness, supported
-  harnesses only) to drive a faithful multi-turn against the real agent.
+- `session_id` — the handle a harness exposes for continuation, read from the
+  snake_case `session_id` (Claude Code, Cursor, Qwen), camelCase `sessionID`
+  (OpenCode), or Codex's `thread_id`; feed it back via `run --resume <session>`
+  (single-harness) to drive a faithful multi-turn against the real agent, or add
+  `--fork` (Claude Code / OpenCode) to branch independent follow-ups off one cached
+  prefix. `null` for a harness that emits no id headlessly (Goose, Copilot) — their
+  handle is caller-supplied, never scraped (see the support matrix).
 - `failure_kind` / `failure_kind_source` — on a non-zero run, a coarse reason
   (`auth`, `rate_limit`, `model_not_found`, `quota`) so a caller can tell a
   retryable condition from a broken request. This is **distinct from `status`**,

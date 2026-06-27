@@ -127,6 +127,14 @@ pub struct RunArgs {
     #[arg(long, value_name = "SESSION", conflicts_with = "all")]
     pub resume: Option<String>,
 
+    /// Fork the resumed session instead of appending to it: branch a new session
+    /// from <SESSION> so the original (and its cached prefix) is untouched and can
+    /// seed independent follow-ups. Requires --resume, and only for harnesses that
+    /// support it (see `supports_fork` in `oneharness list`); others are a usage
+    /// error rather than a silent linear resume.
+    #[arg(long, requires = "resume")]
+    pub fork: bool,
+
     /// Override the output format requested from each harness (default: the
     /// per-harness default; see `oneharness list`). Affects both the emitted
     /// format flag and how `text` is extracted.

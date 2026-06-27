@@ -108,3 +108,9 @@ TOML
 
 note "» session_id forwarding: the shim must put input.sessionID on its payload"
 oh_opencode_session_id_forwarded
+
+# Edit enforcement: `--mode edit` rides the OPENCODE_CONFIG_CONTENT env var
+# ({"permission":{"edit":"allow","bash":"deny"}}) — a file edit must apply while
+# a shell `touch` is denied. The live proof that env-delivered mode is honored.
+note "» edit enforcement: edits apply, bash gated under --mode edit"
+oh_edit_enforce opencode

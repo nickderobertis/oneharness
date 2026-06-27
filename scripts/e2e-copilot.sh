@@ -22,3 +22,8 @@ oh_assert_echoed copilot "$marker"
 note "» read-only / plan enforcement: each must block a write"
 oh_mode_enforce copilot read-only
 oh_mode_enforce copilot plan
+
+# Edit enforcement: `--mode edit` allows the `write` tool but not `shell` — a file
+# edit must apply while a `touch` is blocked.
+note "» edit enforcement: edits apply, shell gated under --mode edit"
+oh_edit_enforce copilot

@@ -246,9 +246,14 @@ shape. When you add one:
   no-mutation mode the harness supports (`read-only`, `plan`), add an
   `oh_mode_enforce <id> <mode>` phase to its `e2e-<id>.sh` (a write blocked under
   `--mode <mode>`, allowed under `--mode bypass`) — the live proof the mapping is
-  honored and its drift alarm. A mode delivered by environment (Goose's
-  `GOOSE_MODE`, OpenCode's `OPENCODE_CONFIG_CONTENT`) is pinned hermetically via
-  the mock harness's `MOCK_ECHO_ENV` instead.
+  honored and its drift alarm. If the harness supports `edit` and cleanly gates
+  shell (not Claude's `acceptEdits`, which also auto-approves filesystem shell),
+  add `oh_edit_enforce <id>` (a file-tool edit applies while a shell `touch` is
+  blocked under `--mode edit`, both run under bypass). A mode delivered by
+  environment (Goose's `GOOSE_MODE`, OpenCode's `OPENCODE_CONFIG_CONTENT`) is
+  pinned hermetically via the mock harness's `MOCK_ECHO_ENV` instead. (`auto` has
+  no live drift-alarm: a deterministic cross-harness check would hinge on the
+  classifier's safe/risky split, which is model-dependent — it stays unit-pinned.)
 - Update the harness table in `README.md` — including its config-support
   columns (`model`, `system`, bypass, allow/deny rules, hooks, output format,
   `--resume`), which document how each unified setting reaches (or doesn't

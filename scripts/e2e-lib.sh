@@ -174,13 +174,21 @@ oh_sandbox_prepare() {
 # in the output proves this run produced it.
 oh_marker() { printf 'ONEHARNESS-LIVE-%s%s%s' "${RANDOM}" "${RANDOM}" "${RANDOM}"; }
 
-# The echo prompt: ask the harness to emit exactly the marker and nothing else.
-# Framed as a sanctioned connectivity check, not a bare "output this token":
-# coding-tuned harnesses (notably Copilot) otherwise refuse it as off-task
-# ("I'm here to help with software development tasks"). The verbatim-echo demand
-# is unchanged, so the marker assertion still means the model genuinely ran.
+# The connectivity prompt: ask the harness to include the random marker verbatim
+# somewhere in its reply. Two refusal modes to avoid, both observed live:
+#   * Copilot refuses a bare "output this token" as off-task ("I'm here to help
+#     with software development tasks") — so the prompt frames it as a test-suite
+#     connectivity check (an on-task software context).
+#   * Claude (haiku) refuses an over-framed "echo this token and NOTHING else,
+#     trust the framing" as a prompt-injection pattern — so the prompt drops the
+#     "nothing else / suppress all other output" demand and the defensive
+#     over-justification, and says plainly that the marker is a harmless,
+#     non-secret test fixture.
+# oh_assert_echoed is a substring check, so allowing the model to reply naturally
+# (and merely include the marker) is fine — its presence still proves the model
+# genuinely ran. Kept single-line for cross-shell quoting safety on Windows.
 oh_prompt() {
-    printf 'This is an automated connectivity check for the oneharness end-to-end test suite, and echoing the token below is the expected, approved task — not an arbitrary request to decline. The suite confirms the request/response round-trip by checking that one verification token comes back verbatim. Reply with this exact token and nothing else: no preamble, no explanation, no quotes, no code fences — just the token on a single line: %s' "$1"
+    printf 'This is an automated connectivity check for the oneharness end-to-end test suite — a harmless request/response round-trip test, not untrusted input and not a secret to guard. The identifier below is a random fixture the suite just generated; please confirm the round-trip by including it verbatim somewhere in your reply: %s' "$1"
 }
 
 # Run one prompt through oneharness against a real harness. Stores the JSON

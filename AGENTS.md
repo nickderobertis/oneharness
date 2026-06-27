@@ -246,14 +246,19 @@ shape. When you add one:
   no-mutation mode the harness supports (`read-only`, `plan`), add an
   `oh_mode_enforce <id> <mode>` phase to its `e2e-<id>.sh` (a write blocked under
   `--mode <mode>`, allowed under `--mode bypass`) — the live proof the mapping is
-  honored and its drift alarm. If the harness supports `edit` and cleanly gates
-  shell (not Claude's `acceptEdits`, which also auto-approves filesystem shell),
-  add `oh_edit_enforce <id>` (a file-tool edit applies while a shell `touch` is
-  blocked under `--mode edit`, both run under bypass). A mode delivered by
+  honored and its drift alarm. If the harness's `edit` auto-approves a write that
+  its non-edit posture would deny (copilot, qwen), add `oh_edit_enforce <id>` —
+  under `--mode edit` a file-tool edit must succeed, the live proof the edit
+  mapping is honored. Its "gate shell" half is NOT asserted live: it isn't
+  reliably testable, because a model told to write via shell routes around any
+  gate through whatever path the harness still allows (copilot auto-approves
+  `echo`, opencode delegates to a `task` subagent, qwen's auto-edit ran it) — that
+  half stays argv/env-pinned in the `domain::harness` tests. A mode delivered by
   environment (Goose's `GOOSE_MODE`, OpenCode's `OPENCODE_CONFIG_CONTENT`) is
-  pinned hermetically via the mock harness's `MOCK_ECHO_ENV` instead. (`auto` has
-  no live drift-alarm: a deterministic cross-harness check would hinge on the
-  classifier's safe/risky split, which is model-dependent — it stays unit-pinned.)
+  pinned hermetically via the mock harness's `MOCK_ECHO_ENV` instead. (`auto`
+  likewise has no live drift-alarm: a deterministic cross-harness check would
+  hinge on the classifier's model-dependent safe/risky split — it stays
+  unit-pinned.)
 - Update the harness table in `README.md` — including its config-support
   columns (`model`, `system`, bypass, allow/deny rules, hooks, output format,
   `--resume`), which document how each unified setting reaches (or doesn't

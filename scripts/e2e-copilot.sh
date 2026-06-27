@@ -23,7 +23,7 @@ note "» read-only / plan enforcement: each must block a write"
 oh_mode_enforce copilot read-only
 oh_mode_enforce copilot plan
 
-# Edit enforcement: `--mode edit` allows the `write` tool but not `shell` — a file
-# edit must apply while a `touch` is blocked.
-note "» edit enforcement: edits apply, shell gated under --mode edit"
+# Edit enforcement: `--mode edit` allows the `write` tool, so a file edit that
+# bare `-p` would auto-deny must apply.
+note "» edit enforcement: a file edit is auto-approved under --mode edit"
 oh_edit_enforce copilot

@@ -72,17 +72,28 @@ Use the `just` recipes; do not hand-roll equivalents.
   pass more than one prompt (`--prompt`/`--prompt-file` are repeatable, each one
   whole prompt) and `run` fans **one** harness over the N prompts instead —
   single-harness by nature (a provider cache prefix is per harness/model/tools),
-  and not a session continuation (no `--resume`/`--fork`). Pure scheduling lives
-  in `domain::batch` (the `BatchStrategy` waves: `speed` = one concurrent wave;
-  `min-tokens` = a one-call warm-up wave that writes the shared `--system` prefix
-  to cache, then the fanned-out rest read it). The command layer (`run_in_waves`)
-  runs the waves with a barrier between them; only spawning is I/O, so the
-  warm-then-fan ordering is unit-testable against the mock (`MOCK_LOG_FILE` records
-  start/end interleaving). Each result carries its own `prompt`; the report gains a
-  `batch` block. `--batch-strategy` is a per-invocation orchestration knob, so —
-  unlike most `run` flags — it deliberately has no config/`ONEHARNESS_*` layer. The
-  live drift alarm that the mode *reduces tokens* (not just reorders) is
-  `oh_batch_cache_enforce` in `e2e-claude.sh`, tied to the cache counts in `usage`.
+  and not itself a `--resume`/`--fork` continuation (those are a usage error with a
+  batch). Pure scheduling lives in `domain::batch` (the `BatchStrategy` waves:
+  `speed` = one concurrent wave; `min-tokens` = a one-call warm-up wave then the
+  fanned-out rest, with a barrier between). `min-tokens` *reduces tokens* only via
+  **session reuse**: a static `--system` is NOT reused across separate harness
+  processes (Claude Code re-creates a user-supplied `--append-system-prompt` every
+  `claude -p`; only its own global prefix gets cross-process cache reads — verified
+  live, three experiments). So on a **fork-capable** harness (`supports_fork`:
+  claude-code, opencode) the command layer's `run_fork_batch` runs the warm-up
+  (prompt[0], establishing a session that carries `--system`), reads its
+  `session_id`, then rewrites the fan-out jobs to `--resume <sid> --fork` (dropping
+  `--system`, inherited from the session) so they reuse the warmed prefix; on a
+  non-fork harness `min-tokens` only orders the calls (a stderr warning — no
+  reuse). `run_in_waves` covers `speed`/non-fork; `run_fork_batch` the fork path.
+  Only spawning is I/O, so the warm-then-fan ordering is unit-testable against the
+  mock (`MOCK_LOG_FILE` records start/end interleaving; a mock `session_id` drives
+  the fork-argv test). Each result carries its own `prompt`; the report's `batch`
+  block carries `strategy`/`prompt_count`/`forked`. `--batch-strategy` is a
+  per-invocation orchestration knob, so — unlike most `run` flags — it deliberately
+  has no config/`ONEHARNESS_*` layer. The live drift alarm that the mode *reduces
+  tokens* is `oh_batch_fork_enforce` in `e2e-claude.sh` (the fork fan-out reads the
+  warmed prefix and writes less than the warm-up), tied to the `usage` cache counts.
   `list` and `detect` describe and probe
   the registry; `config` shows the effective layered configuration with each
   value's source; `sync` merges the unified policy settings (allow/deny rules,

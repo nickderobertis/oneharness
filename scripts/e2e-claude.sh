@@ -34,20 +34,14 @@ oh_assert_echoed claude-code "$sysmarker"
 note "» cache reporting: a second run must surface cache_read_tokens"
 oh_cache_assert claude-code
 
-# Same-prefix batch mode: the `min-tokens` batch must run end to end — one harness
-# fanned over N prompts, every prompt clean, the batch block present, the fan-out
-# surfacing cache reads. (It does NOT assert a min-tokens-vs-speed reduction via a
-# static --system: Claude Code re-creates a user-appended --system per process, so
-# warm-then-fan saves nothing there — see oh_batch_smoke.)
-note "» batch orchestration: a min-tokens batch must run end to end"
-oh_batch_smoke claude-code
-
-# Session reuse (fork) is the realizable cost saving on Claude Code: a forked
-# call must REUSE the warmed session's cached prefix rather than re-create it
-# (fork cache_write < a cold run's). This is the premise behind a fork-based
-# min-tokens and the drift alarm the fork feature otherwise lacks.
-note "» fork caching: --resume --fork must reuse the warmed session's cached prefix"
-oh_fork_cache_assert claude-code
+# Same-prefix batch mode (fork-based min-tokens): the batch warms prompt[0] as a
+# session carrying the large shared --system, then FORKS it for the fan-out, so
+# each fanned-out call reuses the warmed cached prefix and writes less than the
+# warm-up. This is the end-to-end proof that min-tokens actually reduces tokens
+# on a fork-capable harness (a static --system can't be reused across separate
+# `claude -p` processes; session reuse is the realizable saving).
+note "» batch min-tokens (fork): the fan-out must reuse the warmed session and save writes"
+oh_batch_fork_enforce claude-code
 
 # Sync enforcement: a policy synced into .claude/settings.json must govern the
 # real CLI under --no-bypass — the allow rule lets the exact command run, the

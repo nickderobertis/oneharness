@@ -548,47 +548,54 @@ context (a spec, a big reference doc, few-shot examples) with a different questi
 each time. Pass more than one prompt and `run` switches to a **batch**: it drives
 **one** harness over each prompt and returns one report with a result per prompt
 (in order), each tagged with its own `prompt`. The top-level report gains a
-`batch` block (`{ "strategy", "prompt_count" }`); `results[].prompt` is
+`batch` block (`{ "strategy", "prompt_count", "forked" }`); `results[].prompt` is
 authoritative, and the top-level `prompt` repeats the first for back-compat.
 
 ```console
-# 3 questions over one shared context, warming the cache once:
+# 3 questions over one shared context, warming it once then forking:
 oneharness run --harness claude-code --system "$(cat reference.md)" \
   --prompt "Summarize section 2" \
   --prompt "List the open questions" \
   --prompt "What changed since v1?" \
-  --batch-strategy min-tokens --compact | jq '.results[].usage'
+  --batch-strategy min-tokens --compact | jq '.batch, .results[].usage'
 ```
 
-Why batch instead of running oneharness N times by hand: provider **prompt
-caching** keys on the harness's byte-exact request prefix (tools → system →
-messages), so identical `--system` + model + tool config across the prompts is a
-shared, cacheable prefix. oneharness keeps that prefix stable and times the calls
-so they land inside the cache TTL. Two strategies:
+Two strategies:
 
-- **`speed`** (default) — fire all prompts at once for minimum wall-clock. There
-  is no cache yet, so every call may *write* the prefix independently; this
-  optimizes latency, not tokens.
-- **`min-tokens`** — run **one** prompt first to *write* the shared prefix to
-  cache, wait for it, then fan the rest out concurrently so they *read* the warmed
-  prefix instead of each re-writing it. Optimizes cost at some wall-clock expense.
+- **`speed`** (default) — fire all prompts at once for minimum wall-clock. Every
+  call is independent; this optimizes latency, not tokens.
+- **`min-tokens`** — minimize redundant token spend on the shared prefix. On a
+  **fork-capable** harness (Claude Code, OpenCode) it runs the first prompt as a
+  warm-up that establishes a session carrying the shared `--system`, then **forks
+  that session** for the remaining prompts, so each fanned-out call *reuses* the
+  warmed cached prefix instead of re-sending it. The report sets `batch.forked:
+  true`, and the fanned-out results report `usage.cache_read_tokens > 0` with a
+  lower `cache_write_tokens` than the warm-up. oneharness never claims a saving it
+  can't measure — read the counts.
 
-Whether batching actually saves tokens is observable in the report: under
-`min-tokens` the fanned-out results report `usage.cache_read_tokens > 0` (see
-[the usage fields](#the-result-envelope-vs-the-normalized-signals)). oneharness
-never claims a saving it can't measure — read the counts.
+Why fork rather than just repeating `--system`: provider prompt caching keys on
+the harness's byte-exact request prefix, but these CLIs inject per-invocation
+content (Claude Code, for instance, re-creates a user-supplied
+`--append-system-prompt` on every separate `claude -p` process — only its *own*
+global prefix gets cross-process cache reads). So a static `--system` repeated
+across processes is **not** reused; the reliable cross-call reuse is a warmed
+**session**, which is exactly what `--fork` branches from (see
+[`--fork`](#usage)). `min-tokens` operationalizes that.
 
-**Caveats.** A batch is **single-harness** by nature (a cache prefix is per
-harness/model/tools) — selecting more than one harness (or `--all`), or combining
-with `--resume`/`--fork`, is a usage error. The shared prefix is only reliably
-cached on harnesses with a **native system flag** that gets its own breakpoint
-(Claude Code's `--append-system-prompt`, Goose's `--system`); on the *prepend*
-harnesses `--system` is glued to the front of the user message and usually isn't
-independently cached, so those benefit little. Caching itself is best-effort and
-provider-side: a ~5-min TTL (refreshed on hit), a minimum prefix length, and a
-prefix that must stay byte-identical (a harness/tool/version change busts it), so
-`min-tokens` only helps when the prefix clears the minimum and the fan-out lands
-within the warm-up's TTL.
+**Caveats.** A batch is **single-harness** by nature (a session/cache prefix is
+per harness/model/tools) — selecting more than one harness (or `--all`), or
+combining with `--resume`/`--fork`, is a usage error. The token saving needs a
+**fork-capable** harness (`supports_fork` in `oneharness list` — today Claude Code
+and OpenCode); on any other harness `min-tokens` only *orders* the calls (no
+reuse) and oneharness says so on stderr. Note this changes the fan-out's
+semantics: because the fork-capable fan-out branches from the warm-up's turn, the
+later prompts share the first prompt's context (the fork model — "one initial
+prompt seeds independent follow-ups"), rather than being fully independent
+questions. Caching itself is best-effort and provider-side (a ~5-min TTL refreshed
+on hit, a minimum prefix length, a byte-identical prefix), so the reuse only lands
+when the warmed session's prefix clears the minimum and the fan-out runs within
+its TTL. Use `speed` when you want N strictly-independent answers with no shared
+context.
 
 ### Safety note: bypass by default
 

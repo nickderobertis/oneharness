@@ -173,4 +173,11 @@ pub struct BatchReport {
     pub strategy: BatchStrategy,
     /// How many prompts were run (equals `results.len()`).
     pub prompt_count: usize,
+    /// Whether the fan-out actually **forked** the warm-up's session to reuse its
+    /// cached prefix (`min-tokens` on a fork-capable harness whose warm-up exposed
+    /// a session id). `false` for `speed`, for `min-tokens` on a harness that
+    /// cannot fork, or when the warm-up exposed no session to fork. When `true`,
+    /// the fan-out results' `command` carries the resume/fork flags and their
+    /// `usage.cache_read_tokens` reflect the reused prefix.
+    pub forked: bool,
 }

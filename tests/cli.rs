@@ -4417,3 +4417,95 @@ fn batch_with_an_unavailable_harness_skips_every_prompt() {
         assert_eq!(r["status"], "skipped");
     }
 }
+
+#[test]
+fn batch_min_tokens_forks_the_warmed_session_for_the_fan_out() {
+    // claude-code is fork-capable, so a min-tokens batch warms prompt[0] (a
+    // session) then FORKS it for the rest, reusing the warmed cached prefix. The
+    // mock emits a session_id so the fork wiring engages: the fan-out commands
+    // must carry --resume <sid> --fork-session and drop --system (inherited from
+    // the session), the warm-up must not, and the report marks the batch forked.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--batch-strategy",
+            "min-tokens",
+            "--system",
+            "shared context",
+            "--prompt",
+            "warm",
+            "--prompt",
+            "q1",
+            "--prompt",
+            "q2",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"ok","session_id":"SID-XYZ"}"#)],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["batch"]["strategy"], "min-tokens");
+    assert_eq!(value["batch"]["forked"], true);
+
+    let warm = command_of(&value, 0);
+    // Warm-up establishes the session: no --resume, and it carries --system.
+    assert!(!warm.contains(&"--resume".to_string()), "warm-up: {warm:?}");
+    assert!(
+        warm.contains(&"--append-system-prompt".to_string()),
+        "warm-up should send --system: {warm:?}"
+    );
+    // Fan-out forks the warmed session and does not re-send --system.
+    for i in [1, 2] {
+        let fan = command_of(&value, i);
+        assert!(
+            fan.windows(2).any(|w| w == ["--resume", "SID-XYZ"]),
+            "fan-out {i} should resume the warmed session: {fan:?}"
+        );
+        assert!(
+            fan.contains(&"--fork-session".to_string()),
+            "fan-out {i} should fork: {fan:?}"
+        );
+        assert!(
+            !fan.contains(&"--append-system-prompt".to_string()),
+            "fan-out {i} must not re-send --system (inherited from the session): {fan:?}"
+        );
+    }
+}
+
+#[test]
+fn batch_min_tokens_on_a_non_fork_harness_warns_and_does_not_fork() {
+    // Codex cannot fork, so min-tokens can only order the calls (no prefix reuse):
+    // the report marks it not forked and oneharness warns on stderr, while still
+    // producing one result per prompt.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--batch-strategy",
+            "min-tokens",
+            "--prompt",
+            "a",
+            "--prompt",
+            "b",
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    assert_eq!(value["batch"]["forked"], false);
+    assert_eq!(value["results"].as_array().unwrap().len(), 2);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not fork-capable"), "{stderr}");
+}

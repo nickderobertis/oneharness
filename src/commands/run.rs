@@ -206,7 +206,6 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             plan.push(Plan::Pending {
                 spec,
                 bin: resolved.bin,
-                command,
                 output_format,
                 job_index,
                 prompt: result_prompt,
@@ -215,30 +214,69 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         }
     }
 
-    // Schedule the jobs into waves. An ordinary run (and a batch under `speed`) is
-    // a single wave of everything; a batch under `min-tokens` is a warm-up wave of
-    // one followed by the fanned-out rest. The runner spawns each wave in parallel
-    // and we keep a barrier between waves, so `min-tokens` truly writes the shared
-    // cache prefix before the readers fan out.
+    // Schedule and run the jobs. An ordinary run (and a batch under `speed`) is a
+    // single concurrent wave; a batch under `min-tokens` runs a one-call warm-up
+    // before the fanned-out rest, with a barrier between them.
     let max_parallel = args
         .max_parallel
         .or(cfg.max_parallel)
         .unwrap_or(jobs.len().max(1));
-    let waves = if batch_run {
-        batch::waves(batch_strategy, jobs.len())
-    } else if jobs.is_empty() {
-        Vec::new()
+    // Fork-based `min-tokens`: when a batch's single harness can fork, the warm-up
+    // (prompt[0]) establishes a session and the fan-out branches forks of it, so
+    // each reuses the warmed cached prefix — the realizable token saving on these
+    // CLIs (a static --system is re-created per process, so plain warm-then-fan
+    // saves nothing). It needs the warm-up's *runtime* session id, so it cannot
+    // run under --print-command (nothing executes, no session).
+    let fork_batch = batch_run
+        && batch_strategy == BatchStrategy::MinTokens
+        && specs[0].supports_fork
+        && !args.print_command
+        && !jobs.is_empty();
+    // `min-tokens` on a harness that cannot fork only reorders the calls: there is
+    // no fork to reuse a prefix, and a prepended --system is not independently
+    // cached. Say so rather than imply a saving the harness can't deliver.
+    if batch_run
+        && batch_strategy == BatchStrategy::MinTokens
+        && !specs[0].supports_fork
+        && !args.print_command
+    {
+        eprintln!(
+            "oneharness: warning: `--batch-strategy min-tokens` cannot reduce tokens on `{}` \
+             (not fork-capable); it only orders the calls. Token savings need a fork-capable \
+             harness (see `supports_fork` in `oneharness list`).",
+            specs[0].id
+        );
+    }
+    let mut forked = false;
+    let outcomes = if fork_batch {
+        let o = run_fork_batch(
+            &mut jobs,
+            &mut job_plans,
+            schema.as_ref(),
+            max_retries,
+            max_parallel,
+        );
+        // The fan-out actually forked iff the warm-up exposed a session to branch
+        // (run_fork_batch sets the fan-out plans' `resume` only when it did).
+        forked = job_plans.len() > 1 && job_plans[1].resume.is_some();
+        o
     } else {
-        vec![(0..jobs.len()).collect()]
+        let waves = if batch_run {
+            batch::waves(batch_strategy, jobs.len())
+        } else if jobs.is_empty() {
+            Vec::new()
+        } else {
+            vec![(0..jobs.len()).collect()]
+        };
+        run_in_waves(
+            &jobs,
+            &job_plans,
+            schema.as_ref(),
+            max_retries,
+            max_parallel,
+            &waves,
+        )
     };
-    let outcomes = run_in_waves(
-        &jobs,
-        &job_plans,
-        schema.as_ref(),
-        max_retries,
-        max_parallel,
-        &waves,
-    );
 
     let results: Vec<RunResult> = plan
         .into_iter()
@@ -247,12 +285,14 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             Plan::Pending {
                 spec,
                 bin,
-                command,
                 output_format,
                 job_index,
                 prompt,
             } => {
                 let outcome = &outcomes[job_index];
+                // The argv actually run (fork-batch rewrites the fan-out jobs to
+                // resume+fork the warmed session, so read it back from the job).
+                let command = jobs[job_index].argv.clone();
                 executed_result(
                     spec,
                     bin,
@@ -292,6 +332,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         batch: batch_run.then_some(BatchReport {
             strategy: batch_strategy,
             prompt_count: prompts.len(),
+            forked,
         }),
         config_files: loaded.files,
         results,
@@ -350,6 +391,64 @@ fn run_in_waves(
         .collect()
 }
 
+/// Execute a fork-based `min-tokens` batch (job 0 is the warm-up, jobs 1.. the
+/// fan-out). Runs the warm-up to establish a session, then — if it exposed a
+/// session id — rewrites each fan-out job to `--resume <sid> --fork` (dropping
+/// `--system`, which the session already carries) so the fan-out reuses the
+/// warmed cached prefix, and runs them concurrently. Falls back to plain
+/// independent fan-out (a warning, no reuse) when no session id is exposed.
+/// Mutates `jobs`/`job_plans` in place (the caller reads back the rewritten argv
+/// for the report, and checks `job_plans[1].resume` to learn whether it forked).
+/// Returns outcomes in job order. The structured-output retry closure is rebound
+/// per wave so its local index maps to the right `job_plans` entry.
+fn run_fork_batch(
+    jobs: &mut [Job],
+    job_plans: &mut [HarnessPlan],
+    schema: Option<&Schema>,
+    max_retries: u32,
+    max_parallel: usize,
+) -> Vec<Outcome> {
+    let n = jobs.len();
+    // Warm-up: job 0 alone (its own wave).
+    let warm = runner::run_jobs_with(&jobs[0..1], 1, |_, attempt, capture| {
+        schema.and_then(|s| retry_decision(&job_plans[0], s, attempt, max_retries, capture))
+    })
+    .into_iter()
+    .next()
+    .expect("one warm-up outcome");
+    if n == 1 {
+        return vec![warm];
+    }
+    // Branch the fan-out from the warmed session, when one was exposed. A
+    // fork-capable harness (claude-code, opencode) emits a session id headlessly;
+    // if absent, leave the fan-out as independent runs so the batch still
+    // produces results (no cache reuse).
+    match signals::extract_session(&warm.capture.stdout) {
+        Some(sid) => {
+            for plan in job_plans.iter_mut().skip(1) {
+                plan.resume = Some(sid.clone());
+                plan.fork = true;
+                plan.system = None; // the session already carries --system
+            }
+            for (i, job) in jobs.iter_mut().enumerate().skip(1) {
+                job.argv = job_plans[i].argv(schema, None);
+            }
+        }
+        None => eprintln!(
+            "oneharness: warning: the batch warm-up exposed no session id to fork; \
+             the fan-out runs independently (no cache reuse)."
+        ),
+    }
+    // Fan-out: jobs 1..n concurrently (local index k → job 1 + k).
+    let fan = runner::run_jobs_with(&jobs[1..n], max_parallel, |k, attempt, capture| {
+        schema.and_then(|s| retry_decision(&job_plans[1 + k], s, attempt, max_retries, capture))
+    });
+    let mut outcomes = Vec::with_capacity(n);
+    outcomes.push(warm);
+    outcomes.extend(fan);
+    outcomes
+}
+
 /// A planned harness: either fully resolved (skipped/planned) or awaiting a job.
 /// `Ready` is boxed because `RunResult` is far larger than `Pending`'s fields.
 enum Plan {
@@ -357,7 +456,6 @@ enum Plan {
     Pending {
         spec: &'static HarnessSpec,
         bin: String,
-        command: Vec<String>,
         output_format: OutputFormat,
         job_index: usize,
         /// The per-result prompt on a batch run; `None` otherwise.

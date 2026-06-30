@@ -315,6 +315,53 @@ oh_assert_echoed() {
     note "PASS: $id live e2e"
 }
 
+# --- usage / cache-token reporting -------------------------------------------
+
+# Live proof that oneharness surfaces provider prompt-cache counts in the
+# normalized `usage` — the drift alarm for cache-token extraction against the
+# REAL harness output shape (the hermetic suite can only mock the JSON). Only
+# Claude Code and OpenCode report cache counts today (see the README `usage`
+# field docs); call this only for those two.
+#
+# Provider prompt caching keys on the byte-exact request *prefix* (tools +
+# system) the harness assembles, which is identical across two runs with the
+# same model — the user message comes after the cache breakpoint, so it may
+# differ. So a first "warm" run writes that prefix into the provider cache, and a
+# second run (well within the ~5-min TTL) reads it back. We assert the second run
+# reports cache_read_tokens > 0: the only end-to-end proof the count is real and
+# lifted from the live harness's own usage block, not a mock.
+#   $1 harness id
+oh_cache_assert() {
+    local id="$1"
+    local status write1 read1 read2
+
+    note "  cache[warm]: a first run writes the cacheable tools+system prefix"
+    oh_run "$id" "$(oh_prompt "$(oh_marker)")"
+    status="$(oh_field '.results[0].status')"
+    if [ "$status" = "skipped" ] || [ "$(oh_field '.results[0].available')" != "true" ]; then
+        skip "$id is not installed (oneharness reported status=$status); nothing to verify"
+    fi
+    [ "$status" = "ok" ] || { oh_dump; fail "$id: cache warm-up run did not complete (status=$status)"; }
+    write1="$(oh_field '.results[0].usage.cache_write_tokens // 0')"
+    read1="$(oh_field '.results[0].usage.cache_read_tokens // 0')"
+    note "  warm run usage: cache_write_tokens=$write1 cache_read_tokens=$read1"
+
+    note "  cache[read]: a second run with the same prefix must read it back"
+    oh_run "$id" "$(oh_prompt "$(oh_marker)")"
+    status="$(oh_field '.results[0].status')"
+    [ "$status" = "ok" ] || { oh_dump; fail "$id: cache-read run did not complete (status=$status)"; }
+    read2="$(oh_field '.results[0].usage.cache_read_tokens // 0')"
+    note "  second run usage: cache_read_tokens=$read2 input_tokens=$(oh_field '.results[0].usage.input_tokens // "null"')"
+
+    if [ "${read2:-0}" -gt 0 ] 2>/dev/null; then
+        note "PASS: $id surfaced cache_read_tokens ($read2) on the cached second run"
+    else
+        oh_dump
+        note "  usage: $(printf '%s' "$OH_REPORT" | jq -c '.results[0].usage')"
+        fail "$id: the second run reported no cache_read_tokens (> 0) — either provider caching did not land (prefix unstable, under the cache-size threshold, or cold beyond the TTL) or oneharness's cache-token extraction drifted from the live shape"
+    fi
+}
+
 # --- sync enforcement --------------------------------------------------------
 
 # One phase of the sync-enforcement check: plant a oneharness.toml in a fresh

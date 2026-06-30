@@ -440,10 +440,18 @@ more than one possible method) records how it was found:
   surface **provider-side prompt-cache** counts — `cache_read_tokens` is prefix
   tokens served cheaply from cache, `cache_write_tokens` is tokens written to it
   (a.k.a. cache creation) — so a consumer can confirm a repeated/forked run
-  actually hit the cache. Only Claude Code (`cache_read_input_tokens` /
-  `cache_creation_input_tokens`) and OpenCode (`tokens.cache.{read,write}`) report
-  them today; harnesses that don't leave both `null` (never `0` as a guess). Cursor
-  does not emit token usage today, so its `usage` stays `null`.
+  actually hit the cache. Cache-reporting support today (the rest leave both cache
+  fields `null` — never `0` as a guess):
+
+  | harness | cache fields | source field(s) |
+  |---------|:------------:|-----------------|
+  | `claude-code` | ✓ read + write | `usage.cache_read_input_tokens` / `usage.cache_creation_input_tokens` |
+  | `opencode` | ✓ read + write | summed `part.tokens.cache.{read,write}` |
+  | all others | — | (no cache counts emitted; `cursor` emits no usage at all) |
+
+  Each supported harness has a live drift alarm (`oh_cache_assert` in its
+  `scripts/e2e-<id>.sh`): a second run within the cache TTL must surface
+  `cache_read_tokens > 0`, proving the extraction matches the real output shape.
 - `session_id` — the handle a harness exposes for continuation, read from the
   snake_case `session_id` (Claude Code, Cursor, Qwen), camelCase `sessionID`
   (OpenCode), or Codex's `thread_id`; feed it back via `run --resume <session>`

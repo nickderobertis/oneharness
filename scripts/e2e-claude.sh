@@ -27,6 +27,13 @@ multiline_system="$(printf 'You are a connectivity-check fixture.\nFollow the ne
 oh_run claude-code "Follow your system instructions." --system "$multiline_system"
 oh_assert_echoed claude-code "$sysmarker"
 
+# Cache-token reporting: Claude Code auto-caches its tools+system prefix, so a
+# second run within the TTL reads it back. Assert oneharness surfaces the
+# provider's cache_read_tokens (read from `cache_read_input_tokens`) — the live
+# drift alarm for cache-token extraction.
+note "» cache reporting: a second run must surface cache_read_tokens"
+oh_cache_assert claude-code
+
 # Sync enforcement: a policy synced into .claude/settings.json must govern the
 # real CLI under --no-bypass — the allow rule lets the exact command run, the
 # deny rule (and headless default-deny) keeps the other from running.

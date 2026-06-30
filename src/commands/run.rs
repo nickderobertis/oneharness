@@ -4,10 +4,11 @@ use std::time::Duration;
 
 use crate::cli::RunArgs;
 use crate::commands::{print_json, select_specs};
+use oneharness_core::domain::batch::{self, BatchStrategy};
 use oneharness_core::domain::harness::{self, BuildCtx, HarnessSpec};
 use oneharness_core::domain::mode::{ModeHeadless, PermissionMode};
 use oneharness_core::domain::report::{
-    Capture, OutputFormat, RunReport, RunResult, Status, SCHEMA_VERSION,
+    BatchReport, Capture, OutputFormat, RunReport, RunResult, Status, SCHEMA_VERSION,
 };
 use oneharness_core::domain::signals::Usage;
 use oneharness_core::domain::structured::{self, Schema};
@@ -15,7 +16,7 @@ use oneharness_core::domain::{normalize, signals};
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::config as config_io;
 use oneharness_core::io::detect::{self, BinOverrides};
-use oneharness_core::io::runner::{self, Job};
+use oneharness_core::io::runner::{self, Job, Outcome};
 
 /// Exit codes (clap uses 2 for argument errors).
 const EXIT_OK: i32 = 0;
@@ -32,7 +33,13 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let loaded = config_io::load(args.config.as_deref(), args.no_config, &project_start)?;
     let cfg = &loaded.config;
 
-    let prompt = resolve_prompt(args)?;
+    let prompts = resolve_prompts(args)?;
+    // A batch run is "one harness over N prompts that share a cacheable prefix"
+    // (the same --system/model). It is signalled simply by more than one prompt;
+    // a single prompt keeps the ordinary "one prompt across the selected
+    // harnesses" behavior.
+    let batch_run = prompts.len() > 1;
+    let batch_strategy = args.batch_strategy.unwrap_or(BatchStrategy::Speed);
     // Structured output: an optional compiled schema and the per-harness retry
     // budget. Compiling here (once) turns an invalid schema into a loud usage
     // error before any harness is spawned.
@@ -57,6 +64,12 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         args.exclude.clone()
     };
     let specs = select_specs(all, &include, &exclude)?;
+    // A batch (multi-prompt) run is single-harness by nature — a provider cache
+    // prefix is per harness/model/tools — and is a fresh fan-out, not a session
+    // continuation. Refuse both before anything spawns (loud usage errors).
+    if batch_run {
+        validate_batch(&specs, args.resume.is_some() || args.fork)?;
+    }
     let resume = args.resume.as_deref();
     validate_resume(resume, &specs)?;
     // `--fork` (clap-guaranteed to imply `--resume`) branches a new session
@@ -92,15 +105,28 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let timeout = args.timeout.or(cfg.timeout).unwrap_or(120);
     let require_available = args.require_available || cfg.require_available.unwrap_or(false);
 
-    // Build a plan entry for every selected harness; queue jobs only for the
-    // ones that are available and actually being executed. `job_plans` parallels
-    // `jobs` and retains what the structured-output retry loop needs to rebuild
-    // a harness's argv with a feedback prompt.
-    let mut plan: Vec<Plan> = Vec::with_capacity(specs.len());
+    // The (harness, prompt) units to run. An ordinary run is each selected
+    // harness against the one prompt; a batch run is the single selected harness
+    // against each prompt (so `results` carries one entry per prompt, in order).
+    let units: Vec<(&'static HarnessSpec, &str)> = if batch_run {
+        prompts.iter().map(|p| (specs[0], p.as_str())).collect()
+    } else {
+        specs.iter().map(|s| (*s, prompts[0].as_str())).collect()
+    };
+
+    // Build a plan entry for every unit; queue jobs only for the ones that are
+    // available and actually being executed. `job_plans` parallels `jobs` and
+    // retains what the structured-output retry loop needs to rebuild a unit's
+    // argv with a feedback prompt.
+    let mut plan: Vec<Plan> = Vec::with_capacity(units.len());
     let mut jobs: Vec<Job> = Vec::new();
     let mut job_plans: Vec<HarnessPlan> = Vec::new();
 
-    for spec in &specs {
+    for (spec, unit_prompt) in &units {
+        let spec = *spec;
+        // On a batch run each result records the prompt it ran (they differ);
+        // on an ordinary run the single top-level `prompt` covers them all.
+        let result_prompt = batch_run.then(|| unit_prompt.to_string());
         let resolved = detect::resolve(spec, &overrides);
         let chosen_format = args
             .output_format
@@ -133,7 +159,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             mode,
             output_format,
             native,
-            base_prompt: prompt.clone(),
+            base_prompt: unit_prompt.to_string(),
             extra,
         };
         let command = harness_plan.argv(schema.as_ref(), None);
@@ -145,6 +171,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 resolved.available,
                 command,
                 output_format,
+                result_prompt,
             ))));
         } else if !resolved.available {
             plan.push(Plan::Ready(Box::new(skipped_result(
@@ -152,6 +179,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 &resolved.bin,
                 command,
                 output_format,
+                result_prompt,
             ))));
         } else {
             let job_index = jobs.len();
@@ -178,27 +206,79 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             plan.push(Plan::Pending {
                 spec,
                 bin: resolved.bin,
-                command,
                 output_format,
                 job_index,
+                prompt: result_prompt,
             });
             job_plans.push(harness_plan);
         }
     }
 
-    let outcomes = if jobs.is_empty() {
-        Vec::new()
+    // Schedule and run the jobs. An ordinary run (and a batch under `speed`) is a
+    // single concurrent wave; a batch under `min-tokens` runs a one-call warm-up
+    // before the fanned-out rest, with a barrier between them.
+    let max_parallel = args
+        .max_parallel
+        .or(cfg.max_parallel)
+        .unwrap_or(jobs.len().max(1));
+    // Fork-based `min-tokens`: when a batch's single harness can fork, the warm-up
+    // (prompt[0]) establishes a session and the fan-out branches forks of it, so
+    // each reuses the warmed cached prefix — the realizable token saving on these
+    // CLIs (a static --system is re-created per process, so plain warm-then-fan
+    // saves nothing). It needs the warm-up's *runtime* session id, so it cannot
+    // run under --print-command (nothing executes, no session).
+    let fork_batch = batch_run
+        && batch_strategy == BatchStrategy::MinTokens
+        && specs[0].fork_reuses_cache
+        && !args.print_command
+        && !jobs.is_empty();
+    // `min-tokens` reduces tokens only when the harness has a *cache-reusing* fork
+    // (the warm-up writes the shared prefix, the forked fan-out reads it). When it
+    // does not — no fork at all, or a fork that re-sends the prefix cold, like
+    // OpenCode — `min-tokens` can only order the calls; say so rather than imply a
+    // saving the harness can't deliver.
+    if batch_run
+        && batch_strategy == BatchStrategy::MinTokens
+        && !specs[0].fork_reuses_cache
+        && !args.print_command
+    {
+        eprintln!(
+            "oneharness: warning: `--batch-strategy min-tokens` cannot reduce tokens on `{}` \
+             (no cache-reusing fork available); it only orders the calls. Token savings need a \
+             harness whose fork reuses the prompt cache (see `fork_reuses_cache` in \
+             `oneharness list`).",
+            specs[0].id
+        );
+    }
+    let mut forked = false;
+    let outcomes = if fork_batch {
+        let o = run_fork_batch(
+            &mut jobs,
+            &mut job_plans,
+            schema.as_ref(),
+            max_retries,
+            max_parallel,
+        );
+        // The fan-out actually forked iff the warm-up exposed a session to branch
+        // (run_fork_batch sets the fan-out plans' `resume` only when it did).
+        forked = job_plans.len() > 1 && job_plans[1].resume.is_some();
+        o
     } else {
-        let max_parallel = args.max_parallel.or(cfg.max_parallel).unwrap_or(jobs.len());
-        match schema.as_ref() {
-            // Structured output: after each run, validate and (if it failed and
-            // retries remain) re-run with a feedback prompt. The closure is pure
-            // domain validation; the runner owns the spawning.
-            Some(sch) => runner::run_jobs_with(&jobs, max_parallel, |i, attempt, capture| {
-                retry_decision(&job_plans[i], sch, attempt, max_retries, capture)
-            }),
-            None => runner::run_jobs_with(&jobs, max_parallel, |_, _, _| None),
-        }
+        let waves = if batch_run {
+            batch::waves(batch_strategy, jobs.len())
+        } else if jobs.is_empty() {
+            Vec::new()
+        } else {
+            vec![(0..jobs.len()).collect()]
+        };
+        run_in_waves(
+            &jobs,
+            &job_plans,
+            schema.as_ref(),
+            max_retries,
+            max_parallel,
+            &waves,
+        )
     };
 
     let results: Vec<RunResult> = plan
@@ -208,11 +288,14 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             Plan::Pending {
                 spec,
                 bin,
-                command,
                 output_format,
                 job_index,
+                prompt,
             } => {
                 let outcome = &outcomes[job_index];
+                // The argv actually run (fork-batch rewrites the fan-out jobs to
+                // resume+fork the warmed session, so read it back from the job).
+                let command = jobs[job_index].argv.clone();
                 executed_result(
                     spec,
                     bin,
@@ -221,6 +304,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                     &outcome.capture,
                     schema.as_ref(),
                     outcome.attempts,
+                    prompt,
                 )
             }
         })
@@ -235,7 +319,9 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let report = RunReport {
         schema_version: SCHEMA_VERSION,
         oneharness_version: env!("CARGO_PKG_VERSION"),
-        prompt,
+        // On a batch run the per-result `prompt` is authoritative; the top-level
+        // field repeats the first prompt for back-compat (it is always present).
+        prompt: prompts[0].clone(),
         // The effective top-level model (CLI, else config); a per-harness
         // config model is visible in that result's `command`.
         model: model.map(str::to_string),
@@ -246,6 +332,11 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         dry_run: args.print_command,
         schema: schema.as_ref().map(|s| s.as_value().clone()),
         schema_max_retries: schema.as_ref().map(|_| max_retries),
+        batch: batch_run.then_some(BatchReport {
+            strategy: batch_strategy,
+            prompt_count: prompts.len(),
+            forked,
+        }),
         config_files: loaded.files,
         results,
     };
@@ -265,6 +356,102 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     Ok(exit)
 }
 
+/// Run `jobs` wave by wave, preserving global order in the returned outcomes.
+/// Each wave is a set of job indices run concurrently (up to `max_parallel`),
+/// with a barrier between waves — so a `min-tokens` batch's warm-up call fully
+/// completes (writing the shared cache prefix) before the readers fan out. The
+/// structured-output retry closure is rebound per wave so its local index maps
+/// back to the right `job_plans` entry. Every index in `0..jobs.len()` must
+/// appear in exactly one wave (guaranteed by `batch::waves` and the single-wave
+/// fallback), so every outcome slot is filled exactly once.
+fn run_in_waves(
+    jobs: &[Job],
+    job_plans: &[HarnessPlan],
+    schema: Option<&Schema>,
+    max_retries: u32,
+    max_parallel: usize,
+    waves: &[Vec<usize>],
+) -> Vec<Outcome> {
+    let mut slots: Vec<Option<Outcome>> = (0..jobs.len()).map(|_| None).collect();
+    for wave in waves {
+        let wave_jobs: Vec<Job> = wave.iter().map(|&i| jobs[i].clone()).collect();
+        let outs = match schema {
+            // Structured output: after each run, validate and (if it failed and
+            // retries remain) re-run with a feedback prompt. The closure is pure
+            // domain validation; the runner owns the spawning.
+            Some(sch) => runner::run_jobs_with(&wave_jobs, max_parallel, |k, attempt, capture| {
+                retry_decision(&job_plans[wave[k]], sch, attempt, max_retries, capture)
+            }),
+            None => runner::run_jobs_with(&wave_jobs, max_parallel, |_, _, _| None),
+        };
+        for (k, out) in outs.into_iter().enumerate() {
+            slots[wave[k]] = Some(out);
+        }
+    }
+    slots
+        .into_iter()
+        .map(|o| o.expect("every job is scheduled into exactly one wave"))
+        .collect()
+}
+
+/// Execute a fork-based `min-tokens` batch (job 0 is the warm-up, jobs 1.. the
+/// fan-out). Runs the warm-up to establish a session, then — if it exposed a
+/// session id — rewrites each fan-out job to `--resume <sid> --fork` (dropping
+/// `--system`, which the session already carries) so the fan-out reuses the
+/// warmed cached prefix, and runs them concurrently. Falls back to plain
+/// independent fan-out (a warning, no reuse) when no session id is exposed.
+/// Mutates `jobs`/`job_plans` in place (the caller reads back the rewritten argv
+/// for the report, and checks `job_plans[1].resume` to learn whether it forked).
+/// Returns outcomes in job order. The structured-output retry closure is rebound
+/// per wave so its local index maps to the right `job_plans` entry.
+fn run_fork_batch(
+    jobs: &mut [Job],
+    job_plans: &mut [HarnessPlan],
+    schema: Option<&Schema>,
+    max_retries: u32,
+    max_parallel: usize,
+) -> Vec<Outcome> {
+    let n = jobs.len();
+    // Warm-up: job 0 alone (its own wave).
+    let warm = runner::run_jobs_with(&jobs[0..1], 1, |_, attempt, capture| {
+        schema.and_then(|s| retry_decision(&job_plans[0], s, attempt, max_retries, capture))
+    })
+    .into_iter()
+    .next()
+    .expect("one warm-up outcome");
+    if n == 1 {
+        return vec![warm];
+    }
+    // Branch the fan-out from the warmed session, when one was exposed. A
+    // fork-capable harness (claude-code, opencode) emits a session id headlessly;
+    // if absent, leave the fan-out as independent runs so the batch still
+    // produces results (no cache reuse).
+    match signals::extract_session(&warm.capture.stdout) {
+        Some(sid) => {
+            for plan in job_plans.iter_mut().skip(1) {
+                plan.resume = Some(sid.clone());
+                plan.fork = true;
+                plan.system = None; // the session already carries --system
+            }
+            for (i, job) in jobs.iter_mut().enumerate().skip(1) {
+                job.argv = job_plans[i].argv(schema, None);
+            }
+        }
+        None => eprintln!(
+            "oneharness: warning: the batch warm-up exposed no session id to fork; \
+             the fan-out runs independently (no cache reuse)."
+        ),
+    }
+    // Fan-out: jobs 1..n concurrently (local index k → job 1 + k).
+    let fan = runner::run_jobs_with(&jobs[1..n], max_parallel, |k, attempt, capture| {
+        schema.and_then(|s| retry_decision(&job_plans[1 + k], s, attempt, max_retries, capture))
+    });
+    let mut outcomes = Vec::with_capacity(n);
+    outcomes.push(warm);
+    outcomes.extend(fan);
+    outcomes
+}
+
 /// A planned harness: either fully resolved (skipped/planned) or awaiting a job.
 /// `Ready` is boxed because `RunResult` is far larger than `Pending`'s fields.
 enum Plan {
@@ -272,9 +459,10 @@ enum Plan {
     Pending {
         spec: &'static HarnessSpec,
         bin: String,
-        command: Vec<String>,
         output_format: OutputFormat,
         job_index: usize,
+        /// The per-result prompt on a batch run; `None` otherwise.
+        prompt: Option<String>,
     },
 }
 
@@ -284,12 +472,14 @@ fn planned_result(
     available: bool,
     command: Vec<String>,
     output_format: OutputFormat,
+    prompt: Option<String>,
 ) -> RunResult {
     RunResult {
         harness: spec.id.to_string(),
         bin: bin.to_string(),
         available,
         status: Status::Planned,
+        prompt,
         exit_code: None,
         duration_ms: None,
         command,
@@ -316,12 +506,14 @@ fn skipped_result(
     bin: &str,
     command: Vec<String>,
     output_format: OutputFormat,
+    prompt: Option<String>,
 ) -> RunResult {
     RunResult {
         harness: spec.id.to_string(),
         bin: bin.to_string(),
         available: false,
         status: Status::Skipped,
+        prompt,
         exit_code: None,
         duration_ms: None,
         command,
@@ -346,6 +538,7 @@ fn skipped_result(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn executed_result(
     spec: &HarnessSpec,
     bin: String,
@@ -354,6 +547,7 @@ fn executed_result(
     capture: &Capture,
     schema: Option<&Schema>,
     attempts: u32,
+    prompt: Option<String>,
 ) -> RunResult {
     // Best-effort signals are extracted only from a run that actually produced
     // output (ok or non-zero), never fabricated for a timeout/spawn failure.
@@ -415,6 +609,7 @@ fn executed_result(
         bin,
         available: true,
         status: capture.status,
+        prompt,
         exit_code: capture.exit_code,
         duration_ms: capture.duration_ms,
         command,
@@ -600,8 +795,17 @@ fn exit_code(results: &[RunResult], require_available: bool) -> i32 {
     }
 }
 
-fn resolve_prompt(args: &RunArgs) -> Result<String, OneharnessError> {
-    if let Some(path) = &args.prompt_file {
+/// Resolve the prompt list, in order: every `--prompt` value, then every
+/// `--prompt-file` (each file read whole as one prompt; `-` reads stdin once).
+/// More than one prompt makes this a batch run. Empty is a usage error.
+fn resolve_prompts(args: &RunArgs) -> Result<Vec<String>, OneharnessError> {
+    let mut prompts: Vec<String> = args.prompt.clone();
+    // stdin can be consumed only once; reading it twice would block/return empty.
+    let stdin_count = args.prompt_file.iter().filter(|p| *p == "-").count();
+    if stdin_count > 1 {
+        return Err(OneharnessError::MultipleStdinPrompts { count: stdin_count });
+    }
+    for path in &args.prompt_file {
         if path == "-" {
             let mut buf = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf).map_err(|source| {
@@ -610,14 +814,41 @@ fn resolve_prompt(args: &RunArgs) -> Result<String, OneharnessError> {
                     source,
                 }
             })?;
-            return Ok(buf);
+            prompts.push(buf);
+        } else {
+            let text =
+                std::fs::read_to_string(path).map_err(|source| OneharnessError::PromptFile {
+                    path: path.clone(),
+                    source,
+                })?;
+            prompts.push(text);
         }
-        return std::fs::read_to_string(path).map_err(|source| OneharnessError::PromptFile {
-            path: path.clone(),
-            source,
+    }
+    if prompts.is_empty() {
+        return Err(OneharnessError::NoPrompt);
+    }
+    Ok(prompts)
+}
+
+/// A batch run (more than one prompt) fans **one** harness over the prompts so
+/// they share a provider cache prefix, which is per harness/model/tools — so it
+/// requires exactly one selected harness — and is a fresh fan-out rather than a
+/// session continuation, so it cannot combine with `--resume`/`--fork`. Both are
+/// usage errors caught before anything spawns.
+fn validate_batch(
+    specs: &[&'static HarnessSpec],
+    resume_or_fork: bool,
+) -> Result<(), OneharnessError> {
+    if specs.len() != 1 {
+        return Err(OneharnessError::BatchMultipleHarnesses {
+            count: specs.len(),
+            selected: specs.iter().map(|s| s.id).collect::<Vec<_>>().join(", "),
         });
     }
-    args.prompt.clone().ok_or(OneharnessError::NoPrompt)
+    if resume_or_fork {
+        return Err(OneharnessError::BatchResume);
+    }
+    Ok(())
 }
 
 /// Write each result's raw stdout/stderr to `<dir>/<harness>.{stdout,stderr}`.
@@ -629,9 +860,24 @@ fn write_output_dir(dir: &std::path::Path, results: &[RunResult]) -> Result<(), 
         path: dir.display().to_string(),
         source,
     })?;
-    for result in results {
+    // On a batch run every result is the same harness, so a bare `<harness>`
+    // stem would overwrite itself. Disambiguate with the index whenever a harness
+    // id repeats; unique ids (the ordinary `--all` case) keep their plain name.
+    let counts = results.iter().fold(
+        std::collections::HashMap::<&str, usize>::new(),
+        |mut m, r| {
+            *m.entry(r.harness.as_str()).or_default() += 1;
+            m
+        },
+    );
+    for (index, result) in results.iter().enumerate() {
+        let stem = if counts.get(result.harness.as_str()).copied().unwrap_or(0) > 1 {
+            format!("{}-{index}", result.harness)
+        } else {
+            result.harness.clone()
+        };
         for (suffix, contents) in [("stdout", &result.stdout), ("stderr", &result.stderr)] {
-            let path = dir.join(format!("{}.{suffix}", result.harness));
+            let path = dir.join(format!("{stem}.{suffix}"));
             std::fs::write(&path, contents).map_err(|source| OneharnessError::OutputDir {
                 path: path.display().to_string(),
                 source,
@@ -789,6 +1035,7 @@ mod tests {
             bin: "x".into(),
             available,
             status,
+            prompt: None,
             exit_code: None,
             duration_ms: None,
             command: vec![],
@@ -904,10 +1151,13 @@ mod tests {
             &ok,
             Some(&schema),
             1,
+            Some("the batch prompt".into()),
         );
         assert_eq!(r.schema_valid, Some(true));
         assert_eq!(r.schema_attempts, Some(1));
         assert!(r.structured.is_some());
+        // The per-result prompt is carried through verbatim (batch runs).
+        assert_eq!(r.prompt.as_deref(), Some("the batch prompt"));
         // Timed out under a schema: nothing to validate, attempts still recorded.
         let to = capture(Status::Timeout, "");
         let r = executed_result(
@@ -918,9 +1168,12 @@ mod tests {
             &to,
             Some(&schema),
             1,
+            None,
         );
         assert!(r.schema_valid.is_none());
         assert_eq!(r.schema_attempts, Some(1));
+        // No prompt recorded on an ordinary (non-batch) result.
+        assert!(r.prompt.is_none());
         // No schema requested: every structured field is null.
         let r = executed_result(
             spec,
@@ -930,6 +1183,7 @@ mod tests {
             &ok,
             None,
             1,
+            None,
         );
         assert!(r.schema_valid.is_none());
         assert!(r.schema_attempts.is_none());
@@ -1002,6 +1256,7 @@ mod tests {
             output_format: OutputFormat::Text,
             supports_resume: false,
             supports_fork: false,
+            fork_reuses_cache: false,
             sync: None,
             hooks: None,
             global_hook: None,

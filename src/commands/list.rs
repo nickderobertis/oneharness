@@ -32,6 +32,11 @@ struct HarnessInfo {
     /// Whether `run --resume <session> --fork` is supported — branching a new
     /// session from the resumed one. `false` means it resumes linearly only.
     supports_fork: bool,
+    /// Whether a forked run reuses the parent session's prompt-cache prefix, so a
+    /// fork-based `--batch-strategy min-tokens` run actually reduces tokens. `true`
+    /// only for Claude Code today; `false` (incl. OpenCode, whose fork re-sends the
+    /// prefix cold) means `min-tokens` only orders the calls (no saving).
+    fork_reuses_cache: bool,
     /// The approval modes (`--mode`) this harness can express, each with its
     /// headless behavior. Modes not listed are unsupported for the harness.
     modes: Vec<ModeInfo>,
@@ -83,6 +88,7 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 output_format: spec.output_format,
                 supports_resume: spec.supports_resume,
                 supports_fork: spec.supports_fork,
+                fork_reuses_cache: spec.fork_reuses_cache,
                 modes: spec
                     .modes
                     .iter()

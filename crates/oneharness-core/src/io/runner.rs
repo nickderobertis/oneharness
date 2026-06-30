@@ -15,6 +15,7 @@ use wait_timeout::ChildExt;
 use crate::domain::report::{Capture, Status};
 
 /// A fully-specified subprocess to run.
+#[derive(Clone)]
 pub struct Job {
     pub argv: Vec<String>,
     pub cwd: Option<PathBuf>,

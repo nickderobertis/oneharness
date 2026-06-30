@@ -162,6 +162,8 @@ oneharness sync                                   # merge the unified settings i
 oneharness sync --global                          # install [[hooks]] into the user-global config instead of the project
 oneharness run --all --prompt "…"                 # run everywhere, in parallel
 oneharness run --harness claude-code,codex --prompt-file task.md
+oneharness run --harness claude-code --system "$(cat ctx.md)" \
+  --prompt "Q1" --prompt "Q2" --prompt "Q3" --batch-strategy min-tokens  # batch: one harness, N prompts, shared cache prefix
 oneharness run --all --print-command --prompt "…" # dry run: show commands, run nothing
 oneharness gate claude-code --deny-if-contains X  # the pre-tool gate an installed hook invokes (reads stdin)
 ```
@@ -169,7 +171,15 @@ oneharness gate claude-code --deny-if-contains X  # the pre-tool gate an install
 Useful `run` flags:
 
 - `--all` / `--harness <id,…>` / `--exclude <id,…>` — selection.
-- `--prompt <text>` or `--prompt-file <path|->` — the prompt (file or stdin).
+- `--prompt <text>` or `--prompt-file <path|->` — the prompt (file or stdin). Both
+  are **repeatable**; passing more than one prompt switches to a [batch
+  run](#batch-runs-same-prefix-prompt-caching) (one harness, N prompts). Each
+  `--prompt-file` is read whole as one prompt (not split per line); `-` (stdin)
+  may appear once. Combined order is every `--prompt`, then every `--prompt-file`.
+- `--batch-strategy <speed|min-tokens>` — for a batch run, how the calls are
+  scheduled to exploit the shared prefix cache (`speed`, the default, or
+  `min-tokens`); see [batch runs](#batch-runs-same-prefix-prompt-caching). No
+  effect on a single-prompt run.
 - `--model <m>` — passed to each harness that supports a model flag.
 - `--system <text>` — portable system prompt for **every** harness: mapped to a
   native flag where one exists (Claude Code's `--append-system-prompt`, Goose's
@@ -530,6 +540,98 @@ delivery (and a schema appended to the prompt) may not reach a `.cmd`-shim
 harness intact — structured output is most reliable on Linux/macOS, or on Windows
 against a real `.exe` harness. oneharness's own argv construction and validation
 are exercised on Windows by the hermetic test suite regardless.
+
+### Batch runs (same-prefix prompt caching)
+
+A common workload is **many prompts that share a prefix** — the same `--system`
+context (a spec, a big reference doc, few-shot examples) with a different question
+each time. Pass more than one prompt and `run` switches to a **batch**: it drives
+**one** harness over each prompt and returns one report with a result per prompt
+(in order), each tagged with its own `prompt`. The top-level report gains a
+`batch` block (`{ "strategy", "prompt_count", "forked" }`); `results[].prompt` is
+authoritative, and the top-level `prompt` repeats the first for back-compat.
+
+```console
+# 3 questions over one shared context, warming it once then forking:
+oneharness run --harness claude-code --system "$(cat reference.md)" \
+  --prompt "Summarize section 2" \
+  --prompt "List the open questions" \
+  --prompt "What changed since v1?" \
+  --batch-strategy min-tokens --compact | jq '.batch, .results[].usage'
+```
+
+Two strategies:
+
+- **`speed`** — **the default** — fire all prompts at once for minimum wall-clock.
+  Every call is independent; this optimizes latency, not tokens. It is the default
+  precisely because the token-saving alternative only helps one harness today (see
+  the support matrix below) and never *hurts* — `speed` is the safe choice for any
+  harness.
+- **`min-tokens`** — minimize redundant token spend on the shared prefix. On a
+  harness whose fork **reuses the cache** (today Claude Code only; see the matrix
+  below) it runs the first prompt as a warm-up that establishes a session carrying
+  the shared `--system`, then **forks that session** for the remaining prompts, so
+  each fanned-out call *reuses* the warmed cached prefix instead of re-sending it.
+  The report sets `batch.forked: true`, and the fanned-out results report
+  `usage.cache_read_tokens > 0` with a lower `cache_write_tokens` than the warm-up.
+  oneharness never claims a saving it can't measure — read the counts. On every
+  other harness `min-tokens` falls back to order-only (no saving) with a stderr
+  warning, so it is never worse than `speed`.
+
+Why fork rather than just repeating `--system`: provider prompt caching keys on
+the harness's byte-exact request prefix, but these CLIs inject per-invocation
+content (Claude Code, for instance, re-creates a user-supplied
+`--append-system-prompt` on every separate `claude -p` process — only its *own*
+global prefix gets cross-process cache reads). So a static `--system` repeated
+across processes is **not** reused; the reliable cross-call reuse is a warmed
+**session**, which is exactly what `--fork` branches from (see
+[`--fork`](#usage)). `min-tokens` operationalizes that.
+
+**Support matrix — where `min-tokens` reduces tokens.** The saving needs a
+*cache-reusing fork* (`fork_reuses_cache` in `oneharness list`), which today is
+**Claude Code only**:
+
+| harness | token reduction | status |
+| --- | --- | --- |
+| **claude-code** | yes — warm-then-fork, cache reuse | ✅ **confirmed** (live-proven by `oh_batch_fork_enforce`; the underlying provider caching is itself best-effort — see *Caveats*) |
+| opencode | no — its `--fork` re-sends the prefix cold (forking would *raise* tokens), so oneharness keeps it order-only | ⚠️ **known not to help** (measured live) |
+| codex, goose, qwen, crush, copilot, cursor | no — no cache-reusing fork, and no cache-count reporting to even measure one | ⛔ **order-only** (no saving) |
+
+So exactly one harness is confirmed to save tokens; every other harness runs
+`min-tokens` as a plain scheduler (results are correct, just no token reduction)
+and oneharness prints a stderr warning rather than implying a saving. Two findings
+shape this (both measured live, not assumed):
+
+- **A static `--system` is not reused across separate harness processes.** Even on
+  Claude Code (a *native* `--system` harness) a repeated `--append-system-prompt`
+  is re-created on every `claude -p` — only the harness's *own* global prefix gets
+  cross-process cache reads. The other five non-Goose harnesses merely *prepend*
+  `--system` (no cacheable breakpoint), and the six non-fork harnesses report no
+  cache counts at all (so a saving couldn't even be observed). So a system-prompt
+  approach saves nothing on them.
+- **Only a *cache-reusing* fork helps.** Claude Code's `--fork-session` branches
+  from the warmed session and reuses its cached prefix (the fan-out reads it and
+  writes little). OpenCode's `--fork` instead re-sends the branched conversation
+  cold (the fan-out reads no cache and re-writes the whole prefix — so forking it
+  would *raise* tokens), so oneharness leaves OpenCode's `min-tokens` order-only.
+
+On every order-only harness `min-tokens` just orders the calls, and oneharness
+says so on stderr rather than implying a saving.
+
+**Caveats.** A batch is **single-harness** by nature (a session/cache prefix is
+per harness/model/tools) — selecting more than one harness (or `--all`), or
+combining with `--resume`/`--fork`, is a usage error. The token saving needs a
+harness with a **cache-reusing fork** (`fork_reuses_cache` in `oneharness list` —
+today Claude Code only); on any other harness `min-tokens` only *orders* the calls
+(no reuse) and oneharness says so on stderr. Note that where it does fork, this
+changes the fan-out's semantics: because the fan-out branches from the warm-up's
+turn, the later prompts share the first prompt's context (the fork model — "one
+initial prompt seeds independent follow-ups"), rather than being fully independent
+questions. Caching itself is best-effort and provider-side (a ~5-min TTL refreshed
+on hit, a minimum prefix length, a byte-identical prefix), so the reuse only lands
+when the warmed session's prefix clears the minimum and the fan-out runs within
+its TTL. Use `speed` when you want N strictly-independent answers with no shared
+context.
 
 ### Safety note: bypass by default
 

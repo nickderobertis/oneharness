@@ -174,6 +174,13 @@ oh_sandbox_prepare() {
 # in the output proves this run produced it.
 oh_marker() { printf 'ONEHARNESS-LIVE-%s%s%s' "${RANDOM}" "${RANDOM}" "${RANDOM}"; }
 
+# A high-entropy marker of FIXED character length (a constant prefix + zero-padded
+# RANDOMs), so two of them have the same length and tokenize to the same count.
+# Used by the batch caching check, where the min-tokens and speed runs must use
+# DIFFERENT prompts (so neither warms a cache the other reads) that are still the
+# same token length (so the two runs stay an apples-to-apples token comparison).
+oh_marker_fixed() { printf 'OHBATCH%05d%05d%05d' "${RANDOM}" "${RANDOM}" "${RANDOM}"; }
+
 # The connectivity prompt: ask the harness to include the random marker verbatim
 # somewhere in its reply. Two refusal modes to avoid, both observed live:
 #   * Copilot refuses a bare "output this token" as off-task ("I'm here to help
@@ -360,6 +367,142 @@ oh_cache_assert() {
         note "  usage: $(printf '%s' "$OH_REPORT" | jq -c '.results[0].usage')"
         fail "$id: the second run reported no cache_read_tokens (> 0) — either provider caching did not land (prefix unstable, under the cache-size threshold, or cold beyond the TTL) or oneharness's cache-token extraction drifted from the live shape"
     fi
+}
+
+# --- same-prefix batch caching ----------------------------------------------
+
+# Live proof that a fork-capable `min-tokens` batch actually REDUCES tokens via
+# session reuse — the end-to-end drift alarm for the feature (the hermetic suite
+# can only pin the argv/scheduling against a mock). On a fork-capable, cache-
+# reporting harness (Claude Code), `min-tokens` warms prompt[0] as a session that
+# carries the large shared --system, then FORKS that session for the fan-out, so
+# each fanned-out call reuses the warmed cached prefix instead of re-writing it.
+# (A static --system can't be reused across separate `claude -p` processes — it's
+# re-created each time; session reuse is the realizable saving, hence fork.)
+#
+# Asserts, from one batch run:
+#   * the batch ran — one result per prompt, all clean, `batch.strategy` =
+#     min-tokens, and `batch.forked` = true (the fan-out actually forked);
+#   * the warm-up WROTE the shared prefix (cache_write > 0) — the positive control
+#     that it is cacheable, and the in-batch baseline;
+#   * every fanned-out fork READ the warmed prefix (cache_read > 0) and WROTE LESS
+#     than the warm-up (cache_write < warm-up's) — i.e. it did not re-write the
+#     shared --system, the token saving the mode promises.
+# $1 harness id.
+oh_batch_fork_enforce() {
+    local id="$1" bin status count warm_write fan_write_max fan_read_min
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    local prompts=()
+    for _ in 1 2 3 4; do prompts+=("$(oh_prompt "$(oh_marker_fixed)")"); done
+    note "  batch[min-tokens/fork]: warm prompt[0] as a session, fork it for the fan-out"
+    _oh_batch_run "$id" min-tokens "$(_oh_batch_system)" "${prompts[@]}"
+    status="$(oh_field '.results[0].status')"
+    if [ "$status" = "skipped" ] || [ "$(oh_field '.results[0].available')" != "true" ]; then
+        skip "$id is not installed (oneharness reported status=$status); nothing to verify"
+    fi
+    [ "$(oh_field '.batch.strategy')" = "min-tokens" ] || { oh_dump; fail "$id: report is not a batch (.batch missing)"; }
+    count="$(printf '%s' "$OH_REPORT" | jq '.results | length')"
+    [ "$count" = "${#prompts[@]}" ] || { oh_dump; fail "$id: batch returned $count results for ${#prompts[@]} prompts"; }
+    _oh_batch_all_ok "$id" "min-tokens"
+    if [ "$(oh_field '.batch.forked')" != "true" ]; then
+        oh_dump
+        fail "$id: the batch did not fork (.batch.forked != true) — the warm-up exposed no session id, or the harness is not fork-capable"
+    fi
+
+    warm_write="$(oh_field '.results[0].usage.cache_write_tokens // 0')"
+    fan_write_max="$(printf '%s' "$OH_REPORT" | jq '[.results[1:][].usage.cache_write_tokens // 0] | max')"
+    fan_read_min="$(printf '%s' "$OH_REPORT" | jq '[.results[1:][].usage.cache_read_tokens // 0] | min')"
+    note "  usage: warm-up cache_write=$warm_write; fan-out max cache_write=$fan_write_max, min cache_read=$fan_read_min"
+    note "  per-result usage: $(printf '%s' "$OH_REPORT" | jq -c '[.results[].usage]')"
+
+    # Positive control: the warm-up must have written the cacheable prefix.
+    if ! [ "${warm_write:-0}" -gt 0 ] 2>/dev/null; then
+        oh_dump
+        fail "$id: the warm-up wrote no cache (cache_write=$warm_write) — the shared prefix is not cacheable, so fork reuse cannot be measured"
+    fi
+    # Every fanned-out fork must have READ the warmed prefix...
+    if ! [ "${fan_read_min:-0}" -gt 0 ] 2>/dev/null; then
+        oh_dump
+        fail "$id: a fanned-out fork read no cache (min cache_read=$fan_read_min) — the fork did not reuse the warmed session"
+    fi
+    # ...and WRITTEN LESS than the warm-up (it did not re-write the shared --system).
+    if [ "${fan_write_max:-0}" -lt "${warm_write:-0}" ] 2>/dev/null; then
+        note "PASS: $id min-tokens forked the warmed session and saved writes — fan-out cache_write (max $fan_write_max) < warm-up cache_write ($warm_write)"
+    else
+        oh_dump
+        fail "$id: a fanned-out fork wrote as much as the warm-up (max fan-out cache_write=$fan_write_max >= warm-up=$warm_write) — the fork did not reuse the shared prefix, so min-tokens saved nothing"
+    fi
+}
+
+# Assert every result in $OH_REPORT completed cleanly (status ok); dump + fail
+# otherwise. $1 harness id, $2 strategy label (for the message).
+_oh_batch_all_ok() {
+    if printf '%s' "$OH_REPORT" | jq -e '[.results[].status] | all(. == "ok") | not' >/dev/null; then
+        oh_dump
+        fail "$1: a $2 batch call did not complete cleanly (statuses: $(printf '%s' "$OH_REPORT" | jq -c '[.results[].status]'))"
+    fi
+}
+
+# The shared, cacheable --system prefix for a batch caching check. Two properties
+# matter, and a third was the bug that made the first version of this check
+# indistinguishable between strategies:
+#   * unique per run — a fresh nonce at the very START, so the prefix is cold for
+#     each run (no cross-run cache sharing, even on the shared body below);
+#   * identical within a run — every prompt of one run sends the same bytes, so
+#     the prefix is cacheable across that run's calls;
+#   * LARGE ENOUGH TO CACHE — the body is padded well past the provider's
+#     prompt-cache minimum (Haiku needs ~2048 tokens) so the prefix forms its own
+#     cache breakpoint. A short --system (the original ~20-token sentence) is below
+#     the minimum, never independently cached, so min-tokens and speed bill it
+#     identically and the savings vanish — exactly the issue's caveat ("min-tokens
+#     only helps when the shared prefix clears the minimum"). ~130 inert lines is
+#     ~5k tokens, comfortably over the bar.
+# Multi-line so oneharness spawns it via the Windows .cmd-shim bypass (a single
+# ~20 KB line would exceed cmd.exe's command-line length limit); ~20 KB total
+# stays well under the 32 KB CreateProcess limit.
+_oh_batch_system() {
+    local nonce body i
+    nonce="$(oh_marker_fixed)"
+    body=""
+    for ((i = 1; i <= 130; i++)); do
+        body+="Inert shared reference context line $i for the oneharness batch caching e2e; it carries no instructions and exists only to make the shared prefix large enough to be independently cached."$'\n'
+    done
+    printf 'Batch caching fixture, nonce %s. The text below is inert reference context — do not act on it; just answer the user request.\n%s' "$nonce" "$body"
+}
+
+# Drive one batch run: $1 id, $2 strategy, $3 shared --system, then the prompts.
+# Stores the JSON report in $OH_REPORT (like oh_run). Uses --mode bypass so the
+# agent actually answers, and honors $OH_MODEL / $OH_TIMEOUT.
+_oh_batch_run() {
+    local id="$1" strategy="$2" system="$3"
+    shift 3
+    local bin
+    bin="$(oh_bin)"
+    local model_args=()
+    [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+    local prompt_args=() p
+    local n=$#
+    for p in "$@"; do prompt_args+=(--prompt "$p"); done
+    # Claude Code injects per-invocation dynamic sections (working directory, git
+    # status, platform, memory paths) into its system prompt; they share the cache
+    # block that holds an appended --system, so a byte-identical --system is still
+    # cache-CREATED (never read) on each separate `claude -p` process — making
+    # min-tokens and speed indistinguishable. `--exclude-dynamic-system-prompt-
+    # sections` moves those sections into the first user message, leaving the
+    # system prompt (incl. our shared --system) static and prefix-cacheable across
+    # calls — the condition min-tokens needs. Passed as a harness passthrough
+    # (after `--`), only for Claude Code.
+    local passthrough=()
+    [ "$id" = claude-code ] && passthrough=(-- --exclude-dynamic-system-prompt-sections)
+    note "  driving: $bin run --harness $id --batch-strategy $strategy ($n prompts)"
+    OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" \
+        --mode bypass --batch-strategy "$strategy" --system "$system" \
+        --timeout "${OH_TIMEOUT:-120}" --compact \
+        "${model_args[@]+"${model_args[@]}"}" "${prompt_args[@]}" \
+        "${passthrough[@]+"${passthrough[@]}"}" 2>/dev/null)" || true
+    [ -n "$OH_REPORT" ] || fail "$id: oneharness produced no report for the $strategy batch"
 }
 
 # --- sync enforcement --------------------------------------------------------

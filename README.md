@@ -37,7 +37,7 @@ $ oneharness run --all --prompt "Reply with the single word: pong" --model haiku
       "output_format": "json",
       "text": "pong",
       "text_source": "json:result",
-      "usage": { "input_tokens": 1234, "output_tokens": 8, "cost_usd": 0.0095 },
+      "usage": { "input_tokens": 1234, "output_tokens": 8, "cache_read_tokens": 7, "cache_write_tokens": null, "cost_usd": 0.0095 },
       "usage_source": "json",
       "session_id": "0f3c…",
       "failure_kind": null,
@@ -430,14 +430,20 @@ more than one possible method) records how it was found:
   is then `null` too.** A consumer that needs certainty reads the guaranteed
   `stdout` — when `text` is `null`, `stdout` is the fallback that always carries
   the harness's real output.
-- `usage` / `usage_source` — `{ input_tokens, output_tokens, cost_usd }`, each
-  field independently `null` when the harness doesn't report it (cost is commonly
-  absent on subscription auth). The `usage` object is always present so the shape
-  is stable for cross-harness cost/latency tables. `usage_source` records the
-  method: `json` for a harness that reports a whole-run total in one event (Claude
-  Code), `json:summed-steps` for one that reports per-step usage that oneharness
-  sums (OpenCode). Cursor does not emit token usage today, so its `usage` stays
-  `null`.
+- `usage` / `usage_source` — `{ input_tokens, output_tokens, cache_read_tokens,
+  cache_write_tokens, cost_usd }`, each field independently `null` when the harness
+  doesn't report it (cost is commonly absent on subscription auth). The `usage`
+  object is always present so the shape is stable for cross-harness cost/latency
+  tables. `usage_source` records the method: `json` for a harness that reports a
+  whole-run total in one event (Claude Code), `json:summed-steps` for one that
+  reports per-step usage that oneharness sums (OpenCode). The two cache fields
+  surface **provider-side prompt-cache** counts — `cache_read_tokens` is prefix
+  tokens served cheaply from cache, `cache_write_tokens` is tokens written to it
+  (a.k.a. cache creation) — so a consumer can confirm a repeated/forked run
+  actually hit the cache. Only Claude Code (`cache_read_input_tokens` /
+  `cache_creation_input_tokens`) and OpenCode (`tokens.cache.{read,write}`) report
+  them today; harnesses that don't leave both `null` (never `0` as a guess). Cursor
+  does not emit token usage today, so its `usage` stays `null`.
 - `session_id` — the handle a harness exposes for continuation, read from the
   snake_case `session_id` (Claude Code, Cursor, Qwen), camelCase `sessionID`
   (OpenCode), or Codex's `thread_id`; feed it back via `run --resume <session>`

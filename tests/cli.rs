@@ -726,7 +726,7 @@ fn normalizes_usage_and_session_id_from_claude_json() {
     // buried in stdout; oneharness lifts them into the envelope, best-effort.
     let stdout = r#"{"type":"result","result":"pong","session_id":"sess-xyz",
         "total_cost_usd":0.0095,"usage":{"input_tokens":1200,"output_tokens":8,
-        "cache_read_input_tokens":34}}"#;
+        "cache_read_input_tokens":34,"cache_creation_input_tokens":56}}"#;
     let output = run(
         &[
             "run",
@@ -745,6 +745,8 @@ fn normalizes_usage_and_session_id_from_claude_json() {
     let result = &value["results"][0];
     assert_eq!(result["usage"]["input_tokens"], 1200);
     assert_eq!(result["usage"]["output_tokens"], 8);
+    assert_eq!(result["usage"]["cache_read_tokens"], 34);
+    assert_eq!(result["usage"]["cache_write_tokens"], 56);
     assert_eq!(result["usage"]["cost_usd"], 0.0095);
     assert_eq!(result["usage_source"], "json");
     assert_eq!(result["session_id"], "sess-xyz");
@@ -772,6 +774,8 @@ fn usage_fields_are_null_when_harness_reports_none() {
     let result = &value["results"][0];
     assert!(result["usage"]["cost_usd"].is_null());
     assert!(result["usage"]["input_tokens"].is_null());
+    assert!(result["usage"]["cache_read_tokens"].is_null());
+    assert!(result["usage"]["cache_write_tokens"].is_null());
     assert!(result["usage_source"].is_null());
     assert!(result["session_id"].is_null());
 }
@@ -1080,7 +1084,7 @@ fn normalizes_usage_and_session_from_opencode_stream_json() {
     let stdout = concat!(
         "{\"type\":\"step_start\",\"sessionID\":\"ses_abc\",\"part\":{}}\n",
         "{\"type\":\"step_finish\",\"sessionID\":\"ses_abc\",\"part\":{\"cost\":0.001,",
-        "\"tokens\":{\"input\":671,\"output\":8}}}\n",
+        "\"tokens\":{\"input\":671,\"output\":8,\"cache\":{\"read\":21415,\"write\":100}}}}\n",
         "{\"type\":\"step_finish\",\"sessionID\":\"ses_abc\",\"part\":{\"cost\":0.002,",
         "\"tokens\":{\"input\":12,\"output\":34}}}\n",
     );
@@ -1102,6 +1106,8 @@ fn normalizes_usage_and_session_from_opencode_stream_json() {
     let result = &value["results"][0];
     assert_eq!(result["usage"]["input_tokens"], 683);
     assert_eq!(result["usage"]["output_tokens"], 42);
+    assert_eq!(result["usage"]["cache_read_tokens"], 21415);
+    assert_eq!(result["usage"]["cache_write_tokens"], 100);
     assert!((result["usage"]["cost_usd"].as_f64().unwrap() - 0.003).abs() < 1e-9);
     assert_eq!(result["usage_source"], "json:summed-steps");
     assert_eq!(result["session_id"], "ses_abc");

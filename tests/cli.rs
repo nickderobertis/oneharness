@@ -4329,3 +4329,91 @@ fn print_command_works_for_a_batch() {
     assert!(command_of(&value, 0).contains(&"alpha".to_string()));
     assert!(command_of(&value, 1).contains(&"beta".to_string()));
 }
+
+#[test]
+fn batch_repeated_stdin_prompt_file_is_a_usage_error() {
+    // `-` (stdin) can be consumed only once; two of them is a usage error caught
+    // before any read, so it never blocks waiting on stdin.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt-file",
+            "-",
+            "--prompt-file",
+            "-",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("stdin"), "{stderr}");
+}
+
+#[test]
+fn batch_applies_the_schema_to_every_prompt() {
+    // Structured output composes with batch: each prompt is validated
+    // independently, so every result reports schema_valid.
+    let dir = std::env::temp_dir().join(format!("oneharness-batchschema-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let schema = dir.join("s.json");
+    std::fs::write(&schema, r#"{"type":"object","required":["a"]}"#).unwrap();
+
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--schema",
+            &schema.display().to_string(),
+            "--prompt",
+            "q1",
+            "--prompt",
+            "q2",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"{\"a\":1}"}"#)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    assert_eq!(value["batch"]["prompt_count"], 2);
+    let results = value["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    for r in results {
+        assert_eq!(r["schema_valid"], true, "result: {r}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn batch_with_an_unavailable_harness_skips_every_prompt() {
+    // A missing binary in batch mode skips each prompt (one skipped result per
+    // prompt), exits 0 by default, and still reports the batch block.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "a",
+            "--prompt",
+            "b",
+            "--bin",
+            "claude-code=/no/such/oneharness-binary-xyz",
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    let value = json_stdout(&output);
+    assert_eq!(value["batch"]["prompt_count"], 2);
+    let results = value["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    for r in results {
+        assert_eq!(r["status"], "skipped");
+    }
+}

@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/nickderobertis/oneharness/compare/v0.3.0...v0.3.1) - 2026-06-30
+
+### Added
+
+- extend session continuation to all harnesses and add --fork
+
 ## [0.3.0](https://github.com/nickderobertis/oneharness/compare/v0.2.531...v0.3.0) - 2026-06-27
 
 ### Added

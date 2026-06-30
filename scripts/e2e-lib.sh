@@ -371,113 +371,120 @@ oh_cache_assert() {
 
 # --- same-prefix batch caching ----------------------------------------------
 
-# Live proof that a `min-tokens` batch (one harness, N prompts sharing a
-# --system prefix) actually REDUCES token usage via provider prompt caching — the
-# drift alarm that the mode saves tokens, not merely reorders calls (the hermetic
-# suite can only pin the wave ordering against a mock). It runs N prompts twice
-# against an auto-caching harness (Claude Code). The two runs must NOT share a
-# cache, or the speed run (which goes second) could READ a prefix the min-tokens
-# run just warmed and look artificially cheap. Two guards keep each run
-# independently cold: (a) each run uses its own FRESH random --system prefix, and
-# (b) the two runs use DISJOINT prompt sets, so no request (prefix + message) is
-# byte-identical across runs at any cache breakpoint. The prompt sets are
-# length-matched (fixed-length markers) and the --system nonce is fixed-length
-# too, so the two runs stay an apples-to-apples token comparison:
-#   * min-tokens — one warm-up call WRITES the shared prefix, then the rest fan
-#     out and READ it cheaply.
-#   * speed      — all N fire at once cold, each paying full price for the prefix
-#     (writing its own copy, since none exists yet).
+# Live proof that a `min-tokens` batch RUNS end to end against a real harness: one
+# harness fanned over N prompts (a warm-up wave then the fanned-out rest), every
+# prompt completing cleanly, the `batch` block present with one result per prompt,
+# and the fanned-out calls surfacing cache reads. This is the orchestration +
+# cache-extraction drift alarm for batch mode.
 #
-# Caching shifts the shared prefix between three billed buckets — written
-# (`cache_write`, ~1.25x), read (`cache_read`, ~0.1x), or uncached input. The
-# savings show up as TWO independent inequalities, asserted together so the proof
-# holds across how a provider books concurrent cold calls:
-#   1. min-tokens total cache_READ  >  speed total cache_read   (min reuses the
-#      prefix on every fan-out call; speed races cold and reuses ~nothing) — the
-#      robust signal, since min's reads are ~ (N-1)x the prefix and speed's ~0.
-#   2. min-tokens total cache_WRITE  <  speed total cache_write  (min writes the
-#      prefix once; speed writes it on each cold call) — the direct "fewer
-#      expensive writes" the feature promises.
-# Positive controls guard against a vacuous pass: the fan-out must actually read
-# (cache_read > 0) and speed must actually have written (cache_write > 0, i.e. the
-# prefix is cacheable at all). Every count is the #1083 normalized `usage`.
-#
-# Only meaningful for a harness that reports cache counts and auto-caches its
-# tools+system prefix (Claude Code today; the prepend-only harnesses don't get an
-# independently cached --system, and Goose reports no cache counts). $1 harness id.
-oh_batch_cache_enforce() {
-    local id="$1"
-    local bin status fan_read min_read min_write speed_read speed_write
+# It deliberately does NOT assert a min-tokens-vs-speed token REDUCTION via a
+# static --system: empirically (three live experiments) Claude Code re-creates a
+# user-appended --system on every separate `claude -p` process — its own global
+# tools+system prefix is what gets cross-process cache reads, so a static --system
+# is billed identically under both strategies and warm-then-fan saves nothing. The
+# realizable cost saving on these CLIs is SESSION reuse (fork), proven separately
+# by oh_fork_cache_assert. $1 harness id.
+oh_batch_smoke() {
+    local id="$1" bin status fan_read count
     bin="$(oh_bin)"
     [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-    # Two DISJOINT prompt sets (1 warm-up + 3 fanned out each), one per run, so the
-    # speed run can never read a cache entry the min-tokens run just wrote. Each
-    # marker is fixed-length, so both sets tokenize to the same length and the runs
-    # stay comparable. More fan-out calls widen the read/write gap → robust
-    # inequalities. Each prompt carries its own marker so it genuinely runs.
-    local min_prompts=() speed_prompts=()
-    for _ in 1 2 3 4; do min_prompts+=("$(oh_prompt "$(oh_marker_fixed)")"); done
-    for _ in 1 2 3 4; do speed_prompts+=("$(oh_prompt "$(oh_marker_fixed)")"); done
-
-    note "  batch[min-tokens]: warm the shared --system prefix, then fan out the rest"
-    _oh_batch_run "$id" min-tokens "$(_oh_batch_system)" "${min_prompts[@]}"
+    local prompts=()
+    for _ in 1 2 3 4; do prompts+=("$(oh_prompt "$(oh_marker_fixed)")"); done
+    note "  batch[min-tokens]: one harness fanned over ${#prompts[@]} prompts (warm-up then fan-out)"
+    _oh_batch_run "$id" min-tokens "$(_oh_batch_system)" "${prompts[@]}"
     status="$(oh_field '.results[0].status')"
     if [ "$status" = "skipped" ] || [ "$(oh_field '.results[0].available')" != "true" ]; then
         skip "$id is not installed (oneharness reported status=$status); nothing to verify"
     fi
     [ "$(oh_field '.batch.strategy')" = "min-tokens" ] || { oh_dump; fail "$id: report is not a batch (.batch missing)"; }
+    count="$(printf '%s' "$OH_REPORT" | jq '.results | length')"
+    [ "$count" = "${#prompts[@]}" ] || { oh_dump; fail "$id: batch returned $count results for ${#prompts[@]} prompts"; }
     _oh_batch_all_ok "$id" "min-tokens"
     fan_read="$(printf '%s' "$OH_REPORT" | jq '[.results[1:][].usage.cache_read_tokens // 0] | add')"
-    min_read="$(_oh_usage_total cache_read_tokens)"
-    min_write="$(_oh_usage_total cache_write_tokens)"
-    local min_usage
-    min_usage="$(printf '%s' "$OH_REPORT" | jq -c '[.results[].usage]')"
-    note "  min-tokens totals: cache_read=$min_read cache_write=$min_write input=$(_oh_usage_total input_tokens) (fan-out cache_read=$fan_read)"
-
-    # Positive control: the warm-up's prefix must actually be read back by the fan-out.
-    if [ "${fan_read:-0}" -gt 0 ] 2>/dev/null; then
-        note "  ok: the fanned-out calls READ the warmed prefix (cache_read_tokens=$fan_read)"
-    else
+    if ! [ "${fan_read:-0}" -gt 0 ] 2>/dev/null; then
         oh_dump
         note "  usage: $(printf '%s' "$OH_REPORT" | jq -c '[.results[].usage]')"
-        fail "$id: the min-tokens fan-out reported no cache_read_tokens (> 0) — either the warm-up's prefix did not land (under the cache-size threshold or not byte-stable) or oneharness's cache-token extraction drifted"
+        fail "$id: the fanned-out batch calls surfaced no cache_read_tokens (> 0) — cache-token extraction may have drifted"
     fi
-
-    note "  batch[speed]: all prompts race cold under a fresh prefix (each pays full price)"
-    _oh_batch_run "$id" speed "$(_oh_batch_system)" "${speed_prompts[@]}"
-    _oh_batch_all_ok "$id" "speed"
-    speed_read="$(_oh_usage_total cache_read_tokens)"
-    speed_write="$(_oh_usage_total cache_write_tokens)"
-    note "  speed totals:      cache_read=$speed_read cache_write=$speed_write input=$(_oh_usage_total input_tokens)"
-
-    # Positive control: speed must have WRITTEN the prefix cold, proving it is
-    # cacheable at all (else "min wrote fewer" would be vacuous).
-    if ! [ "${speed_write:-0}" -gt 0 ] 2>/dev/null; then
-        oh_dump
-        fail "$id: speed reported no cache_write_tokens — the --system prefix is not being cached at all, so there is nothing for min-tokens to save (prefix under the cache-size threshold?)"
-    fi
-
-    # The two savings inequalities (see header). Reported together; both must hold.
-    # On any failure, dump BOTH runs' per-result usage so the cache split is visible.
-    local speed_usage
-    speed_usage="$(printf '%s' "$OH_REPORT" | jq -c '[.results[].usage]')"
-    if ! [ "${min_read:-0}" -gt "${speed_read:-0}" ] 2>/dev/null; then
-        note "  min usage:   $min_usage"
-        note "  speed usage: $speed_usage"
-        fail "$id: min-tokens did not READ the cache more than speed (min cache_read=$min_read, speed=$speed_read) — the warm-then-fan ordering is not reusing the prefix"
-    fi
-    if ! [ "${min_write:-0}" -lt "${speed_write:-0}" ] 2>/dev/null; then
-        note "  min usage:   $min_usage"
-        note "  speed usage: $speed_usage"
-        fail "$id: min-tokens did not WRITE the cache fewer than speed (min cache_write=$min_write, speed=$speed_write) — the warm-then-fan ordering is not saving writes"
-    fi
-    note "PASS: $id min-tokens reduced token usage vs speed — more cache reads ($min_read > $speed_read), fewer cache writes ($min_write < $speed_write)"
+    note "PASS: $id min-tokens batch ran end to end ($count results, fan-out cache_read=$fan_read)"
 }
 
-# Sum a usage field across every result in $OH_REPORT (missing → 0). $1 field name.
-_oh_usage_total() {
-    printf '%s' "$OH_REPORT" | jq "[.results[].usage.$1 // 0] | add"
+# Live proof that `run --resume <sid> --fork` REUSES the warmed session's cached
+# prefix instead of re-creating it — the premise behind cost-saving session reuse
+# (the fork feature's documented purpose), which nothing else currently asserts,
+# and the foundation for a fork-based min-tokens. Three runs:
+#   1. warm  — establish a session carrying a large shared --system (capture sid);
+#   2. fork  — `--resume sid --fork` with a new prompt: should READ the warmed
+#              prefix, so it WRITES little;
+#   3. cold  — a fresh session with a DIFFERENT large --system: must WRITE its
+#              prefix (the positive control that the prefix is cacheable at all).
+# Assert cache_write(fork) < cache_write(cold): the fork avoided re-writing the
+# prefix the cold run had to, i.e. it reused the warmed session. (cache_read alone
+# is not a reuse signal — Claude's always-warm global prefix makes read > write
+# even with no reuse.) Only meaningful for a fork-capable, cache-reporting harness
+# (Claude Code). $1 harness id.
+oh_fork_cache_assert() {
+    local id="$1" bin sid status fork_write cold_write
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    local model_args=()
+    [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+    # Claude needs --exclude-dynamic-system-prompt-sections so the cached prefix is
+    # process-stable (see _oh_batch_run); harmless to scope it to claude-code.
+    local pass=()
+    [ "$id" = claude-code ] && pass=(-- --exclude-dynamic-system-prompt-sections)
+
+    note "  fork[warm]: establish a session carrying a large shared --system"
+    OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --mode bypass \
+        --system "$(_oh_batch_system)" --prompt "$(oh_prompt "$(oh_marker_fixed)")" \
+        --timeout "${OH_TIMEOUT:-120}" --compact \
+        "${model_args[@]+"${model_args[@]}"}" "${pass[@]+"${pass[@]}"}" 2>/dev/null)" || true
+    [ -n "$OH_REPORT" ] || fail "$id: no report from the fork warm-up run"
+    status="$(oh_field '.results[0].status')"
+    if [ "$status" = "skipped" ] || [ "$(oh_field '.results[0].available')" != "true" ]; then
+        skip "$id is not installed (status=$status); nothing to verify"
+    fi
+    [ "$status" = "ok" ] || { oh_dump; fail "$id: fork warm-up did not complete (status=$status)"; }
+    sid="$(oh_field '.results[0].session_id')"
+    if [ -z "$sid" ] || [ "$sid" = "null" ]; then
+        oh_dump
+        fail "$id: warm-up surfaced no session_id to fork"
+    fi
+    note "  warm session $sid: cache_write=$(oh_field '.results[0].usage.cache_write_tokens // 0') cache_read=$(oh_field '.results[0].usage.cache_read_tokens // 0')"
+
+    note "  fork[branch]: fork the warmed session with a new prompt (should reuse its prefix)"
+    OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --mode bypass \
+        --resume "$sid" --fork --prompt "$(oh_prompt "$(oh_marker_fixed)")" \
+        --timeout "${OH_TIMEOUT:-120}" --compact \
+        "${model_args[@]+"${model_args[@]}"}" "${pass[@]+"${pass[@]}"}" 2>/dev/null)" || true
+    [ "$(oh_field '.results[0].status')" = "ok" ] || { oh_dump; fail "$id: fork run did not complete cleanly"; }
+    fork_write="$(oh_field '.results[0].usage.cache_write_tokens // 0')"
+    note "  fork usage: cache_read=$(oh_field '.results[0].usage.cache_read_tokens // 0') cache_write=$fork_write"
+
+    note "  fork[cold control]: a fresh session with a different --system must WRITE its prefix"
+    OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --mode bypass \
+        --system "$(_oh_batch_system)" --prompt "$(oh_prompt "$(oh_marker_fixed)")" \
+        --timeout "${OH_TIMEOUT:-120}" --compact \
+        "${model_args[@]+"${model_args[@]}"}" "${pass[@]+"${pass[@]}"}" 2>/dev/null)" || true
+    [ "$(oh_field '.results[0].status')" = "ok" ] || { oh_dump; fail "$id: fork cold-control run did not complete cleanly"; }
+    cold_write="$(oh_field '.results[0].usage.cache_write_tokens // 0')"
+    note "  cold-control usage: cache_read=$(oh_field '.results[0].usage.cache_read_tokens // 0') cache_write=$cold_write"
+
+    # Positive control: a cold run must write a non-trivial prefix (else "fork wrote
+    # less" is vacuous).
+    if ! [ "${cold_write:-0}" -gt 0 ] 2>/dev/null; then
+        oh_dump
+        fail "$id: the cold-control run wrote no cache (cache_write=$cold_write) — the --system prefix is not cacheable, so fork reuse cannot be measured here"
+    fi
+    # The reuse proof: the fork avoided re-writing the prefix the cold run had to.
+    if [ "${fork_write:-0}" -lt "${cold_write:-0}" ] 2>/dev/null; then
+        note "PASS: $id fork reused the warmed session's cached prefix — fork cache_write=$fork_write < cold cache_write=$cold_write"
+    else
+        oh_dump
+        fail "$id: fork did NOT reuse the warmed prefix (fork cache_write=$fork_write, cold cache_write=$cold_write) — session-reuse caching is not landing on this harness, so a fork-based min-tokens would not save tokens either"
+    fi
 }
 
 # Assert every result in $OH_REPORT completed cleanly (status ok); dump + fail

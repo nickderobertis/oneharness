@@ -34,12 +34,20 @@ oh_assert_echoed claude-code "$sysmarker"
 note "» cache reporting: a second run must surface cache_read_tokens"
 oh_cache_assert claude-code
 
-# Same-prefix batch mode: a `min-tokens` batch must warm the shared --system
-# prefix once, then have the fanned-out prompts READ it (cache_read_tokens > 0)
-# and spend fewer total cache-write tokens than the same batch under `speed` —
-# the drift alarm that the mode actually reduces tokens, not just reorders calls.
-note "» batch caching: min-tokens must read the warmed prefix and out-save speed"
-oh_batch_cache_enforce claude-code
+# Same-prefix batch mode: the `min-tokens` batch must run end to end — one harness
+# fanned over N prompts, every prompt clean, the batch block present, the fan-out
+# surfacing cache reads. (It does NOT assert a min-tokens-vs-speed reduction via a
+# static --system: Claude Code re-creates a user-appended --system per process, so
+# warm-then-fan saves nothing there — see oh_batch_smoke.)
+note "» batch orchestration: a min-tokens batch must run end to end"
+oh_batch_smoke claude-code
+
+# Session reuse (fork) is the realizable cost saving on Claude Code: a forked
+# call must REUSE the warmed session's cached prefix rather than re-create it
+# (fork cache_write < a cold run's). This is the premise behind a fork-based
+# min-tokens and the drift alarm the fork feature otherwise lacks.
+note "» fork caching: --resume --fork must reuse the warmed session's cached prefix"
+oh_fork_cache_assert claude-code
 
 # Sync enforcement: a policy synced into .claude/settings.json must govern the
 # real CLI under --no-bypass — the allow rule lets the exact command run, the

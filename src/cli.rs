@@ -225,11 +225,14 @@ pub struct RunArgs {
     #[arg(long, value_name = "N")]
     pub max_parallel: Option<usize>,
 
-    /// How a **batch** run (more than one prompt) schedules its calls to exploit
-    /// the shared --system/model prompt-cache prefix (no effect on a single-prompt
-    /// run). `speed` (default) fires all prompts at once for minimum wall-clock;
-    /// `min-tokens` runs one prompt first to warm the cache, waits, then fans out
-    /// the rest so they read the warmed prefix instead of each re-writing it.
+    /// How a **batch** run (more than one prompt) schedules its calls (no effect on
+    /// a single-prompt run). `speed` (the DEFAULT) fires all prompts at once for
+    /// minimum wall-clock. `min-tokens` reduces tokens by warming the shared
+    /// --system as a session on the first prompt and forking it for the rest, so
+    /// the fan-out reuses the cached prefix — but only on a harness whose fork
+    /// reuses the cache (today Claude Code only; see `fork_reuses_cache` in
+    /// `oneharness list`). On any other harness `min-tokens` only orders the calls
+    /// (no saving, with a stderr warning), so `speed` is the safe default.
     #[arg(long, value_parser = batch_strategy_parser(), value_name = "STRATEGY")]
     pub batch_strategy: Option<BatchStrategy>,
 

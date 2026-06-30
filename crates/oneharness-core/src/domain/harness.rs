@@ -102,6 +102,18 @@ pub struct HarnessSpec {
     /// linear resume. Implies `supports_resume`. Introspectable via `oneharness
     /// list`.
     pub supports_fork: bool,
+    /// Whether a forked run *reuses* the parent session's provider prompt-cache
+    /// prefix — so a fork-based `min-tokens` batch (warm one prompt, fork the
+    /// rest) actually *reduces* tokens. Implies `supports_fork`. This is the gate
+    /// for the fork-based batch path: when false, `min-tokens` only orders the
+    /// calls (no token saving) rather than forking. Measured by the live e2e
+    /// (`oh_batch_fork_enforce`), never guessed: **true for Claude Code** (Anthropic
+    /// prompt caching, and `--fork-session` preserves the cached session prefix);
+    /// **false for OpenCode**, whose `--fork` re-sends the branched conversation
+    /// cold (the fan-out reads nothing and re-writes the whole prefix — measured,
+    /// so forking it would *raise* tokens, not lower them). Introspectable via
+    /// `oneharness list`.
+    pub fork_reuses_cache: bool,
     /// Where this harness reads project-scoped configuration, and how the
     /// unified enforcement settings (`allowed_tools` / `denied_tools` /
     /// `hooks` / `settings`) map into that file. `None` means the harness has
@@ -381,6 +393,7 @@ static REGISTRY: &[HarnessSpec] = &[
         output_format: OutputFormat::Json,
         supports_resume: true,
         supports_fork: true,
+        fork_reuses_cache: true,
         sync: Some(SyncSpec {
             file: ".claude/settings.json",
             alt_files: &[],
@@ -429,6 +442,7 @@ static REGISTRY: &[HarnessSpec] = &[
         output_format: OutputFormat::Text,
         supports_resume: true,
         supports_fork: false,
+        fork_reuses_cache: false,
         sync: None,
         hooks: Some(HookBinding::File {
             shape: HookShape::Nested {
@@ -484,6 +498,10 @@ static REGISTRY: &[HarnessSpec] = &[
         output_format: OutputFormat::Json,
         supports_resume: true,
         supports_fork: true,
+        // OpenCode can fork, but its fork re-sends the branched conversation cold
+        // (measured: the fan-out reads no cache and re-writes the whole prefix),
+        // so a fork-based min-tokens would raise tokens, not lower them.
+        fork_reuses_cache: false,
         sync: Some(SyncSpec {
             file: "opencode.json",
             alt_files: &[],
@@ -537,6 +555,7 @@ static REGISTRY: &[HarnessSpec] = &[
         output_format: OutputFormat::Text,
         supports_resume: true,
         supports_fork: false,
+        fork_reuses_cache: false,
         sync: None,
         hooks: Some(HookBinding::GoosePlugin {
             shape: HookShape::Nested {
@@ -593,6 +612,7 @@ static REGISTRY: &[HarnessSpec] = &[
         output_format: OutputFormat::Text,
         supports_resume: true,
         supports_fork: false,
+        fork_reuses_cache: false,
         sync: Some(SyncSpec {
             file: ".qwen/settings.json",
             alt_files: &[],
@@ -641,6 +661,7 @@ static REGISTRY: &[HarnessSpec] = &[
         output_format: OutputFormat::Text,
         supports_resume: true,
         supports_fork: false,
+        fork_reuses_cache: false,
         sync: Some(SyncSpec {
             file: "crush.json",
             alt_files: &[".crush.json"],
@@ -679,6 +700,7 @@ static REGISTRY: &[HarnessSpec] = &[
         output_format: OutputFormat::Text,
         supports_resume: true,
         supports_fork: false,
+        fork_reuses_cache: false,
         sync: None,
         hooks: Some(HookBinding::File {
             shape: HookShape::CrossShell {
@@ -718,6 +740,7 @@ static REGISTRY: &[HarnessSpec] = &[
         output_format: OutputFormat::StreamJson,
         supports_resume: true,
         supports_fork: false,
+        fork_reuses_cache: false,
         sync: Some(SyncSpec {
             file: ".cursor/cli.json",
             alt_files: &[],

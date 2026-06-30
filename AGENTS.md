@@ -75,28 +75,31 @@ Use the `just` recipes; do not hand-roll equivalents.
   and not itself a `--resume`/`--fork` continuation (those are a usage error with a
   batch). Pure scheduling lives in `domain::batch` (the `BatchStrategy` waves:
   `speed` = one concurrent wave; `min-tokens` = a one-call warm-up wave then the
-  fanned-out rest, with a barrier between). `min-tokens` *reduces tokens* only via
-  **session reuse**: a static `--system` is NOT reused across separate harness
+  fanned-out rest, with a barrier between). `min-tokens` *reduces tokens* only via a
+  **cache-reusing fork** (`HarnessSpec.fork_reuses_cache`, a capability beyond
+  `supports_fork`): a static `--system` is NOT reused across separate harness
   processes (Claude Code re-creates a user-supplied `--append-system-prompt` every
   `claude -p`; only its own global prefix gets cross-process cache reads — verified
-  live, three experiments). So on a **fork-capable** harness (`supports_fork`:
-  claude-code, opencode) the command layer's `run_fork_batch` runs the warm-up
+  live, three experiments). So on a harness whose fork reuses the cache (today
+  **claude-code only**) the command layer's `run_fork_batch` runs the warm-up
   (prompt[0], establishing a session that carries `--system`), reads its
   `session_id`, then rewrites the fan-out jobs to `--resume <sid> --fork` (dropping
-  `--system`, inherited from the session) so they reuse the warmed prefix; on a
-  non-fork harness `min-tokens` only orders the calls (a stderr warning — no
-  reuse). `run_in_waves` covers `speed`/non-fork; `run_fork_batch` the fork path.
+  `--system`, inherited from the session) so they reuse the warmed prefix.
+  **OpenCode is fork-*capable* but `fork_reuses_cache: false`** — its `--fork`
+  re-sends the branched conversation cold (fan-out reads no cache, re-writes the
+  whole prefix — measured live, so forking it would *raise* tokens). Without a
+  cache-reusing fork, `min-tokens` only orders the calls (a stderr warning — no
+  reuse). `run_in_waves` covers `speed`/order-only; `run_fork_batch` the fork path.
   Only spawning is I/O, so the warm-then-fan ordering is unit-testable against the
   mock (`MOCK_LOG_FILE` records start/end interleaving; a mock `session_id` drives
   the fork-argv test). Each result carries its own `prompt`; the report's `batch`
   block carries `strategy`/`prompt_count`/`forked`. `--batch-strategy` is a
   per-invocation orchestration knob, so — unlike most `run` flags — it deliberately
   has no config/`ONEHARNESS_*` layer. The live drift alarm that the mode *reduces
-  tokens* is `oh_batch_fork_enforce` (the fork fan-out reads the warmed prefix and
-  writes less than the warm-up), tied to the `usage` cache counts and run live for
-  both fork-capable + cache-reporting harnesses (`e2e-claude.sh`, `e2e-opencode.sh`)
-  — the exact support-matrix set; the other six harnesses are order-only (no fork,
-  and only claude-code/opencode normalize cache counts at all).
+  tokens* is `oh_batch_fork_enforce` in `e2e-claude.sh` (the fork fan-out reads the
+  warmed prefix and writes less than the warm-up), tied to the `usage` cache counts.
+  It is claude-only because claude-code is the only `fork_reuses_cache` harness;
+  `e2e-opencode.sh` deliberately omits it (its fork doesn't reuse — see above).
   `list` and `detect` describe and probe
   the registry; `config` shows the effective layered configuration with each
   value's source; `sync` merges the unified policy settings (allow/deny rules,
@@ -315,7 +318,13 @@ shape. When you add one:
   an id headlessly, teach `signals::extract_session` its field (Codex's
   `thread_id`); if it emits none (Goose, Copilot), the continuation handle is
   caller-supplied (a `--name` / minted UUID) and `session_id` stays `null` — never
-  fabricate one. Update the `--resume` column in `README.md`.
+  fabricate one. Update the `--resume` column in `README.md`. Also declare
+  `fork_reuses_cache` (implies `supports_fork`): true only if a forked run reuses
+  the parent session's prompt-cache prefix, which is what makes a `min-tokens`
+  batch save tokens — gate, **measured** by `oh_batch_fork_enforce` not guessed
+  (true for claude-code; false for opencode, whose fork re-sends the prefix cold).
+  When true, add the `oh_batch_fork_enforce <id>` live phase and update the batch
+  support matrix in `README.md`.
 - Set its `native_schema` only if the CLI has a real schema flag, sourced from
   that CLI's docs (never guessed) — and pin the injected argv with a
   `--print-command`/`build_argv` assertion. `None` is the right default: the

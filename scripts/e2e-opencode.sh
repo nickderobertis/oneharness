@@ -25,12 +25,12 @@ oh_assert_echoed opencode "$marker" "json:opencode-parts"
 note "» cache reporting: a second run must surface cache_read_tokens"
 oh_cache_assert opencode
 
-# Batch min-tokens (fork): OpenCode is the other fork-capable, cache-reporting
-# harness, so it completes the support matrix's "supported" side. The batch warms
-# prompt[0] as a session, then forks it for the fan-out, which must reuse the
-# warmed cached prefix (read it, and write less than the warm-up).
-note "» batch min-tokens (fork): the fan-out must reuse the warmed session and save writes"
-oh_batch_fork_enforce opencode
+# Batch min-tokens is deliberately NOT fork-accelerated for OpenCode: although
+# OpenCode can fork, its `--fork` re-sends the branched conversation cold (measured
+# live — the fan-out reads no cache and re-writes the whole prefix, so forking
+# would RAISE tokens). `fork_reuses_cache` is false for it, so oneharness leaves
+# OpenCode's min-tokens as order-only — no batch caching check here (only Claude
+# Code's fork reuses the cache; see e2e-claude.sh's oh_batch_fork_enforce).
 
 # Sync enforcement: OpenCode has no list-shaped rules, so the policy goes via
 # the raw settings table into opencode.json's permission map. Without

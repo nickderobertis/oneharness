@@ -229,21 +229,24 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // run under --print-command (nothing executes, no session).
     let fork_batch = batch_run
         && batch_strategy == BatchStrategy::MinTokens
-        && specs[0].supports_fork
+        && specs[0].fork_reuses_cache
         && !args.print_command
         && !jobs.is_empty();
-    // `min-tokens` on a harness that cannot fork only reorders the calls: there is
-    // no fork to reuse a prefix, and a prepended --system is not independently
-    // cached. Say so rather than imply a saving the harness can't deliver.
+    // `min-tokens` reduces tokens only when the harness has a *cache-reusing* fork
+    // (the warm-up writes the shared prefix, the forked fan-out reads it). When it
+    // does not — no fork at all, or a fork that re-sends the prefix cold, like
+    // OpenCode — `min-tokens` can only order the calls; say so rather than imply a
+    // saving the harness can't deliver.
     if batch_run
         && batch_strategy == BatchStrategy::MinTokens
-        && !specs[0].supports_fork
+        && !specs[0].fork_reuses_cache
         && !args.print_command
     {
         eprintln!(
             "oneharness: warning: `--batch-strategy min-tokens` cannot reduce tokens on `{}` \
-             (not fork-capable); it only orders the calls. Token savings need a fork-capable \
-             harness (see `supports_fork` in `oneharness list`).",
+             (no cache-reusing fork available); it only orders the calls. Token savings need a \
+             harness whose fork reuses the prompt cache (see `fork_reuses_cache` in \
+             `oneharness list`).",
             specs[0].id
         );
     }
@@ -1253,6 +1256,7 @@ mod tests {
             output_format: OutputFormat::Text,
             supports_resume: false,
             supports_fork: false,
+            fork_reuses_cache: false,
             sync: None,
             hooks: None,
             global_hook: None,

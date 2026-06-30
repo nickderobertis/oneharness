@@ -1014,6 +1014,16 @@ fn list_exposes_resume_and_fork_capabilities() {
     assert!(!fork("codex"));
     assert!(!fork("cursor"));
     assert!(!fork("goose"));
+    // Cache-reusing fork (the min-tokens batch saving) is Claude Code only:
+    // OpenCode can fork but its fork re-sends the prefix cold.
+    let reuses = |id: &str| {
+        harnesses.iter().find(|h| h["id"] == id).unwrap()["fork_reuses_cache"]
+            .as_bool()
+            .unwrap()
+    };
+    assert!(reuses("claude-code"));
+    assert!(!reuses("opencode"));
+    assert!(!reuses("codex"));
 }
 
 #[test]
@@ -4481,31 +4491,50 @@ fn batch_min_tokens_forks_the_warmed_session_for_the_fan_out() {
 }
 
 #[test]
-fn batch_min_tokens_on_a_non_fork_harness_warns_and_does_not_fork() {
-    // Codex cannot fork, so min-tokens can only order the calls (no prefix reuse):
-    // the report marks it not forked and oneharness warns on stderr, while still
-    // producing one result per prompt.
-    let output = run(
-        &[
-            "run",
-            "--harness",
-            "codex",
-            "--batch-strategy",
-            "min-tokens",
-            "--prompt",
-            "a",
-            "--prompt",
-            "b",
-            "--bin",
-            &bin_override("codex"),
-            "--compact",
-        ],
-        &[],
-    );
-    assert!(output.status.success());
-    let value = json_stdout(&output);
-    assert_eq!(value["batch"]["forked"], false);
-    assert_eq!(value["results"].as_array().unwrap().len(), 2);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not fork-capable"), "{stderr}");
+fn batch_min_tokens_without_a_cache_reusing_fork_warns_and_does_not_fork() {
+    // min-tokens only saves on a harness with a *cache-reusing* fork. Codex can't
+    // fork at all; OpenCode can fork but its fork re-sends the prefix cold
+    // (fork_reuses_cache = false). Both must stay order-only: the report marks
+    // them not forked, oneharness warns on stderr, and the fan-out is NOT forked,
+    // while still producing one result per prompt.
+    for (id, fork_flag) in [("codex", "--fork-session"), ("opencode", "--fork")] {
+        let output = run(
+            &[
+                "run",
+                "--harness",
+                id,
+                "--batch-strategy",
+                "min-tokens",
+                "--prompt",
+                "a",
+                "--prompt",
+                "b",
+                "--bin",
+                &bin_override(id),
+                "--compact",
+            ],
+            // A session_id the fork path *would* pick up if it engaged — proving it
+            // does not for these harnesses.
+            &[(
+                "MOCK_STDOUT",
+                r#"{"result":"ok","session_id":"SID-1","sessionID":"SID-1"}"#,
+            )],
+        );
+        assert!(
+            output.status.success(),
+            "{id} exit {:?}",
+            output.status.code()
+        );
+        let value = json_stdout(&output);
+        assert_eq!(value["batch"]["forked"], false, "{id} should not fork");
+        assert_eq!(value["results"].as_array().unwrap().len(), 2, "{id}");
+        // The fan-out must not carry the fork flag.
+        assert!(
+            !command_of(&value, 1).contains(&fork_flag.to_string()),
+            "{id} fan-out must not fork: {:?}",
+            command_of(&value, 1)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("only orders the calls"), "{id}: {stderr}");
+    }
 }

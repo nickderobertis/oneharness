@@ -565,13 +565,13 @@ Two strategies:
 - **`speed`** (default) — fire all prompts at once for minimum wall-clock. Every
   call is independent; this optimizes latency, not tokens.
 - **`min-tokens`** — minimize redundant token spend on the shared prefix. On a
-  **fork-capable** harness (Claude Code, OpenCode) it runs the first prompt as a
-  warm-up that establishes a session carrying the shared `--system`, then **forks
-  that session** for the remaining prompts, so each fanned-out call *reuses* the
-  warmed cached prefix instead of re-sending it. The report sets `batch.forked:
-  true`, and the fanned-out results report `usage.cache_read_tokens > 0` with a
-  lower `cache_write_tokens` than the warm-up. oneharness never claims a saving it
-  can't measure — read the counts.
+  harness whose fork **reuses the cache** (today Claude Code; see the matrix
+  below) it runs the first prompt as a warm-up that establishes a session carrying
+  the shared `--system`, then **forks that session** for the remaining prompts, so
+  each fanned-out call *reuses* the warmed cached prefix instead of re-sending it.
+  The report sets `batch.forked: true`, and the fanned-out results report
+  `usage.cache_read_tokens > 0` with a lower `cache_write_tokens` than the warm-up.
+  oneharness never claims a saving it can't measure — read the counts.
 
 Why fork rather than just repeating `--system`: provider prompt caching keys on
 the harness's byte-exact request prefix, but these CLIs inject per-invocation
@@ -582,34 +582,43 @@ across processes is **not** reused; the reliable cross-call reuse is a warmed
 **session**, which is exactly what `--fork` branches from (see
 [`--fork`](#usage)). `min-tokens` operationalizes that.
 
-Which harnesses `min-tokens` actually saves tokens on — the support matrix is the
-intersection of *can fork* and *reports cache counts* (oneharness only normalizes
-cache tokens for two harnesses, so a saving is only observable there anyway):
+Which harnesses `min-tokens` actually saves tokens on — the saving needs a
+*cache-reusing fork* (`fork_reuses_cache` in `oneharness list`), which turns out
+to be **Claude Code only**:
 
 | harness | `min-tokens` behavior |
 | --- | --- |
 | **claude-code** | ✓ fork-saving — warm-then-fork, cache reuse (live-proven) |
-| **opencode** | ✓ fork-saving — same mechanism (live-proven) |
-| codex, goose, qwen, crush, copilot, cursor | order-only — no saving (see below) |
+| opencode | order-only — *can* fork, but its fork re-sends the prefix cold |
+| codex, goose, qwen, crush, copilot, cursor | order-only — no cache-reusing fork |
 
-A **system-prompt-based** approach does *not* save on the order-only harnesses, for
-two independent reasons: none of them report prompt-cache counts (so a saving
-can't be measured), and a static `--system` isn't reused across separate harness
-processes — five of them only *prepend* `--system` into the user message (no
-independently cacheable breakpoint), and even Goose's *native* `--system` rides
-the same per-process re-creation that makes Claude Code's `--append-system-prompt`
-non-reusable across `claude -p` calls. So on those harnesses `min-tokens` only
-orders the calls, and oneharness says so on stderr rather than implying a saving.
+Two findings shape this (both measured live, not assumed):
+
+- **A static `--system` is not reused across separate harness processes.** Even on
+  Claude Code (a *native* `--system` harness) a repeated `--append-system-prompt`
+  is re-created on every `claude -p` — only the harness's *own* global prefix gets
+  cross-process cache reads. The other five non-Goose harnesses merely *prepend*
+  `--system` (no cacheable breakpoint), and the six non-fork harnesses report no
+  cache counts at all (so a saving couldn't even be observed). So a system-prompt
+  approach saves nothing on them.
+- **Only a *cache-reusing* fork helps.** Claude Code's `--fork-session` branches
+  from the warmed session and reuses its cached prefix (the fan-out reads it and
+  writes little). OpenCode's `--fork` instead re-sends the branched conversation
+  cold (the fan-out reads no cache and re-writes the whole prefix — so forking it
+  would *raise* tokens), so oneharness leaves OpenCode's `min-tokens` order-only.
+
+On every order-only harness `min-tokens` just orders the calls, and oneharness
+says so on stderr rather than implying a saving.
 
 **Caveats.** A batch is **single-harness** by nature (a session/cache prefix is
 per harness/model/tools) — selecting more than one harness (or `--all`), or
 combining with `--resume`/`--fork`, is a usage error. The token saving needs a
-**fork-capable** harness (`supports_fork` in `oneharness list` — today Claude Code
-and OpenCode); on any other harness `min-tokens` only *orders* the calls (no
-reuse) and oneharness says so on stderr. Note this changes the fan-out's
-semantics: because the fork-capable fan-out branches from the warm-up's turn, the
-later prompts share the first prompt's context (the fork model — "one initial
-prompt seeds independent follow-ups"), rather than being fully independent
+harness with a **cache-reusing fork** (`fork_reuses_cache` in `oneharness list` —
+today Claude Code only); on any other harness `min-tokens` only *orders* the calls
+(no reuse) and oneharness says so on stderr. Note that where it does fork, this
+changes the fan-out's semantics: because the fan-out branches from the warm-up's
+turn, the later prompts share the first prompt's context (the fork model — "one
+initial prompt seeds independent follow-ups"), rather than being fully independent
 questions. Caching itself is best-effort and provider-side (a ~5-min TTL refreshed
 on hit, a minimum prefix length, a byte-identical prefix), so the reuse only lands
 when the warmed session's prefix clears the minimum and the fan-out runs within

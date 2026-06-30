@@ -18,6 +18,14 @@
 //!                   MOCK_STDOUT_<n> is set for that 1-based attempt) emits that
 //!                   instead of MOCK_STDOUT — used to script the structured-output
 //!                   retry loop, where attempt 1 is invalid and a later one valid.
+//!   MOCK_LOG_FILE   if set, an append-only run log: each invocation appends `S\n`
+//!                   when it starts (before MOCK_SLEEP_MS) and `E\n` when it ends
+//!                   (after the sleep). With a sleep that exceeds spawn latency,
+//!                   the interleaving reveals scheduling: concurrent calls all
+//!                   write `S` before the first `E`; a barrier (one call, then the
+//!                   rest) shows `S E` before any further `S`. Used to pin the
+//!                   batch `speed` vs `min-tokens` wave ordering. Small single-byte
+//!                   lines + O_APPEND keep cross-process writes from interleaving.
 
 use std::io::Write;
 
@@ -27,6 +35,21 @@ fn main() {
     if let Ok(path) = std::env::var("MOCK_ARGV_FILE") {
         let _ = std::fs::write(path, argv.join("\n"));
     }
+
+    // Append one line to the run log (when configured), opening fresh each time so
+    // concurrent invocations share the file via the OS's append semantics.
+    let log_line = |line: &str| {
+        if let Ok(path) = std::env::var("MOCK_LOG_FILE") {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = f.write_all(line.as_bytes());
+                let _ = f.flush();
+            }
+        }
+    };
 
     if std::env::var_os("MOCK_ECHO_PWD").is_some() {
         let pwd = std::env::var("PWD").unwrap_or_default();
@@ -42,11 +65,13 @@ fn main() {
         std::process::exit(0);
     }
 
+    log_line("S\n");
     if let Ok(ms) = std::env::var("MOCK_SLEEP_MS") {
         if let Ok(ms) = ms.parse::<u64>() {
             std::thread::sleep(std::time::Duration::from_millis(ms));
         }
     }
+    log_line("E\n");
 
     if let Ok(text) = std::env::var("MOCK_STDERR") {
         let _ = write!(std::io::stderr(), "{text}");

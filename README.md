@@ -162,6 +162,8 @@ oneharness sync                                   # merge the unified settings i
 oneharness sync --global                          # install [[hooks]] into the user-global config instead of the project
 oneharness run --all --prompt "…"                 # run everywhere, in parallel
 oneharness run --harness claude-code,codex --prompt-file task.md
+oneharness run --harness claude-code --system "$(cat ctx.md)" \
+  --prompt "Q1" --prompt "Q2" --prompt "Q3" --batch-strategy min-tokens  # batch: one harness, N prompts, shared cache prefix
 oneharness run --all --print-command --prompt "…" # dry run: show commands, run nothing
 oneharness gate claude-code --deny-if-contains X  # the pre-tool gate an installed hook invokes (reads stdin)
 ```
@@ -169,7 +171,15 @@ oneharness gate claude-code --deny-if-contains X  # the pre-tool gate an install
 Useful `run` flags:
 
 - `--all` / `--harness <id,…>` / `--exclude <id,…>` — selection.
-- `--prompt <text>` or `--prompt-file <path|->` — the prompt (file or stdin).
+- `--prompt <text>` or `--prompt-file <path|->` — the prompt (file or stdin). Both
+  are **repeatable**; passing more than one prompt switches to a [batch
+  run](#batch-runs-same-prefix-prompt-caching) (one harness, N prompts). Each
+  `--prompt-file` is read whole as one prompt (not split per line); `-` (stdin)
+  may appear once. Combined order is every `--prompt`, then every `--prompt-file`.
+- `--batch-strategy <speed|min-tokens>` — for a batch run, how the calls are
+  scheduled to exploit the shared prefix cache (`speed`, the default, or
+  `min-tokens`); see [batch runs](#batch-runs-same-prefix-prompt-caching). No
+  effect on a single-prompt run.
 - `--model <m>` — passed to each harness that supports a model flag.
 - `--system <text>` — portable system prompt for **every** harness: mapped to a
   native flag where one exists (Claude Code's `--append-system-prompt`, Goose's
@@ -530,6 +540,55 @@ delivery (and a schema appended to the prompt) may not reach a `.cmd`-shim
 harness intact — structured output is most reliable on Linux/macOS, or on Windows
 against a real `.exe` harness. oneharness's own argv construction and validation
 are exercised on Windows by the hermetic test suite regardless.
+
+### Batch runs (same-prefix prompt caching)
+
+A common workload is **many prompts that share a prefix** — the same `--system`
+context (a spec, a big reference doc, few-shot examples) with a different question
+each time. Pass more than one prompt and `run` switches to a **batch**: it drives
+**one** harness over each prompt and returns one report with a result per prompt
+(in order), each tagged with its own `prompt`. The top-level report gains a
+`batch` block (`{ "strategy", "prompt_count" }`); `results[].prompt` is
+authoritative, and the top-level `prompt` repeats the first for back-compat.
+
+```console
+# 3 questions over one shared context, warming the cache once:
+oneharness run --harness claude-code --system "$(cat reference.md)" \
+  --prompt "Summarize section 2" \
+  --prompt "List the open questions" \
+  --prompt "What changed since v1?" \
+  --batch-strategy min-tokens --compact | jq '.results[].usage'
+```
+
+Why batch instead of running oneharness N times by hand: provider **prompt
+caching** keys on the harness's byte-exact request prefix (tools → system →
+messages), so identical `--system` + model + tool config across the prompts is a
+shared, cacheable prefix. oneharness keeps that prefix stable and times the calls
+so they land inside the cache TTL. Two strategies:
+
+- **`speed`** (default) — fire all prompts at once for minimum wall-clock. There
+  is no cache yet, so every call may *write* the prefix independently; this
+  optimizes latency, not tokens.
+- **`min-tokens`** — run **one** prompt first to *write* the shared prefix to
+  cache, wait for it, then fan the rest out concurrently so they *read* the warmed
+  prefix instead of each re-writing it. Optimizes cost at some wall-clock expense.
+
+Whether batching actually saves tokens is observable in the report: under
+`min-tokens` the fanned-out results report `usage.cache_read_tokens > 0` (see
+[the usage fields](#the-result-envelope-vs-the-normalized-signals)). oneharness
+never claims a saving it can't measure — read the counts.
+
+**Caveats.** A batch is **single-harness** by nature (a cache prefix is per
+harness/model/tools) — selecting more than one harness (or `--all`), or combining
+with `--resume`/`--fork`, is a usage error. The shared prefix is only reliably
+cached on harnesses with a **native system flag** that gets its own breakpoint
+(Claude Code's `--append-system-prompt`, Goose's `--system`); on the *prepend*
+harnesses `--system` is glued to the front of the user message and usually isn't
+independently cached, so those benefit little. Caching itself is best-effort and
+provider-side: a ~5-min TTL (refreshed on hit), a minimum prefix length, and a
+prefix that must stay byte-identical (a harness/tool/version change busts it), so
+`min-tokens` only helps when the prefix clears the minimum and the fan-out lands
+within the warm-up's TTL.
 
 ### Safety note: bypass by default
 

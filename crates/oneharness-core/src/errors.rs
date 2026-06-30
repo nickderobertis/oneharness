@@ -17,6 +17,15 @@ pub enum OneharnessError {
     #[error("no prompt provided: pass --prompt <text> or --prompt-file <path>")]
     NoPrompt,
 
+    #[error("--prompt-file - (stdin) can be given only once, but it was passed {count} times")]
+    MultipleStdinPrompts { count: usize },
+
+    #[error("a batch run (more than one prompt) needs exactly one harness (a shared cache prefix is per harness/model), but {count} were selected: {selected}. Select one with --harness <id>")]
+    BatchMultipleHarnesses { count: usize, selected: String },
+
+    #[error("a batch run (more than one prompt) cannot be combined with --resume/--fork (those continue a single session with a single prompt)")]
+    BatchResume,
+
     #[error("--resume needs exactly one harness (a session belongs to one harness), but {count} were selected: {selected}")]
     ResumeMultipleHarnesses { count: usize, selected: String },
 

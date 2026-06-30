@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Args, Parser, Subcommand};
 
+use oneharness_core::domain::batch::BatchStrategy;
 use oneharness_core::domain::mode::PermissionMode;
 use oneharness_core::domain::report::OutputFormat;
 
@@ -25,6 +26,14 @@ fn output_format_parser() -> impl TypedValueParser<Value = OutputFormat> {
 fn mode_parser() -> impl TypedValueParser<Value = PermissionMode> {
     PossibleValuesParser::new(PermissionMode::ALL.map(|m| m.as_str()))
         .map(|s| PermissionMode::parse(&s).expect("clap restricts to valid mode tokens"))
+}
+
+/// Parse `--batch-strategy` into the core [`BatchStrategy`], keeping the
+/// possible-value list (and its `--help` listing + validation error) in the
+/// binary so `oneharness-core` need not depend on `clap`.
+fn batch_strategy_parser() -> impl TypedValueParser<Value = BatchStrategy> {
+    PossibleValuesParser::new(BatchStrategy::ALL.map(|s| s.as_str()))
+        .map(|s| BatchStrategy::parse(&s).expect("clap restricts to valid strategy tokens"))
 }
 
 const ABOUT: &str =
@@ -98,16 +107,22 @@ pub struct RunArgs {
     #[arg(long, value_delimiter = ',', value_name = "ID")]
     pub exclude: Vec<String>,
 
-    /// The prompt to send. Mutually exclusive with --prompt-file.
+    /// The prompt to send. Repeatable: passing it more than once (or combining
+    /// it with multiple --prompt-file) runs a **batch** — one harness fanned over
+    /// each prompt, sharing the cacheable --system/model prefix (see
+    /// --batch-strategy). Combined prompt order is every --prompt, then every
+    /// --prompt-file.
     ///
     /// `allow_hyphen_values` so a prompt that begins with `-`/`--` (or YAML
     /// front matter's `---`) is taken as the value rather than parsed as a flag.
-    #[arg(long, conflicts_with = "prompt_file", allow_hyphen_values = true)]
-    pub prompt: Option<String>,
+    #[arg(long, allow_hyphen_values = true)]
+    pub prompt: Vec<String>,
 
-    /// Read the prompt from a file, or '-' for stdin.
+    /// Read a prompt from a file, or '-' for stdin. Repeatable: each file is one
+    /// whole prompt (the file is not split per line); '-' may appear only once.
+    /// Combines with --prompt to form a batch (see --prompt / --batch-strategy).
     #[arg(long, value_name = "PATH")]
-    pub prompt_file: Option<String>,
+    pub prompt_file: Vec<String>,
 
     /// Model passed to each harness that supports a model flag.
     #[arg(long)]
@@ -205,9 +220,18 @@ pub struct RunArgs {
     #[arg(long)]
     pub no_config: bool,
 
-    /// Maximum harnesses to run concurrently (default: all selected at once).
+    /// Maximum harnesses (or, in a batch run, prompts) to run concurrently
+    /// (default: all at once).
     #[arg(long, value_name = "N")]
     pub max_parallel: Option<usize>,
+
+    /// How a **batch** run (more than one prompt) schedules its calls to exploit
+    /// the shared --system/model prompt-cache prefix (no effect on a single-prompt
+    /// run). `speed` (default) fires all prompts at once for minimum wall-clock;
+    /// `min-tokens` runs one prompt first to warm the cache, waits, then fans out
+    /// the rest so they read the warmed prefix instead of each re-writing it.
+    #[arg(long, value_parser = batch_strategy_parser(), value_name = "STRATEGY")]
+    pub batch_strategy: Option<BatchStrategy>,
 
     /// Build and report each command without executing it (dry run).
     #[arg(long)]

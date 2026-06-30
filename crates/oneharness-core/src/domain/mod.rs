@@ -2,6 +2,7 @@
 //! These modules build commands, shape the report, and parse output; all real
 //! I/O stays behind the `io` and `commands` boundaries.
 
+pub mod batch;
 pub mod config;
 pub mod gate;
 pub mod harness;

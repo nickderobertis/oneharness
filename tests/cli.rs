@@ -4046,3 +4046,286 @@ fn list_exposes_native_schema_capability() {
     let crush = harnesses.iter().find(|h| h["id"] == "crush").unwrap();
     assert_eq!(crush["supports_native_schema"], false);
 }
+
+// --- same-prefix batch mode (one harness, N prompts) ------------------------
+
+/// Count `S` (start) lines in the mock run log before the first `E` (end) line.
+/// With a per-call sleep longer than spawn latency, this reveals scheduling: a
+/// single wave that fires everything at once shows every `S` before any `E`; a
+/// `min-tokens` warm-up shows exactly one `S` (and its `E`) before the rest start.
+fn starts_before_first_end(log: &str) -> usize {
+    let mut count = 0;
+    for line in log.lines() {
+        match line.trim() {
+            "S" => count += 1,
+            "E" => break,
+            _ => {}
+        }
+    }
+    count
+}
+
+/// A unique scratch path for a batch test's run log.
+fn batch_log_path(tag: &str) -> PathBuf {
+    let p = std::env::temp_dir().join(format!("oneharness-batchlog-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_file(&p);
+    p
+}
+
+#[test]
+fn batch_speed_fires_every_prompt_in_one_wave() {
+    let log = batch_log_path("speed");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "first",
+            "--prompt",
+            "second",
+            "--prompt",
+            "third",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_LOG_FILE", &log.display().to_string()),
+            ("MOCK_SLEEP_MS", "500"),
+        ],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+
+    // One harness fanned over three prompts → three results, each tagged with its
+    // own prompt, in order; the batch block records the strategy.
+    assert_eq!(value["batch"]["strategy"], "speed");
+    assert_eq!(value["batch"]["prompt_count"], 3);
+    let results = value["results"].as_array().unwrap();
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0]["prompt"], "first");
+    assert_eq!(results[1]["prompt"], "second");
+    assert_eq!(results[2]["prompt"], "third");
+    // Top-level prompt repeats the first for back-compat.
+    assert_eq!(value["prompt"], "first");
+    for r in results {
+        assert_eq!(r["harness"], "claude-code");
+        assert_eq!(r["status"], "ok");
+    }
+
+    // Scheduling: all three start before any finishes — a single concurrent wave.
+    let recorded = std::fs::read_to_string(&log).expect("mock wrote no log");
+    let _ = std::fs::remove_file(&log);
+    assert_eq!(
+        starts_before_first_end(&recorded),
+        3,
+        "speed should fire all prompts at once; log: {recorded:?}"
+    );
+}
+
+#[test]
+fn batch_min_tokens_warms_one_then_fans_the_rest() {
+    let log = batch_log_path("min-tokens");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--batch-strategy",
+            "min-tokens",
+            "--prompt",
+            "warm",
+            "--prompt",
+            "fan-a",
+            "--prompt",
+            "fan-b",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_LOG_FILE", &log.display().to_string()),
+            ("MOCK_SLEEP_MS", "500"),
+        ],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    assert_eq!(value["batch"]["strategy"], "min-tokens");
+    let results = value["results"].as_array().unwrap();
+    assert_eq!(results.len(), 3);
+    // Results stay in prompt order regardless of the warm-then-fan scheduling.
+    assert_eq!(results[0]["prompt"], "warm");
+    assert_eq!(results[2]["prompt"], "fan-b");
+
+    // Scheduling: exactly one call runs (and completes) before the rest begin —
+    // the warm-up wave that writes the shared cache prefix.
+    let recorded = std::fs::read_to_string(&log).expect("mock wrote no log");
+    let _ = std::fs::remove_file(&log);
+    assert_eq!(
+        starts_before_first_end(&recorded),
+        1,
+        "min-tokens should issue exactly one warm-up call first; log: {recorded:?}"
+    );
+}
+
+#[test]
+fn single_prompt_run_is_not_a_batch() {
+    // The ordinary path is unchanged: one prompt, no batch block, no per-result
+    // prompt — even with --batch-strategy set (it only matters for many prompts).
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--batch-strategy",
+            "min-tokens",
+            "--prompt",
+            "solo",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    assert!(value["batch"].is_null());
+    assert!(value["results"][0]["prompt"].is_null());
+    assert_eq!(value["prompt"], "solo");
+}
+
+#[test]
+fn batch_combines_prompt_and_prompt_file_in_order() {
+    let dir = std::env::temp_dir().join(format!("oneharness-batchpf-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("p.txt");
+    std::fs::write(&file, "from-file").unwrap();
+
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "from-flag",
+            "--prompt-file",
+            &file.display().to_string(),
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let results = value["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    // --prompt values come first, then --prompt-file contents (read whole).
+    assert_eq!(results[0]["prompt"], "from-flag");
+    assert_eq!(results[1]["prompt"], "from-file");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn batch_with_multiple_harnesses_is_a_usage_error() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code,codex",
+            "--prompt",
+            "one",
+            "--prompt",
+            "two",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("exactly one harness"), "{stderr}");
+}
+
+#[test]
+fn batch_with_all_is_a_usage_error() {
+    let output = run(&["run", "--all", "--prompt", "one", "--prompt", "two"], &[]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("exactly one harness"), "{stderr}");
+}
+
+#[test]
+fn batch_with_resume_is_a_usage_error() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--resume",
+            "sid-123",
+            "--prompt",
+            "one",
+            "--prompt",
+            "two",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("batch"), "{stderr}");
+}
+
+#[test]
+fn batch_output_dir_disambiguates_same_harness_results() {
+    let dir = std::env::temp_dir().join(format!("oneharness-batchout-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "a",
+            "--prompt",
+            "b",
+            "--output-dir",
+            &dir.display().to_string(),
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"ok"}"#)],
+    );
+    assert!(output.status.success());
+    // Same harness twice → indexed file stems, so neither overwrites the other.
+    assert!(dir.join("claude-code-0.stdout").exists());
+    assert!(dir.join("claude-code-1.stdout").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn print_command_works_for_a_batch() {
+    // A dry-run batch builds one command per prompt without spawning anything.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--print-command",
+            "--prompt",
+            "alpha",
+            "--prompt",
+            "beta",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    assert_eq!(value["dry_run"], true);
+    assert_eq!(value["batch"]["prompt_count"], 2);
+    let results = value["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert!(command_of(&value, 0).contains(&"alpha".to_string()));
+    assert!(command_of(&value, 1).contains(&"beta".to_string()));
+}

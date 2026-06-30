@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::domain::batch::BatchStrategy;
 use crate::domain::mode::PermissionMode;
 use crate::domain::signals::Usage;
 
@@ -69,6 +70,10 @@ pub struct RunResult {
     /// Whether that binary was found.
     pub available: bool,
     pub status: Status,
+    /// The prompt this result ran, set only on a **batch** run (one harness
+    /// fanned over N prompts), where each result has its own prompt. `null` on an
+    /// ordinary run, where the single top-level `prompt` applies to every result.
+    pub prompt: Option<String>,
     /// Process exit code; `null` when not run, timed out, or signalled.
     pub exit_code: Option<i32>,
     /// Wall-clock duration of the run; `null` when not executed.
@@ -125,6 +130,9 @@ pub struct RunResult {
 pub struct RunReport {
     pub schema_version: &'static str,
     pub oneharness_version: &'static str,
+    /// The prompt sent. On an ordinary run this is *the* prompt every result
+    /// shares; on a **batch** run (see `batch`) it repeats the first prompt for
+    /// back-compat, and each result's own `prompt` field is authoritative.
     pub prompt: String,
     pub model: Option<String>,
     /// The session id being continued, when `--resume` was passed; else `null`.
@@ -147,8 +155,22 @@ pub struct RunReport {
     /// Maximum retries allowed per harness under the validate/retry loop; `null`
     /// when no schema was requested.
     pub schema_max_retries: Option<u32>,
+    /// Same-prefix batch metadata when this run fanned **one** harness over more
+    /// than one prompt; `null` on an ordinary run. Its presence is the signal a
+    /// consumer keys on to read each result's own `prompt`.
+    pub batch: Option<BatchReport>,
     /// Config files that shaped this run, in layering order (user first,
     /// project last); empty under `--no-config` or when none exist.
     pub config_files: Vec<String>,
     pub results: Vec<RunResult>,
+}
+
+/// Metadata for a same-prefix batch run (one harness, N prompts sharing a
+/// cacheable prefix). Present on [`RunReport::batch`] only in that mode.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchReport {
+    /// How the prompts were scheduled across the parallel runner.
+    pub strategy: BatchStrategy,
+    /// How many prompts were run (equals `results.len()`).
+    pub prompt_count: usize,
 }

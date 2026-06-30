@@ -34,6 +34,13 @@ oh_assert_echoed claude-code "$sysmarker"
 note "» cache reporting: a second run must surface cache_read_tokens"
 oh_cache_assert claude-code
 
+# Same-prefix batch mode: a `min-tokens` batch must warm the shared --system
+# prefix once, then have the fanned-out prompts READ it (cache_read_tokens > 0)
+# and spend fewer total cache-write tokens than the same batch under `speed` —
+# the drift alarm that the mode actually reduces tokens, not just reorders calls.
+note "» batch caching: min-tokens must read the warmed prefix and out-save speed"
+oh_batch_cache_enforce claude-code
+
 # Sync enforcement: a policy synced into .claude/settings.json must govern the
 # real CLI under --no-bypass — the allow rule lets the exact command run, the
 # deny rule (and headless default-deny) keeps the other from running.

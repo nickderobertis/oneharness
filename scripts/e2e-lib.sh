@@ -362,6 +362,107 @@ oh_cache_assert() {
     fi
 }
 
+# --- same-prefix batch caching ----------------------------------------------
+
+# Live proof that a `min-tokens` batch (one harness, N prompts sharing a
+# --system prefix) actually exploits provider prompt caching — the drift alarm
+# that the mode REDUCES tokens, not merely reorders calls (the hermetic suite can
+# only pin the wave ordering against a mock). It runs the same N prompts twice
+# against an auto-caching harness (Claude Code), each run under a FRESH random
+# --system prefix so the two runs cannot share a cache (a unique prefix is always
+# cold, removing TTL bleed and making the comparison clean):
+#   * min-tokens — one warm-up call writes the shared prefix, then the rest fan
+#     out and READ it. We assert the fanned-out results report
+#     cache_read_tokens > 0 (the prefix was reused) AND the warm-up wrote it.
+#   * speed      — all N fire at once cold, so each races to WRITE the prefix.
+# Then we assert min-tokens spent FEWER total cache-write tokens than speed
+# (≈ one prefix write vs. N), tying the savings to the #1083 cache counts.
+#
+# Only meaningful for a harness that reports cache counts and auto-caches its
+# tools+system prefix (Claude Code today). $1 harness id.
+oh_batch_cache_enforce() {
+    local id="$1"
+    local bin status fan_read warm_write min_write speed_write
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    # Three distinct on-task prompts (each carries its own marker so it genuinely
+    # runs); the shared, cacheable context lives in --system.
+    local p1 p2 p3
+    p1="$(oh_prompt "$(oh_marker)")"
+    p2="$(oh_prompt "$(oh_marker)")"
+    p3="$(oh_prompt "$(oh_marker)")"
+
+    note "  batch[min-tokens]: warm the shared --system prefix, then fan out the rest"
+    _oh_batch_run "$id" min-tokens "$(_oh_batch_system)" "$p1" "$p2" "$p3"
+    status="$(oh_field '.results[0].status')"
+    if [ "$status" = "skipped" ] || [ "$(oh_field '.results[0].available')" != "true" ]; then
+        skip "$id is not installed (oneharness reported status=$status); nothing to verify"
+    fi
+    [ "$(oh_field '.batch.strategy')" = "min-tokens" ] || { oh_dump; fail "$id: report is not a batch (.batch missing)"; }
+    # Every prompt must have completed.
+    if printf '%s' "$OH_REPORT" | jq -e '[.results[].status] | all(. == "ok") | not' >/dev/null; then
+        oh_dump
+        fail "$id: a min-tokens batch call did not complete cleanly"
+    fi
+    warm_write="$(oh_field '.results[0].usage.cache_write_tokens // 0')"
+    fan_read="$(printf '%s' "$OH_REPORT" | jq '[.results[1:][].usage.cache_read_tokens // 0] | add')"
+    min_write="$(printf '%s' "$OH_REPORT" | jq '[.results[].usage.cache_write_tokens // 0] | add')"
+    note "  min-tokens: warm-up cache_write=$warm_write, fanned-out cache_read(sum)=$fan_read, total cache_write=$min_write"
+
+    if [ "${fan_read:-0}" -gt 0 ] 2>/dev/null; then
+        note "  ok: the fanned-out calls READ the warmed prefix (cache_read_tokens=$fan_read)"
+    else
+        oh_dump
+        note "  usage: $(printf '%s' "$OH_REPORT" | jq -c '[.results[].usage]')"
+        fail "$id: the min-tokens fan-out reported no cache_read_tokens (> 0) — either the warm-up's prefix did not land (under the cache-size threshold or not byte-stable) or oneharness's cache-token extraction drifted"
+    fi
+
+    note "  batch[speed]: all prompts race cold under a fresh prefix (each may write)"
+    _oh_batch_run "$id" speed "$(_oh_batch_system)" "$p1" "$p2" "$p3"
+    if printf '%s' "$OH_REPORT" | jq -e '[.results[].status] | all(. == "ok") | not' >/dev/null; then
+        oh_dump
+        fail "$id: a speed batch call did not complete cleanly"
+    fi
+    speed_write="$(printf '%s' "$OH_REPORT" | jq '[.results[].usage.cache_write_tokens // 0] | add')"
+    note "  speed: total cache_write=$speed_write (cold race; vs min-tokens $min_write)"
+
+    if [ "${min_write:-0}" -lt "${speed_write:-0}" ] 2>/dev/null; then
+        note "PASS: $id min-tokens spent fewer cache-write tokens than speed ($min_write < $speed_write)"
+    else
+        oh_dump
+        fail "$id: min-tokens did not reduce cache-write tokens vs speed (min=$min_write, speed=$speed_write) — the warm-then-fan ordering is not saving writes (caching may not be landing, or the strategy is not honored)"
+    fi
+}
+
+# The shared, cacheable --system prefix for a batch caching check: a fixed
+# sentence plus a fresh random marker, so it is identical across the N prompts of
+# one run (cacheable) but unique per run (always cold, no TTL bleed between the
+# min-tokens and speed runs).
+_oh_batch_system() {
+    printf 'You are a connectivity-check fixture for the oneharness batch test suite. Reply naturally and concisely. Fixture nonce %s%s%s.' "${RANDOM}" "${RANDOM}" "${RANDOM}"
+}
+
+# Drive one batch run: $1 id, $2 strategy, $3 shared --system, then the prompts.
+# Stores the JSON report in $OH_REPORT (like oh_run). Uses --mode bypass so the
+# agent actually answers, and honors $OH_MODEL / $OH_TIMEOUT.
+_oh_batch_run() {
+    local id="$1" strategy="$2" system="$3"
+    shift 3
+    local bin
+    bin="$(oh_bin)"
+    local model_args=()
+    [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+    local prompt_args=() p
+    for p in "$@"; do prompt_args+=(--prompt "$p"); done
+    note "  driving: $bin run --harness $id --batch-strategy $strategy (${#prompt_args[@]} prompts)"
+    OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" \
+        --mode bypass --batch-strategy "$strategy" --system "$system" \
+        --timeout "${OH_TIMEOUT:-120}" --compact \
+        "${model_args[@]+"${model_args[@]}"}" "${prompt_args[@]}" 2>/dev/null)" || true
+    [ -n "$OH_REPORT" ] || fail "$id: oneharness produced no report for the $strategy batch"
+}
+
 # --- sync enforcement --------------------------------------------------------
 
 # One phase of the sync-enforcement check: plant a oneharness.toml in a fresh

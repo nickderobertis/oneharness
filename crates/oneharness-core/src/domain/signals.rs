@@ -10,9 +10,12 @@
 //! Coverage is keyed off each harness's real output shape, sourced from its docs,
 //! not guessed:
 //! - Claude Code (`--output-format json`): a terminal `result` event with a
-//!   top-level `usage` block, `total_cost_usd`, and `session_id`.
+//!   top-level `usage` block (including `cache_read_input_tokens` /
+//!   `cache_creation_input_tokens` for prompt-cache reads/writes), `total_cost_usd`,
+//!   and `session_id`.
 //! - OpenCode (`run --format json`): JSONL `step_finish` events that report
-//!   *per-step* tokens/cost under `part`, and a camelCase `sessionID`. The run
+//!   *per-step* tokens/cost under `part` (cache reads/writes under
+//!   `part.tokens.cache.{read,write}`), and a camelCase `sessionID`. The run
 //!   total is the sum across steps (taking the last would undercount).
 //! - Cursor (`--output-format stream-json`): NDJSON whose events carry a
 //!   snake_case `session_id`; it does not emit token usage today, so usage stays
@@ -30,6 +33,13 @@ pub struct Usage {
     pub input_tokens: Option<u64>,
     /// Completion/output tokens billed, when the harness reports them.
     pub output_tokens: Option<u64>,
+    /// Prompt tokens served from the provider's prompt cache (a cheap read of a
+    /// previously-written prefix), when the harness reports them. `None` when the
+    /// harness does not surface cache counts — never `0` as a guess.
+    pub cache_read_tokens: Option<u64>,
+    /// Prompt tokens written to the provider's prompt cache (a.k.a. cache
+    /// creation), when the harness reports them. `None` when not surfaced.
+    pub cache_write_tokens: Option<u64>,
     /// Total cost in USD, when the harness reports it (often absent on
     /// subscription auth, where there is no per-call dollar figure).
     pub cost_usd: Option<f64>,
@@ -37,7 +47,11 @@ pub struct Usage {
 
 impl Usage {
     fn is_empty(&self) -> bool {
-        self.input_tokens.is_none() && self.output_tokens.is_none() && self.cost_usd.is_none()
+        self.input_tokens.is_none()
+            && self.output_tokens.is_none()
+            && self.cache_read_tokens.is_none()
+            && self.cache_write_tokens.is_none()
+            && self.cost_usd.is_none()
     }
 }
 
@@ -81,6 +95,8 @@ fn single_object_usage(value: &Value) -> Option<UsageReading> {
     if let Some(u) = obj.get("usage").and_then(Value::as_object) {
         usage.input_tokens = u.get("input_tokens").and_then(Value::as_u64);
         usage.output_tokens = u.get("output_tokens").and_then(Value::as_u64);
+        usage.cache_read_tokens = u.get("cache_read_input_tokens").and_then(Value::as_u64);
+        usage.cache_write_tokens = u.get("cache_creation_input_tokens").and_then(Value::as_u64);
     }
     usage.cost_usd = obj
         .get("total_cost_usd")
@@ -112,6 +128,10 @@ fn summed_step_usage(candidates: &[Value]) -> Option<UsageReading> {
         if let Some(tokens) = part.get("tokens").and_then(Value::as_object) {
             saw_usage |= add_u64(&mut usage.input_tokens, tokens.get("input"));
             saw_usage |= add_u64(&mut usage.output_tokens, tokens.get("output"));
+            if let Some(cache) = tokens.get("cache").and_then(Value::as_object) {
+                saw_usage |= add_u64(&mut usage.cache_read_tokens, cache.get("read"));
+                saw_usage |= add_u64(&mut usage.cache_write_tokens, cache.get("write"));
+            }
         }
         saw_usage |= add_f64(&mut usage.cost_usd, part.get("cost"));
     }
@@ -263,12 +283,37 @@ mod tests {
     #[test]
     fn usage_from_claude_shaped_json() {
         let raw = r#"{"type":"result","result":"hi","session_id":"abc","total_cost_usd":0.0095,
-            "usage":{"input_tokens":1234,"output_tokens":56,"cache_read_input_tokens":7}}"#;
+            "usage":{"input_tokens":1234,"output_tokens":56,"cache_read_input_tokens":7,
+            "cache_creation_input_tokens":89}}"#;
         let got = extract_usage(raw).unwrap();
         assert_eq!(got.usage.input_tokens, Some(1234));
         assert_eq!(got.usage.output_tokens, Some(56));
+        assert_eq!(got.usage.cache_read_tokens, Some(7));
+        assert_eq!(got.usage.cache_write_tokens, Some(89));
         assert_eq!(got.usage.cost_usd, Some(0.0095));
         assert_eq!(got.source, "json");
+    }
+
+    #[test]
+    fn usage_cache_only_counts_as_usage() {
+        // A run that reports only cache tokens (no fresh input/output, no cost) is
+        // still a real reading — cache fields count toward "has usage".
+        let raw = r#"{"type":"result","usage":{"cache_read_input_tokens":42}}"#;
+        let got = extract_usage(raw).unwrap();
+        assert_eq!(got.usage.cache_read_tokens, Some(42));
+        assert_eq!(got.usage.input_tokens, None);
+        assert_eq!(got.usage.cache_write_tokens, None);
+    }
+
+    #[test]
+    fn usage_without_cache_fields_yields_none_cache() {
+        // Harnesses/shapes that don't report cache counts leave the cache fields
+        // null — never fabricated as 0.
+        let raw = r#"{"type":"result","usage":{"input_tokens":9,"output_tokens":3}}"#;
+        let got = extract_usage(raw).unwrap();
+        assert_eq!(got.usage.input_tokens, Some(9));
+        assert_eq!(got.usage.cache_read_tokens, None);
+        assert_eq!(got.usage.cache_write_tokens, None);
     }
 
     #[test]
@@ -328,13 +373,16 @@ mod tests {
         let raw = concat!(
             "{\"type\":\"step_start\",\"sessionID\":\"ses_1\",\"part\":{}}\n",
             "{\"type\":\"step_finish\",\"sessionID\":\"ses_1\",\"part\":{\"cost\":0.001,\
-             \"tokens\":{\"input\":671,\"output\":8,\"reasoning\":0,\"cache\":{\"read\":21415}}}}\n",
+             \"tokens\":{\"input\":671,\"output\":8,\"reasoning\":0,\
+             \"cache\":{\"read\":21415,\"write\":100}}}}\n",
             "{\"type\":\"step_finish\",\"sessionID\":\"ses_1\",\"part\":{\"cost\":0.002,\
-             \"tokens\":{\"input\":12,\"output\":34}}}\n",
+             \"tokens\":{\"input\":12,\"output\":34,\"cache\":{\"read\":5,\"write\":3}}}}\n",
         );
         let got = extract_usage(raw).unwrap();
         assert_eq!(got.usage.input_tokens, Some(683));
         assert_eq!(got.usage.output_tokens, Some(42));
+        assert_eq!(got.usage.cache_read_tokens, Some(21420));
+        assert_eq!(got.usage.cache_write_tokens, Some(103));
         assert!((got.usage.cost_usd.unwrap() - 0.003).abs() < 1e-9);
         assert_eq!(got.source, "json:summed-steps");
     }
@@ -439,5 +487,19 @@ mod tests {
         assert_eq!(got.usage.input_tokens, Some(5));
         assert_eq!(got.usage.output_tokens, None);
         assert_eq!(got.usage.cost_usd, None);
+    }
+
+    #[test]
+    fn summed_usage_read_only_cache_hit_leaves_write_null() {
+        // The headline scenario: a pure cache *hit* reads a cached prefix and
+        // writes nothing, so OpenCode's `cache` block carries `read` but no
+        // `write`. The read surfaces; `write` stays null rather than defaulting
+        // to zero (never-fabricate, even for the half that's absent).
+        let raw = "{\"type\":\"step_finish\",\"part\":\
+            {\"tokens\":{\"input\":2,\"output\":1,\"cache\":{\"read\":9000}}}}\n";
+        let got = extract_usage(raw).unwrap();
+        assert_eq!(got.usage.cache_read_tokens, Some(9000));
+        assert_eq!(got.usage.cache_write_tokens, None);
+        assert_eq!(got.source, "json:summed-steps");
     }
 }

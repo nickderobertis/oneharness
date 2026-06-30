@@ -319,7 +319,12 @@ shape. When you add one:
   `oh_hook_enforce <id> [scope]` phase — it syncs a `oneharness gate <id>` hook
   and proves the real CLI blocks a marked command and runs an unmarked one, the
   honoring proof + drift alarm for the *hook* install (use `global` scope for a
-  harness, like Qwen, that only fires user-scoped hooks headlessly).
+  harness, like Qwen, that only fires user-scoped hooks headlessly). If the
+  harness reports provider prompt-cache counts in its usage (today only Claude
+  Code and OpenCode — see `extract_usage` in `domain::signals` and the README
+  `usage` support matrix), also add the `oh_cache_assert <id>` phase: a second run
+  within the cache TTL must surface `cache_read_tokens > 0` — the live drift alarm
+  that cache-token extraction still matches the real output shape.
 
 ## Scripts and output are context
 

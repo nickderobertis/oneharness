@@ -18,6 +18,13 @@ oh_run opencode "$(oh_prompt "$marker")"
 # answer from its `text` parts, so require that exact extraction method here.
 oh_assert_echoed opencode "$marker" "json:opencode-parts"
 
+# Cache-token reporting: with an Anthropic model OpenCode caches its tools+system
+# prefix, so a second run reads it back. Assert oneharness surfaces the summed
+# `part.tokens.cache.read` as cache_read_tokens — the live drift alarm for the
+# per-step cache-token extraction.
+note "» cache reporting: a second run must surface cache_read_tokens"
+oh_cache_assert opencode
+
 # Sync enforcement: OpenCode has no list-shaped rules, so the policy goes via
 # the raw settings table into opencode.json's permission map. Without
 # --dangerously-skip-permissions the deny pattern must block the command, and

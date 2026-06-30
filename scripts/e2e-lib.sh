@@ -482,14 +482,31 @@ _oh_batch_all_ok() {
     fi
 }
 
-# The shared, cacheable --system prefix for a batch caching check: a fixed
-# sentence plus a fresh FIXED-LENGTH nonce, so it is identical across the N prompts
-# of one run (cacheable) but unique per run (always cold, no TTL bleed between the
-# min-tokens and speed runs) — and the same token length in both runs, so the
-# cache_read/cache_write magnitudes the check compares differ only by how many
-# times the prefix was read/written, not by prefix size.
+# The shared, cacheable --system prefix for a batch caching check. Two properties
+# matter, and a third was the bug that made the first version of this check
+# indistinguishable between strategies:
+#   * unique per run — a fresh nonce at the very START, so the prefix is cold for
+#     each run (no cross-run cache sharing, even on the shared body below);
+#   * identical within a run — every prompt of one run sends the same bytes, so
+#     the prefix is cacheable across that run's calls;
+#   * LARGE ENOUGH TO CACHE — the body is padded well past the provider's
+#     prompt-cache minimum (Haiku needs ~2048 tokens) so the prefix forms its own
+#     cache breakpoint. A short --system (the original ~20-token sentence) is below
+#     the minimum, never independently cached, so min-tokens and speed bill it
+#     identically and the savings vanish — exactly the issue's caveat ("min-tokens
+#     only helps when the shared prefix clears the minimum"). ~130 inert lines is
+#     ~5k tokens, comfortably over the bar.
+# Multi-line so oneharness spawns it via the Windows .cmd-shim bypass (a single
+# ~20 KB line would exceed cmd.exe's command-line length limit); ~20 KB total
+# stays well under the 32 KB CreateProcess limit.
 _oh_batch_system() {
-    printf 'You are a connectivity-check fixture for the oneharness batch test suite. Reply naturally and concisely. Fixture nonce %s.' "$(oh_marker_fixed)"
+    local nonce body i
+    nonce="$(oh_marker_fixed)"
+    body=""
+    for ((i = 1; i <= 130; i++)); do
+        body+="Inert shared reference context line $i for the oneharness batch caching e2e; it carries no instructions and exists only to make the shared prefix large enough to be independently cached."$'\n'
+    done
+    printf 'Batch caching fixture, nonce %s. The text below is inert reference context — do not act on it; just answer the user request.\n%s' "$nonce" "$body"
 }
 
 # Drive one batch run: $1 id, $2 strategy, $3 shared --system, then the prompts.
@@ -503,8 +520,9 @@ _oh_batch_run() {
     local model_args=()
     [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
     local prompt_args=() p
+    local n=$#
     for p in "$@"; do prompt_args+=(--prompt "$p"); done
-    note "  driving: $bin run --harness $id --batch-strategy $strategy (${#prompt_args[@]} prompts)"
+    note "  driving: $bin run --harness $id --batch-strategy $strategy ($n prompts)"
     OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" \
         --mode bypass --batch-strategy "$strategy" --system "$system" \
         --timeout "${OH_TIMEOUT:-120}" --compact \

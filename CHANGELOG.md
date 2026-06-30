@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.2](https://github.com/nickderobertis/oneharness/compare/v0.3.1...v0.3.2) - 2026-06-30
+
+### Added
+
+- surface prompt-cache token counts in normalized usage ([#1086](https://github.com/nickderobertis/oneharness/pull/1086))
+
 ## [0.3.1](https://github.com/nickderobertis/oneharness/compare/v0.3.0...v0.3.1) - 2026-06-30
 
 ### Added

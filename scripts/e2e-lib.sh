@@ -174,6 +174,13 @@ oh_sandbox_prepare() {
 # in the output proves this run produced it.
 oh_marker() { printf 'ONEHARNESS-LIVE-%s%s%s' "${RANDOM}" "${RANDOM}" "${RANDOM}"; }
 
+# A high-entropy marker of FIXED character length (a constant prefix + zero-padded
+# RANDOMs), so two of them have the same length and tokenize to the same count.
+# Used by the batch caching check, where the min-tokens and speed runs must use
+# DIFFERENT prompts (so neither warms a cache the other reads) that are still the
+# same token length (so the two runs stay an apples-to-apples token comparison).
+oh_marker_fixed() { printf 'OHBATCH%05d%05d%05d' "${RANDOM}" "${RANDOM}" "${RANDOM}"; }
+
 # The connectivity prompt: ask the harness to include the random marker verbatim
 # somewhere in its reply. Two refusal modes to avoid, both observed live:
 #   * Copilot refuses a bare "output this token" as off-task ("I'm here to help
@@ -367,10 +374,15 @@ oh_cache_assert() {
 # Live proof that a `min-tokens` batch (one harness, N prompts sharing a
 # --system prefix) actually REDUCES token usage via provider prompt caching — the
 # drift alarm that the mode saves tokens, not merely reorders calls (the hermetic
-# suite can only pin the wave ordering against a mock). It runs the SAME N prompts
-# twice against an auto-caching harness (Claude Code), each run under its own
-# FRESH random --system prefix so the two runs cannot share a cache (a unique
-# prefix is always cold, removing TTL bleed and making the A/B clean):
+# suite can only pin the wave ordering against a mock). It runs N prompts twice
+# against an auto-caching harness (Claude Code). The two runs must NOT share a
+# cache, or the speed run (which goes second) could READ a prefix the min-tokens
+# run just warmed and look artificially cheap. Two guards keep each run
+# independently cold: (a) each run uses its own FRESH random --system prefix, and
+# (b) the two runs use DISJOINT prompt sets, so no request (prefix + message) is
+# byte-identical across runs at any cache breakpoint. The prompt sets are
+# length-matched (fixed-length markers) and the --system nonce is fixed-length
+# too, so the two runs stay an apples-to-apples token comparison:
 #   * min-tokens — one warm-up call WRITES the shared prefix, then the rest fan
 #     out and READ it cheaply.
 #   * speed      — all N fire at once cold, each paying full price for the prefix
@@ -399,14 +411,17 @@ oh_batch_cache_enforce() {
     bin="$(oh_bin)"
     [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-    # Four distinct on-task prompts (1 warm-up + 3 fanned out), each carrying its
-    # own marker so it genuinely runs; the shared, cacheable context is --system.
-    # More fan-out calls widen the read/write gap, so the inequalities are robust.
-    local prompts=()
-    for _ in 1 2 3 4; do prompts+=("$(oh_prompt "$(oh_marker)")"); done
+    # Two DISJOINT prompt sets (1 warm-up + 3 fanned out each), one per run, so the
+    # speed run can never read a cache entry the min-tokens run just wrote. Each
+    # marker is fixed-length, so both sets tokenize to the same length and the runs
+    # stay comparable. More fan-out calls widen the read/write gap → robust
+    # inequalities. Each prompt carries its own marker so it genuinely runs.
+    local min_prompts=() speed_prompts=()
+    for _ in 1 2 3 4; do min_prompts+=("$(oh_prompt "$(oh_marker_fixed)")"); done
+    for _ in 1 2 3 4; do speed_prompts+=("$(oh_prompt "$(oh_marker_fixed)")"); done
 
     note "  batch[min-tokens]: warm the shared --system prefix, then fan out the rest"
-    _oh_batch_run "$id" min-tokens "$(_oh_batch_system)" "${prompts[@]}"
+    _oh_batch_run "$id" min-tokens "$(_oh_batch_system)" "${min_prompts[@]}"
     status="$(oh_field '.results[0].status')"
     if [ "$status" = "skipped" ] || [ "$(oh_field '.results[0].available')" != "true" ]; then
         skip "$id is not installed (oneharness reported status=$status); nothing to verify"
@@ -428,7 +443,7 @@ oh_batch_cache_enforce() {
     fi
 
     note "  batch[speed]: all prompts race cold under a fresh prefix (each pays full price)"
-    _oh_batch_run "$id" speed "$(_oh_batch_system)" "${prompts[@]}"
+    _oh_batch_run "$id" speed "$(_oh_batch_system)" "${speed_prompts[@]}"
     _oh_batch_all_ok "$id" "speed"
     speed_read="$(_oh_usage_total cache_read_tokens)"
     speed_write="$(_oh_usage_total cache_write_tokens)"
@@ -468,11 +483,13 @@ _oh_batch_all_ok() {
 }
 
 # The shared, cacheable --system prefix for a batch caching check: a fixed
-# sentence plus a fresh random marker, so it is identical across the N prompts of
-# one run (cacheable) but unique per run (always cold, no TTL bleed between the
-# min-tokens and speed runs).
+# sentence plus a fresh FIXED-LENGTH nonce, so it is identical across the N prompts
+# of one run (cacheable) but unique per run (always cold, no TTL bleed between the
+# min-tokens and speed runs) — and the same token length in both runs, so the
+# cache_read/cache_write magnitudes the check compares differ only by how many
+# times the prefix was read/written, not by prefix size.
 _oh_batch_system() {
-    printf 'You are a connectivity-check fixture for the oneharness batch test suite. Reply naturally and concisely. Fixture nonce %s%s%s.' "${RANDOM}" "${RANDOM}" "${RANDOM}"
+    printf 'You are a connectivity-check fixture for the oneharness batch test suite. Reply naturally and concisely. Fixture nonce %s.' "$(oh_marker_fixed)"
 }
 
 # Drive one batch run: $1 id, $2 strategy, $3 shared --system, then the prompts.

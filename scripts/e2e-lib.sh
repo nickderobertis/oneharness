@@ -431,6 +431,8 @@ oh_batch_cache_enforce() {
     fan_read="$(printf '%s' "$OH_REPORT" | jq '[.results[1:][].usage.cache_read_tokens // 0] | add')"
     min_read="$(_oh_usage_total cache_read_tokens)"
     min_write="$(_oh_usage_total cache_write_tokens)"
+    local min_usage
+    min_usage="$(printf '%s' "$OH_REPORT" | jq -c '[.results[].usage]')"
     note "  min-tokens totals: cache_read=$min_read cache_write=$min_write input=$(_oh_usage_total input_tokens) (fan-out cache_read=$fan_read)"
 
     # Positive control: the warm-up's prefix must actually be read back by the fan-out.
@@ -457,12 +459,17 @@ oh_batch_cache_enforce() {
     fi
 
     # The two savings inequalities (see header). Reported together; both must hold.
+    # On any failure, dump BOTH runs' per-result usage so the cache split is visible.
+    local speed_usage
+    speed_usage="$(printf '%s' "$OH_REPORT" | jq -c '[.results[].usage]')"
     if ! [ "${min_read:-0}" -gt "${speed_read:-0}" ] 2>/dev/null; then
-        oh_dump
+        note "  min usage:   $min_usage"
+        note "  speed usage: $speed_usage"
         fail "$id: min-tokens did not READ the cache more than speed (min cache_read=$min_read, speed=$speed_read) — the warm-then-fan ordering is not reusing the prefix"
     fi
     if ! [ "${min_write:-0}" -lt "${speed_write:-0}" ] 2>/dev/null; then
-        oh_dump
+        note "  min usage:   $min_usage"
+        note "  speed usage: $speed_usage"
         fail "$id: min-tokens did not WRITE the cache fewer than speed (min cache_write=$min_write, speed=$speed_write) — the warm-then-fan ordering is not saving writes"
     fi
     note "PASS: $id min-tokens reduced token usage vs speed — more cache reads ($min_read > $speed_read), fewer cache writes ($min_write < $speed_write)"
@@ -522,11 +529,23 @@ _oh_batch_run() {
     local prompt_args=() p
     local n=$#
     for p in "$@"; do prompt_args+=(--prompt "$p"); done
+    # Claude Code injects per-invocation dynamic sections (working directory, git
+    # status, platform, memory paths) into its system prompt; they share the cache
+    # block that holds an appended --system, so a byte-identical --system is still
+    # cache-CREATED (never read) on each separate `claude -p` process — making
+    # min-tokens and speed indistinguishable. `--exclude-dynamic-system-prompt-
+    # sections` moves those sections into the first user message, leaving the
+    # system prompt (incl. our shared --system) static and prefix-cacheable across
+    # calls — the condition min-tokens needs. Passed as a harness passthrough
+    # (after `--`), only for Claude Code.
+    local passthrough=()
+    [ "$id" = claude-code ] && passthrough=(-- --exclude-dynamic-system-prompt-sections)
     note "  driving: $bin run --harness $id --batch-strategy $strategy ($n prompts)"
     OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" \
         --mode bypass --batch-strategy "$strategy" --system "$system" \
         --timeout "${OH_TIMEOUT:-120}" --compact \
-        "${model_args[@]+"${model_args[@]}"}" "${prompt_args[@]}" 2>/dev/null)" || true
+        "${model_args[@]+"${model_args[@]}"}" "${prompt_args[@]}" \
+        "${passthrough[@]+"${passthrough[@]}"}" 2>/dev/null)" || true
     [ -n "$OH_REPORT" ] || fail "$id: oneharness produced no report for the $strategy batch"
 }
 

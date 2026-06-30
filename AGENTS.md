@@ -92,8 +92,11 @@ Use the `just` recipes; do not hand-roll equivalents.
   block carries `strategy`/`prompt_count`/`forked`. `--batch-strategy` is a
   per-invocation orchestration knob, so — unlike most `run` flags — it deliberately
   has no config/`ONEHARNESS_*` layer. The live drift alarm that the mode *reduces
-  tokens* is `oh_batch_fork_enforce` in `e2e-claude.sh` (the fork fan-out reads the
-  warmed prefix and writes less than the warm-up), tied to the `usage` cache counts.
+  tokens* is `oh_batch_fork_enforce` (the fork fan-out reads the warmed prefix and
+  writes less than the warm-up), tied to the `usage` cache counts and run live for
+  both fork-capable + cache-reporting harnesses (`e2e-claude.sh`, `e2e-opencode.sh`)
+  — the exact support-matrix set; the other six harnesses are order-only (no fork,
+  and only claude-code/opencode normalize cache counts at all).
   `list` and `detect` describe and probe
   the registry; `config` shows the effective layered configuration with each
   value's source; `sync` merges the unified policy settings (allow/deny rules,

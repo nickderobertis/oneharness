@@ -582,6 +582,25 @@ across processes is **not** reused; the reliable cross-call reuse is a warmed
 **session**, which is exactly what `--fork` branches from (see
 [`--fork`](#usage)). `min-tokens` operationalizes that.
 
+Which harnesses `min-tokens` actually saves tokens on — the support matrix is the
+intersection of *can fork* and *reports cache counts* (oneharness only normalizes
+cache tokens for two harnesses, so a saving is only observable there anyway):
+
+| harness | `min-tokens` behavior |
+| --- | --- |
+| **claude-code** | ✓ fork-saving — warm-then-fork, cache reuse (live-proven) |
+| **opencode** | ✓ fork-saving — same mechanism (live-proven) |
+| codex, goose, qwen, crush, copilot, cursor | order-only — no saving (see below) |
+
+A **system-prompt-based** approach does *not* save on the order-only harnesses, for
+two independent reasons: none of them report prompt-cache counts (so a saving
+can't be measured), and a static `--system` isn't reused across separate harness
+processes — five of them only *prepend* `--system` into the user message (no
+independently cacheable breakpoint), and even Goose's *native* `--system` rides
+the same per-process re-creation that makes Claude Code's `--append-system-prompt`
+non-reusable across `claude -p` calls. So on those harnesses `min-tokens` only
+orders the calls, and oneharness says so on stderr rather than implying a saving.
+
 **Caveats.** A batch is **single-harness** by nature (a session/cache prefix is
 per harness/model/tools) — selecting more than one harness (or `--all`), or
 combining with `--resume`/`--fork`, is a usage error. The token saving needs a

@@ -25,6 +25,13 @@ oh_assert_echoed opencode "$marker" "json:opencode-parts"
 note "» cache reporting: a second run must surface cache_read_tokens"
 oh_cache_assert opencode
 
+# Batch min-tokens (fork): OpenCode is the other fork-capable, cache-reporting
+# harness, so it completes the support matrix's "supported" side. The batch warms
+# prompt[0] as a session, then forks it for the fan-out, which must reuse the
+# warmed cached prefix (read it, and write less than the warm-up).
+note "» batch min-tokens (fork): the fan-out must reuse the warmed session and save writes"
+oh_batch_fork_enforce opencode
+
 # Sync enforcement: OpenCode has no list-shaped rules, so the policy goes via
 # the raw settings table into opencode.json's permission map. Without
 # --dangerously-skip-permissions the deny pattern must block the command, and

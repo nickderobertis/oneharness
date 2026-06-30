@@ -488,4 +488,18 @@ mod tests {
         assert_eq!(got.usage.output_tokens, None);
         assert_eq!(got.usage.cost_usd, None);
     }
+
+    #[test]
+    fn summed_usage_read_only_cache_hit_leaves_write_null() {
+        // The headline scenario: a pure cache *hit* reads a cached prefix and
+        // writes nothing, so OpenCode's `cache` block carries `read` but no
+        // `write`. The read surfaces; `write` stays null rather than defaulting
+        // to zero (never-fabricate, even for the half that's absent).
+        let raw = "{\"type\":\"step_finish\",\"part\":\
+            {\"tokens\":{\"input\":2,\"output\":1,\"cache\":{\"read\":9000}}}}\n";
+        let got = extract_usage(raw).unwrap();
+        assert_eq!(got.usage.cache_read_tokens, Some(9000));
+        assert_eq!(got.usage.cache_write_tokens, None);
+        assert_eq!(got.source, "json:summed-steps");
+    }
 }

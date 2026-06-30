@@ -29,6 +29,9 @@ struct HarnessInfo {
     output_format: OutputFormat,
     /// Whether `run --resume <session>` is supported for this harness.
     supports_resume: bool,
+    /// Whether `run --resume <session> --fork` is supported — branching a new
+    /// session from the resumed one. `false` means it resumes linearly only.
+    supports_fork: bool,
     /// The approval modes (`--mode`) this harness can express, each with its
     /// headless behavior. Modes not listed are unsupported for the harness.
     modes: Vec<ModeInfo>,
@@ -66,6 +69,7 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 model: None,
                 system: None,
                 resume: None,
+                fork: false,
                 mode: PermissionMode::Bypass,
                 output_format: spec.output_format,
                 schema: None,
@@ -78,6 +82,7 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 install_hint: spec.install_hint,
                 output_format: spec.output_format,
                 supports_resume: spec.supports_resume,
+                supports_fork: spec.supports_fork,
                 modes: spec
                     .modes
                     .iter()

@@ -23,6 +23,9 @@ pub enum OneharnessError {
     #[error("harness `{id}` does not support --resume. supported: {supported}")]
     ResumeUnsupported { id: String, supported: String },
 
+    #[error("harness `{id}` does not support --fork (it resumes linearly, appending in place). supported: {supported}")]
+    ForkUnsupported { id: String, supported: String },
+
     #[error("harness `{id}` does not support `--mode {mode}`. supported modes: {supported}")]
     ModeUnsupported {
         id: String,

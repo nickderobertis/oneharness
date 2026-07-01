@@ -871,19 +871,30 @@ The manifest names *which* secrets go *where*; the values never touch the repo.
 
 ## Releasing
 
-Releases are versioned by hand and built by CI. To cut one:
+Releases are automated from [conventional commits](https://www.conventionalcommits.org)
+by [release-plz](https://release-plz.dev) — do not hand-bump the version or
+`CHANGELOG.md`. Land commits on `main` (`feat` → minor, `fix`/`perf` → patch,
+`!`/`BREAKING` → major; `docs`/`test`/`chore`/`ci` do not release), and
+release-plz opens a `release vX.Y.Z` PR that bumps `Cargo.toml`/`Cargo.lock` and
+writes the changelog. That PR auto-merges once the gate is green, then release-plz:
 
-```console
-# 1. bump the version + changelog, commit, and land on the default branch
-#    (edit Cargo.toml `version`, move CHANGELOG [Unreleased] to the new version)
-# 2. tag the release commit and push the tag
-git tag v0.2.0 && git push origin v0.2.0
-```
+1. runs `cargo publish` for **both crates** — `oneharness-core` first, then the
+   `oneharness` binary that depends on it — so they land on
+   [crates.io](https://crates.io/crates/oneharness);
+2. tags `vX.Y.Z` and cuts the GitHub Release;
+3. that Release fires `.github/workflows/release.yml`, which re-runs the gate and
+   attaches archived, sha256-checksummed binaries for Linux, macOS, and Windows.
 
-Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the
-gate, creates the GitHub Release with generated notes, and attaches archived,
-sha256-checksummed binaries for Linux, macOS, and Windows. There is no
-crates.io publish step.
+So each release ships three ways: crates.io (`cargo install oneharness`), the
+GitHub Release binaries, and `cargo install --git`. Only the binary is
+git-tagged and GitHub-released; `oneharness-core` is published to crates.io but
+keeps its own independent version line and is not separately tagged.
+
+Two repo secrets gate the automation (the workflow no-ops until both are set):
+`RELEASE_PLZ_TOKEN` (a PAT with `contents: write` + `pull-requests: write`) and
+`CARGO_REGISTRY_TOKEN` (a crates.io API token). Creating a GitHub Release by hand
+(`gh release create vX.Y.Z`) is the supported fallback for the binaries if the
+automation is wedged, but it does **not** publish to crates.io.
 
 ## License
 

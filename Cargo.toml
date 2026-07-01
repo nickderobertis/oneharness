@@ -29,8 +29,11 @@ required-features = ["mock-harness"]
 # Builds the mock harness fixture. Enabled by `just test`/`just check` and CI.
 mock-harness = []
 
+# Depended on by path for local builds, with a `version` requirement so the
+# crate is publishable: `cargo publish` rewrites the path dep to this registry
+# version, which release-plz keeps in step with `oneharness-core`'s own version.
 [dependencies]
-oneharness-core = { path = "crates/oneharness-core" }
+oneharness-core = { path = "crates/oneharness-core", version = "0.2.38" }
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

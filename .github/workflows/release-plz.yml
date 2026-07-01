@@ -15,17 +15,23 @@ name: Release-plz
 # cross-platform binaries — so artifacts still publish only after a green gate,
 # with no manual merge step and no gating skipped.
 #
-# RELEASE_PLZ_TOKEN is a PAT, not the default GITHUB_TOKEN: a tag or release
-# created by GITHUB_TOKEN does NOT trigger other workflows, so release.yml would
-# never build the binaries. The PAT needs `contents: write` +
-# `pull-requests: write`. Until that secret is set, the `guard` job keeps this
-# workflow dormant instead of failing on every push to main.
+# Two secrets gate this workflow (the `guard` job requires both, else no-ops):
+#   * RELEASE_PLZ_TOKEN — a PAT (contents:write + pull-requests:write), NOT the
+#     default GITHUB_TOKEN: a tag or release created by GITHUB_TOKEN does NOT
+#     trigger other workflows, so release.yml would never build the binaries.
+#   * CARGO_REGISTRY_TOKEN — a crates.io API token; `release` runs `cargo publish`
+#     for both crates, so without it a release would hard-fail mid-run (after
+#     publishing the engine but before the binary). Requiring it up front keeps
+#     releases all-or-nothing instead of leaving a partial publish behind.
+# Until both are set, the guard keeps this workflow dormant instead of failing
+# on every push to main.
 #
-# Why the binary is driven directly (not release-plz/action): this crate is not
-# published to crates.io, so release-plz has no registry baseline to compute the
-# next version from. `--registry-manifest-path` points it at a checkout of the
-# last release tag as the baseline, restoring conventional-commit versioning
-# from git history. The action does not expose that flag.
+# Why the binary is driven directly (not release-plz/action): version numbers are
+# computed against the last release *tag* as the baseline, not crates.io.
+# `--registry-manifest-path` points release-plz at a checkout of that tag's
+# Cargo.toml, which keeps conventional-commit versioning deterministic from git
+# history AND works for the very first crates.io publish, when nothing is on the
+# registry yet to diff against. The release-plz action does not expose that flag.
 
 on:
   push:
@@ -40,9 +46,10 @@ env:
   RELEASE_PLZ_VERSION: "0.3.158"
 
 jobs:
-  # `secrets` is not available in a job-level `if`, so a tiny job maps the PAT to
-  # an output the release job gates on. No PAT -> the release job is skipped, and
-  # the workflow is a clean no-op instead of a per-push failure.
+  # `secrets` is not available in a job-level `if`, so a tiny job maps the two
+  # required secrets to an output the release job gates on. Missing either one ->
+  # the release job is skipped, and the workflow is a clean no-op instead of a
+  # per-push failure (or a partial crates.io publish).
   guard:
     runs-on: ubuntu-latest
     outputs:
@@ -50,16 +57,26 @@ jobs:
     steps:
       - id: check
         env:
-          TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          CARGO_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          if [ -n "$TOKEN" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "RELEASE_PLZ_TOKEN not set; skipping release automation." >&2
+          enabled=true
+          if [ -z "$RELEASE_TOKEN" ]; then
+            echo "RELEASE_PLZ_TOKEN not set." >&2
             echo "Add a PAT (contents:write + pull-requests:write) as the repo" >&2
             echo "secret RELEASE_PLZ_TOKEN to enable conventional-commit releases." >&2
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            enabled=false
           fi
+          if [ -z "$CARGO_TOKEN" ]; then
+            echo "CARGO_REGISTRY_TOKEN not set." >&2
+            echo "Add a crates.io API token as the repo secret CARGO_REGISTRY_TOKEN" >&2
+            echo "so releases can 'cargo publish' both crates." >&2
+            enabled=false
+          fi
+          if [ "$enabled" = false ]; then
+            echo "Skipping release automation until both secrets are set." >&2
+          fi
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
 
   release-plz:
     needs: guard
@@ -100,12 +117,15 @@ jobs:
             echo "No release tag yet; the first release uses the current version."
           fi
 
-      # `release` publishes only after the release PR has merged. Normal pushes
-      # may create/update the release PR below, but release-plz.toml sets
-      # `release_always = false` so they do not tag immediately.
-      - name: Tag and publish a merged version bump
+      # `release` acts only after the release PR has merged. Normal pushes may
+      # create/update the release PR below, but release-plz.toml sets
+      # `release_always = false` so they do not tag immediately. When it fires it
+      # runs `cargo publish` for both crates (CARGO_REGISTRY_TOKEN), then tags
+      # `vX.Y.Z` and cuts the GitHub Release (RELEASE_PLZ_TOKEN).
+      - name: Publish to crates.io, tag, and cut the GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: release-plz release --git-token "$GITHUB_TOKEN"
 
       - name: Open or update the release PR

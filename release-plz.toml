@@ -12,10 +12,13 @@
 #      checksums, and attaches the cross-platform binaries.
 
 [workspace]
-# This is an end-user binary distributed via GitHub Releases and
-# `cargo install --git`, never a crates.io dependency: release-plz only versions,
-# changelogs, tags, and cuts the GitHub Release — it never runs `cargo publish`.
-publish = false
+# Both crates are published to crates.io on release. release-plz runs
+# `cargo publish` in dependency order — `oneharness-core` first, then the
+# `oneharness` binary that depends on it — as part of the same `release` run
+# that tags and cuts the GitHub Release. crates.io publishing is additive: the
+# binary is still distributed via GitHub Releases and `cargo install --git`.
+# The publish needs a CARGO_REGISTRY_TOKEN secret (see release-plz.yml).
+publish = true
 
 # Only release on release-worthy conventional commits. Without this, release-plz
 # treats every commit as eligible, so generated `chore(...): release v...`
@@ -40,12 +43,20 @@ semver_check = false
 git_tag_name = "v{{ version }}"
 git_release_name = "v{{ version }}"
 
-# The reusable engine crate is never released, tagged, or changelogged on its
-# own. The binary depends on it by path with no version requirement, so the two
-# versions need not move together.
+# The reusable engine crate is now published to crates.io so the binary that
+# depends on it can be published too (a path dependency must resolve to a
+# registry version at publish time — see the `version` on the dep in
+# `Cargo.toml`, which release-plz keeps in step with this crate's version). It
+# keeps its own independent version line — bumped by release-plz from
+# conventional commits touching `crates/oneharness-core/` — and its own
+# CHANGELOG, but it is deliberately NOT separately git-tagged or
+# GitHub-released: the single `vX.Y.Z` tag continues to track the binary, so one
+# tag still means one thing and `release.yml` fires once (for the binary's
+# Release), never a second time for the engine.
 [[package]]
 name = "oneharness-core"
-release = false
+git_tag_enable = false
+git_release_enable = false
 
 # Keep-a-Changelog-style grouping. The version bump is computed from the
 # conventional-commit *type* (pre-1.0 follows Cargo's 0.x rules: feat/fix/perf ->

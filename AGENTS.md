@@ -162,10 +162,18 @@ aren't re-litigated each session:
   worth replacing it. (`release-plz` *is* now used for conventional-commit
   versioning — see *Releasing* — driven directly with a `RELEASE_PLZ_TOKEN` PAT,
   reversing the earlier "hand-versioned only" choice.)
-- **No crates.io publish** — the binary is distributed via GitHub Releases and
-  `cargo install --git`; the `oneharness-core` library is consumed by sibling
-  tools as a git dependency, not from crates.io. release-plz versions/tags only
-  the binary (`oneharness-core` is `release = false`).
+- **crates.io publish** (*now enabled* — reversing the earlier "distribute the
+  binary via GitHub Releases / `cargo install --git` only" choice). release-plz
+  runs `cargo publish` on release for **both** crates in dependency order
+  (`oneharness-core` then the `oneharness` binary), so a release ships via
+  crates.io *and* the GitHub Release binaries *and* `git`. Publishing the binary
+  forces the engine onto crates.io too: a path dependency must resolve to a
+  registry version at publish time, so `Cargo.toml` pins
+  `oneharness-core = { path = ..., version = "x.y.z" }` (release-plz keeps that
+  `version` in step). `oneharness-core` is published but keeps `git_tag_enable =
+  false` / `git_release_enable = false` so only the binary is tagged/GitHub-
+  released — one `vX.Y.Z` tag still means one thing. Needs a `CARGO_REGISTRY_TOKEN`
+  secret alongside the `RELEASE_PLZ_TOKEN` PAT (see *Releasing*).
 - **No pre-commit/lefthook or direnv** — template baggage. The gate is `just
   check` plus CI on the standard Cargo workspace layout (root binary crate +
   `crates/oneharness-core` library).
@@ -412,19 +420,30 @@ shape. When you add one:
   do not release — so commit subjects are load-bearing for both the bump and the
   generated `CHANGELOG.md`). release-plz opens a `release vX.Y.Z` PR that bumps
   `Cargo.toml`/`Cargo.lock` and writes the changelog section, auto-merges it once
-  the required checks are green, then tags `vX.Y.Z` and cuts the GitHub Release.
-  That Release fires `release.yml`, which re-gates on the tests and attaches the
-  checksummed cross-platform binaries.
-- **Requires a PAT.** The automation runs only once a `RELEASE_PLZ_TOKEN` repo
-  secret exists (a classic or fine-grained PAT with `contents: write` +
-  `pull-requests: write`). A tag/Release made with the default `GITHUB_TOKEN`
-  would not retrigger `release.yml`, so the binaries would never build; until the
-  secret is set, the workflow's `guard` job no-ops cleanly. The crate version and
-  `CHANGELOG.md` are managed by release-plz — do not hand-bump them.
+  the required checks are green, then — in one `release-plz release` run —
+  `cargo publish`es both crates in dependency order (`oneharness-core`, then the
+  `oneharness` binary), tags `vX.Y.Z`, and cuts the GitHub Release. That Release
+  fires `release.yml`, which re-gates on the tests and attaches the checksummed
+  cross-platform binaries. So a release lands three ways: **crates.io**, the
+  GitHub Release binaries, and `cargo install --git`. Only the binary is
+  tagged/GitHub-released; `oneharness-core` is published but not separately
+  tagged (`git_tag_enable`/`git_release_enable = false`) and keeps its own
+  version line — see the crates.io bullet under *How this repo was composed*.
+- **Requires two secrets.** The automation runs only once BOTH repo secrets
+  exist; the `guard` job no-ops cleanly (no partial release) until then.
+  `RELEASE_PLZ_TOKEN` is a PAT (classic or fine-grained, `contents: write` +
+  `pull-requests: write`): a tag/Release made with the default `GITHUB_TOKEN`
+  would not retrigger `release.yml`, so the binaries would never build.
+  `CARGO_REGISTRY_TOKEN` is a crates.io API token for `cargo publish`; without it
+  a release would fail after publishing the engine but before the binary, so the
+  guard requires it up front. Both are set by hand (they are release
+  infrastructure, not in the `gh-secrets.json` harness-auth manifest). The crate
+  version and `CHANGELOG.md` are managed by release-plz — do not hand-bump them.
 - **Manual fallback.** Creating a GitHub Release by hand (the UI, or
   `gh release create vX.Y.Z`) fires the same `release: published` event and builds
-  the binaries — use it only if the automation is wedged. Never publish by editing
-  a release by hand mid-flight.
+  the binaries — use it only if the automation is wedged. It does NOT publish to
+  crates.io (only `release-plz release` does); run `cargo publish` by hand if a
+  crates.io version is missing. Never publish by editing a release mid-flight.
 - The JSON `schema_version` is independent of the crate version: bump it only when
   the report shape changes incompatibly, and document it in the changelog.
 

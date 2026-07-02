@@ -2,6 +2,12 @@
 **/*.rs.bk
 *.pdb
 
+# Python packaging build outputs (maturin wheels + caches). pyproject.toml IS
+# committed; these build artifacts are not.
+/dist
+__pycache__/
+*.egg-info/
+
 # Local secrets synced from Bitwarden (gh-secrets.json -> env_file destination)
 # and the manifest sync-state log. The manifest itself IS committed; these aren't.
 .env

@@ -127,12 +127,15 @@ flags.
 ## Install
 
 ```console
-# latest prebuilt release for your platform
+# from PyPI (per-platform wheel wrapping the prebuilt binary — no Rust toolchain)
+pip install oneharness-cli          # installs the `oneharness` command
+# or the latest prebuilt release for your platform via the install script
 curl -fsSL https://raw.githubusercontent.com/nickderobertis/oneharness/main/scripts/install.sh | sh
 # or pin a release tag / install directory
 curl -fsSL https://raw.githubusercontent.com/nickderobertis/oneharness/main/scripts/install.sh \
   | sh -s -- --version v0.1.0 --to ~/.local/bin
-# or build from a published release tag
+# or from crates.io / a published release tag
+cargo install oneharness --locked
 cargo install --git https://github.com/nickderobertis/oneharness --tag v0.1.0 --locked
 # or from a clone
 cargo install --path .
@@ -140,13 +143,66 @@ cargo install --path .
 just build-release            # -> target/release/oneharness
 ```
 
-Each tagged release also publishes prebuilt, checksummed binaries for Linux,
-macOS, and Windows on its [GitHub Releases](https://github.com/nickderobertis/oneharness/releases)
-page. Building from source requires a stable Rust toolchain and
-[`just`](https://github.com/casey/just).
-The installer honors `ONEHARNESS_VERSION`, `ONEHARNESS_INSTALL_DIR`, and
+A tagged release ships four ways: **PyPI** wheels (`pip install oneharness-cli`,
+the distribution is `oneharness-cli`, the command is `oneharness`), **crates.io**
+(`cargo install oneharness`), prebuilt checksummed binaries on its
+[GitHub Releases](https://github.com/nickderobertis/oneharness/releases) page for
+Linux, macOS, and Windows, and `cargo install --git`. Building from source
+requires a stable Rust toolchain and [`just`](https://github.com/casey/just).
+The install script honors `ONEHARNESS_VERSION`, `ONEHARNESS_INSTALL_DIR`,
+`ONEHARNESS_RELEASE_BASE_URL`/`--base-url`, `ONEHARNESS_CHECKSUM_BASE_URL`, and
 `GITHUB_TOKEN` (for higher GitHub API rate limits when resolving the latest
-release), and refuses to install an archive whose checksum does not match.
+release).
+
+### Supply-chain verification
+
+The install script never trusts a mirror to attest its own download. It verifies
+every archive against a trust root **independent of where it was downloaded**,
+and aborts if nothing independent can vouch for it. Two roots, tried in order:
+
+1. **Sigstore build-provenance attestation (preferred).** Each release ships a
+   keyless [Sigstore](https://www.sigstore.dev/) bundle beside the archive
+   (`oneharness-<tag>-<target>.sigstore.json`), logged to the public Rekor
+   transparency log and bound to this repo's release workflow's OIDC identity —
+   no signing key or secret. When a verifier is present —
+   [`cosign`](https://github.com/sigstore/cosign),
+   [`sigstore`](https://pypi.org/project/sigstore/) (`pip install sigstore`), or
+   [`gh`](https://cli.github.com/) — the installer verifies the archive against
+   the bundle **offline**. The trusted digest comes from the signed attestation
+   itself (no checksum file is consulted), so a mirror cannot forge it, and it
+   works behind a mirror that can't reach github.com. Where github.com is
+   unreachable a verifier is one registry install away (`pip install sigstore`,
+   `npm i -g @sigstore/cli`, or `go install …/cosign@latest`).
+2. **SHA-256 checksum from canonical GitHub (fallback, only when no verifier is
+   installed).** The `.sha256` is fetched from github.com, never from the mirror.
+   A checksum that shares the mirror's origin is no trust root at all — the mirror
+   would just serve a matching tampered checksum — so the installer **refuses**
+   it and tells you to install a verifier, rather than trust the mirror to vouch
+   for its own download.
+
+Serve the archive from a mirror with `ONEHARNESS_RELEASE_BASE_URL` (or
+`--base-url`) — for a network that can reach a mirror but not github.com, ship
+the `.sigstore.json` bundle on the mirror too and install a verifier, and the
+whole flow works offline. `ONEHARNESS_CHECKSUM_BASE_URL` points the checksum
+fallback at a specific independent root. You can also verify any archive out of
+band:
+
+```console
+cosign verify-blob-attestation --new-bundle-format \
+  --bundle oneharness-v0.1.0-x86_64-unknown-linux-gnu.sigstore.json \
+  --type https://slsa.dev/provenance/v1 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github.com/nickderobertis/oneharness/\.github/workflows/release\.yml@' \
+  oneharness-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+# or, more simply:
+gh attestation verify oneharness-v0.1.0-x86_64-unknown-linux-gnu.tar.gz \
+  --repo nickderobertis/oneharness
+```
+
+Every release runs a `verify-attestation` CI job that installs real `cosign` and
+`sigstore-python` and runs these exact commands against the just-published
+bundle, so a drift in the signing identity or flags reddens the release instead
+of silently degrading installs to the checksum fallback.
 
 ## Usage
 
@@ -882,14 +938,26 @@ writes the changelog. That PR auto-merges once the gate is green, then release-p
    `oneharness` binary that depends on it — so they land on
    [crates.io](https://crates.io/crates/oneharness);
 2. tags `vX.Y.Z` and cuts the GitHub Release;
-3. that Release fires `.github/workflows/release.yml`, which re-runs the gate and
-   attaches archived, sha256-checksummed binaries for Linux, macOS, and Windows.
+3. that Release fires `.github/workflows/release.yml`, which re-runs the gate,
+   attaches archived, sha256-checksummed binaries for Linux, macOS, and Windows,
+   signs each archive with a keyless Sigstore build-provenance attestation and
+   publishes its `.sigstore.json` bundle (see
+   [Supply-chain verification](#supply-chain-verification)), builds per-platform
+   PyPI wheels with maturin, and publishes them to
+   [PyPI](https://pypi.org/project/oneharness-cli/) via Trusted Publishing.
 
-So each release ships three ways: crates.io (`cargo install oneharness`), the
+So each release ships four ways: [PyPI](https://pypi.org/project/oneharness-cli/)
+(`pip install oneharness-cli`), crates.io (`cargo install oneharness`), the
 GitHub Release binaries, and `cargo install --git`. Only the binary gets a
 `vX.Y.Z` tag and GitHub Release; `oneharness-core` is published to crates.io and
 tagged in its own `oneharness-core-v*` namespace (no GitHub Release) so its
 version never collides with the binary's `vX.Y.Z` tags.
+
+PyPI publishing is keyless [Trusted Publishing](https://docs.pypi.org/trusted-publishers/)
+(OIDC — no token secret), and stays dormant until the `PYPI_PUBLISH` repo
+variable is set to `true`; the wheels still build on every release so a packaging
+break surfaces early. Activating it requires the PyPI project `oneharness-cli` to
+register this repo's `release.yml` (environment `pypi`) as a Trusted Publisher.
 
 Two repo secrets gate the automation (the workflow no-ops until both are set):
 `RELEASE_PLZ_TOKEN` (a PAT with `contents: write` + `pull-requests: write`) and

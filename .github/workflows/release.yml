@@ -9,10 +9,28 @@ name: Release
 # and uploads the archives + checksums. Creating a Release by hand in the GitHub
 # UI is the supported manual fallback — it triggers the same event.
 #
-#   * test    — the deterministic gate (lint + shellcheck + tests), so untested
-#               artifacts never publish.
-#   * upload  — build each target on a native runner and attach the archive +
-#               sha256 checksum to the Release.
+#   * test               — the deterministic gate (lint + shellcheck + tests),
+#                           so untested artifacts never publish.
+#   * upload             — build each target on a native runner, attach the
+#                           archive + sha256 checksum, sign a keyless Sigstore
+#                           build-provenance attestation (OIDC → the public Rekor
+#                           log), and publish the `.sigstore.json` bundle beside
+#                           the archive. That attestation is a trust root outside
+#                           GitHub Releases and any mirror, so scripts/install.sh
+#                           (or an auditor) can verify an archive's provenance
+#                           independently of where it was fetched.
+#   * verify-attestation — install real verifiers (cosign, sigstore-python) and
+#                           run install.sh's exact verification against a
+#                           just-published archive + bundle, so a flag drift
+#                           reddens the release instead of silently degrading.
+#   * build-wheels       — wrap the prebuilt binary in per-platform PyPI wheels
+#                           with maturin (the ruff/uv pattern); always runs so a
+#                           packaging break is caught even while publishing is off.
+#   * publish-pypi       — Trusted Publishing (keyless OIDC) to oneharness-cli,
+#                           dormant until the PYPI_PUBLISH repo variable is set.
+#   * verify-pypi        — prove the just-published version is pip-installable.
+#
+# crates.io publishing stays in release-plz (release-plz.yml), not here.
 
 on:
   release:
@@ -50,7 +68,9 @@ jobs:
     name: upload (${{ matrix.target }})
     needs: test
     permissions:
-      contents: write
+      contents: write      # attach the archive + checksum to the Release
+      id-token: write      # mint the keyless OIDC token for Sigstore (no secret)
+      attestations: write  # record the build-provenance attestation on GitHub
     strategy:
       fail-fast: false
       matrix:
@@ -58,6 +78,128 @@ jobs:
           # Native runners per target so nothing needs cross-compilation:
           # arm64 Linux builds on a hosted arm64 runner; macOS cross-builds
           # x86_64<->arm64 within the Apple toolchain (no emulation/Docker).
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            ext: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            ext: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            ext: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            ext: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            ext: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build, archive, checksum, and upload
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: oneharness
+          target: ${{ matrix.target }}
+          archive: $bin-$tag-$target
+          checksum: sha256
+          include: README.md,LICENSE,CHANGELOG.md
+          token: ${{ secrets.GITHUB_TOKEN }}
+      # Sign the built archive with a keyless Sigstore build-provenance
+      # attestation. It is logged to the public Rekor transparency log and bound
+      # to this workflow's OIDC identity — a trust root a download mirror cannot
+      # forge. The action leaves the archive in the workspace; attest that exact
+      # file (the glob matches exactly one archive per target).
+      - name: Attest build provenance
+        id: attest
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: oneharness-*-${{ matrix.target }}.${{ matrix.ext }}
+      # Publish the Sigstore bundle as a release asset, named by replacing the
+      # archive extension with `.sigstore.json` (matching install.sh's bundlefile
+      # and the .sha256 convention). Shipping the bundle — rather than relying on
+      # GitHub's attestation API — is what lets scripts/install.sh verify OFFLINE
+      # with cosign/sigstore/gh after downloading everything from a mirror, the
+      # whole point for networks that can't reach github.com. The signature is
+      # bound to this workflow's OIDC identity, so a mirror serving the bundle
+      # cannot forge it.
+      - name: Publish attestation bundle
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          TARGET: ${{ matrix.target }}
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          asset="oneharness-${TAG}-${TARGET}.sigstore.json"
+          cp "$BUNDLE" "$asset"
+          gh release upload "$TAG" "$asset" --clobber --repo "${{ github.repository }}"
+
+  # Prove the offline verification path end to end on every real release: install
+  # the verifiers the easy ways (the official cosign installer action; `pip
+  # install sigstore` from PyPI) and run the EXACT commands scripts/install.sh
+  # uses against a just-published archive + its bundle. This is the only place the
+  # real invocations meet a genuine GitHub-OIDC-signed bundle, so it keeps
+  # install.sh's flags (--new-bundle-format, --type, the pinned identity/issuer,
+  # `verify github --offline --repository`) honest — a mismatch reddens the
+  # release instead of silently degrading users to the checksum fallback.
+  verify-attestation:
+    needs: upload
+    runs-on: ubuntu-latest
+    steps:
+      # Pin >= 2.4.0: --new-bundle-format lands there and the action's unpinned
+      # default can be older.
+      - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.4.1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The registry-only bootstrap install.sh recommends for hosts that cannot
+      # reach github.com; pinned to a version known to verify DSSE bundles offline.
+      - run: pip install sigstore==4.3.0
+      - name: Verify a release archive against its Sigstore bundle
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ github.event.release.tag_name }}"
+          target="x86_64-unknown-linux-gnu"
+          base="oneharness-${tag}-${target}"
+          # No checkout here, so gh cannot infer the repo from git — name it.
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir . \
+            --pattern "${base}.tar.gz" --pattern "${base}.sigstore.json"
+          cosign verify-blob-attestation \
+            --new-bundle-format \
+            --bundle "${base}.sigstore.json" \
+            --type "https://slsa.dev/provenance/v1" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/\.github/workflows/release\.yml@" \
+            "${base}.tar.gz"
+          echo "cosign verified ${base}.tar.gz."
+          sigstore verify github \
+            --bundle "${base}.sigstore.json" \
+            --offline \
+            --repository "$GITHUB_REPOSITORY" \
+            "${base}.tar.gz"
+          echo "sigstore-python verified ${base}.tar.gz."
+
+  # PyPI wheels: maturin's `bin` bindings wrap the prebuilt binary in
+  # per-platform wheels (the ruff/uv pattern), so `pip install oneharness-cli` is
+  # a seconds-fast binary install anywhere PyPI is reachable — the quickest
+  # trustworthy path where github.com is blocked but package registries are open.
+  # Wheels build on every release (unconditioned, so a packaging break is caught
+  # even before publishing is activated); maturin-action compiles inside
+  # manylinux containers on Linux for broad glibc compatibility. The wheel
+  # version comes from Cargo.toml, so release-plz stays the single version driver.
+  build-wheels:
+    name: build-wheels (${{ matrix.target }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Mirror the binary `upload` matrix: native runners per target.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
@@ -71,12 +213,78 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
-      - name: Build, archive, checksum, and upload
-        uses: taiki-e/upload-rust-binary-action@v1
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
         with:
-          bin: oneharness
           target: ${{ matrix.target }}
-          archive: $bin-$tag-$target
-          checksum: sha256
-          include: README.md,LICENSE,CHANGELOG.md
-          token: ${{ secrets.GITHUB_TOKEN }}
+          args: --release --locked --out dist
+          manylinux: auto
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.target }}
+          path: dist
+
+  # PyPI publishing self-activates when the PYPI_PUBLISH repository variable is
+  # set to 'true' (Trusted Publishing is keyless — there is no secret whose
+  # presence could gate it like a token does). Until the PyPI project exists with
+  # this repo + release.yml registered as its Trusted Publisher (environment
+  # `pypi`) and the variable is set, publishing stays dormant while the wheels
+  # still build. Trusted Publishing (OIDC, `id-token: write`) also auto-generates
+  # PEP 740 attestations, so pip consumers get build provenance too.
+  publish-pypi:
+    needs: build-wheels
+    if: ${{ vars.PYPI_PUBLISH == 'true' }}
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+
+  # Post-publish gate: prove the just-published version is pip-installable. PyPI
+  # propagation is not instant, so poll the JSON API until the version is
+  # queryable, then install the real wheel and smoke-test it. A failure here means
+  # a broken release, not a blocked publish (the wheel is already public).
+  verify-pypi:
+    needs: publish-pypi
+    if: ${{ vars.PYPI_PUBLISH == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Wait for the version to land on PyPI
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          url="https://pypi.org/pypi/oneharness-cli/${ver}/json"
+          echo "Waiting for oneharness-cli $ver on PyPI..."
+          for i in $(seq 1 30); do
+            if curl -fsSL -o /dev/null "$url" 2>/dev/null; then
+              echo "oneharness-cli $ver is available on PyPI."
+              exit 0
+            fi
+            echo "  attempt $i: not indexed yet; sleeping 10s..."
+            sleep 10
+          done
+          echo "::error::oneharness-cli $ver did not appear on PyPI within ~5 minutes"
+          exit 1
+      - name: Install from PyPI and smoke-test
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          pip install "oneharness-cli==${ver}"
+          installed="$(oneharness --version)"
+          echo "installed: $installed"
+          case "$installed" in
+            *"$ver"*) ;;
+            *) echo "::error::installed version mismatch: '$installed' does not contain '$ver'"; exit 1 ;;
+          esac
+          oneharness --help >/dev/null
+          oneharness list >/dev/null
+          echo "PyPI install + smoke test passed for oneharness-cli $ver"

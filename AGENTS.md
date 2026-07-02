@@ -178,6 +178,39 @@ aren't re-litigated each session:
   `vX.Y.Z` tag *and* GitHub Release — one `vX.Y.Z` tag still means one thing.
   Needs a `CARGO_REGISTRY_TOKEN` secret alongside the `RELEASE_PLZ_TOKEN` PAT
   (see *Releasing*).
+- **PyPI wheels** (*now enabled*, mirroring `nickderobertis/llmlint`). `pyproject.toml`
+  uses maturin's `bindings = "bin"` (the ruff/uv pattern) to wrap the prebuilt
+  `oneharness` binary in per-platform wheels, so `pip install oneharness-cli` is a
+  seconds-fast binary install where PyPI is reachable but github.com may be
+  blocked. The PyPI distribution is **`oneharness-cli`** (the bare name was
+  unavailable); the console command it installs is still `oneharness`. The wheel
+  version is `dynamic` — maturin reads it from `Cargo.toml`, so release-plz stays
+  the single version driver (never hand-set a version in `pyproject.toml`).
+  `release.yml`'s `build-wheels` job runs on every release (so a packaging break
+  surfaces even while publishing is off); `publish-pypi` uses keyless **Trusted
+  Publishing** (OIDC, environment `pypi`, no token secret) and stays dormant until
+  the `PYPI_PUBLISH` repo variable is `true` and the PyPI project registers this
+  repo's `release.yml` as its Trusted Publisher; `verify-pypi` then proves the
+  published version is `pip install`-able.
+- **Sigstore release signing + mirror-safe `install.sh`** (*now enabled*,
+  mirroring llmlint). `release.yml`'s `upload` job signs each archive with a
+  keyless [Sigstore](https://www.sigstore.dev/) build-provenance attestation
+  (`actions/attest-build-provenance@v2`, OIDC `id-token` — no secret) and
+  publishes the `.sigstore.json` bundle beside the archive. `scripts/install.sh`
+  verifies the downloaded archive against a trust root **independent of the
+  mirror it came from**, in order: (1) the Sigstore bundle, verified OFFLINE by
+  `cosign` → `sigstore` (python) → `gh` (whichever is installed), pinned to this
+  repo's `release.yml` signer identity + SLSA-provenance predicate; (2) a SHA-256
+  checksum from canonical GitHub — and it **refuses** a checksum that shares the
+  mirror's origin (a mirror vouching for its own download is no trust root),
+  aborting instead. Never re-introduce a "trust the mirror's own checksum" escape
+  hatch. The `verify-attestation` release job runs the exact `cosign`/`sigstore`
+  commands `install.sh` uses against the real published bundle — the drift alarm
+  for the signing identity/flags. The install path is proven hermetically by
+  `scripts/install-e2e.sh` (run in `just check`/CI via `smoke.sh`): independent
+  checksum installs, tampered mirror rejected, mirror-origin checksum refused, and
+  a stubbed `cosign`/`sigstore`/`gh` proves the Sigstore gate (pass installs, fail
+  aborts) without a live signature.
 - **No pre-commit/lefthook or direnv** — template baggage. The gate is `just
   check` plus CI on the standard Cargo workspace layout (root binary crate +
   `crates/oneharness-core` library).
@@ -427,9 +460,12 @@ shape. When you add one:
   the required checks are green, then — in one `release-plz release` run —
   `cargo publish`es both crates in dependency order (`oneharness-core`, then the
   `oneharness` binary), tags `vX.Y.Z`, and cuts the GitHub Release. That Release
-  fires `release.yml`, which re-gates on the tests and attaches the checksummed
-  cross-platform binaries. So a release lands three ways: **crates.io**, the
-  GitHub Release binaries, and `cargo install --git`. Only the binary gets a
+  fires `release.yml`, which re-gates on the tests, attaches the checksummed
+  cross-platform binaries + their Sigstore `.sigstore.json` bundles, and builds &
+  publishes the PyPI wheels. So a release lands four ways: **PyPI**
+  (`pip install oneharness-cli`), **crates.io**, the GitHub Release binaries, and
+  `cargo install --git` (see the PyPI-wheels and Sigstore bullets under *How this
+  repo was composed*). Only the binary gets a
   `vX.Y.Z` tag + GitHub Release; `oneharness-core` is published and tagged in its
   own `oneharness-core-v{{ version }}` namespace (with `git_release_enable =
   false`, so no GitHub Release) — a distinct namespace is required, else its

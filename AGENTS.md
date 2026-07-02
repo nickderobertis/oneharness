@@ -170,10 +170,14 @@ aren't re-litigated each session:
   forces the engine onto crates.io too: a path dependency must resolve to a
   registry version at publish time, so `Cargo.toml` pins
   `oneharness-core = { path = ..., version = "x.y.z" }` (release-plz keeps that
-  `version` in step). `oneharness-core` is published but keeps `git_tag_enable =
-  false` / `git_release_enable = false` so only the binary is tagged/GitHub-
-  released — one `vX.Y.Z` tag still means one thing. Needs a `CARGO_REGISTRY_TOKEN`
-  secret alongside the `RELEASE_PLZ_TOKEN` PAT (see *Releasing*).
+  `version` in step). `oneharness-core` is git-tagged in its own
+  `oneharness-core-v{{ version }}` namespace (NOT the binary's `v{{ version }}` —
+  a shared scheme collides, and release-plz then mistakes an existing `vX.Y.Z`
+  for the engine being already published and skips its `cargo publish`; see
+  *Releasing*) and keeps `git_release_enable = false`, so only the binary gets a
+  `vX.Y.Z` tag *and* GitHub Release — one `vX.Y.Z` tag still means one thing.
+  Needs a `CARGO_REGISTRY_TOKEN` secret alongside the `RELEASE_PLZ_TOKEN` PAT
+  (see *Releasing*).
 - **No pre-commit/lefthook or direnv** — template baggage. The gate is `just
   check` plus CI on the standard Cargo workspace layout (root binary crate +
   `crates/oneharness-core` library).
@@ -425,20 +429,26 @@ shape. When you add one:
   `oneharness` binary), tags `vX.Y.Z`, and cuts the GitHub Release. That Release
   fires `release.yml`, which re-gates on the tests and attaches the checksummed
   cross-platform binaries. So a release lands three ways: **crates.io**, the
-  GitHub Release binaries, and `cargo install --git`. Only the binary is
-  tagged/GitHub-released; `oneharness-core` is published but not separately
-  tagged (`git_tag_enable`/`git_release_enable = false`) and keeps its own
-  version line — see the crates.io bullet under *How this repo was composed*.
+  GitHub Release binaries, and `cargo install --git`. Only the binary gets a
+  `vX.Y.Z` tag + GitHub Release; `oneharness-core` is published and tagged in its
+  own `oneharness-core-v{{ version }}` namespace (with `git_release_enable =
+  false`, so no GitHub Release) — a distinct namespace is required, else its
+  version can collide with a historical binary `vX.Y.Z` tag and release-plz skips
+  the engine's `cargo publish` (this exact collision — core 0.3.0 vs the binary's
+  old `v0.3.0` — broke the first automated release). See the crates.io bullet
+  under *How this repo was composed*.
 - **Requires two secrets.** The automation runs only once BOTH repo secrets
   exist; the `guard` job no-ops cleanly (no partial release) until then.
   `RELEASE_PLZ_TOKEN` is a PAT (classic or fine-grained, `contents: write` +
   `pull-requests: write`): a tag/Release made with the default `GITHUB_TOKEN`
   would not retrigger `release.yml`, so the binaries would never build.
   `CARGO_REGISTRY_TOKEN` is a crates.io API token for `cargo publish`; without it
-  a release would fail after publishing the engine but before the binary, so the
-  guard requires it up front. Both are set by hand (they are release
-  infrastructure, not in the `gh-secrets.json` harness-auth manifest). The crate
-  version and `CHANGELOG.md` are managed by release-plz — do not hand-bump them.
+  the release fails before publishing anything, so the guard requires it up
+  front. `CARGO_REGISTRY_TOKEN` is synced from Bitwarden via the
+  `gh-secrets.json` manifest (`just secrets-sync`); `RELEASE_PLZ_TOKEN` is a
+  GitHub PAT set by hand (a PAT can't live in the harness-auth manifest's
+  Bitwarden flow). The crate version and `CHANGELOG.md` are managed by
+  release-plz — do not hand-bump them.
 - **Manual fallback.** Creating a GitHub Release by hand (the UI, or
   `gh release create vX.Y.Z`) fires the same `release: published` event and builds
   the binaries — use it only if the automation is wedged. It does NOT publish to

@@ -117,11 +117,14 @@ jobs:
             echo "No release tag yet; the first release uses the current version."
           fi
 
-      # `release` acts only after the release PR has merged. Normal pushes may
-      # create/update the release PR below, but release-plz.toml sets
-      # `release_always = false` so they do not tag immediately. When it fires it
-      # runs `cargo publish` for both crates (CARGO_REGISTRY_TOKEN), then tags
-      # `vX.Y.Z` and cuts the GitHub Release (RELEASE_PLZ_TOKEN).
+      # `release` publishes any package whose manifest version isn't on crates.io
+      # yet, then tags it and cuts its GitHub Release. In practice the version
+      # only changes when the release PR (below) merges, so ordinary pushes find
+      # nothing unreleased and no-op; but running it every push (release-plz.toml
+      # `release_always = true`) makes a failed publish RECOVERABLE — a fix lands
+      # as a normal commit and the next push finishes the pending release. It runs
+      # `cargo publish` for both crates (CARGO_REGISTRY_TOKEN), then tags and cuts
+      # the GitHub Release (RELEASE_PLZ_TOKEN).
       - name: Publish to crates.io, tag, and cut the GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}

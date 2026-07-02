@@ -25,10 +25,19 @@ publish = true
 # commits can open the next release PR and create an auto-merge loop.
 release_commits = "(?s)^(feat|fix|perf)(\\([^)]+\\))?!?:|BREAKING CHANGE:"
 
-# The workflow intentionally gates releases through the generated release PR.
-# Normal pushes may open/update that PR, but only merging it should tag and
-# publish the GitHub Release.
-release_always = false
+# Run the `release` (publish/tag) step on every push to main, publishing only
+# packages whose manifest version isn't yet on crates.io. Releases are still
+# effectively gated by the release PR — the version only *changes* when that PR
+# merges, so a normal push finds nothing unreleased and no-ops — but this also
+# makes the release step RECOVERABLE: if a publish fails partway (a bad config, a
+# rate limit, a registry hiccup), the fix can land as an ordinary commit and the
+# next push completes the pending release. With `release_always = false` the
+# publish only fires on the exact release-PR merge commit, so a failure there
+# wedges the release permanently (the versions are already bumped, so no new
+# release PR is opened to re-fire it) — which is exactly what happened on the
+# first crates.io release. `release_commits` below still stops `chore: release`
+# commits from opening a fresh release PR, so there is no auto-merge loop.
+release_always = true
 
 # API breaking-change detection (cargo-semver-checks) needs an extra tool and
 # would block releases on any surface change; rely on review and the

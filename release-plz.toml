@@ -48,14 +48,21 @@ git_release_name = "v{{ version }}"
 # registry version at publish time — see the `version` on the dep in
 # `Cargo.toml`, which release-plz keeps in step with this crate's version). It
 # keeps its own independent version line — bumped by release-plz from
-# conventional commits touching `crates/oneharness-core/` — and its own
-# CHANGELOG, but it is deliberately NOT separately git-tagged or
-# GitHub-released: the single `vX.Y.Z` tag continues to track the binary, so one
-# tag still means one thing and `release.yml` fires once (for the binary's
-# Release), never a second time for the engine.
+# conventional commits touching `crates/oneharness-core/` — and its own CHANGELOG.
+#
+# It IS git-tagged, but in its own `oneharness-core-v{{ version }}` namespace,
+# NOT the binary's `v{{ version }}`. This is load-bearing: release-plz uses the
+# per-package tag to decide whether a version is already released, so a shared
+# `v{{ version }}` scheme collides — core's next version (0.3.0) matched the
+# binary's historical `v0.3.0` tag, so release-plz thought core was already
+# published, skipped its `cargo publish`, and then the binary publish failed
+# because core was never actually on crates.io. A distinct namespace keeps that
+# check accurate. `git_release_enable = false` still means NO GitHub Release for
+# the engine, so the `vX.Y.Z` Release (and the `release.yml` it fires) remains
+# the binary's alone — one `vX.Y.Z` tag still means one thing.
 [[package]]
 name = "oneharness-core"
-git_tag_enable = false
+git_tag_name = "oneharness-core-v{{ version }}"
 git_release_enable = false
 
 # Keep-a-Changelog-style grouping. The version bump is computed from the

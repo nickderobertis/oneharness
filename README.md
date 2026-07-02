@@ -886,9 +886,10 @@ writes the changelog. That PR auto-merges once the gate is green, then release-p
    attaches archived, sha256-checksummed binaries for Linux, macOS, and Windows.
 
 So each release ships three ways: crates.io (`cargo install oneharness`), the
-GitHub Release binaries, and `cargo install --git`. Only the binary is
-git-tagged and GitHub-released; `oneharness-core` is published to crates.io but
-keeps its own independent version line and is not separately tagged.
+GitHub Release binaries, and `cargo install --git`. Only the binary gets a
+`vX.Y.Z` tag and GitHub Release; `oneharness-core` is published to crates.io and
+tagged in its own `oneharness-core-v*` namespace (no GitHub Release) so its
+version never collides with the binary's `vX.Y.Z` tags.
 
 Two repo secrets gate the automation (the workflow no-ops until both are set):
 `RELEASE_PLZ_TOKEN` (a PAT with `contents: write` + `pull-requests: write`) and

@@ -1,0 +1,48 @@
+# PyPI packaging for the oneharness CLI.
+#
+# maturin's `bin` bindings wrap the prebuilt Rust binary in a per-platform wheel
+# (the ruff/uv pattern), so `pip install oneharness-cli` is a seconds-fast binary
+# install — the quickest trustworthy path in restricted-egress environments where
+# github.com is blocked but PyPI is reachable. The distribution is `oneharness-cli`
+# (the bare `oneharness` name was unavailable); the console command it installs is
+# `oneharness`, from the `[[bin]]` in Cargo.toml.
+#
+# The version is intentionally NOT set here (`dynamic = ["version"]`): maturin
+# sources it from Cargo.toml, so release-plz stays the single version driver.
+# Wheels are built and published by .github/workflows/release.yml.
+
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "oneharness-cli"
+description = "One CLI to drive many agentic coding harnesses non-interactively and return uniform JSON."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "Nick DeRobertis" }]
+keywords = ["cli", "agent", "claude", "codex", "harness"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Software Development :: Testing",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/nickderobertis/oneharness"
+Repository = "https://github.com/nickderobertis/oneharness"
+
+[tool.maturin]
+# Package the compiled `oneharness` binary as a wheel entry point (not a Python
+# extension module). manifest-path names the root binary crate explicitly so
+# maturin does not treat the workspace as ambiguous.
+bindings = "bin"
+manifest-path = "Cargo.toml"
+strip = true

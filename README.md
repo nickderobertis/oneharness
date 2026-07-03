@@ -957,7 +957,8 @@ PyPI publishing is keyless [Trusted Publishing](https://docs.pypi.org/trusted-pu
 (OIDC — no token secret), and stays dormant until the `PYPI_PUBLISH` repo
 variable is set to `true`; the wheels still build on every release so a packaging
 break surfaces early. Activating it requires the PyPI project `oneharness-cli` to
-register this repo's `release.yml` (environment `pypi`) as a Trusted Publisher.
+register this repo's `release.yml` as a Trusted Publisher (no GitHub Actions
+environment).
 
 Two repo secrets gate the automation (the workflow no-ops until both are set):
 `RELEASE_PLZ_TOKEN` (a PAT with `contents: write` + `pull-requests: write`) and

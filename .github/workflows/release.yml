@@ -227,15 +227,16 @@ jobs:
   # PyPI publishing self-activates when the PYPI_PUBLISH repository variable is
   # set to 'true' (Trusted Publishing is keyless — there is no secret whose
   # presence could gate it like a token does). Until the PyPI project exists with
-  # this repo + release.yml registered as its Trusted Publisher (environment
-  # `pypi`) and the variable is set, publishing stays dormant while the wheels
-  # still build. Trusted Publishing (OIDC, `id-token: write`) also auto-generates
-  # PEP 740 attestations, so pip consumers get build provenance too.
+  # this repo + release.yml registered as its Trusted Publisher and the variable
+  # is set, publishing stays dormant while the wheels still build. No GitHub
+  # Actions environment is configured on the Trusted Publisher, so this job must
+  # not declare one either — an environment claim in the OIDC token would fail to
+  # match. Trusted Publishing (OIDC, `id-token: write`) also auto-generates PEP
+  # 740 attestations, so pip consumers get build provenance too.
   publish-pypi:
     needs: build-wheels
     if: ${{ vars.PYPI_PUBLISH == 'true' }}
     runs-on: ubuntu-latest
-    environment: pypi
     permissions:
       id-token: write
     steps:

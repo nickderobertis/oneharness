@@ -188,8 +188,10 @@ aren't re-litigated each session:
   the single version driver (never hand-set a version in `pyproject.toml`).
   `release.yml`'s `build-wheels` job runs on every release (so a packaging break
   surfaces even while publishing is off); `publish-pypi` uses keyless **Trusted
-  Publishing** (OIDC, environment `pypi`, no token secret) and stays dormant until
-  the `PYPI_PUBLISH` repo variable is `true` and the PyPI project registers this
+  Publishing** (OIDC, no token secret and **no GitHub Actions environment** — the
+  Trusted Publisher is registered without one, so the job must not declare
+  `environment:` or the OIDC claim won't match) and stays dormant until the
+  `PYPI_PUBLISH` repo variable is `true` and the PyPI project registers this
   repo's `release.yml` as its Trusted Publisher; `verify-pypi` then proves the
   published version is `pip install`-able.
 - **Sigstore release signing + mirror-safe `install.sh`** (*now enabled*,

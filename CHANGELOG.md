@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.5](https://github.com/nickderobertis/oneharness/compare/v0.3.4...v0.3.5) - 2026-07-03
+
+### Added
+
+- verify installs against Sigstore provenance and ship PyPI wheels ([#1094](https://github.com/nickderobertis/oneharness/pull/1094))
+
 ## [0.3.4](https://github.com/nickderobertis/oneharness/compare/v0.3.3...v0.3.4) - 2026-07-01
 
 ### Added

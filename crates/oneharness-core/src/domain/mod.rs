@@ -4,6 +4,7 @@
 
 pub mod batch;
 pub mod config;
+pub mod events;
 pub mod gate;
 pub mod harness;
 pub mod hooks;

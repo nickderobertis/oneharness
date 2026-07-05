@@ -40,6 +40,8 @@ $ oneharness run --all --prompt "Reply with the single word: pong" --model haiku
       "usage": { "input_tokens": 1234, "output_tokens": 8, "cache_read_tokens": 7, "cache_write_tokens": null, "cost_usd": 0.0095 },
       "usage_source": "json",
       "session_id": "0f3c…",
+      "events": null,
+      "events_source": null,
       "failure_kind": null,
       "failure_kind_source": null,
       "stdout": "{\"type\":\"result\",\"result\":\"pong\"…}",
@@ -525,6 +527,24 @@ more than one possible method) records how it was found:
   `--fork` (Claude Code / OpenCode) to branch independent follow-ups off one cached
   prefix. `null` for a harness that emits no id headlessly (Goose, Copilot) — their
   handle is caller-supplied, never scraped (see the support matrix).
+- `events` / `events_source` — a **normalized array of tool-call / action
+  events** the harness took, in order, so a consumer can assert on *behavior*
+  (`ran bash with a command matching /…/`, `edited exactly config.yaml`, `used ≤
+  3 tool calls`), not just the final `text`. Each entry is `{ kind, name, input,
+  output, index }`: `kind` is `tool_call` or `tool_result`, `name` is the
+  normalized tool name (`null` for a result), `input` is the structured,
+  tool-shaped arguments (so a consumer reads the command string / file path
+  without re-parsing), `output` is the observation when exposed, and `index` is
+  the position in the run. `events` is `null` (never `[]`) when the harness's
+  output carries no machine-readable trace — a plain-text harness (Codex, Goose,
+  Qwen, Crush, Copilot), or Claude Code's single-document `json` result, which
+  omits the intermediate transcript — with `events_source` then also `null`, so a
+  consumer tells "harness doesn't expose it" from "no tools were used." Recognized
+  shapes today (widening as more are sourced): OpenCode's `tool` parts
+  (`json:opencode-parts`) and the Anthropic content-block transcript emitted under
+  `stream-json` (`stream-json:content-blocks`, e.g. Cursor, or Claude Code when
+  run with `--output-format stream-json`). Like `text`, it is best-effort and
+  never fabricated; consumers needing certainty parse `stdout`.
 - `failure_kind` / `failure_kind_source` — on a non-zero run, a coarse reason
   (`auth`, `rate_limit`, `model_not_found`, `quota`) so a caller can tell a
   retryable condition from a broken request. This is **distinct from `status`**,

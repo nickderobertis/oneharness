@@ -410,6 +410,19 @@ shape. When you add one:
   `usage` support matrix), also add the `oh_cache_assert <id>` phase: a second run
   within the cache TTL must surface `cache_read_tokens > 0` — the live drift alarm
   that cache-token extraction still matches the real output shape.
+- If the harness's oneharness output format carries a machine-readable **tool
+  transcript** (OpenCode's `tool` parts, or the Anthropic content-block stream a
+  `stream-json` harness emits — see `extract_events` in `domain::events` and the
+  README `events` docs), the normalized `events` array works for free once the
+  shape is recognized. A harness with a *new* transcript shape needs a recognizer
+  arm in `extract_events` (sourced from a real transcript, never guessed) plus a
+  unit test; then add the `oh_events_assert <id> [source]` live phase — a
+  tool-using turn must surface at least one `tool_call` event — the honoring proof
+  + drift alarm for event extraction. Pass the expected `events_source` only when
+  a repo fixture pins the shape (opencode → `json:opencode-parts`); leave it
+  lenient otherwise (cursor). A plain-`text` harness, or Claude Code's
+  single-document `json` result, exposes no transcript, so `events` stays `null`
+  for it — that is correct, not a gap to fill.
 
 ## Scripts and output are context
 

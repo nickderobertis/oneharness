@@ -369,6 +369,58 @@ oh_cache_assert() {
     fi
 }
 
+# --- normalized tool-call / action events ------------------------------------
+
+# Live proof that oneharness surfaces normalized tool-call events in the
+# `events` array — the drift alarm for event extraction against the REAL harness
+# output shape (the hermetic suite can only mock the JSON). Only harnesses whose
+# oneharness output format carries a machine-readable tool transcript expose
+# events (OpenCode's `tool` parts, the Anthropic content-block stream — see the
+# README `events` docs); call this only for those.
+#
+# Drives a prompt that forces a shell tool call — run a command that prints the
+# marker — then asserts oneharness lifted at least one `tool_call` event into the
+# normalized `events` array (with a non-null `events_source`, matching the caller's
+# expected method when given). This is the only end-to-end proof the event
+# extraction matches the live harness shape, not a mock.
+#   $1 harness id
+#   $2 expected events_source (optional; when given, held exactly)
+oh_events_assert() {
+    local id="$1" expected_source="${2:-}"
+    local marker status count source calls
+
+    marker="$(oh_marker)"
+    note "  events: a run that must use a shell tool to print the marker"
+    # Bypass so the agent may actually run the command; ask plainly for a shell
+    # tool so a tool_call is emitted (not just an inline text answer).
+    oh_run "$id" "Using your shell/bash tool, run a command that prints the exact text ${marker} to stdout, then tell me you did it."
+    status="$(oh_field '.results[0].status')"
+    if [ "$status" = "skipped" ] || [ "$(oh_field '.results[0].available')" != "true" ]; then
+        skip "$id is not installed (oneharness reported status=$status); nothing to verify"
+    fi
+    [ "$status" = "ok" ] || { oh_dump; fail "$id: events run did not complete (status=$status)"; }
+
+    source="$(oh_field '.results[0].events_source')"
+    count="$(printf '%s' "$OH_REPORT" | jq '(.results[0].events // []) | length')"
+    calls="$(printf '%s' "$OH_REPORT" | jq '[(.results[0].events // [])[] | select(.kind == "tool_call")] | length')"
+    note "  events: events_source=$source count=$count tool_calls=$calls"
+
+    if [ "${count:-0}" -eq 0 ] 2>/dev/null || [ "$source" = "null" ]; then
+        oh_dump
+        note "  events: $(printf '%s' "$OH_REPORT" | jq -c '.results[0].events')"
+        fail "$id: oneharness surfaced no normalized events for a tool-using turn — either the model answered without a tool call or event extraction drifted from the live shape"
+    fi
+    if [ "${calls:-0}" -lt 1 ] 2>/dev/null; then
+        oh_dump
+        fail "$id: events surfaced but none was a tool_call (got kinds: $(printf '%s' "$OH_REPORT" | jq -c '[.results[0].events[].kind]'))"
+    fi
+    if [ -n "$expected_source" ] && [ "$source" != "$expected_source" ]; then
+        oh_dump
+        fail "$id: expected events_source=$expected_source but got '$source' — event extraction regressed"
+    fi
+    note "PASS: $id surfaced $calls normalized tool_call event(s) via '$source'"
+}
+
 # --- same-prefix batch caching ----------------------------------------------
 
 # Live proof that a fork-capable `min-tokens` batch actually REDUCES tokens via

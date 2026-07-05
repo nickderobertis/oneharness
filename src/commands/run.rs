@@ -12,7 +12,7 @@ use oneharness_core::domain::report::{
 };
 use oneharness_core::domain::signals::Usage;
 use oneharness_core::domain::structured::{self, Schema};
-use oneharness_core::domain::{normalize, signals};
+use oneharness_core::domain::{events, normalize, signals};
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::config as config_io;
 use oneharness_core::io::detect::{self, BinOverrides};
@@ -489,6 +489,8 @@ fn planned_result(
         usage: Usage::default(),
         usage_source: None,
         session_id: None,
+        events: None,
+        events_source: None,
         structured: None,
         schema_valid: None,
         schema_attempts: None,
@@ -523,6 +525,8 @@ fn skipped_result(
         usage: Usage::default(),
         usage_source: None,
         session_id: None,
+        events: None,
+        events_source: None,
         structured: None,
         schema_valid: None,
         schema_attempts: None,
@@ -594,6 +598,14 @@ fn executed_result(
         Status::Ok | Status::Nonzero => signals::extract_session(&capture.stdout),
         _ => None,
     };
+    let events_reading = match capture.status {
+        Status::Ok | Status::Nonzero => events::extract_events(&capture.stdout, output_format),
+        _ => None,
+    };
+    let (events, events_source) = match events_reading {
+        Some(r) => (Some(r.events), Some(r.source)),
+        None => (None, None),
+    };
     // Classify only an actual non-zero run: timeouts/spawn failures already carry
     // a oneharness-generated `error`, and `status` explains them.
     let failure = match capture.status {
@@ -619,6 +631,8 @@ fn executed_result(
         usage,
         usage_source,
         session_id,
+        events,
+        events_source,
         structured,
         schema_valid,
         schema_attempts,
@@ -1045,6 +1059,8 @@ mod tests {
             usage: Usage::default(),
             usage_source: None,
             session_id: None,
+            events: None,
+            events_source: None,
             structured: None,
             schema_valid: None,
             schema_attempts: None,

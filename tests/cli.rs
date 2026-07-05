@@ -1152,6 +1152,116 @@ fn extracts_opencode_text_from_real_jsonl_transcript() {
 }
 
 #[test]
+fn normalizes_tool_events_from_opencode_jsonl() {
+    // Behavioral trace (issue #1096): OpenCode's `tool` parts become normalized
+    // `tool_call` events carrying name/input/output, in order — so a consumer can
+    // assert on what the harness *did*, not just its final text.
+    let stdout = concat!(
+        r#"{"type":"text","part":{"type":"text","text":"running it"}}"#,
+        "\n",
+        r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"git commit -m x"},"output":"OK"}}}"#,
+        "\n",
+        r#"{"type":"tool_use","part":{"type":"tool","tool":"edit","state":{"status":"completed","input":{"filePath":"config.yaml"}}}}"#,
+        "\n",
+        r#"{"type":"step_finish","part":{"type":"step-finish","cost":0.01}}"#,
+        "\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("opencode"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["events_source"], "json:opencode-parts");
+    let events = result["events"].as_array().unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["kind"], "tool_call");
+    assert_eq!(events[0]["name"], "bash");
+    assert_eq!(events[0]["input"]["command"], "git commit -m x");
+    assert_eq!(events[0]["output"], "OK");
+    assert_eq!(events[0]["index"], 0);
+    assert_eq!(events[1]["name"], "edit");
+    assert_eq!(events[1]["input"]["filePath"], "config.yaml");
+    assert!(events[1]["output"].is_null());
+    assert_eq!(events[1]["index"], 1);
+}
+
+#[test]
+fn normalizes_tool_events_from_cursor_stream_json_content_blocks() {
+    // The Anthropic content-block shape (Cursor / Claude Code under stream-json):
+    // a `tool_use` assistant block and its `tool_result` observation normalize to
+    // `tool_call` + `tool_result` events under `stream-json:content-blocks`.
+    let stdout = concat!(
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}"#,
+        "\n",
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"a.txt"}]}}"#,
+        "\n",
+        r#"{"type":"result","subtype":"success","result":"done","session_id":"11111111-2222-3333-4444-555555555555"}"#,
+        "\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "cursor",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("cursor"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["events_source"], "stream-json:content-blocks");
+    let events = result["events"].as_array().unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["kind"], "tool_call");
+    assert_eq!(events[0]["name"], "Bash");
+    assert_eq!(events[0]["input"]["command"], "ls");
+    assert_eq!(events[1]["kind"], "tool_result");
+    assert_eq!(events[1]["output"], "a.txt");
+    assert!(events[1]["name"].is_null());
+}
+
+#[test]
+fn events_absent_when_harness_exposes_no_trace() {
+    // Claude Code's single-document `json` result carries no transcript, so
+    // `events`/`events_source` stay null (absent), distinct from an empty array —
+    // never fabricated, mirroring the `text`/`usage` best-effort contract.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"type":"result","result":"hi"}"#)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert!(result["events"].is_null());
+    assert!(result["events_source"].is_null());
+}
+
+#[test]
 fn qwen_gets_yolo_suppression_env_injected() {
     // oneharness injects the harness's declared `default_env` into the child, so
     // qwen's startup YOLO warning is silenced without the caller doing anything.

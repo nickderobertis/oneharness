@@ -149,21 +149,88 @@ pub struct MockRule {
 }
 
 /// What a rule matches on. At least one criterion is required (an empty match
-/// would silently intercept everything); both must hold when both are given.
+/// would silently intercept everything); when several are given, **all** must
+/// hold (AND). Criteria: the tool name (exact or regex), the raw event JSON
+/// (substring or regex), and per-field predicates on the tool's input.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MatchSpec {
     /// Case-insensitive exact match on the event's tool name. Tool names are
     /// per-harness (`Bash` on Claude Code, `bash` on OpenCode/Crush,
     /// `run_shell_command` on Qwen), so cross-harness rules usually prefer
-    /// `event_contains`.
+    /// `event_contains` or an `input` predicate.
     #[serde(default)]
     pub tool: Option<String>,
+    /// Regex (RE2, unanchored) on the tool name — e.g. `"^(Bash|bash)$"` to
+    /// span a harness's casing. Anchor with `^…$` for an exact match.
+    #[serde(default)]
+    pub tool_regex: Option<String>,
     /// Substring match over the raw event JSON — harness-agnostic, because the
     /// tool's command/args always serialize into the event (the same principle
     /// as [`crate::domain::gate::should_deny`]).
     #[serde(default)]
     pub event_contains: Option<String>,
+    /// Regex (RE2, unanchored) over the raw event JSON — e.g. `"git\\s+push"`.
+    #[serde(default)]
+    pub event_regex: Option<String>,
+    /// Per-field predicates on the tool's input arguments (`tool_input`, or
+    /// Copilot's `toolArgs`): the map key is the argument name (`command`,
+    /// `file_path`, …) and the value a [`StringPredicate`]. All listed fields
+    /// must match, and a field absent from the event fails the rule. A field
+    /// whose value is not a string is compared against its compact JSON form,
+    /// so a predicate can still target an array/object argument.
+    #[serde(default)]
+    pub input: std::collections::BTreeMap<String, StringPredicate>,
+}
+
+/// A predicate on one string value (a `tool_input` field, matched by
+/// [`MatchSpec::input`]). At least one form must be set; when several are, all
+/// must hold (AND). `equals` is an exact match (an empty string is allowed —
+/// it matches only an empty value, not everything); `contains` is a substring;
+/// `regex` is an unanchored RE2 (linear-time) match. `contains`/`regex` reject
+/// an empty pattern (it would match everything).
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StringPredicate {
+    #[serde(default)]
+    pub equals: Option<String>,
+    #[serde(default)]
+    pub contains: Option<String>,
+    #[serde(default)]
+    pub regex: Option<String>,
+}
+
+impl StringPredicate {
+    /// Whether every set form holds for `value`. A regex that somehow fails to
+    /// compile (validated at parse time, so unreachable in practice) is treated
+    /// as a non-match — never an accidental match-everything.
+    fn matches(&self, value: &str) -> bool {
+        if let Some(want) = &self.equals {
+            if value != want {
+                return false;
+            }
+        }
+        if let Some(needle) = &self.contains {
+            if !value.contains(needle.as_str()) {
+                return false;
+            }
+        }
+        if let Some(pattern) = &self.regex {
+            match regex::Regex::new(pattern) {
+                Ok(re) if re.is_match(value) => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// The forms that are set (for validation): `(any_set, has_empty_needle)`.
+    fn forms(&self) -> (bool, bool) {
+        let any = self.equals.is_some() || self.contains.is_some() || self.regex.is_some();
+        let empty_needle =
+            self.contains.as_deref() == Some("") || self.regex.as_deref() == Some("");
+        (any, empty_needle)
+    }
 }
 
 /// The interception to perform when a rule matches.
@@ -216,22 +283,60 @@ impl Action {
 pub fn parse_rules(text: &str) -> Result<MockRules, String> {
     let rules: MockRules = serde_json::from_str(text).map_err(|e| e.to_string())?;
     for (i, rule) in rules.rules.iter().enumerate() {
-        let tool_empty = rule.matcher.tool.as_deref().is_none_or(str::is_empty);
-        let needle_empty = rule
-            .matcher
-            .event_contains
-            .as_deref()
-            .is_none_or(str::is_empty);
-        if rule.matcher.tool.as_deref() == Some("")
-            || rule.matcher.event_contains.as_deref() == Some("")
-        {
-            return Err(format!(
-                "rule {i}: empty `match` strings are not allowed (an empty needle would match everything)"
-            ));
+        let m = &rule.matcher;
+        // Empty top-level needles would match everything — refuse each loudly.
+        for (field, value) in [
+            ("tool", &m.tool),
+            ("tool_regex", &m.tool_regex),
+            ("event_contains", &m.event_contains),
+            ("event_regex", &m.event_regex),
+        ] {
+            if value.as_deref() == Some("") {
+                return Err(format!(
+                    "rule {i}: empty `match.{field}` is not allowed (it would match everything)"
+                ));
+            }
         }
-        if tool_empty && needle_empty {
+        // Compile the regex criteria so an invalid pattern is a loud parse
+        // error, never a silent match-nothing at runtime.
+        for (field, pattern) in [
+            ("tool_regex", &m.tool_regex),
+            ("event_regex", &m.event_regex),
+        ] {
+            if let Some(pattern) = pattern {
+                regex::Regex::new(pattern)
+                    .map_err(|e| format!("rule {i}: invalid `match.{field}` regex: {e}"))?;
+            }
+        }
+        // Per-field input predicates: each needs a form, no empty needle, valid
+        // regex.
+        for (key, pred) in &m.input {
+            let (any, empty_needle) = pred.forms();
+            if !any {
+                return Err(format!(
+                    "rule {i}: `match.input.{key}` needs one of `equals`/`contains`/`regex`"
+                ));
+            }
+            if empty_needle {
+                return Err(format!(
+                    "rule {i}: empty `contains`/`regex` in `match.input.{key}` is not allowed (it would match everything)"
+                ));
+            }
+            if let Some(pattern) = &pred.regex {
+                regex::Regex::new(pattern).map_err(|e| {
+                    format!("rule {i}: invalid `match.input.{key}.regex` regex: {e}")
+                })?;
+            }
+        }
+        // At least one criterion, or the rule intercepts everything.
+        let no_criteria = m.tool.is_none()
+            && m.tool_regex.is_none()
+            && m.event_contains.is_none()
+            && m.event_regex.is_none()
+            && m.input.is_empty();
+        if no_criteria {
             return Err(format!(
-                "rule {i}: `match` needs `tool` and/or `event_contains`"
+                "rule {i}: `match` needs at least one of `tool`, `tool_regex`, `event_contains`, `event_regex`, or `input`"
             ));
         }
         if let Action::Rewrite { input, .. } = &rule.action {
@@ -269,17 +374,21 @@ pub fn unsupported_action(
 /// harness piped to stdin. First match wins; no match means allow-through
 /// (empty stdout, the universal "no objection").
 pub fn decide<'r>(event: &str, rules: &'r MockRules) -> Option<(usize, &'r Action)> {
-    let tool = extract_tool_name(event);
+    // Parse the event once (the process handles a single hook call), so every
+    // rule sees the same tool name and input object without re-parsing.
+    let parsed: Option<Value> = serde_json::from_str(event.trim()).ok();
+    let tool = parsed.as_ref().and_then(tool_name_of);
     rules
         .rules
         .iter()
         .enumerate()
-        .find(|(_, rule)| rule_matches(rule, event, tool.as_deref()))
+        .find(|(_, rule)| rule_matches(rule, event, tool.as_deref(), parsed.as_ref()))
         .map(|(i, rule)| (i, &rule.action))
 }
 
-fn rule_matches(rule: &MockRule, event: &str, tool: Option<&str>) -> bool {
-    if let Some(want) = rule.matcher.tool.as_deref() {
+fn rule_matches(rule: &MockRule, event: &str, tool: Option<&str>, parsed: Option<&Value>) -> bool {
+    let m = &rule.matcher;
+    if let Some(want) = m.tool.as_deref() {
         // A `tool` criterion can only match an event that names its tool; an
         // empty want never matches (also rejected at parse time).
         match tool {
@@ -287,9 +396,43 @@ fn rule_matches(rule: &MockRule, event: &str, tool: Option<&str>) -> bool {
             _ => return false,
         }
     }
-    if let Some(needle) = rule.matcher.event_contains.as_deref() {
+    if let Some(pattern) = m.tool_regex.as_deref() {
+        match (tool, regex::Regex::new(pattern)) {
+            (Some(name), Ok(re)) if re.is_match(name) => {}
+            _ => return false,
+        }
+    }
+    if let Some(needle) = m.event_contains.as_deref() {
         if needle.is_empty() || !event.contains(needle) {
             return false;
+        }
+    }
+    if let Some(pattern) = m.event_regex.as_deref() {
+        match regex::Regex::new(pattern) {
+            Ok(re) if re.is_match(event) => {}
+            _ => return false,
+        }
+    }
+    if !m.input.is_empty() {
+        let args = parsed.and_then(tool_input_of);
+        for (key, pred) in &m.input {
+            // A field absent from the event fails the rule (never fabricated).
+            let Some(value) = args.and_then(|a| a.get(key)) else {
+                return false;
+            };
+            // Match a string field directly; coerce anything else to its
+            // compact JSON so a predicate can still target a non-string arg.
+            let owned;
+            let text = match value.as_str() {
+                Some(s) => s,
+                None => {
+                    owned = serde_json::to_string(value).unwrap_or_default();
+                    &owned
+                }
+            };
+            if !pred.matches(text) {
+                return false;
+            }
         }
     }
     true
@@ -301,11 +444,27 @@ fn rule_matches(rule: &MockRule, event: &str, tool: Option<&str>) -> bool {
 /// names no tool — a `tool` matcher then simply cannot match (never fabricated).
 pub fn extract_tool_name(event: &str) -> Option<String> {
     let value: Value = serde_json::from_str(event.trim()).ok()?;
+    tool_name_of(&value)
+}
+
+/// The tool name from an already-parsed event value.
+fn tool_name_of(value: &Value) -> Option<String> {
     for key in ["tool_name", "toolName", "tool"] {
         if let Some(name) = value.get(key).and_then(Value::as_str) {
             if !name.is_empty() {
                 return Some(name.to_string());
             }
+        }
+    }
+    None
+}
+
+/// The tool's input-arguments object from a parsed event: `tool_input` (every
+/// gated harness + the OpenCode shim) or `toolArgs` (Copilot).
+fn tool_input_of(value: &Value) -> Option<&serde_json::Map<String, Value>> {
+    for key in ["tool_input", "toolArgs"] {
+        if let Some(obj) = value.get(key).and_then(Value::as_object) {
+            return Some(obj);
         }
     }
     None
@@ -408,7 +567,7 @@ mod tests {
         // An empty match would intercept everything — refused.
         let err = parse_rules(r#"{"rules":[{"match":{},"action":{"deny":{"message":"m"}}}]}"#)
             .unwrap_err();
-        assert!(err.contains("tool` and/or `event_contains"), "{err}");
+        assert!(err.contains("at least one of"), "{err}");
         // Empty strings are refused too (an empty needle matches everything).
         for m in [
             r#"{"tool": ""}"#,
@@ -454,6 +613,159 @@ mod tests {
             &r
         )
         .is_none());
+    }
+
+    #[test]
+    fn tool_regex_and_event_regex_match() {
+        // One cross-harness rule spanning `Bash`/`bash` and asserting a push.
+        let r = rules(
+            r#"{"rules":[{"match":{"tool_regex":"^(?i)bash$","event_regex":"git\\s+push"},"action":{"deny":{"message":"m"}}}]}"#,
+        );
+        assert!(decide(
+            r#"{"tool_name":"Bash","tool_input":{"command":"git    push"}}"#,
+            &r
+        )
+        .is_some());
+        assert!(decide(
+            r#"{"tool_name":"bash","tool_input":{"command":"git push"}}"#,
+            &r
+        )
+        .is_some());
+        // Wrong tool, or no push, or no tool name → no match.
+        assert!(decide(
+            r#"{"tool_name":"Edit","tool_input":{"command":"git push"}}"#,
+            &r
+        )
+        .is_none());
+        assert!(decide(
+            r#"{"tool_name":"bash","tool_input":{"command":"git status"}}"#,
+            &r
+        )
+        .is_none());
+        assert!(decide(r#"{"tool_input":{"command":"git push"}}"#, &r).is_none());
+    }
+
+    #[test]
+    fn input_field_predicates_match_and_coerce() {
+        // Regex on the command field; substring + equals on others.
+        let r = rules(
+            r#"{"rules":[{"match":{"input":{"command":{"regex":"rm\\s+-rf"}}},"action":{"deny":{"message":"m"}}}]}"#,
+        );
+        assert!(decide(
+            r#"{"tool_name":"bash","tool_input":{"command":"rm  -rf /tmp/x"}}"#,
+            &r
+        )
+        .is_some());
+        assert!(decide(r#"{"tool_name":"bash","tool_input":{"command":"ls"}}"#, &r).is_none());
+        // An absent field fails the rule (never fabricated).
+        assert!(decide(
+            r#"{"tool_name":"bash","tool_input":{"other":"rm -rf"}}"#,
+            &r
+        )
+        .is_none());
+
+        // `equals` is exact; multiple criteria on one field AND together.
+        let r = rules(
+            r#"{"rules":[{"match":{"input":{"file_path":{"equals":"/etc/passwd"}}},"action":{"deny":{"message":"m"}}}]}"#,
+        );
+        assert!(decide(
+            r#"{"tool_name":"Read","tool_input":{"file_path":"/etc/passwd"}}"#,
+            &r
+        )
+        .is_some());
+        assert!(decide(
+            r#"{"tool_name":"Read","tool_input":{"file_path":"/etc/passwd.bak"}}"#,
+            &r
+        )
+        .is_none());
+
+        // A non-string field is coerced to compact JSON, so a predicate can
+        // still target an array/object argument.
+        let r = rules(
+            r#"{"rules":[{"match":{"input":{"args":{"contains":"--force"}}},"action":{"deny":{"message":"m"}}}]}"#,
+        );
+        assert!(decide(
+            r#"{"tool_name":"exec","tool_input":{"args":["git","push","--force"]}}"#,
+            &r
+        )
+        .is_some());
+        assert!(decide(
+            r#"{"tool_name":"exec","tool_input":{"args":["git","status"]}}"#,
+            &r
+        )
+        .is_none());
+
+        // Copilot's `toolArgs` is accepted as the input object too.
+        let r = rules(
+            r#"{"rules":[{"match":{"input":{"command":{"contains":"push"}}},"action":{"deny":{"message":"m"}}}]}"#,
+        );
+        assert!(decide(
+            r#"{"toolName":"shell","toolArgs":{"command":"git push"}}"#,
+            &r
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn input_and_tool_criteria_are_anded() {
+        // Both a tool pin and an input predicate must hold.
+        let r = rules(
+            r#"{"rules":[{"match":{"tool":"Bash","input":{"command":{"contains":"push"}}},"action":{"deny":{"message":"m"}}}]}"#,
+        );
+        assert!(decide(
+            r#"{"tool_name":"Bash","tool_input":{"command":"git push"}}"#,
+            &r
+        )
+        .is_some());
+        // Right command, wrong tool → no match (AND).
+        assert!(decide(
+            r#"{"tool_name":"Edit","tool_input":{"command":"git push"}}"#,
+            &r
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn regex_and_input_validation_is_loud() {
+        // Invalid regex in each location is a loud parse error.
+        for m in [
+            r#"{"tool_regex":"("}"#,
+            r#"{"event_regex":"["}"#,
+            r#"{"input":{"command":{"regex":"("}}}"#,
+        ] {
+            let text =
+                format!(r#"{{"rules":[{{"match":{m},"action":{{"deny":{{"message":"m"}}}}}}]}}"#);
+            let err = parse_rules(&text).unwrap_err();
+            assert!(
+                err.contains("invalid") && err.contains("regex"),
+                "{m}: {err}"
+            );
+        }
+        // An input predicate with no form set is refused.
+        let err = parse_rules(
+            r#"{"rules":[{"match":{"input":{"command":{}}},"action":{"deny":{"message":"m"}}}]}"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("needs one of"), "{err}");
+        // Empty contains/regex in an input predicate is refused; empty `equals`
+        // is allowed (it matches only an empty value, not everything).
+        assert!(parse_rules(
+            r#"{"rules":[{"match":{"input":{"c":{"contains":""}}},"action":{"deny":{"message":"m"}}}]}"#
+        )
+        .is_err());
+        let ok = parse_rules(
+            r#"{"rules":[{"match":{"input":{"c":{"equals":""}}},"action":{"deny":{"message":"m"}}}]}"#,
+        )
+        .unwrap();
+        assert!(decide(r#"{"tool_name":"x","tool_input":{"c":""}}"#, &ok).is_some());
+        assert!(decide(r#"{"tool_name":"x","tool_input":{"c":"nonempty"}}"#, &ok).is_none());
+        // Empty tool_regex/event_regex refused (would match everything).
+        for f in ["tool_regex", "event_regex"] {
+            let text = format!(
+                r#"{{"rules":[{{"match":{{"{f}":""}},"action":{{"deny":{{"message":"m"}}}}}}]}}"#
+            );
+            assert!(parse_rules(&text).is_err(), "{f}");
+        }
     }
 
     #[test]

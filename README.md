@@ -442,30 +442,45 @@ JSONL log (or `$ONEHARNESS_SPY_FILE`) — the **spy** channel, which records the
 {
   "rules": [
     {
-      // both criteria must hold; `tool` is the per-harness tool name,
-      // `event_contains` a substring of the raw hook event (portable)
-      "match": { "tool": "Bash", "event_contains": "git push" },
+      // all listed criteria must hold (AND). `tool_regex` spans a harness's
+      // tool-name casing; `input` matches specific argument fields.
+      "match": {
+        "tool_regex": "^(?i)bash$",
+        "input": { "command": { "regex": "git\\s+push" } }
+      },
       "action": { "deny": { "message": "pushes are mocked in this test" } }
     },
     {
-      "match": { "event_contains": "git status" },
       // fake a shell result by declaring ONLY the output: oneharness generates
       // a safely-quoted printf stub itself, so no user-authored command — and
       // nothing real — executes; the model receives this text (+ trailing
       // newline) as the tool's genuine result. `exit_code` fakes a failure.
+      "match": { "input": { "command": { "contains": "git status" } } },
       "action": { "stub": { "output": "nothing to commit, working tree clean" } }
     },
     {
-      "match": { "tool": "Read", "event_contains": "config.prod.yaml" },
       // the general rewrite: substitute any input fields — here redirecting a
       // file read to a fixture (shell stubs are better written with `stub`)
+      "match": { "tool": "Read", "input": { "file_path": { "equals": "/etc/prod.yaml" } } },
       "action": { "rewrite": { "input": { "file_path": "/tmp/ws/fixtures/config.yaml" } } }
     }
   ]
 }
 ```
 
-Three actions: `deny` (the model reads the message as the tool's failure),
+**Matching** — a rule's `match` combines any of these criteria (all present
+ones must hold): `tool` (case-insensitive exact tool name) or `tool_regex`;
+`event_contains` (substring of the raw hook event — the portable, harness-
+agnostic option) or `event_regex`; and `input`, a map from an argument name
+(`command`, `file_path`, …) to a predicate — `equals`, `contains`, or `regex`
+— so you can match on the *specific* tool input rather than the whole event. An
+absent input field fails the rule (never fabricated); a non-string argument is
+compared against its compact JSON, so a predicate can still target an array or
+object. Regexes are RE2 (linear-time — a caller-supplied pattern can't hang the
+responder), unanchored (use `^…$` for exact); an invalid pattern, an empty
+needle, or a match with no criteria is a loud usage error before anything runs.
+
+**Actions**: `deny` (the model reads the message as the tool's failure),
 `stub` (declare a shell call's output — compiled to a safe printf rewrite, so
 it needs the same `mock_rewrite` capability), and `rewrite` (substitute raw
 input fields — the primitive under `stub`, and the way to mock file reads).
@@ -475,9 +490,11 @@ just the result — keep canned output *plausible for what was asked*, since a
 self-inconsistent result (a fixture whose content names a different file) is
 the one thing a model has been observed to notice.
 
-Two actions, per-harness capability (see `supports_mock_deny` / `mock_rewrite`
-in `oneharness list`; a rule using an action the harness can't express is a
-loud usage error, never a silent allow):
+Per-harness capability — `deny` works wherever the gate does; `rewrite` (and
+therefore `stub`, which compiles to one) needs the harness's `mock_rewrite`
+shape (see `supports_mock_deny` / `mock_rewrite` in `oneharness list`; a rule
+using an action the harness can't express is a loud usage error, never a silent
+allow):
 
 | harness | deny | input rewrite (`mock_rewrite`) |
 | --- | --- | --- |

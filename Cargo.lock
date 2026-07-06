@@ -613,6 +613,7 @@ name = "oneharness-core"
 version = "0.3.1"
 dependencies = [
  "jsonschema",
+ "regex",
  "serde",
  "serde_json",
  "thiserror",

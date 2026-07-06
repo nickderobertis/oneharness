@@ -4751,6 +4751,55 @@ fn run_mock_rules_works_with_a_batch_and_restores_once() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Regex + per-field input matching through the real `mock` binary: a rule
+/// that fires only on a `bash` tool whose `command` argument matches a regex,
+/// and an invalid regex is a loud usage error.
+#[test]
+fn mock_regex_and_input_matching_end_to_end() {
+    let (dir, _rules) = mock_fixture("regexmatch");
+    let rules = dir.join("rx.json");
+    std::fs::write(
+        &rules,
+        r#"{"rules":[{"match":{"tool_regex":"^(?i)bash$","input":{"command":{"regex":"git\\s+push"}}},"action":{"deny":{"message":"no pushing"}}}]}"#,
+    )
+    .unwrap();
+    let rules = rules.to_str().unwrap();
+
+    // Matches: bash tool + command matching the regex → deny.
+    let out = run_with_stdin(
+        &["mock", "claude-code", "--rules", rules],
+        r#"{"tool_name":"Bash","tool_input":{"command":"git   push origin"}}"#,
+    );
+    let v = json_stdout(&out);
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert_eq!(
+        v["hookSpecificOutput"]["permissionDecisionReason"],
+        "no pushing"
+    );
+
+    // Right tool, non-matching command → fall through (empty stdout).
+    let out = run_with_stdin(
+        &["mock", "claude-code", "--rules", rules],
+        r#"{"tool_name":"Bash","tool_input":{"command":"git status"}}"#,
+    );
+    assert!(out.status.success() && out.stdout.is_empty());
+
+    // An invalid regex is a loud usage error before any event is read.
+    let bad = dir.join("bad-rx.json");
+    std::fs::write(
+        &bad,
+        r#"{"rules":[{"match":{"event_regex":"("},"action":{"deny":{"message":"m"}}}]}"#,
+    )
+    .unwrap();
+    let out = run_with_stdin(
+        &["mock", "claude-code", "--rules", bad.to_str().unwrap()],
+        "{}",
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("invalid mock rules"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn mock_startup_faults_are_loud_usage_errors() {
     let (dir, rules) = mock_fixture("errors");

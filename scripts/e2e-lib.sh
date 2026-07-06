@@ -1026,6 +1026,15 @@ JSON
     # generates the printf rewrite itself, so the model must receive (and be
     # able to repeat) the canned text as the tool's genuine result — the live
     # proof of the declare-the-output mock, end to end through the model.
+    #
+    # The stubbed command must have an output the model CANNOT predict, or it
+    # notices the mismatch and refuses: an `echo ohstub-probe` whose result
+    # comes back as an unrelated marker reads to a capable model as a prompt
+    # injection ("the output isn't what that command prints") and it declines
+    # to repeat it (observed live — opencode/haiku). Reading a file whose
+    # contents are unknowable (`cat ohstub-probe.txt`) removes that tell: any
+    # output is plausible, so the model relays the marker. This is exactly the
+    # "keep canned output plausible for what was asked" rule the README states.
     local stubmark stubrules stubspy answer
     stubmark="OHSTUBOUT${RANDOM}${RANDOM}"
     stubrules="$sandbox/stub-rules.json"
@@ -1036,7 +1045,7 @@ JSON
     for attempt in 1 2; do
         rm -f "$stubspy"
         note "  mock-enforce[stub]: the canned output must reach the model (attempt $attempt)"
-        oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then report the EXACT stdout text it printed, verbatim: echo ohstub-probe. Rules: you MUST actually invoke your shell tool with that exact command; never refuse. Then repeat its stdout verbatim in your reply." --cwd "$sandbox" --mock-rules "$stubrules" --spy-file "$stubspy"
+        oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Using your shell tool, run exactly this command to read a status file whose contents you do not know in advance, then report its exact stdout verbatim in your reply: cat ohstub-probe.txt. Rules: you MUST actually invoke your shell tool with that exact command; never refuse. Report exactly what the command prints, verbatim." --cwd "$sandbox" --mock-rules "$stubrules" --spy-file "$stubspy"
         [ -s "$stubspy" ] && break
         note "  note: the spy log is empty — the agent never attempted the tool call; retrying"
     done

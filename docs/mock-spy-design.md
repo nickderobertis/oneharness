@@ -26,7 +26,13 @@ a safely-quoted printf rewrite, so users never author commands and nothing
 real executes. Still open, in build order:
 result replacement (`replace` — start with opencode's probe-verified
 after-hook mutation), hook-sourced `events` for the transcript-less
-harnesses, and the `mocks` per-result block.
+harnesses, and the `mocks` per-result block. The matcher is rich: a rule's
+`match` ANDs any of `tool`/`tool_regex`, `event_contains`/`event_regex`, and
+`input` (per-argument `equals`/`contains`/`regex` predicates over
+`tool_input`/`toolArgs`, with non-string args coerced to compact JSON).
+Regexes use the linear-time `regex` crate (no ReDoS from a caller-supplied
+pattern) and are compiled at parse time, so an invalid pattern — like every
+other ruleset fault — aborts loudly before any process spawns.
 
 Consumer: the cross-harness skill-testing
 framework (`nickderobertis/skilltest`), which drives real harnesses through

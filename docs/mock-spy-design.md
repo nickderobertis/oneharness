@@ -155,6 +155,25 @@ verdict:
 5. **Report surface**: a `mocks` block per result (rules matched / applied /
    unmatched) — added fields, `schema_version` intact.
 
+## Coverage map (hermetic H / live L)
+
+- Responder verbs deny/rewrite/stub + shapes per harness: H (exact-JSON
+  round-trips) + L (`oh_mock_enforce` rewrite+stub on claude/codex/opencode/
+  crush/cursor; `oh_mock_deny_enforce` deny+spy on goose — its ceiling).
+- Spy log (flag + env channels, original-event preservation, fall-through
+  records): H + L (both enforce phases assert on it).
+- `run --mock-rules` delivery: H (claude settings-flag lifecycle, codex
+  created-file+auto-flags, layering onto pre-existing config with byte-
+  identical restore, multi-harness snapshot isolation, batch, stream-path
+  restore, spy-only, all refusals) + L (all six deliverable harnesses,
+  each ending in a zero-residue workspace assertion).
+- Known live gaps, deliberate: cursor mock on Windows (its hook-shell bug);
+  claude file-read redirect (probe-verified once, no recurring phase — the
+  shell-rewrite phase covers the same verdict shape); deny-through-mock on
+  the rewrite harnesses (hermetic only — the identical deny render is
+  live-proven per harness by `oh_hook_enforce`, and the goose phase proves
+  deny through the mock binary itself); qwen/copilot excluded by refusal.
+
 ## Verification plan
 
 - **`scripts/explore-hooks.sh` + `explore-hooks.yml`** (dispatch-only, this

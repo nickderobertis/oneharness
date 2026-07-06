@@ -4599,6 +4599,158 @@ fn mock_stub_action_compiles_to_a_safe_printf_rewrite() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `--stream` + `--mock-rules`: the ephemeral hook is delivered, the stream
+/// path still emits NDJSON + a terminal result line (carrying `mock_rules`),
+/// and the restore runs on the streaming exit path too — the created plugin
+/// file and its directory are gone afterwards.
+#[test]
+fn run_stream_with_mock_rules_restores_on_the_streaming_path() {
+    let dir = std::env::temp_dir().join(format!("oneharness-mockstream-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let rules = dir.join("rules.json");
+    std::fs::write(
+        &rules,
+        r#"{"rules":[{"match":{"event_contains":"MARK"},"action":{"stub":{"output":"ok"}}}]}"#,
+    )
+    .unwrap();
+    let out = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--cwd",
+            dir.to_str().unwrap(),
+            "--mock-rules",
+            rules.to_str().unwrap(),
+            "--bin",
+            &bin_override("opencode"),
+            "--stream",
+        ],
+        &[(
+            "MOCK_STDOUT",
+            r#"{"type":"text","part":{"type":"text","text":"done"}}"#,
+        )],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    let last: serde_json::Value =
+        serde_json::from_str(text.lines().last().expect("a terminal line")).unwrap();
+    assert_eq!(last["type"], "result");
+    assert!(
+        !last["report"]["mock_rules"].is_null(),
+        "the streaming report must record the ruleset"
+    );
+    // The JS-plugin install (a created file) was removed on the streaming path.
+    assert!(
+        !dir.join(".opencode").exists(),
+        "restore must run after a stream"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A multi-harness mocked run delivers per harness and restores per harness:
+/// a pre-existing config is snapshotted BEFORE its own install (never after
+/// another harness's) and comes back byte-identical, while a fresh harness's
+/// created file and directory are removed.
+#[test]
+fn run_mock_rules_multi_harness_restores_each_config_independently() {
+    let dir = std::env::temp_dir().join(format!("oneharness-mockmulti-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let crush_config = dir.join("crush.json");
+    let original = r#"{"mine":{"keep":1}}"#;
+    std::fs::write(&crush_config, original).unwrap();
+    let rules = dir.join("rules.json");
+    std::fs::write(
+        &rules,
+        r#"{"rules":[{"match":{"event_contains":"MARK"},"action":{"deny":{"message":"m"}}}]}"#,
+    )
+    .unwrap();
+    let out = run(
+        &[
+            "run",
+            "--harness",
+            "crush,codex",
+            "--prompt",
+            "hi",
+            "--cwd",
+            dir.to_str().unwrap(),
+            "--mock-rules",
+            rules.to_str().unwrap(),
+            "--bin",
+            &bin_override("crush"),
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report = json_stdout(&out);
+    assert_eq!(report["results"].as_array().unwrap().len(), 2);
+    // Pre-existing config restored byte-identically; fresh one fully removed.
+    assert_eq!(std::fs::read_to_string(&crush_config).unwrap(), original);
+    assert!(!dir.join(".codex").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A batch run (one harness, N prompts) under --mock-rules installs once,
+/// applies the hook args to every fanned-out job, and restores afterwards.
+#[test]
+fn run_mock_rules_works_with_a_batch_and_restores_once() {
+    let dir = std::env::temp_dir().join(format!("oneharness-mockbatch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let rules = dir.join("rules.json");
+    std::fs::write(
+        &rules,
+        r#"{"rules":[{"match":{"event_contains":"MARK"},"action":{"stub":{"output":"ok"}}}]}"#,
+    )
+    .unwrap();
+    let out = run(
+        &[
+            "run",
+            "--harness",
+            "crush",
+            "--prompt",
+            "one",
+            "--prompt",
+            "two",
+            "--cwd",
+            dir.to_str().unwrap(),
+            "--mock-rules",
+            rules.to_str().unwrap(),
+            "--bin",
+            &bin_override("crush"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report = json_stdout(&out);
+    assert_eq!(report["results"].as_array().unwrap().len(), 2);
+    assert_eq!(report["batch"]["prompt_count"], 2);
+    assert!(!report["mock_rules"].is_null());
+    // The (created) config file is gone after the batch completes.
+    assert!(!dir.join("crush.json").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn mock_startup_faults_are_loud_usage_errors() {
     let (dir, rules) = mock_fixture("errors");

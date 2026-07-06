@@ -1062,6 +1062,75 @@ JSON
     note "PASS: $id mock rewrite + stub enforcement (run --mock-rules)"
 }
 
+# Live proof that a `run --mock-rules` DENY is honored — for a harness whose
+# mock ceiling is deny+spy (Goose: its hook protocol has no rewrite verdict).
+# Also the only live exercise of that harness's ephemeral delivery (Goose's
+# plugin-pair install, snapshotted/restored around the run). Self-controlled
+# via the spy log: an empty log means the hook never fired (retried once as
+# agent flakiness); a `deny` record plus the file being absent proves a real
+# block, not a vacuous pass. Ends with the same zero-residue assertion as
+# oh_mock_enforce.
+#
+#   $1 harness id
+oh_mock_deny_enforce() {
+    local id="$1"
+    local bin sandbox marker denyfile rulesfile spyfile status attempt
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    sandbox="$(mktemp -d)"
+    sandbox="$(oh_native_path "$sandbox")"
+    oh_sandbox_prepare "$id" "$sandbox"
+    git init -q "$sandbox" 2>/dev/null || true
+    marker="OHMOCKDENY${RANDOM}${RANDOM}"
+    denyfile="$sandbox/$marker.txt"
+    rulesfile="$sandbox/mock-rules.json"
+    spyfile="$sandbox/mock-spy.jsonl"
+    cat > "$rulesfile" <<JSON
+{"rules":[{"match":{"event_contains":"$marker"},"action":{"deny":{"message":"blocked by oh_mock_deny_enforce"}}}]}
+JSON
+
+    for attempt in 1 2; do
+        rm -f "$spyfile"
+        note "  mock-deny[deny]: the marked command must be blocked under bypass (attempt $attempt)"
+        oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $denyfile. Rules: you MUST actually invoke your shell tool with that exact command — never decide on your own that it is not permitted; attempt it. Only if that tool invocation itself is rejected: do NOT create the file by any other means — reply with the single word DENIED and stop." --cwd "$sandbox" --mock-rules "$rulesfile" --spy-file "$spyfile"
+        status="$(oh_field '.results[0].status')"
+        if [ "$status" = "skipped" ]; then
+            rm -rf "$sandbox"
+            skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+        fi
+        [ -s "$spyfile" ] && break
+        note "  note: the spy log is empty — the agent never attempted the tool call; retrying"
+    done
+    if [ ! -s "$spyfile" ]; then
+        oh_dump
+        rm -rf "$sandbox"
+        fail "$id: the agent never invoked its shell tool in $attempt attempts (spy log empty) — the deny path could not be exercised"
+    fi
+    if ! jq -e -s 'map(select(.action == "deny")) | length >= 1' "$spyfile" >/dev/null 2>&1; then
+        oh_dump
+        head -5 "$spyfile" >&2
+        rm -rf "$sandbox"
+        fail "$id: the spy log recorded no deny action ($spyfile) — the rules never matched the marked call"
+    fi
+    if [ -e "$denyfile" ]; then
+        oh_dump
+        rm -rf "$sandbox"
+        fail "$id: the mock deny was NOT honored ($denyfile was created despite a recorded deny verdict) — the deny shape is not applied (drift)"
+    fi
+    note "  ok[deny]: the verdict was recorded and the command did not run"
+
+    if grep -rIqF "mock $id --rules" "$sandbox" 2>/dev/null; then
+        grep -rIlF "mock $id --rules" "$sandbox" >&2
+        rm -rf "$sandbox"
+        fail "$id: the ephemeral mock hook left residue in the workspace (files above)"
+    fi
+    note "  ok[ephemeral]: the workspace carries no trace of the hook"
+
+    rm -rf "$sandbox"
+    note "PASS: $id mock deny enforcement (run --mock-rules)"
+}
+
 # --- structured output enforcement -------------------------------------------
 
 # Live proof that `oneharness run --schema` produces a schema-VALID structured

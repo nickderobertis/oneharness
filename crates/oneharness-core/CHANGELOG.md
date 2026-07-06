@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.3.1...oneharness-core-v0.3.2) - 2026-07-06
+
+### Added
+
+- mock/spy responder — per-tool-call deny/rewrite/stub with regex matching ([#1099](https://github.com/nickderobertis/oneharness/pull/1099))
+
 ## [0.3.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.3.0...oneharness-core-v0.3.1) - 2026-07-06
 
 ### Added

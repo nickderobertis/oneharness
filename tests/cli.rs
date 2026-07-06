@@ -1358,6 +1358,108 @@ fn events_flag_respects_explicit_output_format() {
 }
 
 #[test]
+fn stream_mode_emits_event_lines_then_a_terminal_report() {
+    // `--stream` writes one NDJSON line per normalized event as it arrives, then a
+    // terminal `{"type":"result","report":{…}}` line carrying the full envelope.
+    let stdout = concat!(
+        r#"{"type":"text","part":{"type":"text","text":"working"}}"#,
+        "\n",
+        r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"echo hi"},"output":"hi"}}}"#,
+        "\n",
+        r#"{"type":"tool_use","part":{"type":"tool","tool":"edit","state":{"input":{"filePath":"a.txt"}}}}"#,
+        "\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("opencode"),
+            "--stream",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let text = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("each stream line is JSON"))
+        .collect();
+    // Two event lines, then one result line.
+    assert_eq!(lines.len(), 3, "lines: {text}");
+    assert_eq!(lines[0]["type"], "event");
+    assert_eq!(lines[0]["event"]["kind"], "tool_call");
+    assert_eq!(lines[0]["event"]["name"], "bash");
+    assert_eq!(lines[0]["event"]["index"], 0);
+    assert_eq!(lines[1]["type"], "event");
+    assert_eq!(lines[1]["event"]["name"], "edit");
+    assert_eq!(lines[1]["event"]["index"], 1);
+    // The terminal line is the full report; its single result carries the same
+    // events array and the extracted text.
+    assert_eq!(lines[2]["type"], "result");
+    let result = &lines[2]["report"]["results"][0];
+    assert_eq!(result["events_source"], "json:opencode-parts");
+    assert_eq!(result["events"].as_array().unwrap().len(), 2);
+    assert_eq!(result["text"], "working");
+}
+
+#[test]
+fn stream_with_multiple_harnesses_is_a_usage_error() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--stream",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--stream runs a single harness"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn stream_with_schema_is_a_usage_error() {
+    // A schema file is needed to reach the --stream/--schema conflict check.
+    let dir = std::env::temp_dir().join(format!("oh-stream-schema-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let schema_path = dir.join("s.json");
+    std::fs::write(&schema_path, r#"{"type":"object"}"#).unwrap();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--stream",
+            "--schema",
+            schema_path.to_str().unwrap(),
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--stream is incompatible with --schema"),
+        "{stderr}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn events_absent_when_harness_exposes_no_trace() {
     // Claude Code's single-document `json` result carries no transcript, so
     // `events`/`events_source` stay null (absent), distinct from an empty array —

@@ -75,6 +75,10 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // `--fork` (clap-guaranteed to imply `--resume`) branches a new session
     // instead of appending; refused before spawning for a harness that can't fork.
     validate_fork(args.fork, &specs)?;
+    // `--stream` emits events incrementally for a *single* harness/prompt; the
+    // validate/retry loop and the batch fan-out both need the whole output at
+    // once, so they are mutually exclusive. Refused loudly before spawning.
+    validate_stream(args.stream, &specs, batch_run, schema.is_some())?;
     // Resolve the approval mode (CLI --mode > --bypass/--no-bypass > config
     // `mode` > config `bypass` > the built-in default, which is `default`). A
     // mode a selected harness *cannot express* is refused here (a command can't
@@ -224,6 +228,44 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         }
     }
 
+    // Streaming path: a single harness, emitting normalized events to stdout as
+    // they arrive, then a final report line — so a consumer can short-circuit the
+    // moment it sees a disallowed action. `--print-command` still just prints the
+    // planned command (nothing executes), so it falls through to the normal path.
+    if args.stream && !args.print_command {
+        let result = match plan.into_iter().next().expect("stream: one unit") {
+            // The harness was unavailable/skipped — nothing to stream; emit only
+            // the terminal report line so the shape is still complete.
+            Plan::Ready(result) => *result,
+            Plan::Pending {
+                spec,
+                bin,
+                output_format,
+                job_index,
+                prompt,
+            } => stream_one_harness(&jobs[job_index], spec, &bin, output_format, prompt),
+        };
+        if let Some(dir) = &args.output_dir {
+            write_output_dir(dir, std::slice::from_ref(&result))?;
+        }
+        let exit = exit_code(std::slice::from_ref(&result), require_available);
+        let report = build_report(
+            vec![result],
+            &prompts,
+            model,
+            args,
+            mode,
+            schema.as_ref(),
+            max_retries,
+            None,
+            loaded.files.clone(),
+        );
+        // The event lines were already written during the run; the report is the
+        // terminal `{"type":"result", ...}` line of the same NDJSON stream.
+        emit_stream_result(&report)?;
+        return Ok(exit);
+    }
+
     // Schedule and run the jobs. An ordinary run (and a batch under `speed`) is a
     // single concurrent wave; a batch under `min-tokens` runs a one-call warm-up
     // before the fanned-out rest, with a barrier between them.
@@ -326,30 +368,21 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
 
     let exit = exit_code(&results, require_available);
 
-    let report = RunReport {
-        schema_version: SCHEMA_VERSION,
-        oneharness_version: env!("CARGO_PKG_VERSION"),
-        // On a batch run the per-result `prompt` is authoritative; the top-level
-        // field repeats the first prompt for back-compat (it is always present).
-        prompt: prompts[0].clone(),
-        // The effective top-level model (CLI, else config); a per-harness
-        // config model is visible in that result's `command`.
-        model: model.map(str::to_string),
-        resume: args.resume.clone(),
-        fork: args.fork,
-        permission_mode: mode,
-        bypass_permissions: mode.is_bypass(),
-        dry_run: args.print_command,
-        schema: schema.as_ref().map(|s| s.as_value().clone()),
-        schema_max_retries: schema.as_ref().map(|_| max_retries),
-        batch: batch_run.then_some(BatchReport {
+    let report = build_report(
+        results,
+        &prompts,
+        model,
+        args,
+        mode,
+        schema.as_ref(),
+        max_retries,
+        batch_run.then_some(BatchReport {
             strategy: batch_strategy,
             prompt_count: prompts.len(),
             forked,
         }),
-        config_files: loaded.files,
-        results,
-    };
+        loaded.files,
+    );
     print_json(&report, args.compact)?;
 
     if exit != EXIT_OK {
@@ -364,6 +397,151 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         );
     }
     Ok(exit)
+}
+
+/// Assemble the top-level [`RunReport`] from the finished results and the shared
+/// run metadata. Extracted so the normal and streaming paths emit an identical
+/// envelope shape (the streaming path passes `batch: None`).
+#[allow(clippy::too_many_arguments)]
+fn build_report(
+    results: Vec<RunResult>,
+    prompts: &[String],
+    model: Option<&str>,
+    args: &RunArgs,
+    mode: PermissionMode,
+    schema: Option<&Schema>,
+    max_retries: u32,
+    batch: Option<BatchReport>,
+    config_files: Vec<String>,
+) -> RunReport {
+    RunReport {
+        schema_version: SCHEMA_VERSION,
+        oneharness_version: env!("CARGO_PKG_VERSION"),
+        // On a batch run the per-result `prompt` is authoritative; the top-level
+        // field repeats the first prompt for back-compat (it is always present).
+        prompt: prompts[0].clone(),
+        // The effective top-level model (CLI, else config); a per-harness config
+        // model is visible in that result's `command`.
+        model: model.map(str::to_string),
+        resume: args.resume.clone(),
+        fork: args.fork,
+        permission_mode: mode,
+        bypass_permissions: mode.is_bypass(),
+        dry_run: args.print_command,
+        schema: schema.map(|s| s.as_value().clone()),
+        schema_max_retries: schema.map(|_| max_retries),
+        batch,
+        config_files,
+        results,
+    }
+}
+
+/// Run one harness with streaming: feed each stdout line through the event
+/// extractor as it arrives and write any new normalized events to stdout as
+/// NDJSON (`{"type":"event","event":{…}}`), then return the same [`RunResult`] a
+/// batch run would produce (from the accumulated output). A write failure to the
+/// consumer (it closed the stream — short-circuiting on what it saw) tells the
+/// runner to stop and tear down the child. `schema` is always `None` here
+/// (`--stream` and `--schema` are mutually exclusive, enforced up front).
+fn stream_one_harness(
+    job: &Job,
+    spec: &'static HarnessSpec,
+    bin: &str,
+    output_format: OutputFormat,
+    prompt: Option<String>,
+) -> RunResult {
+    use oneharness_core::io::runner::StreamStep;
+    use serde_json::Value;
+    use std::io::Write;
+
+    let mut next_index = 0usize;
+    let capture = runner::run_job_streaming(job, |line| {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            return StreamStep::Continue;
+        };
+        let evs = events::events_from_value(&value, next_index);
+        if evs.is_empty() {
+            return StreamStep::Continue;
+        }
+        next_index += evs.len();
+        let mut out = std::io::stdout().lock();
+        for ev in &evs {
+            let envelope = serde_json::json!({ "type": "event", "event": ev });
+            // A broken pipe (consumer closed the stream) is the short-circuit
+            // signal: stop reading and tear the child down.
+            if serde_json::to_string(&envelope)
+                .map_err(|_| ())
+                .and_then(|s| writeln!(out, "{s}").map_err(|_| ()))
+                .is_err()
+            {
+                return StreamStep::Stop;
+            }
+        }
+        if out.flush().is_err() {
+            return StreamStep::Stop;
+        }
+        StreamStep::Continue
+    });
+    executed_result(
+        spec,
+        bin.to_string(),
+        job.argv.clone(),
+        output_format,
+        &capture,
+        None,
+        1,
+        prompt,
+    )
+}
+
+/// Write the terminal `{"type":"result","report":<RunReport>}` line that closes a
+/// streaming run — the same envelope a non-streaming run emits, so a consumer
+/// that ignored the incremental events still gets the full report. A broken pipe
+/// (the consumer already short-circuited and left) is not an error.
+fn emit_stream_result(report: &RunReport) -> Result<(), OneharnessError> {
+    use std::io::Write;
+    let line = serde_json::to_string(&serde_json::json!({ "type": "result", "report": report }))?;
+    // A broken pipe (the consumer already short-circuited and left) is expected,
+    // not an error; any other write failure on the terminal line is non-fatal.
+    let _ = writeln!(std::io::stdout(), "{line}");
+    Ok(())
+}
+
+/// Refuse `--stream` combined with anything it cannot serve: more than one
+/// harness, a batch (multi-prompt) run, or structured output — each needs the
+/// whole output at once, which streaming does not provide. A loud usage error
+/// before anything spawns.
+fn validate_stream(
+    stream: bool,
+    specs: &[&'static HarnessSpec],
+    batch_run: bool,
+    has_schema: bool,
+) -> Result<(), OneharnessError> {
+    if !stream {
+        return Ok(());
+    }
+    if specs.len() > 1 {
+        return Err(OneharnessError::StreamInvalid(
+            "--stream runs a single harness; select exactly one with --harness <id> (a \
+             multi-harness stream would interleave unrelated event streams on one stdout)"
+                .to_string(),
+        ));
+    }
+    if batch_run {
+        return Err(OneharnessError::StreamInvalid(
+            "--stream is incompatible with a batch (multiple prompts): the batch fan-out needs \
+             each run's whole output. Stream one prompt at a time instead."
+                .to_string(),
+        ));
+    }
+    if has_schema {
+        return Err(OneharnessError::StreamInvalid(
+            "--stream is incompatible with --schema: structured-output validation and its retry \
+             loop need the complete answer, not an incremental stream."
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Run `jobs` wave by wave, preserving global order in the returned outcomes.

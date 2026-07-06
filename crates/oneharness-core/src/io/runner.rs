@@ -534,6 +534,71 @@ mod tests {
         assert!(run_jobs_with(&[], 4, |_, _, _| None).is_empty());
     }
 
+    /// A portable job that prints three lines then exits 0 (`sh -c printf` on
+    /// Unix, `cmd /c echo` on Windows), for exercising the streaming reader.
+    fn three_line_job() -> Job {
+        #[cfg(not(windows))]
+        let argv = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "printf 'a\\nb\\nc\\n'".to_string(),
+        ];
+        #[cfg(windows)]
+        let argv = vec![
+            "cmd".to_string(),
+            "/c".to_string(),
+            "echo a& echo b& echo c".to_string(),
+        ];
+        Job {
+            argv,
+            cwd: None,
+            env: Vec::new(),
+            timeout: Duration::from_secs(10),
+        }
+    }
+
+    #[test]
+    fn streaming_delivers_each_line_and_accumulates_stdout() {
+        // The happy path: every line reaches the callback in order, and the final
+        // capture's stdout is the byte-faithful accumulation, status Ok.
+        let mut lines = Vec::new();
+        let cap = run_job_streaming(&three_line_job(), |line| {
+            lines.push(line.to_string());
+            StreamStep::Continue
+        });
+        assert_eq!(cap.status, Status::Ok);
+        assert_eq!(cap.exit_code, Some(0));
+        assert_eq!(lines.len(), 3, "got {lines:?}");
+        // Trim to tolerate any shell quirks; the content is a/b/c in order.
+        let trimmed: Vec<_> = lines.iter().map(|l| l.trim()).collect();
+        assert_eq!(trimmed, vec!["a", "b", "c"]);
+        for token in ["a", "b", "c"] {
+            assert!(cap.stdout.contains(token), "stdout: {:?}", cap.stdout);
+        }
+    }
+
+    #[test]
+    fn streaming_stops_and_tears_down_on_callback_stop() {
+        // Returning Stop after the first line ends the run immediately (the child
+        // is killed); the consumer-driven stop is reported as Ok, not a failure.
+        let mut count = 0u32;
+        let cap = run_job_streaming(&three_line_job(), |_| {
+            count += 1;
+            StreamStep::Stop
+        });
+        assert_eq!(count, 1, "should stop after the first line");
+        assert_eq!(cap.status, Status::Ok);
+    }
+
+    #[test]
+    fn streaming_spawn_error_is_data_not_a_panic() {
+        // A missing binary surfaces as a SpawnError capture, same as run_job.
+        let job = job(&["/no/such/oneharness-stream-binary"]);
+        let cap = run_job_streaming(&job, |_| StreamStep::Continue);
+        assert_eq!(cap.status, Status::SpawnError);
+        assert!(cap.error.as_deref().unwrap_or_default().contains("spawn"));
+    }
+
     #[test]
     fn resolve_program_falls_back_to_the_name_when_unresolvable() {
         // A name that PATH lookup cannot resolve must come back unchanged on every

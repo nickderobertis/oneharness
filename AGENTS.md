@@ -111,7 +111,19 @@ Use the `just` recipes; do not hand-roll equivalents.
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It
   exists to prove a synced hook is *honored* end to end (the per-harness live
   e2e drives a real harness through it), not to be a policy engine — that is the
-  sibling `allowlister`'s role, which consumes the `install` library.
+  sibling `allowlister`'s role, which consumes the `install` library. `mock
+  <id>` is its read-write sibling for behavioral test suites (the `skilltest`
+  consumer; design in `docs/mock-spy-design.md`): the same hook loop, driven by
+  a `--rules` JSON ruleset that can *deny* or *rewrite the tool's input* (the
+  mock — swap a command for a stub printing canned output) and appends every
+  observed event to a `--spy-file`/`ONEHARNESS_SPY_FILE` JSONL spy log, which
+  preserves the *original* pre-rewrite call (the transcript `events` show only
+  post-rewrite reality). Decision/verdicts are pure in `domain::mock`; the
+  rewrite shape is per-harness registry data (`mock_rewrite`: claude-code/qwen
+  `claude-nested`, crush `crush-flat`, opencode via the plugin shim's args
+  merge; absent — a loud usage error — for goose, whose protocol can't rewrite,
+  and for codex/copilot/cursor until the `explore-hooks` probe verifies them
+  live). `oh_mock_enforce` is its live drift alarm.
 - **Structured output** (`run --schema <file>`): constrain each harness's final
   answer to a JSON Schema, validate it (the `jsonschema` crate, pinned
   `default-features = false` so it stays offline), and re-prompt on failure up to
@@ -384,6 +396,12 @@ shape. When you add one:
   sourced from the allowlister adapters, never guessed; both are loud when absent
   (a missing `gate_deny` makes `oneharness gate <id>` a usage error). Pin the new
   deny shape with a `--print`-style assertion in `domain::gate`/`tests/cli.rs`.
+  Likewise declare `mock_rewrite` (how `oneharness mock <id>` expresses an
+  input-rewrite verdict) ONLY once verified — doc-source the shape, pin it in
+  `domain::mock` + the registry test, and add the `oh_mock_enforce <id> [scope]`
+  live phase (the rewritten command runs, the original doesn't, the spy log
+  keeps the original event); leave it `None` (a loud usage error) until the
+  `explore-hooks` probe proves the CLI honors it headlessly.
 - Source the real invocation from a known-good driver — the
   `nickderobertis/allowlister` repo's `run_agent()` / `e2e-*.sh` drivers are the
   reference — rather than guessing flags. (`scripts/smoke.sh --live` here is the

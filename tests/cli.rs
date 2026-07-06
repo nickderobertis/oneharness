@@ -3724,6 +3724,27 @@ fn list_exposes_sync_capabilities() {
 }
 
 #[test]
+fn list_exposes_mock_capabilities() {
+    let output = run(&["list", "--compact"], &[]);
+    let value = json_stdout(&output);
+    let harnesses = value["harnesses"].as_array().unwrap();
+    let by_id = |id: &str| harnesses.iter().find(|h| h["id"] == id).unwrap();
+    // Every harness can express the mock deny (the gate protocol).
+    for h in harnesses {
+        assert_eq!(h["supports_mock_deny"], true, "{}", h["id"]);
+    }
+    // The rewrite shape is present only where doc-sourced and absent where the
+    // capability awaits live verification (see docs/mock-spy-design.md).
+    assert_eq!(by_id("claude-code")["mock_rewrite"], "claude-nested");
+    assert_eq!(by_id("qwen")["mock_rewrite"], "claude-nested");
+    assert_eq!(by_id("crush")["mock_rewrite"], "crush-flat");
+    assert_eq!(by_id("opencode")["mock_rewrite"], "opencode-shim");
+    for id in ["codex", "goose", "copilot", "cursor"] {
+        assert!(by_id(id)["mock_rewrite"].is_null(), "{id}");
+    }
+}
+
+#[test]
 fn run_never_emits_policy_flags_from_sync_settings() {
     // The file-only guarantee: rules/hooks/settings are delivered by `sync`,
     // never injected into a run's argv. A config full of policy must leave
@@ -3993,6 +4014,248 @@ fn gate_unknown_harness_is_a_usage_error() {
     let out = run_with_stdin(&["gate", "nope", "--deny-if-contains", "x"], "{}");
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("unknown harness"));
+}
+
+/// A throwaway directory for the mock responder's rules/spy files, plus the
+/// standard ruleset the tests share: rule 0 denies `git push`, rule 1 rewrites
+/// `git status` to a stub that prints canned output.
+fn mock_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("oneharness-mock-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let rules = dir.join("rules.json");
+    std::fs::write(
+        &rules,
+        r#"{"rules":[
+            {"match":{"tool":"Bash","event_contains":"git push"},
+             "action":{"deny":{"message":"pushes are mocked"}}},
+            {"match":{"event_contains":"git status"},
+             "action":{"rewrite":{"input":{"command":"printf clean"},"message":"mocked status"}}}
+        ]}"#,
+    )
+    .unwrap();
+    (dir, rules)
+}
+
+#[test]
+fn mock_rewrites_denies_and_falls_through() {
+    let (dir, rules) = mock_fixture("verbs");
+    let rules = rules.to_str().unwrap();
+
+    // A matched rewrite emits the harness's native allow+updatedInput verdict.
+    let out = run_with_stdin(
+        &["mock", "claude-code", "--rules", rules],
+        r#"{"tool_name":"Bash","tool_input":{"command":"git status"}}"#,
+    );
+    assert!(
+        out.status.success(),
+        "mock must always exit 0 after startup"
+    );
+    let v = json_stdout(&out);
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "allow");
+    assert_eq!(
+        v["hookSpecificOutput"]["updatedInput"]["command"],
+        "printf clean"
+    );
+    assert_eq!(
+        v["hookSpecificOutput"]["permissionDecisionReason"],
+        "mocked status"
+    );
+
+    // A matched deny speaks the same protocol the gate does.
+    let out = run_with_stdin(
+        &["mock", "claude-code", "--rules", rules],
+        r#"{"tool_name":"Bash","tool_input":{"command":"git push origin"}}"#,
+    );
+    let v = json_stdout(&out);
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert_eq!(
+        v["hookSpecificOutput"]["permissionDecisionReason"],
+        "pushes are mocked"
+    );
+
+    // No matching rule -> empty stdout, the universal fall-through.
+    let out = run_with_stdin(
+        &["mock", "claude-code", "--rules", rules],
+        r#"{"tool_name":"Bash","tool_input":{"command":"ls"}}"#,
+    );
+    assert!(out.status.success());
+    assert!(
+        out.stdout.is_empty(),
+        "a non-match must emit nothing, got: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    // No rules at all -> spy-only responder: everything falls through.
+    let out = run_with_stdin(&["mock", "claude-code"], r#"{"tool_name":"Bash"}"#);
+    assert!(out.status.success() && out.stdout.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn mock_renders_each_harness_rewrite_shape() {
+    let (dir, rules) = mock_fixture("shapes");
+    let rules = rules.to_str().unwrap();
+    let event = r#"{"tool_name":"bash","tool_input":{"command":"git status"}}"#;
+    let rewrite = |id: &str| json_stdout(&run_with_stdin(&["mock", id, "--rules", rules], event));
+
+    // Claude Code / Qwen: nested under hookSpecificOutput (updatedInput).
+    for id in ["claude-code", "qwen"] {
+        let v = rewrite(id);
+        assert_eq!(
+            v["hookSpecificOutput"]["permissionDecision"], "allow",
+            "{id}"
+        );
+        assert_eq!(
+            v["hookSpecificOutput"]["updatedInput"]["command"], "printf clean",
+            "{id}"
+        );
+    }
+    // Crush: flat versioned shape with a shallow-merge updated_input.
+    let v = rewrite("crush");
+    assert_eq!(v["version"], 1);
+    assert_eq!(v["decision"], "allow");
+    assert_eq!(v["updated_input"]["command"], "printf clean");
+    // OpenCode: the flat decision the oneharness plugin shim applies.
+    let v = rewrite("opencode");
+    assert_eq!(v["decision"], "allow");
+    assert_eq!(v["updated_input"]["command"], "printf clean");
+    assert!(v.get("version").is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn mock_spy_log_records_every_event_including_fall_throughs() {
+    let (dir, rules) = mock_fixture("spy");
+    let rules = rules.to_str().unwrap();
+    let spy = dir.join("spy.jsonl");
+    let spy_arg = spy.to_str().unwrap();
+
+    // One deny, one fall-through (with rules), one spy-only (no rules).
+    for (args, event) in [
+        (
+            vec![
+                "mock",
+                "claude-code",
+                "--rules",
+                rules,
+                "--spy-file",
+                spy_arg,
+            ],
+            r#"{"tool_name":"Bash","tool_input":{"command":"git push"}}"#,
+        ),
+        (
+            vec![
+                "mock",
+                "claude-code",
+                "--rules",
+                rules,
+                "--spy-file",
+                spy_arg,
+            ],
+            r#"{"tool_name":"Bash","tool_input":{"command":"ls"}}"#,
+        ),
+        (
+            vec!["mock", "goose", "--spy-file", spy_arg],
+            "not even json",
+        ),
+    ] {
+        assert!(run_with_stdin(&args, event).status.success());
+    }
+
+    let log = std::fs::read_to_string(&spy).unwrap();
+    let lines: Vec<serde_json::Value> = log
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(
+        lines.len(),
+        3,
+        "every invocation appends exactly one record"
+    );
+    assert_eq!(lines[0]["harness"], "claude-code");
+    assert_eq!(lines[0]["action"], "deny");
+    assert_eq!(lines[0]["rule"], 0);
+    // The original event is embedded as parsed JSON — the pre-rewrite intent.
+    assert_eq!(lines[0]["event"]["tool_input"]["command"], "git push");
+    assert_eq!(lines[1]["action"], "allow");
+    assert!(lines[1]["rule"].is_null());
+    // A non-JSON event is kept verbatim as a string, never dropped.
+    assert_eq!(lines[2]["harness"], "goose");
+    assert_eq!(lines[2]["event"], "not even json");
+
+    // The env-var channel (how a `run --env` setting reaches every hook
+    // invocation) selects the same spy file; the flag would win over it.
+    let env_spy = dir.join("spy-env.jsonl");
+    let out = {
+        use std::io::Write;
+        use std::process::Stdio;
+        let mut child = Command::new(oneharness_bin())
+            .env("ONEHARNESS_NO_CONFIG", "1")
+            .env("ONEHARNESS_SPY_FILE", &env_spy)
+            .args(["mock", "claude-code"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn oneharness");
+        let _ = child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(br#"{"tool_name":"Bash"}"#);
+        child.wait_with_output().expect("failed to wait")
+    };
+    assert!(out.status.success());
+    let log = std::fs::read_to_string(&env_spy).unwrap();
+    let line: serde_json::Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
+    assert_eq!(line["action"], "allow");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn mock_startup_faults_are_loud_usage_errors() {
+    let (dir, rules) = mock_fixture("errors");
+    let rules_arg = rules.to_str().unwrap();
+
+    // Unknown harness.
+    let out = run_with_stdin(&["mock", "nope", "--rules", rules_arg], "{}");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown harness"));
+
+    // Missing rules file.
+    let missing = dir.join("absent.json");
+    let out = run_with_stdin(
+        &["mock", "claude-code", "--rules", missing.to_str().unwrap()],
+        "{}",
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("could not read mock rules"));
+
+    // Invalid rules (empty match) — refused before any event is read.
+    let bad = dir.join("bad.json");
+    std::fs::write(
+        &bad,
+        r#"{"rules":[{"match":{},"action":{"deny":{"message":"m"}}}]}"#,
+    )
+    .unwrap();
+    let out = run_with_stdin(
+        &["mock", "claude-code", "--rules", bad.to_str().unwrap()],
+        "{}",
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("invalid mock rules"));
+
+    // A rewrite rule for a harness with no verified rewrite shape (Goose) is a
+    // loud refusal, never a silent allow — the capability gap must be visible.
+    let out = run_with_stdin(&["mock", "goose", "--rules", rules_arg], "{}");
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("cannot express the mock action `rewrite`"),
+        "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `sync --global` installs `[[hooks]]` at each harness's user-global location

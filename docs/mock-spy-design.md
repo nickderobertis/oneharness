@@ -1,6 +1,18 @@
 # Mock/spy for tool calls, shell commands, and file operations — design notes
 
-Status: **research** (2026-07-06). Consumer: the cross-harness skill-testing
+Status: **research → v1 implemented** (2026-07-06). Shipped so far:
+`oneharness mock <id>` (`domain::mock` + `src/commands/mock.rs`) with the
+deny + input-rewrite verbs, the JSONL spy log
+(`--spy-file`/`ONEHARNESS_SPY_FILE`), the `mock_rewrite` registry capability
+(claude-code/qwen `claude-nested`, crush `crush-flat`, opencode via the plugin
+shim's `updated_input` args merge), and the `oh_mock_enforce` live phases
+(claude, opencode, crush, qwen-global). Still open, in build order below:
+running the `explore-hooks` probe (settles codex/copilot/cursor rewrite and
+every result-replacement shape), result replacement (`replace`), `run
+--mock-rules` ephemeral wiring, hook-sourced `events` for the transcript-less
+harnesses, and the `mocks` report block.
+
+Consumer: the cross-harness skill-testing
 framework (`nickderobertis/skilltest`), which drives real harnesses through
 `oneharness run` and needs to (a) **spy** — observe every tool call a harness
 made — and (b) **mock** — substitute canned results for selected tool calls —

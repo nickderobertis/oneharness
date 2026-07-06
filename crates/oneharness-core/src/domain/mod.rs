@@ -8,6 +8,7 @@ pub mod events;
 pub mod gate;
 pub mod harness;
 pub mod hooks;
+pub mod mock;
 pub mod mode;
 pub mod normalize;
 pub mod report;

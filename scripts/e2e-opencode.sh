@@ -59,6 +59,13 @@ note "PASS: opencode sync enforcement"
 note "» hook enforcement: the synced plugin gate must block a marked command"
 oh_hook_enforce opencode
 
+# Mock enforcement: the synced plugin shim must APPLY a mock's `updated_input`
+# reply by merging it into the tool's mutable args before execution — the live
+# proof of the shim's rewrite path (the hermetic suite pins only the shim text),
+# and that the spy log preserves the original (pre-rewrite) event.
+note "» mock enforcement: the synced mock must rewrite a marked command's input"
+oh_mock_enforce opencode
+
 # The OpenCode plugin shim is the only harness path that BUILDS its own JSON
 # payload (every other harness pipes its native hook event straight to the gate),
 # so it is the only place session_id forwarding can silently regress — and the

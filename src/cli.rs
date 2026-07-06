@@ -91,6 +91,17 @@ pub enum Command {
     /// `[[hooks]]` hook invokes, so it is the runtime proof a synced hook is
     /// honored. Always exits 0 (a gate never blocks on its own error).
     Gate(GateArgs),
+    /// Run the mock/spy responder for a harness: read its pre-tool hook event
+    /// on stdin, append it to the spy log, and — when a `--rules` rule matches —
+    /// emit the harness's native verdict on stdout: a *deny* (the model reads
+    /// the message as tool feedback) or an *input rewrite* (the call runs with
+    /// substituted arguments, e.g. a shell command swapped for a stub printing
+    /// canned output). No match, or no rules, emits nothing (the call proceeds
+    /// — spy-only). Installed the same way as `gate`, via a `[[hooks]]` entry;
+    /// exits 0 on any post-startup fault (never blocks a call on its own
+    /// error), while a bad ruleset or an action the harness cannot express is
+    /// a loud usage error up front.
+    Mock(MockArgs),
 }
 
 #[derive(Args, Debug)]
@@ -360,6 +371,27 @@ pub struct GateArgs {
         default_value = "blocked by oneharness gate"
     )]
     pub reason: String,
+}
+
+#[derive(Args, Debug)]
+pub struct MockArgs {
+    /// Harness id whose hook protocol to speak (see `oneharness list`).
+    #[arg(value_name = "ID")]
+    pub harness: String,
+
+    /// JSON ruleset deciding which tool calls to intercept and how (first
+    /// matching rule wins): {"rules":[{"match":{"tool":…,"event_contains":…},
+    /// "action":{"deny":{"message":…}} | {"rewrite":{"input":{…}}}}]}. Without
+    /// it every call is allowed through and only spied on.
+    #[arg(long, value_name = "PATH")]
+    pub rules: Option<PathBuf>,
+
+    /// Append one JSONL record per observed hook event (the raw event plus the
+    /// action taken) to this file — the spy channel, recording the *original*
+    /// tool call even when a rewrite substituted its input. Also settable via
+    /// ONEHARNESS_SPY_FILE (the flag wins); absent means no spy log.
+    #[arg(long, value_name = "PATH")]
+    pub spy_file: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]

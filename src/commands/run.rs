@@ -1466,6 +1466,7 @@ mod tests {
             hooks: None,
             global_hook: None,
             gate_deny: None,
+            mock_rewrite: None,
             default_env: &[],
             native_schema: None,
             modes: &[],

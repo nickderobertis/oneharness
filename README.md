@@ -426,6 +426,64 @@ live e2e drives a real harness through it), not to be a policy engine — that i
 [allowlister](https://github.com/nickderobertis/allowlister)'s role, which
 consumes `oneharness-core`'s installer as a library.
 
+#### The mock/spy responder (`oneharness mock`)
+
+**`oneharness mock <id>`** is the gate's read-write sibling, for behavioral
+test suites (the [skilltest](https://github.com/nickderobertis/skilltest)
+consumer — see `docs/mock-spy-design.md`): the same stdin/stdout hook loop,
+but driven by a `--rules <file>` JSON ruleset that can **intercept** tool calls,
+not just deny them. Every observed event is also appended to a `--spy-file`
+JSONL log (or `$ONEHARNESS_SPY_FILE`) — the **spy** channel, which records the
+*original* tool call even when a rewrite substituted its input (the transcript
+`events` can only show post-rewrite reality).
+
+```jsonc
+// rules.json — first matching rule wins; no match = allow through (spy-only)
+{
+  "rules": [
+    {
+      // both criteria must hold; `tool` is the per-harness tool name,
+      // `event_contains` a substring of the raw hook event (portable)
+      "match": { "tool": "Bash", "event_contains": "git push" },
+      "action": { "deny": { "message": "pushes are mocked in this test" } }
+    },
+    {
+      "match": { "event_contains": "git status" },
+      // the mock workhorse: the call runs with substituted arguments, so the
+      // model sees exactly the canned output and the real command never runs
+      "action": { "rewrite": { "input": { "command": "printf 'nothing to commit'" } } }
+    }
+  ]
+}
+```
+
+Two actions, per-harness capability (see `supports_mock_deny` / `mock_rewrite`
+in `oneharness list`; a rule using an action the harness can't express is a
+loud usage error, never a silent allow):
+
+| harness | deny | input rewrite (`mock_rewrite`) |
+| --- | --- | --- |
+| `claude-code` | ✅ | ✅ `claude-nested` (PreToolUse `updatedInput`) |
+| `qwen` | ✅ | ✅ `claude-nested` (user-scope hooks, like its gate) |
+| `crush` | ✅ | ✅ `crush-flat` (`updated_input`, shallow-merged) |
+| `opencode` | ✅ | ✅ `opencode-shim` (the synced plugin merges the args) |
+| `codex` / `copilot` / `cursor` | ✅ | ❌ pending live verification (`explore-hooks` probe) |
+| `goose` | ✅ | ❌ its hook protocol has no rewrite verdict |
+
+Delivery is the same `[[hooks]]` loop as the gate, and is naturally ephemeral
+in a throwaway workspace — sync into a temp `--cwd` (or, for qwen's user-scope
+hooks, into a redirected `HOME`/`XDG_CONFIG_HOME` passed to both `sync
+--global` and `run --env`), and delete the sandbox afterwards:
+
+```toml
+[[hooks]]
+command = "oneharness mock {harness} --rules /tmp/ws/rules.json --spy-file /tmp/ws/spy.jsonl"
+```
+
+The rewrite path is drift-alarmed live per harness by the `oh_mock_enforce`
+e2e phases (the substituted command must run, the original must not, and the
+spy log must keep the original event).
+
 The merge is deliberately conservative:
 
 - **Unrelated keys are never touched** — objects merge per key, and only the

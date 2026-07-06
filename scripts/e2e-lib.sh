@@ -917,6 +917,112 @@ TOML
     note "PASS: $id hook enforcement"
 }
 
+# Live proof that a `oneharness mock` INPUT REWRITE is honored by the real
+# harness — the drift alarm for the per-harness rewrite verdict shape
+# (`mock_rewrite` in the registry: Claude/Qwen's `updatedInput`, Crush's
+# `updated_input`, the OpenCode shim's args merge). Only call this for a
+# harness `oneharness list` marks with a `mock_rewrite` shape.
+#
+# It syncs a hook that runs `oneharness mock <id> --rules <file> --spy-file
+# <file>`, where the ruleset rewrites the marked command (`touch ORIG…`) to a
+# different one (`touch MOCK…`), then asks the agent to run the marked command
+# under bypass and asserts:
+#   * the MOCK file exists — the rewritten input is what actually executed
+#     (this doubles as the positive control: a command demonstrably ran), and
+#   * the ORIG file does not — the original input was really substituted, and
+#   * the spy log recorded the ORIGINAL event with action `rewrite` — the spy
+#     channel preserves pre-rewrite intent end to end.
+#
+#   $1 harness id   $2 scope (project|global; default project — use global for
+#   a harness, like Qwen, that only fires user-scoped hooks headlessly)
+oh_mock_enforce() {
+    local id="$1" scope="${2:-project}"
+    local bin sandbox marker origfile mockfile rulesfile spyfile out status home
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    sandbox="$(mktemp -d)"
+    sandbox="$(oh_native_path "$sandbox")"
+    oh_sandbox_prepare "$id" "$sandbox"
+    # A real repo: some harnesses only discover project-scoped hooks inside one.
+    git init -q "$sandbox" 2>/dev/null || true
+    marker="OHMOCKORIG${RANDOM}${RANDOM}"
+    origfile="$sandbox/$marker.txt"
+    mockfile="$sandbox/ohmock-rewritten-${RANDOM}${RANDOM}.txt"
+    rulesfile="$sandbox/mock-rules.json"
+    spyfile="$sandbox/mock-spy.jsonl"
+
+    # The ruleset: rewrite the marked command to touch the MOCK file instead.
+    # Every rewrite-capable harness's shell tool takes its command in a
+    # `command` input field, so one input object serves them all.
+    cat > "$rulesfile" <<JSON
+{"rules":[{"match":{"event_contains":"$marker"},"action":{"rewrite":{"input":{"command":"touch $mockfile"},"message":"rewritten by oh_mock_enforce"}}}]}
+JSON
+
+    # The hook command is whitespace-tokenized by the OpenCode shim, so every
+    # argument (the mktemp paths included) must stay space-free — same
+    # constraint as the gate hook above.
+    cat > "$sandbox/oneharness.toml" <<TOML
+[[hooks]]
+command = "$bin mock $id --rules $rulesfile --spy-file $spyfile"
+harnesses = ["$id"]
+plugin_name = "ohmock"
+TOML
+
+    # For a global sync, point HOME/XDG at the sandbox so the install lands where
+    # the run will read it; the same env is passed to the harness via --env.
+    local sync_vars=(ONEHARNESS_NO_CONFIG=) sync_global=() run_extra=()
+    if [ "$scope" = global ]; then
+        home="$sandbox/home"
+        mkdir -p "$home"
+        sync_vars+=("HOME=$home" "XDG_CONFIG_HOME=$sandbox/xdg")
+        sync_global=(--global)
+        run_extra=(--env "HOME=$home" --env "XDG_CONFIG_HOME=$sandbox/xdg")
+    fi
+
+    note "  mock-enforce: syncing a mock hook into $id's own config ($scope scope)"
+    if ! out="$(env "${sync_vars[@]}" "$bin" sync --harness "$id" "${sync_global[@]+"${sync_global[@]}"}" \
+        --cwd "$sandbox" --config "$sandbox/oneharness.toml" --compact 2>&1)"; then
+        printf '%s\n' "$out" >&2
+        rm -rf "$sandbox"
+        fail "$id: oneharness sync failed to install the mock hook"
+    fi
+
+    note "  mock-enforce[rewrite]: the marked command must run REWRITTEN under bypass"
+    oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $origfile. Rules: you MUST actually invoke your shell tool with that exact command — never decide on your own that it is not permitted; attempt it. Use only the shell tool, and do NOT create the file by any other means." --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}"
+    status="$(oh_field '.results[0].status')"
+    if [ "$status" = "skipped" ]; then
+        rm -rf "$sandbox"
+        skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+    fi
+    if [ ! -e "$mockfile" ]; then
+        oh_dump
+        rm -rf "$sandbox"
+        fail "$id: the rewrite was NOT honored ($mockfile absent) — the mock_rewrite verdict shape is not applied (or drifted, or the hook never fired)"
+    fi
+    if [ -e "$origfile" ]; then
+        oh_dump
+        rm -rf "$sandbox"
+        fail "$id: the ORIGINAL command still ran ($origfile exists) — the rewrite did not substitute the input"
+    fi
+    note "  ok[rewrite]: the rewritten command ran and the original did not"
+
+    if ! jq -e -s 'map(select(.action == "rewrite")) | length >= 1' "$spyfile" >/dev/null 2>&1; then
+        oh_dump
+        [ -f "$spyfile" ] && head -5 "$spyfile" >&2
+        rm -rf "$sandbox"
+        fail "$id: the spy log recorded no rewrite action ($spyfile) — the spy channel is broken even though the rewrite executed"
+    fi
+    if ! grep -q "$marker" "$spyfile"; then
+        rm -rf "$sandbox"
+        fail "$id: the spy log lost the ORIGINAL command (marker $marker absent) — it must record pre-rewrite intent"
+    fi
+    note "  ok[spy]: the spy log preserved the original event"
+
+    rm -rf "$sandbox"
+    note "PASS: $id mock rewrite enforcement"
+}
+
 # --- structured output enforcement -------------------------------------------
 
 # Live proof that `oneharness run --schema` produces a schema-VALID structured

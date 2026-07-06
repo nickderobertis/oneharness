@@ -69,6 +69,19 @@ pub enum OneharnessError {
     )]
     GateUnsupported { id: String },
 
+    #[error("could not read mock rules file `{path}`: {source}")]
+    MockRulesFile {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("invalid mock rules file `{path}`: {message}")]
+    MockRulesInvalid { path: String, message: String },
+
+    #[error("harness `{id}` cannot express the mock action `{action}`, so `oneharness mock {id}` refuses this ruleset (see `mock_rewrite`/`supports_mock_deny` in `oneharness list`)")]
+    MockActionUnsupported { id: String, action: &'static str },
+
     #[error("could not write harness config `{path}`: {source}")]
     HarnessConfigWrite {
         path: String,

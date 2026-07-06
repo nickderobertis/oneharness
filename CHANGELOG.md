@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.6](https://github.com/nickderobertis/oneharness/compare/v0.3.5...v0.3.6) - 2026-07-06
+
+### Added
+
+- normalized tool-call events + streaming across the harness matrix ([#1097](https://github.com/nickderobertis/oneharness/pull/1097))
+
 ## [0.3.5](https://github.com/nickderobertis/oneharness/compare/v0.3.4...v0.3.5) - 2026-07-03
 
 ### Added

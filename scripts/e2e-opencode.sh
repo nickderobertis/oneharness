@@ -25,6 +25,17 @@ oh_assert_echoed opencode "$marker" "json:opencode-parts"
 note "» cache reporting: a second run must surface cache_read_tokens"
 oh_cache_assert opencode
 
+# Normalized tool events: OpenCode's `tool` parts become `tool_call` events, so a
+# shell-tool turn must surface at least one via `json:opencode-parts` — the live
+# drift alarm for event extraction against the real JSONL shape.
+note "» events: a tool-using turn must surface normalized tool_call events"
+oh_events_assert opencode "json:opencode-parts"
+
+# Streaming: the same events must arrive incrementally under --stream, then a
+# terminal result line — the live proof of the short-circuit path.
+note "» stream: events must arrive incrementally, then a terminal result line"
+oh_stream_assert opencode
+
 # Batch min-tokens is deliberately NOT fork-accelerated for OpenCode: although
 # OpenCode can fork, its `--fork` re-sends the branched conversation cold (measured
 # live — the fan-out reads no cache and re-writes the whole prefix, so forking

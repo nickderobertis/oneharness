@@ -50,6 +50,82 @@ fn extract_json(stdout: &str) -> Option<Extracted> {
     // not one document, so the single-parse above fails (or finds no top-level
     // text key). Its visible answer lives in `text` parts; recover it from those.
     extract_opencode_parts(stdout)
+        // Codex `exec --json` emits JSONL whose final answer is an `agent_message`
+        // item (used when `--events` upgrades codex to its JSON event stream).
+        .or_else(|| extract_codex_agent_message(stdout))
+        // Qwen `--output-format json` emits one JSON *array* of Anthropic-style
+        // messages; the answer is the last assistant message's `text` blocks.
+        .or_else(|| extract_content_block_text(stdout))
+}
+
+/// Codex `exec --json`: the final assistant text is the last `item.completed`
+/// whose `item.type == "agent_message"`, under `item.text`. `None` when no such
+/// item is present. Sourced from a real codex transcript.
+fn extract_codex_agent_message(stdout: &str) -> Option<Extracted> {
+    let mut last: Option<String> = None;
+    for value in json_lines(stdout) {
+        if value.get("type").and_then(Value::as_str) != Some("item.completed") {
+            continue;
+        }
+        let Some(item) = value.get("item") else {
+            continue;
+        };
+        if item.get("type").and_then(Value::as_str) != Some("agent_message") {
+            continue;
+        }
+        if let Some(t) = item.get("text").and_then(Value::as_str) {
+            if !t.trim().is_empty() {
+                last = Some(t.to_string());
+            }
+        }
+    }
+    last.map(|text| Extracted {
+        text,
+        source: "json:codex-agent-message".to_string(),
+    })
+}
+
+/// Anthropic content-block text (Qwen / Claude stream-json): the last assistant
+/// message's `text` blocks, joined — the visible final answer when there is no
+/// terminal `result` string. `message.content[]` (or a top-level `content[]`)
+/// entries of `type:"text"` with a non-empty `text`. `None` when none is found.
+fn extract_content_block_text(stdout: &str) -> Option<Extracted> {
+    let mut last: Option<String> = None;
+    for value in json_lines(stdout) {
+        let content = value
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .or_else(|| value.get("content"))
+            .and_then(Value::as_array);
+        let Some(blocks) = content else { continue };
+        let joined = blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|b| b.get("text").and_then(Value::as_str))
+            .filter(|t| !t.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !joined.is_empty() {
+            last = Some(joined);
+        }
+    }
+    last.map(|text| Extracted {
+        text,
+        source: "content-blocks:text".to_string(),
+    })
+}
+
+/// JSON values in `stdout`: a top-level array flattened to its elements (Qwen's
+/// `json` mode), else each parseable line (JSONL / stream-json). Mirrors
+/// `events::json_candidates` so the text and event paths see the same shapes.
+fn json_lines(stdout: &str) -> Vec<Value> {
+    if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(stdout.trim()) {
+        return items;
+    }
+    stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
+        .collect()
 }
 
 /// OpenCode's `run --format json` streams one JSON event per line. The assistant's
@@ -113,6 +189,12 @@ fn extract_stream_json(stdout: &str) -> Option<Extracted> {
             text,
             source: "stream-json:result".to_string(),
         });
+    }
+    // Qwen's stream-json carries no terminal `result` string; its answer is the
+    // last assistant message's Anthropic content-block `text`. Prefer that over a
+    // stray top-level text key from an intermediate event.
+    if let Some(extracted) = extract_content_block_text(stdout) {
+        return Some(extracted);
     }
     last.map(|(text, key)| Extracted {
         text,

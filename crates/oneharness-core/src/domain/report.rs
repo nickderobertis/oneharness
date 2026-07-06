@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::domain::batch::BatchStrategy;
+use crate::domain::events::ActionEvent;
 use crate::domain::mode::PermissionMode;
 use crate::domain::signals::Usage;
 
@@ -93,6 +94,19 @@ pub struct RunResult {
     /// Best-effort harness session id for continuation; `null` when none is
     /// exposed. (Surfaced only; oneharness does not yet consume it.)
     pub session_id: Option<String>,
+    /// Best-effort normalized tool-call / action events the harness took (shell
+    /// commands, file edits, tool uses), in order — so consumers can assert on
+    /// *behavior*, not just the final `text`. `null` when the harness's output
+    /// exposes no machine-readable trace (a plain-text harness, or Claude Code's
+    /// single-document `json` result), distinct from `[]` — an empty array is not
+    /// currently emitted; absence is signalled by `null` + a null `events_source`.
+    /// Never fabricated. See [`crate::domain::events`].
+    pub events: Option<Vec<ActionEvent>>,
+    /// How `events` was recovered (e.g. `json:opencode-parts`,
+    /// `stream-json:content-blocks`), parallel to `text_source`; `null` when no
+    /// events were found. Lets a consumer tell "harness doesn't support it" from
+    /// "no tools were used."
+    pub events_source: Option<String>,
     /// Structured-output run only: the JSON value extracted from the final
     /// answer and validated against the requested schema. `null` when no schema
     /// was requested, or when no JSON value could be extracted. Carries the

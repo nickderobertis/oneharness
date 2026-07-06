@@ -410,6 +410,32 @@ shape. When you add one:
   `usage` support matrix), also add the `oh_cache_assert <id>` phase: a second run
   within the cache TTL must surface `cache_read_tokens > 0` — the live drift alarm
   that cache-token extraction still matches the real output shape.
+- If the harness's oneharness output format carries a machine-readable **tool
+  transcript** (OpenCode's `tool` parts, or the Anthropic content-block stream a
+  `stream-json` harness emits — see `extract_events` in `domain::events` and the
+  README `events` docs), the normalized `events` array works for free once the
+  shape is recognized. A harness with a *new* transcript shape needs a recognizer
+  arm in `extract_events` (sourced from a real transcript, never guessed) plus a
+  unit test; then add the `oh_events_assert <id> <source> [run-args…]` live phase
+  — a tool-using turn must surface at least one `tool_call` event — the honoring
+  proof + drift alarm. Events need a **transcript-carrying output format**, which
+  `--events`/`--stream` selects per harness via `HarnessSpec.events_format`
+  (must not break text extraction — verified live). **Never guess a shape: source
+  it from a real transcript** — the `scripts/explore-events.sh` + dispatch-only
+  `explore-events.yml` probe dumps every harness's live output to CI logs (run it
+  from the Actions tab), which is how the current four recognizers were written;
+  re-run it when adding a harness. Coverage today
+  (all sourced, all e2e drift-alarmed): opencode (`json`, default),
+  cursor (`stream-json`, default, its own `type:"tool_call"` shape), claude-code
+  (`--events`→`stream-json`, Anthropic content blocks), codex (`--events`→`exec
+  --json`, `command_execution` items), qwen (`--events`→`stream-json`, content
+  blocks). Goose/crush/copilot emit only decorative TUI text headlessly (probe-
+  confirmed), so `events` stays `null` — correct, not a gap. Forward `--events`
+  (or `--stream`) to `oh_events_assert`/`oh_stream_assert` as a run-arg for a
+  harness whose transcript needs the upgraded format. Streaming
+  (`run --stream`, `io::runner::run_job_streaming` + `events::events_from_value`)
+  emits events incrementally so a consumer can short-circuit on bad behavior;
+  `oh_stream_assert` is its live proof. See the README *events* matrix.
 
 ## Scripts and output are context
 

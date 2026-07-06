@@ -18,6 +18,12 @@
 //!                   MOCK_STDOUT_<n> is set for that 1-based attempt) emits that
 //!                   instead of MOCK_STDOUT — used to script the structured-output
 //!                   retry loop, where attempt 1 is invalid and a later one valid.
+//!   MOCK_STREAM_DELAY_MS  if set, emit MOCK_STDOUT one line at a time, flushing
+//!                   and sleeping this many ms between lines (so a streaming
+//!                   consumer sees events arrive over time). On completion,
+//!                   append `COMPLETE\n` to MOCK_LOG_FILE; on a failed write
+//!                   (reader gone / killed mid-stream) exit WITHOUT it, so a test
+//!                   can prove an early teardown by the sentinel's absence.
 //!   MOCK_LOG_FILE   if set, an append-only run log: each invocation appends `S\n`
 //!                   when it starts (before MOCK_SLEEP_MS) and `E\n` when it ends
 //!                   (after the sleep). With a sleep that exceeds spawn latency,
@@ -93,6 +99,30 @@ fn main() {
     let stdout = attempt_stdout
         .or_else(|| std::env::var("MOCK_STDOUT").ok())
         .unwrap_or_else(|| "{\"result\":\"mock ok\"}".to_string());
+
+    // Incremental streaming mode: with MOCK_STREAM_DELAY_MS set, emit MOCK_STDOUT
+    // one line at a time, flushing and sleeping between lines — so a streaming
+    // consumer sees events arrive over time and can short-circuit mid-stream. On
+    // the FIRST write that fails (the reader — oneharness — was killed or stopped
+    // reading, or oneharness forwarded an event to a consumer that closed the
+    // pipe and then killed this child), we exit *without* writing the completion
+    // sentinel, which is how a test proves the child was torn down early. When the
+    // stream runs to completion, "COMPLETE\n" is appended to MOCK_LOG_FILE.
+    if let Ok(delay) = std::env::var("MOCK_STREAM_DELAY_MS") {
+        let delay = delay.parse::<u64>().unwrap_or(0);
+        let mut out = std::io::stdout();
+        for (i, line) in stdout.lines().enumerate() {
+            if i > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+            }
+            if writeln!(out, "{line}").is_err() || out.flush().is_err() {
+                std::process::exit(0); // reader gone — do not signal completion
+            }
+        }
+        log_line("COMPLETE\n");
+        std::process::exit(0);
+    }
+
     let _ = write!(std::io::stdout(), "{stdout}");
     let _ = std::io::stdout().flush();
 

@@ -40,6 +40,8 @@ $ oneharness run --all --prompt "Reply with the single word: pong" --model haiku
       "usage": { "input_tokens": 1234, "output_tokens": 8, "cache_read_tokens": 7, "cache_write_tokens": null, "cost_usd": 0.0095 },
       "usage_source": "json",
       "session_id": "0f3c…",
+      "events": null,
+      "events_source": null,
       "failure_kind": null,
       "failure_kind_source": null,
       "stdout": "{\"type\":\"result\",\"result\":\"pong\"…}",
@@ -525,6 +527,53 @@ more than one possible method) records how it was found:
   `--fork` (Claude Code / OpenCode) to branch independent follow-ups off one cached
   prefix. `null` for a harness that emits no id headlessly (Goose, Copilot) — their
   handle is caller-supplied, never scraped (see the support matrix).
+- `events` / `events_source` — a **normalized array of tool-call / action
+  events** the harness took, in order, so a consumer can assert on *behavior*
+  (`ran bash with a command matching /…/`, `edited exactly config.yaml`, `used ≤
+  3 tool calls`), not just the final `text`. Each entry is `{ kind, name, input,
+  output, index }`: `kind` is `tool_call` or `tool_result`, `name` is the
+  normalized tool name (`null` for a result), `input` is the structured,
+  tool-shaped arguments (so a consumer reads the command string / file path
+  without re-parsing), `output` is the observation when exposed, and `index` is
+  the position in the run. `events` is `null` (never `[]`) when the harness's
+  output carries no machine-readable trace — a plain-text harness (Codex, Goose,
+  Qwen, Crush, Copilot), or Claude Code's single-document `json` result, which
+  omits the intermediate transcript — with `events_source` then also `null`, so a
+  consumer tells "harness doesn't expose it" from "no tools were used." Like
+  `text`, it is best-effort and never fabricated; consumers needing certainty
+  parse `stdout`.
+
+  Events require the harness to run in a format that carries a **tool
+  transcript**. Some emit one in the format oneharness already uses; the rest
+  need a richer format, which **`--events`** (and `--stream`) selects
+  automatically per harness (`HarnessSpec.events_format`) without you knowing the
+  quirk — and without breaking text extraction. Every shape below was **sourced
+  from a real transcript** captured from the live CLI (never guessed) and is
+  drift-alarmed by a per-harness live e2e (`oh_events_assert`):
+
+  | harness | events via | `events_source` |
+  |---------|------------|-----------------|
+  | `opencode` | `json` (default) | `json:opencode-parts` |
+  | `cursor` | `stream-json` (default) | `stream-json:cursor-tool-calls` |
+  | `claude-code` | `--events` → `stream-json` (adds the required `--verbose`) | `stream-json:content-blocks` |
+  | `codex` | `--events` → `exec --json` | `json:codex-items` |
+  | `qwen` | `--events` → `--output-format stream-json` | `stream-json:content-blocks` |
+  | `goose`, `crush`, `copilot` | no machine-readable transcript headlessly | — (null) |
+
+  Four recognizers cover these, each harness-agnostic: OpenCode `tool` parts, the
+  Anthropic content-block shape (Claude Code + Qwen), Cursor's `tool_call`
+  events, and Codex's `command_execution` items. `goose`, `crush`, and `copilot`
+  emit only decorative TUI text headlessly (confirmed by probing the live CLIs),
+  so `events` stays `null` for them — the honest answer, not a gap.
+
+  **Streaming** (`oneharness run --stream <one harness>`) emits each event as an
+  NDJSON `{"type":"event","event":{…}}` line the instant it is observed, then a
+  terminal `{"type":"result","report":{…}}` line with the full envelope. A
+  consumer can **short-circuit** the moment it sees a disallowed action by
+  closing the stream — oneharness's next write fails (broken pipe) and it tears
+  the harness down, so a bad turn is cut off instead of paid for in full. Stream
+  runs a single harness (no batch, no `--schema`); `--stream` implies the
+  `--events` format selection.
 - `failure_kind` / `failure_kind_source` — on a non-zero run, a coarse reason
   (`auth`, `rate_limit`, `model_not_found`, `quota`) so a caller can tell a
   retryable condition from a broken request. This is **distinct from `status`**,
@@ -535,6 +584,25 @@ Coverage is keyed off each harness's documented output shape — Claude Code's
 usage), Cursor's `stream-json` — and widens as more shapes are sourced; an absent
 signal is the honest answer, not an error. Consumers that need certainty should
 parse `stdout` themselves.
+
+#### Streaming events (direction)
+
+Today `events` is delivered **at the end**, in the final report — oneharness
+spawns each harness, waits for it to exit, then normalizes the whole transcript
+at once. The `events` shape above is deliberately the same one a **streaming**
+mode will emit incrementally: the extractor is line-oriented and pure, so the
+same normalized `{ kind, name, input, output, index }` events can be surfaced as
+soon as each is observed rather than only after the run completes.
+
+The motivating consumer is behavioral skill-testing (`skilltest`): with a live
+event stream, a language test can **short-circuit the moment it observes bad
+behavior** (a forbidden `rm -rf`, an out-of-scope network call) — killing the run
+instead of paying for a full turn before judging it. Realizing that end to end is
+a staged effort beyond this field: a streaming `run` path in the runner
+(incremental read + early-terminate on the consumer's signal, single-harness and
+non-batch), then threading the stream through the language **SDKs** and the
+skilltest **plugin**. This section is the anchor for that work; the normalized
+event shape is the stable contract it will build on.
 
 ### Structured output
 

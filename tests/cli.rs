@@ -1152,6 +1152,476 @@ fn extracts_opencode_text_from_real_jsonl_transcript() {
 }
 
 #[test]
+fn normalizes_tool_events_from_opencode_jsonl() {
+    // Behavioral trace (issue #1096): OpenCode's `tool` parts become normalized
+    // `tool_call` events carrying name/input/output, in order — so a consumer can
+    // assert on what the harness *did*, not just its final text.
+    let stdout = concat!(
+        r#"{"type":"text","part":{"type":"text","text":"running it"}}"#,
+        "\n",
+        r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"git commit -m x"},"output":"OK"}}}"#,
+        "\n",
+        r#"{"type":"tool_use","part":{"type":"tool","tool":"edit","state":{"status":"completed","input":{"filePath":"config.yaml"}}}}"#,
+        "\n",
+        r#"{"type":"step_finish","part":{"type":"step-finish","cost":0.01}}"#,
+        "\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("opencode"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["events_source"], "json:opencode-parts");
+    let events = result["events"].as_array().unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["kind"], "tool_call");
+    assert_eq!(events[0]["name"], "bash");
+    assert_eq!(events[0]["input"]["command"], "git commit -m x");
+    assert_eq!(events[0]["output"], "OK");
+    assert_eq!(events[0]["index"], 0);
+    assert_eq!(events[1]["name"], "edit");
+    assert_eq!(events[1]["input"]["filePath"], "config.yaml");
+    assert!(events[1]["output"].is_null());
+    assert_eq!(events[1]["index"], 1);
+}
+
+#[test]
+fn normalizes_tool_events_from_cursor_stream_json_content_blocks() {
+    // The Anthropic content-block shape (Cursor / Claude Code under stream-json):
+    // a `tool_use` assistant block and its `tool_result` observation normalize to
+    // `tool_call` + `tool_result` events under `stream-json:content-blocks`.
+    let stdout = concat!(
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}"#,
+        "\n",
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"a.txt"}]}}"#,
+        "\n",
+        r#"{"type":"result","subtype":"success","result":"done","session_id":"11111111-2222-3333-4444-555555555555"}"#,
+        "\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "cursor",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("cursor"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["events_source"], "stream-json:content-blocks");
+    let events = result["events"].as_array().unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["kind"], "tool_call");
+    assert_eq!(events[0]["name"], "Bash");
+    assert_eq!(events[0]["input"]["command"], "ls");
+    assert_eq!(events[1]["kind"], "tool_result");
+    assert_eq!(events[1]["output"], "a.txt");
+    assert!(events[1]["name"].is_null());
+}
+
+#[test]
+fn claude_stream_json_surfaces_content_block_events() {
+    // The flagship path: Claude Code's default `json` result has no transcript,
+    // but under `--output-format stream-json` it emits the Anthropic content-block
+    // stream, which oneharness normalizes into `tool_call` / `tool_result` events.
+    // (The real CLI needs `--verbose` for this, which oneharness adds — see the
+    // build_argv test; the mock just emits the shape.)
+    let stdout = concat!(
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo hi"}}]}}"#,
+        "\n",
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"hi"}]}}"#,
+        "\n",
+        r#"{"type":"result","subtype":"success","result":"done","session_id":"sess-1"}"#,
+        "\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--output-format",
+            "stream-json",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    // oneharness added `--verbose` to the built command (required by the real CLI).
+    let command = result["command"].as_array().unwrap();
+    assert!(
+        command.iter().any(|t| t == "--verbose"),
+        "stream-json command should carry --verbose: {command:?}"
+    );
+    assert_eq!(result["events_source"], "stream-json:content-blocks");
+    let events = result["events"].as_array().unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["kind"], "tool_call");
+    assert_eq!(events[0]["name"], "Bash");
+    assert_eq!(events[0]["input"]["command"], "echo hi");
+    assert_eq!(events[1]["kind"], "tool_result");
+    assert_eq!(events[1]["output"], "hi");
+}
+
+#[test]
+fn events_flag_upgrades_claude_to_stream_json_and_surfaces_events() {
+    // `--events` selects the harness's events-capable format when its default
+    // carries no transcript: claude-code's default `json` becomes `stream-json`
+    // (with the required `--verbose`), so tool events surface without the caller
+    // knowing the quirk or passing --output-format.
+    let stdout = concat!(
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}"#,
+        "\n",
+        r#"{"type":"result","result":"done"}"#,
+        "\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--events",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    let command = result["command"].as_array().unwrap();
+    assert!(
+        command
+            .windows(2)
+            .any(|w| w[0] == "--output-format" && w[1] == "stream-json"),
+        "--events should upgrade claude to stream-json: {command:?}"
+    );
+    assert!(command.iter().any(|t| t == "--verbose"), "{command:?}");
+    assert_eq!(result["events_source"], "stream-json:content-blocks");
+    assert_eq!(result["events"][0]["name"], "Bash");
+}
+
+#[test]
+fn events_flag_respects_explicit_output_format() {
+    // An explicit --output-format always wins over the --events upgrade, so a
+    // caller can still pin the format (here json, which for claude has no
+    // transcript → events null) even with --events.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--events",
+            "--output-format",
+            "json",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"type":"result","result":"hi"}"#)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let command = value["results"][0]["command"].as_array().unwrap();
+    assert!(
+        !command.iter().any(|t| t == "stream-json"),
+        "explicit --output-format json must win: {command:?}"
+    );
+    assert!(value["results"][0]["events"].is_null());
+}
+
+#[test]
+fn stream_mode_emits_event_lines_then_a_terminal_report() {
+    // `--stream` writes one NDJSON line per normalized event as it arrives, then a
+    // terminal `{"type":"result","report":{…}}` line carrying the full envelope.
+    let stdout = concat!(
+        r#"{"type":"text","part":{"type":"text","text":"working"}}"#,
+        "\n",
+        r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"echo hi"},"output":"hi"}}}"#,
+        "\n",
+        r#"{"type":"tool_use","part":{"type":"tool","tool":"edit","state":{"input":{"filePath":"a.txt"}}}}"#,
+        "\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("opencode"),
+            "--stream",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let text = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("each stream line is JSON"))
+        .collect();
+    // Two event lines, then one result line.
+    assert_eq!(lines.len(), 3, "lines: {text}");
+    assert_eq!(lines[0]["type"], "event");
+    assert_eq!(lines[0]["event"]["kind"], "tool_call");
+    assert_eq!(lines[0]["event"]["name"], "bash");
+    assert_eq!(lines[0]["event"]["index"], 0);
+    assert_eq!(lines[1]["type"], "event");
+    assert_eq!(lines[1]["event"]["name"], "edit");
+    assert_eq!(lines[1]["event"]["index"], 1);
+    // The terminal line is the full report; its single result carries the same
+    // events array and the extracted text.
+    assert_eq!(lines[2]["type"], "result");
+    let result = &lines[2]["report"]["results"][0];
+    assert_eq!(result["events_source"], "json:opencode-parts");
+    assert_eq!(result["events"].as_array().unwrap().len(), 2);
+    assert_eq!(result["text"], "working");
+}
+
+#[test]
+fn stream_short_circuit_tears_down_the_child_when_the_consumer_closes() {
+    // The flagship streaming behavior: when the consumer stops reading (closes
+    // oneharness's stdout), oneharness's next event write fails (broken pipe) and
+    // it tears the harness child down — so a bad turn is cut off, not paid for in
+    // full. Proven deterministically: the mock streams several event lines with a
+    // delay and only writes a COMPLETE sentinel if it runs to the end. We read the
+    // first event, drop the pipe, and assert COMPLETE was never written.
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    let sentinel = std::env::temp_dir().join(format!("oh-sc-{}.log", std::process::id()));
+    let _ = std::fs::remove_file(&sentinel);
+    // Five opencode tool-part lines → five tool_call events, 300ms apart.
+    let lines: Vec<String> = (0..5)
+        .map(|i| {
+            format!(
+                r#"{{"type":"tool_use","part":{{"type":"tool","tool":"bash","state":{{"input":{{"command":"step {i}"}}}}}}}}"#
+            )
+        })
+        .collect();
+    let stdout_script = lines.join("\n");
+
+    let mut child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_STDOUT", &stdout_script)
+        .env("MOCK_STREAM_DELAY_MS", "300")
+        .env("MOCK_LOG_FILE", &sentinel)
+        .args([
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("opencode"),
+            "--stream",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn oneharness --stream");
+
+    // Read exactly the first event line, then drop the reader → close the read
+    // end of oneharness's stdout (the consumer short-circuiting).
+    let mut reader = BufReader::new(child.stdout.take().expect("piped stdout"));
+    let mut first = String::new();
+    reader.read_line(&mut first).expect("read first event line");
+    let first: Value = serde_json::from_str(first.trim()).expect("first line is JSON");
+    assert_eq!(first["type"], "event");
+    assert_eq!(first["event"]["kind"], "tool_call");
+    drop(reader); // close the pipe — the short-circuit signal
+
+    let status = child
+        .wait()
+        .expect("oneharness should exit after the pipe closes");
+    // The mock only writes COMPLETE if it streamed every line; a torn-down child
+    // never reaches it. (If short-circuit regressed, oneharness would drain all
+    // lines, the mock would finish, and COMPLETE would be present.)
+    let log = std::fs::read_to_string(&sentinel).unwrap_or_default();
+    assert!(
+        !log.contains("COMPLETE"),
+        "child was not torn down on consumer close (mock ran to completion): {log:?}"
+    );
+    // oneharness itself exits cleanly (a consumer-driven stop is not a failure).
+    assert!(
+        status.success() || status.code().is_none(),
+        "unexpected exit: {status:?}"
+    );
+    let _ = std::fs::remove_file(&sentinel);
+}
+
+#[test]
+fn stream_with_multiple_harnesses_is_a_usage_error() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--stream",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--stream runs a single harness"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn stream_with_schema_is_a_usage_error() {
+    // A schema file is needed to reach the --stream/--schema conflict check.
+    let dir = std::env::temp_dir().join(format!("oh-stream-schema-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let schema_path = dir.join("s.json");
+    std::fs::write(&schema_path, r#"{"type":"object"}"#).unwrap();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--stream",
+            "--schema",
+            schema_path.to_str().unwrap(),
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--stream is incompatible with --schema"),
+        "{stderr}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn events_flag_is_a_safe_noop_for_a_text_only_harness() {
+    // The skilltest safety property: `--events` must never break text extraction.
+    // A text-only harness (goose) has no events_format, so `--events` leaves its
+    // format (and text extraction) untouched, and `events` is honestly null — the
+    // reply still comes through. (A blanket `--output-format json` once broke
+    // exactly this; `--events` is the safe path.)
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "goose",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("goose"),
+            "--events",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", "plain text reply")],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    // Format stayed the harness default (text) — no format flag was injected.
+    let command = result["command"].as_array().unwrap();
+    assert!(
+        !command.iter().any(|t| t == "json" || t == "stream-json"),
+        "text-only harness must not be format-upgraded by --events: {command:?}"
+    );
+    assert_eq!(result["text"], "plain text reply");
+    assert!(result["events"].is_null());
+    assert!(result["events_source"].is_null());
+}
+
+#[test]
+fn events_are_extracted_from_a_nonzero_run() {
+    // Events are best-effort over whatever output a run produced — including a
+    // non-zero exit (a harness that used tools then failed). The tool trace is
+    // still lifted, so a consumer can see what ran before the failure.
+    let stdout = concat!(
+        r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"input":{"command":"boom"},"output":"err"}}}"#,
+        "\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("opencode"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout), ("MOCK_EXIT", "1")],
+    );
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["status"], "nonzero");
+    assert_eq!(result["events_source"], "json:opencode-parts");
+    assert_eq!(result["events"][0]["name"], "bash");
+    assert_eq!(result["events"][0]["input"]["command"], "boom");
+}
+
+#[test]
+fn events_absent_when_harness_exposes_no_trace() {
+    // Claude Code's single-document `json` result carries no transcript, so
+    // `events`/`events_source` stay null (absent), distinct from an empty array —
+    // never fabricated, mirroring the `text`/`usage` best-effort contract.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"type":"result","result":"hi"}"#)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert!(result["events"].is_null());
+    assert!(result["events_source"].is_null());
+}
+
+#[test]
 fn qwen_gets_yolo_suppression_env_injected() {
     // oneharness injects the harness's declared `default_env` into the child, so
     // qwen's startup YOLO warning is silenced without the caller doing anything.

@@ -16,6 +16,19 @@ marker="$(oh_marker)"
 oh_run cursor "$(oh_prompt "$marker")"
 oh_assert_echoed cursor "$marker"
 
+# Normalized tool events: Cursor's default `stream-json` carries its own
+# `type:"tool_call"` transcript (nested `shellToolCall` payload), so a shell-tool
+# turn must surface a normalized `tool_call` via `stream-json:cursor-tool-calls`
+# — the live drift alarm for the cursor recognizer (sourced from a real
+# cursor-agent transcript). No --events needed: its default already streams.
+note "» events: a tool-using turn must surface normalized tool_call events"
+oh_events_assert cursor "stream-json:cursor-tool-calls"
+
+# Streaming: Cursor's default stream-json already carries the transcript, so
+# --stream needs no --events; events must arrive incrementally, then a result line.
+note "» stream: events must arrive incrementally, then a terminal result line"
+oh_stream_assert cursor
+
 # Sync enforcement: permissions synced into .cursor/cli.json must govern the
 # real CLI without --force. Cursor's documented baseline rule is the command
 # base token (Shell(touch)), so allow and deny get their own sandboxes.

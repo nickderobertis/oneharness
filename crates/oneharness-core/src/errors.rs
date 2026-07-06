@@ -93,6 +93,9 @@ pub enum OneharnessError {
     #[error("invalid --schema: {0}")]
     Schema(String),
 
+    #[error("invalid --stream: {0}")]
+    StreamInvalid(String),
+
     #[error("could not read config file `{path}`: {source}")]
     ConfigRead {
         path: String,

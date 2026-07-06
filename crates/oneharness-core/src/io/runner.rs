@@ -291,6 +291,182 @@ fn read_all<R: std::io::Read>(reader: &mut R) -> String {
     String::from_utf8_lossy(&buf).into_owned()
 }
 
+/// What a streaming line callback asks the run to do next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamStep {
+    /// Keep reading the harness's output.
+    Continue,
+    /// Stop now and tear down the child — the consumer has gone away (e.g. a
+    /// broken stdout pipe: it short-circuited on an observed action).
+    Stop,
+}
+
+/// Run one job, invoking `on_line` for each complete line of stdout **as it
+/// arrives**, and return the same [`Capture`] the batch path would (accumulated
+/// stdout/stderr, status, timing) so the caller can still emit a final envelope.
+///
+/// This is the streaming counterpart to [`run_job`]: it exists so a consumer can
+/// observe a harness's normalized events incrementally and short-circuit the
+/// moment it sees a disallowed action — instead of paying for a whole turn before
+/// judging it. The parsing stays out of this layer: `on_line` (a pure
+/// domain-driven closure in the command layer) decides what to emit and returns
+/// [`StreamStep::Stop`] to end early (the command layer returns `Stop` when its
+/// write to the consumer fails, i.e. the consumer closed the stream). On `Stop`
+/// or timeout the child is killed; on normal EOF its exit is awaited. Never
+/// panics on harness behavior — same contract as [`run_job`].
+pub fn run_job_streaming<F>(job: &Job, mut on_line: F) -> Capture
+where
+    F: FnMut(&str) -> StreamStep,
+{
+    use std::io::BufRead;
+    use std::sync::mpsc;
+
+    let start = Instant::now();
+    let (program, args) = spawn_target(&job.argv);
+    let mut command = Command::new(program);
+    command
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(cwd) = &job.cwd {
+        command.current_dir(cwd);
+        let pwd = if cwd.is_absolute() {
+            cwd.clone()
+        } else {
+            std::env::current_dir()
+                .map(|base| base.join(cwd))
+                .unwrap_or_else(|_| cwd.clone())
+        };
+        command.env("PWD", pwd);
+    }
+    for (key, value) in &job.env {
+        command.env(key, value);
+    }
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            return Capture {
+                status: Status::SpawnError,
+                exit_code: None,
+                duration_ms: Some(start.elapsed().as_millis()),
+                stdout: String::new(),
+                stderr: String::new(),
+                error: Some(format!(
+                    "failed to spawn `{}`: {err}. Suggestion: check the binary exists and is executable (try `oneharness detect`)",
+                    job.argv[0]
+                )),
+            };
+        }
+    };
+
+    let out = child.stdout.take().expect("piped stdout");
+    let mut err = child.stderr.take().expect("piped stderr");
+    let err_reader = std::thread::spawn(move || read_all(&mut err));
+
+    // A reader thread turns blocking line reads into channel messages, so the
+    // main loop can honor the wall-clock timeout (recv_timeout) between lines
+    // without non-blocking I/O. Each message is one line *with* its terminator
+    // preserved, so the accumulated stdout is byte-faithful to the batch path.
+    let (tx, rx) = mpsc::channel::<String>();
+    let out_reader = std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(out);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break, // EOF
+                Ok(_) => {
+                    if tx.send(line).is_err() {
+                        break; // main loop gone
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let deadline = start + job.timeout;
+    let mut stdout = String::new();
+    let mut stopped = false;
+    let mut timed_out = false;
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            timed_out = true;
+            break;
+        }
+        match rx.recv_timeout(deadline - now) {
+            Ok(line) => {
+                stdout.push_str(&line);
+                // Feed the callback the line without its trailing newline(s).
+                if on_line(line.trim_end_matches(['\n', '\r'])) == StreamStep::Stop {
+                    stopped = true;
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                timed_out = true;
+                break;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break, // EOF
+        }
+    }
+
+    let (status, exit_code) = if stopped || timed_out {
+        let _ = child.kill();
+        let _ = child.wait();
+        if timed_out {
+            (Status::Timeout, None)
+        } else {
+            // Consumer-driven stop: not a harness failure. Report Ok so the
+            // (best-effort) final envelope isn't misread as an error; the
+            // consumer already has what it needed.
+            (Status::Ok, None)
+        }
+    } else {
+        match child.wait() {
+            Ok(exit) => {
+                let code = exit.code();
+                let status = if code == Some(0) {
+                    Status::Ok
+                } else {
+                    Status::Nonzero
+                };
+                (status, code)
+            }
+            Err(_) => (Status::SpawnError, None),
+        }
+    };
+
+    // Drain any remaining buffered lines the reader already had, so the final
+    // envelope's stdout is complete even if we broke out on stop/timeout.
+    let _ = out_reader.join();
+    while let Ok(line) = rx.try_recv() {
+        stdout.push_str(&line);
+    }
+    let stderr = err_reader.join().unwrap_or_default();
+
+    let error = if timed_out {
+        Some(format!(
+            "`{}` exceeded the {}s timeout and was killed. Suggestion: raise --timeout or simplify the prompt",
+            job.argv[0],
+            job.timeout.as_secs()
+        ))
+    } else {
+        None
+    };
+
+    Capture {
+        status,
+        exit_code,
+        duration_ms: Some(start.elapsed().as_millis()),
+        stdout,
+        stderr,
+        error,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,6 +532,71 @@ mod tests {
         assert_eq!(outcomes[0].attempts, 1);
         // Empty input is still the no-work fast path.
         assert!(run_jobs_with(&[], 4, |_, _, _| None).is_empty());
+    }
+
+    /// A portable job that prints three lines then exits 0 (`sh -c printf` on
+    /// Unix, `cmd /c echo` on Windows), for exercising the streaming reader.
+    fn three_line_job() -> Job {
+        #[cfg(not(windows))]
+        let argv = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "printf 'a\\nb\\nc\\n'".to_string(),
+        ];
+        #[cfg(windows)]
+        let argv = vec![
+            "cmd".to_string(),
+            "/c".to_string(),
+            "echo a& echo b& echo c".to_string(),
+        ];
+        Job {
+            argv,
+            cwd: None,
+            env: Vec::new(),
+            timeout: Duration::from_secs(10),
+        }
+    }
+
+    #[test]
+    fn streaming_delivers_each_line_and_accumulates_stdout() {
+        // The happy path: every line reaches the callback in order, and the final
+        // capture's stdout is the byte-faithful accumulation, status Ok.
+        let mut lines = Vec::new();
+        let cap = run_job_streaming(&three_line_job(), |line| {
+            lines.push(line.to_string());
+            StreamStep::Continue
+        });
+        assert_eq!(cap.status, Status::Ok);
+        assert_eq!(cap.exit_code, Some(0));
+        assert_eq!(lines.len(), 3, "got {lines:?}");
+        // Trim to tolerate any shell quirks; the content is a/b/c in order.
+        let trimmed: Vec<_> = lines.iter().map(|l| l.trim()).collect();
+        assert_eq!(trimmed, vec!["a", "b", "c"]);
+        for token in ["a", "b", "c"] {
+            assert!(cap.stdout.contains(token), "stdout: {:?}", cap.stdout);
+        }
+    }
+
+    #[test]
+    fn streaming_stops_and_tears_down_on_callback_stop() {
+        // Returning Stop after the first line ends the run immediately (the child
+        // is killed); the consumer-driven stop is reported as Ok, not a failure.
+        let mut count = 0u32;
+        let cap = run_job_streaming(&three_line_job(), |_| {
+            count += 1;
+            StreamStep::Stop
+        });
+        assert_eq!(count, 1, "should stop after the first line");
+        assert_eq!(cap.status, Status::Ok);
+    }
+
+    #[test]
+    fn streaming_spawn_error_is_data_not_a_panic() {
+        // A missing binary surfaces as a SpawnError capture, same as run_job.
+        let job = job(&["/no/such/oneharness-stream-binary"]);
+        let cap = run_job_streaming(&job, |_| StreamStep::Continue);
+        assert_eq!(cap.status, Status::SpawnError);
+        assert!(cap.error.as_deref().unwrap_or_default().contains("spawn"));
     }
 
     #[test]

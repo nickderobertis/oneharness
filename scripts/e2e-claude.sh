@@ -34,6 +34,18 @@ oh_assert_echoed claude-code "$sysmarker"
 note "» cache reporting: a second run must surface cache_read_tokens"
 oh_cache_assert claude-code
 
+# Normalized tool events: Claude Code's default single-document `json` result
+# carries no transcript, so `--events` upgrades it to `stream-json` (oneharness
+# adds the required `--verbose`), surfacing the Anthropic content-block transcript
+# as `tool_call` / `tool_result` events — the live drift alarm for that path.
+note "» events: a tool-using turn must surface normalized events (--events)"
+oh_events_assert claude-code "stream-json:content-blocks" --events
+
+# Streaming: the same events must arrive incrementally on stdout under --stream,
+# then a terminal result line — the live proof of the short-circuit path.
+note "» stream: events must arrive incrementally, then a terminal result line"
+oh_stream_assert claude-code --events
+
 # Same-prefix batch mode (fork-based min-tokens): the batch warms prompt[0] as a
 # session carrying the large shared --system, then FORKS it for the fan-out, so
 # each fanned-out call reuses the warmed cached prefix and writes less than the

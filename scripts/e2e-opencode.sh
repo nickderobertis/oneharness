@@ -102,17 +102,35 @@ TOML
         printf '%s' "$sb"
     }
 
+    # The positive control needs the model to actually run the touch — a
+    # model-behavior-dependent POSITIVE check, so retry (fresh sandbox per
+    # attempt) before failing, per oh_run_until_file's rationale. The deny PROOF
+    # below is a negative assertion and is NOT retried.
     note "  session-id[control]: a needle absent from the payload must let the touch run"
     allowfile="ohsess-allow-${RANDOM}${RANDOM}.txt"
-    sandbox="$(_oh_oc_gate_run "$allowfile" "OHSESSNEVER${RANDOM}${RANDOM}")"
-    status="$(oh_field '.results[0].status')"
-    if [ "$status" = "skipped" ]; then
+    local i=1 ctl_ok=
+    while [ "$i" -le "$OH_ACT_RETRIES" ]; do
+        sandbox="$(_oh_oc_gate_run "$allowfile" "OHSESSNEVER${RANDOM}${RANDOM}")"
+        status="$(oh_field '.results[0].status')"
+        if [ "$status" = "skipped" ]; then
+            rm -rf "$sandbox"
+            skip "opencode is not installed (oneharness reported status=skipped); nothing to verify"
+        fi
+        if [ -e "$sandbox/$allowfile" ]; then
+            ctl_ok=1
+            if [ "$i" -gt 1 ]; then
+                note "  (model acted on attempt $i/$OH_ACT_RETRIES)"
+            fi
+            break
+        fi
         rm -rf "$sandbox"
-        skip "opencode is not installed (oneharness reported status=skipped); nothing to verify"
-    fi
-    if [ ! -e "$sandbox/$allowfile" ]; then
+        if [ "$i" -lt "$OH_ACT_RETRIES" ]; then
+            note "  (attempt $i/$OH_ACT_RETRIES: model did not act; retrying)"
+        fi
+        i=$((i + 1))
+    done
+    if [ -z "$ctl_ok" ]; then
         oh_dump
-        rm -rf "$sandbox"
         fail "opencode: the positive control never ran ($allowfile absent) — cannot trust the session_id deny as a real block (does OpenCode run shell headlessly here?)"
     fi
     note "  ok[control]: the unmatched command ran"

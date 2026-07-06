@@ -438,8 +438,9 @@ static REGISTRY: &[HarnessSpec] = &[
         // `--permission-mode` covers the whole spectrum, all honored under `-p`.
         // `default` maps to `dontAsk` (deny-and-continue), not `default` (which
         // aborts on an un-allowed tool), so the ask flow never hangs headless.
-        // `read-only` is `bypassPermissions` with the mutating tools denied (deny
-        // rules win even under bypass), distinct from `plan`'s plan workflow.
+        // `read-only` is `dontAsk` (default-deny) + a read allowlist + the
+        // mutating tools *and* `Agent` denied — a hard no-mutation posture that a
+        // subagent can't route around, distinct from `plan`'s plan workflow.
         modes: &[
             mode(PermissionMode::ReadOnly, ModeHeadless::Clean),
             mode(PermissionMode::Plan, ModeHeadless::Clean),
@@ -821,12 +822,15 @@ static REGISTRY: &[HarnessSpec] = &[
 /// maps to `dontAsk` (deny any un-allowed tool and continue) rather than
 /// `default` (which *aborts* the `-p` run on an un-allowed tool): the ask flow
 /// then completes headlessly instead of failing on the first prompt. `ReadOnly`
-/// rides `bypassPermissions` (allow-all, no prompts) with the mutating tools
-/// denied separately — deny rules take precedence even under bypass.
+/// rides `dontAsk` too — a default-DENY floor, NOT `bypassPermissions` — so an
+/// unlisted write path is denied by default rather than pre-approved; the read
+/// allowlist and the mutating-tool + `Agent` denylist (see `argv_claude_code`)
+/// then make it a hard no-mutation posture, not a name-only denylist over
+/// allow-everything (a subagent could route around that — verified live).
 fn claude_permission_mode(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::Plan => "plan",
-        PermissionMode::ReadOnly => "bypassPermissions",
+        PermissionMode::ReadOnly => "dontAsk",
         PermissionMode::Default => "dontAsk",
         PermissionMode::Edit => "acceptEdits",
         PermissionMode::Auto => "auto",
@@ -843,11 +847,20 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "-p".into(), c.prompt.into()];
     a.push("--permission-mode".into());
     a.push(claude_permission_mode(c.mode).into());
-    // read-only: deny the mutating tools (Bash covers destructive shell; reads
-    // still run via Read/Grep/Glob). A bare name removes the tool entirely.
+    // read-only: on the `dontAsk` default-DENY floor, allowlist the read-only
+    // tools and deny the mutating ones *and* `Agent` — the subagent spawner. A
+    // subagent gets a fresh, writable toolset, so leaving `Agent` available lets
+    // the model delegate a write and defeat a name-only denylist (the exact
+    // route-around seen live). Deny beats allow, and un-listed tools deny by
+    // default under `dontAsk` (unlike `bypassPermissions`, which pre-approves
+    // them). A bare name removes the tool entirely.
     if c.mode == PermissionMode::ReadOnly {
+        a.push("--allowedTools".into());
+        for tool in ["Read", "Grep", "Glob"] {
+            a.push(tool.into());
+        }
         a.push("--disallowedTools".into());
-        for tool in ["Bash", "Edit", "Write", "NotebookEdit"] {
+        for tool in ["Bash", "Edit", "Write", "NotebookEdit", "Agent"] {
             a.push(tool.into());
         }
     }
@@ -1104,9 +1117,9 @@ fn argv_crush(c: &BuildCtx) -> Vec<String> {
 fn argv_copilot(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "-p".into(), prompt_with_system(c)];
     // Bypass is the allow-all trio; `plan` is the read-only plan mode;
-    // `read-only` is allow-all with `write`/`shell` denied (deny beats allow).
-    // Without any, `-p` auto-denies gated tools and continues. Unsupported modes
-    // never reach here.
+    // `read-only` allowlists `read` only (no allow-all floor), so every mutating
+    // tool auto-denies under `-p`. Without any, `-p` auto-denies gated tools and
+    // continues. Unsupported modes never reach here.
     match c.mode {
         PermissionMode::Bypass => {
             a.push("--allow-all-tools".into());
@@ -1114,12 +1127,14 @@ fn argv_copilot(c: &BuildCtx) -> Vec<String> {
             a.push("--no-ask-user".into());
         }
         PermissionMode::ReadOnly => {
-            a.push("--allow-all-tools".into());
+            // Allowlist reads only; every other tool (write/shell/…) auto-denies
+            // under `-p`. No `--allow-all-tools`, so there's no allow-everything
+            // floor for a denylist to chase — the inverse of bypass, mirroring the
+            // claude read-only fix (a name-only denylist over allow-all is
+            // route-around-able; a default-deny allowlist is not).
+            a.push("--allow-tool".into());
+            a.push("read".into());
             a.push("--allow-all-paths".into());
-            a.push("--deny-tool".into());
-            a.push("shell".into());
-            a.push("--deny-tool".into());
-            a.push("write".into());
             a.push("--no-ask-user".into());
         }
         PermissionMode::Edit => {
@@ -1271,7 +1286,10 @@ mod tests {
         let spec = by_id("claude-code").unwrap();
         for (mode, token) in [
             (PermissionMode::Plan, "plan"),
-            (PermissionMode::ReadOnly, "bypassPermissions"),
+            // read-only rides `dontAsk` (a default-DENY floor), NOT
+            // `bypassPermissions` — that's what stops an un-listed write path from
+            // being pre-approved.
+            (PermissionMode::ReadOnly, "dontAsk"),
             (PermissionMode::Default, "dontAsk"),
             (PermissionMode::Edit, "acceptEdits"),
             (PermissionMode::Auto, "auto"),
@@ -1283,14 +1301,20 @@ mod tests {
                 "mode {mode:?} should emit {token}: {argv:?}"
             );
         }
-        // read-only additionally denies the mutating tools (and only read-only
-        // does — plan/bypass leave them available to the permission system).
+        // read-only allowlists the read tools and denies the mutating ones *and*
+        // `Agent` (the subagent spawner — else a subagent's writable toolset
+        // defeats the denylist). Only read-only does this; plan/bypass leave the
+        // tools to the permission system.
         let ro = (spec.build_argv)(&ctx("claude", None, PermissionMode::ReadOnly));
+        assert!(
+            ro.windows(2).any(|w| w == ["--allowedTools", "Read"]),
+            "read-only should allowlist Read: {ro:?}"
+        );
         assert!(
             ro.windows(2).any(|w| w == ["--disallowedTools", "Bash"]),
             "read-only should deny Bash: {ro:?}"
         );
-        for tool in ["Edit", "Write", "NotebookEdit"] {
+        for tool in ["Edit", "Write", "NotebookEdit", "Agent"] {
             assert!(
                 ro.iter().any(|t| t == tool),
                 "read-only denies {tool}: {ro:?}"
@@ -1301,6 +1325,15 @@ mod tests {
                 .iter()
                 .any(|t| t == "--disallowedTools"),
             "plan should not deny tools"
+        );
+        // bypass must NOT be a denylist-over-allow-all: it stays the pure
+        // allow-everything posture, with no tool flags (the anti-pattern lived in
+        // read-only, now fixed).
+        assert!(
+            !(spec.build_argv)(&ctx("claude", None, PermissionMode::Bypass))
+                .iter()
+                .any(|t| t == "--disallowedTools" || t == "--allowedTools"),
+            "bypass should not carry tool allow/deny flags"
         );
     }
 
@@ -1336,15 +1369,12 @@ mod tests {
             ),
             ("qwen", PermissionMode::Auto, &["--approval-mode", "auto"]),
             ("copilot", PermissionMode::Plan, &["--mode", "plan"]),
+            // read-only allowlists `read` only (no allow-all floor), so writes and
+            // shell auto-deny under `-p`.
             (
                 "copilot",
                 PermissionMode::ReadOnly,
-                &["--deny-tool", "shell"],
-            ),
-            (
-                "copilot",
-                PermissionMode::ReadOnly,
-                &["--deny-tool", "write"],
+                &["--allow-tool", "read"],
             ),
             ("copilot", PermissionMode::Edit, &["--allow-tool", "write"]),
             ("cursor", PermissionMode::Plan, &["--mode", "plan"]),

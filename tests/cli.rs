@@ -351,7 +351,15 @@ fn read_only_is_distinct_from_plan_and_enforced_where_possible() {
         &[],
     );
     let c = json_stdout(&claude_ro)["results"][0]["command"].to_string();
+    // Claude read-only is a hard no-mutation posture: a default-deny floor
+    // (`dontAsk`, NOT bypass) + a read allowlist + a denylist that includes
+    // `Agent` (the subagent spawner). That combination is what stops the model
+    // routing a write around a name-only denylist via a subagent.
+    assert!(c.contains("dontAsk"), "{c}");
+    assert!(!c.contains("bypassPermissions"), "{c}");
+    assert!(c.contains("allowedTools"), "{c}");
     assert!(c.contains("disallowedTools"), "{c}");
+    assert!(c.contains("Agent"), "{c}");
 }
 
 #[test]

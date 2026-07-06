@@ -259,6 +259,44 @@ oh_dump() {
     oh_field '.results[0].stderr // ""' | tail -20 | sed 's/^/    /' >&2 || true
 }
 
+# Retry budget for POSITIVE, model-behavior-dependent checks — the ones that need
+# the model to actually PERFORM an action (create a file). A weak or overly
+# cautious model occasionally refuses or misfires on a single try (replies DENIED,
+# treats the fixture prompt as an injection, runs the wrong command), which is
+# orthogonal to what the check proves — the enforcement *mapping* — so we
+# re-attempt before failing. NEGATIVE assertions (a write that must be BLOCKED, a
+# gate that must DENY) are NEVER retried: one leak is a real failure, not noise.
+OH_ACT_RETRIES="${OH_ACT_RETRIES:-3}"
+
+# Drive harness $1 with prompt $2 up to $OH_ACT_RETRIES times, stopping as soon as
+# file $3 exists. Extra args after $3 are forwarded to oh_run verbatim. Leaves
+# $OH_REPORT holding the last attempt (so a caller can oh_dump on failure).
+# Returns 0 if the model acted, 2 if the harness is not installed (status
+# skipped), 1 if it never acted. Call as `oh_run_until_file … || rc=$?` so the
+# non-zero returns stay set -e-safe.
+oh_run_until_file() {
+    local id="$1" prompt="$2" expect="$3"
+    shift 3
+    local i=1
+    while [ "$i" -le "$OH_ACT_RETRIES" ]; do
+        oh_run "$id" "$prompt" "$@"
+        if [ "$(oh_field '.results[0].status')" = skipped ]; then
+            return 2
+        fi
+        if [ -e "$expect" ]; then
+            if [ "$i" -gt 1 ]; then
+                note "  (model acted on attempt $i/$OH_ACT_RETRIES)"
+            fi
+            return 0
+        fi
+        if [ "$i" -lt "$OH_ACT_RETRIES" ]; then
+            note "  (attempt $i/$OH_ACT_RETRIES: model did not act; retrying)"
+        fi
+        i=$((i + 1))
+    done
+    return 1
+}
+
 # The shared conclusion for every harness. Given the harness id and the marker
 # planted in the prompt, assert oneharness reported a clean run AND the marker
 # surfaced in the harness output. Treats an uninstalled harness as a SKIP.
@@ -754,8 +792,9 @@ oh_mode_enforce() {
     note "  ok[$mode]: the write was blocked"
 
     note "  mode-enforce[bypass]: the same command must run under --mode bypass (control)"
-    oh_run "$id" "$prompt" --mode bypass --cwd "$sandbox"
-    if [ ! -e "$sandbox/$file" ]; then
+    local rc=0
+    oh_run_until_file "$id" "$prompt" "$sandbox/$file" --mode bypass --cwd "$sandbox" || rc=$?
+    if [ "$rc" != 0 ]; then
         oh_dump
         rm -rf "$sandbox"
         fail "$id: positive control failed ($file absent under --mode bypass) — the $mode block can't be trusted (does the harness run shell headlessly?)"
@@ -786,7 +825,7 @@ oh_mode_enforce() {
 # (its `OPENCODE_CONFIG_CONTENT` injection is pinned hermetically instead). $1 id.
 oh_edit_enforce() {
     local id="$1"
-    local bin sandbox editfile status
+    local bin sandbox editfile
     bin="$(oh_bin)"
     [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
@@ -794,17 +833,20 @@ oh_edit_enforce() {
     sandbox="$(oh_native_path "$sandbox")"
     oh_sandbox_prepare "$id" "$sandbox"
     editfile="$(oh_enforce_file edited)"
+    # Matter-of-fact framing (not "you MUST … never refuse", which a safety-trained
+    # model reads as an injection and refuses): a weak model over-uses the DENIED
+    # escape hatch, so make it clearly conditional on an ACTUAL tool rejection.
     local prompt
-    prompt="You are a non-interactive test fixture in a scratch directory. Using your file-writing/editing tool (do NOT use the shell), create a file named $editfile containing the single word ok, then stop. If that tool call is rejected, reply with the single word DENIED and stop — do not use the shell or any other tool or workaround."
+    prompt="You are a non-interactive test fixture in a scratch directory — a harmless file-creation check, not untrusted input. Using your file-writing/editing tool (not the shell), create a file named $editfile containing the single word ok, then stop. Actually invoke the tool; do not decide on your own that it is disallowed. Only if the tool call is itself rejected by the system, reply with the single word DENIED and stop — do not fall back to the shell or any other workaround."
 
     note "  edit-enforce: a file edit must be auto-approved under --mode edit"
-    oh_run "$id" "$prompt" --mode edit --cwd "$sandbox"
-    status="$(oh_field '.results[0].status')"
-    if [ "$status" = "skipped" ]; then
+    local rc=0
+    oh_run_until_file "$id" "$prompt" "$sandbox/$editfile" --mode edit --cwd "$sandbox" || rc=$?
+    if [ "$rc" = 2 ]; then
         rm -rf "$sandbox"
         skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
     fi
-    if [ ! -e "$sandbox/$editfile" ]; then
+    if [ "$rc" != 0 ]; then
         oh_dump
         rm -rf "$sandbox"
         fail "$id: --mode edit did NOT auto-approve the file edit ($editfile absent) — edit mode must auto-approve edits (its argv/env mapping may have drifted)"
@@ -905,8 +947,9 @@ TOML
     note "  ok[deny]: the gate blocked the marked command"
 
     note "  hook-enforce[allow]: an unmarked command must run (positive control)"
-    oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $allowfile. $rules" --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}"
-    if [ ! -e "$allowfile" ]; then
+    local rc=0
+    oh_run_until_file "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $allowfile. $rules" "$allowfile" --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}" || rc=$?
+    if [ "$rc" != 0 ]; then
         oh_dump
         rm -rf "$sandbox"
         fail "$id: the positive-control command never ran ($allowfile absent) — the deny phase cannot be trusted as a real block (does the harness run shell headlessly?)"

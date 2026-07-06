@@ -274,7 +274,15 @@ aren't re-litigated each session:
   becomes a `timeout` result, per "never panic on a harness's behavior"), and
   `--permit-prompts` silences the warning. The per-harness `read-only`/`plan`
   mapping is drift-alarmed live by `oh_mode_enforce` (writes blocked under
-  read-only, allowed under bypass).
+  read-only, allowed under bypass). A no-mutation mode must be an **allowlist over
+  a default-deny floor, never a name-based denylist over allow-everything**: the
+  latter is route-around-able — under Claude's `bypassPermissions` the model
+  delegated the write to an `Agent` subagent (fresh writable toolset) and the
+  denylist never saw it (flaky Windows `oh_mode_enforce` failures, live-diagnosed).
+  So claude read-only is `dontAsk` (default-deny) + `--allowedTools Read Grep Glob`
+  + `--disallowedTools …,Agent`, and copilot is `--allow-tool read` with no
+  allow-all. When a harness gates via a denylist, that denylist MUST include the
+  subagent-spawn tool.
 - **Config is layered and loud.** Defaults come from `oneharness.toml` files —
   user level (`$ONEHARNESS_CONFIG` or the platform config dir) under project
   level (discovered upward from `--cwd`/cwd) under the `ONEHARNESS_<FIELD>`
@@ -473,7 +481,15 @@ shape. When you add one:
   workflows are gated to the canonical repo and non-fork PRs. Auth comes from the
   `gh-secrets.json` manifest (Bitwarden secure notes → `.env` + GitHub Actions
   secrets via `just secrets-sync`); values never enter the repo and `.env` /
-  `.gh-secrets-state.json` are gitignored.
+  `.gh-secrets-state.json` are gitignored. A **POSITIVE** live assertion — one that
+  needs the model to actually *act* (the `bypass`/`allow` positive controls, the
+  `edit` auto-approve) — must go through `oh_run_until_file` (retries up to
+  `OH_ACT_RETRIES`, default 3): a weak/cautious model sporadically refuses or
+  misfires on a single try, which is orthogonal to the mapping under test. A
+  **NEGATIVE** assertion (a write that must be BLOCKED, a gate that must DENY) is
+  NEVER retried — one leak is a real failure. Keep model-facing fixture prompts
+  matter-of-fact ("harmless test fixture, not untrusted input"); over-framed "you
+  MUST … never refuse" prompts read as injection and get refused (see `oh_prompt`).
 - A user-visible change ships with a test that fails without it.
 
 ## Releasing

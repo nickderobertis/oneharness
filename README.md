@@ -808,9 +808,12 @@ synced so the prompt never fires.
 ✓ supported & clean headless · ⚠ supported but may block on a prompt headlessly
 (warns + runs; `--timeout` backstops, `--permit-prompts` silences the warning) ·
 — unsupported (refused). `read-only` is **enforced** where marked — ˢ Codex's
-read-only sandbox (OS-enforced), ᵈ deny rules (Claude's `--disallowedTools Bash
-Edit Write NotebookEdit`, Copilot's `--deny-tool shell/write` — deny beats
-allow) — and ᵖ behavioral where its only mechanism is the plan agent (OpenCode
+read-only sandbox (OS-enforced), ᵈ an allowlist over a default-deny floor
+(Claude's `dontAsk` + `--allowedTools Read Grep Glob` + `--disallowedTools Bash
+Edit Write NotebookEdit Agent`; Copilot's `--allow-tool read` with no allow-all)
+— so an un-listed write path, *including a subagent* (`Agent`), is denied by
+default rather than pre-approved, which a name-only denylist over allow-all is
+not (a subagent routes around it) — and ᵖ behavioral where its only mechanism is the plan agent (OpenCode
 `--agent plan`, Qwen `--approval-mode plan`, so `read-only` and `plan` coincide
 there). Cursor's `read-only` is native `--mode ask`. Codex has no *native* plan
 mode in `exec`, so `plan` (ⁱ) is synthesized — the read-only sandbox enforces

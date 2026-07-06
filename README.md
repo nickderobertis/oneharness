@@ -472,19 +472,48 @@ loud usage error, never a silent allow):
 | `copilot` | ✅* | ❌ probe-refuted: its repo hooks produced **zero events** headlessly (`-p`), so neither verb can fire through `oneharness run` today |
 | `goose` | ✅ | ❌ its hook protocol has no rewrite verdict |
 
-Delivery is the same `[[hooks]]` loop as the gate, and is naturally ephemeral
-in a throwaway workspace — sync into a temp `--cwd` (or, for qwen's user-scope
-hooks, into a redirected `HOME`/`XDG_CONFIG_HOME` passed to both `sync
---global` and `run --env`), and delete the sandbox afterwards:
+**The single-flag path — `run --mock-rules` (and/or `--spy-file`)** delivers
+the hook **for one invocation**, works in an *original* workspace whose
+existing config keeps applying (the mock is layered on top), and leaves no
+trace afterwards:
+
+```console
+$ oneharness run --harness claude-code --cwd ~/proj \
+    --mock-rules rules.json --spy-file spy.jsonl --prompt "…"
+```
+
+Per-harness delivery (all live-verified; see `mock_delivery` in the registry):
+Claude Code takes the hook **on the argv** via a per-run `--settings` temp
+file — zero workspace mutation, project/user settings untouched and still in
+effect. The others get a **project-scope install through the non-destructive
+merge** (existing hooks and unrelated keys preserved), with every touched file
+snapshotted before and restored byte-identically after the run — files the
+install created are deleted, directories it created are pruned. Codex's
+hook-engine opt-in flags (`-c features.hooks=true
+--dangerously-bypass-hook-trust`) are appended to its argv automatically.
+`--spy-file` alone (no ruleset) installs a pure observer. A selected harness
+whose hooks can't fire this way is refused loudly before anything is touched:
+qwen (user-scope-only hooks — use the `sync --global` + redirected-HOME
+pattern instead) and copilot (hooks never fire headlessly). The report records
+`mock_rules` and `spy_file` so a mocked run is distinguishable from a clean
+one. One caveat: the restore runs on the normal exit path, so a hard kill
+(SIGKILL) mid-run can leave the hook installed — re-running any oneharness
+mock/sync in that workspace, or `git checkout`, puts it back; prefer throwaway
+workspaces for suites.
+
+**The standing-policy path** — a `[[hooks]]` entry synced into the harness's
+own config — remains available for policies that should persist (and is how
+qwen's user-scope delivery works):
 
 ```toml
 [[hooks]]
 command = "oneharness mock {harness} --rules /tmp/ws/rules.json --spy-file /tmp/ws/spy.jsonl"
 ```
 
-The rewrite path is drift-alarmed live per harness by the `oh_mock_enforce`
-e2e phases (the substituted command must run, the original must not, and the
-spy log must keep the original event).
+The rewrite path AND the ephemeral delivery are drift-alarmed live per harness
+by the `oh_mock_enforce` e2e phases (driven through `run --mock-rules`: the
+substituted command must run, the original must not, the spy log must keep the
+original event, and the workspace must carry no trace of the hook afterwards).
 
 The merge is deliberately conservative:
 

@@ -73,12 +73,12 @@ note "PASS: claude-code sync enforcement"
 note "» hook enforcement: the synced gate must block a marked command"
 oh_hook_enforce claude-code
 
-# Mock enforcement: a synced `[[hooks]]` mock (oneharness mock claude-code) must
-# REWRITE a marked command's input via PreToolUse `updatedInput`, so the
-# substituted command runs instead of the original — the live proof the
-# mock_rewrite verdict shape is honored, and that the spy log preserves the
-# original (pre-rewrite) event.
-note "» mock enforcement: the synced mock must rewrite a marked command's input"
+# Mock enforcement: `run --mock-rules` must REWRITE a marked command's input
+# via PreToolUse `updatedInput` — delivered for this run only on the argv
+# (--settings, zero workspace mutation; probe-verified that -p loads hooks from
+# it) — so the substituted command runs instead of the original, the spy log
+# preserves the original event, and the workspace is left untouched.
+note "» mock enforcement: run --mock-rules must rewrite a marked command's input"
 oh_mock_enforce claude-code
 
 # Approval-mode enforcement: the no-mutation modes (`read-only` =

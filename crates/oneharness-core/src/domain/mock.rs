@@ -64,6 +64,58 @@ impl RewriteShape {
     }
 }
 
+/// How `run --mock-rules` / `run --spy-file` delivers the mock hook to this
+/// harness **for one invocation** — the single-flag ephemeral path. Every
+/// variant is live-verified; `None` (qwen: project hooks don't fire headlessly;
+/// copilot: hooks never fire headlessly at all) makes the flag a loud usage
+/// error for the harness, never a silently inert install.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MockDelivery {
+    /// The hook rides the argv via a per-run settings flag (Claude Code's
+    /// `--settings <file>`, probe-verified to load hooks headlessly): zero
+    /// workspace mutation — existing project/user config still applies, the
+    /// mock hook is layered on top for this invocation only.
+    SettingsFlag { flag: &'static str },
+    /// The hook is installed into the project-scope config in the working
+    /// directory via the non-destructive merge (existing keys and hooks
+    /// preserved — layered on top), with every touched file snapshotted first
+    /// and restored after the run. `extra_args` are appended to the harness's
+    /// argv — how Codex's hooks engine is opted in per invocation.
+    ProjectHooks { extra_args: &'static [&'static str] },
+}
+
+/// Render the hook command an installed mock hook runs: this binary's `mock`
+/// verb with the ruleset and spy log wired in. Paths are embedded verbatim, so
+/// the caller must have refused whitespace-bearing ones first (the OpenCode
+/// shim tokenizes the command on spaces, and shell-run hooks would split too).
+pub fn hook_command(exe: &str, id: &str, rules: Option<&str>, spy: Option<&str>) -> String {
+    let mut command = format!("{exe} mock {id}");
+    if let Some(rules) = rules {
+        command.push_str(" --rules ");
+        command.push_str(rules);
+    }
+    if let Some(spy) = spy {
+        command.push_str(" --spy-file ");
+        command.push_str(spy);
+    }
+    command
+}
+
+/// The settings JSON a [`MockDelivery::SettingsFlag`] harness receives: a
+/// PreToolUse hook (no matcher — every tool) invoking `command`. Exactly the
+/// shape the explore-hooks probe verified Claude Code loads from a per-run
+/// `--settings` file.
+pub fn settings_hooks_json(command: &str) -> String {
+    json!({
+        "hooks": {
+            "PreToolUse": [
+                { "hooks": [ { "type": "command", "command": command } ] }
+            ]
+        }
+    })
+    .to_string()
+}
+
 /// A parsed mock ruleset: the first rule whose `match` covers the event wins.
 /// Deserialized from the JSON file `oneharness mock --rules <path>` reads;
 /// unknown fields are rejected loudly (a typo must never become a silent
@@ -465,6 +517,38 @@ mod tests {
         assert_eq!(
             cursor,
             json!({"permission": "allow", "updated_input": {"command": "printf mocked"}})
+        );
+    }
+
+    #[test]
+    fn hook_command_wires_rules_and_spy() {
+        assert_eq!(
+            hook_command("/bin/oh", "crush", Some("/w/r.json"), Some("/w/s.jsonl")),
+            "/bin/oh mock crush --rules /w/r.json --spy-file /w/s.jsonl"
+        );
+        // Spy-only (no rules): a pure observer hook.
+        assert_eq!(
+            hook_command("/bin/oh", "goose", None, Some("/w/s.jsonl")),
+            "/bin/oh mock goose --spy-file /w/s.jsonl"
+        );
+        assert_eq!(
+            hook_command("oh", "claude-code", Some("r.json"), None),
+            "oh mock claude-code --rules r.json"
+        );
+    }
+
+    #[test]
+    fn settings_hooks_json_matches_the_probe_verified_shape() {
+        let v: Value = serde_json::from_str(&settings_hooks_json("oh mock claude-code")).unwrap();
+        assert_eq!(
+            v,
+            json!({
+                "hooks": {
+                    "PreToolUse": [
+                        { "hooks": [ { "type": "command", "command": "oh mock claude-code" } ] }
+                    ]
+                }
+            })
         );
     }
 

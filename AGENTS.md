@@ -132,9 +132,17 @@ Use the `just` recipes; do not hand-roll equivalents.
   documented PostToolUse `updatedToolOutput` replacement was also
   probe-refuted — fired, ignored — so there is no `replace` verb yet; opencode
   after-hook replacement is probe-verified and is where `replace` starts).
-  `oh_mock_enforce` is its live drift alarm, and it retries once when the spy
-  log is empty (an agent refusal — the hook never fired — is flakiness, not
-  verdict drift).
+  `run --mock-rules <file>` / `run --spy-file <file>` is the single-flag
+  ephemeral delivery: per-run argv for claude-code (`--settings` temp file,
+  zero mutation), a snapshot-and-restore project-scope install for the rest
+  (layers onto existing config via the non-destructive merge; created files
+  deleted, created dirs pruned — `io::hooks::HookSnapshot`), codex's opt-in
+  flags auto-appended (`MockDelivery` in the registry); qwen/copilot are
+  refused loudly (no headless-capable delivery). `oh_mock_enforce` is the live
+  drift alarm for both the verdict shape and the ephemeral delivery (it drives
+  `run --mock-rules` and asserts zero residue), and it retries once when the
+  spy log is empty (an agent refusal — the hook never fired — is flakiness,
+  not verdict drift).
 - **Structured output** (`run --schema <file>`): constrain each harness's final
   answer to a JSON Schema, validate it (the `jsonschema` crate, pinned
   `default-features = false` so it stays offline), and re-prompt on failure up to

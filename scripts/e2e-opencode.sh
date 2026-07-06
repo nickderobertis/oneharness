@@ -59,11 +59,12 @@ note "PASS: opencode sync enforcement"
 note "» hook enforcement: the synced plugin gate must block a marked command"
 oh_hook_enforce opencode
 
-# Mock enforcement: the synced plugin shim must APPLY a mock's `updated_input`
+# Mock enforcement: `run --mock-rules` installs the plugin shim ephemerally
+# (restored afterwards) and the shim must APPLY the mock's `updated_input`
 # reply by merging it into the tool's mutable args before execution — the live
 # proof of the shim's rewrite path (the hermetic suite pins only the shim text),
 # and that the spy log preserves the original (pre-rewrite) event.
-note "» mock enforcement: the synced mock must rewrite a marked command's input"
+note "» mock enforcement: run --mock-rules must rewrite a marked command's input"
 oh_mock_enforce opencode
 
 # The OpenCode plugin shim is the only harness path that BUILDS its own JSON

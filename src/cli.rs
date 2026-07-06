@@ -184,6 +184,28 @@ pub struct RunArgs {
     #[arg(long)]
     pub stream: bool,
 
+    /// Mock/spy the selected harnesses' tool calls FOR THIS RUN ONLY: a JSON
+    /// ruleset (same format as `oneharness mock --rules`) whose matching rules
+    /// deny a call or rewrite its input. Delivery is ephemeral and layers on
+    /// top of any existing workspace config: Claude Code takes the hook on the
+    /// argv (--settings, zero file mutation); the other harnesses get a
+    /// project-scope install via the non-destructive merge, snapshotted and
+    /// restored after the run (Codex's hook-engine opt-in flags are appended
+    /// automatically). A selected harness whose hooks cannot fire this way
+    /// (qwen, copilot), or a rule action it cannot express, is a loud usage
+    /// error before anything spawns.
+    #[arg(long, value_name = "PATH", conflicts_with = "print_command")]
+    pub mock_rules: Option<PathBuf>,
+
+    /// Append one JSONL record per observed tool call (the raw hook event plus
+    /// the action taken) to this file — the spy channel, recording the
+    /// original call even when a rewrite substituted its input. Works with or
+    /// without --mock-rules (alone it is a pure observer: every call allowed
+    /// through, all of them recorded). Same ephemeral delivery as
+    /// --mock-rules.
+    #[arg(long, value_name = "PATH", conflicts_with = "print_command")]
+    pub spy_file: Option<PathBuf>,
+
     /// Constrain each harness's final answer to this JSON Schema file
     /// (structured output). The schema is delivered natively where the harness
     /// supports it (Claude Code's --json-schema) and via the prompt otherwise;

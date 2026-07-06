@@ -10,7 +10,7 @@
 
 use crate::domain::gate::DenyShape;
 use crate::domain::hooks::HookShape;
-use crate::domain::mock::RewriteShape;
+use crate::domain::mock::{MockDelivery, RewriteShape};
 use crate::domain::mode::{ModeHeadless, PermissionMode};
 use crate::domain::report::OutputFormat;
 use crate::domain::structured::NativeSchema;
@@ -165,6 +165,15 @@ pub struct HarnessSpec {
     /// loud usage error, never a silent allow. Sourced from each CLI's hook
     /// docs; honored-live is drift-alarmed by the `oh_mock_enforce` e2e phases.
     pub mock_rewrite: Option<RewriteShape>,
+    /// How `run --mock-rules`/`run --spy-file` delivers the mock hook for ONE
+    /// invocation (see [`MockDelivery`]): Claude Code takes it on the argv via
+    /// `--settings` (zero workspace mutation); the rest get a project-scope
+    /// install that is snapshotted and restored around the run, layering on top
+    /// of any existing config non-destructively. `None` for a harness whose
+    /// hooks cannot fire from a project-scope headless run (qwen: user scope
+    /// only; copilot: probe-refuted entirely) — the flag is then a loud usage
+    /// error, never a silently inert install.
+    pub mock_delivery: Option<MockDelivery>,
     /// Environment variables oneharness sets when spawning this harness, so a
     /// headless run is clean without the caller knowing the harness's quirks
     /// (e.g. silencing a startup warning that would otherwise litter `stderr`).
@@ -462,6 +471,9 @@ static REGISTRY: &[HarnessSpec] = &[
         // PreToolUse output: `permissionDecision: "allow"` + `updatedInput`
         // (the documented input-rewrite verdict; docs/mock-spy-design.md).
         mock_rewrite: Some(RewriteShape::ClaudeNested),
+        // Probe-verified: hooks load from a per-run `--settings <file>` in `-p`
+        // mode — the zero-mutation delivery (existing config still applies).
+        mock_delivery: Some(MockDelivery::SettingsFlag { flag: "--settings" }),
         default_env: &[],
         native_schema: Some(NativeSchema::ClaudeJsonSchema),
         // `--permission-mode` covers the whole spectrum, all honored under `-p`.
@@ -516,6 +528,15 @@ static REGISTRY: &[HarnessSpec] = &[
         // passes them per run (config `args` / `--` passthrough), as the
         // `oh_mock_enforce codex` phase does.
         mock_rewrite: Some(RewriteShape::ClaudeNested),
+        // Project .codex/hooks.json, restored after the run; the opt-in flags
+        // the probe proved necessary are auto-appended to the argv.
+        mock_delivery: Some(MockDelivery::ProjectHooks {
+            extra_args: &[
+                "-c",
+                "features.hooks=true",
+                "--dangerously-bypass-hook-trust",
+            ],
+        }),
         default_env: &[],
         // Codex `exec` *does* have a native schema flag (`--output-schema <file>`),
         // but it takes a schema FILE (not inline) and is reportedly ignored once
@@ -583,6 +604,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // the tool's mutable `args` at `tool.execute.before` (the officially
         // documented mutation point of OpenCode's plugin API).
         mock_rewrite: Some(RewriteShape::OpencodeShim),
+        mock_delivery: Some(MockDelivery::ProjectHooks { extra_args: &[] }),
         default_env: &[],
         native_schema: None,
         // The built-in `plan` agent is read-only, so `plan` and `read-only` both
@@ -640,6 +662,8 @@ static REGISTRY: &[HarnessSpec] = &[
         // Goose hooks can only block (exit 2 / `decision: "block"`); its
         // protocol has no input-rewrite verdict — deny is its mock ceiling.
         mock_rewrite: None,
+        // Deny/spy rules still deliver (its project plugin hooks fire live).
+        mock_delivery: Some(MockDelivery::ProjectHooks { extra_args: &[] }),
         default_env: &[],
         native_schema: None,
         // Goose has no mode flag on `goose run`; the mode is the `GOOSE_MODE`
@@ -714,6 +738,11 @@ static REGISTRY: &[HarnessSpec] = &[
         // the measured-not-guessed rule until the explore-hooks probe sources a
         // shape qwen actually applies; `oneharness mock qwen` is deny-only.
         mock_rewrite: None,
+        // Qwen fires only *user*-scoped hooks headlessly (project hooks sit
+        // behind folder trust), so a project-scope one-shot install would be
+        // silently inert — refused loudly; use `sync --global` into a
+        // redirected HOME instead (the oh_hook_enforce qwen pattern).
+        mock_delivery: None,
         default_env: &[("QWEN_CODE_SUPPRESS_YOLO_WARNING", "1")],
         native_schema: None,
         // `--approval-mode` spans the whole spectrum, all clean headless: current
@@ -767,6 +796,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // Crush's PreToolUse stdout documents `updated_input` (a shallow-merge
         // patch of the tool input) beside `decision: "allow"`.
         mock_rewrite: Some(RewriteShape::CrushFlat),
+        mock_delivery: Some(MockDelivery::ProjectHooks { extra_args: &[] }),
         default_env: &[],
         native_schema: None,
         // `crush run` auto-approves the whole session, so it never hangs — but it
@@ -809,6 +839,9 @@ static REGISTRY: &[HarnessSpec] = &[
         // docs demonstrating `-p` hooks. With no hook firing there is nothing
         // to rewrite; absent until a live run shows its hooks loading at all.
         mock_rewrite: None,
+        // No hook has ever fired headlessly (probe: zero events) — nothing any
+        // delivery could make the CLI run, so the flag is refused loudly.
+        mock_delivery: None,
         default_env: &[],
         native_schema: None,
         // `--mode plan` is a real read-only plan mode; `read-only` is allow-all
@@ -876,6 +909,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // subsequent before/afterShellExecution events. The `preToolUse` event
         // is wired into the hook binding above for exactly this.
         mock_rewrite: Some(RewriteShape::CursorPermission),
+        mock_delivery: Some(MockDelivery::ProjectHooks { extra_args: &[] }),
         default_env: &[],
         native_schema: None,
         // `--mode plan` is the read-only plan mode; `--mode ask` is read-only
@@ -1320,6 +1354,35 @@ mod tests {
         assert_eq!(shape("cursor"), Some(RewriteShape::CursorPermission));
         for id in ["goose", "qwen", "copilot"] {
             assert_eq!(shape(id), None, "{id} must stay absent until verified");
+        }
+        // The one-shot delivery (`run --mock-rules`): claude rides the argv,
+        // qwen (user-scope-only hooks) and copilot (hooks never fire) are
+        // refused, codex auto-appends its probe-proven opt-in flags, the rest
+        // are plain project installs.
+        let delivery = |id: &str| by_id(id).unwrap().mock_delivery;
+        assert_eq!(
+            delivery("claude-code"),
+            Some(MockDelivery::SettingsFlag { flag: "--settings" })
+        );
+        assert_eq!(
+            delivery("codex"),
+            Some(MockDelivery::ProjectHooks {
+                extra_args: &[
+                    "-c",
+                    "features.hooks=true",
+                    "--dangerously-bypass-hook-trust",
+                ],
+            })
+        );
+        for id in ["opencode", "goose", "crush", "cursor"] {
+            assert_eq!(
+                delivery(id),
+                Some(MockDelivery::ProjectHooks { extra_args: &[] }),
+                "{id}"
+            );
+        }
+        for id in ["qwen", "copilot"] {
+            assert_eq!(delivery(id), None, "{id} must be refused loudly");
         }
         for h in all() {
             if h.mock_rewrite.is_some() {

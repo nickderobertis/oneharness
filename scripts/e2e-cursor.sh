@@ -56,10 +56,12 @@ else
     note "» hook enforcement: the synced gate must block a marked command"
     oh_hook_enforce cursor
 
-    # Mock enforcement: cursor honors `{"permission":"allow","updated_input":…}`
-    # on its `preToolUse` event (probe-verified headlessly 2026-07-06); the hook
-    # binding wires preToolUse alongside the three before* events for this.
-    note "» mock enforcement: the synced mock must rewrite a marked command's input"
+    # Mock enforcement: `run --mock-rules` installs .cursor/hooks.json
+    # ephemerally (restored afterwards); cursor honors
+    # `{"permission":"allow","updated_input":…}` on its `preToolUse` event
+    # (probe-verified headlessly 2026-07-06), which the hook binding wires
+    # alongside the three before* events.
+    note "» mock enforcement: run --mock-rules must rewrite a marked command's input"
     oh_mock_enforce cursor
 fi
 

@@ -919,33 +919,25 @@ TOML
     note "PASS: $id hook enforcement"
 }
 
-# Live proof that a `oneharness mock` INPUT REWRITE is honored by the real
-# harness — the drift alarm for the per-harness rewrite verdict shape
-# (`mock_rewrite` in the registry: Claude/Qwen's `updatedInput`, Crush's
-# `updated_input`, the OpenCode shim's args merge). Only call this for a
-# harness `oneharness list` marks with a `mock_rewrite` shape.
-#
-# It syncs a hook that runs `oneharness mock <id> --rules <file> --spy-file
-# <file>`, where the ruleset rewrites the marked command (`touch ORIG…`) to a
-# different one (`touch MOCK…`), then asks the agent to run the marked command
-# under bypass and asserts:
+# Live proof that `run --mock-rules` — the single-flag ephemeral mock — is
+# honored end to end by the real harness: the hook is delivered for THIS run
+# only (claude: a per-run --settings temp file; the rest: a project-scope
+# install snapshotted and restored; codex: its hook-engine opt-in flags
+# auto-appended), the ruleset rewrites the marked command (`touch ORIG…`) to a
+# different one (`touch MOCK…`), and afterwards the workspace carries no trace
+# of the hook. Only call this for a harness `oneharness list` marks with a
+# `mock_rewrite` shape. Asserts:
 #   * the MOCK file exists — the rewritten input is what actually executed
 #     (this doubles as the positive control: a command demonstrably ran), and
 #   * the ORIG file does not — the original input was really substituted, and
-#   * the spy log recorded the ORIGINAL event with action `rewrite` — the spy
-#     channel preserves pre-rewrite intent end to end.
+#   * the spy log recorded the ORIGINAL event with action `rewrite`, and
+#   * no file in the workspace still mentions the mock hook — the ephemeral
+#     delivery restored/removed everything.
 #
-#   $1 harness id   $2 scope (project|global; default project — use global for
-#   a harness, like Qwen, that only fires user-scoped hooks headlessly)
-#   $3.. extra args forwarded to each run — e.g. codex needs its hooks engine
-#   opted in per invocation (`-- -c features.hooks=true
-#   --dangerously-bypass-hook-trust`; probe-verified, the config trust route
-#   loads no hooks)
+#   $1 harness id
 oh_mock_enforce() {
-    local id="$1" scope="${2:-project}"
-    shift
-    [ $# -gt 0 ] && shift
-    local bin sandbox marker origfile mockfile rulesfile spyfile out status home
+    local id="$1"
+    local bin sandbox marker origfile mockfile rulesfile spyfile status
     bin="$(oh_bin)"
     [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
@@ -967,35 +959,6 @@ oh_mock_enforce() {
 {"rules":[{"match":{"event_contains":"$marker"},"action":{"rewrite":{"input":{"command":"touch $mockfile"},"message":"rewritten by oh_mock_enforce"}}}]}
 JSON
 
-    # The hook command is whitespace-tokenized by the OpenCode shim, so every
-    # argument (the mktemp paths included) must stay space-free — same
-    # constraint as the gate hook above.
-    cat > "$sandbox/oneharness.toml" <<TOML
-[[hooks]]
-command = "$bin mock $id --rules $rulesfile --spy-file $spyfile"
-harnesses = ["$id"]
-plugin_name = "ohmock"
-TOML
-
-    # For a global sync, point HOME/XDG at the sandbox so the install lands where
-    # the run will read it; the same env is passed to the harness via --env.
-    local sync_vars=(ONEHARNESS_NO_CONFIG=) sync_global=() run_extra=()
-    if [ "$scope" = global ]; then
-        home="$sandbox/home"
-        mkdir -p "$home"
-        sync_vars+=("HOME=$home" "XDG_CONFIG_HOME=$sandbox/xdg")
-        sync_global=(--global)
-        run_extra=(--env "HOME=$home" --env "XDG_CONFIG_HOME=$sandbox/xdg")
-    fi
-
-    note "  mock-enforce: syncing a mock hook into $id's own config ($scope scope)"
-    if ! out="$(env "${sync_vars[@]}" "$bin" sync --harness "$id" "${sync_global[@]+"${sync_global[@]}"}" \
-        --cwd "$sandbox" --config "$sandbox/oneharness.toml" --compact 2>&1)"; then
-        printf '%s\n' "$out" >&2
-        rm -rf "$sandbox"
-        fail "$id: oneharness sync failed to install the mock hook"
-    fi
-
     # Up to two attempts: a model occasionally refuses the fixture framing and
     # never invokes its shell tool at all — visible as an EMPTY spy log (the
     # hook never fired), which is agent flakiness, not a verdict-shape failure.
@@ -1004,7 +967,7 @@ TOML
     for attempt in 1 2; do
         rm -f "$spyfile"
         note "  mock-enforce[rewrite]: the marked command must run REWRITTEN under bypass (attempt $attempt)"
-        oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $origfile. Rules: you MUST actually invoke your shell tool with that exact command — never decide on your own that it is not permitted; attempt it. Use only the shell tool, and do NOT create the file by any other means." --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}" "$@"
+        oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $origfile. Rules: you MUST actually invoke your shell tool with that exact command — never decide on your own that it is not permitted; attempt it. Use only the shell tool, and do NOT create the file by any other means." --cwd "$sandbox" --mock-rules "$rulesfile" --spy-file "$spyfile"
         status="$(oh_field '.results[0].status')"
         if [ "$status" = "skipped" ]; then
             rm -rf "$sandbox"
@@ -1045,8 +1008,19 @@ TOML
     fi
     note "  ok[spy]: the spy log preserved the original event"
 
+    # Ephemerality: after the run, nothing in the workspace may still mention
+    # the mock hook (the snapshotted config files were restored, created ones
+    # removed; claude's delivery never wrote into the workspace at all). The
+    # rules/spy files are ours and carry no hook command, so a hit is residue.
+    if grep -rqF "mock $id --rules" "$sandbox" 2>/dev/null; then
+        grep -rlF "mock $id --rules" "$sandbox" >&2
+        rm -rf "$sandbox"
+        fail "$id: the ephemeral mock hook left residue in the workspace (files above) — the restore did not run or missed a file"
+    fi
+    note "  ok[ephemeral]: the workspace carries no trace of the hook"
+
     rm -rf "$sandbox"
-    note "PASS: $id mock rewrite enforcement"
+    note "PASS: $id mock rewrite enforcement (run --mock-rules)"
 }
 
 # --- structured output enforcement -------------------------------------------

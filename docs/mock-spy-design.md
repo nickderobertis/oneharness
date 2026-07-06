@@ -13,10 +13,16 @@ hook binding for this). Live-refuted and deliberately absent: qwen's
 documented `updatedInput` (hook fired, verdict emitted, original ran, 3 OSes),
 copilot's headless hooks entirely (zero events under `-p`), and claude's
 PostToolUse `updatedToolOutput` result replacement (fired, ignored). The
-probe ran and its findings are folded in below. Still open, in build order:
+probe ran and its findings are folded in below. `run --mock-rules` /
+`run --spy-file` is also shipped: single-flag ephemeral delivery that works in
+an original workspace (claude-code via a per-run `--settings` temp file — zero
+mutation; the rest via a snapshotted project-scope install restored after the
+run; codex's opt-in flags auto-appended; qwen/copilot refused loudly), with
+`mock_rules`/`spy_file` recorded in the report and `oh_mock_enforce` rewritten
+to drive it (including a zero-residue assertion). Still open, in build order:
 result replacement (`replace` — start with opencode's probe-verified
-after-hook mutation), `run --mock-rules` ephemeral wiring, hook-sourced
-`events` for the transcript-less harnesses, and the `mocks` report block.
+after-hook mutation), hook-sourced `events` for the transcript-less
+harnesses, and the `mocks` per-result block.
 
 Consumer: the cross-harness skill-testing
 framework (`nickderobertis/skilltest`), which drives real harnesses through

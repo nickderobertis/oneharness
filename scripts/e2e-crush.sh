@@ -29,9 +29,10 @@ note "PASS: crush sync enforcement"
 note "» hook enforcement: the synced gate must block a marked command"
 oh_hook_enforce crush
 
-# Mock enforcement: crush's PreToolUse stdout `updated_input` (a shallow-merge
-# patch of the tool input) must substitute the marked command — the live proof
-# of the crush-flat mock_rewrite shape, and that the spy log preserves the
-# original (pre-rewrite) event.
-note "» mock enforcement: the synced mock must rewrite a marked command's input"
+# Mock enforcement: `run --mock-rules` installs the crush hook ephemerally
+# (restored afterwards) and its PreToolUse stdout `updated_input` (a
+# shallow-merge patch of the tool input) must substitute the marked command —
+# the live proof of the crush-flat mock_rewrite shape, and that the spy log
+# preserves the original (pre-rewrite) event.
+note "» mock enforcement: run --mock-rules must rewrite a marked command's input"
 oh_mock_enforce crush

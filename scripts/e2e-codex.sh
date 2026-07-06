@@ -26,10 +26,10 @@ oh_mode_enforce codex plan
 # `exec` and honors the claude-nested `updatedInput` rewrite — but only when
 # the invocation opts in with `-c features.hooks=true` plus the per-run hook
 # trust bypass (probe-verified 2026-07-06; the `projects.<dir>.trust_level`
-# config route loads no hooks). The flags ride the `--` passthrough, exactly
-# how a consumer would pass them.
-note "» mock enforcement: the synced mock must rewrite a marked command's input"
-oh_mock_enforce codex project -- -c features.hooks=true --dangerously-bypass-hook-trust
+# config route loads no hooks). `run --mock-rules` appends those flags itself
+# and restores the created .codex/hooks.json afterwards.
+note "» mock enforcement: run --mock-rules must rewrite a marked command's input"
+oh_mock_enforce codex
 
 # Normalized tool events: Codex's default text has no transcript, so `--events`
 # upgrades it to `exec --json`, whose `command_execution` items normalize to a

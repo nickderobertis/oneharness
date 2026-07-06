@@ -507,10 +507,15 @@ static REGISTRY: &[HarnessSpec] = &[
             anchor: ".codex/hooks.json",
         }),
         gate_deny: Some(DenyShape::ClaudeNested),
-        // Codex's hooks engine documents `updatedInput`, but hook loading under
-        // the `codex exec` oneharness drives is not yet verified live (the
-        // explore-hooks probe settles it) — absent until then, never guessed.
-        mock_rewrite: None,
+        // Probe-verified (2026-07-06, codex v0.142.5): `codex exec` DOES load
+        // project `.codex/hooks.json` and honors the claude-nested
+        // `updatedInput` rewrite — but ONLY when the invocation carries
+        // `-c features.hooks=true --dangerously-bypass-hook-trust` (the
+        // `projects.<dir>.trust_level="trusted"` config route yields zero hook
+        // events). oneharness does not add those flags itself; the caller
+        // passes them per run (config `args` / `--` passthrough), as the
+        // `oh_mock_enforce codex` phase does.
+        mock_rewrite: Some(RewriteShape::ClaudeNested),
         default_env: &[],
         // Codex `exec` *does* have a native schema flag (`--output-schema <file>`),
         // but it takes a schema FILE (not inline) and is reportedly ignored once
@@ -798,9 +803,11 @@ static REGISTRY: &[HarnessSpec] = &[
             anchor: ".copilot/hooks/{name}.json",
         }),
         gate_deny: Some(DenyShape::CopilotFlat),
-        // Copilot documents `modifiedArgs`, but its hooks are not loadable
-        // through `oneharness run` today (trust scaffolding — same reason it
-        // has no oh_hook_enforce phase); absent until the probe proves it.
+        // Probe-REFUTED (2026-07-06): copilot's repo `.github/hooks/*.json`
+        // hooks produced ZERO events across every headless `-p` experiment,
+        // even though the agent demonstrably used its shell tool — despite its
+        // docs demonstrating `-p` hooks. With no hook firing there is nothing
+        // to rewrite; absent until a live run shows its hooks loading at all.
         mock_rewrite: None,
         default_env: &[],
         native_schema: None,
@@ -844,6 +851,14 @@ static REGISTRY: &[HarnessSpec] = &[
                     "beforeShellExecution",
                     "beforeReadFile",
                     "beforeMCPExecution",
+                    // `preToolUse` is the ONLY cursor event whose reply can
+                    // rewrite the tool's input (`updated_input`, probe-verified
+                    // headlessly 2026-07-06); the three `before*` events are
+                    // allow/deny-only. Wiring it alongside them means a shell
+                    // call invokes the hook command more than once — the gate's
+                    // verdicts are idempotent, and the mock's rewrite rides
+                    // this event.
+                    "preToolUse",
                 ],
             },
             file: ".cursor/hooks.json",
@@ -855,11 +870,12 @@ static REGISTRY: &[HarnessSpec] = &[
             anchor: ".cursor/hooks.json",
         }),
         gate_deny: Some(DenyShape::CursorPermission),
-        // Cursor documents `updated_input` on `preToolUse` only — an event the
-        // oneharness hook install does not wire (it uses the three `before*`
-        // events, which are allow/deny) — and its headless firing is not yet
-        // probe-verified; absent until then.
-        mock_rewrite: None,
+        // Probe-verified (2026-07-06): cursor honors a `preToolUse` reply of
+        // `{"permission":"allow","updated_input":{…}}` headlessly — the
+        // original command in the preToolUse event, the rewritten one in the
+        // subsequent before/afterShellExecution events. The `preToolUse` event
+        // is wired into the hook binding above for exactly this.
+        mock_rewrite: Some(RewriteShape::CursorPermission),
         default_env: &[],
         native_schema: None,
         // `--mode plan` is the read-only plan mode; `--mode ask` is read-only
@@ -1286,21 +1302,23 @@ mod tests {
     }
 
     /// Pin each harness's mock input-rewrite capability: the live-verified
-    /// shapes for the three that honor one (oh_mock_enforce, 2026-07-06), and —
-    /// as deliberately as the presences — the absences: Goose has no rewrite
-    /// verdict; Codex/Copilot/Cursor await live verification via the
-    /// explore-hooks probe; and Qwen's documented `updatedInput` was live-
-    /// REFUTED (verdict emitted, original command still ran — see its registry
-    /// comment), so it stays absent despite its docs. A rewrite also requires
-    /// an installable hook and a deny shape (the mock responder's other verb),
-    /// so those must accompany it.
+    /// shapes for the five that honor one (oh_mock_enforce + the explore-hooks
+    /// probe, 2026-07-06), and — as deliberately as the presences — the
+    /// absences: Goose's protocol has no rewrite verdict; Copilot's hooks
+    /// never fired headlessly (probe: zero events); and Qwen's documented
+    /// `updatedInput` was live-REFUTED (verdict emitted, original command
+    /// still ran — see its registry comment), so it stays absent despite its
+    /// docs. A rewrite also requires an installable hook and a deny shape
+    /// (the mock responder's other verb), so those must accompany it.
     #[test]
     fn registry_mock_rewrite_capability_is_pinned() {
         let shape = |id: &str| by_id(id).unwrap().mock_rewrite;
         assert_eq!(shape("claude-code"), Some(RewriteShape::ClaudeNested));
+        assert_eq!(shape("codex"), Some(RewriteShape::ClaudeNested));
         assert_eq!(shape("crush"), Some(RewriteShape::CrushFlat));
         assert_eq!(shape("opencode"), Some(RewriteShape::OpencodeShim));
-        for id in ["codex", "goose", "qwen", "copilot", "cursor"] {
+        assert_eq!(shape("cursor"), Some(RewriteShape::CursorPermission));
+        for id in ["goose", "qwen", "copilot"] {
             assert_eq!(shape(id), None, "{id} must stay absent until verified");
         }
         for h in all() {

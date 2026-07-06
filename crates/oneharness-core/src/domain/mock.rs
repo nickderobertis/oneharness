@@ -27,15 +27,17 @@ use serde_json::{json, Value};
 use crate::domain::gate::DenyShape;
 
 /// How a harness expresses "allow this call, but with these rewritten
-/// arguments" from a pre-tool hook. Sourced from each CLI's hook docs (see
-/// `docs/mock-spy-design.md` for provenance); absent for a harness whose hook
-/// protocol has no input-rewrite verdict (Goose) or whose hook loading is not
-/// yet verified through `oneharness run` (Codex, Copilot, Cursor — pending the
-/// `explore-hooks` probe).
+/// arguments" from a pre-tool hook. Every variant is live-verified (the
+/// `explore-hooks` probe and/or an `oh_mock_enforce` phase — see
+/// `docs/mock-spy-design.md` for the per-harness evidence); absent for a
+/// harness whose protocol has no rewrite verdict (Goose), whose hooks never
+/// fire headlessly (Copilot), or whose documented rewrite was live-refuted
+/// (Qwen).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RewriteShape {
-    /// Claude Code / Qwen: `hookSpecificOutput.updatedInput` beside an `allow`
-    /// permission decision.
+    /// Claude Code / Codex: `hookSpecificOutput.updatedInput` beside an
+    /// `allow` permission decision. (Qwen documents this shape too but was
+    /// live-refuted — see the registry.)
     ClaudeNested,
     /// Crush: a flat `{"version":1,"decision":"allow","updated_input":{…}}`
     /// (its `updated_input` is a shallow-merge patch of the tool input).
@@ -44,6 +46,10 @@ pub enum RewriteShape {
     /// `{"decision":"allow","updated_input":{…}}` reply by merging it into the
     /// tool's mutable `args` before execution.
     OpencodeShim,
+    /// Cursor: a flat `{"permission":"allow","updated_input":{…}}` on its
+    /// `preToolUse` event. Exactly the probe-verified reply — no reason slot
+    /// (extra fields are unverified against its parser, so none are sent).
+    CursorPermission,
 }
 
 impl RewriteShape {
@@ -53,6 +59,7 @@ impl RewriteShape {
             RewriteShape::ClaudeNested => "claude-nested",
             RewriteShape::CrushFlat => "crush-flat",
             RewriteShape::OpencodeShim => "opencode-shim",
+            RewriteShape::CursorPermission => "cursor-permission",
         }
     }
 }
@@ -244,6 +251,12 @@ pub fn render_rewrite(shape: RewriteShape, input: &Value, reason: &str) -> Strin
         RewriteShape::OpencodeShim => json!({
             "decision": "allow",
             "reason": reason,
+            "updated_input": input,
+        }),
+        // Cursor's probe-verified reply carries no reason slot; sending only
+        // what was verified keeps its parser from rejecting the verdict.
+        RewriteShape::CursorPermission => json!({
+            "permission": "allow",
             "updated_input": input,
         }),
     };
@@ -444,6 +457,15 @@ mod tests {
         assert_eq!(oc["decision"], "allow");
         assert_eq!(oc["updated_input"]["command"], "printf mocked");
         assert!(oc.get("hookSpecificOutput").is_none());
+        // Cursor: permission + updated_input ONLY — the probe-verified reply
+        // carries no reason field, so none may be added.
+        let cursor: Value =
+            serde_json::from_str(&render_rewrite(RewriteShape::CursorPermission, &input, "r"))
+                .unwrap();
+        assert_eq!(
+            cursor,
+            json!({"permission": "allow", "updated_input": {"command": "printf mocked"}})
+        );
     }
 
     #[test]
@@ -451,6 +473,7 @@ mod tests {
         assert_eq!(RewriteShape::ClaudeNested.as_str(), "claude-nested");
         assert_eq!(RewriteShape::CrushFlat.as_str(), "crush-flat");
         assert_eq!(RewriteShape::OpencodeShim.as_str(), "opencode-shim");
+        assert_eq!(RewriteShape::CursorPermission.as_str(), "cursor-permission");
     }
 
     #[test]

@@ -3733,13 +3733,16 @@ fn list_exposes_mock_capabilities() {
     for h in harnesses {
         assert_eq!(h["supports_mock_deny"], true, "{}", h["id"]);
     }
-    // The rewrite shape is present only where verified live (oh_mock_enforce)
-    // and absent where verification is pending — or, for qwen, where the
-    // documented shape was live-refuted (see docs/mock-spy-design.md).
+    // The rewrite shape is present only where verified live (oh_mock_enforce /
+    // the explore-hooks probe) and absent where the harness can't express one
+    // (goose), never fires hooks headlessly (copilot), or had its documented
+    // shape live-refuted (qwen) — see docs/mock-spy-design.md.
     assert_eq!(by_id("claude-code")["mock_rewrite"], "claude-nested");
+    assert_eq!(by_id("codex")["mock_rewrite"], "claude-nested");
     assert_eq!(by_id("crush")["mock_rewrite"], "crush-flat");
     assert_eq!(by_id("opencode")["mock_rewrite"], "opencode-shim");
-    for id in ["codex", "goose", "qwen", "copilot", "cursor"] {
+    assert_eq!(by_id("cursor")["mock_rewrite"], "cursor-permission");
+    for id in ["goose", "qwen", "copilot"] {
         assert!(by_id(id)["mock_rewrite"].is_null(), "{id}");
     }
 }
@@ -4120,6 +4123,18 @@ fn mock_renders_each_harness_rewrite_shape() {
     assert_eq!(v["decision"], "allow");
     assert_eq!(v["updated_input"]["command"], "printf clean");
     assert!(v.get("version").is_none());
+    // Codex speaks the same claude-nested protocol (probe-verified).
+    let v = rewrite("codex");
+    assert_eq!(
+        v["hookSpecificOutput"]["updatedInput"]["command"],
+        "printf clean"
+    );
+    // Cursor: permission + updated_input ONLY (the probe-verified reply).
+    let v = rewrite("cursor");
+    assert_eq!(
+        v,
+        serde_json::json!({"permission": "allow", "updated_input": {"command": "printf clean"}})
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

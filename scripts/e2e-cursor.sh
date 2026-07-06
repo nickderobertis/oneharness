@@ -51,9 +51,16 @@ note "PASS: cursor sync enforcement"
 # https://forum.cursor.com/t/agent-cli-on-windows-no-way-to-configure-shell-hardcoded-to-powershell-no-shell-flag-or-config-option/151858
 if [ "${OS:-}" = "Windows_NT" ]; then
     note "» hook enforcement: SKIPPED on windows-latest (cursor-agent hook-shell bug; see README)"
+    note "» mock enforcement: SKIPPED on windows-latest (same cursor-agent hook-shell bug)"
 else
     note "» hook enforcement: the synced gate must block a marked command"
     oh_hook_enforce cursor
+
+    # Mock enforcement: cursor honors `{"permission":"allow","updated_input":…}`
+    # on its `preToolUse` event (probe-verified headlessly 2026-07-06); the hook
+    # binding wires preToolUse alongside the three before* events for this.
+    note "» mock enforcement: the synced mock must rewrite a marked command's input"
+    oh_mock_enforce cursor
 fi
 
 # Approval-mode enforcement: `read-only` is Cursor's native `--mode ask` and

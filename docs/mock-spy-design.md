@@ -4,16 +4,19 @@ Status: **research → v1 implemented** (2026-07-06). Shipped so far:
 `oneharness mock <id>` (`domain::mock` + `src/commands/mock.rs`) with the
 deny + input-rewrite verbs, the JSONL spy log
 (`--spy-file`/`ONEHARNESS_SPY_FILE`), the `mock_rewrite` registry capability
-(claude-code `claude-nested`, crush `crush-flat`, opencode via the plugin
-shim's `updated_input` args merge — all three verified live by the
-`oh_mock_enforce` phases, 2026-07-06). Qwen's documented `updatedInput` was
-**live-refuted** by the same phase (hook fired, verdict emitted, original
-command still ran, all three OSes) and pulled back to deny-only — the first
-drift the alarm caught. Still open, in build order below:
-running the `explore-hooks` probe (settles codex/copilot/cursor rewrite and
-every result-replacement shape), result replacement (`replace`), `run
---mock-rules` ephemeral wiring, hook-sourced `events` for the transcript-less
-harnesses, and the `mocks` report block.
+(claude-code + codex `claude-nested`, crush `crush-flat`, cursor
+`cursor-permission`, opencode via the plugin shim's `updated_input` args merge
+— all verified live by `oh_mock_enforce` and/or the `explore-hooks` probe,
+2026-07-06; codex requires the run to opt in via `-c features.hooks=true
+--dangerously-bypass-hook-trust`, and cursor's `preToolUse` was added to its
+hook binding for this). Live-refuted and deliberately absent: qwen's
+documented `updatedInput` (hook fired, verdict emitted, original ran, 3 OSes),
+copilot's headless hooks entirely (zero events under `-p`), and claude's
+PostToolUse `updatedToolOutput` result replacement (fired, ignored). The
+probe ran and its findings are folded in below. Still open, in build order:
+result replacement (`replace` — start with opencode's probe-verified
+after-hook mutation), `run --mock-rules` ephemeral wiring, hook-sourced
+`events` for the transcript-less harnesses, and the `mocks` report block.
 
 Consumer: the cross-harness skill-testing
 framework (`nickderobertis/skilltest`), which drives real harnesses through
@@ -48,9 +51,10 @@ until it is probe- or e2e-confirmed ("sourced from real output, never guessed").
   at runtime the harness pipes `{tool_name, tool_input, cwd, session_id}` to
   the gate on stdin and the gate can emit the harness's native **deny**
   verdict (`domain::gate::DenyShape`). Deny-only today. LIVE for claude-code,
-  opencode, goose, crush, cursor (project scope) and qwen (user scope);
-  excluded for codex ("`codex exec` ignores hooks" — **now stale**, see below)
-  and copilot (trust scaffolding).
+  opencode, goose, crush, cursor (project scope) and qwen (user scope); codex
+  loads hooks only when the run opts in via `-c features.hooks=true
+  --dangerously-bypass-hook-trust` (probe-verified — its mock phase passes
+  them); copilot's hooks never fire headlessly (probe-refuted).
 - **Ephemeral delivery — proven in the e2e lib**: project-scope hooks
   installed into a `mktemp -d` passed as `--cwd` (die with the sandbox);
   user-scope hooks into a fake `HOME`/`XDG_CONFIG_HOME` passed to both `sync
@@ -69,17 +73,23 @@ harness's hook protocol actually supports, delivered ephemerally per run.
 1. **Deny with a model-visible message** — all 8 harnesses (LIVE for the six
    hook-enforced ones). Degraded mock: the model reads the message as tool
    feedback, but the call "failed".
-2. **Input rewrite** (pre-tool hook rewrites the tool's arguments) — 7 of 8
-   (all but goose). The workhorse: rewrite `git push …` → `printf '%s' '<canned>'`
-   and the model sees exactly the fabricated output while the real command
-   never runs; rewrite a read's path to a fixture file to mock file reads.
-3. **Result replacement** (the model sees a substituted result) — claude-code
-   (`PostToolUse.updatedToolOutput`, DOC), opencode (mutate the `after` hook's
-   output object, DOC/source-verified), copilot (`postToolUse.modifiedResult`,
-   DOC). Post-hoc (the real tool ran); a true "never executes" mock composes
-   rewrite-to-no-op + replace-output. OpenCode alone has a genuine
-   no-execution mock: a same-named custom tool overrides a built-in (DOC),
-   plus `tools:{bash:false}`.
+2. **Input rewrite** (pre-tool hook rewrites the tool's arguments) — LIVE on
+   5 of 8 (claude-code, codex, opencode, crush, cursor). The workhorse:
+   rewrite `git push …` → `printf '%s' '<canned>'` and the model sees exactly
+   the fabricated output while the real command never runs; rewrite a read's
+   path to a fixture to mock file reads (claude Read redirect LIVE — though
+   the model can notice the returned content naming a different file).
+   Refuted for qwen (docs say yes, CLI ignores it) and unreachable for
+   copilot (hooks never fire); goose has no such verdict.
+3. **Result replacement** (the model sees a substituted result) — LIVE for
+   opencode only (mutate the `after` hook's output object; the probe surfaced
+   the substituted answer). Claude's documented PostToolUse
+   `updatedToolOutput` was probe-REFUTED (fired, ignored, v2.1.201) and
+   copilot's `modifiedResult` is unreachable (hooks never fire). So the
+   composed "rewrite-to-no-op + replace" true mock currently exists only on
+   opencode; everywhere else the true mock IS the rewrite-to-stub. OpenCode
+   alone also has a genuine no-execution mock: a same-named custom tool
+   overrides a built-in (DOC), plus `tools:{bash:false}`.
 4. **MCP substitution** (mock MCP server + disable built-ins) — all 8 to
    varying degrees; the only pre-execution fabrication that works everywhere,
    but it changes the tool surface the skill sees. Escape hatch, not default.
@@ -90,20 +100,20 @@ sandbox). More faithful to real behavior, zero per-harness support needed.
 
 ## Capability matrix
 
+All cells below are settled — the probe ran on PR #1099 (2026-07-06, run
+28813236792) and every prior DOC/UNVERIFIED tag was replaced with a LIVE
+verdict:
+
 | harness | pre-hook fires headless | payload → spy | rewrite input | replace result | ephemeral delivery |
 |---|---|---|---|---|---|
-| claude-code | LIVE (project file) | LIVE (gate + mock spy log) + PostToolUse DOC | `updatedInput` LIVE for Bash (oh_mock_enforce; other tools' honoring still UNVERIFIED) | `updatedToolOutput` DOC | `--settings <file-or-json>` per-run DOC; temp-cwd LIVE (trust handled by e2e lib) |
-| codex | DOC (hooks engine ~v0.124+, `features.hooks=true`; repo's "exec ignores hooks" predates it) — UNVERIFIED here | DOC (`tool_input`, Post `tool_response`) | `updatedInput` DOC/UNVERIFIED | none | temp-cwd `.codex/hooks.json` + `--dangerously-bypass-hook-trust` DOC; `CODEX_HOME` (carries auth — seed it) |
-| opencode | LIVE (JS plugin) | LIVE (gate) + `after` DOC | mutate `before` `output.args` LIVE (oh_mock_enforce via the shim) | mutate `after` `output.output` DOC (undocumented, source-verified) | `OPENCODE_CONFIG_CONTENT` LIVE; `OPENCODE_CONFIG_DIR` DOC; temp-cwd plugin LIVE |
-| goose | LIVE (plugin dir) | LIVE (gate); PostToolUse observe-only DOC | none | none | temp-cwd `.agents/plugins` LIVE; `GOOSE_PATH_ROOT` DOC |
-| qwen | LIVE (user scope only) | LIVE (gate) + PostToolUse `tool_response` DOC | **REFUTED live** (`updatedInput` per docs, ignored under `--yolo` — original ran; re-source via probe) | none (context-inject only) | fake-HOME LIVE; `QWEN_HOME` DOC (auth is env-delivered, so redirect is safe) |
-| crush | LIVE (project file) | LIVE (gate); **no post event** | `updated_input` LIVE (oh_mock_enforce; shallow-merge) | none | temp-cwd `.crush.json` LIVE |
-| copilot | DOC (`-p` tutorial demonstrates it; repo's trust-scaffolding exclusion may be narrower than assumed) — UNVERIFIED here | DOC (post carries `toolResult`) | `modifiedArgs` DOC | `modifiedResult` DOC | temp-cwd `.github/hooks/*.json` DOC; `COPILOT_HOME` DOC |
-| cursor | UNVERIFIED headless (officially undocumented; community-confirmed for deny) | LIVE (gate, project scope) + stream-json LIVE | `updated_input` DOC | MCP tools only (`updated_mcp_tool_output`) | temp-cwd `.cursor/hooks.json` LIVE (known Windows hook bug) |
-
-Two stale repo facts to re-verify live and then update in the registry/e2e:
-codex `exec` hook support (post-dates the "ignores hooks" note) and copilot
-`-p` hook firing.
+| claude-code | LIVE (project file; `--settings <file>` per-run also LIVE via the probe) | LIVE — Pre + Post, `tool_response` object | `updatedInput` LIVE for Bash **and Read** (file-read redirect verified; model can notice a content/filename mismatch) | **REFUTED live**: PostToolUse `updatedToolOutput` fired but was ignored (v2.1.201) | `--settings <file>` per-run LIVE; temp-cwd LIVE (trust handled by e2e lib) |
+| codex | LIVE (v0.142.5, project `.codex/hooks.json`) — **only with `-c features.hooks=true --dangerously-bypass-hook-trust` on the invocation**; the `projects.<dir>.trust_level="trusted"` config route loads no hooks | LIVE — Pre + Post; claude-compatible payload + `turn_id`/`model`; Post `tool_response` is a plain string | `updatedInput` LIVE (claude-nested shape honored) | untested | temp-cwd `.codex/hooks.json` + the two flags LIVE; `CODEX_HOME` (carries auth — seed it) |
+| opencode | LIVE (JS plugin) | LIVE — before + after (after carries the result; note: hook sees the PRE-replace output) | mutate `before` `output.args` LIVE | mutate `after` `output.output` **LIVE (probe)** — the substituted result surfaced in the model's answer | `OPENCODE_CONFIG_CONTENT` LIVE; `OPENCODE_CONFIG_DIR` DOC; temp-cwd plugin LIVE |
+| goose | LIVE (plugin dir) | LIVE — but **PostToolUse carries no result** (byte-identical fields to Pre; observe-only AND result-blind) | none (probe: claude-style verdict ignored, as expected) | none | temp-cwd `.agents/plugins` LIVE; `GOOSE_PATH_ROOT` DOC |
+| qwen | LIVE (user scope; both `QWEN_HOME` and fake-HOME redirects verified) | LIVE — Pre + Post `tool_response.llmContent`; payload carries `timestamp` + dual `tool_use_id`/`tool_call_id` | **REFUTED live twice** (`updatedInput` per docs, ignored under `--yolo` — original ran) | none (context-inject only) | `QWEN_HOME` LIVE; fake-HOME LIVE (auth is env-delivered, so redirect is safe) |
+| crush | LIVE (project file; pre only) | LIVE — pre only, **no post event** | `updated_input` LIVE (shallow-merge) | none | temp-cwd `.crush.json` LIVE |
+| copilot | **REFUTED live**: repo `.github/hooks/*.json` produced ZERO events across every `-p` experiment, despite real shell tool use and its docs demonstrating `-p` hooks | none (nothing ever fired) | unreachable (hook never fires) | unreachable | n/a until its hooks load at all headlessly |
+| cursor | LIVE — **four events per shell call** (`preToolUse`, `beforeShellExecution`, `afterShellExecution`, `postToolUse`); payloads include `user_email`/`cursor_version` | LIVE — post carries `tool_output` (a JSON string) | `updated_input` on `preToolUse` LIVE (snake_case; pre event shows the original, downstream events the rewrite; the model was not told) | MCP tools only (`updated_mcp_tool_output`, DOC) | temp-cwd `.cursor/hooks.json` LIVE (known Windows hook bug applies) |
 
 ## Proposed oneharness additions
 

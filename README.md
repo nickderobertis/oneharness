@@ -463,11 +463,13 @@ loud usage error, never a silent allow):
 
 | harness | deny | input rewrite (`mock_rewrite`) |
 | --- | --- | --- |
-| `claude-code` | ✅ | ✅ `claude-nested` (PreToolUse `updatedInput`) — verified live |
+| `claude-code` | ✅ | ✅ `claude-nested` (PreToolUse `updatedInput`; also honored for `Read` — file-read mocking) — verified live |
+| `codex` | ✅ | ✅ `claude-nested` — verified live, but its hooks engine needs the run to opt in: pass `-c features.hooks=true --dangerously-bypass-hook-trust` (via `--` passthrough or `[harness.codex] args`); the `trust_level` config route loads no hooks |
 | `crush` | ✅ | ✅ `crush-flat` (`updated_input`, shallow-merged) — verified live |
 | `opencode` | ✅ | ✅ `opencode-shim` (the synced plugin merges the args) — verified live |
+| `cursor` | ✅ | ✅ `cursor-permission` (`preToolUse` `updated_input`) — verified live on Linux/macOS (its Windows hook bug applies to mocks too) |
 | `qwen` | ✅ | ❌ its documented `updatedInput` is **not honored live** (hook fires, verdict emitted, original ran — measured on all three OSes); deny-only until re-sourced |
-| `codex` / `copilot` / `cursor` | ✅ | ❌ pending live verification (`explore-hooks` probe) |
+| `copilot` | ✅* | ❌ probe-refuted: its repo hooks produced **zero events** headlessly (`-p`), so neither verb can fire through `oneharness run` today |
 | `goose` | ✅ | ❌ its hook protocol has no rewrite verdict |
 
 Delivery is the same `[[hooks]]` loop as the gate, and is naturally ephemeral
@@ -971,8 +973,11 @@ config, then drives the real CLI under bypass (so the hook is the sole decider)
 through a marked command (the gate must block it) and an unmarked one (the gate
 must let it run). For **Qwen** the gate is synced with `--global` — Qwen only
 fires user-scoped hooks headlessly — which also exercises `sync --global` live.
-Two harnesses are excluded by design: **Codex** (`oneharness run` drives `codex
-exec`, which does not load hooks) and **Copilot** (its project hooks sit behind a
+Two harnesses are excluded by design: **Codex** (`codex exec` loads hooks only
+when the invocation opts in with `-c features.hooks=true
+--dangerously-bypass-hook-trust` — probe-verified; the `oh_mock_enforce codex`
+phase passes those flags and is the live proof its hooks load, so the plain
+gate phase stays omitted) and **Copilot** (its project hooks sit behind a
 trusted-folder + prompt-mode setup that belongs in allowlister's adapter e2e);
 both keep their hermetic install coverage.
 

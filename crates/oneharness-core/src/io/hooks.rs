@@ -441,7 +441,8 @@ mod tests {
     }
 
     /// Cursor's dedicated file is seeded with its required `version` and fans
-    /// the command across the three `before*` events.
+    /// the command across the three `before*` events plus `preToolUse` (the
+    /// rewrite-capable event `oneharness mock` rides).
     #[test]
     fn file_strategy_seeds_cursor_version() {
         let dir = temp_project("cursor");
@@ -454,6 +455,7 @@ mod tests {
                     "beforeShellExecution": [{ "command": "guard hook cursor" }],
                     "beforeReadFile": [{ "command": "guard hook cursor" }],
                     "beforeMCPExecution": [{ "command": "guard hook cursor" }],
+                    "preToolUse": [{ "command": "guard hook cursor" }],
                 }
             }),
         );

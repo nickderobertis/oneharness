@@ -833,10 +833,12 @@ oh_edit_enforce() {
 #             proving the deny was a real block, not the harness simply never
 #             executing anything headlessly.
 #
-# Excluded by design: Codex (`oneharness run` drives `codex exec`, which does not
-# load hooks — allowlister proves Codex hooks only via the TUI in a PTY) and
-# Copilot (project hooks are gated behind a real repo + a `trustedFolders` trust
-# file + prompt-mode scaffolding that belongs in allowlister's adapter e2e).
+# Excluded by design: Codex (`codex exec` loads hooks only when the invocation
+# opts in with `-c features.hooks=true --dangerously-bypass-hook-trust` —
+# probe-verified 2026-07-06; oh_mock_enforce passes those flags and is the live
+# proof its hooks load, so this plain gate phase stays omitted) and Copilot
+# (probe-refuted: its repo `.github/hooks` produced ZERO events headlessly in
+# `-p` even while the agent used its shell tool — nothing to gate).
 #
 #   $1 harness id
 #   $2 scope: project (default) or global. Qwen only fires *user*-scoped hooks
@@ -935,8 +937,14 @@ TOML
 #
 #   $1 harness id   $2 scope (project|global; default project — use global for
 #   a harness, like Qwen, that only fires user-scoped hooks headlessly)
+#   $3.. extra args forwarded to each run — e.g. codex needs its hooks engine
+#   opted in per invocation (`-- -c features.hooks=true
+#   --dangerously-bypass-hook-trust`; probe-verified, the config trust route
+#   loads no hooks)
 oh_mock_enforce() {
     local id="$1" scope="${2:-project}"
+    shift
+    [ $# -gt 0 ] && shift
     local bin sandbox marker origfile mockfile rulesfile spyfile out status home
     bin="$(oh_bin)"
     [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
@@ -996,7 +1004,7 @@ TOML
     for attempt in 1 2; do
         rm -f "$spyfile"
         note "  mock-enforce[rewrite]: the marked command must run REWRITTEN under bypass (attempt $attempt)"
-        oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $origfile. Rules: you MUST actually invoke your shell tool with that exact command — never decide on your own that it is not permitted; attempt it. Use only the shell tool, and do NOT create the file by any other means." --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}"
+        oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $origfile. Rules: you MUST actually invoke your shell tool with that exact command — never decide on your own that it is not permitted; attempt it. Use only the shell tool, and do NOT create the file by any other means." --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}" "$@"
         status="$(oh_field '.results[0].status')"
         if [ "$status" = "skipped" ]; then
             rm -rf "$sandbox"

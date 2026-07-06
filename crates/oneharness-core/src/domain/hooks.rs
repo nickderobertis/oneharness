@@ -228,8 +228,9 @@ mod tests {
         );
     }
 
-    /// Cursor fans the same command across its three `before*` events, with no
-    /// matcher key.
+    /// Cursor fans the same command across its three `before*` events plus
+    /// `preToolUse` (the one event whose reply can rewrite the tool's input),
+    /// with no matcher key.
     #[test]
     fn command_only_matches_cursor_shape() {
         let spec = HookSpec::command("guard hook cursor");
@@ -238,6 +239,7 @@ mod tests {
                 "beforeShellExecution",
                 "beforeReadFile",
                 "beforeMCPExecution",
+                "preToolUse",
             ],
         };
         assert_eq!(
@@ -246,6 +248,7 @@ mod tests {
                 "beforeShellExecution": [ { "command": "guard hook cursor" } ],
                 "beforeReadFile": [ { "command": "guard hook cursor" } ],
                 "beforeMCPExecution": [ { "command": "guard hook cursor" } ],
+                "preToolUse": [ { "command": "guard hook cursor" } ],
             }),
         );
     }

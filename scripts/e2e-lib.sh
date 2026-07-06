@@ -1028,19 +1028,22 @@ JSON
     note "  ok[ephemeral]: the workspace carries no trace of the hook"
 
     # Stub enforcement: the `stub` action declares only the OUTPUT; oneharness
-    # generates the printf rewrite itself, so the model must receive (and be
-    # able to repeat) the canned text as the tool's genuine result — the live
-    # proof of the declare-the-output mock, end to end through the model.
+    # generates the printf rewrite itself, so the stub's text becomes the tool's
+    # genuine result — the live proof of the declare-the-output mock.
     #
-    # The stubbed command must have an output the model CANNOT predict, or it
-    # notices the mismatch and refuses: an `echo ohstub-probe` whose result
-    # comes back as an unrelated marker reads to a capable model as a prompt
-    # injection ("the output isn't what that command prints") and it declines
-    # to repeat it (observed live — opencode/haiku). Reading a file whose
-    # contents are unknowable (`cat ohstub-probe.txt`) removes that tell: any
-    # output is plausible, so the model relays the marker. This is exactly the
-    # "keep canned output plausible for what was asked" rule the README states.
-    local stubmark stubrules stubspy answer
+    # The assertion observes the TOOL RESULT, not the model's prose. The stub's
+    # contract is "the declared text is what the tool returns"; whether the model
+    # then repeats it is model behavior, not oneharness's, and asserting on it is
+    # flaky — a capable model reads the coercive "you MUST repeat this verbatim"
+    # framing (or a stubbed output it can't reconcile) as a prompt injection and
+    # lectures instead of relaying (observed live — opencode/haiku, twice). So we
+    # ask (plainly, no coercion) the model to run the command, pass `--events` so
+    # the tool transcript lands in the result's raw `stdout`, and assert the
+    # marker surfaced there (the tool output) OR in the extracted `text` (the
+    # fallback for crush, whose headless output carries no transcript). The
+    # marker cannot appear unless the stub rule matched and its printf executed,
+    # so a hit proves the stub end to end regardless of what the model says.
+    local stubmark stubrules stubspy blob
     stubmark="OHSTUBOUT${RANDOM}${RANDOM}"
     stubrules="$sandbox/stub-rules.json"
     stubspy="$sandbox/stub-spy.jsonl"
@@ -1049,8 +1052,8 @@ JSON
 JSON
     for attempt in 1 2; do
         rm -f "$stubspy"
-        note "  mock-enforce[stub]: the canned output must reach the model (attempt $attempt)"
-        oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Using your shell tool, run exactly this command to read a status file whose contents you do not know in advance, then report its exact stdout verbatim in your reply: cat ohstub-probe.txt. Rules: you MUST actually invoke your shell tool with that exact command; never refuse. Report exactly what the command prints, verbatim." --cwd "$sandbox" --mock-rules "$stubrules" --spy-file "$stubspy"
+        note "  mock-enforce[stub]: the stub's output must become the tool result (attempt $attempt)"
+        oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Using your shell tool, run this command to read a status token, then tell me the token it printed: cat ohstub-probe.txt" --cwd "$sandbox" --events --mock-rules "$stubrules" --spy-file "$stubspy"
         [ -s "$stubspy" ] && break
         note "  note: the spy log is empty — the agent never attempted the tool call; retrying"
     done
@@ -1059,18 +1062,20 @@ JSON
         rm -rf "$sandbox"
         fail "$id: the agent never invoked its shell tool for the stub phase (spy log empty)"
     fi
-    answer="$(oh_field '.results[0].text // ""')"
-    if ! printf '%s' "$answer" | grep -q "$stubmark"; then
-        oh_dump
-        head -5 "$stubspy" >&2
-        rm -rf "$sandbox"
-        fail "$id: the stubbed output ($stubmark) never surfaced in the model's answer — the generated printf rewrite was not honored (or the model did not receive it)"
-    fi
     if ! jq -e -s 'map(select(.action == "stub")) | length >= 1' "$stubspy" >/dev/null 2>&1; then
         rm -rf "$sandbox"
         fail "$id: the spy log recorded no stub action ($stubspy)"
     fi
-    note "  ok[stub]: the model received and repeated the canned output"
+    # The tool transcript (raw stdout) plus the extracted answer — the marker in
+    # either proves the stub's printf ran and produced the declared output.
+    blob="$(oh_field '.results[0].stdout // ""')$(oh_field '.results[0].text // ""')"
+    if ! printf '%s' "$blob" | grep -q "$stubmark"; then
+        oh_dump
+        head -5 "$stubspy" >&2
+        rm -rf "$sandbox"
+        fail "$id: the stubbed output ($stubmark) never surfaced as the tool result — the generated printf rewrite was not honored"
+    fi
+    note "  ok[stub]: the stub's output became the tool result"
 
     rm -rf "$sandbox"
     note "PASS: $id mock rewrite + stub enforcement (run --mock-rules)"

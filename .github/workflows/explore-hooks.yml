@@ -1,19 +1,28 @@
 name: Explore (hook capabilities)
 
-# Investigative, DISPATCH-ONLY probe (mock/spy framework groundwork; see
+# Investigative probe (mock/spy framework groundwork; see
 # docs/mock-spy-design.md). Installs and authenticates every real harness, then
 # runs scripts/explore-hooks.sh against each to answer, from live behavior:
 # does its pre/post tool hook fire headlessly, what payload does it receive,
 # and are input-rewrite / result-replacement verdicts honored? The point is to
 # SOURCE each harness's mock verdict shape from real output before any `mock`
 # capability lands in the registry — never guess (the same discipline as
-# explore-events.yml for transcript shapes). Retained (not auto-triggered) so a
-# capability can be re-probed when a harness updates: run it from the Actions
-# tab, read the logs, learn the shape. Gated like the e2e workflows: canonical
-# repo only, so its secrets are never reachable by untrusted code.
+# explore-events.yml for transcript shapes).
+#
+# Triggers: dispatch on demand from the Actions tab (re-probe when a harness
+# updates), PLUS same-repo PRs that modify the probe itself — because a
+# workflow_dispatch entry only exists once the file is on the default branch,
+# a paths-filtered pull_request trigger is what lets a new or changed probe
+# produce its logs BEFORE merge (and stays silent on every unrelated PR).
+# Gated like the e2e workflows: canonical repo and non-fork PRs only, so its
+# secrets are never reachable by untrusted code.
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - scripts/explore-hooks.sh
+      - .github/workflows/explore-hooks.yml
 
 permissions:
   contents: read
@@ -25,7 +34,10 @@ concurrency:
 jobs:
   explore:
     name: explore harness hook capabilities
-    if: github.repository == 'nickderobertis/oneharness'
+    if: >-
+      github.repository == 'nickderobertis/oneharness' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     defaults:
       run:

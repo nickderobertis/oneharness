@@ -11,8 +11,6 @@ name: Explore (events shapes) [TEMP]
 # the secrets are never reachable by untrusted code.
 
 on:
-  push:
-    branches: [claude/oneharness-1096-q9v1az]
   workflow_dispatch:
 
 permissions:

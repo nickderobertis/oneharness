@@ -1,14 +1,14 @@
-name: Explore (events shapes) [TEMP]
+name: Explore (events shapes)
 
-# TEMPORARY investigation workflow for issue #1096 (events / streaming). Installs
+# Investigative, DISPATCH-ONLY probe (issue #1096, events / streaming). Installs
 # and authenticates every real harness, then runs scripts/explore-events.sh
 # against each to dump raw tool-transcript output under candidate output formats.
 # The point is to SOURCE each harness's real event shape from live output before
-# writing an `extract_events` recognizer — never guess. Read the job logs, learn
-# the shapes, then DELETE this workflow and scripts/explore-events.sh.
-#
-# Gated exactly like the e2e workflows: canonical repo only, never a fork PR, so
-# the secrets are never reachable by untrusted code.
+# writing an `extract_events` recognizer — never guess (this is how the current
+# recognizers were written). Retained (not auto-triggered) so a future harness
+# addition can re-probe: run it from the Actions tab, read the logs, learn the
+# shape. Gated like the e2e workflows: canonical repo only, so its secrets are
+# never reachable by untrusted code.
 
 on:
   workflow_dispatch:

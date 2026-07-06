@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# TEMPORARY exploratory harness-output probe (issue #1096, events/streaming).
+# Investigative harness-output probe (issue #1096, events/streaming).
 #
-# NOT part of the gate. Drives each REAL harness CLI directly (bypassing
-# oneharness) with a tool-using prompt under candidate output formats, and dumps
-# `--help` plus the raw stdout + a structural digest — so the true tool-transcript
-# shape of each harness can be *sourced from real output*, never guessed, before
-# writing an `extract_events` recognizer for it. Delete once the events matrix is
-# settled (`.github/workflows/explore-events.yml` too).
+# NOT part of the gate; run via the dispatch-only `explore-events.yml` workflow.
+# Drives each REAL harness CLI directly (bypassing oneharness) with a tool-using
+# prompt under candidate output formats, and dumps `--help` plus the raw stdout +
+# a structural digest — so the true tool-transcript shape of each harness can be
+# *sourced from real output*, never guessed, before writing (or updating) an
+# `extract_events` recognizer for it. Retained as the tool for adding a new
+# harness's event shape; see AGENTS.md ("Adding or changing a harness").
 #
 # Usage: scripts/explore-events.sh <harness-id>
 # Auth/model come from the environment the workflow sets (same as the e2e jobs).

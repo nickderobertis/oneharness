@@ -421,9 +421,10 @@ shape. When you add one:
   proof + drift alarm. Events need a **transcript-carrying output format**, which
   `--events`/`--stream` selects per harness via `HarnessSpec.events_format`
   (must not break text extraction — verified live). **Never guess a shape: source
-  it from a real transcript** — the `scripts/explore-events.sh` + `explore-events.yml`
-  probe (temporary; delete once settled) dumped every harness's live output to CI
-  logs, which is how the current four recognizers were written. Coverage today
+  it from a real transcript** — the `scripts/explore-events.sh` + dispatch-only
+  `explore-events.yml` probe dumps every harness's live output to CI logs (run it
+  from the Actions tab), which is how the current four recognizers were written;
+  re-run it when adding a harness. Coverage today
   (all sourced, all e2e drift-alarmed): opencode (`json`, default),
   cursor (`stream-json`, default, its own `type:"tool_call"` shape), claude-code
   (`--events`→`stream-json`, Anthropic content blocks), codex (`--events`→`exec

@@ -69,6 +69,30 @@ pub enum OneharnessError {
     )]
     GateUnsupported { id: String },
 
+    #[error("could not read mock rules file `{path}`: {source}")]
+    MockRulesFile {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("invalid mock rules file `{path}`: {message}")]
+    MockRulesInvalid { path: String, message: String },
+
+    #[error("harness `{id}` cannot express the mock action `{action}`, so `oneharness mock {id}` refuses this ruleset (see `mock_rewrite`/`supports_mock_deny` in `oneharness list`)")]
+    MockActionUnsupported { id: String, action: &'static str },
+
+    #[error(
+        "harness `{id}` cannot take a one-shot mock hook (`--mock-rules`/`--spy-file`): {reason}"
+    )]
+    MockDeliveryUnsupported { id: String, reason: &'static str },
+
+    #[error("cannot embed `{path}` into a hook command: it contains whitespace (hook commands are tokenized on spaces by some harnesses; use space-free paths)")]
+    MockPathWhitespace { path: String },
+
+    #[error("could not wire the one-shot mock hook: {message}")]
+    MockSetup { message: String },
+
     #[error("could not write harness config `{path}`: {source}")]
     HarnessConfigWrite {
         path: String,

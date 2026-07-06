@@ -833,10 +833,12 @@ oh_edit_enforce() {
 #             proving the deny was a real block, not the harness simply never
 #             executing anything headlessly.
 #
-# Excluded by design: Codex (`oneharness run` drives `codex exec`, which does not
-# load hooks — allowlister proves Codex hooks only via the TUI in a PTY) and
-# Copilot (project hooks are gated behind a real repo + a `trustedFolders` trust
-# file + prompt-mode scaffolding that belongs in allowlister's adapter e2e).
+# Excluded by design: Codex (`codex exec` loads hooks only when the invocation
+# opts in with `-c features.hooks=true --dangerously-bypass-hook-trust` —
+# probe-verified 2026-07-06; oh_mock_enforce passes those flags and is the live
+# proof its hooks load, so this plain gate phase stays omitted) and Copilot
+# (probe-refuted: its repo `.github/hooks` produced ZERO events headlessly in
+# `-p` even while the agent used its shell tool — nothing to gate).
 #
 #   $1 harness id
 #   $2 scope: project (default) or global. Qwen only fires *user*-scoped hooks
@@ -915,6 +917,237 @@ TOML
 
     rm -rf "$sandbox"
     note "PASS: $id hook enforcement"
+}
+
+# Live proof that `run --mock-rules` — the single-flag ephemeral mock — is
+# honored end to end by the real harness: the hook is delivered for THIS run
+# only (claude: a per-run --settings temp file; the rest: a project-scope
+# install snapshotted and restored; codex: its hook-engine opt-in flags
+# auto-appended), the ruleset rewrites the marked command (`touch ORIG…`) to a
+# different one (`touch MOCK…`), and afterwards the workspace carries no trace
+# of the hook. Only call this for a harness `oneharness list` marks with a
+# `mock_rewrite` shape. Asserts:
+#   * the MOCK file exists — the rewritten input is what actually executed
+#     (this doubles as the positive control: a command demonstrably ran), and
+#   * the ORIG file does not — the original input was really substituted, and
+#   * the spy log recorded the ORIGINAL event with action `rewrite`, and
+#   * no file in the workspace still mentions the mock hook — the ephemeral
+#     delivery restored/removed everything.
+#
+#   $1 harness id
+oh_mock_enforce() {
+    local id="$1"
+    local bin sandbox marker origfile mockfile rulesfile spyfile status
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    sandbox="$(mktemp -d)"
+    sandbox="$(oh_native_path "$sandbox")"
+    oh_sandbox_prepare "$id" "$sandbox"
+    # A real repo: some harnesses only discover project-scoped hooks inside one.
+    git init -q "$sandbox" 2>/dev/null || true
+    marker="OHMOCKORIG${RANDOM}${RANDOM}"
+    origfile="$sandbox/$marker.txt"
+    mockfile="$sandbox/ohmock-rewritten-${RANDOM}${RANDOM}.txt"
+    rulesfile="$sandbox/mock-rules.json"
+    spyfile="$sandbox/mock-spy.jsonl"
+
+    # The ruleset: rewrite the marked command to touch the MOCK file instead.
+    # Every rewrite-capable harness's shell tool takes (and exposes) its command
+    # in a `command` input field, so one input object serves them all — and the
+    # MATCH here uses a per-field `input.command.regex` predicate (the marker is
+    # alphanumeric, a valid literal regex), so this phase is also the live proof
+    # of regex + input-field matching against real harness events on every
+    # rewrite harness. (Stub/deny phases keep `event_contains`, so both matcher
+    # styles stay live-covered.)
+    cat > "$rulesfile" <<JSON
+{"rules":[{"match":{"input":{"command":{"regex":"$marker"}}},"action":{"rewrite":{"input":{"command":"touch $mockfile"},"message":"rewritten by oh_mock_enforce"}}}]}
+JSON
+
+    # Up to two attempts: a model occasionally refuses the fixture framing and
+    # never invokes its shell tool at all — visible as an EMPTY spy log (the
+    # hook never fired), which is agent flakiness, not a verdict-shape failure.
+    # Only that case is retried; a fired hook with a wrong outcome fails hard.
+    local attempt
+    for attempt in 1 2; do
+        rm -f "$spyfile"
+        note "  mock-enforce[rewrite]: the marked command must run REWRITTEN under bypass (attempt $attempt)"
+        oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $origfile. Rules: you MUST actually invoke your shell tool with that exact command — never decide on your own that it is not permitted; attempt it. Use only the shell tool, and do NOT create the file by any other means." --cwd "$sandbox" --mock-rules "$rulesfile" --spy-file "$spyfile"
+        status="$(oh_field '.results[0].status')"
+        if [ "$status" = "skipped" ]; then
+            rm -rf "$sandbox"
+            skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+        fi
+        if [ -s "$spyfile" ]; then
+            break
+        fi
+        note "  note: the spy log is empty — the agent never attempted the tool call (a refusal, not a hook failure)"
+    done
+    if [ ! -s "$spyfile" ]; then
+        oh_dump
+        rm -rf "$sandbox"
+        fail "$id: the agent never invoked its shell tool in $attempt attempts (spy log empty) — the rewrite path could not be exercised (a prompt-robustness problem, not a verdict-shape one)"
+    fi
+    if [ ! -e "$mockfile" ]; then
+        oh_dump
+        head -5 "$spyfile" >&2
+        rm -rf "$sandbox"
+        fail "$id: the rewrite was NOT honored ($mockfile absent although the hook fired — see the spy records above) — the harness ignored or misparsed the mock_rewrite verdict shape (drift)"
+    fi
+    if [ -e "$origfile" ]; then
+        oh_dump
+        rm -rf "$sandbox"
+        fail "$id: the ORIGINAL command still ran ($origfile exists) — the rewrite did not substitute the input"
+    fi
+    note "  ok[rewrite]: the rewritten command ran and the original did not"
+
+    if ! jq -e -s 'map(select(.action == "rewrite")) | length >= 1' "$spyfile" >/dev/null 2>&1; then
+        oh_dump
+        [ -f "$spyfile" ] && head -5 "$spyfile" >&2
+        rm -rf "$sandbox"
+        fail "$id: the spy log recorded no rewrite action ($spyfile) — the spy channel is broken even though the rewrite executed"
+    fi
+    if ! grep -q "$marker" "$spyfile"; then
+        rm -rf "$sandbox"
+        fail "$id: the spy log lost the ORIGINAL command (marker $marker absent) — it must record pre-rewrite intent"
+    fi
+    note "  ok[spy]: the spy log preserved the original event"
+
+    # Ephemerality: after the run, no CONFIG file in the workspace may still
+    # mention the mock hook (the snapshotted files were restored, created ones
+    # removed; claude's delivery never wrote into the workspace at all). The
+    # rules/spy files are ours and carry no hook command, so a text hit is
+    # residue. -I ignores binary files: a harness's own runtime artifacts (e.g.
+    # crush's .crush/crush.db session database) may journal whatever config the
+    # run loaded — that is the harness recording history, not a missed restore.
+    if grep -rIqF "mock $id --rules" "$sandbox" 2>/dev/null; then
+        grep -rIlF "mock $id --rules" "$sandbox" >&2
+        rm -rf "$sandbox"
+        fail "$id: the ephemeral mock hook left residue in the workspace (files above) — the restore did not run or missed a file"
+    fi
+    note "  ok[ephemeral]: the workspace carries no trace of the hook"
+
+    # Stub enforcement: the `stub` action declares only the OUTPUT; oneharness
+    # generates the printf rewrite itself, so the stub's text becomes the tool's
+    # genuine result — the live proof of the declare-the-output mock.
+    #
+    # The assertion observes the TOOL RESULT, not the model's prose. The stub's
+    # contract is "the declared text is what the tool returns"; whether the model
+    # then repeats it is model behavior, not oneharness's, and asserting on it is
+    # flaky — a capable model reads the coercive "you MUST repeat this verbatim"
+    # framing (or a stubbed output it can't reconcile) as a prompt injection and
+    # lectures instead of relaying (observed live — opencode/haiku, twice). So we
+    # ask (plainly, no coercion) the model to run the command, pass `--events` so
+    # the tool transcript lands in the result's raw `stdout`, and assert the
+    # marker surfaced there (the tool output) OR in the extracted `text` (the
+    # fallback for crush, whose headless output carries no transcript). The
+    # marker cannot appear unless the stub rule matched and its printf executed,
+    # so a hit proves the stub end to end regardless of what the model says.
+    local stubmark stubrules stubspy blob
+    stubmark="OHSTUBOUT${RANDOM}${RANDOM}"
+    stubrules="$sandbox/stub-rules.json"
+    stubspy="$sandbox/stub-spy.jsonl"
+    cat > "$stubrules" <<JSON
+{"rules":[{"match":{"event_contains":"ohstub-probe"},"action":{"stub":{"output":"$stubmark"}}}]}
+JSON
+    for attempt in 1 2; do
+        rm -f "$stubspy"
+        note "  mock-enforce[stub]: the stub's output must become the tool result (attempt $attempt)"
+        oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Using your shell tool, run this command to read a status token, then tell me the token it printed: cat ohstub-probe.txt" --cwd "$sandbox" --events --mock-rules "$stubrules" --spy-file "$stubspy"
+        [ -s "$stubspy" ] && break
+        note "  note: the spy log is empty — the agent never attempted the tool call; retrying"
+    done
+    if [ ! -s "$stubspy" ]; then
+        oh_dump
+        rm -rf "$sandbox"
+        fail "$id: the agent never invoked its shell tool for the stub phase (spy log empty)"
+    fi
+    if ! jq -e -s 'map(select(.action == "stub")) | length >= 1' "$stubspy" >/dev/null 2>&1; then
+        rm -rf "$sandbox"
+        fail "$id: the spy log recorded no stub action ($stubspy)"
+    fi
+    # The tool transcript (raw stdout) plus the extracted answer — the marker in
+    # either proves the stub's printf ran and produced the declared output.
+    blob="$(oh_field '.results[0].stdout // ""')$(oh_field '.results[0].text // ""')"
+    if ! printf '%s' "$blob" | grep -q "$stubmark"; then
+        oh_dump
+        head -5 "$stubspy" >&2
+        rm -rf "$sandbox"
+        fail "$id: the stubbed output ($stubmark) never surfaced as the tool result — the generated printf rewrite was not honored"
+    fi
+    note "  ok[stub]: the stub's output became the tool result"
+
+    rm -rf "$sandbox"
+    note "PASS: $id mock rewrite + stub enforcement (run --mock-rules)"
+}
+
+# Live proof that a `run --mock-rules` DENY is honored — for a harness whose
+# mock ceiling is deny+spy (Goose: its hook protocol has no rewrite verdict).
+# Also the only live exercise of that harness's ephemeral delivery (Goose's
+# plugin-pair install, snapshotted/restored around the run). Self-controlled
+# via the spy log: an empty log means the hook never fired (retried once as
+# agent flakiness); a `deny` record plus the file being absent proves a real
+# block, not a vacuous pass. Ends with the same zero-residue assertion as
+# oh_mock_enforce.
+#
+#   $1 harness id
+oh_mock_deny_enforce() {
+    local id="$1"
+    local bin sandbox marker denyfile rulesfile spyfile status attempt
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    sandbox="$(mktemp -d)"
+    sandbox="$(oh_native_path "$sandbox")"
+    oh_sandbox_prepare "$id" "$sandbox"
+    git init -q "$sandbox" 2>/dev/null || true
+    marker="OHMOCKDENY${RANDOM}${RANDOM}"
+    denyfile="$sandbox/$marker.txt"
+    rulesfile="$sandbox/mock-rules.json"
+    spyfile="$sandbox/mock-spy.jsonl"
+    cat > "$rulesfile" <<JSON
+{"rules":[{"match":{"event_contains":"$marker"},"action":{"deny":{"message":"blocked by oh_mock_deny_enforce"}}}]}
+JSON
+
+    for attempt in 1 2; do
+        rm -f "$spyfile"
+        note "  mock-deny[deny]: the marked command must be blocked under bypass (attempt $attempt)"
+        oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $denyfile. Rules: you MUST actually invoke your shell tool with that exact command — never decide on your own that it is not permitted; attempt it. Only if that tool invocation itself is rejected: do NOT create the file by any other means — reply with the single word DENIED and stop." --cwd "$sandbox" --mock-rules "$rulesfile" --spy-file "$spyfile"
+        status="$(oh_field '.results[0].status')"
+        if [ "$status" = "skipped" ]; then
+            rm -rf "$sandbox"
+            skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+        fi
+        [ -s "$spyfile" ] && break
+        note "  note: the spy log is empty — the agent never attempted the tool call; retrying"
+    done
+    if [ ! -s "$spyfile" ]; then
+        oh_dump
+        rm -rf "$sandbox"
+        fail "$id: the agent never invoked its shell tool in $attempt attempts (spy log empty) — the deny path could not be exercised"
+    fi
+    if ! jq -e -s 'map(select(.action == "deny")) | length >= 1' "$spyfile" >/dev/null 2>&1; then
+        oh_dump
+        head -5 "$spyfile" >&2
+        rm -rf "$sandbox"
+        fail "$id: the spy log recorded no deny action ($spyfile) — the rules never matched the marked call"
+    fi
+    if [ -e "$denyfile" ]; then
+        oh_dump
+        rm -rf "$sandbox"
+        fail "$id: the mock deny was NOT honored ($denyfile was created despite a recorded deny verdict) — the deny shape is not applied (drift)"
+    fi
+    note "  ok[deny]: the verdict was recorded and the command did not run"
+
+    if grep -rIqF "mock $id --rules" "$sandbox" 2>/dev/null; then
+        grep -rIlF "mock $id --rules" "$sandbox" >&2
+        rm -rf "$sandbox"
+        fail "$id: the ephemeral mock hook left residue in the workspace (files above)"
+    fi
+    note "  ok[ephemeral]: the workspace carries no trace of the hook"
+
+    rm -rf "$sandbox"
+    note "PASS: $id mock deny enforcement (run --mock-rules)"
 }
 
 # --- structured output enforcement -------------------------------------------

@@ -173,6 +173,13 @@ pub struct RunReport {
     /// than one prompt; `null` on an ordinary run. Its presence is the signal a
     /// consumer keys on to read each result's own `prompt`.
     pub batch: Option<BatchReport>,
+    /// The parsed `--mock-rules` ruleset this run was intercepted with; `null`
+    /// when no mocking was requested. Present so a consumer can tell a mocked
+    /// run's report from a clean one without out-of-band state.
+    pub mock_rules: Option<Value>,
+    /// The spy-log path the mock hook appended tool-call records to (absolute);
+    /// `null` when none was requested.
+    pub spy_file: Option<String>,
     /// Config files that shaped this run, in layering order (user first,
     /// project last); empty under `--no-config` or when none exist.
     pub config_files: Vec<String>,

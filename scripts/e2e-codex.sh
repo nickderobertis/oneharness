@@ -22,6 +22,15 @@ note "» read-only / plan enforcement: each must block a write"
 oh_mode_enforce codex read-only
 oh_mode_enforce codex plan
 
+# Mock enforcement: codex's hooks engine loads project .codex/hooks.json under
+# `exec` and honors the claude-nested `updatedInput` rewrite — but only when
+# the invocation opts in with `-c features.hooks=true` plus the per-run hook
+# trust bypass (probe-verified 2026-07-06; the `projects.<dir>.trust_level`
+# config route loads no hooks). `run --mock-rules` appends those flags itself
+# and restores the created .codex/hooks.json afterwards.
+note "» mock enforcement: run --mock-rules must rewrite a marked command's input"
+oh_mock_enforce codex
+
 # Normalized tool events: Codex's default text has no transcript, so `--events`
 # upgrades it to `exec --json`, whose `command_execution` items normalize to a
 # `tool_call` via `json:codex-items` — the live drift alarm for the codex

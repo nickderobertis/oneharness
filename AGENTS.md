@@ -111,7 +111,43 @@ Use the `just` recipes; do not hand-roll equivalents.
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It
   exists to prove a synced hook is *honored* end to end (the per-harness live
   e2e drives a real harness through it), not to be a policy engine — that is the
-  sibling `allowlister`'s role, which consumes the `install` library.
+  sibling `allowlister`'s role, which consumes the `install` library. `mock
+  <id>` is its read-write sibling for behavioral test suites (the `skilltest`
+  consumer; design in `docs/mock-spy-design.md`): the same hook loop, driven by
+  a `--rules` JSON ruleset — rules match on the tool name (`tool`/`tool_regex`),
+  the raw event (`event_contains`/`event_regex`), and per-field `input`
+  predicates (`equals`/`contains`/`regex` over `tool_input`), all ANDed and
+  loud-validated (regexes are the linear-time `regex` crate, compiled at parse
+  time) — that can *deny*, *rewrite the tool's input*, or *stub* a shell call
+  (declare only the output; oneharness compiles it to a safely-quoted printf
+  rewrite — nothing user-authored executes) and appends every
+  observed event to a `--spy-file`/`ONEHARNESS_SPY_FILE` JSONL spy log, which
+  preserves the *original* pre-rewrite call (the transcript `events` show only
+  post-rewrite reality). Decision/verdicts are pure in `domain::mock`; the
+  rewrite shape is per-harness registry data (`mock_rewrite`, all verified live
+  by `oh_mock_enforce` and/or the `explore-hooks` probe: claude-code and codex
+  `claude-nested` — codex's hooks engine needs the run to opt in via a `-c
+  features.hooks=true --dangerously-bypass-hook-trust` passthrough — crush
+  `crush-flat`, cursor `cursor-permission` (its `preToolUse` event, wired into
+  the hook binding for this), opencode via the plugin shim's args merge;
+  absent — a loud usage error — for goose, whose protocol can't rewrite, for
+  copilot, whose hooks were probe-REFUTED headlessly (zero events under `-p`),
+  and for qwen, whose documented `updatedInput` was live-REFUTED — hook fired,
+  verdict emitted, original command still ran on all three OSes. Claude's
+  documented PostToolUse `updatedToolOutput` replacement was also
+  probe-refuted — fired, ignored — so there is no `replace` verb yet; opencode
+  after-hook replacement is probe-verified and is where `replace` starts).
+  `run --mock-rules <file>` / `run --spy-file <file>` is the single-flag
+  ephemeral delivery: per-run argv for claude-code (`--settings` temp file,
+  zero mutation), a snapshot-and-restore project-scope install for the rest
+  (layers onto existing config via the non-destructive merge; created files
+  deleted, created dirs pruned — `io::hooks::HookSnapshot`), codex's opt-in
+  flags auto-appended (`MockDelivery` in the registry); qwen/copilot are
+  refused loudly (no headless-capable delivery). `oh_mock_enforce` is the live
+  drift alarm for both the verdict shape and the ephemeral delivery (it drives
+  `run --mock-rules` and asserts zero residue), and it retries once when the
+  spy log is empty (an agent refusal — the hook never fired — is flakiness,
+  not verdict drift).
 - **Structured output** (`run --schema <file>`): constrain each harness's final
   answer to a JSON Schema, validate it (the `jsonschema` crate, pinned
   `default-features = false` so it stays offline), and re-prompt on failure up to
@@ -384,6 +420,13 @@ shape. When you add one:
   sourced from the allowlister adapters, never guessed; both are loud when absent
   (a missing `gate_deny` makes `oneharness gate <id>` a usage error). Pin the new
   deny shape with a `--print`-style assertion in `domain::gate`/`tests/cli.rs`.
+  Likewise declare `mock_rewrite` (how `oneharness mock <id>` expresses an
+  input-rewrite verdict) ONLY once verified — doc-source the shape, pin it in
+  `domain::mock` + the registry test, and add the `oh_mock_enforce <id> [scope]
+  [run-args…]` live phase (the rewritten command runs, the original doesn't,
+  the spy log keeps the original event; forward any opt-in flags the harness's
+  hooks engine needs, as codex's phase does); leave it `None` (a loud usage
+  error) until the `explore-hooks` probe proves the CLI honors it headlessly.
 - Source the real invocation from a known-good driver — the
   `nickderobertis/allowlister` repo's `run_agent()` / `e2e-*.sh` drivers are the
   reference — rather than guessing flags. (`scripts/smoke.sh --live` here is the
@@ -399,8 +442,10 @@ shape. When you add one:
   harness has a `SyncSpec`, also add the `oh_sync_enforce` phases (allow rule
   executes under `--no-bypass`, deny rule doesn't): that live check is the only
   proof the synced file is *honored* and the drift alarm for its format. Unless
-  the harness can't load a hook through `oneharness run` (Codex's `codex exec`
-  ignores hooks) or needs bespoke trust scaffolding (Copilot), also add the
+  the harness can't load a hook through a plain `oneharness run` (Codex loads
+  hooks only when the run opts in via `-c features.hooks=true
+  --dangerously-bypass-hook-trust` — probe-verified, covered live by its mock
+  phase; Copilot's hooks were probe-REFUTED headlessly, zero events), also add the
   `oh_hook_enforce <id> [scope]` phase — it syncs a `oneharness gate <id>` hook
   and proves the real CLI blocks a marked command and runs an unmarked one, the
   honoring proof + drift alarm for the *hook* install (use `global` scope for a

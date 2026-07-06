@@ -160,6 +160,92 @@ pub fn install(
     }
 }
 
+/// A byte-level snapshot of config files about to be touched by an ephemeral
+/// hook install (`run --mock-rules`), so the workspace can be put back exactly
+/// as it was after the run — including in an "original" workspace whose
+/// existing config the install merged into. A file absent at snapshot time is
+/// restored by deletion, along with any directories the install had to create
+/// for it (removed only while empty, so nothing else is ever swept up).
+#[derive(Debug, Default)]
+pub struct HookSnapshot {
+    /// Each path with its pre-install bytes (`None` = did not exist).
+    entries: Vec<(PathBuf, Option<Vec<u8>>)>,
+    /// Ancestor directories that did not exist at snapshot time, deepest last.
+    created_dirs: Vec<PathBuf>,
+}
+
+impl HookSnapshot {
+    /// Record the current state of `paths` (typically the planned writes a
+    /// check-mode [`install`] returned) before the real install runs.
+    pub fn capture(paths: &[PathBuf]) -> Self {
+        let mut snapshot = HookSnapshot::default();
+        for path in paths {
+            snapshot
+                .entries
+                .push((path.clone(), std::fs::read(path).ok()));
+            // Note which ancestors the install will have to create, so restore
+            // can remove them again (nearest-missing first here; restore walks
+            // them deepest-first).
+            let mut missing = Vec::new();
+            let mut cursor = path.parent();
+            while let Some(dir) = cursor {
+                if dir.as_os_str().is_empty() || dir.exists() {
+                    break;
+                }
+                missing.push(dir.to_path_buf());
+                cursor = dir.parent();
+            }
+            for dir in missing.into_iter().rev() {
+                if !snapshot.created_dirs.contains(&dir) {
+                    snapshot.created_dirs.push(dir);
+                }
+            }
+        }
+        snapshot
+    }
+
+    /// Fold another snapshot's entries into this one (per-harness installs are
+    /// captured separately so an earlier install's writes are never re-captured
+    /// as if they were pre-existing state).
+    pub fn extend(&mut self, other: HookSnapshot) {
+        self.entries.extend(other.entries);
+        for dir in other.created_dirs {
+            if !self.created_dirs.contains(&dir) {
+                self.created_dirs.push(dir);
+            }
+        }
+    }
+
+    /// Put every captured path back: rewrite prior bytes, delete files that did
+    /// not exist, and prune the directories the install created (best-effort,
+    /// only while empty). Returns the failures (path + error) instead of
+    /// aborting, so a caller can warn per file — a restore must never take the
+    /// run's results down with it.
+    pub fn restore(&self) -> Vec<(PathBuf, std::io::Error)> {
+        let mut failures = Vec::new();
+        for (path, prior) in &self.entries {
+            let result = match prior {
+                Some(bytes) => std::fs::write(path, bytes),
+                None => match std::fs::remove_file(path) {
+                    // Already absent — nothing to undo.
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    other => other,
+                },
+            };
+            if let Err(err) = result {
+                failures.push((path.clone(), err));
+            }
+        }
+        // Deepest-first so nested created dirs empty out before their parents;
+        // `remove_dir` refuses non-empty dirs, which is exactly the safety we
+        // want (never remove anything the user put there meanwhile).
+        for dir in self.created_dirs.iter().rev() {
+            let _ = std::fs::remove_dir(dir);
+        }
+        failures
+    }
+}
+
 /// The path a binding anchors at for the given scope: a file for the JSON-merge
 /// and JS-shim strategies, the plugin directory for Goose. The project paths come
 /// from the [`HookBinding`]; the global ones from the harness's `global_hook`.
@@ -441,7 +527,8 @@ mod tests {
     }
 
     /// Cursor's dedicated file is seeded with its required `version` and fans
-    /// the command across the three `before*` events.
+    /// the command across the three `before*` events plus `preToolUse` (the
+    /// rewrite-capable event `oneharness mock` rides).
     #[test]
     fn file_strategy_seeds_cursor_version() {
         let dir = temp_project("cursor");
@@ -454,6 +541,7 @@ mod tests {
                     "beforeShellExecution": [{ "command": "guard hook cursor" }],
                     "beforeReadFile": [{ "command": "guard hook cursor" }],
                     "beforeMCPExecution": [{ "command": "guard hook cursor" }],
+                    "preToolUse": [{ "command": "guard hook cursor" }],
                 }
             }),
         );
@@ -572,6 +660,63 @@ mod tests {
             shim.contains("JSON.stringify({ tool_name, tool_input: args, cwd, session_id })"),
             "session_id must be on the stdin payload:\n{shim}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A snapshot taken before an ephemeral install restores an existing file
+    /// byte-identically, deletes a file that did not exist, and prunes the
+    /// directories the install created — but only while they are empty.
+    #[test]
+    fn snapshot_restores_existing_files_and_removes_created_ones() {
+        let dir = temp_project("snapshot");
+        let existing = dir.join("crush.json");
+        std::fs::write(&existing, r#"{"keep":"me"}"#).unwrap();
+        let created = dir.join(".codex").join("hooks.json");
+
+        let snapshot = HookSnapshot::capture(&[existing.clone(), created.clone()]);
+        // Simulate the installs: mutate the existing file, create the new one.
+        std::fs::write(&existing, r#"{"keep":"me","hooks":{}}"#).unwrap();
+        std::fs::create_dir_all(created.parent().unwrap()).unwrap();
+        std::fs::write(&created, r#"{"hooks":{}}"#).unwrap();
+
+        let failures = snapshot.restore();
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(
+            std::fs::read_to_string(&existing).unwrap(),
+            r#"{"keep":"me"}"#
+        );
+        assert!(!created.exists(), "created file must be deleted");
+        assert!(
+            !dir.join(".codex").exists(),
+            "the directory the install created must be pruned"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A created directory that gained OTHER content meanwhile is left alone —
+    /// restore only ever prunes empty dirs, never sweeps up user files. And
+    /// restoring an already-absent created file is a no-op, not a failure.
+    #[test]
+    fn snapshot_restore_never_removes_nonempty_dirs_and_tolerates_absence() {
+        let dir = temp_project("snapshot-keep");
+        let created = dir.join(".codex").join("hooks.json");
+        let snapshot = HookSnapshot::capture(std::slice::from_ref(&created));
+        std::fs::create_dir_all(created.parent().unwrap()).unwrap();
+        // The install never happened (or the file vanished) — and the user put
+        // something else into the created dir meanwhile.
+        std::fs::write(dir.join(".codex").join("user.txt"), "mine").unwrap();
+
+        let failures = snapshot.restore();
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(
+            dir.join(".codex").join("user.txt").exists(),
+            "restore must not touch user content"
+        );
+        // Snapshots merge without double-counting created dirs.
+        let mut a = HookSnapshot::capture(std::slice::from_ref(&created));
+        let b = HookSnapshot::capture(&[created]);
+        a.extend(b);
+        let _ = a.restore();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

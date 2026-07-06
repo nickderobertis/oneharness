@@ -20,3 +20,9 @@ toml = "1.0.7"
 # `$ref`s still resolve. Pinned to a 0.33.x line whose MSRV (1.71) stays at or
 # below the crate's declared `rust-version`.
 jsonschema = { version = "0.33", default-features = false }
+# Regex matching for mock rulesets (`domain::mock` MatchSpec `*_regex` / input
+# predicates). The `regex` crate is the linear-time RE2-style engine — no
+# catastrophic backtracking, so a caller-supplied (untrusted) pattern can never
+# hang the responder — and is already in the tree via `jsonschema`, so this adds
+# no new download.
+regex = "1"

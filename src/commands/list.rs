@@ -53,6 +53,14 @@ struct HarnessInfo {
     supports_allowed_tools: bool,
     supports_denied_tools: bool,
     supports_hooks: bool,
+    /// Whether `oneharness mock <id>` can express a pre-tool *deny* for this
+    /// harness (the same protocol `oneharness gate` speaks).
+    supports_mock_deny: bool,
+    /// The input-rewrite verdict shape `oneharness mock <id>` speaks for this
+    /// harness (`claude-nested`, `crush-flat`, `opencode-shim`); `null` when
+    /// the harness has no verified rewrite — a rewrite rule for it is then a
+    /// loud usage error (see the README mock support matrix).
+    mock_rewrite: Option<&'static str>,
     /// The argv oneharness would build, with placeholders, so the adapter's
     /// shape is visible without running anything.
     example_command: Vec<String>,
@@ -105,6 +113,8 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 supports_allowed_tools: sync.is_some_and(|s| s.allow_path.is_some()),
                 supports_denied_tools: sync.is_some_and(|s| s.deny_path.is_some()),
                 supports_hooks: sync.is_some_and(|s| s.hooks_path.is_some()),
+                supports_mock_deny: spec.gate_deny.is_some(),
+                mock_rewrite: spec.mock_rewrite.map(|s| s.as_str()),
                 example_command: (spec.build_argv)(&ctx),
             }
         })

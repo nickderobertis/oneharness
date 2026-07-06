@@ -10,6 +10,7 @@
 
 use crate::domain::gate::DenyShape;
 use crate::domain::hooks::HookShape;
+use crate::domain::mock::{MockDelivery, RewriteShape};
 use crate::domain::mode::{ModeHeadless, PermissionMode};
 use crate::domain::report::OutputFormat;
 use crate::domain::structured::NativeSchema;
@@ -154,6 +155,25 @@ pub struct HarnessSpec {
     /// for a harness with no gateable pre-tool hook. Consumed by the `gate`
     /// command (`src/commands/gate.rs`); sourced from the allowlister adapters.
     pub gate_deny: Option<DenyShape>,
+    /// How this harness expresses a pre-tool *input rewrite* when its installed
+    /// hook runs `oneharness mock <id>` — allow the call with substituted
+    /// arguments, the mock workhorse (swap a shell command for a stub that
+    /// prints canned output). `None` for a harness whose hook protocol has no
+    /// rewrite verdict (Goose), or whose support is not yet verified through
+    /// `oneharness run` (Codex, Copilot, Cursor — pending the `explore-hooks`
+    /// probe; see `docs/mock-spy-design.md`): a rewrite rule for it is then a
+    /// loud usage error, never a silent allow. Sourced from each CLI's hook
+    /// docs; honored-live is drift-alarmed by the `oh_mock_enforce` e2e phases.
+    pub mock_rewrite: Option<RewriteShape>,
+    /// How `run --mock-rules`/`run --spy-file` delivers the mock hook for ONE
+    /// invocation (see [`MockDelivery`]): Claude Code takes it on the argv via
+    /// `--settings` (zero workspace mutation); the rest get a project-scope
+    /// install that is snapshotted and restored around the run, layering on top
+    /// of any existing config non-destructively. `None` for a harness whose
+    /// hooks cannot fire from a project-scope headless run (qwen: user scope
+    /// only; copilot: probe-refuted entirely) — the flag is then a loud usage
+    /// error, never a silently inert install.
+    pub mock_delivery: Option<MockDelivery>,
     /// Environment variables oneharness sets when spawning this harness, so a
     /// headless run is clean without the caller knowing the harness's quirks
     /// (e.g. silencing a startup warning that would otherwise litter `stderr`).
@@ -334,15 +354,20 @@ const GOOSE_MANIFEST: &str = r#"{
 /// `{argv}` the command as a JSON argv array, `{name}` the display name. It
 /// spawns the command before every tool call, pipes `{tool_name, tool_input,
 /// cwd, session_id}` on stdin (the camelCase `input.sessionID` normalized to
-/// snake_case, omitted when absent), and throws to block on a
-/// `{"decision":"deny"}` reply — failing open if the command cannot run.
-/// Mirrors the known-good allowlister shim; pinned in the `io::hooks` tests.
+/// snake_case, omitted when absent), throws to block on a
+/// `{"decision":"deny"}` reply, and merges a reply's `updated_input` object
+/// into the tool's mutable `args` (OpenCode's documented pre-execution
+/// mutation point — how `oneharness mock` rewrites a call) — failing open if
+/// the command cannot run. Mirrors the known-good allowlister shim; pinned in
+/// the `io::hooks` tests.
 const OPENCODE_PLUGIN_JS: &str = r#"// {name} OpenCode plugin — installed by oneharness.
 //
 // OpenCode can block a tool call only from an in-process plugin, so this shim
 // bridges to an external command: before any tool runs it spawns the command,
-// piping the tool name and arguments as JSON on stdin, and throws to block when
-// the command replies with {"decision":"deny"}. Re-running sync regenerates it.
+// piping the tool name and arguments as JSON on stdin, throws to block when
+// the command replies with {"decision":"deny"}, and applies a reply's
+// {"updated_input":{...}} by merging it into the tool's mutable args (an input
+// rewrite, for `oneharness mock`). Re-running sync regenerates it.
 
 export const {export} = async ({ directory }) => ({
   "tool.execute.before": async (input, output) => {
@@ -377,6 +402,16 @@ export const {export} = async ({ directory }) => ({
     }
     if (decision && decision.decision === "deny") {
       throw new Error(decision.reason || "Blocked by {name}");
+    }
+    if (
+      decision &&
+      decision.updated_input &&
+      typeof decision.updated_input === "object" &&
+      !Array.isArray(decision.updated_input) &&
+      output &&
+      output.args
+    ) {
+      Object.assign(output.args, decision.updated_input);
     }
   },
 });
@@ -433,6 +468,12 @@ static REGISTRY: &[HarnessSpec] = &[
             anchor: ".claude/settings.json",
         }),
         gate_deny: Some(DenyShape::ClaudeNested),
+        // PreToolUse output: `permissionDecision: "allow"` + `updatedInput`
+        // (the documented input-rewrite verdict; docs/mock-spy-design.md).
+        mock_rewrite: Some(RewriteShape::ClaudeNested),
+        // Probe-verified: hooks load from a per-run `--settings <file>` in `-p`
+        // mode — the zero-mutation delivery (existing config still applies).
+        mock_delivery: Some(MockDelivery::SettingsFlag { flag: "--settings" }),
         default_env: &[],
         native_schema: Some(NativeSchema::ClaudeJsonSchema),
         // `--permission-mode` covers the whole spectrum, all honored under `-p`.
@@ -478,6 +519,24 @@ static REGISTRY: &[HarnessSpec] = &[
             anchor: ".codex/hooks.json",
         }),
         gate_deny: Some(DenyShape::ClaudeNested),
+        // Probe-verified (2026-07-06, codex v0.142.5): `codex exec` DOES load
+        // project `.codex/hooks.json` and honors the claude-nested
+        // `updatedInput` rewrite — but ONLY when the invocation carries
+        // `-c features.hooks=true --dangerously-bypass-hook-trust` (the
+        // `projects.<dir>.trust_level="trusted"` config route yields zero hook
+        // events). oneharness does not add those flags itself; the caller
+        // passes them per run (config `args` / `--` passthrough), as the
+        // `oh_mock_enforce codex` phase does.
+        mock_rewrite: Some(RewriteShape::ClaudeNested),
+        // Project .codex/hooks.json, restored after the run; the opt-in flags
+        // the probe proved necessary are auto-appended to the argv.
+        mock_delivery: Some(MockDelivery::ProjectHooks {
+            extra_args: &[
+                "-c",
+                "features.hooks=true",
+                "--dangerously-bypass-hook-trust",
+            ],
+        }),
         default_env: &[],
         // Codex `exec` *does* have a native schema flag (`--output-schema <file>`),
         // but it takes a schema FILE (not inline) and is reportedly ignored once
@@ -541,6 +600,11 @@ static REGISTRY: &[HarnessSpec] = &[
             anchor: "opencode/plugin/{name}.js",
         }),
         gate_deny: Some(DenyShape::Decision("deny")),
+        // The oneharness plugin shim applies `updated_input` by merging it into
+        // the tool's mutable `args` at `tool.execute.before` (the officially
+        // documented mutation point of OpenCode's plugin API).
+        mock_rewrite: Some(RewriteShape::OpencodeShim),
+        mock_delivery: Some(MockDelivery::ProjectHooks { extra_args: &[] }),
         default_env: &[],
         native_schema: None,
         // The built-in `plan` agent is read-only, so `plan` and `read-only` both
@@ -595,6 +659,11 @@ static REGISTRY: &[HarnessSpec] = &[
             anchor: ".agents/plugins/{name}",
         }),
         gate_deny: Some(DenyShape::Decision("block")),
+        // Goose hooks can only block (exit 2 / `decision: "block"`); its
+        // protocol has no input-rewrite verdict — deny is its mock ceiling.
+        mock_rewrite: None,
+        // Deny/spy rules still deliver (its project plugin hooks fire live).
+        mock_delivery: Some(MockDelivery::ProjectHooks { extra_args: &[] }),
         default_env: &[],
         native_schema: None,
         // Goose has no mode flag on `goose run`; the mode is the `GOOSE_MODE`
@@ -661,6 +730,19 @@ static REGISTRY: &[HarnessSpec] = &[
             anchor: ".qwen/settings.json",
         }),
         gate_deny: Some(DenyShape::ClaudeNested),
+        // Qwen's docs describe the same `updatedInput` rewrite as Claude Code,
+        // but it is NOT honored live: with the hook demonstrably firing (its
+        // gate deny passed at the same global scope) and the allow+updatedInput
+        // verdict emitted, the ORIGINAL command still ran — measured by
+        // oh_mock_enforce on all three OSes (2026-07-06, `--yolo`). Absent per
+        // the measured-not-guessed rule until the explore-hooks probe sources a
+        // shape qwen actually applies; `oneharness mock qwen` is deny-only.
+        mock_rewrite: None,
+        // Qwen fires only *user*-scoped hooks headlessly (project hooks sit
+        // behind folder trust), so a project-scope one-shot install would be
+        // silently inert — refused loudly; use `sync --global` into a
+        // redirected HOME instead (the oh_hook_enforce qwen pattern).
+        mock_delivery: None,
         default_env: &[("QWEN_CODE_SUPPRESS_YOLO_WARNING", "1")],
         native_schema: None,
         // `--approval-mode` spans the whole spectrum, all clean headless: current
@@ -711,6 +793,10 @@ static REGISTRY: &[HarnessSpec] = &[
             anchor: "crush/crush.json",
         }),
         gate_deny: Some(DenyShape::Decision("deny")),
+        // Crush's PreToolUse stdout documents `updated_input` (a shallow-merge
+        // patch of the tool input) beside `decision: "allow"`.
+        mock_rewrite: Some(RewriteShape::CrushFlat),
+        mock_delivery: Some(MockDelivery::ProjectHooks { extra_args: &[] }),
         default_env: &[],
         native_schema: None,
         // `crush run` auto-approves the whole session, so it never hangs — but it
@@ -747,6 +833,15 @@ static REGISTRY: &[HarnessSpec] = &[
             anchor: ".copilot/hooks/{name}.json",
         }),
         gate_deny: Some(DenyShape::CopilotFlat),
+        // Probe-REFUTED (2026-07-06): copilot's repo `.github/hooks/*.json`
+        // hooks produced ZERO events across every headless `-p` experiment,
+        // even though the agent demonstrably used its shell tool — despite its
+        // docs demonstrating `-p` hooks. With no hook firing there is nothing
+        // to rewrite; absent until a live run shows its hooks loading at all.
+        mock_rewrite: None,
+        // No hook has ever fired headlessly (probe: zero events) — nothing any
+        // delivery could make the CLI run, so the flag is refused loudly.
+        mock_delivery: None,
         default_env: &[],
         native_schema: None,
         // `--mode plan` is a real read-only plan mode; `read-only` is allow-all
@@ -789,6 +884,14 @@ static REGISTRY: &[HarnessSpec] = &[
                     "beforeShellExecution",
                     "beforeReadFile",
                     "beforeMCPExecution",
+                    // `preToolUse` is the ONLY cursor event whose reply can
+                    // rewrite the tool's input (`updated_input`, probe-verified
+                    // headlessly 2026-07-06); the three `before*` events are
+                    // allow/deny-only. Wiring it alongside them means a shell
+                    // call invokes the hook command more than once — the gate's
+                    // verdicts are idempotent, and the mock's rewrite rides
+                    // this event.
+                    "preToolUse",
                 ],
             },
             file: ".cursor/hooks.json",
@@ -800,6 +903,13 @@ static REGISTRY: &[HarnessSpec] = &[
             anchor: ".cursor/hooks.json",
         }),
         gate_deny: Some(DenyShape::CursorPermission),
+        // Probe-verified (2026-07-06): cursor honors a `preToolUse` reply of
+        // `{"permission":"allow","updated_input":{…}}` headlessly — the
+        // original command in the preToolUse event, the rewritten one in the
+        // subsequent before/afterShellExecution events. The `preToolUse` event
+        // is wired into the hook binding above for exactly this.
+        mock_rewrite: Some(RewriteShape::CursorPermission),
+        mock_delivery: Some(MockDelivery::ProjectHooks { extra_args: &[] }),
         default_env: &[],
         native_schema: None,
         // `--mode plan` is the read-only plan mode; `--mode ask` is read-only
@@ -1223,6 +1333,82 @@ mod tests {
             assert!(seen.insert(h.id), "duplicate id {}", h.id);
         }
         assert_eq!(all().len(), 8);
+    }
+
+    /// Pin each harness's mock input-rewrite capability: the live-verified
+    /// shapes for the five that honor one (oh_mock_enforce + the explore-hooks
+    /// probe, 2026-07-06), and — as deliberately as the presences — the
+    /// absences: Goose's protocol has no rewrite verdict; Copilot's hooks
+    /// never fired headlessly (probe: zero events); and Qwen's documented
+    /// `updatedInput` was live-REFUTED (verdict emitted, original command
+    /// still ran — see its registry comment), so it stays absent despite its
+    /// docs. A rewrite also requires an installable hook and a deny shape
+    /// (the mock responder's other verb), so those must accompany it.
+    #[test]
+    fn registry_mock_rewrite_capability_is_pinned() {
+        let shape = |id: &str| by_id(id).unwrap().mock_rewrite;
+        assert_eq!(shape("claude-code"), Some(RewriteShape::ClaudeNested));
+        assert_eq!(shape("codex"), Some(RewriteShape::ClaudeNested));
+        assert_eq!(shape("crush"), Some(RewriteShape::CrushFlat));
+        assert_eq!(shape("opencode"), Some(RewriteShape::OpencodeShim));
+        assert_eq!(shape("cursor"), Some(RewriteShape::CursorPermission));
+        for id in ["goose", "qwen", "copilot"] {
+            assert_eq!(shape(id), None, "{id} must stay absent until verified");
+        }
+        // The one-shot delivery (`run --mock-rules`): claude rides the argv,
+        // qwen (user-scope-only hooks) and copilot (hooks never fire) are
+        // refused, codex auto-appends its probe-proven opt-in flags, the rest
+        // are plain project installs.
+        let delivery = |id: &str| by_id(id).unwrap().mock_delivery;
+        assert_eq!(
+            delivery("claude-code"),
+            Some(MockDelivery::SettingsFlag { flag: "--settings" })
+        );
+        assert_eq!(
+            delivery("codex"),
+            Some(MockDelivery::ProjectHooks {
+                extra_args: &[
+                    "-c",
+                    "features.hooks=true",
+                    "--dangerously-bypass-hook-trust",
+                ],
+            })
+        );
+        for id in ["opencode", "goose", "crush", "cursor"] {
+            assert_eq!(
+                delivery(id),
+                Some(MockDelivery::ProjectHooks { extra_args: &[] }),
+                "{id}"
+            );
+        }
+        for id in ["qwen", "copilot"] {
+            assert_eq!(delivery(id), None, "{id} must be refused loudly");
+        }
+        for h in all() {
+            if h.mock_rewrite.is_some() {
+                assert!(
+                    h.hooks.is_some() && h.gate_deny.is_some(),
+                    "{}: a rewrite shape needs an installable hook and a deny shape",
+                    h.id
+                );
+            }
+        }
+    }
+
+    /// The OpenCode shim must keep both verdict paths: throw-to-block on a
+    /// deny, and merge `updated_input` into the tool's mutable args (the
+    /// rewrite `oneharness mock` emits for `RewriteShape::OpencodeShim`).
+    #[test]
+    fn opencode_shim_applies_updated_input_and_still_blocks_on_deny() {
+        assert!(OPENCODE_PLUGIN_JS.contains(r#"decision.decision === "deny""#));
+        assert!(OPENCODE_PLUGIN_JS.contains("Object.assign(output.args, decision.updated_input)"));
+        // The deny check runs first, so a malformed reply carrying both never
+        // rewrites a call that should have been blocked.
+        let deny = OPENCODE_PLUGIN_JS
+            .find(r#"decision.decision === "deny""#)
+            .unwrap();
+        let rewrite = OPENCODE_PLUGIN_JS.find("decision.updated_input").unwrap();
+        assert!(deny < rewrite, "deny must be evaluated before the rewrite");
     }
 
     #[test]

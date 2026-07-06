@@ -26,3 +26,11 @@ oh_assert_echoed goose "$marker"
 # hooks even under GOOSE_MODE=auto, which oneharness's bypass requests).
 note "» hook enforcement: the synced plugin gate must block a marked command"
 oh_hook_enforce goose
+
+# Mock enforcement (deny+spy — goose's mock ceiling: its hook protocol has no
+# rewrite verdict): `run --mock-rules` installs the plugin pair ephemerally
+# (restored afterwards), the deny rule must block the marked command, and the
+# spy log must record the original call — the live proof of goose's one-shot
+# delivery and of the deny action through `oneharness mock`.
+note "» mock enforcement (deny): run --mock-rules must block a marked command"
+oh_mock_deny_enforce goose

@@ -426,6 +426,130 @@ live e2e drives a real harness through it), not to be a policy engine — that i
 [allowlister](https://github.com/nickderobertis/allowlister)'s role, which
 consumes `oneharness-core`'s installer as a library.
 
+#### The mock/spy responder (`oneharness mock`)
+
+**`oneharness mock <id>`** is the gate's read-write sibling, for behavioral
+test suites (the [skilltest](https://github.com/nickderobertis/skilltest)
+consumer — see `docs/mock-spy-design.md`): the same stdin/stdout hook loop,
+but driven by a `--rules <file>` JSON ruleset that can **intercept** tool calls,
+not just deny them. Every observed event is also appended to a `--spy-file`
+JSONL log (or `$ONEHARNESS_SPY_FILE`) — the **spy** channel, which records the
+*original* tool call even when a rewrite substituted its input (the transcript
+`events` can only show post-rewrite reality).
+
+```jsonc
+// rules.json — first matching rule wins; no match = allow through (spy-only)
+{
+  "rules": [
+    {
+      // all listed criteria must hold (AND). `tool_regex` spans a harness's
+      // tool-name casing; `input` matches specific argument fields.
+      "match": {
+        "tool_regex": "^(?i)bash$",
+        "input": { "command": { "regex": "git\\s+push" } }
+      },
+      "action": { "deny": { "message": "pushes are mocked in this test" } }
+    },
+    {
+      // fake a shell result by declaring ONLY the output: oneharness generates
+      // a safely-quoted printf stub itself, so no user-authored command — and
+      // nothing real — executes; the model receives this text (+ trailing
+      // newline) as the tool's genuine result. `exit_code` fakes a failure.
+      "match": { "input": { "command": { "contains": "git status" } } },
+      "action": { "stub": { "output": "nothing to commit, working tree clean" } }
+    },
+    {
+      // the general rewrite: substitute any input fields — here redirecting a
+      // file read to a fixture (shell stubs are better written with `stub`)
+      "match": { "tool": "Read", "input": { "file_path": { "equals": "/etc/prod.yaml" } } },
+      "action": { "rewrite": { "input": { "file_path": "/tmp/ws/fixtures/config.yaml" } } }
+    }
+  ]
+}
+```
+
+**Matching** — a rule's `match` combines any of these criteria (all present
+ones must hold): `tool` (case-insensitive exact tool name) or `tool_regex`;
+`event_contains` (substring of the raw hook event — the portable, harness-
+agnostic option) or `event_regex`; and `input`, a map from an argument name
+(`command`, `file_path`, …) to a predicate — `equals`, `contains`, or `regex`
+— so you can match on the *specific* tool input rather than the whole event. An
+absent input field fails the rule (never fabricated); a non-string argument is
+compared against its compact JSON, so a predicate can still target an array or
+object. Regexes are RE2 (linear-time — a caller-supplied pattern can't hang the
+responder), unanchored (use `^…$` for exact); an invalid pattern, an empty
+needle, or a match with no criteria is a loud usage error before anything runs.
+
+**Actions**: `deny` (the model reads the message as the tool's failure),
+`stub` (declare a shell call's output — compiled to a safe printf rewrite, so
+it needs the same `mock_rewrite` capability), and `rewrite` (substitute raw
+input fields — the primitive under `stub`, and the way to mock file reads).
+The model never perceives the substitution: its own tool call (the original)
+is already in its context when the hook fires, and what it receives back is
+just the result — keep canned output *plausible for what was asked*, since a
+self-inconsistent result (a fixture whose content names a different file) is
+the one thing a model has been observed to notice.
+
+Per-harness capability — `deny` works wherever the gate does; `rewrite` (and
+therefore `stub`, which compiles to one) needs the harness's `mock_rewrite`
+shape (see `supports_mock_deny` / `mock_rewrite` in `oneharness list`; a rule
+using an action the harness can't express is a loud usage error, never a silent
+allow):
+
+| harness | deny | input rewrite (`mock_rewrite`) |
+| --- | --- | --- |
+| `claude-code` | ✅ | ✅ `claude-nested` (PreToolUse `updatedInput`; also honored for `Read` — file-read mocking) — verified live |
+| `codex` | ✅ | ✅ `claude-nested` — verified live, but its hooks engine needs the run to opt in: pass `-c features.hooks=true --dangerously-bypass-hook-trust` (via `--` passthrough or `[harness.codex] args`); the `trust_level` config route loads no hooks |
+| `crush` | ✅ | ✅ `crush-flat` (`updated_input`, shallow-merged) — verified live |
+| `opencode` | ✅ | ✅ `opencode-shim` (the synced plugin merges the args) — verified live |
+| `cursor` | ✅ | ✅ `cursor-permission` (`preToolUse` `updated_input`) — verified live on Linux/macOS (its Windows hook bug applies to mocks too) |
+| `qwen` | ✅ | ❌ its documented `updatedInput` is **not honored live** (hook fires, verdict emitted, original ran — measured on all three OSes); deny-only until re-sourced |
+| `copilot` | ✅* | ❌ probe-refuted: its repo hooks produced **zero events** headlessly (`-p`), so neither verb can fire through `oneharness run` today |
+| `goose` | ✅ | ❌ its hook protocol has no rewrite verdict |
+
+**The single-flag path — `run --mock-rules` (and/or `--spy-file`)** delivers
+the hook **for one invocation**, works in an *original* workspace whose
+existing config keeps applying (the mock is layered on top), and leaves no
+trace afterwards:
+
+```console
+$ oneharness run --harness claude-code --cwd ~/proj \
+    --mock-rules rules.json --spy-file spy.jsonl --prompt "…"
+```
+
+Per-harness delivery (all live-verified; see `mock_delivery` in the registry):
+Claude Code takes the hook **on the argv** via a per-run `--settings` temp
+file — zero workspace mutation, project/user settings untouched and still in
+effect. The others get a **project-scope install through the non-destructive
+merge** (existing hooks and unrelated keys preserved), with every touched file
+snapshotted before and restored byte-identically after the run — files the
+install created are deleted, directories it created are pruned. Codex's
+hook-engine opt-in flags (`-c features.hooks=true
+--dangerously-bypass-hook-trust`) are appended to its argv automatically.
+`--spy-file` alone (no ruleset) installs a pure observer. A selected harness
+whose hooks can't fire this way is refused loudly before anything is touched:
+qwen (user-scope-only hooks — use the `sync --global` + redirected-HOME
+pattern instead) and copilot (hooks never fire headlessly). The report records
+`mock_rules` and `spy_file` so a mocked run is distinguishable from a clean
+one. One caveat: the restore runs on the normal exit path, so a hard kill
+(SIGKILL) mid-run can leave the hook installed — re-running any oneharness
+mock/sync in that workspace, or `git checkout`, puts it back; prefer throwaway
+workspaces for suites.
+
+**The standing-policy path** — a `[[hooks]]` entry synced into the harness's
+own config — remains available for policies that should persist (and is how
+qwen's user-scope delivery works):
+
+```toml
+[[hooks]]
+command = "oneharness mock {harness} --rules /tmp/ws/rules.json --spy-file /tmp/ws/spy.jsonl"
+```
+
+The rewrite path AND the ephemeral delivery are drift-alarmed live per harness
+by the `oh_mock_enforce` e2e phases (driven through `run --mock-rules`: the
+substituted command must run, the original must not, the spy log must keep the
+original event, and the workspace must carry no trace of the hook afterwards).
+
 The merge is deliberately conservative:
 
 - **Unrelated keys are never touched** — objects merge per key, and only the
@@ -913,8 +1037,11 @@ config, then drives the real CLI under bypass (so the hook is the sole decider)
 through a marked command (the gate must block it) and an unmarked one (the gate
 must let it run). For **Qwen** the gate is synced with `--global` — Qwen only
 fires user-scoped hooks headlessly — which also exercises `sync --global` live.
-Two harnesses are excluded by design: **Codex** (`oneharness run` drives `codex
-exec`, which does not load hooks) and **Copilot** (its project hooks sit behind a
+Two harnesses are excluded by design: **Codex** (`codex exec` loads hooks only
+when the invocation opts in with `-c features.hooks=true
+--dangerously-bypass-hook-trust` — probe-verified; the `oh_mock_enforce codex`
+phase passes those flags and is the live proof its hooks load, so the plain
+gate phase stays omitted) and **Copilot** (its project hooks sit behind a
 trusted-folder + prompt-mode setup that belongs in allowlister's adapter e2e);
 both keep their hermetic install coverage.
 

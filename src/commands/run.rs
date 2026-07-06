@@ -6,6 +6,7 @@ use crate::cli::RunArgs;
 use crate::commands::{print_json, select_specs};
 use oneharness_core::domain::batch::{self, BatchStrategy};
 use oneharness_core::domain::harness::{self, BuildCtx, HarnessSpec};
+use oneharness_core::domain::mock::{self, MockDelivery};
 use oneharness_core::domain::mode::{ModeHeadless, PermissionMode};
 use oneharness_core::domain::report::{
     BatchReport, Capture, OutputFormat, RunReport, RunResult, Status, SCHEMA_VERSION,
@@ -16,6 +17,7 @@ use oneharness_core::domain::{events, normalize, signals};
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::config as config_io;
 use oneharness_core::io::detect::{self, BinOverrides};
+use oneharness_core::io::hooks::{self as hooks_io, HookSnapshot, Scope};
 use oneharness_core::io::runner::{self, Job, Outcome};
 
 /// Exit codes (clap uses 2 for argument errors).
@@ -103,6 +105,11 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         .filter_map(|(id, h)| h.bin.clone().map(|bin| (id.clone(), bin)))
         .collect();
     let overrides = BinOverrides::parse(&args.bin)?.with_config_bins(config_bins);
+    // One-shot mock/spy wiring (`--mock-rules` / `--spy-file`): validate the
+    // ruleset and every selected harness's capability loudly, then deliver the
+    // hook ephemerally — on the argv where the harness supports it, else via a
+    // snapshotted project-scope install restored after the run.
+    let mock_wiring = setup_mock(args, &specs, &project_start, &overrides)?;
     let cli_env = parse_env(&args.env)?;
     let model = args.model.as_deref().or(cfg.model.as_deref());
     let system = args.system.as_deref().or(cfg.system.as_deref());
@@ -157,6 +164,9 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         };
         let mut extra = cfg.args_for(spec.id).to_vec();
         extra.extend(args.passthrough.iter().cloned());
+        if let Some(wiring) = &mock_wiring {
+            extra.extend(wiring.extra_args_for(spec.id));
+        }
         let harness_plan = HarnessPlan {
             spec,
             bin: resolved.bin.clone(),
@@ -245,6 +255,8 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 prompt,
             } => stream_one_harness(&jobs[job_index], spec, &bin, output_format, prompt),
         };
+        // The run is over: put the workspace back before anything else can fail.
+        let mock_report = mock_wiring.map(MockWiring::finish);
         if let Some(dir) = &args.output_dir {
             write_output_dir(dir, std::slice::from_ref(&result))?;
         }
@@ -259,6 +271,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             max_retries,
             None,
             loaded.files.clone(),
+            mock_report,
         );
         // The event lines were already written during the run; the report is the
         // terminal `{"type":"result", ...}` line of the same NDJSON stream.
@@ -333,6 +346,11 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         )
     };
 
+    // Every job is done (or nothing ran under --print-command, where mock
+    // wiring is refused by clap): put the workspace back before anything else
+    // can fail, so a later I/O error never leaves the ephemeral hook behind.
+    let mock_report = mock_wiring.map(MockWiring::finish);
+
     let results: Vec<RunResult> = plan
         .into_iter()
         .map(|entry| match entry {
@@ -382,6 +400,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             forked,
         }),
         loaded.files,
+        mock_report,
     );
     print_json(&report, args.compact)?;
 
@@ -403,6 +422,225 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
 /// run metadata. Extracted so the normal and streaming paths emit an identical
 /// envelope shape (the streaming path passes `batch: None`).
 #[allow(clippy::too_many_arguments)]
+/// What `--mock-rules`/`--spy-file` wired up before spawning, and how to undo
+/// it. Built by [`setup_mock`]; consumed by [`MockWiring::finish`] the moment
+/// every job is done — the restore must run on the same code path as the run
+/// itself, so a later failure (report I/O) can never leave the ephemeral hook
+/// installed in the workspace.
+struct MockWiring {
+    /// Per-harness argv additions: Claude Code's `--settings <tempfile>`,
+    /// Codex's hook-engine opt-in flags.
+    extra_args: std::collections::HashMap<&'static str, Vec<String>>,
+    /// Byte snapshots of every project config file the installs touched
+    /// (existing files restored verbatim, created ones deleted).
+    snapshot: HookSnapshot,
+    /// Temp settings files to delete afterwards (the `SettingsFlag` delivery).
+    temp_files: Vec<std::path::PathBuf>,
+    /// What the report records.
+    rules: Option<serde_json::Value>,
+    spy_file: Option<String>,
+}
+
+/// The report-facing remainder of a finished [`MockWiring`].
+struct MockReport {
+    rules: Option<serde_json::Value>,
+    spy_file: Option<String>,
+}
+
+impl MockWiring {
+    fn extra_args_for(&self, id: &str) -> Vec<String> {
+        self.extra_args.get(id).cloned().unwrap_or_default()
+    }
+
+    /// Undo everything: restore the snapshotted config files and delete the
+    /// temp settings files. Best-effort with a stderr warning per failure — a
+    /// restore problem must never take the run's results down with it.
+    fn finish(self) -> MockReport {
+        for (path, err) in self.snapshot.restore() {
+            eprintln!(
+                "oneharness: warning: could not restore `{}` after the mocked run: {err}",
+                path.display()
+            );
+        }
+        for path in &self.temp_files {
+            if let Err(err) = std::fs::remove_file(path) {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!(
+                        "oneharness: warning: could not remove temp settings `{}`: {err}",
+                        path.display()
+                    );
+                }
+            }
+        }
+        MockReport {
+            rules: self.rules,
+            spy_file: self.spy_file,
+        }
+    }
+}
+
+/// Validate and deliver the one-shot mock hook for every selected harness.
+/// `None` when neither `--mock-rules` nor `--spy-file` was given. Everything
+/// refusable is refused here, before any file is touched or process spawned:
+/// a harness with no one-shot delivery (qwen, copilot), a rule action a
+/// harness cannot express, an unreadable/invalid ruleset, or a path that
+/// cannot be embedded into a hook command. Only then are the hooks delivered —
+/// on the argv where possible, else installed at project scope in the working
+/// directory (layering onto existing config via the non-destructive merge)
+/// with every touched file snapshotted for [`MockWiring::finish`].
+fn setup_mock(
+    args: &RunArgs,
+    specs: &[&'static HarnessSpec],
+    project_dir: &std::path::Path,
+    overrides: &BinOverrides,
+) -> Result<Option<MockWiring>, OneharnessError> {
+    if args.mock_rules.is_none() && args.spy_file.is_none() {
+        return Ok(None);
+    }
+
+    // Parse + validate the ruleset (loud), and keep the raw value for the report.
+    let mut rules_value = None;
+    let mut parsed_rules = None;
+    if let Some(path) = &args.mock_rules {
+        let text =
+            std::fs::read_to_string(path).map_err(|source| OneharnessError::MockRulesFile {
+                path: path.display().to_string(),
+                source,
+            })?;
+        let rules =
+            mock::parse_rules(&text).map_err(|message| OneharnessError::MockRulesInvalid {
+                path: path.display().to_string(),
+                message,
+            })?;
+        rules_value = serde_json::from_str(&text).ok();
+        parsed_rules = Some(rules);
+    }
+
+    // Every selected harness must be able to take the hook AND express every
+    // rule action — refused before anything is delivered anywhere.
+    for spec in specs {
+        if spec.mock_delivery.is_none() {
+            return Err(OneharnessError::MockDeliveryUnsupported {
+                id: spec.id.to_string(),
+                reason: match spec.id {
+                    "qwen" => {
+                        "its hooks fire only at user scope headlessly (project hooks sit behind \
+                         folder trust) — sync a [[hooks]] mock with --global into a redirected \
+                         HOME instead (see the README)"
+                    }
+                    _ => {
+                        "its hooks never fire in a headless run (probe-refuted), so no delivery \
+                          could make the CLI honor them"
+                    }
+                },
+            });
+        }
+        if let Some(rules) = &parsed_rules {
+            if let Some(action) = mock::unsupported_action(rules, spec.gate_deny, spec.mock_rewrite)
+            {
+                return Err(OneharnessError::MockActionUnsupported {
+                    id: spec.id.to_string(),
+                    action,
+                });
+            }
+        }
+    }
+
+    // The hook command embeds this binary and the (absolutized) paths — the
+    // hook runs from the harness's own cwd, and some harnesses tokenize the
+    // command on whitespace, so space-bearing paths are refused loudly.
+    let exe = std::env::current_exe().map_err(|err| OneharnessError::MockSetup {
+        message: format!("could not resolve the oneharness binary path: {err}"),
+    })?;
+    let rules_abs = args
+        .mock_rules
+        .as_deref()
+        .map(std::path::absolute)
+        .transpose()
+        .map_err(|err| OneharnessError::MockSetup {
+            message: format!("could not absolutize --mock-rules: {err}"),
+        })?;
+    let spy_abs = args
+        .spy_file
+        .as_deref()
+        .map(std::path::absolute)
+        .transpose()
+        .map_err(|err| OneharnessError::MockSetup {
+            message: format!("could not absolutize --spy-file: {err}"),
+        })?;
+    let embed = |p: &std::path::Path| -> Result<String, OneharnessError> {
+        // Forward slashes work everywhere Windows paths are consumed here, and
+        // keep the string safe for JSON/TOML/shim embedding.
+        let text = p.display().to_string().replace('\\', "/");
+        if text.chars().any(char::is_whitespace) {
+            return Err(OneharnessError::MockPathWhitespace { path: text });
+        }
+        Ok(text)
+    };
+    let exe = embed(&exe)?;
+    let rules_str = rules_abs.as_deref().map(&embed).transpose()?;
+    let spy_str = spy_abs.as_deref().map(&embed).transpose()?;
+
+    let mut wiring = MockWiring {
+        extra_args: std::collections::HashMap::new(),
+        snapshot: HookSnapshot::default(),
+        temp_files: Vec::new(),
+        rules: rules_value,
+        spy_file: spy_str.clone(),
+    };
+
+    for spec in specs {
+        // A missing binary is a skipped result; do not touch the workspace for it.
+        if !detect::resolve(spec, overrides).available {
+            continue;
+        }
+        let command = mock::hook_command(&exe, spec.id, rules_str.as_deref(), spy_str.as_deref());
+        match spec.mock_delivery.expect("validated above") {
+            MockDelivery::SettingsFlag { flag } => {
+                let path = std::env::temp_dir().join(format!(
+                    "oneharness-mock-{}-{}.json",
+                    spec.id,
+                    std::process::id()
+                ));
+                std::fs::write(&path, mock::settings_hooks_json(&command)).map_err(|err| {
+                    OneharnessError::MockSetup {
+                        message: format!(
+                            "could not write temp settings `{}`: {err}",
+                            path.display()
+                        ),
+                    }
+                })?;
+                let path_str = embed(&path)?;
+                wiring.temp_files.push(path);
+                wiring
+                    .extra_args
+                    .insert(spec.id, vec![flag.to_string(), path_str]);
+            }
+            MockDelivery::ProjectHooks { extra_args } => {
+                let hook = oneharness_core::domain::hooks::HookSpec {
+                    plugin_name: Some("oneharness-mock".into()),
+                    ..oneharness_core::domain::hooks::HookSpec::command(&command)
+                };
+                // Plan first (check mode) to learn which files the install will
+                // touch, snapshot exactly those, then install for real. Captured
+                // per spec so one harness's install is never re-captured as
+                // another's pre-existing state.
+                let planned = hooks_io::install(Scope::Project(project_dir), spec, &hook, true)?;
+                let paths: Vec<std::path::PathBuf> = planned.into_iter().map(|w| w.path).collect();
+                wiring.snapshot.extend(HookSnapshot::capture(&paths));
+                hooks_io::install(Scope::Project(project_dir), spec, &hook, false)?;
+                if !extra_args.is_empty() {
+                    wiring
+                        .extra_args
+                        .insert(spec.id, extra_args.iter().map(|a| a.to_string()).collect());
+                }
+            }
+        }
+    }
+    Ok(Some(wiring))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn build_report(
     results: Vec<RunResult>,
     prompts: &[String],
@@ -413,6 +651,7 @@ fn build_report(
     max_retries: u32,
     batch: Option<BatchReport>,
     config_files: Vec<String>,
+    mock: Option<MockReport>,
 ) -> RunReport {
     RunReport {
         schema_version: SCHEMA_VERSION,
@@ -431,6 +670,8 @@ fn build_report(
         schema: schema.map(|s| s.as_value().clone()),
         schema_max_retries: schema.map(|_| max_retries),
         batch,
+        mock_rules: mock.as_ref().and_then(|m| m.rules.clone()),
+        spy_file: mock.and_then(|m| m.spy_file),
         config_files,
         results,
     }
@@ -1466,6 +1707,8 @@ mod tests {
             hooks: None,
             global_hook: None,
             gate_deny: None,
+            mock_rewrite: None,
+            mock_delivery: None,
             default_env: &[],
             native_schema: None,
             modes: &[],

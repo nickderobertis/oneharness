@@ -13,6 +13,14 @@
 //!                   (used to assert that --cwd keeps $PWD consistent)
 //!   MOCK_ECHO_ENV   if set to a variable NAME, write `NAME=<inherited value>`
 //!                   to stdout and exit (used to assert per-harness env injection)
+//!   MOCK_CAT_FILE   if set to a path, write that file's current contents to
+//!                   stdout and exit — proving what a config file contained
+//!                   WHILE the harness ran (the ephemeral mock-hook install,
+//!                   restored afterwards, is only observable from inside).
+//!   MOCK_CAT_ARG_AFTER  if set to a flag (e.g. `--settings`), find it in the
+//!                   received argv and write the contents of the file named by
+//!                   the NEXT argument to stdout, then exit — proving an
+//!                   argv-delivered temp file existed and what it carried.
 //!   MOCK_ATTEMPT_FILE  if set, a counter file: each invocation reads the prior
 //!                   count, increments it, writes it back, and (when
 //!                   MOCK_STDOUT_<n> is set for that 1-based attempt) emits that
@@ -67,6 +75,26 @@ fn main() {
     if let Ok(name) = std::env::var("MOCK_ECHO_ENV") {
         let value = std::env::var(&name).unwrap_or_default();
         let _ = write!(std::io::stdout(), "{name}={value}");
+        let _ = std::io::stdout().flush();
+        std::process::exit(0);
+    }
+
+    if let Ok(path) = std::env::var("MOCK_CAT_FILE") {
+        let contents = std::fs::read_to_string(&path).unwrap_or_default();
+        let _ = write!(std::io::stdout(), "{contents}");
+        let _ = std::io::stdout().flush();
+        std::process::exit(0);
+    }
+
+    if let Ok(flag) = std::env::var("MOCK_CAT_ARG_AFTER") {
+        let path = argv
+            .iter()
+            .position(|a| *a == flag)
+            .and_then(|i| argv.get(i + 1));
+        let contents = path
+            .map(|p| std::fs::read_to_string(p).unwrap_or_default())
+            .unwrap_or_default();
+        let _ = write!(std::io::stdout(), "{contents}");
         let _ = std::io::stdout().flush();
         std::process::exit(0);
     }

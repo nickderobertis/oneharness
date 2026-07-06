@@ -114,8 +114,9 @@ Use the `just` recipes; do not hand-roll equivalents.
   sibling `allowlister`'s role, which consumes the `install` library. `mock
   <id>` is its read-write sibling for behavioral test suites (the `skilltest`
   consumer; design in `docs/mock-spy-design.md`): the same hook loop, driven by
-  a `--rules` JSON ruleset that can *deny* or *rewrite the tool's input* (the
-  mock — swap a command for a stub printing canned output) and appends every
+  a `--rules` JSON ruleset that can *deny*, *rewrite the tool's input*, or
+  *stub* a shell call (declare only the output; oneharness compiles it to a
+  safely-quoted printf rewrite — nothing user-authored executes) and appends every
   observed event to a `--spy-file`/`ONEHARNESS_SPY_FILE` JSONL spy log, which
   preserves the *original* pre-rewrite call (the transcript `events` show only
   post-rewrite reality). Decision/verdicts are pure in `domain::mock`; the

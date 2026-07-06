@@ -4532,6 +4532,73 @@ fn run_mock_rules_refusals_are_loud_and_touch_nothing() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The `stub` action: declare only the output; oneharness generates the
+/// safely-quoted printf rewrite itself (nothing user-authored executes).
+#[test]
+fn mock_stub_action_compiles_to_a_safe_printf_rewrite() {
+    let dir = std::env::temp_dir().join(format!("oneharness-stub-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let rules = dir.join("rules.json");
+    std::fs::write(
+        &rules,
+        r#"{"rules":[{"match":{"event_contains":"git status"},"action":{"stub":{"output":"nothing to commit, it's clean"}}},{"match":{"event_contains":"flaky"},"action":{"stub":{"output":"boom","exit_code":3}}}]}"#,
+    )
+    .unwrap();
+    let rules = rules.to_str().unwrap();
+
+    // The verdict is an input rewrite whose command prints the declared output
+    // verbatim (single-quote escaping included) with a trailing newline.
+    let out = run_with_stdin(
+        &["mock", "crush", "--rules", rules],
+        r#"{"tool_name":"bash","tool_input":{"command":"git status"}}"#,
+    );
+    let v = json_stdout(&out);
+    assert_eq!(v["decision"], "allow");
+    assert_eq!(
+        v["updated_input"]["command"],
+        "printf '%s\\n' 'nothing to commit, it'\\''s clean'"
+    );
+    // exit_code fakes a failing command.
+    let out = run_with_stdin(
+        &["mock", "claude-code", "--rules", rules],
+        r#"{"tool_name":"Bash","tool_input":{"command":"run the flaky thing"}}"#,
+    );
+    let v = json_stdout(&out);
+    assert_eq!(
+        v["hookSpecificOutput"]["updatedInput"]["command"],
+        "printf '%s\\n' 'boom'; exit 3"
+    );
+    // The spy log records the action as `stub`.
+    let spy = dir.join("spy.jsonl");
+    let out = run_with_stdin(
+        &[
+            "mock",
+            "crush",
+            "--rules",
+            rules,
+            "--spy-file",
+            spy.to_str().unwrap(),
+        ],
+        r#"{"tool_name":"bash","tool_input":{"command":"git status"}}"#,
+    );
+    assert!(out.status.success());
+    let line: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string(&spy)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(line["action"], "stub");
+    // A stub is a rewrite underneath, so a rewrite-less harness refuses it loudly.
+    let out = run_with_stdin(&["mock", "goose", "--rules", rules], "{}");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot express the mock action `stub`"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn mock_startup_faults_are_loud_usage_errors() {
     let (dir, rules) = mock_fixture("errors");

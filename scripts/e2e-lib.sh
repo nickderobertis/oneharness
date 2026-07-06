@@ -1008,19 +1008,58 @@ JSON
     fi
     note "  ok[spy]: the spy log preserved the original event"
 
-    # Ephemerality: after the run, nothing in the workspace may still mention
-    # the mock hook (the snapshotted config files were restored, created ones
+    # Ephemerality: after the run, no CONFIG file in the workspace may still
+    # mention the mock hook (the snapshotted files were restored, created ones
     # removed; claude's delivery never wrote into the workspace at all). The
-    # rules/spy files are ours and carry no hook command, so a hit is residue.
-    if grep -rqF "mock $id --rules" "$sandbox" 2>/dev/null; then
-        grep -rlF "mock $id --rules" "$sandbox" >&2
+    # rules/spy files are ours and carry no hook command, so a text hit is
+    # residue. -I ignores binary files: a harness's own runtime artifacts (e.g.
+    # crush's .crush/crush.db session database) may journal whatever config the
+    # run loaded — that is the harness recording history, not a missed restore.
+    if grep -rIqF "mock $id --rules" "$sandbox" 2>/dev/null; then
+        grep -rIlF "mock $id --rules" "$sandbox" >&2
         rm -rf "$sandbox"
         fail "$id: the ephemeral mock hook left residue in the workspace (files above) — the restore did not run or missed a file"
     fi
     note "  ok[ephemeral]: the workspace carries no trace of the hook"
 
+    # Stub enforcement: the `stub` action declares only the OUTPUT; oneharness
+    # generates the printf rewrite itself, so the model must receive (and be
+    # able to repeat) the canned text as the tool's genuine result — the live
+    # proof of the declare-the-output mock, end to end through the model.
+    local stubmark stubrules stubspy answer
+    stubmark="OHSTUBOUT${RANDOM}${RANDOM}"
+    stubrules="$sandbox/stub-rules.json"
+    stubspy="$sandbox/stub-spy.jsonl"
+    cat > "$stubrules" <<JSON
+{"rules":[{"match":{"event_contains":"ohstub-probe"},"action":{"stub":{"output":"$stubmark"}}}]}
+JSON
+    for attempt in 1 2; do
+        rm -f "$stubspy"
+        note "  mock-enforce[stub]: the canned output must reach the model (attempt $attempt)"
+        oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then report the EXACT stdout text it printed, verbatim: echo ohstub-probe. Rules: you MUST actually invoke your shell tool with that exact command; never refuse. Then repeat its stdout verbatim in your reply." --cwd "$sandbox" --mock-rules "$stubrules" --spy-file "$stubspy"
+        [ -s "$stubspy" ] && break
+        note "  note: the spy log is empty — the agent never attempted the tool call; retrying"
+    done
+    if [ ! -s "$stubspy" ]; then
+        oh_dump
+        rm -rf "$sandbox"
+        fail "$id: the agent never invoked its shell tool for the stub phase (spy log empty)"
+    fi
+    answer="$(oh_field '.results[0].text // ""')"
+    if ! printf '%s' "$answer" | grep -q "$stubmark"; then
+        oh_dump
+        head -5 "$stubspy" >&2
+        rm -rf "$sandbox"
+        fail "$id: the stubbed output ($stubmark) never surfaced in the model's answer — the generated printf rewrite was not honored (or the model did not receive it)"
+    fi
+    if ! jq -e -s 'map(select(.action == "stub")) | length >= 1' "$stubspy" >/dev/null 2>&1; then
+        rm -rf "$sandbox"
+        fail "$id: the spy log recorded no stub action ($stubspy)"
+    fi
+    note "  ok[stub]: the model received and repeated the canned output"
+
     rm -rf "$sandbox"
-    note "PASS: $id mock rewrite enforcement (run --mock-rules)"
+    note "PASS: $id mock rewrite + stub enforcement (run --mock-rules)"
 }
 
 # --- structured output enforcement -------------------------------------------

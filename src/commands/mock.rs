@@ -78,6 +78,17 @@ pub fn run(args: &MockArgs) -> Result<i32, OneharnessError> {
                 println!("{}", mock::render_rewrite(shape, input, reason));
             }
         }
+        Some((_, Action::Stub { output, exit_code })) => {
+            // A stub is a rewrite whose substituted command oneharness
+            // generated itself: a safely-quoted printf of the declared output.
+            if let Some(shape) = spec.mock_rewrite {
+                let input = mock::stub_input(output, *exit_code);
+                println!(
+                    "{}",
+                    mock::render_rewrite(shape, &input, "stubbed by oneharness mock")
+                );
+            }
+        }
         None => {}
     }
     Ok(0)

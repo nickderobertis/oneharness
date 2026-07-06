@@ -116,6 +116,19 @@ pub fn settings_hooks_json(command: &str) -> String {
     .to_string()
 }
 
+/// Compile a [`Action::Stub`] into the substituted shell-tool input: a
+/// `printf` of the declared output (single-quoted with POSIX escaping, so any
+/// text — quotes, `$`, backticks, newlines — is emitted verbatim and nothing
+/// is ever interpreted), plus an `exit` when a non-zero code fakes a failure.
+pub fn stub_input(output: &str, exit_code: i32) -> Value {
+    let quoted = format!("'{}'", output.replace('\'', "'\\''"));
+    let mut command = format!("printf '%s\\n' {quoted}");
+    if exit_code != 0 {
+        command.push_str(&format!("; exit {exit_code}"));
+    }
+    json!({ "command": command })
+}
+
 /// A parsed mock ruleset: the first rule whose `match` covers the event wins.
 /// Deserialized from the JSON file `oneharness mock --rules <path>` reads;
 /// unknown fields are rejected loudly (a typo must never become a silent
@@ -161,14 +174,29 @@ pub enum Action {
     /// tool's feedback. Expressible wherever `oneharness gate` works.
     Deny { message: String },
     /// Allow the call with `input` substituted for the tool's arguments — the
-    /// mock workhorse: rewrite a shell command to a stub that prints the canned
-    /// output, or a read's path to a fixture. `input` is passed to the harness
-    /// verbatim (each applies its own semantics; Crush shallow-merges).
+    /// general rewrite: swap a shell command, or redirect a read's `file_path`
+    /// to a fixture. `input` is passed to the harness verbatim (each applies
+    /// its own semantics; Crush shallow-merges).
     Rewrite {
         input: Value,
         /// Optional reason surfaced where the harness's shape carries one.
         #[serde(default)]
         message: Option<String>,
+    },
+    /// Fake a SHELL call's result by declaring only the output (and optional
+    /// exit code): oneharness generates a safely-quoted `printf` stub itself
+    /// and delivers it as an input rewrite, so no user-authored command — and
+    /// nothing real — ever executes. The model receives `output` (plus a
+    /// trailing newline, like real command output) as the tool's genuine
+    /// result. Sugar over [`Action::Rewrite`], so it needs the same
+    /// `mock_rewrite` capability; shell tools only (their input is a `command`
+    /// field on every rewrite-capable harness) — mock file reads with a
+    /// `rewrite` of `file_path` instead.
+    Stub {
+        output: String,
+        /// The stub's exit code (default 0). Non-zero fakes a failing command.
+        #[serde(default)]
+        exit_code: i32,
     },
 }
 
@@ -178,6 +206,7 @@ impl Action {
         match self {
             Action::Deny { .. } => "deny",
             Action::Rewrite { .. } => "rewrite",
+            Action::Stub { .. } => "stub",
         }
     }
 }
@@ -228,6 +257,8 @@ pub fn unsupported_action(
         match rule.action {
             Action::Deny { .. } if gate_deny.is_none() => return Some("deny"),
             Action::Rewrite { .. } if rewrite.is_none() => return Some("rewrite"),
+            // A stub is delivered as a rewrite, so it needs the same shape.
+            Action::Stub { .. } if rewrite.is_none() => return Some("stub"),
             _ => {}
         }
     }
@@ -550,6 +581,64 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn stub_input_quotes_any_output_safely() {
+        // Plain text: a printf of the output, trailing newline like a real
+        // command, exit 0 implied (no exit suffix).
+        assert_eq!(
+            stub_input("nothing to commit", 0)["command"],
+            "printf '%s\\n' 'nothing to commit'"
+        );
+        // Nothing is ever shell-interpreted: quotes, $, backticks, newlines all
+        // ride inside the single-quoted argument (POSIX quote escaping).
+        assert_eq!(
+            stub_input("it's `x` a $HOME\nline2", 0)["command"],
+            "printf '%s\\n' 'it'\\''s `x` a $HOME\nline2'"
+        );
+        // A non-zero exit code fakes a failing command.
+        assert_eq!(
+            stub_input("boom", 3)["command"],
+            "printf '%s\\n' 'boom'; exit 3"
+        );
+    }
+
+    #[test]
+    fn stub_action_parses_and_requires_the_rewrite_shape() {
+        let rules = parse_rules(
+            r#"{"rules":[{"match":{"event_contains":"git status"},"action":{"stub":{"output":"clean"}}}]}"#,
+        )
+        .unwrap();
+        let (_, action) = decide(r#"{"tool_input":{"command":"git status"}}"#, &rules).unwrap();
+        assert_eq!(action.kind(), "stub");
+        assert_eq!(
+            *action,
+            Action::Stub {
+                output: "clean".into(),
+                exit_code: 0
+            }
+        );
+        // exit_code is optional sugar with an explicit form.
+        let rules = parse_rules(
+            r#"{"rules":[{"match":{"tool":"Bash"},"action":{"stub":{"output":"e","exit_code":2}}}]}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            rules.rules[0].action,
+            Action::Stub { exit_code: 2, .. }
+        ));
+        // A stub compiles to a rewrite, so it needs the same capability.
+        assert_eq!(
+            unsupported_action(&rules, Some(DenyShape::Decision("block")), None),
+            Some("stub")
+        );
+        assert!(unsupported_action(
+            &rules,
+            Some(DenyShape::Decision("block")),
+            Some(RewriteShape::CrushFlat)
+        )
+        .is_none());
     }
 
     #[test]

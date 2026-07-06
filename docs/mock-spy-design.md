@@ -19,7 +19,11 @@ an original workspace (claude-code via a per-run `--settings` temp file — zero
 mutation; the rest via a snapshotted project-scope install restored after the
 run; codex's opt-in flags auto-appended; qwen/copilot refused loudly), with
 `mock_rules`/`spy_file` recorded in the report and `oh_mock_enforce` rewritten
-to drive it (including a zero-residue assertion). Still open, in build order:
+to drive it (including a zero-residue assertion and a `stub` phase proving the
+canned output reaches the model). The `stub` action ships the
+declare-only-the-output UX: `{"stub":{"output":…,"exit_code":…}}` compiles to
+a safely-quoted printf rewrite, so users never author commands and nothing
+real executes. Still open, in build order:
 result replacement (`replace` — start with opencode's probe-verified
 after-hook mutation), hook-sourced `events` for the transcript-less
 harnesses, and the `mocks` per-result block.

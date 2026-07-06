@@ -449,13 +449,31 @@ JSONL log (or `$ONEHARNESS_SPY_FILE`) — the **spy** channel, which records the
     },
     {
       "match": { "event_contains": "git status" },
-      // the mock workhorse: the call runs with substituted arguments, so the
-      // model sees exactly the canned output and the real command never runs
-      "action": { "rewrite": { "input": { "command": "printf 'nothing to commit'" } } }
+      // fake a shell result by declaring ONLY the output: oneharness generates
+      // a safely-quoted printf stub itself, so no user-authored command — and
+      // nothing real — executes; the model receives this text (+ trailing
+      // newline) as the tool's genuine result. `exit_code` fakes a failure.
+      "action": { "stub": { "output": "nothing to commit, working tree clean" } }
+    },
+    {
+      "match": { "tool": "Read", "event_contains": "config.prod.yaml" },
+      // the general rewrite: substitute any input fields — here redirecting a
+      // file read to a fixture (shell stubs are better written with `stub`)
+      "action": { "rewrite": { "input": { "file_path": "/tmp/ws/fixtures/config.yaml" } } }
     }
   ]
 }
 ```
+
+Three actions: `deny` (the model reads the message as the tool's failure),
+`stub` (declare a shell call's output — compiled to a safe printf rewrite, so
+it needs the same `mock_rewrite` capability), and `rewrite` (substitute raw
+input fields — the primitive under `stub`, and the way to mock file reads).
+The model never perceives the substitution: its own tool call (the original)
+is already in its context when the hook fires, and what it receives back is
+just the result — keep canned output *plausible for what was asked*, since a
+self-inconsistent result (a fixture whose content names a different file) is
+the one thing a model has been observed to notice.
 
 Two actions, per-harness capability (see `supports_mock_deny` / `mock_rewrite`
 in `oneharness list`; a rule using an action the harness can't express is a

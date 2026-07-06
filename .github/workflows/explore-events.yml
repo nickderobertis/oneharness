@@ -1,0 +1,107 @@
+name: Explore (events shapes) [TEMP]
+
+# TEMPORARY investigation workflow for issue #1096 (events / streaming). Installs
+# and authenticates every real harness, then runs scripts/explore-events.sh
+# against each to dump raw tool-transcript output under candidate output formats.
+# The point is to SOURCE each harness's real event shape from live output before
+# writing an `extract_events` recognizer — never guess. Read the job logs, learn
+# the shapes, then DELETE this workflow and scripts/explore-events.sh.
+#
+# Gated exactly like the e2e workflows: canonical repo only, never a fork PR, so
+# the secrets are never reachable by untrusted code.
+
+on:
+  push:
+    branches: [claude/oneharness-1096-q9v1az]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: explore-events-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  explore:
+    name: explore harness output shapes
+    if: github.repository == 'nickderobertis/oneharness'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 40
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install harness CLIs
+        run: |
+          npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai \
+            @qwen-code/qwen-code @charmland/crush @github/copilot
+          curl https://cursor.com/install -fsS | bash
+          if [ -x "$HOME/.local/bin/cursor-agent" ]; then echo "$HOME/.local/bin" >> "$GITHUB_PATH"; fi
+          curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Authenticate Codex (headless)
+        run: printenv OPENAI_API_KEY | codex login --with-api-key || true
+
+      - name: Probe claude-code
+        continue-on-error: true
+        env:
+          EXPLORE_MODEL: ${{ vars.CLAUDE_E2E_MODEL }}
+        run: bash scripts/explore-events.sh claude-code
+
+      - name: Probe codex
+        continue-on-error: true
+        env:
+          EXPLORE_MODEL: ${{ vars.CODEX_E2E_MODEL }}
+        run: bash scripts/explore-events.sh codex
+
+      - name: Probe opencode
+        continue-on-error: true
+        env:
+          EXPLORE_MODEL: ${{ vars.OPENCODE_E2E_MODEL || 'anthropic/claude-haiku-4-5' }}
+        run: bash scripts/explore-events.sh opencode
+
+      - name: Probe cursor
+        continue-on-error: true
+        env:
+          EXPLORE_MODEL: ${{ vars.CURSOR_E2E_MODEL }}
+        run: bash scripts/explore-events.sh cursor
+
+      - name: Probe goose
+        continue-on-error: true
+        env:
+          GOOSE_PROVIDER: openai
+          GOOSE_MODEL: ${{ vars.GOOSE_E2E_MODEL || 'gpt-4o-mini' }}
+        run: bash scripts/explore-events.sh goose
+
+      - name: Probe qwen
+        continue-on-error: true
+        env:
+          OPENAI_BASE_URL: ${{ vars.QWEN_OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
+          OPENAI_MODEL: ${{ vars.QWEN_E2E_MODEL || 'gpt-4o-mini' }}
+          EXPLORE_MODEL: ${{ vars.QWEN_E2E_MODEL || 'gpt-4o-mini' }}
+        run: bash scripts/explore-events.sh qwen
+
+      - name: Probe crush
+        continue-on-error: true
+        env:
+          EXPLORE_MODEL: ${{ vars.CRUSH_E2E_MODEL }}
+        run: bash scripts/explore-events.sh crush
+
+      - name: Probe copilot
+        continue-on-error: true
+        env:
+          EXPLORE_MODEL: ${{ vars.COPILOT_E2E_MODEL }}
+        run: bash scripts/explore-events.sh copilot

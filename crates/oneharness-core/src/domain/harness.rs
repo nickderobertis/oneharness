@@ -701,10 +701,14 @@ static REGISTRY: &[HarnessSpec] = &[
             anchor: ".qwen/settings.json",
         }),
         gate_deny: Some(DenyShape::ClaudeNested),
-        // Qwen's PreToolUse documents the same `updatedInput` rewrite as Claude
-        // Code (its `permissionDecisionReason` is required — the shape always
-        // carries one). Like its gate, honored at user scope headlessly.
-        mock_rewrite: Some(RewriteShape::ClaudeNested),
+        // Qwen's docs describe the same `updatedInput` rewrite as Claude Code,
+        // but it is NOT honored live: with the hook demonstrably firing (its
+        // gate deny passed at the same global scope) and the allow+updatedInput
+        // verdict emitted, the ORIGINAL command still ran — measured by
+        // oh_mock_enforce on all three OSes (2026-07-06, `--yolo`). Absent per
+        // the measured-not-guessed rule until the explore-hooks probe sources a
+        // shape qwen actually applies; `oneharness mock qwen` is deny-only.
+        mock_rewrite: None,
         default_env: &[("QWEN_CODE_SUPPRESS_YOLO_WARNING", "1")],
         native_schema: None,
         // `--approval-mode` spans the whole spectrum, all clean headless: current
@@ -1281,20 +1285,22 @@ mod tests {
         assert_eq!(all().len(), 8);
     }
 
-    /// Pin each harness's mock input-rewrite capability: the doc-sourced shapes
-    /// for the four that express one, and — as deliberately as the presences —
-    /// the absences (Goose has no rewrite verdict; Codex/Copilot/Cursor await
-    /// live verification via the explore-hooks probe before any shape lands).
-    /// A rewrite also requires an installable hook and a deny shape (the mock
-    /// responder's other verb), so those must accompany it.
+    /// Pin each harness's mock input-rewrite capability: the live-verified
+    /// shapes for the three that honor one (oh_mock_enforce, 2026-07-06), and —
+    /// as deliberately as the presences — the absences: Goose has no rewrite
+    /// verdict; Codex/Copilot/Cursor await live verification via the
+    /// explore-hooks probe; and Qwen's documented `updatedInput` was live-
+    /// REFUTED (verdict emitted, original command still ran — see its registry
+    /// comment), so it stays absent despite its docs. A rewrite also requires
+    /// an installable hook and a deny shape (the mock responder's other verb),
+    /// so those must accompany it.
     #[test]
     fn registry_mock_rewrite_capability_is_pinned() {
         let shape = |id: &str| by_id(id).unwrap().mock_rewrite;
         assert_eq!(shape("claude-code"), Some(RewriteShape::ClaudeNested));
-        assert_eq!(shape("qwen"), Some(RewriteShape::ClaudeNested));
         assert_eq!(shape("crush"), Some(RewriteShape::CrushFlat));
         assert_eq!(shape("opencode"), Some(RewriteShape::OpencodeShim));
-        for id in ["codex", "goose", "copilot", "cursor"] {
+        for id in ["codex", "goose", "qwen", "copilot", "cursor"] {
             assert_eq!(shape(id), None, "{id} must stay absent until verified");
         }
         for h in all() {

@@ -119,11 +119,15 @@ Use the `just` recipes; do not hand-roll equivalents.
   observed event to a `--spy-file`/`ONEHARNESS_SPY_FILE` JSONL spy log, which
   preserves the *original* pre-rewrite call (the transcript `events` show only
   post-rewrite reality). Decision/verdicts are pure in `domain::mock`; the
-  rewrite shape is per-harness registry data (`mock_rewrite`: claude-code/qwen
-  `claude-nested`, crush `crush-flat`, opencode via the plugin shim's args
-  merge; absent — a loud usage error — for goose, whose protocol can't rewrite,
-  and for codex/copilot/cursor until the `explore-hooks` probe verifies them
-  live). `oh_mock_enforce` is its live drift alarm.
+  rewrite shape is per-harness registry data (`mock_rewrite`, all verified live
+  by `oh_mock_enforce`: claude-code `claude-nested`, crush `crush-flat`,
+  opencode via the plugin shim's args merge; absent — a loud usage error — for
+  goose, whose protocol can't rewrite, for codex/copilot/cursor until the
+  `explore-hooks` probe verifies them live, and for qwen, whose documented
+  `updatedInput` was live-REFUTED — hook fired, verdict emitted, original
+  command still ran on all three OSes). `oh_mock_enforce` is its live drift
+  alarm, and it retries once when the spy log is empty (an agent refusal —
+  the hook never fired — is flakiness, not verdict drift).
 - **Structured output** (`run --schema <file>`): constrain each harness's final
   answer to a JSON Schema, validate it (the `jsonschema` crate, pinned
   `default-features = false` so it stays offline), and re-prompt on failure up to

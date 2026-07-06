@@ -3733,13 +3733,13 @@ fn list_exposes_mock_capabilities() {
     for h in harnesses {
         assert_eq!(h["supports_mock_deny"], true, "{}", h["id"]);
     }
-    // The rewrite shape is present only where doc-sourced and absent where the
-    // capability awaits live verification (see docs/mock-spy-design.md).
+    // The rewrite shape is present only where verified live (oh_mock_enforce)
+    // and absent where verification is pending — or, for qwen, where the
+    // documented shape was live-refuted (see docs/mock-spy-design.md).
     assert_eq!(by_id("claude-code")["mock_rewrite"], "claude-nested");
-    assert_eq!(by_id("qwen")["mock_rewrite"], "claude-nested");
     assert_eq!(by_id("crush")["mock_rewrite"], "crush-flat");
     assert_eq!(by_id("opencode")["mock_rewrite"], "opencode-shim");
-    for id in ["codex", "goose", "copilot", "cursor"] {
+    for id in ["codex", "goose", "qwen", "copilot", "cursor"] {
         assert!(by_id(id)["mock_rewrite"].is_null(), "{id}");
     }
 }
@@ -4099,18 +4099,17 @@ fn mock_renders_each_harness_rewrite_shape() {
     let event = r#"{"tool_name":"bash","tool_input":{"command":"git status"}}"#;
     let rewrite = |id: &str| json_stdout(&run_with_stdin(&["mock", id, "--rules", rules], event));
 
-    // Claude Code / Qwen: nested under hookSpecificOutput (updatedInput).
-    for id in ["claude-code", "qwen"] {
-        let v = rewrite(id);
-        assert_eq!(
-            v["hookSpecificOutput"]["permissionDecision"], "allow",
-            "{id}"
-        );
-        assert_eq!(
-            v["hookSpecificOutput"]["updatedInput"]["command"], "printf clean",
-            "{id}"
-        );
-    }
+    // Claude Code: nested under hookSpecificOutput (updatedInput). (Qwen's
+    // docs describe the same shape, but it was live-refuted — see the registry
+    // — so a rewrite for qwen is now a loud refusal, covered below.)
+    let v = rewrite("claude-code");
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "allow");
+    assert_eq!(
+        v["hookSpecificOutput"]["updatedInput"]["command"],
+        "printf clean"
+    );
+    let out = run_with_stdin(&["mock", "qwen", "--rules", rules], event);
+    assert_eq!(out.status.code(), Some(2), "qwen rewrite must be refused");
     // Crush: flat versioned shape with a shallow-merge updated_input.
     let v = rewrite("crush");
     assert_eq!(v["version"], 1);

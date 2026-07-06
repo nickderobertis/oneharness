@@ -46,12 +46,12 @@ note "PASS: qwen accepts the synced settings file (headless enforcement is flag-
 note "» hook enforcement (global scope): the synced gate must block a marked command"
 oh_hook_enforce qwen global
 
-# Mock enforcement: qwen's PreToolUse `updatedInput` must substitute the marked
-# command — the live proof of its claude-nested mock_rewrite shape, and that the
-# spy log preserves the original (pre-rewrite) event. Global scope for the same
-# folder-trust reason as the gate above.
-note "» mock enforcement (global scope): the synced mock must rewrite a marked command's input"
-oh_mock_enforce qwen global
+# No oh_mock_enforce phase: qwen's documented PreToolUse `updatedInput` was
+# live-REFUTED here (2026-07-06, all three OSes) — the hook fired (the gate
+# deny above proves the loop) and the allow+updatedInput verdict was emitted,
+# but the ORIGINAL command still ran under --yolo. `mock_rewrite` is therefore
+# absent for qwen (deny-only mock) until the explore-hooks probe sources a
+# shape it actually applies; restore the phase alongside the registry entry.
 
 # Approval-mode enforcement: qwen's `read-only` and `plan` both map to
 # `--approval-mode plan` (read-only — no execution), so a write must be blocked

@@ -4,9 +4,12 @@ Status: **research → v1 implemented** (2026-07-06). Shipped so far:
 `oneharness mock <id>` (`domain::mock` + `src/commands/mock.rs`) with the
 deny + input-rewrite verbs, the JSONL spy log
 (`--spy-file`/`ONEHARNESS_SPY_FILE`), the `mock_rewrite` registry capability
-(claude-code/qwen `claude-nested`, crush `crush-flat`, opencode via the plugin
-shim's `updated_input` args merge), and the `oh_mock_enforce` live phases
-(claude, opencode, crush, qwen-global). Still open, in build order below:
+(claude-code `claude-nested`, crush `crush-flat`, opencode via the plugin
+shim's `updated_input` args merge — all three verified live by the
+`oh_mock_enforce` phases, 2026-07-06). Qwen's documented `updatedInput` was
+**live-refuted** by the same phase (hook fired, verdict emitted, original
+command still ran, all three OSes) and pulled back to deny-only — the first
+drift the alarm caught. Still open, in build order below:
 running the `explore-hooks` probe (settles codex/copilot/cursor rewrite and
 every result-replacement shape), result replacement (`replace`), `run
 --mock-rules` ephemeral wiring, hook-sourced `events` for the transcript-less
@@ -89,12 +92,12 @@ sandbox). More faithful to real behavior, zero per-harness support needed.
 
 | harness | pre-hook fires headless | payload → spy | rewrite input | replace result | ephemeral delivery |
 |---|---|---|---|---|---|
-| claude-code | LIVE (project file) | LIVE (gate) + PostToolUse DOC | `updatedInput` DOC (per-tool honoring UNVERIFIED) | `updatedToolOutput` DOC | `--settings <file-or-json>` per-run DOC; temp-cwd LIVE (trust handled by e2e lib) |
+| claude-code | LIVE (project file) | LIVE (gate + mock spy log) + PostToolUse DOC | `updatedInput` LIVE for Bash (oh_mock_enforce; other tools' honoring still UNVERIFIED) | `updatedToolOutput` DOC | `--settings <file-or-json>` per-run DOC; temp-cwd LIVE (trust handled by e2e lib) |
 | codex | DOC (hooks engine ~v0.124+, `features.hooks=true`; repo's "exec ignores hooks" predates it) — UNVERIFIED here | DOC (`tool_input`, Post `tool_response`) | `updatedInput` DOC/UNVERIFIED | none | temp-cwd `.codex/hooks.json` + `--dangerously-bypass-hook-trust` DOC; `CODEX_HOME` (carries auth — seed it) |
-| opencode | LIVE (JS plugin) | LIVE (gate) + `after` DOC | mutate `before` `output.args` DOC | mutate `after` `output.output` DOC (undocumented, source-verified) | `OPENCODE_CONFIG_CONTENT` LIVE; `OPENCODE_CONFIG_DIR` DOC; temp-cwd plugin LIVE |
+| opencode | LIVE (JS plugin) | LIVE (gate) + `after` DOC | mutate `before` `output.args` LIVE (oh_mock_enforce via the shim) | mutate `after` `output.output` DOC (undocumented, source-verified) | `OPENCODE_CONFIG_CONTENT` LIVE; `OPENCODE_CONFIG_DIR` DOC; temp-cwd plugin LIVE |
 | goose | LIVE (plugin dir) | LIVE (gate); PostToolUse observe-only DOC | none | none | temp-cwd `.agents/plugins` LIVE; `GOOSE_PATH_ROOT` DOC |
-| qwen | LIVE (user scope only) | LIVE (gate) + PostToolUse `tool_response` DOC | `updatedInput` DOC | none (context-inject only) | fake-HOME LIVE; `QWEN_HOME` DOC (auth is env-delivered, so redirect is safe) |
-| crush | LIVE (project file) | LIVE (gate); **no post event** | `updated_input` DOC (shallow-merge) | none | temp-cwd `.crush.json` LIVE |
+| qwen | LIVE (user scope only) | LIVE (gate) + PostToolUse `tool_response` DOC | **REFUTED live** (`updatedInput` per docs, ignored under `--yolo` — original ran; re-source via probe) | none (context-inject only) | fake-HOME LIVE; `QWEN_HOME` DOC (auth is env-delivered, so redirect is safe) |
+| crush | LIVE (project file) | LIVE (gate); **no post event** | `updated_input` LIVE (oh_mock_enforce; shallow-merge) | none | temp-cwd `.crush.json` LIVE |
 | copilot | DOC (`-p` tutorial demonstrates it; repo's trust-scaffolding exclusion may be narrower than assumed) — UNVERIFIED here | DOC (post carries `toolResult`) | `modifiedArgs` DOC | `modifiedResult` DOC | temp-cwd `.github/hooks/*.json` DOC; `COPILOT_HOME` DOC |
 | cursor | UNVERIFIED headless (officially undocumented; community-confirmed for deny) | LIVE (gate, project scope) + stream-json LIVE | `updated_input` DOC | MCP tools only (`updated_mcp_tool_output`) | temp-cwd `.cursor/hooks.json` LIVE (known Windows hook bug) |
 

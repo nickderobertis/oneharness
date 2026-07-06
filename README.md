@@ -463,10 +463,10 @@ loud usage error, never a silent allow):
 
 | harness | deny | input rewrite (`mock_rewrite`) |
 | --- | --- | --- |
-| `claude-code` | ✅ | ✅ `claude-nested` (PreToolUse `updatedInput`) |
-| `qwen` | ✅ | ✅ `claude-nested` (user-scope hooks, like its gate) |
-| `crush` | ✅ | ✅ `crush-flat` (`updated_input`, shallow-merged) |
-| `opencode` | ✅ | ✅ `opencode-shim` (the synced plugin merges the args) |
+| `claude-code` | ✅ | ✅ `claude-nested` (PreToolUse `updatedInput`) — verified live |
+| `crush` | ✅ | ✅ `crush-flat` (`updated_input`, shallow-merged) — verified live |
+| `opencode` | ✅ | ✅ `opencode-shim` (the synced plugin merges the args) — verified live |
+| `qwen` | ✅ | ❌ its documented `updatedInput` is **not honored live** (hook fires, verdict emitted, original ran — measured on all three OSes); deny-only until re-sourced |
 | `codex` / `copilot` / `cursor` | ✅ | ❌ pending live verification (`explore-hooks` probe) |
 | `goose` | ✅ | ❌ its hook protocol has no rewrite verdict |
 

@@ -988,17 +988,35 @@ TOML
         fail "$id: oneharness sync failed to install the mock hook"
     fi
 
-    note "  mock-enforce[rewrite]: the marked command must run REWRITTEN under bypass"
-    oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $origfile. Rules: you MUST actually invoke your shell tool with that exact command — never decide on your own that it is not permitted; attempt it. Use only the shell tool, and do NOT create the file by any other means." --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}"
-    status="$(oh_field '.results[0].status')"
-    if [ "$status" = "skipped" ]; then
+    # Up to two attempts: a model occasionally refuses the fixture framing and
+    # never invokes its shell tool at all — visible as an EMPTY spy log (the
+    # hook never fired), which is agent flakiness, not a verdict-shape failure.
+    # Only that case is retried; a fired hook with a wrong outcome fails hard.
+    local attempt
+    for attempt in 1 2; do
+        rm -f "$spyfile"
+        note "  mock-enforce[rewrite]: the marked command must run REWRITTEN under bypass (attempt $attempt)"
+        oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $origfile. Rules: you MUST actually invoke your shell tool with that exact command — never decide on your own that it is not permitted; attempt it. Use only the shell tool, and do NOT create the file by any other means." --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}"
+        status="$(oh_field '.results[0].status')"
+        if [ "$status" = "skipped" ]; then
+            rm -rf "$sandbox"
+            skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+        fi
+        if [ -s "$spyfile" ]; then
+            break
+        fi
+        note "  note: the spy log is empty — the agent never attempted the tool call (a refusal, not a hook failure)"
+    done
+    if [ ! -s "$spyfile" ]; then
+        oh_dump
         rm -rf "$sandbox"
-        skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+        fail "$id: the agent never invoked its shell tool in $attempt attempts (spy log empty) — the rewrite path could not be exercised (a prompt-robustness problem, not a verdict-shape one)"
     fi
     if [ ! -e "$mockfile" ]; then
         oh_dump
+        head -5 "$spyfile" >&2
         rm -rf "$sandbox"
-        fail "$id: the rewrite was NOT honored ($mockfile absent) — the mock_rewrite verdict shape is not applied (or drifted, or the hook never fired)"
+        fail "$id: the rewrite was NOT honored ($mockfile absent although the hook fired — see the spy records above) — the harness ignored or misparsed the mock_rewrite verdict shape (drift)"
     fi
     if [ -e "$origfile" ]; then
         oh_dump

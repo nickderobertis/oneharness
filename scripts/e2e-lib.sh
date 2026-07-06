@@ -424,7 +424,17 @@ oh_events_assert() {
         oh_dump
         fail "$id: expected events_source=$expected_source but got '$source' — event extraction regressed"
     fi
-    note "PASS: $id surfaced $calls normalized tool_call event(s) via '$source'"
+    # Input/output fidelity: the model ran `echo <marker>`, so the marker must
+    # appear in a tool_call's structured `input` (and usually a tool_result's
+    # `output`). This proves oneharness extracted the *real* args/observation into
+    # the normalized shape — not merely that some empty event object surfaced.
+    if ! printf '%s' "$OH_REPORT" | jq -e --arg m "$marker" \
+        '[(.results[0].events // [])[] | (.input // {} | tostring) + (.output // "")] | any(contains($m))' >/dev/null; then
+        oh_dump
+        note "  events: $(printf '%s' "$OH_REPORT" | jq -c '.results[0].events')"
+        fail "$id: the marker never appeared in any event's input/output — the command/observation was not lifted into the normalized event (structured extraction drifted)"
+    fi
+    note "PASS: $id surfaced $calls normalized tool_call event(s) via '$source' (marker present in event input/output)"
 }
 
 # Live proof of the STREAMING path: `oneharness run --stream` must emit at least

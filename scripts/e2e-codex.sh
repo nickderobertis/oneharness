@@ -28,3 +28,8 @@ oh_mode_enforce codex plan
 # recognizer (sourced from a real `codex exec --json` transcript).
 note "» events: a tool-using turn must surface normalized tool_call events (--events)"
 oh_events_assert codex "json:codex-items" --events
+
+# Streaming: the same events must arrive incrementally under --stream (with
+# --events selecting exec --json), then a terminal result line.
+note "» stream: events must arrive incrementally, then a terminal result line"
+oh_stream_assert codex --events

@@ -65,3 +65,8 @@ oh_edit_enforce qwen
 # live drift alarm for qwen event extraction (sourced from a real transcript).
 note "» events: a tool-using turn must surface normalized tool_call events (--events)"
 oh_events_assert qwen "stream-json:content-blocks" --events
+
+# Streaming: the same events must arrive incrementally under --stream (with
+# --events selecting stream-json), then a terminal result line.
+note "» stream: events must arrive incrementally, then a terminal result line"
+oh_stream_assert qwen --events

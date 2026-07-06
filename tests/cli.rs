@@ -1408,6 +1408,78 @@ fn stream_mode_emits_event_lines_then_a_terminal_report() {
 }
 
 #[test]
+fn stream_short_circuit_tears_down_the_child_when_the_consumer_closes() {
+    // The flagship streaming behavior: when the consumer stops reading (closes
+    // oneharness's stdout), oneharness's next event write fails (broken pipe) and
+    // it tears the harness child down — so a bad turn is cut off, not paid for in
+    // full. Proven deterministically: the mock streams several event lines with a
+    // delay and only writes a COMPLETE sentinel if it runs to the end. We read the
+    // first event, drop the pipe, and assert COMPLETE was never written.
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    let sentinel = std::env::temp_dir().join(format!("oh-sc-{}.log", std::process::id()));
+    let _ = std::fs::remove_file(&sentinel);
+    // Five opencode tool-part lines → five tool_call events, 300ms apart.
+    let lines: Vec<String> = (0..5)
+        .map(|i| {
+            format!(
+                r#"{{"type":"tool_use","part":{{"type":"tool","tool":"bash","state":{{"input":{{"command":"step {i}"}}}}}}}}"#
+            )
+        })
+        .collect();
+    let stdout_script = lines.join("\n");
+
+    let mut child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_STDOUT", &stdout_script)
+        .env("MOCK_STREAM_DELAY_MS", "300")
+        .env("MOCK_LOG_FILE", &sentinel)
+        .args([
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("opencode"),
+            "--stream",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn oneharness --stream");
+
+    // Read exactly the first event line, then drop the reader → close the read
+    // end of oneharness's stdout (the consumer short-circuiting).
+    let mut reader = BufReader::new(child.stdout.take().expect("piped stdout"));
+    let mut first = String::new();
+    reader.read_line(&mut first).expect("read first event line");
+    let first: Value = serde_json::from_str(first.trim()).expect("first line is JSON");
+    assert_eq!(first["type"], "event");
+    assert_eq!(first["event"]["kind"], "tool_call");
+    drop(reader); // close the pipe — the short-circuit signal
+
+    let status = child
+        .wait()
+        .expect("oneharness should exit after the pipe closes");
+    // The mock only writes COMPLETE if it streamed every line; a torn-down child
+    // never reaches it. (If short-circuit regressed, oneharness would drain all
+    // lines, the mock would finish, and COMPLETE would be present.)
+    let log = std::fs::read_to_string(&sentinel).unwrap_or_default();
+    assert!(
+        !log.contains("COMPLETE"),
+        "child was not torn down on consumer close (mock ran to completion): {log:?}"
+    );
+    // oneharness itself exits cleanly (a consumer-driven stop is not a failure).
+    assert!(
+        status.success() || status.code().is_none(),
+        "unexpected exit: {status:?}"
+    );
+    let _ = std::fs::remove_file(&sentinel);
+}
+
+#[test]
 fn stream_with_multiple_harnesses_is_a_usage_error() {
     let output = run(
         &[
@@ -1457,6 +1529,71 @@ fn stream_with_schema_is_a_usage_error() {
         "{stderr}"
     );
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn events_flag_is_a_safe_noop_for_a_text_only_harness() {
+    // The skilltest safety property: `--events` must never break text extraction.
+    // A text-only harness (goose) has no events_format, so `--events` leaves its
+    // format (and text extraction) untouched, and `events` is honestly null — the
+    // reply still comes through. (A blanket `--output-format json` once broke
+    // exactly this; `--events` is the safe path.)
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "goose",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("goose"),
+            "--events",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", "plain text reply")],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    // Format stayed the harness default (text) — no format flag was injected.
+    let command = result["command"].as_array().unwrap();
+    assert!(
+        !command.iter().any(|t| t == "json" || t == "stream-json"),
+        "text-only harness must not be format-upgraded by --events: {command:?}"
+    );
+    assert_eq!(result["text"], "plain text reply");
+    assert!(result["events"].is_null());
+    assert!(result["events_source"].is_null());
+}
+
+#[test]
+fn events_are_extracted_from_a_nonzero_run() {
+    // Events are best-effort over whatever output a run produced — including a
+    // non-zero exit (a harness that used tools then failed). The tool trace is
+    // still lifted, so a consumer can see what ran before the failure.
+    let stdout = concat!(
+        r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"input":{"command":"boom"},"output":"err"}}}"#,
+        "\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("opencode"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout), ("MOCK_EXIT", "1")],
+    );
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["status"], "nonzero");
+    assert_eq!(result["events_source"], "json:opencode-parts");
+    assert_eq!(result["events"][0]["name"], "bash");
+    assert_eq!(result["events"][0]["input"]["command"], "boom");
 }
 
 #[test]

@@ -21,3 +21,10 @@ oh_assert_echoed codex "$marker"
 note "» read-only / plan enforcement: each must block a write"
 oh_mode_enforce codex read-only
 oh_mode_enforce codex plan
+
+# Normalized tool events: Codex's default text has no transcript, so `--events`
+# upgrades it to `exec --json`, whose `command_execution` items normalize to a
+# `tool_call` via `json:codex-items` — the live drift alarm for the codex
+# recognizer (sourced from a real `codex exec --json` transcript).
+note "» events: a tool-using turn must surface normalized tool_call events (--events)"
+oh_events_assert codex "json:codex-items" --events

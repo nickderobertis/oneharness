@@ -544,21 +544,36 @@ more than one possible method) records how it was found:
   parse `stdout`.
 
   Events require the harness to run in a format that carries a **tool
-  transcript**. Some harnesses emit one in the format oneharness already uses;
-  others need a richer `--output-format`. Coverage today (widening as more shapes
-  are sourced — an absent transcript is an honest `null`, not a bug):
+  transcript**. Some emit one in the format oneharness already uses; the rest
+  need a richer format, which **`--events`** (and `--stream`) selects
+  automatically per harness (`HarnessSpec.events_format`) without you knowing the
+  quirk — and without breaking text extraction. Every shape below was **sourced
+  from a real transcript** captured from the live CLI (never guessed) and is
+  drift-alarmed by a per-harness live e2e (`oh_events_assert`):
 
   | harness | events via | `events_source` |
   |---------|------------|-----------------|
   | `opencode` | `json` (default) | `json:opencode-parts` |
-  | `cursor` | `stream-json` (default) | `stream-json:content-blocks` |
-  | `claude-code` | `--output-format stream-json` (default `json` has no transcript; oneharness adds the required `--verbose`) | `stream-json:content-blocks` |
-  | `codex` | not yet wired (`codex exec --json` exists; needs its event shape sourced) | — |
-  | `goose`, `qwen`, `crush`, `copilot` | no machine-readable transcript exposed headlessly | — |
+  | `cursor` | `stream-json` (default) | `stream-json:cursor-tool-calls` |
+  | `claude-code` | `--events` → `stream-json` (adds the required `--verbose`) | `stream-json:content-blocks` |
+  | `codex` | `--events` → `exec --json` | `json:codex-items` |
+  | `qwen` | `--events` → `--output-format stream-json` | `stream-json:content-blocks` |
+  | `goose`, `crush`, `copilot` | no machine-readable transcript headlessly | — (null) |
 
-  The recognizers are harness-agnostic — the OpenCode `tool`-part shape and the
-  Anthropic content-block shape — so any harness that emits one of them gets
-  `events` for free once run in a format that carries it.
+  Four recognizers cover these, each harness-agnostic: OpenCode `tool` parts, the
+  Anthropic content-block shape (Claude Code + Qwen), Cursor's `tool_call`
+  events, and Codex's `command_execution` items. `goose`, `crush`, and `copilot`
+  emit only decorative TUI text headlessly (confirmed by probing the live CLIs),
+  so `events` stays `null` for them — the honest answer, not a gap.
+
+  **Streaming** (`oneharness run --stream <one harness>`) emits each event as an
+  NDJSON `{"type":"event","event":{…}}` line the instant it is observed, then a
+  terminal `{"type":"result","report":{…}}` line with the full envelope. A
+  consumer can **short-circuit** the moment it sees a disallowed action by
+  closing the stream — oneharness's next write fails (broken pipe) and it tears
+  the harness down, so a bad turn is cut off instead of paid for in full. Stream
+  runs a single harness (no batch, no `--schema`); `--stream` implies the
+  `--events` format selection.
 - `failure_kind` / `failure_kind_source` — on a non-zero run, a coarse reason
   (`auth`, `rate_limit`, `model_not_found`, `quota`) so a caller can tell a
   retryable condition from a broken request. This is **distinct from `status`**,

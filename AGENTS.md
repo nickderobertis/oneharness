@@ -416,24 +416,25 @@ shape. When you add one:
   README `events` docs), the normalized `events` array works for free once the
   shape is recognized. A harness with a *new* transcript shape needs a recognizer
   arm in `extract_events` (sourced from a real transcript, never guessed) plus a
-  unit test; then add the `oh_events_assert <id> [source] [run-args…]` live phase
+  unit test; then add the `oh_events_assert <id> <source> [run-args…]` live phase
   — a tool-using turn must surface at least one `tool_call` event — the honoring
-  proof + drift alarm for event extraction. Pass the expected `events_source` only
-  when a repo fixture pins the shape (opencode → `json:opencode-parts`); leave it
-  lenient otherwise (cursor). Events need a **transcript-carrying output format**:
-  some harnesses emit one by default (opencode `json`, cursor `stream-json`),
-  others need a richer `--output-format` forwarded as a run-arg — claude-code's
-  default `json` result has no transcript, so its events ride
-  `--output-format stream-json` (oneharness adds the CLI-required `--verbose`; see
-  `argv_claude_code`), asserted via `oh_events_assert claude-code
-  "stream-json:content-blocks" --output-format stream-json`. A plain-`text` harness
-  with no structured transcript at all (goose/qwen/crush/copilot today) exposes
-  nothing to extract, so `events` stays `null` — correct, not a gap. Codex is the
-  open lead: `codex exec --json` emits a JSONL event stream, but its shape must be
-  sourced from a real transcript before wiring a recognizer (never guessed). The
-  end goal is **streaming** these normalized events to the consumer as they occur
-  (so a skilltest can short-circuit on bad behavior) — the shape is designed for
-  it; see the README *Streaming events* note.
+  proof + drift alarm. Events need a **transcript-carrying output format**, which
+  `--events`/`--stream` selects per harness via `HarnessSpec.events_format`
+  (must not break text extraction — verified live). **Never guess a shape: source
+  it from a real transcript** — the `scripts/explore-events.sh` + `explore-events.yml`
+  probe (temporary; delete once settled) dumped every harness's live output to CI
+  logs, which is how the current four recognizers were written. Coverage today
+  (all sourced, all e2e drift-alarmed): opencode (`json`, default),
+  cursor (`stream-json`, default, its own `type:"tool_call"` shape), claude-code
+  (`--events`→`stream-json`, Anthropic content blocks), codex (`--events`→`exec
+  --json`, `command_execution` items), qwen (`--events`→`stream-json`, content
+  blocks). Goose/crush/copilot emit only decorative TUI text headlessly (probe-
+  confirmed), so `events` stays `null` — correct, not a gap. Forward `--events`
+  (or `--stream`) to `oh_events_assert`/`oh_stream_assert` as a run-arg for a
+  harness whose transcript needs the upgraded format. Streaming
+  (`run --stream`, `io::runner::run_job_streaming` + `events::events_from_value`)
+  emits events incrementally so a consumer can short-circuit on bad behavior;
+  `oh_stream_assert` is its live proof. See the README *events* matrix.
 
 ## Scripts and output are context
 

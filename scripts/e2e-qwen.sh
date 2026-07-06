@@ -58,3 +58,10 @@ oh_mode_enforce qwen plan
 # file edit that `default` would deny-continue — the edit must apply.
 note "» edit enforcement: a file edit is auto-approved under --mode edit"
 oh_edit_enforce qwen
+
+# Normalized tool events: qwen's default text has no transcript, so `--events`
+# upgrades it to `--output-format stream-json` (Anthropic content blocks), which
+# normalize to `tool_call` / `tool_result` via `stream-json:content-blocks` — the
+# live drift alarm for qwen event extraction (sourced from a real transcript).
+note "» events: a tool-using turn must surface normalized tool_call events (--events)"
+oh_events_assert qwen "stream-json:content-blocks" --events

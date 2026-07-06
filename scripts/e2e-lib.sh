@@ -427,6 +427,49 @@ oh_events_assert() {
     note "PASS: $id surfaced $calls normalized tool_call event(s) via '$source'"
 }
 
+# Live proof of the STREAMING path: `oneharness run --stream` must emit at least
+# one incremental `{"type":"event",...}` line for a tool-using turn, then a
+# terminal `{"type":"result",...}` line — the end-to-end drift alarm for
+# streaming + the consumer short-circuit contract. Extra args ($2..) are
+# forwarded (e.g. --events to select a transcript-capable format).
+#   $1 harness id
+#   $2.. extra run args
+oh_stream_assert() {
+    local id="$1"
+    shift
+    local bin marker out events_lines result_lines
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    marker="$(oh_marker)"
+    local model_args=()
+    [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+
+    note "  stream: a --stream run must emit event lines then a result line"
+    out="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" \
+        --prompt "Using your shell/bash tool, run a command that prints the exact text ${marker} to stdout, then confirm." \
+        --stream --mode bypass --timeout "${OH_TIMEOUT:-120}" \
+        "${model_args[@]+"${model_args[@]}"}" "$@" 2>/dev/null)" || true
+
+    if [ -z "$out" ]; then
+        fail "$id: --stream produced no output"
+    fi
+    # Each line is a JSON object with a "type" discriminator.
+    events_lines="$(printf '%s\n' "$out" | jq -rc 'select(.type == "event") | .event.kind' 2>/dev/null | grep -c . || true)"
+    result_lines="$(printf '%s\n' "$out" | jq -rc 'select(.type == "result") | .report.results[0].status' 2>/dev/null | grep -c . || true)"
+    note "  stream: event lines=$events_lines result lines=$result_lines"
+
+    if [ "${result_lines:-0}" -lt 1 ] 2>/dev/null; then
+        printf '%s\n' "$out" | tail -5 | sed 's/^/    /' >&2
+        fail "$id: --stream emitted no terminal result line"
+    fi
+    if [ "${events_lines:-0}" -lt 1 ] 2>/dev/null; then
+        printf '%s\n' "$out" | tail -8 | sed 's/^/    /' >&2
+        fail "$id: --stream emitted no incremental event line for a tool-using turn"
+    fi
+    note "PASS: $id streamed $events_lines event line(s) then a result line"
+}
+
 # --- same-prefix batch caching ----------------------------------------------
 
 # Live proof that a fork-capable `min-tokens` batch actually REDUCES tokens via

@@ -16,13 +16,13 @@ marker="$(oh_marker)"
 oh_run cursor "$(oh_prompt "$marker")"
 oh_assert_echoed cursor "$marker"
 
-# Normalized tool events: Cursor's `stream-json` carries the Anthropic
-# content-block transcript, so a shell-tool turn must surface at least one
-# `tool_call` event — the live drift alarm for event extraction. Left lenient on
-# the exact `events_source` (Cursor's stream shape is not pinned by a repo
-# fixture); the hermetic suite pins `stream-json:content-blocks` against the mock.
+# Normalized tool events: Cursor's default `stream-json` carries its own
+# `type:"tool_call"` transcript (nested `shellToolCall` payload), so a shell-tool
+# turn must surface a normalized `tool_call` via `stream-json:cursor-tool-calls`
+# — the live drift alarm for the cursor recognizer (sourced from a real
+# cursor-agent transcript). No --events needed: its default already streams.
 note "» events: a tool-using turn must surface normalized tool_call events"
-oh_events_assert cursor
+oh_events_assert cursor "stream-json:cursor-tool-calls"
 
 # Sync enforcement: permissions synced into .cursor/cli.json must govern the
 # real CLI without --force. Cursor's documented baseline rule is the command

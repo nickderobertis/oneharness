@@ -88,6 +88,19 @@ pub struct HarnessSpec {
     pub install_hint: &'static str,
     /// The format the adapter requests, which drives text extraction.
     pub output_format: OutputFormat,
+    /// The format to switch this harness to when the caller asks for tool
+    /// **events** (`--events` / `--stream`) and its *default* format carries no
+    /// machine-readable tool transcript — so `events` can be surfaced without the
+    /// caller knowing each CLI's quirk. `None` means either the default already
+    /// carries a transcript (OpenCode's `json`, Cursor's `stream-json` — no
+    /// upgrade needed) or the harness exposes no events-capable format at all
+    /// (the plain-text harnesses); in both cases `--events` leaves the format
+    /// unchanged. When `Some`, the command layer selects it under `--events`
+    /// unless the caller set an explicit `--output-format`. Claude Code needs
+    /// `stream-json` (its default single-document `json` result omits the
+    /// transcript). Sourced from each CLI's real output, never guessed; text/usage
+    /// extraction must still work under the upgraded format (verified live).
+    pub events_format: Option<OutputFormat>,
     /// Whether this harness can continue a prior session (`run --resume`). When
     /// false, the command layer rejects `--resume` for it rather than silently
     /// starting a fresh session. Kept as data so the capability is introspectable
@@ -391,6 +404,9 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "claude",
         install_hint: "npm install -g @anthropic-ai/claude-code",
         output_format: OutputFormat::Json,
+        // The default `json` result carries no transcript; `stream-json` emits the
+        // Anthropic content-block stream oneharness normalizes into `events`.
+        events_format: Some(OutputFormat::StreamJson),
         supports_resume: true,
         supports_fork: true,
         fork_reuses_cache: true,
@@ -440,6 +456,10 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "codex",
         install_hint: "npm install -g @openai/codex",
         output_format: OutputFormat::Text,
+        // `codex exec --json` emits a JSONL event stream whose `command_execution`
+        // items oneharness normalizes into `events` (the plain default has no
+        // transcript). A non-text format maps to `--json` in `argv_codex`.
+        events_format: Some(OutputFormat::Json),
         supports_resume: true,
         supports_fork: false,
         fork_reuses_cache: false,
@@ -496,6 +516,8 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "opencode",
         install_hint: "npm install -g opencode-ai",
         output_format: OutputFormat::Json,
+        // Default `json` (JSONL) already carries the `tool` parts, so no upgrade.
+        events_format: None,
         supports_resume: true,
         supports_fork: true,
         // OpenCode can fork, but its fork re-sends the branched conversation cold
@@ -553,6 +575,8 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "goose",
         install_hint: "see https://block.github.io/goose/docs/getting-started/installation",
         output_format: OutputFormat::Text,
+        // Events pending investigation (see the events matrix).
+        events_format: None,
         supports_resume: true,
         supports_fork: false,
         fork_reuses_cache: false,
@@ -610,6 +634,10 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "qwen",
         install_hint: "npm install -g @qwen-code/qwen-code",
         output_format: OutputFormat::Text,
+        // Qwen's `--output-format stream-json` emits the Anthropic content-block
+        // stream oneharness normalizes into `events` (its default text has no
+        // transcript). Mapped to `--output-format stream-json` in `argv_qwen`.
+        events_format: Some(OutputFormat::StreamJson),
         supports_resume: true,
         supports_fork: false,
         fork_reuses_cache: false,
@@ -659,6 +687,8 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "crush",
         install_hint: "npm install -g @charmland/crush",
         output_format: OutputFormat::Text,
+        // Events pending investigation (see the events matrix).
+        events_format: None,
         supports_resume: true,
         supports_fork: false,
         fork_reuses_cache: false,
@@ -698,6 +728,8 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "copilot",
         install_hint: "npm install -g @github/copilot",
         output_format: OutputFormat::Text,
+        // Events pending investigation (see the events matrix).
+        events_format: None,
         supports_resume: true,
         supports_fork: false,
         fork_reuses_cache: false,
@@ -738,6 +770,8 @@ static REGISTRY: &[HarnessSpec] = &[
         default_bin: "cursor-agent",
         install_hint: "see https://docs.cursor.com/en/cli/overview",
         output_format: OutputFormat::StreamJson,
+        // Default `stream-json` already carries the tool transcript, so no upgrade.
+        events_format: None,
         supports_resume: true,
         supports_fork: false,
         fork_reuses_cache: false,
@@ -901,6 +935,14 @@ fn argv_codex(c: &BuildCtx) -> Vec<String> {
         a.push("--model".into());
         a.push(m.into());
     }
+    // `--events`/`--stream` upgrades codex to its JSON event stream (`--json`),
+    // whose `command_execution` items become normalized `events` and whose
+    // `agent_message` item carries the final text. The default (`Text`) stays
+    // plain. Codex has no `stream-json`; `--json` IS its JSONL stream, so both
+    // non-text formats map to it. Sourced from `codex exec --help`.
+    if c.output_format != OutputFormat::Text {
+        a.push("--json".into());
+    }
     // The resumed thread's id is the positional that precedes the prompt for
     // `codex exec resume <id> <prompt>` (the `resume` token was pushed above).
     if let Some(sid) = c.resume {
@@ -1012,6 +1054,14 @@ fn argv_qwen(c: &BuildCtx) -> Vec<String> {
     if let Some(m) = c.model {
         a.push("-m".into());
         a.push(m.into());
+    }
+    // `--events`/`--stream` upgrades qwen to `--output-format stream-json` (its
+    // NDJSON Anthropic content-block stream), which oneharness normalizes into
+    // `events` and from which it recovers the final text. The default stays plain
+    // text. Sourced from `qwen --help` (`-o, --output-format text|json|stream-json`).
+    if c.output_format != OutputFormat::Text {
+        a.push("--output-format".into());
+        a.push(format_flag(c.output_format).into());
     }
     if let Some(sid) = c.resume {
         a.push("--resume".into());
@@ -1407,8 +1457,14 @@ mod tests {
 
     #[test]
     fn codex_argv_uses_exec_and_bypass_flag() {
+        // Codex's default format is Text (no transcript), so no `--json`.
         let spec = by_id("codex").unwrap();
-        let argv = (spec.build_argv)(&ctx("codex", None, PermissionMode::Bypass));
+        let argv = (spec.build_argv)(&ctx_fmt(
+            "codex",
+            None,
+            PermissionMode::Bypass,
+            OutputFormat::Text,
+        ));
         assert_eq!(
             argv,
             vec![
@@ -1417,6 +1473,51 @@ mod tests {
                 "--dangerously-bypass-approvals-and-sandbox",
                 "hi"
             ]
+        );
+    }
+
+    #[test]
+    fn codex_events_format_adds_json_flag() {
+        // Under `--events`/`--stream` the command layer selects codex's
+        // events_format (Json), which maps to `--json` — its JSONL event stream.
+        let spec = by_id("codex").unwrap();
+        assert_eq!(spec.events_format, Some(OutputFormat::Json));
+        let argv = (spec.build_argv)(&ctx_fmt(
+            "codex",
+            None,
+            PermissionMode::Bypass,
+            OutputFormat::Json,
+        ));
+        assert!(argv.iter().any(|t| t == "--json"), "{argv:?}");
+    }
+
+    #[test]
+    fn qwen_events_format_adds_stream_json_flag() {
+        // Qwen's events_format is stream-json → `--output-format stream-json`; the
+        // default (text) emits no format flag.
+        let spec = by_id("qwen").unwrap();
+        assert_eq!(spec.events_format, Some(OutputFormat::StreamJson));
+        let stream = (spec.build_argv)(&ctx_fmt(
+            "qwen",
+            None,
+            PermissionMode::Bypass,
+            OutputFormat::StreamJson,
+        ));
+        assert!(
+            stream
+                .windows(2)
+                .any(|w| w == ["--output-format", "stream-json"]),
+            "{stream:?}"
+        );
+        let text = (spec.build_argv)(&ctx_fmt(
+            "qwen",
+            None,
+            PermissionMode::Bypass,
+            OutputFormat::Text,
+        ));
+        assert!(
+            !text.iter().any(|t| t == "--output-format"),
+            "default text must not add a format flag: {text:?}"
         );
     }
 

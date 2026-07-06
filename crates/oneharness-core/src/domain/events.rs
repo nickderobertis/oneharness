@@ -14,22 +14,30 @@
 //! envelope could express. Normalizing here, where the per-harness output shapes
 //! are already known, spares every consumer from per-harness stdout parsing.
 //!
-//! Two output shapes are recognized, both sourced from real transcripts, not
-//! guessed:
+//! Four output shapes are recognized, all sourced from real transcripts captured
+//! from the live CLIs (the `explore-events` CI probe), not guessed:
 //! - **OpenCode** (`run --format json`): JSONL events whose `part.type == "tool"`
-//!   carry the tool `name`, and a `state` object holding the call `input` and the
-//!   observed `output`. One part is one completed call, so it maps to a single
-//!   `tool_call` event that also carries its `output`.
-//! - **Anthropic content blocks** (Claude Code / Cursor under `stream-json`):
-//!   assistant messages whose `message.content[]` holds `tool_use` blocks
-//!   (`name` + structured `input`), and `user` messages whose `content[]` holds
-//!   `tool_result` blocks (the observation). These become `tool_call` and
-//!   `tool_result` events respectively.
+//!   carry the tool `name` (`part.tool`) and a `state` object holding the call
+//!   `input` and observed `output`. One part is one completed call → one
+//!   `tool_call` event carrying its `output`.
+//! - **Anthropic content blocks** (Claude Code `stream-json`, Qwen `stream-json`
+//!   / `json`): messages whose `message.content[]` holds `tool_use` blocks
+//!   (`name` + structured `input`) and `tool_result` blocks (the observation) —
+//!   `tool_call` and `tool_result` events respectively.
+//! - **Cursor** (`--output-format stream-json`): top-level `type:"tool_call"`
+//!   events whose `tool_call` object nests a `<name>ToolCall` payload (e.g.
+//!   `shellToolCall`) with `args` and, once complete, `result.success`. The tool
+//!   name is the payload key minus its `ToolCall` suffix.
+//! - **Codex** (`exec --json`): flat `item.completed` events with
+//!   `item.type == "command_execution"` (the shell), the run `command` as input
+//!   and `aggregated_output` as output.
 //!
-//! A harness whose oneharness output format is plain `text` (Codex, Goose, Qwen,
-//! Crush, Copilot), or Claude Code under its default single-document `json`
-//! result (which omits the intermediate transcript), exposes no machine-readable
-//! trace, so `events` stays `None` for it rather than being invented.
+//! Goose, Crush, and Copilot expose no machine-readable transcript headlessly
+//! (decorative TUI text, or no JSON output mode at all — confirmed by the probe),
+//! and Claude Code / Cursor under their non-stream `json` mode collapse to only a
+//! final result object. In those cases `events` stays `None` rather than being
+//! invented. Which format yields a transcript per harness is declared by
+//! `HarnessSpec.events_format` and selected by `run --events` / `--stream`.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -90,26 +98,18 @@ impl PartialEvent {
 }
 
 /// Best-effort normalized tool events from a harness's stdout. Scans every JSON
-/// candidate (the whole document, else each parseable line) in order, collecting
-/// events from the first shape each candidate matches — OpenCode tool parts or
-/// Anthropic content blocks. `None` when no candidate yields an event, so the
-/// consumer can distinguish "unsupported" from "used no tools" via the absent
-/// `events_source`. `fmt` only labels the source's provenance prefix.
+/// candidate (the whole document, each array element, or each parseable line) in
+/// order, collecting events from whichever known shape each candidate matches.
+/// `None` when no candidate yields an event, so the consumer can distinguish
+/// "unsupported" from "used no tools" via the absent `events_source`. `fmt` only
+/// labels the source's provenance prefix.
 pub fn extract_events(stdout: &str, fmt: OutputFormat) -> Option<EventsReading> {
     let mut events: Vec<PartialEvent> = Vec::new();
     let mut recognizer: Option<&'static str> = None;
     for value in json_candidates(stdout) {
-        // An OpenCode `tool` part is self-contained (name + input + output); its
-        // shape never overlaps a content-block message, so try it first.
-        if let Some(pe) = opencode_tool_event(&value) {
-            recognizer.get_or_insert("opencode-parts");
-            events.push(pe);
-            continue;
-        }
-        let blocks = content_block_events(&value);
-        if !blocks.is_empty() {
-            recognizer.get_or_insert("content-blocks");
-            events.extend(blocks);
+        if let Some((label, mut partials)) = recognize(&value) {
+            recognizer.get_or_insert(label);
+            events.append(&mut partials);
         }
     }
     let recognizer = recognizer?;
@@ -121,6 +121,46 @@ pub fn extract_events(stdout: &str, fmt: OutputFormat) -> Option<EventsReading> 
             .map(|(i, pe)| pe.into_event(i))
             .collect(),
     })
+}
+
+/// Extract normalized events from a single already-parsed JSON value (one stream
+/// line or document), numbering them from `start_index`. The streaming path calls
+/// this per line as output arrives; [`extract_events`] is the batch counterpart.
+/// Empty when the value carries no recognizable tool event.
+pub fn events_from_value(value: &Value, start_index: usize) -> Vec<ActionEvent> {
+    match recognize(value) {
+        Some((_, partials)) => partials
+            .into_iter()
+            .enumerate()
+            .map(|(i, pe)| pe.into_event(start_index + i))
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Try each known harness transcript shape against one JSON value, returning the
+/// recognizer label (for `events_source`) and the events it yielded, or `None`.
+/// The shapes are mutually exclusive in practice (each keys off a distinct field
+/// layout), so the first match wins.
+fn recognize(value: &Value) -> Option<(&'static str, Vec<PartialEvent>)> {
+    // OpenCode `tool` part: self-contained (name + input + output).
+    if let Some(pe) = opencode_tool_event(value) {
+        return Some(("opencode-parts", vec![pe]));
+    }
+    // Cursor `type:"tool_call"` with a nested `<name>ToolCall` payload.
+    if let Some(pe) = cursor_tool_call(value) {
+        return Some(("cursor-tool-calls", vec![pe]));
+    }
+    // Codex `item.completed` `command_execution` (shell), result folded in.
+    if let Some(pe) = codex_command_item(value) {
+        return Some(("codex-items", vec![pe]));
+    }
+    // Anthropic content blocks (Claude Code / Qwen): tool_use + tool_result.
+    let blocks = content_block_events(value);
+    if !blocks.is_empty() {
+        return Some(("content-blocks", blocks));
+    }
+    None
 }
 
 /// One OpenCode `tool` part → a single `tool_call` event carrying its input and
@@ -179,6 +219,76 @@ fn content_block_events(value: &Value) -> Vec<PartialEvent> {
     out
 }
 
+/// Cursor's `stream-json` tool event: a top-level `{"type":"tool_call", ...}`
+/// whose `tool_call` object holds a nested `<name>ToolCall` payload (e.g.
+/// `shellToolCall`) with `args` (the input) and, once complete, a
+/// `result.success` (the observation). The tool identity is the payload *key*,
+/// not a string field — so the name is that key with its `ToolCall` suffix
+/// stripped (`shellToolCall` → `shell`). Emitted only on the `completed` subtype
+/// (which carries the result); the paired `started` event is skipped so a call
+/// is counted once. `None` for any other line. Sourced from a real cursor-agent
+/// transcript, not guessed.
+fn cursor_tool_call(value: &Value) -> Option<PartialEvent> {
+    let obj = value.as_object()?;
+    if obj.get("type").and_then(Value::as_str) != Some("tool_call") {
+        return None;
+    }
+    // Only the terminal event carries the result; skip `started` to avoid dupes.
+    if obj.get("subtype").and_then(Value::as_str) != Some("completed") {
+        return None;
+    }
+    let tool_call = obj.get("tool_call").and_then(Value::as_object)?;
+    // The payload key ends in `ToolCall` (e.g. `shellToolCall`), distinct from the
+    // sibling `toolCallId` metadata; its value is the tool object.
+    let (key, payload) = tool_call
+        .iter()
+        .find(|(k, v)| k.ends_with("ToolCall") && v.is_object())?;
+    let name = key.strip_suffix("ToolCall").unwrap_or(key).to_string();
+    let payload = payload.as_object()?;
+    Some(PartialEvent {
+        kind: "tool_call",
+        name: Some(name),
+        input: payload.get("args").cloned(),
+        // The observation lives under result.success (shape varies per tool); pull
+        // a stdout string when present, else leave null rather than fabricating.
+        output: payload
+            .get("result")
+            .and_then(|r| r.get("success"))
+            .and_then(|s| s.get("stdout"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
+/// Codex's `exec --json` tool event: a flat `{"type":"item.completed",
+/// "item":{"type":"command_execution", ...}}`. Codex has no generic tool-name
+/// field — the tool identity *is* the item type — so the normalized `name` is
+/// `command_execution` (the shell), the `input` is the run command, and the
+/// `output` is the aggregated output. Emitted only on `item.completed` (the
+/// paired `item.started` has no output and would double-count); other item types
+/// (`agent_message`, …) are not tool calls. Sourced from a real codex transcript.
+fn codex_command_item(value: &Value) -> Option<PartialEvent> {
+    let obj = value.as_object()?;
+    if obj.get("type").and_then(Value::as_str) != Some("item.completed") {
+        return None;
+    }
+    let item = obj.get("item").and_then(Value::as_object)?;
+    if item.get("type").and_then(Value::as_str) != Some("command_execution") {
+        return None;
+    }
+    Some(PartialEvent {
+        kind: "tool_call",
+        name: Some("command_execution".to_string()),
+        input: item
+            .get("command")
+            .map(|c| serde_json::json!({ "command": c.clone() })),
+        output: item
+            .get("aggregated_output")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
 /// Normalize a `tool_result` block's `content` (a bare string, or an array of
 /// `{type:"text","text":…}` blocks — the two Anthropic shapes) to a single
 /// string; `None` when neither yields text.
@@ -206,16 +316,20 @@ fn format_prefix(fmt: OutputFormat) -> &'static str {
     }
 }
 
-/// Candidate JSON objects in `stdout`: the whole document when it parses, else
-/// each parseable line (stream-json / JSONL). Document order preserved so event
-/// ordering reflects the transcript.
+/// Candidate JSON objects in `stdout`: the whole document when it parses (a
+/// top-level array is flattened to its elements — Qwen's `json` mode emits one
+/// JSON array of message objects), else each parseable line (stream-json /
+/// JSONL). Document order preserved so event ordering reflects the transcript.
 fn json_candidates(stdout: &str) -> Vec<Value> {
     let trimmed = stdout.trim();
     if trimmed.is_empty() {
         return Vec::new();
     }
     if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-        return vec![value];
+        return match value {
+            Value::Array(items) => items,
+            other => vec![other],
+        };
     }
     stdout
         .lines()
@@ -314,6 +428,97 @@ mod tests {
         let got = extract_events(raw, OutputFormat::StreamJson).unwrap();
         assert_eq!(got.events.len(), 1);
         assert_eq!(got.events[0].name.as_deref(), Some("read"));
+    }
+
+    #[test]
+    fn cursor_tool_call_completed_event() {
+        // Real cursor-agent stream-json: a `tool_call` `started` then `completed`.
+        // The tool name is the `shellToolCall` key minus its `ToolCall` suffix;
+        // input is `.args`, output is `.result.success.stdout`. Only the completed
+        // event yields a normalized event (started is skipped to avoid a dupe).
+        let raw = concat!(
+            r#"{"type":"tool_call","subtype":"started","call_id":"c1","tool_call":{"shellToolCall":{"args":{"command":"echo hi"}},"toolCallId":"c1","startedAtMs":"1"}}"#,
+            "\n",
+            r#"{"type":"tool_call","subtype":"completed","call_id":"c1","tool_call":{"shellToolCall":{"args":{"command":"echo hi"},"result":{"success":{"command":"echo hi","exitCode":0,"stdout":"hi\n","stderr":""}}},"toolCallId":"c1","completedAtMs":"2"}}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","result":"done"}"#,
+            "\n",
+        );
+        let got = extract_events(raw, OutputFormat::StreamJson).unwrap();
+        assert_eq!(got.source, "stream-json:cursor-tool-calls");
+        assert_eq!(got.events.len(), 1);
+        assert_eq!(got.events[0].kind, "tool_call");
+        assert_eq!(got.events[0].name.as_deref(), Some("shell"));
+        assert_eq!(got.events[0].input, Some(json!({"command": "echo hi"})));
+        assert_eq!(got.events[0].output.as_deref(), Some("hi\n"));
+    }
+
+    #[test]
+    fn codex_command_execution_item_event() {
+        // Real codex `exec --json`: an `item.started` then `item.completed` for a
+        // `command_execution`. The completed item folds in the result; only it
+        // yields an event. Name is the item type (codex has no tool-name field),
+        // input is the run command, output is the aggregated output. A trailing
+        // `agent_message` item is the final text, not a tool call.
+        let raw = concat!(
+            r#"{"type":"thread.started","thread_id":"th_1"}"#,
+            "\n",
+            r#"{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/bash -lc 'echo hi'","aggregated_output":"","exit_code":null,"status":"in_progress"}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/bash -lc 'echo hi'","aggregated_output":"hi\n","exit_code":0,"status":"completed"}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"I ran it."}}"#,
+            "\n",
+        );
+        let got = extract_events(raw, OutputFormat::Json).unwrap();
+        assert_eq!(got.source, "json:codex-items");
+        assert_eq!(got.events.len(), 1);
+        assert_eq!(got.events[0].kind, "tool_call");
+        assert_eq!(got.events[0].name.as_deref(), Some("command_execution"));
+        assert_eq!(
+            got.events[0].input,
+            Some(json!({"command": "/bin/bash -lc 'echo hi'"}))
+        );
+        assert_eq!(got.events[0].output.as_deref(), Some("hi\n"));
+    }
+
+    #[test]
+    fn qwen_content_blocks_stream_and_json_array() {
+        // Qwen uses the Anthropic content-block shape. Under stream-json it is
+        // NDLJSON (one message per line); under json it is a single JSON *array*
+        // of the same message objects — json_candidates flattens the array so both
+        // yield the same normalized events.
+        let call = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"call_1","name":"run_shell_command","input":{"command":"echo hi"}}]}}"#;
+        let result = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call_1","is_error":false,"content":"hi"}]}}"#;
+        let ndjson = format!("{call}\n{result}\n");
+        let got = extract_events(&ndjson, OutputFormat::StreamJson).unwrap();
+        assert_eq!(got.source, "stream-json:content-blocks");
+        assert_eq!(got.events.len(), 2);
+        assert_eq!(got.events[0].name.as_deref(), Some("run_shell_command"));
+        assert_eq!(got.events[1].output.as_deref(), Some("hi"));
+
+        let array = format!("[{call},{result}]");
+        let got = extract_events(&array, OutputFormat::Json).unwrap();
+        assert_eq!(got.source, "json:content-blocks");
+        assert_eq!(got.events.len(), 2);
+        assert_eq!(got.events[0].name.as_deref(), Some("run_shell_command"));
+    }
+
+    #[test]
+    fn events_from_value_numbers_from_start_index() {
+        // The streaming entry point: per-line extraction that numbers events from
+        // a running offset, so the incremental stream matches the batch indices.
+        let line: Value = serde_json::from_str(
+            r#"{"part":{"type":"tool","tool":"bash","state":{"input":{"command":"ls"}}}}"#,
+        )
+        .unwrap();
+        let evs = events_from_value(&line, 5);
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0].index, 5);
+        assert_eq!(evs[0].name.as_deref(), Some("bash"));
+        // A non-event line yields nothing.
+        let noise: Value = serde_json::from_str(r#"{"type":"step_start"}"#).unwrap();
+        assert!(events_from_value(&noise, 0).is_empty());
     }
 
     #[test]

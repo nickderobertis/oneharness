@@ -156,6 +156,23 @@ pub struct RunArgs {
     #[arg(long, value_parser = output_format_parser())]
     pub output_format: Option<OutputFormat>,
 
+    /// Surface each harness's normalized tool-call `events`. Selects the
+    /// harness's events-capable output format when its default carries no tool
+    /// transcript (e.g. Claude Code → stream-json), unless --output-format is set
+    /// explicitly. Harnesses whose default already carries a transcript (OpenCode,
+    /// Cursor) report `events` regardless; this flag just makes the upgrade
+    /// explicit and covers the rest.
+    #[arg(long)]
+    pub events: bool,
+
+    /// Stream normalized events to stdout as they occur (single harness), then a
+    /// final result line — instead of one report at the end. Implies --events'
+    /// format selection. Lets a consumer short-circuit (close stdin / signal) the
+    /// moment it observes a disallowed action. Mutually exclusive with a
+    /// multi-harness selection, --schema, and batch prompts.
+    #[arg(long)]
+    pub stream: bool,
+
     /// Constrain each harness's final answer to this JSON Schema file
     /// (structured output). The schema is delivered natively where the harness
     /// supports it (Claude Code's --json-schema) and via the prompt otherwise;

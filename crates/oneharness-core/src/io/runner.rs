@@ -291,6 +291,182 @@ fn read_all<R: std::io::Read>(reader: &mut R) -> String {
     String::from_utf8_lossy(&buf).into_owned()
 }
 
+/// What a streaming line callback asks the run to do next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamStep {
+    /// Keep reading the harness's output.
+    Continue,
+    /// Stop now and tear down the child — the consumer has gone away (e.g. a
+    /// broken stdout pipe: it short-circuited on an observed action).
+    Stop,
+}
+
+/// Run one job, invoking `on_line` for each complete line of stdout **as it
+/// arrives**, and return the same [`Capture`] the batch path would (accumulated
+/// stdout/stderr, status, timing) so the caller can still emit a final envelope.
+///
+/// This is the streaming counterpart to [`run_job`]: it exists so a consumer can
+/// observe a harness's normalized events incrementally and short-circuit the
+/// moment it sees a disallowed action — instead of paying for a whole turn before
+/// judging it. The parsing stays out of this layer: `on_line` (a pure
+/// domain-driven closure in the command layer) decides what to emit and returns
+/// [`StreamStep::Stop`] to end early (the command layer returns `Stop` when its
+/// write to the consumer fails, i.e. the consumer closed the stream). On `Stop`
+/// or timeout the child is killed; on normal EOF its exit is awaited. Never
+/// panics on harness behavior — same contract as [`run_job`].
+pub fn run_job_streaming<F>(job: &Job, mut on_line: F) -> Capture
+where
+    F: FnMut(&str) -> StreamStep,
+{
+    use std::io::BufRead;
+    use std::sync::mpsc;
+
+    let start = Instant::now();
+    let (program, args) = spawn_target(&job.argv);
+    let mut command = Command::new(program);
+    command
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(cwd) = &job.cwd {
+        command.current_dir(cwd);
+        let pwd = if cwd.is_absolute() {
+            cwd.clone()
+        } else {
+            std::env::current_dir()
+                .map(|base| base.join(cwd))
+                .unwrap_or_else(|_| cwd.clone())
+        };
+        command.env("PWD", pwd);
+    }
+    for (key, value) in &job.env {
+        command.env(key, value);
+    }
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            return Capture {
+                status: Status::SpawnError,
+                exit_code: None,
+                duration_ms: Some(start.elapsed().as_millis()),
+                stdout: String::new(),
+                stderr: String::new(),
+                error: Some(format!(
+                    "failed to spawn `{}`: {err}. Suggestion: check the binary exists and is executable (try `oneharness detect`)",
+                    job.argv[0]
+                )),
+            };
+        }
+    };
+
+    let out = child.stdout.take().expect("piped stdout");
+    let mut err = child.stderr.take().expect("piped stderr");
+    let err_reader = std::thread::spawn(move || read_all(&mut err));
+
+    // A reader thread turns blocking line reads into channel messages, so the
+    // main loop can honor the wall-clock timeout (recv_timeout) between lines
+    // without non-blocking I/O. Each message is one line *with* its terminator
+    // preserved, so the accumulated stdout is byte-faithful to the batch path.
+    let (tx, rx) = mpsc::channel::<String>();
+    let out_reader = std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(out);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break, // EOF
+                Ok(_) => {
+                    if tx.send(line).is_err() {
+                        break; // main loop gone
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let deadline = start + job.timeout;
+    let mut stdout = String::new();
+    let mut stopped = false;
+    let mut timed_out = false;
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            timed_out = true;
+            break;
+        }
+        match rx.recv_timeout(deadline - now) {
+            Ok(line) => {
+                stdout.push_str(&line);
+                // Feed the callback the line without its trailing newline(s).
+                if on_line(line.trim_end_matches(['\n', '\r'])) == StreamStep::Stop {
+                    stopped = true;
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                timed_out = true;
+                break;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break, // EOF
+        }
+    }
+
+    let (status, exit_code) = if stopped || timed_out {
+        let _ = child.kill();
+        let _ = child.wait();
+        if timed_out {
+            (Status::Timeout, None)
+        } else {
+            // Consumer-driven stop: not a harness failure. Report Ok so the
+            // (best-effort) final envelope isn't misread as an error; the
+            // consumer already has what it needed.
+            (Status::Ok, None)
+        }
+    } else {
+        match child.wait() {
+            Ok(exit) => {
+                let code = exit.code();
+                let status = if code == Some(0) {
+                    Status::Ok
+                } else {
+                    Status::Nonzero
+                };
+                (status, code)
+            }
+            Err(_) => (Status::SpawnError, None),
+        }
+    };
+
+    // Drain any remaining buffered lines the reader already had, so the final
+    // envelope's stdout is complete even if we broke out on stop/timeout.
+    let _ = out_reader.join();
+    while let Ok(line) = rx.try_recv() {
+        stdout.push_str(&line);
+    }
+    let stderr = err_reader.join().unwrap_or_default();
+
+    let error = if timed_out {
+        Some(format!(
+            "`{}` exceeded the {}s timeout and was killed. Suggestion: raise --timeout or simplify the prompt",
+            job.argv[0],
+            job.timeout.as_secs()
+        ))
+    } else {
+        None
+    };
+
+    Capture {
+        status,
+        exit_code,
+        duration_ms: Some(start.elapsed().as_millis()),
+        stdout,
+        stderr,
+        error,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

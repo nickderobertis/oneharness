@@ -1286,6 +1286,78 @@ fn claude_stream_json_surfaces_content_block_events() {
 }
 
 #[test]
+fn events_flag_upgrades_claude_to_stream_json_and_surfaces_events() {
+    // `--events` selects the harness's events-capable format when its default
+    // carries no transcript: claude-code's default `json` becomes `stream-json`
+    // (with the required `--verbose`), so tool events surface without the caller
+    // knowing the quirk or passing --output-format.
+    let stdout = concat!(
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}"#,
+        "\n",
+        r#"{"type":"result","result":"done"}"#,
+        "\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--events",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    let command = result["command"].as_array().unwrap();
+    assert!(
+        command
+            .windows(2)
+            .any(|w| w[0] == "--output-format" && w[1] == "stream-json"),
+        "--events should upgrade claude to stream-json: {command:?}"
+    );
+    assert!(command.iter().any(|t| t == "--verbose"), "{command:?}");
+    assert_eq!(result["events_source"], "stream-json:content-blocks");
+    assert_eq!(result["events"][0]["name"], "Bash");
+}
+
+#[test]
+fn events_flag_respects_explicit_output_format() {
+    // An explicit --output-format always wins over the --events upgrade, so a
+    // caller can still pin the format (here json, which for claude has no
+    // transcript → events null) even with --events.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--events",
+            "--output-format",
+            "json",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"type":"result","result":"hi"}"#)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let command = value["results"][0]["command"].as_array().unwrap();
+    assert!(
+        !command.iter().any(|t| t == "stream-json"),
+        "explicit --output-format json must win: {command:?}"
+    );
+    assert!(value["results"][0]["events"].is_null());
+}
+
+#[test]
 fn events_absent_when_harness_exposes_no_trace() {
     // Claude Code's single-document `json` result carries no transcript, so
     // `events`/`events_source` stay null (absent), distinct from an empty array —

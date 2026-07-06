@@ -128,10 +128,20 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         // on an ordinary run the single top-level `prompt` covers them all.
         let result_prompt = batch_run.then(|| unit_prompt.to_string());
         let resolved = detect::resolve(spec, &overrides);
-        let chosen_format = args
-            .output_format
-            .or(cfg.output_format)
-            .unwrap_or(spec.output_format);
+        // Explicit format (CLI or config) always wins. Otherwise, when the caller
+        // asked for events/streaming, upgrade to the harness's events-capable
+        // format so a tool transcript is actually emitted (e.g. Claude Code's
+        // default `json` → `stream-json`); harnesses whose default already
+        // carries a transcript declare `events_format: None` and stay put.
+        let explicit_format = args.output_format.or(cfg.output_format);
+        let want_events = args.events || args.stream;
+        let chosen_format = explicit_format.unwrap_or_else(|| {
+            if want_events {
+                spec.events_format.unwrap_or(spec.output_format)
+            } else {
+                spec.output_format
+            }
+        });
         // A native-schema harness must receive its schema as JSON; force the
         // format so the conforming value lands where we read it (Claude Code's
         // `structured_output`, which needs `--output-format json`).
@@ -1270,6 +1280,7 @@ mod tests {
             default_bin: "test-unsupported",
             install_hint: "",
             output_format: OutputFormat::Text,
+            events_format: None,
             supports_resume: false,
             supports_fork: false,
             fork_reuses_cache: false,

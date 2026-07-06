@@ -953,10 +953,15 @@ oh_mock_enforce() {
     spyfile="$sandbox/mock-spy.jsonl"
 
     # The ruleset: rewrite the marked command to touch the MOCK file instead.
-    # Every rewrite-capable harness's shell tool takes its command in a
-    # `command` input field, so one input object serves them all.
+    # Every rewrite-capable harness's shell tool takes (and exposes) its command
+    # in a `command` input field, so one input object serves them all — and the
+    # MATCH here uses a per-field `input.command.regex` predicate (the marker is
+    # alphanumeric, a valid literal regex), so this phase is also the live proof
+    # of regex + input-field matching against real harness events on every
+    # rewrite harness. (Stub/deny phases keep `event_contains`, so both matcher
+    # styles stay live-covered.)
     cat > "$rulesfile" <<JSON
-{"rules":[{"match":{"event_contains":"$marker"},"action":{"rewrite":{"input":{"command":"touch $mockfile"},"message":"rewritten by oh_mock_enforce"}}}]}
+{"rules":[{"match":{"input":{"command":{"regex":"$marker"}}},"action":{"rewrite":{"input":{"command":"touch $mockfile"},"message":"rewritten by oh_mock_enforce"}}}]}
 JSON
 
     # Up to two attempts: a model occasionally refuses the fixture framing and

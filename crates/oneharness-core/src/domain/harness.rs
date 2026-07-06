@@ -838,6 +838,15 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     }
     a.push("--output-format".into());
     a.push(format_flag(c.output_format).into());
+    // Claude Code refuses `-p --output-format stream-json` without `--verbose`
+    // ("--print with --output-format=stream-json requires --verbose"). Emit it so
+    // the streaming path actually runs — it is what surfaces the Anthropic
+    // content-block transcript oneharness normalizes into `events` (the default
+    // single-document `json` result carries no transcript). Sourced from the CLI's
+    // own error, not guessed.
+    if c.output_format == OutputFormat::StreamJson {
+        a.push("--verbose".into());
+    }
     // Native structured output: `--json-schema <inline>` makes Claude Code return
     // the conforming value in the result document's `structured_output` field
     // (it requires `--output-format json`, already emitted above). Sourced from
@@ -1568,6 +1577,34 @@ mod tests {
         // Without a schema the flag is absent.
         let argv = (spec.build_argv)(&base_ctx(spec));
         assert!(!argv.iter().any(|t| t == "--json-schema"), "{argv:?}");
+    }
+
+    #[test]
+    fn claude_stream_json_adds_verbose_but_default_json_does_not() {
+        // `-p --output-format stream-json` requires `--verbose` (Claude Code
+        // errors otherwise); it is what surfaces the content-block transcript
+        // oneharness normalizes into `events`. The default `json` result carries
+        // no transcript and must NOT get `--verbose`.
+        let spec = by_id("claude-code").unwrap();
+        let stream = (spec.build_argv)(&BuildCtx {
+            output_format: OutputFormat::StreamJson,
+            ..base_ctx(spec)
+        });
+        assert!(
+            stream
+                .windows(2)
+                .any(|w| w == ["--output-format", "stream-json"]),
+            "{stream:?}"
+        );
+        assert!(
+            stream.iter().any(|t| t == "--verbose"),
+            "stream-json needs --verbose: {stream:?}"
+        );
+        let json = (spec.build_argv)(&base_ctx(spec));
+        assert!(
+            !json.iter().any(|t| t == "--verbose"),
+            "default json must not add --verbose: {json:?}"
+        );
     }
 
     #[test]

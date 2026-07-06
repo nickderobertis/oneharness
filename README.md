@@ -539,12 +539,26 @@ more than one possible method) records how it was found:
   output carries no machine-readable trace — a plain-text harness (Codex, Goose,
   Qwen, Crush, Copilot), or Claude Code's single-document `json` result, which
   omits the intermediate transcript — with `events_source` then also `null`, so a
-  consumer tells "harness doesn't expose it" from "no tools were used." Recognized
-  shapes today (widening as more are sourced): OpenCode's `tool` parts
-  (`json:opencode-parts`) and the Anthropic content-block transcript emitted under
-  `stream-json` (`stream-json:content-blocks`, e.g. Cursor, or Claude Code when
-  run with `--output-format stream-json`). Like `text`, it is best-effort and
-  never fabricated; consumers needing certainty parse `stdout`.
+  consumer tells "harness doesn't expose it" from "no tools were used." Like
+  `text`, it is best-effort and never fabricated; consumers needing certainty
+  parse `stdout`.
+
+  Events require the harness to run in a format that carries a **tool
+  transcript**. Some harnesses emit one in the format oneharness already uses;
+  others need a richer `--output-format`. Coverage today (widening as more shapes
+  are sourced — an absent transcript is an honest `null`, not a bug):
+
+  | harness | events via | `events_source` |
+  |---------|------------|-----------------|
+  | `opencode` | `json` (default) | `json:opencode-parts` |
+  | `cursor` | `stream-json` (default) | `stream-json:content-blocks` |
+  | `claude-code` | `--output-format stream-json` (default `json` has no transcript; oneharness adds the required `--verbose`) | `stream-json:content-blocks` |
+  | `codex` | not yet wired (`codex exec --json` exists; needs its event shape sourced) | — |
+  | `goose`, `qwen`, `crush`, `copilot` | no machine-readable transcript exposed headlessly | — |
+
+  The recognizers are harness-agnostic — the OpenCode `tool`-part shape and the
+  Anthropic content-block shape — so any harness that emits one of them gets
+  `events` for free once run in a format that carries it.
 - `failure_kind` / `failure_kind_source` — on a non-zero run, a coarse reason
   (`auth`, `rate_limit`, `model_not_found`, `quota`) so a caller can tell a
   retryable condition from a broken request. This is **distinct from `status`**,
@@ -555,6 +569,25 @@ Coverage is keyed off each harness's documented output shape — Claude Code's
 usage), Cursor's `stream-json` — and widens as more shapes are sourced; an absent
 signal is the honest answer, not an error. Consumers that need certainty should
 parse `stdout` themselves.
+
+#### Streaming events (direction)
+
+Today `events` is delivered **at the end**, in the final report — oneharness
+spawns each harness, waits for it to exit, then normalizes the whole transcript
+at once. The `events` shape above is deliberately the same one a **streaming**
+mode will emit incrementally: the extractor is line-oriented and pure, so the
+same normalized `{ kind, name, input, output, index }` events can be surfaced as
+soon as each is observed rather than only after the run completes.
+
+The motivating consumer is behavioral skill-testing (`skilltest`): with a live
+event stream, a language test can **short-circuit the moment it observes bad
+behavior** (a forbidden `rm -rf`, an out-of-scope network call) — killing the run
+instead of paying for a full turn before judging it. Realizing that end to end is
+a staged effort beyond this field: a streaming `run` path in the runner
+(incremental read + early-terminate on the consumer's signal, single-harness and
+non-batch), then threading the stream through the language **SDKs** and the
+skilltest **plugin**. This section is the anchor for that work; the normalized
+event shape is the stable contract it will build on.
 
 ### Structured output
 

@@ -416,13 +416,24 @@ shape. When you add one:
   README `events` docs), the normalized `events` array works for free once the
   shape is recognized. A harness with a *new* transcript shape needs a recognizer
   arm in `extract_events` (sourced from a real transcript, never guessed) plus a
-  unit test; then add the `oh_events_assert <id> [source]` live phase — a
-  tool-using turn must surface at least one `tool_call` event — the honoring proof
-  + drift alarm for event extraction. Pass the expected `events_source` only when
-  a repo fixture pins the shape (opencode → `json:opencode-parts`); leave it
-  lenient otherwise (cursor). A plain-`text` harness, or Claude Code's
-  single-document `json` result, exposes no transcript, so `events` stays `null`
-  for it — that is correct, not a gap to fill.
+  unit test; then add the `oh_events_assert <id> [source] [run-args…]` live phase
+  — a tool-using turn must surface at least one `tool_call` event — the honoring
+  proof + drift alarm for event extraction. Pass the expected `events_source` only
+  when a repo fixture pins the shape (opencode → `json:opencode-parts`); leave it
+  lenient otherwise (cursor). Events need a **transcript-carrying output format**:
+  some harnesses emit one by default (opencode `json`, cursor `stream-json`),
+  others need a richer `--output-format` forwarded as a run-arg — claude-code's
+  default `json` result has no transcript, so its events ride
+  `--output-format stream-json` (oneharness adds the CLI-required `--verbose`; see
+  `argv_claude_code`), asserted via `oh_events_assert claude-code
+  "stream-json:content-blocks" --output-format stream-json`. A plain-`text` harness
+  with no structured transcript at all (goose/qwen/crush/copilot today) exposes
+  nothing to extract, so `events` stays `null` — correct, not a gap. Codex is the
+  open lead: `codex exec --json` emits a JSONL event stream, but its shape must be
+  sourced from a real transcript before wiring a recognizer (never guessed). The
+  end goal is **streaming** these normalized events to the consumer as they occur
+  (so a skilltest can short-circuit on bad behavior) — the shape is designed for
+  it; see the README *Streaming events* note.
 
 ## Scripts and output are context
 

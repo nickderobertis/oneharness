@@ -1237,6 +1237,55 @@ fn normalizes_tool_events_from_cursor_stream_json_content_blocks() {
 }
 
 #[test]
+fn claude_stream_json_surfaces_content_block_events() {
+    // The flagship path: Claude Code's default `json` result has no transcript,
+    // but under `--output-format stream-json` it emits the Anthropic content-block
+    // stream, which oneharness normalizes into `tool_call` / `tool_result` events.
+    // (The real CLI needs `--verbose` for this, which oneharness adds — see the
+    // build_argv test; the mock just emits the shape.)
+    let stdout = concat!(
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo hi"}}]}}"#,
+        "\n",
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"hi"}]}}"#,
+        "\n",
+        r#"{"type":"result","subtype":"success","result":"done","session_id":"sess-1"}"#,
+        "\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--output-format",
+            "stream-json",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    // oneharness added `--verbose` to the built command (required by the real CLI).
+    let command = result["command"].as_array().unwrap();
+    assert!(
+        command.iter().any(|t| t == "--verbose"),
+        "stream-json command should carry --verbose: {command:?}"
+    );
+    assert_eq!(result["events_source"], "stream-json:content-blocks");
+    let events = result["events"].as_array().unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["kind"], "tool_call");
+    assert_eq!(events[0]["name"], "Bash");
+    assert_eq!(events[0]["input"]["command"], "echo hi");
+    assert_eq!(events[1]["kind"], "tool_result");
+    assert_eq!(events[1]["output"], "hi");
+}
+
+#[test]
 fn events_absent_when_harness_exposes_no_trace() {
     // Claude Code's single-document `json` result carries no transcript, so
     // `events`/`events_source` stay null (absent), distinct from an empty array —

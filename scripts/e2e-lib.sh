@@ -384,16 +384,22 @@ oh_cache_assert() {
 # expected method when given). This is the only end-to-end proof the event
 # extraction matches the live harness shape, not a mock.
 #   $1 harness id
-#   $2 expected events_source (optional; when given, held exactly)
+#   $2 expected events_source (optional; when given, held exactly; "" to skip)
+#   $3.. extra args forwarded to `oneharness run` (e.g. --output-format
+#        stream-json for a harness whose transcript needs a richer format)
 oh_events_assert() {
-    local id="$1" expected_source="${2:-}"
+    local id="$1"
+    shift
+    local expected_source="${1:-}"
+    [ $# -gt 0 ] && shift
     local marker status count source calls
 
     marker="$(oh_marker)"
     note "  events: a run that must use a shell tool to print the marker"
     # Bypass so the agent may actually run the command; ask plainly for a shell
-    # tool so a tool_call is emitted (not just an inline text answer).
-    oh_run "$id" "Using your shell/bash tool, run a command that prints the exact text ${marker} to stdout, then tell me you did it."
+    # tool so a tool_call is emitted (not just an inline text answer). Any extra
+    # args ($@) select the events-capable output format for this harness.
+    oh_run "$id" "Using your shell/bash tool, run a command that prints the exact text ${marker} to stdout, then tell me you did it." "$@"
     status="$(oh_field '.results[0].status')"
     if [ "$status" = "skipped" ] || [ "$(oh_field '.results[0].available')" != "true" ]; then
         skip "$id is not installed (oneharness reported status=$status); nothing to verify"

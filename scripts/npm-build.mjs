@@ -28,7 +28,7 @@
 //
 // `platform` prints the created package directory; `launcher` does likewise.
 
-import { readFileSync, writeFileSync, mkdirSync, copyFileSync, chmodSync, rmSync, cpSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, copyFileSync, chmodSync, rmSync, cpSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -96,9 +96,16 @@ function buildPlatform(args) {
   const binDir = join(pkgDir, "bin");
   const binName = facts.exe ? "oneharness.exe" : "oneharness";
 
+  // Resolve the source binary with a `.exe` fallback: a bash caller may pass the
+  // extensionless path (Git Bash's `test -x` matches oneharness.exe transparently,
+  // but Node's copyFileSync needs the real path).
+  let srcBin = resolve(binary);
+  if (!existsSync(srcBin) && existsSync(`${srcBin}.exe`)) srcBin = `${srcBin}.exe`;
+  if (!existsSync(srcBin)) die(`platform: binary not found: ${binary}`);
+
   rmSync(pkgDir, { recursive: true, force: true });
   mkdirSync(binDir, { recursive: true });
-  copyFileSync(resolve(binary), join(binDir, binName));
+  copyFileSync(srcBin, join(binDir, binName));
   if (!facts.exe) chmodSync(join(binDir, binName), 0o755);
 
   writeJson(join(pkgDir, "package.json"), {

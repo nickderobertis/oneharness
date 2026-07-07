@@ -36,6 +36,24 @@ fn batch_strategy_parser() -> impl TypedValueParser<Value = BatchStrategy> {
         .map(|s| BatchStrategy::parse(&s).expect("clap restricts to valid strategy tokens"))
 }
 
+/// How `oneharness history list`/`show` renders. Every other subcommand emits
+/// JSON to stdout by design; the history views keep JSON as the default (the
+/// programmatic contract) and add an opt-in human-readable `text` mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryFormat {
+    Json,
+    Text,
+}
+
+/// Parse `--format` into [`HistoryFormat`], keeping the possible-value list in
+/// the binary (json is the default, applied on the field).
+fn history_format_parser() -> impl TypedValueParser<Value = HistoryFormat> {
+    PossibleValuesParser::new(["json", "text"]).map(|s| match s.as_str() {
+        "text" => HistoryFormat::Text,
+        _ => HistoryFormat::Json,
+    })
+}
+
 const ABOUT: &str =
     "One CLI across many agentic coding harnesses. Emits JSON for programmatic consumers.";
 
@@ -102,6 +120,142 @@ pub enum Command {
     /// error), while a bad ruleset or an action the harness cannot express is
     /// a loud usage error up front.
     Mock(MockArgs),
+    /// View and manage the standardized run history recorded by `run --history`.
+    /// The `list`/`show` views print JSON to stdout by default (the programmatic
+    /// contract); pass `--format text` for a human-readable view.
+    History(HistoryArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct HistoryArgs {
+    #[command(subcommand)]
+    pub command: HistoryCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum HistoryCommand {
+    /// List recorded sessions, newest first: id, name, project, start time,
+    /// harnesses, and record count.
+    List(HistoryListArgs),
+    /// Print the normalized records of one session, resolved by id or name (name
+    /// is non-unique — the newest match wins unless --all is given).
+    Show(HistoryShowArgs),
+    /// Delete recorded sessions. Reports what it WOULD remove and removes nothing
+    /// unless --yes is given (so it is safe to run non-interactively first).
+    Clear(HistoryClearArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct HistoryListArgs {
+    /// The project whose sessions to list (its history subdir); defaults to the
+    /// current directory. Ignored when --all-projects is given.
+    #[arg(long, value_name = "DIR")]
+    pub project: Option<PathBuf>,
+
+    /// List sessions across every project, not just one.
+    #[arg(long, conflicts_with = "project")]
+    pub all_projects: bool,
+
+    /// History directory to read (default: config `history_dir`,
+    /// ONEHARNESS_HISTORY_DIR, else the platform state dir).
+    #[arg(long, value_name = "DIR")]
+    pub history_dir: Option<PathBuf>,
+
+    /// Output format: `json` (default) or `text` (human-readable).
+    #[arg(long, value_parser = history_format_parser(), default_value = "json")]
+    pub format: HistoryFormat,
+
+    /// Load configuration from this file only (skip user/project discovery).
+    #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
+    pub config: Option<PathBuf>,
+
+    /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
+    #[arg(long)]
+    pub no_config: bool,
+
+    /// Emit compact single-line JSON instead of pretty-printed (JSON format only).
+    #[arg(long)]
+    pub compact: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct HistoryShowArgs {
+    /// The session id or name to show. Optional with --last (the newest session).
+    #[arg(value_name = "SESSION", required_unless_present = "last")]
+    pub session: Option<String>,
+
+    /// Show the most recent session (in the selected project scope) instead of
+    /// naming one.
+    #[arg(long, conflicts_with = "session")]
+    pub last: bool,
+
+    /// When the name matches more than one session, show all of them (records
+    /// concatenated, newest first) rather than just the newest.
+    #[arg(long)]
+    pub all: bool,
+
+    /// The project scope for resolving the session; defaults to the current
+    /// directory. Ignored when --all-projects is given.
+    #[arg(long, value_name = "DIR")]
+    pub project: Option<PathBuf>,
+
+    /// Resolve the session across every project, not just one.
+    #[arg(long, conflicts_with = "project")]
+    pub all_projects: bool,
+
+    /// History directory to read (default: config `history_dir`,
+    /// ONEHARNESS_HISTORY_DIR, else the platform state dir).
+    #[arg(long, value_name = "DIR")]
+    pub history_dir: Option<PathBuf>,
+
+    /// Output format: `json` (default) or `text` (human-readable).
+    #[arg(long, value_parser = history_format_parser(), default_value = "json")]
+    pub format: HistoryFormat,
+
+    /// Load configuration from this file only (skip user/project discovery).
+    #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
+    pub config: Option<PathBuf>,
+
+    /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
+    #[arg(long)]
+    pub no_config: bool,
+
+    /// Emit compact single-line JSON instead of pretty-printed (JSON format only).
+    #[arg(long)]
+    pub compact: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct HistoryClearArgs {
+    /// The project whose sessions to delete; defaults to the current directory.
+    /// Ignored when --all-projects is given.
+    #[arg(long, value_name = "DIR")]
+    pub project: Option<PathBuf>,
+
+    /// Delete sessions across every project.
+    #[arg(long, conflicts_with = "project")]
+    pub all_projects: bool,
+
+    /// Actually delete. Without it, `clear` only reports what it would remove.
+    #[arg(long)]
+    pub yes: bool,
+
+    /// History directory to operate on (default: config `history_dir`,
+    /// ONEHARNESS_HISTORY_DIR, else the platform state dir).
+    #[arg(long, value_name = "DIR")]
+    pub history_dir: Option<PathBuf>,
+
+    /// Load configuration from this file only (skip user/project discovery).
+    #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
+    pub config: Option<PathBuf>,
+
+    /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
+    #[arg(long)]
+    pub no_config: bool,
+
+    /// Emit compact single-line JSON instead of pretty-printed.
+    #[arg(long)]
+    pub compact: bool,
 }
 
 #[derive(Args, Debug)]
@@ -298,6 +452,29 @@ pub struct RunArgs {
     /// Treat a not-installed harness as a failure (non-zero exit).
     #[arg(long)]
     pub require_available: bool,
+
+    /// Record a normalized, cross-harness history of this run to disk (opt-in;
+    /// off by default). Also settable via `history` in config or ONEHARNESS_HISTORY
+    /// — most naturally in a user-level config.toml, to turn it on everywhere.
+    /// Never written under --print-command. See `oneharness history` to view it.
+    #[arg(long, conflicts_with = "no_history")]
+    pub history: bool,
+
+    /// Do NOT record history for this run, overriding `history` in config or
+    /// ONEHARNESS_HISTORY.
+    #[arg(long)]
+    pub no_history: bool,
+
+    /// Directory history is written to (default: <platform state dir>/oneharness/
+    /// history; also `history_dir` in config or ONEHARNESS_HISTORY_DIR).
+    #[arg(long, value_name = "DIR")]
+    pub history_dir: Option<PathBuf>,
+
+    /// Human-meaningful label for this session, shown by `oneharness history list`
+    /// and resolvable by `oneharness history show`. Defaults to a slug of the
+    /// first prompt.
+    #[arg(long, value_name = "NAME")]
+    pub history_name: Option<String>,
 
     /// Emit compact single-line JSON instead of pretty-printed.
     #[arg(long)]

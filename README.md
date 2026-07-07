@@ -339,6 +339,8 @@ schema_file = "person.json"     # --schema (structured output; relative to proje
 schema_max_retries = 2          # --schema-max-retries (default 2)
 max_parallel = 4                # --max-parallel
 require_available = false       # --require-available
+history = false                 # --history / --no-history (opt-in run history)
+history_dir = "~/logs/oh"       # --history-dir (default: platform state dir)
 allowed_tools = ["Bash(git log:*)"]  # synced into each harness's config file
 denied_tools = ["Bash(rm:*)"]        # (see `oneharness sync` below)
 
@@ -880,6 +882,62 @@ on hit, a minimum prefix length, a byte-identical prefix), so the reuse only lan
 when the warmed session's prefix clears the minimum and the fan-out runs within
 its TTL. Use `speed` when you want N strictly-independent answers with no shared
 context.
+
+### Run history
+
+Every harness keeps its own session history in its own place and shape (Claude
+Code under `~/.claude/projects/`, Codex under its sessions dir, …). `run
+--history` records a **standardized, cross-harness** history instead: one
+normalized record per harness run — the same signals the JSON report carries
+(`harness`, `prompt`, `model`, `status`, `usage`, `session_id`, `events`, `text`),
+and *only* those (no raw stdout/stderr) — streamed to disk as the run finalizes.
+
+It is **off by default** and opt-in three ways, layered like every other setting
+(CLI > env > project file > user file):
+
+```bash
+oneharness run --harness claude-code --prompt "…" --history          # this run
+```
+```toml
+# ~/.config/oneharness/config.toml — the per-user opt-in: on for all your
+# projects, without committing anything to any project's own config.
+history = true
+history_dir = "~/logs/oneharness"   # optional; default below
+```
+```bash
+ONEHARNESS_HISTORY=1 ONEHARNESS_HISTORY_DIR=/data/oh oneharness run …  # env
+```
+
+`--no-history` (or `history = false` in a nearer layer) turns it back off. Nothing
+is written under `--print-command` (nothing runs).
+
+**Layout.** `<history_dir>/<project-slug>/<session>.jsonl` — one file per
+`oneharness run` invocation ("session"), partitioned by a slug of the project
+directory. `history_dir` defaults to `<platform state dir>/oneharness/history`
+(`$XDG_STATE_HOME` or `~/.local/state` on Linux, `~/.local/state` on macOS,
+`%LOCALAPPDATA%` on Windows); set it with `--history-dir`, `history_dir`, or
+`ONEHARNESS_HISTORY_DIR`.
+
+**Session name.** Each session has a human-meaningful `name` shown next to its
+`id`. Harnesses don't expose a readable title headlessly (only an opaque
+`session_id`, which oneharness already records per run), so the name is derived
+from the session's first prompt — or set explicitly with `--history-name <NAME>`.
+
+**Programmatic handoff.** The run report echoes the session file as
+`history_file` (absolute), so a consumer captures it and reads the session back
+later. The `oneharness history` verb views and manages the store — JSON on stdout
+by default (the programmatic contract), `--format text` for a human view:
+
+```bash
+oneharness history list [--project <dir> | --all-projects]   # sessions, newest first
+oneharness history show <id-or-name> [--last] [--all]        # a session's records
+oneharness history clear [--all-projects] [--yes]            # dry-run unless --yes
+```
+
+`show` resolves its argument against a session **id or name** (name is
+non-unique — the newest match wins, or `--all` shows every match). `clear` reports
+what it *would* remove and deletes nothing until `--yes`, so it is safe to run
+non-interactively first.
 
 ### Safety note: bypass by default
 

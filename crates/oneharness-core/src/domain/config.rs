@@ -61,6 +61,13 @@ pub struct FileConfig {
     pub max_parallel: Option<usize>,
     /// Treat a missing harness as a failure (like `--require-available`).
     pub require_available: Option<bool>,
+    /// Record a normalized, cross-harness history of each run to disk (opt-in,
+    /// off by default; like `--history` / `--no-history`). Most naturally set in
+    /// a user-level `config.toml` so one turns it on across every project.
+    pub history: Option<bool>,
+    /// Directory the history is written to and read from (like `--history-dir`).
+    /// Defaults to `<platform state dir>/oneharness/history` when unset.
+    pub history_dir: Option<String>,
     /// Tool/permission rules the harness may use without prompting, in each
     /// harness's native rule syntax. Delivered by `oneharness sync`, which
     /// merges them into the harness's own project config file (Claude Code's
@@ -288,6 +295,8 @@ pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Option<FileConfi
         )?,
         max_parallel: env_num(&read, "ONEHARNESS_MAX_PARALLEL", "a non-negative integer")?,
         require_available: env_bool(&read, "ONEHARNESS_REQUIRE_AVAILABLE")?,
+        history: env_bool(&read, "ONEHARNESS_HISTORY")?,
+        history_dir: read("ONEHARNESS_HISTORY_DIR"),
         ..FileConfig::default()
     };
 
@@ -416,6 +425,8 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
         schema_max_retries: over.schema_max_retries.or(base.schema_max_retries),
         max_parallel: over.max_parallel.or(base.max_parallel),
         require_available: over.require_available.or(base.require_available),
+        history: over.history.or(base.history),
+        history_dir: over.history_dir.or(base.history_dir),
         allowed_tools: over.allowed_tools.or(base.allowed_tools),
         denied_tools: over.denied_tools.or(base.denied_tools),
         hooks: over.hooks.or(base.hooks),
@@ -577,6 +588,8 @@ pub struct ConfigReport {
     pub schema_max_retries: Field<u32>,
     pub max_parallel: Field<usize>,
     pub require_available: Field<bool>,
+    pub history: Field<bool>,
+    pub history_dir: Field<String>,
     pub allowed_tools: Field<Vec<String>>,
     pub denied_tools: Field<Vec<String>>,
     pub hooks: Field<Vec<HookEntry>>,
@@ -707,6 +720,8 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         schema_max_retries: pick(layers, |c| c.schema_max_retries),
         max_parallel: pick(layers, |c| c.max_parallel),
         require_available: pick(layers, |c| c.require_available).or_default(false),
+        history: pick(layers, |c| c.history).or_default(false),
+        history_dir: pick(layers, |c| c.history_dir.clone()),
         allowed_tools: pick(layers, |c| c.allowed_tools.clone()),
         denied_tools: pick(layers, |c| c.denied_tools.clone()),
         hooks: pick(layers, |c| c.hooks.clone()),
@@ -745,6 +760,8 @@ mod tests {
             schema_max_retries = 4
             max_parallel = 2
             require_available = true
+            history = true
+            history_dir = "/var/hist"
 
             [env]
             FOO = "bar"
@@ -767,6 +784,8 @@ mod tests {
         assert_eq!(c.schema_max_retries, Some(4));
         assert_eq!(c.max_parallel, Some(2));
         assert_eq!(c.require_available, Some(true));
+        assert_eq!(c.history, Some(true));
+        assert_eq!(c.history_dir.as_deref(), Some("/var/hist"));
         assert_eq!(c.env["FOO"], "bar");
         assert_eq!(c.model_for("claude-code"), Some("sonnet"));
         assert_eq!(c.model_for("codex"), Some("haiku"));
@@ -1167,6 +1186,8 @@ mod tests {
             ("ONEHARNESS_SCHEMA_MAX_RETRIES", "4"),
             ("ONEHARNESS_MAX_PARALLEL", "2"),
             ("ONEHARNESS_REQUIRE_AVAILABLE", "1"),
+            ("ONEHARNESS_HISTORY", "true"),
+            ("ONEHARNESS_HISTORY_DIR", "/var/hist"),
         ]))
         .unwrap()
         .unwrap();
@@ -1182,6 +1203,33 @@ mod tests {
         assert_eq!(c.schema_max_retries, Some(4));
         assert_eq!(c.max_parallel, Some(2));
         assert_eq!(c.require_available, Some(true));
+        assert_eq!(c.history, Some(true));
+        assert_eq!(c.history_dir.as_deref(), Some("/var/hist"));
+    }
+
+    #[test]
+    fn history_layers_and_explains_with_a_default() {
+        // `history`/`history_dir` layer like any scalar; a project value beats
+        // the user one and `explain` attributes it, defaulting `history` to false.
+        let merged = merge(
+            parsed("history = false\nhistory_dir = \"/user/h\""),
+            parsed("history = true"),
+        );
+        assert_eq!(merged.history, Some(true));
+        assert_eq!(merged.history_dir.as_deref(), Some("/user/h"));
+
+        let report = explain(&layers(
+            "history_dir = \"/user/h\"",
+            "history = true\nhistory_dir = \"/proj/h\"",
+        ));
+        assert_eq!(report.history.value, Some(true));
+        assert_eq!(report.history.source.as_deref(), Some("/project.toml"));
+        assert_eq!(report.history_dir.value.as_deref(), Some("/proj/h"));
+        assert_eq!(report.history_dir.source.as_deref(), Some("/project.toml"));
+        // Unset everywhere: history defaults to false, dir stays null.
+        let report = explain(&[]);
+        assert_eq!(report.history, Field::default_value(false));
+        assert_eq!(report.history_dir, Field::unset());
     }
 
     #[test]

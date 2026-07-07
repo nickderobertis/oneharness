@@ -146,6 +146,16 @@ pub enum OneharnessError {
         source: std::io::Error,
     },
 
+    #[error("could not access history under `{path}`: {source}")]
+    HistoryIo {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("no history directory: pass --history-dir, set `history_dir` in config, or ONEHARNESS_HISTORY_DIR (a default under the platform state dir could not be resolved)")]
+    HistoryNoDir,
+
     #[error("failed to write JSON output: {0}")]
     Serialize(#[from] serde_json::Error),
 }

@@ -258,6 +258,9 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
+          # Idempotent: a re-run (e.g. to complete a sibling publish) must not
+          # red-fail because these wheels already exist on PyPI.
+          skip-existing: true
 
   # Post-publish gate: prove the just-published version is pip-installable. PyPI
   # propagation is not instant, so poll the JSON API until the version is
@@ -381,7 +384,10 @@ jobs:
         run: |
           # Platform packages first: the launcher's optionalDependencies pin their
           # exact versions, so they must exist for a subsequent install to resolve.
-          for tgz in npm-artifacts/*.tgz; do
+          # Glob against an ABSOLUTE base so each argument is an absolute path: npm
+          # treats a bare `dir/file.tgz` as a `user/repo` GitHub spec (and tries to
+          # git-clone it), not a local tarball — an absolute path is unambiguous.
+          for tgz in "$GITHUB_WORKSPACE"/npm-artifacts/*.tgz; do
             echo "publishing $tgz"
             npm publish "$tgz" --access public
           done

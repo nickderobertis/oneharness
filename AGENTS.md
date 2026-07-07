@@ -250,6 +250,38 @@ aren't re-litigated each session:
   `PYPI_PUBLISH` repo variable is `true` and the PyPI project registers this
   repo's `release.yml` as its Trusted Publisher; `verify-pypi` then proves the
   published version is `pip install`-able.
+- **npm packages** (*now enabled*, the direct analogue of the PyPI wheels — a
+  fifth install path). The npm distribution is **`oneharness-cli`** too (same
+  bare-name reasoning), and the command it installs is still `oneharness`.
+  `npm/oneharness/` is the committed **launcher** package: its `bin/oneharness.js`
+  shim resolves and execs the prebuilt binary, which is carried in a per-platform
+  package `@oneharness/cli-<platform>-<arch>` declared as an **optional
+  dependency** (with `os`/`cpu` set) so npm installs only the one matching the
+  host — the same "carry the native binary, no compile" pattern as
+  esbuild/@biomejs and the exact npm mirror of maturin's per-platform wheels.
+  `scripts/npm-build.mjs` assembles both shapes: `platform` wraps a target's
+  binary in its package; `launcher` stamps the version into the launcher's own
+  version *and* every optionalDependency (so they stay in lockstep). The version
+  comes from `Cargo.toml` by default (release-plz stays the single version driver,
+  like the wheels' `dynamic` version) — never hand-set it in a committed
+  `package.json` (the committed versions are the `0.0.0-managed` placeholder,
+  replaced at publish). Keep the three platform lists in lockstep: the release
+  matrix's Rust targets, `TARGETS` in `npm-build.mjs`, `PACKAGES` in
+  `bin/oneharness.js`, and the `optionalDependencies` in the launcher manifest.
+  `release.yml`'s `build-npm` job runs on every release (packaging-break alarm,
+  like `build-wheels`); `publish-npm` publishes the platform packages first then
+  the launcher, authenticating with an **npm token** (the `NPM_TOKEN` secret — an
+  automation/granular-access token with publish rights to `oneharness-cli` and the
+  `@oneharness` scope, wired through `NODE_AUTH_TOKEN`), and stays dormant until
+  the `NPM_PUBLISH` repo variable is `true`; `verify-npm` then proves the
+  published version is `npm install -g`-able. (Token, not Trusted Publishing — a
+  deliberate choice, unlike PyPI's keyless OIDC.) The launcher's resolve-and-exec
+  logic is drift-alarmed hermetically by `scripts/npm-e2e.sh` (assemble the host
+  package from the built binary, stage it under the launcher exactly as npm's
+  optional-dependency resolution would, run the shim end to end), which
+  `scripts/smoke.sh` runs inside `just check`/CI whenever Node is present
+  (Node-gated like an external tool — GitHub runners ship Node, a node-less clone
+  skips with a notice). `just npm-e2e` runs it standalone.
 - **Sigstore release signing + mirror-safe `install.sh`** (*now enabled*,
   mirroring llmlint). `release.yml`'s `upload` job signs each archive with a
   keyless [Sigstore](https://www.sigstore.dev/) build-provenance attestation
@@ -554,11 +586,12 @@ shape. When you add one:
   `cargo publish`es both crates in dependency order (`oneharness-core`, then the
   `oneharness` binary), tags `vX.Y.Z`, and cuts the GitHub Release. That Release
   fires `release.yml`, which re-gates on the tests, attaches the checksummed
-  cross-platform binaries + their Sigstore `.sigstore.json` bundles, and builds &
-  publishes the PyPI wheels. So a release lands four ways: **PyPI**
-  (`pip install oneharness-cli`), **crates.io**, the GitHub Release binaries, and
-  `cargo install --git` (see the PyPI-wheels and Sigstore bullets under *How this
-  repo was composed*). Only the binary gets a
+  cross-platform binaries + their Sigstore `.sigstore.json` bundles, builds &
+  publishes the PyPI wheels, and builds & publishes the per-platform npm packages.
+  So a release lands five ways: **PyPI** (`pip install oneharness-cli`), **npm**
+  (`npm install -g oneharness-cli`), **crates.io**, the GitHub Release binaries,
+  and `cargo install --git` (see the PyPI-wheels, npm-packages, and Sigstore
+  bullets under *How this repo was composed*). Only the binary gets a
   `vX.Y.Z` tag + GitHub Release; `oneharness-core` is published and tagged in its
   own `oneharness-core-v{{ version }}` namespace (with `git_release_enable =
   false`, so no GitHub Release) — a distinct namespace is required, else its

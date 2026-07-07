@@ -131,6 +131,8 @@ flags.
 ```console
 # from PyPI (per-platform wheel wrapping the prebuilt binary — no Rust toolchain)
 pip install oneharness-cli          # installs the `oneharness` command
+# or from npm (per-platform package wrapping the prebuilt binary — same promise)
+npm install -g oneharness-cli       # also installs the `oneharness` command
 # or the latest prebuilt release for your platform via the install script
 curl -fsSL https://raw.githubusercontent.com/nickderobertis/oneharness/main/scripts/install.sh | sh
 # or pin a release tag / install directory
@@ -145,12 +147,18 @@ cargo install --path .
 just build-release            # -> target/release/oneharness
 ```
 
-A tagged release ships four ways: **PyPI** wheels (`pip install oneharness-cli`,
-the distribution is `oneharness-cli`, the command is `oneharness`), **crates.io**
-(`cargo install oneharness`), prebuilt checksummed binaries on its
+A tagged release ships five ways: **PyPI** wheels (`pip install oneharness-cli`,
+the distribution is `oneharness-cli`, the command is `oneharness`), **npm**
+per-platform packages (`npm install -g oneharness-cli`, same distribution name,
+same command), **crates.io** (`cargo install oneharness`), prebuilt checksummed
+binaries on its
 [GitHub Releases](https://github.com/nickderobertis/oneharness/releases) page for
-Linux, macOS, and Windows, and `cargo install --git`. Building from source
-requires a stable Rust toolchain and [`just`](https://github.com/casey/just).
+Linux, macOS, and Windows, and `cargo install --git`. The PyPI and npm packages
+both wrap the **prebuilt** binary — no Rust toolchain, no compile — carrying the
+platform-specific binary in a per-platform artifact (a wheel; an
+`@oneharness/cli-<platform>-<arch>` optional dependency) that the package manager
+selects for your OS and CPU. Building from source requires a stable Rust
+toolchain and [`just`](https://github.com/casey/just).
 The install script honors `ONEHARNESS_VERSION`, `ONEHARNESS_INSTALL_DIR`,
 `ONEHARNESS_RELEASE_BASE_URL`/`--base-url`, `ONEHARNESS_CHECKSUM_BASE_URL`, and
 `GITHUB_TOKEN` (for higher GitHub API rate limits when resolving the latest
@@ -1196,11 +1204,14 @@ writes the changelog. That PR auto-merges once the gate is green, then release-p
    signs each archive with a keyless Sigstore build-provenance attestation and
    publishes its `.sigstore.json` bundle (see
    [Supply-chain verification](#supply-chain-verification)), builds per-platform
-   PyPI wheels with maturin, and publishes them to
-   [PyPI](https://pypi.org/project/oneharness-cli/) via Trusted Publishing.
+   PyPI wheels with maturin and publishes them to
+   [PyPI](https://pypi.org/project/oneharness-cli/) via Trusted Publishing, and
+   builds the per-platform npm packages and publishes them to
+   [npm](https://www.npmjs.com/package/oneharness-cli).
 
-So each release ships four ways: [PyPI](https://pypi.org/project/oneharness-cli/)
-(`pip install oneharness-cli`), crates.io (`cargo install oneharness`), the
+So each release ships five ways: [PyPI](https://pypi.org/project/oneharness-cli/)
+(`pip install oneharness-cli`), [npm](https://www.npmjs.com/package/oneharness-cli)
+(`npm install -g oneharness-cli`), crates.io (`cargo install oneharness`), the
 GitHub Release binaries, and `cargo install --git`. Only the binary gets a
 `vX.Y.Z` tag and GitHub Release; `oneharness-core` is published to crates.io and
 tagged in its own `oneharness-core-v*` namespace (no GitHub Release) so its
@@ -1212,6 +1223,16 @@ variable is set to `true`; the wheels still build on every release so a packagin
 break surfaces early. Activating it requires the PyPI project `oneharness-cli` to
 register this repo's `release.yml` as a Trusted Publisher (no GitHub Actions
 environment).
+
+npm packaging mirrors the wheels: maturin's `bindings = "bin"` wraps the prebuilt
+binary in per-platform wheels; `scripts/npm-build.mjs` wraps the same binary in
+per-platform npm packages (`@oneharness/cli-<platform>-<arch>`), pulled in as
+optional dependencies of the `oneharness-cli` launcher so npm installs only the
+one matching the host. npm publishing stays dormant until the `NPM_PUBLISH` repo
+variable is `true` (the packages still build on every release, so a break
+surfaces early) and authenticates with an npm token in the `NPM_TOKEN` secret (an
+automation or granular-access token with publish rights to `oneharness-cli` and
+the `@oneharness` scope).
 
 Two repo secrets gate the automation (the workflow no-ops until both are set):
 `RELEASE_PLZ_TOKEN` (a PAT with `contents: write` + `pull-requests: write`) and

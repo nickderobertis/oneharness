@@ -139,6 +139,22 @@ if [ -n "$crate_ver" ] && [ -n "$installed_ver" ] && [ "$crate_ver" != "$install
 fi
 rm -rf "$install_dir"
 
+# 0b. npm packaging e2e: assemble the host's per-platform npm package from the
+#     binary under test, stage it under the launcher exactly as npm's optional-
+#     dependency resolution would, and prove the `oneharness-cli` launcher shim
+#     resolves and execs it. Node-gated like the other external tools the gate
+#     uses: GitHub runners ship Node so CI covers every platform; a node-less
+#     clone skips with a notice rather than failing the gate.
+if command -v node >/dev/null 2>&1; then
+  LAST_CMD="bash scripts/npm-e2e.sh <oneharness-bin>"
+  if ! out="$(bash scripts/npm-e2e.sh "$oh" 2>&1)"; then
+    fail "npm packaging e2e failed" "$LAST_CMD" "$out" \
+      "inspect scripts/npm-e2e.sh, scripts/npm-build.mjs, and npm/oneharness/"
+  fi
+else
+  echo "smoke: node not found; npm packaging e2e skipped (install Node to run it)" >&2
+fi
+
 # 1. `list` — the registry, with each adapter's example command.
 LAST_CMD="$oh list --compact"
 out="$($oh list --compact)" || fail "list exited non-zero" "$LAST_CMD"

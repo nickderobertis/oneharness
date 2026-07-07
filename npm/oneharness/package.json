@@ -1,0 +1,30 @@
+{
+  "name": "oneharness-cli",
+  "version": "0.0.0-managed",
+  "description": "One CLI to drive many agentic coding harnesses non-interactively and return uniform JSON.",
+  "keywords": ["cli", "agent", "claude", "codex", "harness"],
+  "homepage": "https://github.com/nickderobertis/oneharness",
+  "bugs": "https://github.com/nickderobertis/oneharness/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nickderobertis/oneharness.git"
+  },
+  "license": "MIT",
+  "author": "Nick DeRobertis",
+  "bin": {
+    "oneharness": "bin/oneharness.js"
+  },
+  "files": [
+    "bin/oneharness.js"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "optionalDependencies": {
+    "@oneharness/cli-linux-x64": "0.0.0-managed",
+    "@oneharness/cli-linux-arm64": "0.0.0-managed",
+    "@oneharness/cli-darwin-x64": "0.0.0-managed",
+    "@oneharness/cli-darwin-arm64": "0.0.0-managed",
+    "@oneharness/cli-win32-x64": "0.0.0-managed"
+  }
+}

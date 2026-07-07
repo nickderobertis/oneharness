@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.11](https://github.com/nickderobertis/oneharness/compare/v0.3.10...v0.3.11) - 2026-07-07
+
+### Fixed
+
+- publish npm tarballs by absolute path so npm treats them as files ([#1106](https://github.com/nickderobertis/oneharness/pull/1106))
+
 ## [0.3.10](https://github.com/nickderobertis/oneharness/compare/v0.3.9...v0.3.10) - 2026-07-07
 
 ### Fixed

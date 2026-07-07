@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.9](https://github.com/nickderobertis/oneharness/compare/v0.3.8...v0.3.9) - 2026-07-07
+
+### Added
+
+- npm packaging carrying the prebuilt per-platform binary ([#1103](https://github.com/nickderobertis/oneharness/pull/1103))
+
 ## [0.3.8](https://github.com/nickderobertis/oneharness/compare/v0.3.7...v0.3.8) - 2026-07-07
 
 ### Added

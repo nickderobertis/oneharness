@@ -112,6 +112,13 @@ build:
 build-release:
     cargo build --release --locked
 
+# Hermetic npm-packaging e2e: assemble the host's per-platform npm package from a
+# just-built binary, stage it under the `oneharness-cli` launcher, and prove the
+# launcher shim resolves and execs it. Runs inside `smoke` (Node-gated) too; this
+# recipe is the standalone way to iterate on scripts/npm-build.mjs. Needs Node.
+npm-e2e: build
+    bash scripts/npm-e2e.sh target/debug/oneharness
+
 # Advisory + license audit. Separate from `check`: needs a network advisory DB.
 deps-check:
     if ! command -v cargo-deny >/dev/null 2>&1; then echo "cargo-deny not installed: cargo install cargo-deny --locked" >&2; exit 1; fi

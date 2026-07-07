@@ -106,7 +106,27 @@ Use the `just` recipes; do not hand-roll equivalents.
   hooks, raw `settings` tables) into each harness's **own** config file — project
   by default, or the user-global location under `--global` (hooks only) — so the
   policy also applies without oneharness in the loop. Those five emit JSON to
-  stdout by design. `gate <id>` is the odd one out: the runtime pre-tool gate an
+  stdout by design. `history` (opt-in via `run --history` / `history` config /
+  `ONEHARNESS_HISTORY`, off by default) streams a **standardized cross-harness**
+  run history — one normalized record per harness run (the report's signals, no
+  raw stdout/stderr) — to `<history_dir>/<project-slug>/<session>.jsonl` (one file
+  per run; `history_dir` defaults to the platform state dir). It is its own output
+  contract with its own `domain::history::SCHEMA_VERSION` (independent of the
+  report's), so the shape versions on its own cadence. The record shape + slug +
+  name + timestamp formatting are pure (`domain::history`); the clock reads that
+  mint the session id/timestamps and all file writes/reads are I/O
+  (`io::history`). The writer is **best-effort** — a store that can't be opened or
+  a record that can't be written warns on stderr and disables history for the run,
+  never taking the results down (like the mock restore). The session `name` is
+  oneharness-derived (a slug of the first prompt, or `--history-name`), NOT from
+  the harness — headless harnesses expose only an opaque `session_id` (already
+  captured per record), never a readable title; don't fabricate one. The report
+  echoes the session file as `history_file` (the programmatic handle). The
+  `oneharness history list/show/clear` verb views/manages the store: JSON on
+  stdout by default (the contract), `--format text` for humans; `show` resolves by
+  id OR name; `clear` is a dry run until `--yes`. Adding `history`/`history_dir`
+  extended the config/env/CLI trio (`from_env` gained `ONEHARNESS_HISTORY`/`_DIR`).
+  `gate <id>` is the odd one out: the runtime pre-tool gate an
   installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It
   exists to prove a synced hook is *honored* end to end (the per-harness live

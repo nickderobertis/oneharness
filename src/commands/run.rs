@@ -17,6 +17,7 @@ use oneharness_core::domain::{events, normalize, signals};
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::config as config_io;
 use oneharness_core::io::detect::{self, BinOverrides};
+use oneharness_core::io::history::{self, HistoryWriter};
 use oneharness_core::io::hooks::{self as hooks_io, HookSnapshot, Scope};
 use oneharness_core::io::runner::{self, Job, Outcome};
 
@@ -115,6 +116,21 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let system = args.system.as_deref().or(cfg.system.as_deref());
     let timeout = args.timeout.or(cfg.timeout).unwrap_or(120);
     let require_available = args.require_available || cfg.require_available.unwrap_or(false);
+
+    // History (opt-in): --history/--no-history beats config `history`; the
+    // directory is --history-dir, else config `history_dir`, else the platform
+    // default. Never recorded under --print-command (nothing runs). Best-effort —
+    // a store that cannot be opened warns and disables history for the run, so a
+    // history problem never takes the results down (see "never panic on a
+    // harness's behavior"). The absolute path is echoed in the report as the
+    // programmatic handle a consumer reads the session back with.
+    let history_writer = open_history_writer(args, cfg, &project_start, &prompts);
+    let history_file = history_writer.as_ref().map(|w| {
+        std::path::absolute(w.path())
+            .unwrap_or_else(|_| w.path().to_path_buf())
+            .display()
+            .to_string()
+    });
 
     // The (harness, prompt) units to run. An ordinary run is each selected
     // harness against the one prompt; a batch run is the single selected harness
@@ -255,6 +271,13 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 prompt,
             } => stream_one_harness(&jobs[job_index], spec, &bin, output_format, prompt),
         };
+        record_history(
+            &history_writer,
+            mode,
+            model,
+            &prompts[0],
+            std::slice::from_ref(&result),
+        );
         // The run is over: put the workspace back before anything else can fail.
         let mock_report = mock_wiring.map(MockWiring::finish);
         if let Some(dir) = &args.output_dir {
@@ -272,6 +295,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             None,
             loaded.files.clone(),
             mock_report,
+            history_file,
         );
         // The event lines were already written during the run; the report is the
         // terminal `{"type":"result", ...}` line of the same NDJSON stream.
@@ -380,6 +404,8 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         })
         .collect();
 
+    record_history(&history_writer, mode, model, &prompts[0], &results);
+
     if let Some(dir) = &args.output_dir {
         write_output_dir(dir, &results)?;
     }
@@ -401,6 +427,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         }),
         loaded.files,
         mock_report,
+        history_file,
     );
     print_json(&report, args.compact)?;
 
@@ -652,6 +679,7 @@ fn build_report(
     batch: Option<BatchReport>,
     config_files: Vec<String>,
     mock: Option<MockReport>,
+    history_file: Option<String>,
 ) -> RunReport {
     RunReport {
         schema_version: SCHEMA_VERSION,
@@ -672,8 +700,83 @@ fn build_report(
         batch,
         mock_rules: mock.as_ref().and_then(|m| m.rules.clone()),
         spy_file: mock.and_then(|m| m.spy_file),
+        history_file,
         config_files,
         results,
+    }
+}
+
+/// Open the history session writer for this run, or `None` when history is off,
+/// under `--print-command`, or the store cannot be opened. Best-effort: every
+/// failure warns on stderr and disables history rather than aborting the run.
+fn open_history_writer(
+    args: &RunArgs,
+    cfg: &oneharness_core::domain::config::FileConfig,
+    project_start: &std::path::Path,
+    prompts: &[String],
+) -> Option<HistoryWriter> {
+    if args.print_command {
+        return None;
+    }
+    let enabled = if args.history {
+        true
+    } else if args.no_history {
+        false
+    } else {
+        cfg.history.unwrap_or(false)
+    };
+    if !enabled {
+        return None;
+    }
+    let configured = args
+        .history_dir
+        .as_deref()
+        .map(|p| p.display().to_string())
+        .or_else(|| cfg.history_dir.clone());
+    let Some(dir) = history::resolve_dir(configured.as_deref()) else {
+        eprintln!(
+            "oneharness: warning: history is enabled but no history directory could be resolved \
+             (pass --history-dir, set `history_dir`, or ONEHARNESS_HISTORY_DIR); \
+             skipping history for this run"
+        );
+        return None;
+    };
+    let name = args.history_name.clone().unwrap_or_else(|| {
+        oneharness_core::domain::history::session_name(
+            prompts.first().map(String::as_str).unwrap_or(""),
+        )
+    });
+    match HistoryWriter::open(&dir, project_start, &name) {
+        Ok(writer) => Some(writer),
+        Err(err) => {
+            eprintln!(
+                "oneharness: warning: could not open a history file under `{}`: {err}; \
+                 skipping history for this run",
+                dir.display()
+            );
+            None
+        }
+    }
+}
+
+/// Append each finished result to the session's history file, if history is on.
+/// Best-effort per record: a write failure warns and moves on (the run's stdout
+/// report is authoritative; history is a side channel).
+fn record_history(
+    writer: &Option<HistoryWriter>,
+    mode: PermissionMode,
+    model: Option<&str>,
+    run_prompt: &str,
+    results: &[RunResult],
+) {
+    let Some(writer) = writer else { return };
+    for r in results {
+        if let Err(err) = writer.append(mode, model, run_prompt, r) {
+            eprintln!(
+                "oneharness: warning: could not write history record for `{}`: {err}",
+                r.harness
+            );
+        }
     }
 }
 

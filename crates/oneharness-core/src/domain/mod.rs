@@ -7,6 +7,7 @@ pub mod config;
 pub mod events;
 pub mod gate;
 pub mod harness;
+pub mod history;
 pub mod hooks;
 pub mod mock;
 pub mod mode;

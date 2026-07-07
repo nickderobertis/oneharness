@@ -25,6 +25,7 @@ pub fn dispatch(cli: Cli) -> i32 {
         Command::Sync(args) => commands::sync::run(&args),
         Command::Gate(args) => commands::gate::run(&args),
         Command::Mock(args) => commands::mock::run(&args),
+        Command::History(args) => commands::history::run(&args),
     };
     match result {
         Ok(code) => code,

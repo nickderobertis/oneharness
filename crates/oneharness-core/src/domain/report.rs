@@ -180,6 +180,11 @@ pub struct RunReport {
     /// The spy-log path the mock hook appended tool-call records to (absolute);
     /// `null` when none was requested.
     pub spy_file: Option<String>,
+    /// The history session file this run streamed normalized records to
+    /// (absolute); `null` when history was not enabled (or under `--print-command`,
+    /// where nothing runs). The programmatic handle a consumer captures to read the
+    /// session back later with `oneharness history show`.
+    pub history_file: Option<String>,
     /// Config files that shaped this run, in layering order (user first,
     /// project last); empty under `--no-config` or when none exist.
     pub config_files: Vec<String>,

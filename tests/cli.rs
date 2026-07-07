@@ -64,6 +64,8 @@ const ENV_OVERRIDE_VARS: &[&str] = &[
     "ONEHARNESS_SCHEMA_MAX_RETRIES",
     "ONEHARNESS_MAX_PARALLEL",
     "ONEHARNESS_REQUIRE_AVAILABLE",
+    "ONEHARNESS_HISTORY",
+    "ONEHARNESS_HISTORY_DIR",
 ];
 
 /// Run with config loading enabled but still hermetic: the user-level config is
@@ -5857,4 +5859,733 @@ fn batch_min_tokens_without_a_cache_reusing_fork_warns_and_does_not_fork() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("only orders the calls"), "{id}: {stderr}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// History: opt-in, streamed, standardized run history + the `history` verb.
+// ---------------------------------------------------------------------------
+
+/// A unique, absent temp history dir for one test (removed on entry and by the
+/// caller at the end).
+fn hist_dir(tag: &str) -> PathBuf {
+    let dir =
+        std::env::temp_dir().join(format!("oneharness-histtest-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+#[test]
+fn history_records_a_run_and_reports_the_file() {
+    let dir = hist_dir("record");
+    let ds = dir.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "Fix the login bug",
+            "--bin",
+            &bin_override("claude-code"),
+            "--history",
+            "--history-dir",
+            &ds,
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"done","session_id":"s1"}"#)],
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    // The report carries the absolute session-file path (the programmatic handle).
+    let hf = value["history_file"].as_str().expect("history_file set");
+    assert!(hf.ends_with(".jsonl"), "{hf}");
+    // The file holds one normalized record with the prompt-derived name.
+    let text = std::fs::read_to_string(hf).unwrap();
+    let rec: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    assert_eq!(rec["harness"], "claude-code");
+    assert_eq!(rec["name"], "fix-the-login-bug");
+    assert_eq!(rec["status"], "ok");
+    assert_eq!(rec["session_id"], "s1");
+    assert_eq!(rec["permission_mode"], "bypass");
+    // Normalized only — no raw stdout/stderr leaks into history.
+    assert!(rec.get("stdout").is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn history_is_off_by_default_no_history_and_print_command() {
+    let dir = hist_dir("off");
+    let ds = dir.display().to_string();
+    // Default (no --history): nothing recorded, no file, no dir created.
+    let v = json_stdout(&run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--history-dir",
+            &ds,
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"hi"}"#)],
+    ));
+    assert!(v["history_file"].is_null());
+    assert!(!dir.exists());
+    // Explicit --no-history: still nothing (the override over config is proven in
+    // `history_enabled_via_config_records_the_run`).
+    let v = json_stdout(&run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--no-history",
+            "--history-dir",
+            &ds,
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"hi"}"#)],
+    ));
+    assert!(v["history_file"].is_null());
+    assert!(!dir.exists());
+    // --print-command executes nothing, so history is never written even with --history.
+    let v = json_stdout(&run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--history",
+            "--history-dir",
+            &ds,
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    ));
+    assert!(v["history_file"].is_null());
+    assert!(!dir.exists());
+}
+
+#[test]
+fn history_name_overrides_the_prompt_derived_default() {
+    let dir = hist_dir("name");
+    let ds = dir.display().to_string();
+    let v = json_stdout(&run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "whatever",
+            "--bin",
+            &bin_override("claude-code"),
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-name",
+            "My Release v2!",
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"hi"}"#)],
+    ));
+    let hf = v["history_file"].as_str().unwrap();
+    // The label is slugified into the session id / filename.
+    assert!(hf.contains("my-release-v2-"), "{hf}");
+    let rec: Value =
+        serde_json::from_str(std::fs::read_to_string(hf).unwrap().lines().next().unwrap()).unwrap();
+    assert_eq!(rec["name"], "my-release-v2");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn history_list_show_and_clear_round_trip() {
+    let dir = hist_dir("view");
+    let ds = dir.display().to_string();
+    // Seed one session with an explicit name.
+    let seeded = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "whatever",
+            "--bin",
+            &bin_override("claude-code"),
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-name",
+            "My Session",
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"hi"}"#)],
+    );
+    assert!(seeded.status.success());
+
+    // list (JSON, default) shows id + name.
+    let list = json_stdout(&run(
+        &[
+            "history",
+            "list",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--compact",
+        ],
+        &[],
+    ));
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list[0]["name"], "my-session");
+    assert_eq!(list[0]["harnesses"][0], "claude-code");
+
+    // list --format text is human-readable.
+    let text = run(
+        &[
+            "history",
+            "list",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--format",
+            "text",
+        ],
+        &[],
+    );
+    assert!(text.status.success());
+    assert!(String::from_utf8_lossy(&text.stdout).contains("my-session"));
+
+    // show resolves by name.
+    let show = json_stdout(&run(
+        &[
+            "history",
+            "show",
+            "my-session",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--compact",
+        ],
+        &[],
+    ));
+    assert_eq!(show[0]["harness"], "claude-code");
+
+    // show --last picks the newest session without naming it; --all is accepted
+    // and returns every match (one here). --format text renders records.
+    let last = json_stdout(&run(
+        &[
+            "history",
+            "show",
+            "--last",
+            "--all",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--compact",
+        ],
+        &[],
+    ));
+    assert_eq!(last[0]["name"], "my-session");
+    let last_text = run(
+        &[
+            "history",
+            "show",
+            "--last",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--format",
+            "text",
+        ],
+        &[],
+    );
+    assert!(String::from_utf8_lossy(&last_text.stdout).contains("[claude-code]"));
+
+    // clear without --yes is a dry run (nothing removed).
+    let dry = json_stdout(&run(
+        &[
+            "history",
+            "clear",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--compact",
+        ],
+        &[],
+    ));
+    assert_eq!(dry["dry_run"], true);
+    assert_eq!(dry["would_remove"], 1);
+    assert_eq!(
+        json_stdout(&run(
+            &[
+                "history",
+                "list",
+                "--all-projects",
+                "--history-dir",
+                &ds,
+                "--compact"
+            ],
+            &[],
+        ))
+        .as_array()
+        .unwrap()
+        .len(),
+        1,
+        "dry run must not delete"
+    );
+
+    // clear --yes deletes.
+    let done = json_stdout(&run(
+        &[
+            "history",
+            "clear",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--yes",
+            "--compact",
+        ],
+        &[],
+    ));
+    assert_eq!(done["removed"], 1);
+    assert!(json_stdout(&run(
+        &[
+            "history",
+            "list",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--compact"
+        ],
+        &[],
+    ))
+    .as_array()
+    .unwrap()
+    .is_empty());
+
+    // show of a missing session exits non-zero (not a crash).
+    let missing = run(
+        &[
+            "history",
+            "show",
+            "nope",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(missing.status.code(), Some(1));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn history_enabled_via_config_records_the_run() {
+    // Turning `history` on in a (user-level) config file — the per-user opt-in —
+    // records a run with no CLI --history flag.
+    let hdir = hist_dir("config");
+    let hs = hdir.display().to_string();
+    let fixture = ConfigFixture::new(
+        "history",
+        "", // project config empty
+        &format!(
+            "history = true\nhistory_dir = \"{}\"\n",
+            hs.replace('\\', "\\\\")
+        ),
+    );
+    let output = run_with_config(
+        &[
+            "run",
+            "--cwd",
+            &fixture.cwd(),
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"hi"}"#)],
+        &fixture.user_config(),
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    assert!(
+        value["history_file"].as_str().is_some(),
+        "config `history = true` should record: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // CLI --no-history overrides the config opt-in.
+    let disabled = run_with_config(
+        &[
+            "run",
+            "--cwd",
+            &fixture.cwd(),
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--no-history",
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"hi"}"#)],
+        &fixture.user_config(),
+    );
+    assert!(json_stdout(&disabled)["history_file"].is_null());
+
+    // `history list` with no --history-dir resolves the store from the same
+    // layered config, so it reads back the session the run recorded.
+    let listed = json_stdout(&run_with_config(
+        &["history", "list", "--all-projects", "--compact"],
+        &[],
+        &fixture.user_config(),
+    ));
+    assert_eq!(
+        listed.as_array().unwrap().len(),
+        1,
+        "history list should resolve history_dir from config"
+    );
+    let _ = std::fs::remove_dir_all(&hdir);
+}
+
+#[test]
+fn history_records_every_harness_in_one_session() {
+    let dir = hist_dir("multi");
+    let ds = dir.display().to_string();
+    let out = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code,codex",
+            "--bin",
+            &bin_override("claude-code"),
+            "--bin",
+            &bin_override("codex"),
+            "--prompt",
+            "multi",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"x"}"#)],
+    );
+    let hf = json_stdout(&out)["history_file"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let text = std::fs::read_to_string(&hf).unwrap();
+    let harnesses: Vec<String> = text
+        .lines()
+        .map(|l| {
+            serde_json::from_str::<Value>(l).unwrap()["harness"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        harnesses,
+        ["claude-code", "codex"],
+        "one record per harness, in one file"
+    );
+    // The store sees a single session carrying both records.
+    let list = json_stdout(&run(
+        &[
+            "history",
+            "list",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--compact",
+        ],
+        &[],
+    ));
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list[0]["record_count"], 2);
+    assert_eq!(
+        list[0]["harnesses"],
+        serde_json::json!(["claude-code", "codex"])
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn history_batch_records_one_record_per_prompt() {
+    let dir = hist_dir("batch");
+    let ds = dir.display().to_string();
+    let out = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--prompt",
+            "first prompt",
+            "--prompt",
+            "second prompt",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"x"}"#)],
+    );
+    let hf = json_stdout(&out)["history_file"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let text = std::fs::read_to_string(&hf).unwrap();
+    let prompts: Vec<String> = text
+        .lines()
+        .map(|l| {
+            serde_json::from_str::<Value>(l).unwrap()["prompt"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        prompts,
+        ["first prompt", "second prompt"],
+        "each batch prompt is its own record"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn history_records_a_streamed_run() {
+    // --stream is a separate execution path with its own history append; prove it
+    // records (asserting via the store, since --stream emits NDJSON to stdout).
+    let dir = hist_dir("stream");
+    let ds = dir.display().to_string();
+    let out = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--prompt",
+            "stream test",
+            "--stream",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--bypass",
+        ],
+        &[("MOCK_STDOUT", r#"{"type":"result","result":"streamed"}"#)],
+    );
+    assert!(out.status.success());
+    let list = json_stdout(&run(
+        &[
+            "history",
+            "list",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--compact",
+        ],
+        &[],
+    ));
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list[0]["record_count"], 1);
+    assert_eq!(list[0]["harnesses"][0], "claude-code");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn history_enabled_and_dir_via_environment() {
+    // ONEHARNESS_HISTORY / ONEHARNESS_HISTORY_DIR enable + place the store end to
+    // end (config loading on, so the env layer applies).
+    let dir = hist_dir("env");
+    let ds = dir.display().to_string();
+    let fixture = ConfigFixture::new("history-env", "", "");
+    let out = run_with_config(
+        &[
+            "run",
+            "--cwd",
+            &fixture.cwd(),
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--prompt",
+            "env test",
+            "--bypass",
+            "--compact",
+        ],
+        &[
+            ("MOCK_STDOUT", r#"{"result":"x"}"#),
+            ("ONEHARNESS_HISTORY", "1"),
+            ("ONEHARNESS_HISTORY_DIR", &ds),
+        ],
+        &fixture.user_config(),
+    );
+    let hf = json_stdout(&out)["history_file"]
+        .as_str()
+        .map(str::to_string);
+    let hf = hf.expect("env should enable history");
+    assert!(
+        hf.starts_with(&ds),
+        "ONEHARNESS_HISTORY_DIR should place the store: {hf}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn history_records_a_failed_run_and_shows_by_id() {
+    let dir = hist_dir("failed");
+    let ds = dir.display().to_string();
+    // A nonzero run is still recorded, with its status and classified failure.
+    let out = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--prompt",
+            "boom",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--bypass",
+            "--compact",
+        ],
+        &[
+            ("MOCK_EXIT", "1"),
+            (
+                "MOCK_STDERR",
+                "Error: 401 Unauthorized — please authenticate",
+            ),
+            ("MOCK_STDOUT", ""),
+        ],
+    );
+    let hf = json_stdout(&out)["history_file"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let id = std::path::Path::new(&hf)
+        .file_stem()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let rec: Value = serde_json::from_str(
+        std::fs::read_to_string(&hf)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(rec["status"], "nonzero");
+    assert_eq!(rec["failure_kind"], "auth");
+    // `show` resolves by the exact session id (not just name).
+    let show = json_stdout(&run(
+        &[
+            "history",
+            "show",
+            &id,
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--compact",
+        ],
+        &[],
+    ));
+    assert_eq!(show[0]["status"], "nonzero");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn history_list_scopes_by_project() {
+    let dir = hist_dir("scope");
+    let ds = dir.display().to_string();
+    let pa = std::env::temp_dir().join(format!("oh-projA-{}", std::process::id()));
+    let pb = std::env::temp_dir().join(format!("oh-projB-{}", std::process::id()));
+    std::fs::create_dir_all(&pa).unwrap();
+    std::fs::create_dir_all(&pb).unwrap();
+    for p in [&pa, &pb] {
+        run(
+            &[
+                "run",
+                "--cwd",
+                &p.display().to_string(),
+                "--harness",
+                "claude-code",
+                "--bin",
+                &bin_override("claude-code"),
+                "--prompt",
+                "x",
+                "--history",
+                "--history-dir",
+                &ds,
+                "--bypass",
+                "--compact",
+            ],
+            &[("MOCK_STDOUT", r#"{"result":"x"}"#)],
+        );
+    }
+    // --all-projects sees both; --project scopes to one.
+    assert_eq!(
+        json_stdout(&run(
+            &[
+                "history",
+                "list",
+                "--all-projects",
+                "--history-dir",
+                &ds,
+                "--compact"
+            ],
+            &[],
+        ))
+        .as_array()
+        .unwrap()
+        .len(),
+        2
+    );
+    let just_a = json_stdout(&run(
+        &[
+            "history",
+            "list",
+            "--project",
+            &pa.display().to_string(),
+            "--history-dir",
+            &ds,
+            "--compact",
+        ],
+        &[],
+    ));
+    assert_eq!(just_a.as_array().unwrap().len(), 1);
+    assert_eq!(just_a[0]["project"], pa.display().to_string());
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&pa);
+    let _ = std::fs::remove_dir_all(&pb);
 }

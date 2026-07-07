@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.10](https://github.com/nickderobertis/oneharness/compare/v0.3.9...v0.3.10) - 2026-07-07
+
+### Fixed
+
+- correct secrets-sync recipe to use `gh-secrets sync`
+
 ## [0.3.9](https://github.com/nickderobertis/oneharness/compare/v0.3.8...v0.3.9) - 2026-07-07
 
 ### Added

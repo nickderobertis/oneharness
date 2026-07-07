@@ -208,4 +208,4 @@ live-all: _live-install
 # Sync the e2e secrets from Bitwarden to .env + GitHub Actions (gh-secrets.json).
 secrets-sync:
     if ! command -v gh-secrets >/dev/null 2>&1; then echo "gh-secrets not installed: see https://github.com/nickderobertis/github-secrets" >&2; exit 1; fi
-    gh-secrets manifest sync
+    gh-secrets sync

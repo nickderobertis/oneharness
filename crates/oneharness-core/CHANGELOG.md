@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.3.3...oneharness-core-v0.3.4) - 2026-07-10
+
+### Added
+
+- add --system-file so a large system prompt bypasses the argv limit ([#1109](https://github.com/nickderobertis/oneharness/pull/1109))
+
 ## [0.3.3](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.3.2...oneharness-core-v0.3.3) - 2026-07-07
 
 ### Added

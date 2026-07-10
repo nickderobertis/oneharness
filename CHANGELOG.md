@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.13](https://github.com/nickderobertis/oneharness/compare/v0.3.12...v0.3.13) - 2026-07-10
+
+### Added
+
+- uniform --session handle ([#1112](https://github.com/nickderobertis/oneharness/pull/1112))
+
 ## [0.3.12](https://github.com/nickderobertis/oneharness/compare/v0.3.11...v0.3.12) - 2026-07-10
 
 ### Added

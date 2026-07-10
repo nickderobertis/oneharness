@@ -1182,6 +1182,62 @@ fn session_create_without_a_session_id_warns_and_stores_nothing() {
     let _ = std::fs::remove_dir_all(&cwd);
 }
 
+#[test]
+fn session_works_with_streaming() {
+    // The streaming path has its own finalize step: `--session --stream` must
+    // still capture the token and persist the store, and surface the session
+    // block on the terminal report line.
+    let store = session_store_dir("stream");
+    let store_arg = store.display().to_string();
+    let cwd = session_store_dir("stream-cwd");
+    let stdout = concat!(
+        "{\"type\":\"step_start\",\"sessionID\":\"ses_stream\",\"part\":{}}\n",
+        "{\"type\":\"tool_use\",\"part\":{\"type\":\"tool\",\"tool\":\"bash\",\"state\":{\"status\":\"completed\",\"input\":{\"command\":\"echo hi\"},\"output\":\"hi\"}}}\n",
+        "{\"type\":\"step_finish\",\"sessionID\":\"ses_stream\",\"part\":{}}\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--session",
+            "live",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd.display().to_string(),
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("opencode"),
+            "--stream",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stdout);
+    let terminal: Value = text
+        .lines()
+        .rfind(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .unwrap();
+    assert_eq!(terminal["type"], "result");
+    let session = &terminal["report"]["session"];
+    assert_eq!(session["name"], "live");
+    assert_eq!(session["phase"], "create");
+    assert_eq!(session["token"], "ses_stream");
+    // The store was persisted through the streaming path, so a later run resumes.
+    let record: Value = serde_json::from_str(
+        &std::fs::read_to_string(session["store_file"].as_str().unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["token"], "ses_stream");
+    assert_eq!(record["harness"], "opencode");
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
 /// Build a `--print-command` argv for one harness with the given extra args, and
 /// return its `results[0].command` as a Vec<String>.
 fn print_command_for(extra: &[&str]) -> Vec<String> {

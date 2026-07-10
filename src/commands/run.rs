@@ -9,8 +9,9 @@ use oneharness_core::domain::harness::{self, BuildCtx, HarnessSpec};
 use oneharness_core::domain::mock::{self, MockDelivery};
 use oneharness_core::domain::mode::{ModeHeadless, PermissionMode};
 use oneharness_core::domain::report::{
-    BatchReport, Capture, OutputFormat, RunReport, RunResult, Status, SCHEMA_VERSION,
+    BatchReport, Capture, OutputFormat, RunReport, RunResult, SessionReport, Status, SCHEMA_VERSION,
 };
+use oneharness_core::domain::session::{self, SessionPlan, SessionRecord};
 use oneharness_core::domain::signals::Usage;
 use oneharness_core::domain::structured::{self, Schema};
 use oneharness_core::domain::{events, normalize, signals};
@@ -20,6 +21,8 @@ use oneharness_core::io::detect::{self, BinOverrides};
 use oneharness_core::io::history::{self, HistoryWriter};
 use oneharness_core::io::hooks::{self as hooks_io, HookSnapshot, Scope};
 use oneharness_core::io::runner::{self, Job, Outcome};
+use oneharness_core::io::session as session_io;
+use std::path::PathBuf;
 
 /// Exit codes (clap uses 2 for argument errors).
 const EXIT_OK: i32 = 0;
@@ -85,6 +88,15 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // `--fork` (clap-guaranteed to imply `--resume`) branches a new session
     // instead of appending; refused before spawning for a harness that can't fork.
     validate_fork(args.fork, &specs)?;
+    // `--session <name>`: resolve the uniform handle to the harness's native
+    // token (via the session store) before building argv. Validates single-harness
+    // + capability + no-batch loudly; on a continue it yields the token to resume
+    // with, reusing the harness's verified `--resume` mapping. `None` when the flag
+    // was not passed.
+    let session_wiring = setup_session(args, &specs, batch_run, &project_start)?;
+    let session_resume: Option<String> = session_wiring
+        .as_ref()
+        .and_then(|w| w.plan.resume_token.clone());
     // `--stream` emits events incrementally for a *single* harness/prompt; the
     // validate/retry loop and the batch fan-out both need the whole output at
     // once, so they are mutually exclusive. Refused loudly before spawning.
@@ -204,7 +216,13 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 .or_else(|| cfg.model_for(spec.id))
                 .map(str::to_string),
             system: system.map(str::to_string),
-            resume: resume.map(str::to_string),
+            // A `--session` continue supplies the native token to resume with,
+            // reusing the harness's verified `--resume` mapping; a create (or no
+            // session) leaves it to the explicit `--resume` value (they are
+            // mutually exclusive, so at most one is `Some`).
+            resume: session_resume
+                .clone()
+                .or_else(|| resume.map(str::to_string)),
             fork: args.fork,
             mode,
             output_format,
@@ -290,6 +308,13 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         );
         // The run is over: put the workspace back before anything else can fail.
         let mock_report = mock_wiring.map(MockWiring::finish);
+        // Persist the captured session token (if `--session` was in play) and
+        // build its report block, before `result` is moved into the report.
+        let session_report = finalize_session(
+            session_wiring,
+            std::slice::from_ref(&result),
+            args.print_command,
+        );
         if let Some(dir) = &args.output_dir {
             write_output_dir(dir, std::slice::from_ref(&result))?;
         }
@@ -306,6 +331,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             loaded.files.clone(),
             mock_report,
             history_file,
+            session_report,
         );
         // The event lines were already written during the run; the report is the
         // terminal `{"type":"result", ...}` line of the same NDJSON stream.
@@ -415,6 +441,9 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         .collect();
 
     record_history(&history_writer, mode, model, &prompts[0], &results);
+    // Persist the captured session token (if `--session` was in play) and build
+    // its report block. A session run is single-harness, so `results` holds one.
+    let session_report = finalize_session(session_wiring, &results, args.print_command);
 
     if let Some(dir) = &args.output_dir {
         write_output_dir(dir, &results)?;
@@ -438,6 +467,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         loaded.files,
         mock_report,
         history_file,
+        session_report,
     );
     print_json(&report, args.compact)?;
 
@@ -690,6 +720,7 @@ fn build_report(
     config_files: Vec<String>,
     mock: Option<MockReport>,
     history_file: Option<String>,
+    session: Option<SessionReport>,
 ) -> RunReport {
     RunReport {
         schema_version: SCHEMA_VERSION,
@@ -702,6 +733,7 @@ fn build_report(
         model: model.map(str::to_string),
         resume: args.resume.clone(),
         fork: args.fork,
+        session,
         permission_mode: mode,
         bypass_permissions: mode.is_bypass(),
         dry_run: args.print_command,
@@ -714,6 +746,127 @@ fn build_report(
         config_files,
         results,
     }
+}
+
+/// The resolved `--session` context, carried from validation to finalization:
+/// which named session, on which harness/project, where its store file lives,
+/// what it already held, and the create-vs-continue plan.
+struct SessionWiring {
+    name: String,
+    harness: &'static str,
+    project: PathBuf,
+    path: PathBuf,
+    existing: Option<SessionRecord>,
+    plan: SessionPlan,
+}
+
+/// Validate and resolve a `--session <name>` request against the store, or
+/// `Ok(None)` when the flag was not passed. Loud usage errors up front (nothing
+/// spawns): a batch run, more than one harness, a harness that exposes no session
+/// id (`session_capable`), an unresolvable store directory, or a name already
+/// bound to a different harness. On success the returned plan says whether to
+/// create fresh or continue a stored token.
+fn setup_session(
+    args: &RunArgs,
+    specs: &[&'static HarnessSpec],
+    batch_run: bool,
+    project: &std::path::Path,
+) -> Result<Option<SessionWiring>, OneharnessError> {
+    let Some(name) = args.session.as_deref() else {
+        return Ok(None);
+    };
+    if batch_run {
+        return Err(OneharnessError::SessionBatch);
+    }
+    if specs.len() != 1 {
+        return Err(OneharnessError::SessionMultipleHarnesses {
+            count: specs.len(),
+            selected: specs.iter().map(|s| s.id).collect::<Vec<_>>().join(", "),
+        });
+    }
+    let spec = specs[0];
+    if !spec.session_capable {
+        return Err(OneharnessError::SessionUnsupported {
+            id: spec.id.to_string(),
+            supported: harness::all()
+                .iter()
+                .filter(|s| s.session_capable)
+                .map(|s| s.id)
+                .collect::<Vec<_>>()
+                .join(", "),
+        });
+    }
+    let dir = session_io::resolve_dir(args.session_dir.as_deref().and_then(|p| p.to_str()))
+        .ok_or(OneharnessError::SessionNoStore)?;
+    let path = session_io::session_path(&dir, project, name);
+    let existing = session_io::read(&path);
+    if let Some(was) = session::harness_conflict(existing.as_ref(), spec.id) {
+        return Err(OneharnessError::SessionHarnessConflict {
+            name: name.to_string(),
+            was: was.to_string(),
+            now: spec.id.to_string(),
+        });
+    }
+    let plan = SessionPlan::decide(existing.as_ref());
+    Ok(Some(SessionWiring {
+        name: name.to_string(),
+        harness: spec.id,
+        project: project.to_path_buf(),
+        path,
+        existing,
+        plan,
+    }))
+}
+
+/// Persist the session token this run captured (best-effort) and build the
+/// report block. On a create the token is the result's extracted `session_id`;
+/// on a continue it is re-affirmed (a harness may rotate it). Under
+/// `--print-command` nothing ran, so nothing is written and the block echoes the
+/// stored token (or null on a fresh create). A create run that exposed no session
+/// id warns — the handle cannot be continued — rather than storing an empty one.
+fn finalize_session(
+    wiring: Option<SessionWiring>,
+    results: &[RunResult],
+    dry_run: bool,
+) -> Option<SessionReport> {
+    let wiring = wiring?;
+    let captured = results.first().and_then(|r| r.session_id.clone());
+    if !dry_run {
+        match &captured {
+            Some(token) => {
+                if let Err(err) = session_io::write(
+                    &wiring.path,
+                    &wiring.project,
+                    wiring.harness,
+                    &wiring.name,
+                    token,
+                    wiring.existing.as_ref(),
+                ) {
+                    eprintln!(
+                        "oneharness: warning: could not write session store `{}`: {err}",
+                        wiring.path.display()
+                    );
+                }
+            }
+            None => eprintln!(
+                "oneharness: warning: harness `{}` exposed no session id, so `--session {}` \
+                 cannot be continued (nothing was stored)",
+                wiring.harness, wiring.name
+            ),
+        }
+    }
+    // Report the fresh capture if any, else the token we resumed with.
+    let token = captured.or_else(|| wiring.plan.resume_token.clone());
+    let store_file = std::path::absolute(&wiring.path)
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| wiring.path.display().to_string());
+    Some(SessionReport {
+        // Echo the sanitized handle — exactly what the store keyed the file on.
+        name: oneharness_core::domain::history::sanitize_name(&wiring.name),
+        phase: wiring.plan.phase,
+        token,
+        store_file: Some(store_file),
+    })
 }
 
 /// Open the history session writer for this run, or `None` when history is off,
@@ -1846,6 +1999,7 @@ mod tests {
             output_format: OutputFormat::Text,
             events_format: None,
             supports_resume: false,
+            session_capable: false,
             supports_fork: false,
             fork_reuses_cache: false,
             sync: None,

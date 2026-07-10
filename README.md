@@ -80,6 +80,14 @@ so their continuation handle is **caller-supplied** (a `--name`, or a minted UUI
 respectively) and reused on the next run — `session_id` stays `null` for them
 (nothing to extract); every other harness reports an id oneharness captures.
 
+Above `--resume` sits the higher-level **`--session <name>`** (see the *Session
+handle* section): a stable, caller-owned name oneharness maps to the harness's
+native session id in a small store, so a consumer threads **one name** across
+turns instead of extracting and re-passing the id itself. It is supported exactly
+for the harnesses that expose a session id headlessly — `claude-code`, `opencode`,
+`codex`, `cursor`, `qwen` (`session_capable: true` in `oneharness list`); for the
+rest (which have no id to bind a name to) `--session` is a loud usage error.
+
 - **`model`** — ✓ means the harness takes a model flag. Goose selects its model
   from its own provider config, so `model` is intentionally not mapped for it.
 - **`system`** — "native flag" means the system prompt maps to a real flag
@@ -270,6 +278,19 @@ Useful `run` flags:
   OpenCode (`--fork`) fork headlessly (`supports_fork` in `oneharness list`);
   requesting it for any other harness is a usage error, never a silent linear
   resume. Requires `--resume`.
+- `--session <name>` — continue (or start) a named conversation by a stable,
+  caller-owned handle: oneharness maps `<name>` to the harness's native session id
+  in a small store, so you thread **one name** across turns instead of extracting
+  and re-passing the id yourself. The first `--session <name>` run starts fresh and
+  captures the id; later runs with the same name resume it. **Single-harness only**,
+  and only for harnesses that expose a session id headlessly (`session_capable` in
+  `oneharness list`) — others are a loud usage error. The higher-level counterpart
+  to `--resume`; mutually exclusive with `--resume`/`--fork`/`--all` and with a
+  batch. See [Session handle](#session-handle).
+- `--session-dir <dir>` — directory the `--session` store lives in (default:
+  `<platform state dir>/oneharness/sessions`). Like `--resume`/`--fork`, a
+  per-invocation knob with no config/env layer; mainly for isolating the store in
+  tests and scripts.
 - `--output-format <text|json|stream-json>` — override the format requested from
   each harness (default: per-harness); affects the emitted flag and how `text` is
   extracted.
@@ -667,6 +688,10 @@ more than one possible method) records how it was found:
   `--fork` (Claude Code / OpenCode) to branch independent follow-ups off one cached
   prefix. `null` for a harness that emits no id headlessly (Goose, Copilot) — their
   handle is caller-supplied, never scraped (see the support matrix).
+- `session` — the uniform `--session` handle in play (else `null`): `{name, phase
+  (create|continue), token, store_file}`. Lets a consumer thread one stable name
+  across turns while oneharness maps it to the harness's `session_id` above. See
+  [Session handle](#session-handle).
 - `events` / `events_source` — a **normalized array of tool-call / action
   events** the harness took, in order, so a consumer can assert on *behavior*
   (`ran bash with a command matching /…/`, `edited exactly config.yaml`, `used ≤
@@ -804,6 +829,37 @@ delivery (and a schema appended to the prompt) may not reach a `.cmd`-shim
 harness intact — structured output is most reliable on Linux/macOS, or on Windows
 against a real `.exe` harness. oneharness's own argv construction and validation
 are exercised on Windows by the hermetic test suite regardless.
+
+### Session handle
+
+Driving a faithful multi-turn conversation against a real agent means continuing
+the *same* harness session each turn. The low-level way is `--resume <id>`: run
+once, read `session_id` from the report, pass it back next turn. That works, but
+the caller carries per-harness bookkeeping — extract the id, thread it, and know
+which harnesses even emit one.
+
+`--session <name>` removes that. You pick a stable name and pass it every turn;
+oneharness maps the name to the harness's native session id in a small store
+(`<state dir>/oneharness/sessions/<project-slug>/<name>.json`, or `--session-dir`),
+so:
+
+```bash
+# Turn 1 — starts fresh, captures the harness's session id under the name "triage".
+oneharness run --harness claude-code --session triage --prompt "Investigate the flaky test."
+# Turn 2 — same name resumes the same session; you never touched the native id.
+oneharness run --harness claude-code --session triage --prompt "Now propose a fix."
+```
+
+The report's `session` block echoes `{name, phase, token, store_file}` — `phase`
+is `create` on the first run and `continue` after, `token` is the bound native id.
+A named session is **bound to one harness** (reusing the name on another is a loud
+error), is **single-harness** and cannot combine with `--resume`/`--fork`/`--all`
+or a batch, and is supported only for harnesses that expose a session id headlessly
+(`session_capable` in `oneharness list`: `claude-code`, `opencode`, `codex`,
+`cursor`, `qwen`) — for the rest, `--session` is a usage error rather than a silent
+fresh start. This is the substrate a multi-turn driver (e.g. a simulated-user /
+skill-testing framework) builds on: thread one handle, get faithful state, read
+`events` for what the agent *did*.
 
 ### Batch runs (same-prefix prompt caching)
 

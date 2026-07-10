@@ -843,6 +843,674 @@ fn resume_maps_to_resume_flag_and_echoes_session() {
     );
 }
 
+/// A private, per-test session-store directory (removed and recreated), so the
+/// uniform-handle tests never collide with each other or a real store.
+fn session_store_dir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "oh-session-{tag}-{}-{}",
+        std::process::id(),
+        tag.len()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn session_create_then_continue_round_trips_via_the_store() {
+    // `--session <name>` maps a caller-owned handle to the harness's native
+    // session id: the first run starts fresh and captures the id; the second run
+    // with the same name resumes it — no native-id threading by the caller.
+    let store = session_store_dir("roundtrip");
+    let store_arg = store.display().to_string();
+    // A stable project dir so both runs key the same store file.
+    let cwd = session_store_dir("roundtrip-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let argv_file = store.join("argv.txt");
+    let argv_arg = argv_file.display().to_string();
+
+    // Run 1 — create. The mock emits a Claude-shaped result with a session id.
+    let first = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--session",
+            "greet",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[
+            (
+                "MOCK_STDOUT",
+                r#"{"type":"result","result":"hi","session_id":"sess-1"}"#,
+            ),
+            ("MOCK_ARGV_FILE", &argv_arg),
+        ],
+    );
+    assert!(first.status.success(), "{first:?}");
+    let v1 = json_stdout(&first);
+    assert_eq!(v1["session"]["name"], "greet");
+    assert_eq!(v1["session"]["phase"], "create");
+    assert_eq!(v1["session"]["token"], "sess-1");
+    // A create builds a fresh argv — no --resume.
+    let argv1 = std::fs::read_to_string(&argv_file).unwrap();
+    assert!(
+        !argv1.lines().any(|l| l == "--resume"),
+        "create should not resume: {argv1:?}"
+    );
+
+    // Run 2 — continue. Same name; oneharness resolves it to `sess-1`.
+    let second = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--session",
+            "greet",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "and again",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[
+            (
+                "MOCK_STDOUT",
+                r#"{"type":"result","result":"ok","session_id":"sess-1"}"#,
+            ),
+            ("MOCK_ARGV_FILE", &argv_arg),
+        ],
+    );
+    assert!(second.status.success(), "{second:?}");
+    let v2 = json_stdout(&second);
+    assert_eq!(v2["session"]["phase"], "continue");
+    assert_eq!(v2["session"]["token"], "sess-1");
+    // A continue reuses the harness's verified --resume mapping.
+    let argv2 = std::fs::read_to_string(&argv_file).unwrap();
+    assert!(
+        argv2
+            .lines()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .any(|w| w == ["--resume", "sess-1"]),
+        "continue should resume the stored token: {argv2:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn session_on_an_unsupported_harness_is_a_usage_error() {
+    // Goose exposes no session id headlessly, so a uniform handle cannot bind to
+    // it — a loud usage error (exit 2), never a silent fresh start.
+    let store = session_store_dir("unsupported");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "goose",
+            "--session",
+            "x",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("does not support --session"),
+        "stderr: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn session_needs_exactly_one_harness() {
+    let store = session_store_dir("multi");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code,codex",
+            "--session",
+            "x",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--session needs exactly one harness"),
+        "stderr: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn session_bound_to_one_harness_rejects_a_different_one() {
+    // A named session created on one harness cannot be continued on another.
+    let store = session_store_dir("conflict");
+    let store_arg = store.display().to_string();
+    let cwd = session_store_dir("conflict-cwd");
+    let cwd_arg = cwd.display().to_string();
+
+    // Create `chat` on codex (its session handle is `thread_id`).
+    let create = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--session",
+            "chat",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"thread_id":"th-1","result":"hi"}"#)],
+    );
+    assert!(create.status.success(), "{create:?}");
+    assert_eq!(json_stdout(&create)["session"]["token"], "th-1");
+
+    // Reusing the name on claude-code is a loud conflict, not a silent migration.
+    let conflict = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--session",
+            "chat",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(conflict.status.code(), Some(2), "{conflict:?}");
+    let stderr = String::from_utf8_lossy(&conflict.stderr);
+    assert!(
+        stderr.contains("bound to one harness") || stderr.contains("created on harness"),
+        "stderr: {stderr}"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn session_cannot_combine_with_a_batch() {
+    // A named session is one continued conversation, not a fan-out over prompts.
+    let store = session_store_dir("batch");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--session",
+            "x",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "one",
+            "--prompt",
+            "two",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--session cannot be combined with a batch"),
+        "stderr: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn session_print_command_reports_the_handle_without_writing_the_store() {
+    // `--print-command` builds argv but runs nothing, so a create must not write
+    // a store record, yet still report the (as-yet tokenless) handle.
+    let store = session_store_dir("dry");
+    let store_arg = store.display().to_string();
+    let cwd = session_store_dir("dry-cwd");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--session",
+            "greet",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd.display().to_string(),
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let v = json_stdout(&output);
+    assert_eq!(v["session"]["phase"], "create");
+    assert!(v["session"]["token"].is_null());
+    // Nothing ran, so no record (nor its project subdir) was persisted.
+    assert_eq!(
+        std::fs::read_dir(&store).unwrap().count(),
+        0,
+        "print-command must not write the store"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn session_create_without_a_session_id_warns_and_stores_nothing() {
+    // If a session-capable harness happens to expose no id on a given run, the
+    // handle cannot be continued: oneharness warns and stores nothing rather than
+    // persisting an unusable record.
+    let store = session_store_dir("noid");
+    let store_arg = store.display().to_string();
+    let cwd = session_store_dir("noid-cwd");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--session",
+            "greet",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd.display().to_string(),
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        // A result document with no session id.
+        &[("MOCK_STDOUT", r#"{"type":"result","result":"hi"}"#)],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let v = json_stdout(&output);
+    assert_eq!(v["session"]["phase"], "create");
+    assert!(v["session"]["token"].is_null());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("exposed no session id"), "stderr: {stderr}");
+    // Best-effort: nothing written when there is no token to persist.
+    assert_eq!(std::fs::read_dir(&store).unwrap().count(), 0);
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn session_continue_persists_a_rotated_token() {
+    // A harness may return a fresh session id on a continue; the store must be
+    // updated to the new token (so the next turn resumes it) while keeping the
+    // original `created`.
+    let store = session_store_dir("rotate");
+    let store_arg = store.display().to_string();
+    let cwd = session_store_dir("rotate-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let bin = bin_override("claude-code");
+    let args = |prompt: &'static str| {
+        [
+            "run",
+            "--harness",
+            "claude-code",
+            "--session",
+            "chat",
+            "--session-dir",
+            store_arg.as_str(),
+            "--cwd",
+            cwd_arg.as_str(),
+            "--prompt",
+            prompt,
+            "--bin",
+            bin.as_str(),
+            "--compact",
+        ]
+    };
+
+    let first = run(
+        &args("first"),
+        &[(
+            "MOCK_STDOUT",
+            r#"{"type":"result","result":"a","session_id":"sess-1"}"#,
+        )],
+    );
+    assert!(first.status.success(), "{first:?}");
+    let v1 = json_stdout(&first);
+    assert_eq!(v1["session"]["token"], "sess-1");
+    let created: String = serde_json::from_str::<Value>(
+        &std::fs::read_to_string(v1["session"]["store_file"].as_str().unwrap()).unwrap(),
+    )
+    .unwrap()["created"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let second = run(
+        &args("second"),
+        &[(
+            "MOCK_STDOUT",
+            r#"{"type":"result","result":"b","session_id":"sess-2"}"#,
+        )],
+    );
+    assert!(second.status.success(), "{second:?}");
+    let v2 = json_stdout(&second);
+    assert_eq!(v2["session"]["phase"], "continue");
+    assert_eq!(v2["session"]["token"], "sess-2");
+    // The stored record now holds the rotated token.
+    let record: Value = serde_json::from_str(
+        &std::fs::read_to_string(v2["session"]["store_file"].as_str().unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["token"], "sess-2");
+    // The original creation time is preserved across the rotation.
+    assert_eq!(record["created"], created);
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn session_survives_an_unwritable_store() {
+    // The store is best-effort: if the store path can't be written (here the
+    // --session-dir is a regular file, so its project subdir can't be created),
+    // the run still succeeds and warns rather than aborting.
+    let file = std::env::temp_dir().join(format!("oh-session-file-{}", std::process::id()));
+    std::fs::write(&file, b"not a dir").unwrap();
+    let cwd = session_store_dir("unwritable-cwd");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--session",
+            "greet",
+            "--session-dir",
+            &file.display().to_string(),
+            "--cwd",
+            &cwd.display().to_string(),
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[(
+            "MOCK_STDOUT",
+            r#"{"type":"result","result":"hi","session_id":"sess-1"}"#,
+        )],
+    );
+    assert!(output.status.success(), "best-effort store: {output:?}");
+    // The token is still captured and reported, even though it couldn't persist.
+    assert_eq!(json_stdout(&output)["session"]["token"], "sess-1");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("could not write session store"),
+        "stderr: {stderr}"
+    );
+    let _ = std::fs::remove_file(&file);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn session_without_a_resolvable_store_is_a_usage_error() {
+    // With no --session-dir and no platform state dir (HOME / XDG / LOCALAPPDATA
+    // all unset), the store can't be located — a loud usage error up front.
+    let output = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env_remove("HOME")
+        .env_remove("XDG_STATE_HOME")
+        .env_remove("LOCALAPPDATA")
+        .env_remove("USERPROFILE")
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--session",
+            "x",
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--compact",
+        ])
+        .output()
+        .expect("failed to run oneharness");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("session store directory"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn session_composes_with_structured_output() {
+    // `--schema` runs a validate/retry loop; `--session` must still capture the
+    // token from the (final) result and report a valid structured value.
+    let store = session_store_dir("schema");
+    let cwd = session_store_dir("schema-cwd");
+    let schema = temp_file("session-schema", PERSON_SCHEMA);
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--session",
+            "s",
+            "--session-dir",
+            &store.display().to_string(),
+            "--cwd",
+            &cwd.display().to_string(),
+            "--prompt",
+            "describe ada",
+            "--schema",
+            &schema,
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[(
+            "MOCK_STDOUT",
+            r#"{"type":"result","result":"Here is Ada.","structured_output":{"name":"Ada","age":36},"session_id":"sess-1"}"#,
+        )],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let v = json_stdout(&output);
+    assert_eq!(v["results"][0]["schema_valid"], true);
+    assert_eq!(v["results"][0]["structured"]["name"], "Ada");
+    assert_eq!(v["session"]["phase"], "create");
+    assert_eq!(v["session"]["token"], "sess-1");
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn session_composes_with_history() {
+    // `--session` and `--history` write independent stores; both must be honored
+    // in one run.
+    let store = session_store_dir("hist-sess");
+    let hist = session_store_dir("hist-dir");
+    let cwd = session_store_dir("hist-cwd");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--session",
+            "s",
+            "--session-dir",
+            &store.display().to_string(),
+            "--history",
+            "--history-dir",
+            &hist.display().to_string(),
+            "--cwd",
+            &cwd.display().to_string(),
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[(
+            "MOCK_STDOUT",
+            r#"{"type":"result","result":"hi","session_id":"sess-1"}"#,
+        )],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let v = json_stdout(&output);
+    assert_eq!(v["session"]["token"], "sess-1");
+    assert!(!v["history_file"].is_null(), "history should be recorded");
+    // Both stores landed on disk.
+    assert!(std::fs::read_dir(&store).unwrap().count() > 0);
+    assert!(std::fs::read_dir(&hist).unwrap().count() > 0);
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&hist);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn session_composes_with_mock_rules() {
+    // `--session` and the ephemeral `--mock-rules` delivery must coexist: the
+    // session token is captured and the mock ruleset is echoed on the report.
+    let dir = session_store_dir("mock-sess");
+    let store = session_store_dir("mock-store");
+    let rules = dir.join("rules.json");
+    std::fs::write(
+        &rules,
+        r#"{"rules":[{"match":{"tool":"Bash","event_contains":"MARK"},"action":{"deny":{"message":"m"}}}]}"#,
+    )
+    .unwrap();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--session",
+            "s",
+            "--session-dir",
+            &store.display().to_string(),
+            "--cwd",
+            dir.to_str().unwrap(),
+            "--mock-rules",
+            rules.to_str().unwrap(),
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[(
+            "MOCK_STDOUT",
+            r#"{"type":"result","result":"hi","session_id":"sess-1"}"#,
+        )],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let v = json_stdout(&output);
+    assert_eq!(v["session"]["token"], "sess-1");
+    assert!(!v["mock_rules"].is_null(), "mock rules should be echoed");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn session_works_with_streaming() {
+    // The streaming path has its own finalize step: `--session --stream` must
+    // still capture the token and persist the store, and surface the session
+    // block on the terminal report line.
+    let store = session_store_dir("stream");
+    let store_arg = store.display().to_string();
+    let cwd = session_store_dir("stream-cwd");
+    let stdout = concat!(
+        "{\"type\":\"step_start\",\"sessionID\":\"ses_stream\",\"part\":{}}\n",
+        "{\"type\":\"tool_use\",\"part\":{\"type\":\"tool\",\"tool\":\"bash\",\"state\":{\"status\":\"completed\",\"input\":{\"command\":\"echo hi\"},\"output\":\"hi\"}}}\n",
+        "{\"type\":\"step_finish\",\"sessionID\":\"ses_stream\",\"part\":{}}\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--session",
+            "live",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd.display().to_string(),
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("opencode"),
+            "--stream",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stdout);
+    let terminal: Value = text
+        .lines()
+        .rfind(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .unwrap();
+    assert_eq!(terminal["type"], "result");
+    let session = &terminal["report"]["session"];
+    assert_eq!(session["name"], "live");
+    assert_eq!(session["phase"], "create");
+    assert_eq!(session["token"], "ses_stream");
+    // The store was persisted through the streaming path, so a later run resumes.
+    let record: Value = serde_json::from_str(
+        &std::fs::read_to_string(session["store_file"].as_str().unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["token"], "ses_stream");
+    assert_eq!(record["harness"], "opencode");
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
 /// Build a `--print-command` argv for one harness with the given extra args, and
 /// return its `results[0].command` as a Vec<String>.
 fn print_command_for(extra: &[&str]) -> Vec<String> {
@@ -1026,6 +1694,20 @@ fn list_exposes_resume_and_fork_capabilities() {
     assert!(reuses("claude-code"));
     assert!(!reuses("opencode"));
     assert!(!reuses("codex"));
+
+    // `--session` (the uniform handle) is supported exactly for harnesses that
+    // expose a session id headlessly — the `extract_session` sources.
+    let session_capable = |id: &str| {
+        harnesses.iter().find(|h| h["id"] == id).unwrap()["session_capable"]
+            .as_bool()
+            .unwrap()
+    };
+    for id in ["claude-code", "opencode", "codex", "cursor", "qwen"] {
+        assert!(session_capable(id), "{id} should be session_capable");
+    }
+    for id in ["goose", "copilot", "crush"] {
+        assert!(!session_capable(id), "{id} should not be session_capable");
+    }
 }
 
 #[test]

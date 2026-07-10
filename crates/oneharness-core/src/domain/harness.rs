@@ -107,6 +107,16 @@ pub struct HarnessSpec {
     /// starting a fresh session. Kept as data so the capability is introspectable
     /// via `oneharness list`.
     pub supports_resume: bool,
+    /// Whether this harness exposes a native session id headlessly (the
+    /// `extract_session` sources), so oneharness can back a uniform
+    /// `run --session <name>` handle: it maps the caller's stable name to the
+    /// harness's own token in a small store, letting a consumer thread one name
+    /// across turns instead of extracting and re-passing the id. `true` exactly
+    /// for the harnesses [`crate::domain::signals::extract_session`] can read a
+    /// token from (claude-code, opencode, codex, cursor, qwen); `false` for the
+    /// rest, where `--session` is a loud usage error (no id to bind a name to).
+    /// Implies `supports_resume`. Introspectable via `oneharness list`.
+    pub session_capable: bool,
     /// Whether this harness can *fork* a session when resuming (`run --resume
     /// <id> --fork`): branch a new session id from the resumed one, leaving the
     /// original untouched so its cached prefix seeds independent follow-ups. Only
@@ -443,6 +453,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // Anthropic content-block stream oneharness normalizes into `events`.
         events_format: Some(OutputFormat::StreamJson),
         supports_resume: true,
+        session_capable: true,
         supports_fork: true,
         fork_reuses_cache: true,
         sync: Some(SyncSpec {
@@ -502,6 +513,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // transcript). A non-text format maps to `--json` in `argv_codex`.
         events_format: Some(OutputFormat::Json),
         supports_resume: true,
+        session_capable: true,
         supports_fork: false,
         fork_reuses_cache: false,
         sync: None,
@@ -578,6 +590,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // Default `json` (JSONL) already carries the `tool` parts, so no upgrade.
         events_format: None,
         supports_resume: true,
+        session_capable: true,
         supports_fork: true,
         // OpenCode can fork, but its fork re-sends the branched conversation cold
         // (measured: the fan-out reads no cache and re-writes the whole prefix),
@@ -642,6 +655,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // Events pending investigation (see the events matrix).
         events_format: None,
         supports_resume: true,
+        session_capable: false,
         supports_fork: false,
         fork_reuses_cache: false,
         sync: None,
@@ -708,6 +722,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // transcript). Mapped to `--output-format stream-json` in `argv_qwen`.
         events_format: Some(OutputFormat::StreamJson),
         supports_resume: true,
+        session_capable: true,
         supports_fork: false,
         fork_reuses_cache: false,
         sync: Some(SyncSpec {
@@ -772,6 +787,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // Events pending investigation (see the events matrix).
         events_format: None,
         supports_resume: true,
+        session_capable: false,
         supports_fork: false,
         fork_reuses_cache: false,
         sync: Some(SyncSpec {
@@ -817,6 +833,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // Events pending investigation (see the events matrix).
         events_format: None,
         supports_resume: true,
+        session_capable: false,
         supports_fork: false,
         fork_reuses_cache: false,
         sync: None,
@@ -868,6 +885,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // Default `stream-json` already carries the tool transcript, so no upgrade.
         events_format: None,
         supports_resume: true,
+        session_capable: true,
         supports_fork: false,
         fork_reuses_cache: false,
         sync: Some(SyncSpec {

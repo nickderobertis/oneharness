@@ -7,4 +7,5 @@ pub mod detect;
 pub mod history;
 pub mod hooks;
 pub mod runner;
+pub mod session;
 pub mod sync;

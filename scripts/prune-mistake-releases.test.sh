@@ -96,7 +96,7 @@ reset() { : >"$GH_SPY"; rm -f "$GH_DELETED"; }
 # resolved to an ABSOLUTE path once, so a test can hand the child a PATH with no
 # `bash` (or nothing at all) without breaking how we launch it — the child's
 # PATH controls only what the *script* can find, not what starts it.
-BASH_BIN="$(command -v bash)"
+BASH_BIN="${BASH:-$(command -v bash)}"   # the interpreter already running us
 RUNPATH="${BIN}:${PATH}"
 run() {
   local rp="${RUNPATH}"

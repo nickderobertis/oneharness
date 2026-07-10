@@ -58,8 +58,13 @@ echo "Mode       : $([ "$EXECUTE" -eq 1 ] && echo 'EXECUTE (deletes releases + t
 echo
 
 # Every release tag, across all pages, filtered to the pattern. --paginate walks
-# every page; --jq emits one tag_name per line; grep keeps only matches.
-mapfile -t targets < <(
+# every page; --jq emits one tag_name per line; grep keeps only matches. Read
+# with a while-loop rather than `mapfile` so the tool runs on the bash 3.2 that
+# stock macOS still ships (mapfile is bash 4+).
+targets=()
+while IFS= read -r tag; do
+  [ -n "$tag" ] && targets+=("$tag")
+done < <(
   gh api --paginate -X GET "/repos/${REPO}/releases?per_page=100" --jq '.[].tag_name' \
     | grep -E "$PATTERN" || true
 )

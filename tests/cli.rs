@@ -5083,6 +5083,57 @@ fn system_file_reads_the_system_prompt_from_a_file() {
 }
 
 #[test]
+fn system_file_value_reaches_a_spawned_harness_intact() {
+    // The positive `--system-file` tests above pin the *built* command; this one
+    // actually SPAWNS (the mock harness via --bin) and asserts the file-sourced
+    // system prompt arrives at the child argv byte-identically — the runtime proof
+    // that `--system-file` behaves exactly like `--system`, not just in print.
+    let dir = std::env::temp_dir().join(format!("oneharness-sfspawn-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("system.txt");
+    // A leading `---` (YAML front matter) that would be misparsed as a flag on
+    // argv is safe here because it comes from the file, not the command line.
+    let system = "---\nname: reviewer\nbe terse";
+    std::fs::write(&file, system).unwrap();
+    let argv_file = dir.join("argv.txt");
+
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--system-file",
+            &file.display().to_string(),
+            "--mode",
+            "bypass",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_ARGV_FILE", &argv_file.display().to_string())],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(json_stdout(&output)["results"][0]["status"], "ok");
+    let received =
+        std::fs::read_to_string(&argv_file).expect("mock recorded no argv — the spawn failed");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        received.contains("--append-system-prompt"),
+        "argv: {received:?}"
+    );
+    assert!(
+        received.contains(system),
+        "the file-sourced --system value must reach the child intact: {received:?}"
+    );
+}
+
+#[test]
 fn system_file_dash_reads_the_system_prompt_from_stdin() {
     // `--system-file -` reads the system prompt from stdin — how a pipeline feeds a
     // large or generated system prompt without a temp file.

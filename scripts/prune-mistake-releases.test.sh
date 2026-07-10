@@ -92,7 +92,11 @@ fail() { echo "FAIL: $1" >&2; [ $# -gt 1 ] && printf '%s\n' "$2" >&2; exit 1; }
 reset() { : >"$GH_SPY"; rm -f "$GH_DELETED"; }
 
 # Run the tool under test with the fake gh first on PATH. RUNPATH lets one test
-# drop the fake to prove the missing-tool guard.
+# point at an isolated PATH to prove the missing-tool guard. The interpreter is
+# resolved to an ABSOLUTE path once, so a test can hand the child a PATH with no
+# `bash` (or nothing at all) without breaking how we launch it — the child's
+# PATH controls only what the *script* can find, not what starts it.
+BASH_BIN="$(command -v bash)"
 RUNPATH="${BIN}:${PATH}"
 run() {
   local rp="${RUNPATH}"
@@ -100,7 +104,7 @@ run() {
   OUT=$(PATH="$rp" GH_SPY="$GH_SPY" GH_DELETED="$GH_DELETED" \
         GH_RELEASES_JSON="$FIXTURE" REPO="$REPO_UT" \
         GH_AUTH_FAIL="${GH_AUTH_FAIL:-0}" GH_FAIL_TAG="${GH_FAIL_TAG:-}" \
-        bash "$SCRIPT" "$@" 2>&1)
+        "$BASH_BIN" "$SCRIPT" "$@" 2>&1)
   RC=$?
   set -e
 }
@@ -146,7 +150,14 @@ got=$(deleted_sorted)                      # the other four still went
 grep -q "1 failed" <<<"$OUT" || fail "T4 summary missing failure count" "$OUT"
 
 # --- T5: missing gh aborts before doing anything ----------------------------
-reset; RUNPATH="${PATH}" run --execute      # drop the fake gh; none is installed
+# Hand the child an isolated, empty PATH so `command -v gh` finds nothing — this
+# must hold even though the host HAS gh (CI runners and dev machines all ship it;
+# needing it is the whole point of the tool). The guard aborts before touching
+# jq/grep, so an empty PATH is enough; the interpreter is launched by absolute
+# path (see run), so an empty child PATH can't stop the script from starting.
+EMPTY_PATH="${work}/empty-path"
+mkdir -p "$EMPTY_PATH"
+reset; RUNPATH="${EMPTY_PATH}" run --execute
 [ "$RC" -ne 0 ] || fail "T5 should fail when gh is absent" "$OUT"
 grep -qi "gh.*required\|required.*gh" <<<"$OUT" || fail "T5 no useful gh-missing message" "$OUT"
 [ -f "$GH_DELETED" ] && fail "T5 deleted despite missing gh" "$(cat "$GH_DELETED")"

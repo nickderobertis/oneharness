@@ -36,6 +36,13 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let loaded = config_io::load(args.config.as_deref(), args.no_config, &project_start)?;
     let cfg = &loaded.config;
 
+    // stdin can be consumed only once total, so `--prompt-file -` and
+    // `--system-file -` cannot both read it (repeated `--prompt-file -` is caught
+    // in resolve_prompts). Validated before any read so it never blocks on stdin.
+    if args.system_file.as_deref() == Some("-") && args.prompt_file.iter().any(|p| p == "-") {
+        return Err(OneharnessError::MultipleStdinConsumers { count: 2 });
+    }
+
     let prompts = resolve_prompts(args)?;
     // A batch run is "one harness over N prompts that share a cacheable prefix"
     // (the same --system/model). It is signalled simply by more than one prompt;
@@ -113,7 +120,10 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let mock_wiring = setup_mock(args, &specs, &project_start, &overrides)?;
     let cli_env = parse_env(&args.env)?;
     let model = args.model.as_deref().or(cfg.model.as_deref());
-    let system = args.system.as_deref().or(cfg.system.as_deref());
+    // The effective system prompt comes from `--system` xor `--system-file` (the
+    // argv-limit escape hatch, mirroring `--prompt-file`), then config `system`.
+    let system_text: Option<String> = resolve_system(args)?.or_else(|| cfg.system.clone());
+    let system = system_text.as_deref();
     let timeout = args.timeout.or(cfg.timeout).unwrap_or(120);
     let require_available = args.require_available || cfg.require_available.unwrap_or(false);
 
@@ -1374,6 +1384,38 @@ fn resolve_prompts(args: &RunArgs) -> Result<Vec<String>, OneharnessError> {
         return Err(OneharnessError::NoPrompt);
     }
     Ok(prompts)
+}
+
+/// Resolve the effective system prompt from the mutually-exclusive `--system`
+/// (inline argv) and `--system-file` (file, or `-` for stdin). `--system-file` is
+/// the argv-limit escape hatch mirroring `--prompt-file`: a system prompt too
+/// large for a single argv string trips `E2BIG` at spawn, so it is read from a
+/// file instead. Returns `None` when neither flag is set, so the caller's config
+/// `system` fallback applies. The `-`/stdin collision with `--prompt-file -` is
+/// guarded before any read, so this never double-consumes stdin.
+fn resolve_system(args: &RunArgs) -> Result<Option<String>, OneharnessError> {
+    if let Some(text) = &args.system {
+        return Ok(Some(text.clone()));
+    }
+    let Some(path) = &args.system_file else {
+        return Ok(None);
+    };
+    let text = if path == "-" {
+        let mut buf = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf).map_err(|source| {
+            OneharnessError::SystemFile {
+                path: "<stdin>".to_string(),
+                source,
+            }
+        })?;
+        buf
+    } else {
+        std::fs::read_to_string(path).map_err(|source| OneharnessError::SystemFile {
+            path: path.clone(),
+            source,
+        })?
+    };
+    Ok(Some(text))
 }
 
 /// A batch run (more than one prompt) fans **one** harness over the prompts so

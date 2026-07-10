@@ -247,10 +247,16 @@ Useful `run` flags:
   `min-tokens`); see [batch runs](#batch-runs-same-prefix-prompt-caching). No
   effect on a single-prompt run.
 - `--model <m>` — passed to each harness that supports a model flag.
-- `--system <text>` — portable system prompt for **every** harness: mapped to a
-  native flag where one exists (Claude Code's `--append-system-prompt`, Goose's
-  `--system`), and prepended to the prompt otherwise, so the instructions always
-  reach the model.
+- `--system <text>` or `--system-file <path|->` — portable system prompt for
+  **every** harness: mapped to a native flag where one exists (Claude Code's
+  `--append-system-prompt`, Goose's `--system`), and prepended to the prompt
+  otherwise, so the instructions always reach the model. The two are **two
+  spellings of one input** and mutually exclusive; config `system` is the fallback
+  for both. Use `--system-file` (the file-based counterpart to `--prompt-file`,
+  `-` for stdin) for a system prompt too large to pass as an argv string — a big
+  `--system` value can trip the OS single-argument limit and fail at spawn with
+  `Argument list too long` (E2BIG) before any harness runs. Only one input may
+  read stdin, so `--system-file -` cannot combine with `--prompt-file -`.
 - `--resume <session>` — continue a prior session, sending the prompt as its next
   turn. **Single-harness only** (a session belongs to one harness); every harness
   supports it, but multi-harness selections are still a usage error. The continued

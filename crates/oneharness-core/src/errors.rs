@@ -20,6 +20,9 @@ pub enum OneharnessError {
     #[error("--prompt-file - (stdin) can be given only once, but it was passed {count} times")]
     MultipleStdinPrompts { count: usize },
 
+    #[error("stdin ('-') can be read only once, but {count} inputs request it (across --prompt-file and --system-file)")]
+    MultipleStdinConsumers { count: usize },
+
     #[error("a batch run (more than one prompt) needs exactly one harness (a shared cache prefix is per harness/model), but {count} were selected: {selected}. Select one with --harness <id>")]
     BatchMultipleHarnesses { count: usize, selected: String },
 
@@ -102,6 +105,13 @@ pub enum OneharnessError {
 
     #[error("could not read prompt file `{path}`: {source}")]
     PromptFile {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("could not read system prompt file `{path}`: {source}")]
+    SystemFile {
         path: String,
         #[source]
         source: std::io::Error,

@@ -29,6 +29,11 @@ struct HarnessInfo {
     output_format: OutputFormat,
     /// Whether `run --resume <session>` is supported for this harness.
     supports_resume: bool,
+    /// Whether `run --session <name>` is supported — a uniform, caller-owned
+    /// handle oneharness maps to the harness's native session id. `true` only for
+    /// harnesses that expose a session id headlessly; `false` means `--session` is
+    /// a loud usage error (there is no id to bind a name to).
+    session_capable: bool,
     /// Whether `run --resume <session> --fork` is supported — branching a new
     /// session from the resumed one. `false` means it resumes linearly only.
     supports_fork: bool,
@@ -95,6 +100,7 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 install_hint: spec.install_hint,
                 output_format: spec.output_format,
                 supports_resume: spec.supports_resume,
+                session_capable: spec.session_capable,
                 supports_fork: spec.supports_fork,
                 fork_reuses_cache: spec.fork_reuses_cache,
                 modes: spec

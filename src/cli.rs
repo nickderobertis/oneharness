@@ -326,6 +326,24 @@ pub struct RunArgs {
     #[arg(long, requires = "resume")]
     pub fork: bool,
 
+    /// Continue (or start) a named conversation by a stable, caller-owned handle.
+    /// oneharness maps <NAME> to the harness's native session id in a small store,
+    /// so you thread ONE name across turns instead of extracting and re-passing
+    /// the id yourself: the first `--session <name>` run starts fresh and captures
+    /// the id; later runs with the same name resume it. Single-harness only, and
+    /// only for harnesses that expose a session id headlessly (see `session_capable`
+    /// in `oneharness list`); others are a loud usage error. The lower-level,
+    /// per-invocation counterpart to `--resume` — mutually exclusive with
+    /// --resume/--fork/--all and with a batch (multi-prompt) run.
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["resume", "fork", "all"])]
+    pub session: Option<String>,
+
+    /// Directory the `--session` store lives in (default: <platform state dir>/
+    /// oneharness/sessions). Like --resume/--fork, a per-invocation knob with no
+    /// config/env layer; mainly for isolating the store in tests and scripts.
+    #[arg(long, value_name = "DIR")]
+    pub session_dir: Option<PathBuf>,
+
     /// Override the output format requested from each harness (default: the
     /// per-harness default; see `oneharness list`). Affects both the emitted
     /// format flag and how `text` is extracted.

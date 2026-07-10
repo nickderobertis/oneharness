@@ -454,7 +454,20 @@ shape. When you add one:
   `thread_id`); if it emits none (Goose, Copilot), the continuation handle is
   caller-supplied (a `--name` / minted UUID) and `session_id` stays `null` — never
   fabricate one. Update the `--resume` column in `README.md`. Also declare
-  `fork_reuses_cache` (implies `supports_fork`): true only if a forked run reuses
+  `session_capable` (implies `supports_resume`): true **iff** the harness emits a
+  session id headlessly (exactly the `extract_session` sources — claude-code,
+  opencode, codex, cursor, qwen), which is what lets the uniform
+  `run --session <name>` handle map a caller-owned name to the harness's native
+  token in the session store (`domain::session` decides create-vs-continue,
+  `io::session` persists `<state>/oneharness/sessions/<slug>/<name>.json`; the
+  command layer feeds a continue's token through the *existing verified* `--resume`
+  mapping, so `--session` needs **no** new argv arm). When false, `--session` is a
+  loud usage error (no id to bind a name to) — never a silent fresh start. It is
+  single-harness, refuses batch/`--resume`/`--fork`/`--all`, and echoes a `session`
+  block `{name, phase, token, store_file}` in the report. Update the *Session
+  handle* section + `session_capable`/`--session` mentions in `README.md`. Also
+  declare `fork_reuses_cache` (implies `supports_fork`): true only if a forked run
+  reuses
   the parent session's prompt-cache prefix, which is what makes a `min-tokens`
   batch save tokens — gate, **measured** by `oh_batch_fork_enforce` not guessed
   (true for claude-code; false for opencode, whose fork re-sends the prefix cold).

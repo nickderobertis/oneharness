@@ -9,6 +9,7 @@ use serde_json::Value;
 use crate::domain::batch::BatchStrategy;
 use crate::domain::events::ActionEvent;
 use crate::domain::mode::PermissionMode;
+use crate::domain::session::SessionPhase;
 use crate::domain::signals::Usage;
 
 /// Bumped when the JSON shape changes in a way consumers must notice.
@@ -92,7 +93,9 @@ pub struct RunResult {
     /// How `usage` was read (e.g. `json`); `null` when nothing was found.
     pub usage_source: Option<String>,
     /// Best-effort harness session id for continuation; `null` when none is
-    /// exposed. (Surfaced only; oneharness does not yet consume it.)
+    /// exposed. Surfaced for a consumer to thread into `--resume`, and consumed
+    /// by oneharness itself when `--session` is in play (it is captured into the
+    /// session store to back the uniform handle — see [`RunReport::session`]).
     pub session_id: Option<String>,
     /// Best-effort normalized tool-call / action events the harness took (shell
     /// commands, file edits, tool uses), in order — so consumers can assert on
@@ -154,6 +157,11 @@ pub struct RunReport {
     /// Whether the resumed session was forked (`--fork`) rather than appended to.
     /// `false` unless `--resume` was given with `--fork`.
     pub fork: bool,
+    /// The uniform session handle in play (`--session <name>`), or `null` when
+    /// none was requested. Lets a consumer thread one stable name across turns
+    /// instead of extracting each harness's native session id. Distinct from the
+    /// low-level `resume` field above, which echoes an explicit `--resume` id.
+    pub session: Option<SessionReport>,
     /// The normalized approval mode requested for this run (see the README
     /// support matrix). Each harness maps it to its own mechanism.
     pub permission_mode: PermissionMode,
@@ -189,6 +197,25 @@ pub struct RunReport {
     /// project last); empty under `--no-config` or when none exist.
     pub config_files: Vec<String>,
     pub results: Vec<RunResult>,
+}
+
+/// The uniform session handle for a run (`--session`). Present on
+/// [`RunReport::session`] only when `--session <name>` was requested.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionReport {
+    /// The caller's stable handle (`--session <name>`, sanitized for the store).
+    pub name: String,
+    /// Whether this run created the named session (no prior token) or continued
+    /// an existing one.
+    pub phase: SessionPhase,
+    /// The harness native token now bound to the name: the id resumed on a
+    /// continue, or the id captured on a create. `null` only when a create run
+    /// exposed no session id (the handle then cannot be continued — a warning is
+    /// emitted), or under `--print-command` on a create (nothing ran).
+    pub token: Option<String>,
+    /// The session store file backing the handle (absolute); the programmatic
+    /// handle to the persisted state.
+    pub store_file: Option<String>,
 }
 
 /// Metadata for a same-prefix batch run (one harness, N prompts sharing a

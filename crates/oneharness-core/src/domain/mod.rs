@@ -13,6 +13,7 @@ pub mod mock;
 pub mod mode;
 pub mod normalize;
 pub mod report;
+pub mod session;
 pub mod shim;
 pub mod signals;
 pub mod structured;

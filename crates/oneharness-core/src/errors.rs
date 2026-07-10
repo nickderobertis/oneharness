@@ -38,6 +38,25 @@ pub enum OneharnessError {
     #[error("harness `{id}` does not support --fork (it resumes linearly, appending in place). supported: {supported}")]
     ForkUnsupported { id: String, supported: String },
 
+    #[error("--session needs exactly one harness (a named session belongs to one harness), but {count} were selected: {selected}")]
+    SessionMultipleHarnesses { count: usize, selected: String },
+
+    #[error("--session cannot be combined with a batch run (more than one prompt): a named session is one continued conversation, not a fan-out")]
+    SessionBatch,
+
+    #[error("harness `{id}` does not support --session: it exposes no session id headlessly, so a named handle cannot be mapped to it. supported: {supported}")]
+    SessionUnsupported { id: String, supported: String },
+
+    #[error("session `{name}` was created on harness `{was}`, so it cannot be continued on `{now}` (a named session is bound to one harness; use a different --session name)")]
+    SessionHarnessConflict {
+        name: String,
+        was: String,
+        now: String,
+    },
+
+    #[error("cannot resolve a session store directory (no --session-dir and no platform state dir): set --session-dir <DIR>")]
+    SessionNoStore,
+
     #[error("harness `{id}` does not support `--mode {mode}`. supported modes: {supported}")]
     ModeUnsupported {
         id: String,

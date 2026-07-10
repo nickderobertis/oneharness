@@ -626,7 +626,12 @@ shape. When you add one:
   run until `--execute`) deletes the matched releases *and* their tags with
   `gh release delete --cleanup-tag`. It needs `gh`+`jq` and repo write creds, so
   it can't run from a Claude web session — that proxy 403s release deletion,
-  tag-ref writes, and `git push --delete`. Run it locally or from Actions.
+  tag-ref writes, and `git push --delete`. Run it locally or from Actions. Its
+  safety properties are pinned hermetically by
+  `scripts/prune-mistake-releases.test.sh` (a fake `gh` spy — dry run deletes
+  nothing, only anchored-pattern matches are deleted with the right flags, and
+  near-misses like `v0.2.0-rc.1`/`v0.20.0`/`oneharness-core-v0.2.0` are never
+  touched), run inside `scripts/smoke.sh` (so `just check`/CI cover it).
 
 ## Keeping the allowlist current
 

@@ -155,6 +155,16 @@ else
   echo "smoke: node not found; npm packaging e2e skipped (install Node to run it)" >&2
 fi
 
+# 0c. prune-mistake-releases safety test: drive the release-pruning tool through
+#     a fake `gh` spy and assert exactly which tags it would delete (dry run
+#     deletes nothing; only anchored-pattern matches go; failures are counted).
+#     Self-gates on jq (skips with a notice where absent), like the tool itself.
+LAST_CMD="bash scripts/prune-mistake-releases.test.sh"
+if ! out="$(bash scripts/prune-mistake-releases.test.sh 2>&1)"; then
+  fail "prune-releases safety test failed" "$LAST_CMD" "$out" \
+    "inspect scripts/prune-mistake-releases.sh and its .test.sh"
+fi
+
 # 1. `list` — the registry, with each adapter's example command.
 LAST_CMD="$oh list --compact"
 out="$($oh list --compact)" || fail "list exited non-zero" "$LAST_CMD"

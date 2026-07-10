@@ -301,6 +301,17 @@ pub struct RunArgs {
     #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
     pub system: Option<String>,
 
+    /// Read the system prompt from a file, or '-' for stdin — the file-based
+    /// counterpart to --system (mirroring --prompt-file), for a system prompt too
+    /// large to pass as an argv string: a big --system value can trip the OS
+    /// single-argument limit and fail at spawn with `Argument list too long`
+    /// (E2BIG) before any harness runs. Mutually exclusive with --system; config
+    /// `system` remains the fallback for both. Front-matter/leading-`-` content is
+    /// safe because it comes from the file, not argv. Only one input may read
+    /// stdin, so '-' here cannot combine with `--prompt-file -`.
+    #[arg(long, value_name = "PATH", conflicts_with = "system")]
+    pub system_file: Option<String>,
+
     /// Continue a prior session: send the prompt as the next turn of <SESSION>.
     /// Single-harness only (a session belongs to one harness) and only for
     /// harnesses that support it (see `supports_resume` in `oneharness list`).

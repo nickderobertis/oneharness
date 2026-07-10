@@ -5047,6 +5047,230 @@ fn prompt_file_missing_path_is_a_usage_error() {
     );
 }
 
+#[test]
+fn system_file_reads_the_system_prompt_from_a_file() {
+    // `--system-file PATH` is the file-backed alternative to `--system` (the
+    // argv-limit escape hatch, mirroring `--prompt-file`): the file contents
+    // become the system prompt and reach the harness argv identically.
+    let dir = std::env::temp_dir().join(format!("oneharness-sf-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("system.txt");
+    std::fs::write(&file, "be terse").unwrap();
+
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--system-file",
+            &file.display().to_string(),
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let command = command_of(&json_stdout(&output), 0);
+    assert!(
+        command
+            .windows(2)
+            .any(|w| w == ["--append-system-prompt", "be terse"]),
+        "{command:?}"
+    );
+}
+
+#[test]
+fn system_file_value_reaches_a_spawned_harness_intact() {
+    // The positive `--system-file` tests above pin the *built* command; this one
+    // actually SPAWNS (the mock harness via --bin) and asserts the file-sourced
+    // system prompt arrives at the child argv byte-identically — the runtime proof
+    // that `--system-file` behaves exactly like `--system`, not just in print.
+    let dir = std::env::temp_dir().join(format!("oneharness-sfspawn-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("system.txt");
+    // A leading `---` (YAML front matter) that would be misparsed as a flag on
+    // argv is safe here because it comes from the file, not the command line.
+    let system = "---\nname: reviewer\nbe terse";
+    std::fs::write(&file, system).unwrap();
+    let argv_file = dir.join("argv.txt");
+
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--system-file",
+            &file.display().to_string(),
+            "--mode",
+            "bypass",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_ARGV_FILE", &argv_file.display().to_string())],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(json_stdout(&output)["results"][0]["status"], "ok");
+    let received =
+        std::fs::read_to_string(&argv_file).expect("mock recorded no argv — the spawn failed");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        received.contains("--append-system-prompt"),
+        "argv: {received:?}"
+    );
+    assert!(
+        received.contains(system),
+        "the file-sourced --system value must reach the child intact: {received:?}"
+    );
+}
+
+#[test]
+fn system_file_dash_reads_the_system_prompt_from_stdin() {
+    // `--system-file -` reads the system prompt from stdin — how a pipeline feeds a
+    // large or generated system prompt without a temp file.
+    let output = run_with_stdin(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--system-file",
+            "-",
+            "--print-command",
+            "--compact",
+        ],
+        "be terse",
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let command = command_of(&json_stdout(&output), 0);
+    assert!(
+        command
+            .windows(2)
+            .any(|w| w == ["--append-system-prompt", "be terse"]),
+        "{command:?}"
+    );
+}
+
+#[test]
+fn system_file_missing_path_is_a_usage_error() {
+    // A `--system-file` pointing at a nonexistent path is a clean usage error
+    // (exit 2) with the path surfaced, not a panic.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--system-file",
+            "/no/such/oneharness-system-file-xyz",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("oneharness-system-file-xyz"),
+        "stderr should name the bad path: {stderr}"
+    );
+}
+
+#[test]
+fn system_and_system_file_together_is_a_usage_error() {
+    // `--system` and `--system-file` are two spellings of one input (clap
+    // `conflicts_with`), so passing both is a clean usage error, not a silent
+    // pick-one.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--system",
+            "a",
+            "--system-file",
+            "s.txt",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--system-file") || stderr.contains("--system"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn system_file_and_prompt_file_both_stdin_is_a_usage_error() {
+    // stdin can be consumed only once, so `--prompt-file -` and `--system-file -`
+    // together is a usage error caught before any read (never blocks on stdin).
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt-file",
+            "-",
+            "--system-file",
+            "-",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("stdin"), "{stderr}");
+}
+
+#[test]
+fn large_system_file_avoids_the_argv_limit() {
+    // The point of `--system-file`: a system prompt too large for a single argv
+    // string (Linux's ~128 KiB MAX_ARG_STRLEN) would fail the caller's spawn of
+    // oneharness with E2BIG if passed via `--system`. Delivered as a file path,
+    // oneharness's own argv stays small and it reads the whole prompt — proven
+    // here with a >128 KiB body that round-trips into the built command.
+    let dir = std::env::temp_dir().join(format!("oneharness-sfbig-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("big-system.txt");
+    let marker = "SYSTEM-MARKER-42";
+    let big = format!("{marker}\n{}", "x".repeat(200 * 1024));
+    std::fs::write(&file, &big).unwrap();
+
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--system-file",
+            &file.display().to_string(),
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let command = command_of(&json_stdout(&output), 0);
+    assert!(
+        command.iter().any(|t| t == &big),
+        "the whole >128 KiB system prompt should reach the built command"
+    );
+    assert!(command.iter().any(|t| t.contains(marker)), "{marker}");
+}
+
 // --- Structured output (--schema): validate the final answer against a JSON
 // Schema, delivering it natively where supported (Claude Code) or via the
 // prompt otherwise, and re-prompting on a validation failure. All hermetic

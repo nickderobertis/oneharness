@@ -139,6 +139,12 @@ doctor:
 run *ARGS:
     cargo run --quiet -- {{ARGS}}
 
+# Prune the ~532 runaway `v0.2.x` GitHub Releases + tags that slow `asdf
+# list-all` (dry run by default; add `--execute` to delete). Needs `gh`+`jq`
+# and repo write creds, so it can't run from a Claude web session — run locally.
+prune-releases *ARGS:
+    bash scripts/prune-mistake-releases.sh {{ARGS}}
+
 # --- Per-harness live e2e against the real CLIs (opt-in) ---------------------
 #
 # `smoke-live` is the quick "does any installed harness work" check. These

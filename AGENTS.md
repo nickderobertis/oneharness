@@ -618,6 +618,15 @@ shape. When you add one:
   crates.io version is missing. Never publish by editing a release mid-flight.
 - The JSON `schema_version` is independent of the crate version: bump it only when
   the report shape changes incompatibly, and document it in the changelog.
+- **Pruning bad releases.** An early runaway automation cut ~532 junk `v0.2.x`
+  GitHub Releases (v0.2.0..v0.2.5xx); nothing legitimate lives in the 0.2.x line
+  (real releases are v0.1.x and v0.3.x, and crates.io/PyPI/npm never got a 0.2.x).
+  They slow `asdf list-all oneharness`, which lists via the paginated GitHub
+  *Releases* API. `just prune-releases` (`scripts/prune-mistake-releases.sh`, dry
+  run until `--execute`) deletes the matched releases *and* their tags with
+  `gh release delete --cleanup-tag`. It needs `gh`+`jq` and repo write creds, so
+  it can't run from a Claude web session — that proxy 403s release deletion,
+  tag-ref writes, and `git push --delete`. Run it locally or from Actions.
 
 ## Keeping the allowlist current
 

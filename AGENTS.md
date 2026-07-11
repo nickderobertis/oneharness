@@ -44,6 +44,19 @@ follow-ups (see "After the main task").
    A clean base and a reproducible environment are usually how the user's
    feature ships with a low error rate.
 
+## Stack and composition
+
+- **Product shape:** Rust CLI plus reusable library workspace, composed from
+  `shapes/cli.md`, `shapes/library.md`, and `intersections/rust-cli.md`.
+- **Language(s):** Rust (`languages/rust.md`) with Bash used only for setup and
+  live-e2e orchestration.
+- **Cross-cutting:** `ci.md` and `releasing.md`; no `monorepo.md` because the
+  workspace has one shipped CLI/library product, not multiple independent
+  deliverables.
+- **Excluded, and why:** web-app/React/Next.js/asdf-plugin/skills-repo guidance
+  do not apply; release artifacts are handled by the existing Cargo/GitHub
+  Release workflow rather than a separate frontend or plugin distribution.
+
 ## Command surface
 
 Use the `just` recipes; do not hand-roll equivalents.

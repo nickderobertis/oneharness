@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.3.5...oneharness-core-v0.3.6) - 2026-07-11
+
+### Added
+
+- deliver large prompts/system off the argv to harnesses ([#1115](https://github.com/nickderobertis/oneharness/pull/1115)) ([#1116](https://github.com/nickderobertis/oneharness/pull/1116))
+
 ## [0.3.5](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.3.4...oneharness-core-v0.3.5) - 2026-07-10
 
 ### Added

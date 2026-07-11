@@ -1307,3 +1307,47 @@ oh_schema_enforce() {
     rm -rf "$sandbox"
     note "PASS: $id schema enforcement"
 }
+
+# Live proof that `--reasoning <effort>` is DELIVERED and honored end to end — the
+# drift alarm for each harness's reasoning surface (Claude's `--effort`, Codex's
+# `-c model_reasoning_effort=`, Copilot's `--reasoning-effort`, Cursor's model-id
+# `[effort=…]` suffix). Two checks:
+#
+#   1. Positive (the hard assertion): a run with a VALID effort must complete
+#      cleanly with the marker surfaced. If the flag name / suffix syntax drifted
+#      or the CLI rejects it (a clap-style CLI errors on an unknown flag; Cursor
+#      may reject the bracket syntax outright — a known forum report), the run
+#      fails here — exactly the alarm we want.
+#   2. Negative (best-effort evidence of *honoring*, never a failure): a run with
+#      a BOGUS effort. A harness that validates the effort enum rejects it
+#      (status=nonzero) — logged as confirmed honoring; one that silently ignores
+#      the value stays ok — noted, since acceptance alone can't distinguish
+#      honored from ignored, and not every CLI validates.
+#
+# A model-suffix harness (Cursor) needs a model for `--reasoning` to attach to, so
+# the caller must set OH_MODEL before invoking this for it (guard with an
+# `if [ -n "$OH_MODEL" ]` / `note`, not skip()). $1 id, $2 valid effort, $3 bogus.
+oh_reasoning_enforce() {
+    local id="$1" effort="$2" bogus="${3:-banana-not-an-effort}"
+    local marker status
+
+    marker="$(oh_marker)"
+    note "  reasoning-enforce[$effort]: --reasoning must be accepted and the run must complete"
+    oh_run "$id" "$(oh_prompt "$marker")" --reasoning "$effort"
+    # Shared conclusion: SKIP if not installed, FAIL if it didn't run cleanly or
+    # the marker never surfaced, else the reasoning delivery reached the CLI
+    # without breaking the run.
+    oh_assert_echoed "$id" "$marker"
+    note "  ok[$effort]: --reasoning $effort was accepted and the run completed end to end"
+
+    note "  reasoning-enforce[bogus=$bogus]: a harness that validates effort should reject it"
+    oh_run "$id" "$(oh_prompt "$(oh_marker)")" --reasoning "$bogus"
+    status="$(oh_field '.results[0].status')"
+    if [ "$status" = "nonzero" ]; then
+        note "  confirmed: $id rejected a bogus effort (status=nonzero) — the value is parsed/honored, not ignored"
+    else
+        note "  note: $id did not reject a bogus effort (status=$status) — it accepts the flag but may not validate the value; honoring not provable here"
+    fi
+
+    note "PASS: $id reasoning enforcement"
+}

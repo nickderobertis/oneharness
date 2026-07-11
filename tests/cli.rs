@@ -1587,6 +1587,67 @@ fn reasoning_maps_to_each_capable_harness_native_flag() {
             .any(|w| w == ["--reasoning-effort", "medium"]),
         "{copilot:?}"
     );
+    // cursor: effort rides the model id — `--model 'sonnet[effort=high]'`.
+    let cursor = print_command_for(&[
+        "--harness",
+        "cursor",
+        "--model",
+        "sonnet",
+        "--reasoning",
+        "high",
+    ]);
+    assert!(
+        cursor
+            .windows(2)
+            .any(|w| w == ["--model", "sonnet[effort=high]"]),
+        "{cursor:?}"
+    );
+}
+
+#[test]
+fn cursor_reasoning_without_a_model_is_a_usage_error() {
+    // Cursor's effort rides the model id, so `--reasoning` with no model has
+    // nothing to attach to — a loud usage error, not a bare `[effort=…]`.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "cursor",
+            "--prompt",
+            "hi",
+            "--reasoning",
+            "high",
+            "--print-command",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("needs a model"), "{stderr}");
+}
+
+#[test]
+fn cursor_reasoning_leaves_the_recorded_model_clean() {
+    // The effort suffix rides the argv `--model` only; the result's recorded
+    // `model` stays the plain id (effort is a separate concept, not the model).
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "cursor",
+            "--model",
+            "sonnet",
+            "--reasoning",
+            "high",
+            "--prompt",
+            "hi",
+            "--print-command",
+        ],
+        &[],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["model"], "sonnet");
 }
 
 #[test]
@@ -1647,7 +1708,7 @@ fn reasoning_on_a_harness_without_a_flag_is_a_usage_error() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("cannot take a reasoning"), "{stderr}");
     assert!(
-        stderr.contains("claude-code, codex, copilot"),
+        stderr.contains("claude-code, codex, copilot, cursor"),
         "should list capable harnesses: {stderr}"
     );
 }

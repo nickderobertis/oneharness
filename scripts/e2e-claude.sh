@@ -94,3 +94,8 @@ oh_mock_enforce claude-code
 note "» read-only / plan enforcement: each must block a write"
 oh_mode_enforce claude-code read-only
 oh_mode_enforce claude-code plan
+
+# Reasoning enforcement: `--reasoning high` maps to Claude Code's `--effort` and
+# must round-trip; a bogus effort should be rejected (honoring evidence).
+note "» reasoning: --reasoning must be accepted (and a bogus effort rejected)"
+oh_reasoning_enforce claude-code high

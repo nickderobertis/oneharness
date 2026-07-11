@@ -315,7 +315,7 @@ pub struct HarnessSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReasoningDelivery {
     /// A dedicated flag whose value is the effort string: `<flag> <value>`
-    /// (Claude Code's `--effort <level>`).
+    /// (Claude Code's `--effort <level>`, Copilot's `--reasoning-effort <level>`).
     Flag(&'static str),
     /// A `-c key=value` config override: `-c <key>=<value>` (Codex's
     /// `-c model_reasoning_effort=<level>`; `-c` is Codex's documented headless
@@ -323,15 +323,38 @@ pub enum ReasoningDelivery {
     /// bare word — Codex parses a `-c` value as JSON and falls back to a string,
     /// so `model_reasoning_effort=high` lands as the string `"high"`.
     ConfigKv(&'static str),
+    /// Effort rides the **model id** itself as a bracketed option:
+    /// `<model>[<key>=<value>]` (Cursor's `--model 'sonnet[effort=high]'`). Unlike
+    /// the append-style deliveries this decorates the existing `--model` value
+    /// rather than adding args, so it *requires* a model to attach to (the command
+    /// layer refuses `--reasoning` without a model for such a harness). Sourced
+    /// from `cursor-agent`'s own `--help`; its headless honoring is the live
+    /// `oh_reasoning_enforce` drift alarm (a forum report suggests the CLI may
+    /// reject the syntax, so this one especially wants the live proof).
+    ModelSuffix { key: &'static str },
 }
 
 impl ReasoningDelivery {
-    /// The argv fragment delivering `value`, forwarded verbatim (no quoting or
-    /// normalization — see [`HarnessSpec::reasoning`]).
+    /// The argv fragment appended to the harness's override args, forwarded
+    /// verbatim (no quoting or normalization — see [`HarnessSpec::reasoning`]).
+    /// Empty for [`ReasoningDelivery::ModelSuffix`], which decorates the model id
+    /// via [`Self::model_suffix`] instead of appending args.
     pub fn args(&self, value: &str) -> Vec<String> {
         match self {
             ReasoningDelivery::Flag(flag) => vec![(*flag).to_string(), value.to_string()],
             ReasoningDelivery::ConfigKv(key) => vec!["-c".to_string(), format!("{key}={value}")],
+            ReasoningDelivery::ModelSuffix { .. } => Vec::new(),
+        }
+    }
+
+    /// The bracketed option appended to the model id for a
+    /// [`ReasoningDelivery::ModelSuffix`] harness (`[key=value]`), or `None` for
+    /// the append-style deliveries (which leave the model untouched). The command
+    /// layer appends it to the resolved `--model` value.
+    pub fn model_suffix(&self, value: &str) -> Option<String> {
+        match self {
+            ReasoningDelivery::ModelSuffix { key } => Some(format!("[{key}={value}]")),
+            _ => None,
         }
     }
 }
@@ -1183,9 +1206,12 @@ static REGISTRY: &[HarnessSpec] = &[
             mode(PermissionMode::Default, ModeHeadless::Hangs),
             mode(PermissionMode::Bypass, ModeHeadless::Clean),
         ],
-        // Cursor's headless `cursor-agent -p` documents no reasoning flag; effort
-        // is set in its config / model options, not on the argv — no argv delivery.
-        reasoning: None,
+        // Cursor has no standalone reasoning flag; effort rides the model id as a
+        // bracketed option, `--model 'sonnet[effort=high]'` (documented in
+        // `cursor-agent --help`). Requires a model to attach to; the live
+        // `oh_reasoning_enforce cursor` phase is the honoring proof (a forum
+        // report suggests the CLI may reject the bracket syntax — drift alarm).
+        reasoning: Some(ReasoningDelivery::ModelSuffix { key: "effort" }),
         build_argv: argv_cursor,
     },
 ];
@@ -1677,20 +1703,33 @@ mod tests {
             ReasoningDelivery::ConfigKv("model_reasoning_effort").args("xhigh"),
             vec!["-c".to_string(), "model_reasoning_effort=xhigh".to_string()]
         );
+        // ModelSuffix appends no args; it decorates the model id instead.
+        let suffix = ReasoningDelivery::ModelSuffix { key: "effort" };
+        assert!(suffix.args("high").is_empty());
+        assert_eq!(
+            suffix.model_suffix("high").as_deref(),
+            Some("[effort=high]")
+        );
+        // The append-style deliveries never decorate the model.
+        assert_eq!(
+            ReasoningDelivery::Flag("--effort").model_suffix("high"),
+            None
+        );
     }
 
     #[test]
     fn only_argv_capable_harnesses_declare_reasoning() {
-        // Exactly the harnesses with a doc-sourced headless reasoning flag; the
-        // rest express effort only via config (opencode/qwen/crush — sync-path
-        // follow-up), or not at all (goose/cursor have no headless flag), and are
-        // `None` so the command layer refuses loudly.
+        // Exactly the harnesses with a doc-sourced headless reasoning surface: a
+        // flag (claude-code/copilot), a `-c` override (codex), or a model-id
+        // suffix (cursor). The rest express effort only via config (opencode/qwen/
+        // crush — sync-path follow-up) or not at all (goose), and are `None` so
+        // the command layer refuses loudly.
         let with: Vec<&str> = all()
             .iter()
             .filter(|h| h.reasoning.is_some())
             .map(|h| h.id)
             .collect();
-        assert_eq!(with, vec!["claude-code", "codex", "copilot"]);
+        assert_eq!(with, vec!["claude-code", "codex", "copilot", "cursor"]);
     }
 
     /// Pin each harness's mock input-rewrite capability: the live-verified

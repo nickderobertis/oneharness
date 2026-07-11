@@ -400,14 +400,17 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         } else {
             chosen_format
         };
-        // Reasoning / thinking effort is delivered as override args in the
-        // harness's native shape (Claude's `--effort`, Codex's `-c
-        // model_reasoning_effort=`), resolved per harness so effort can sit next
-        // to each harness's own model (CLI `--reasoning` beats config). It leads
-        // `extra` so a raw `--` passthrough can still override it. A harness with
-        // no headless reasoning surface was already refused by
-        // `validate_reasoning`, so `spec.reasoning` is `Some` whenever a value is.
+        // Reasoning / thinking effort is delivered in the harness's native shape,
+        // resolved per harness so effort can sit next to each harness's own model
+        // (CLI `--reasoning` beats config). Append-style deliveries (Claude's
+        // `--effort`, Codex's `-c model_reasoning_effort=`, Copilot's
+        // `--reasoning-effort`) lead `extra` so a raw `--` passthrough can still
+        // override them; a model-suffix delivery (Cursor's `model[effort=…]`)
+        // instead decorates the resolved model, so it needs one. A harness with no
+        // reasoning surface was already refused by `validate_reasoning`, so
+        // `spec.reasoning` is `Some` whenever a value is.
         let mut extra: Vec<String> = Vec::new();
+        let mut plan_model = unit_model.clone();
         if let Some(value) = args
             .reasoning
             .as_deref()
@@ -416,7 +419,18 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             let delivery = spec.reasoning.expect(
                 "validate_reasoning refused a reasoning value for a harness without delivery",
             );
-            extra.extend(delivery.args(value));
+            if let Some(suffix) = delivery.model_suffix(value) {
+                match plan_model.as_mut() {
+                    Some(m) => m.push_str(&suffix),
+                    None => {
+                        return Err(OneharnessError::ReasoningNeedsModel {
+                            id: spec.id.to_string(),
+                        });
+                    }
+                }
+            } else {
+                extra.extend(delivery.args(value));
+            }
         }
         extra.extend(cfg.args_for(spec.id).iter().cloned());
         extra.extend(args.passthrough.iter().cloned());
@@ -426,10 +440,12 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         let mut harness_plan = HarnessPlan {
             spec,
             bin: resolved.bin.clone(),
-            // The model for this unit, resolved when the units were built: a
-            // fan-out model, the batch's single model, or the harness's own
-            // `model_for` (per-harness `[harness.<id>]` beating the top-level).
-            model: unit_model.clone(),
+            // The model the argv carries: the unit's resolved model (a fan-out
+            // model, the batch's single model, or the harness's own `model_for`
+            // — per-harness `[harness.<id>]` beating the top-level), decorated
+            // with a reasoning suffix above for a model-suffix harness (cursor).
+            // The *recorded* model (in the result) stays the plain `unit_model`.
+            model: plan_model,
             system: system.map(str::to_string),
             // A `--session` continue supplies the native token to resume with,
             // reusing the harness's verified `--resume` mapping; a create (or no

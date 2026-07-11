@@ -79,6 +79,9 @@ pub enum OneharnessError {
     #[error("harness `{id}` cannot take a reasoning/effort setting headlessly: it exposes no reasoning flag (effort is provider/model config there). harnesses that can: {supported}")]
     ReasoningUnsupported { id: String, supported: String },
 
+    #[error("harness `{id}` delivers reasoning effort through the model id (`--model 'MODEL[effort=…]'`), so `--reasoning` needs a model — set --model or `[harness.{id}] model`")]
+    ReasoningNeedsModel { id: String },
+
     #[error("could not read harness config `{path}`: {source}")]
     HarnessConfigRead {
         path: String,

@@ -41,6 +41,8 @@
 //!                   `--model <that name>`; otherwise run normally. Lets a test
 //!                   make one model in a fan-out unusable so a fallback run falls
 //!                   through it to the next (the `model_not_found` classification).
+//!                   MOCK_FAIL_STDERR overrides the emitted stderr (so the same
+//!                   hook can simulate a rate limit instead of a missing model).
 //!   MOCK_LOG_FILE   if set, an append-only run log: each invocation appends `S\n`
 //!                   when it starts (before MOCK_SLEEP_MS) and `E\n` when it ends
 //!                   (after the sleep). With a sleep that exceeds spawn latency,
@@ -125,7 +127,9 @@ fn main() {
             .position(|a| a == "--model")
             .and_then(|i| argv.get(i + 1));
         if requested.map(String::as_str) == Some(bad.as_str()) {
-            let _ = write!(std::io::stderr(), "error: model not found: {bad}");
+            let msg = std::env::var("MOCK_FAIL_STDERR")
+                .unwrap_or_else(|_| format!("error: model not found: {bad}"));
+            let _ = write!(std::io::stderr(), "{msg}");
             let _ = std::io::stderr().flush();
             std::process::exit(1);
         }

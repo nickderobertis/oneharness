@@ -298,9 +298,17 @@ pub struct RunArgs {
     #[arg(long, value_name = "PATH")]
     pub prompt_file: Vec<String>,
 
-    /// Model passed to each harness that supports a model flag.
+    /// Model passed to each harness that supports a model flag. Repeatable: pass
+    /// it more than once (or set config `models`) to **fan out over models**. In
+    /// the default `parallel` run mode that runs the harness × model cross-product
+    /// (each selected harness once per model); in `--run-mode fallback` the
+    /// (harness, model) pairs are tried in priority order (harness-major,
+    /// model-minor) and a per-model rejection (unknown model / rate limit) falls
+    /// through to the next model. A CLI value overrides config `model`/`models`.
+    /// More than one model is incompatible with a batch (multi-prompt) run and
+    /// with --resume / --fork / --session / --stream.
     #[arg(long)]
-    pub model: Option<String>,
+    pub model: Vec<String>,
 
     /// System prompt passed to every harness. Delivered via the harness's native
     /// system flag where one exists (e.g. Claude Code's --append-system-prompt,

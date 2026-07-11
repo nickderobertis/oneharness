@@ -33,7 +33,19 @@ pub struct FileConfig {
     /// Harness ids excluded from an `all` selection (like `--exclude`).
     pub exclude: Option<Vec<String>>,
     /// Model passed to each harness that supports a model flag (like `--model`).
+    /// The single-model base: used as each harness's model when no `models` list
+    /// (and no CLI `--model`) is given, and overridable per harness via
+    /// `[harness.<id>].model`.
     pub model: Option<String>,
+    /// A list of models to **fan out** over (like repeated `--model`). When set
+    /// (more than one entry), the run multiplies by the model axis: in `parallel`
+    /// mode every selected harness runs once per model (the harness × model
+    /// cross-product); in `fallback` mode the (harness, model) pairs form the
+    /// priority chain, harness-major then model-minor, and a per-model rejection
+    /// (`model_not_found` / `rate_limit`) falls through to the next model. A CLI
+    /// `--model` (repeatable) overrides this entirely. Unlike the per-harness
+    /// `model`, this list applies uniformly to every selected harness.
+    pub models: Option<Vec<String>>,
     /// Portable system prompt (like `--system`).
     pub system: Option<String>,
     /// Request each harness's bypass mode (default true; like `--no-bypass`
@@ -290,6 +302,7 @@ pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Option<FileConfi
         harnesses: env_list(&read, "ONEHARNESS_HARNESSES"),
         exclude: env_list(&read, "ONEHARNESS_EXCLUDE"),
         model: read("ONEHARNESS_MODEL"),
+        models: env_list(&read, "ONEHARNESS_MODELS"),
         system: read("ONEHARNESS_SYSTEM"),
         bypass: env_bool(&read, "ONEHARNESS_BYPASS")?,
         mode: env_mode(&read)?,
@@ -436,6 +449,7 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
         harnesses,
         exclude: over.exclude.or(base.exclude),
         model: over.model.or(base.model),
+        models: over.models.or(base.models),
         system: over.system.or(base.system),
         bypass: over.bypass.or(base.bypass),
         mode: over.mode.or(base.mode),
@@ -598,6 +612,9 @@ pub struct ConfigReport {
     pub harnesses: Field<Vec<String>>,
     pub exclude: Field<Vec<String>>,
     pub model: Field<String>,
+    /// The model fan-out list (`models` / repeated `--model` / `ONEHARNESS_MODELS`),
+    /// if any. Unset when the run uses a single per-harness model.
+    pub models: Field<Vec<String>>,
     pub system: Field<String>,
     pub bypass: Field<bool>,
     /// The configured `mode`, if any. Unset when only the legacy `bypass` field
@@ -733,6 +750,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         harnesses,
         exclude: pick(layers, |c| c.exclude.clone()),
         model: pick(layers, |c| c.model.clone()),
+        models: pick(layers, |c| c.models.clone()),
         system: pick(layers, |c| c.system.clone()),
         // Legacy `bypass` is opt-in now (the default mode is `default`), so its
         // built-in default is false; `mode` is the richer field.
@@ -1262,6 +1280,36 @@ mod tests {
         assert_eq!(c.run_mode, Some(RunMode::Fallback));
         let err = from_env(env_get(&[("ONEHARNESS_RUN_MODE", "nope")])).unwrap_err();
         assert!(err.contains("parallel"), "{err}");
+    }
+
+    #[test]
+    fn models_list_layers_env_and_explains() {
+        // The fan-out list parses, layers like any list (project beats user),
+        // and coexists with the single-model `model` base.
+        let c = parsed("model = \"base\"\nmodels = [\"opus\", \"sonnet\"]");
+        assert_eq!(c.model.as_deref(), Some("base"));
+        assert_eq!(c.models.as_deref().unwrap(), ["opus", "sonnet"]);
+
+        let merged = merge(
+            parsed("models = [\"user-a\", \"user-b\"]"),
+            parsed("models = [\"proj\"]"),
+        );
+        assert_eq!(merged.models.as_deref().unwrap(), ["proj"]);
+
+        // `explain` attributes the list to its winning file; unset stays null.
+        let report = explain(&layers(
+            "models = [\"user\"]",
+            "models = [\"opus\", \"sonnet\"]",
+        ));
+        assert_eq!(report.models.value.as_deref().unwrap(), ["opus", "sonnet"]);
+        assert_eq!(report.models.source.as_deref(), Some("/project.toml"));
+        assert_eq!(explain(&[]).models, Field::unset());
+
+        // The env layer reads a comma-separated list, trimming entries.
+        let c = from_env(env_get(&[("ONEHARNESS_MODELS", "opus, sonnet")]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(c.models.as_deref().unwrap(), ["opus", "sonnet"]);
     }
 
     #[test]

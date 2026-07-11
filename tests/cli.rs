@@ -56,6 +56,7 @@ const ENV_OVERRIDE_VARS: &[&str] = &[
     "ONEHARNESS_HARNESSES",
     "ONEHARNESS_EXCLUDE",
     "ONEHARNESS_MODEL",
+    "ONEHARNESS_MODELS",
     "ONEHARNESS_SYSTEM",
     "ONEHARNESS_BYPASS",
     "ONEHARNESS_TIMEOUT",
@@ -7778,6 +7779,559 @@ fn small_prompt_keeps_the_inline_argv() {
 fn missing_bin(id: &str) -> String {
     let path = std::env::temp_dir().join(format!("oneharness-no-such-bin-{}", std::process::id()));
     format!("{id}={}", path.display())
+}
+
+#[test]
+fn multiple_models_run_the_harness_by_model_cross_product() {
+    // Repeated --model fans out over the model axis: in parallel mode every
+    // selected harness runs once per model, so `results` holds the (harness ×
+    // model) cross-product, harness-major then model-minor. --print-command pins
+    // the argv (each unit carries its own --model) without spawning.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code,codex",
+            "--prompt",
+            "hi",
+            "--model",
+            "alpha",
+            "--model",
+            "beta",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
+    let v = json_stdout(&output);
+    // The fan-out list is echoed; the top-level model is the first of the list.
+    assert_eq!(v["models"][0], "alpha");
+    assert_eq!(v["models"][1], "beta");
+    assert_eq!(v["model"], "alpha");
+    // Four (harness, model) units in cross-product order.
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 4);
+    let pairs: Vec<(&str, &str)> = results
+        .iter()
+        .map(|r| (r["harness"].as_str().unwrap(), r["model"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        pairs,
+        vec![
+            ("claude-code", "alpha"),
+            ("claude-code", "beta"),
+            ("codex", "alpha"),
+            ("codex", "beta"),
+        ]
+    );
+    // Each unit's argv carries its own model.
+    assert!(command_of(&v, 0)
+        .windows(2)
+        .any(|w| w == ["--model", "alpha"]));
+    assert!(command_of(&v, 1)
+        .windows(2)
+        .any(|w| w == ["--model", "beta"]));
+    assert!(command_of(&v, 3)
+        .windows(2)
+        .any(|w| w == ["--model", "beta"]));
+}
+
+#[test]
+fn multiple_models_execute_each_pair_in_parallel() {
+    // The cross-product actually runs (via the mock): two models on one harness
+    // yield two ok results, each tagged with the model it ran.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--model",
+            "alpha",
+            "--model",
+            "beta",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let v = json_stdout(&output);
+    assert!(v["fallback"].is_null());
+    assert!(v["batch"].is_null());
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    for r in results {
+        assert_eq!(r["harness"], "claude-code");
+        assert_eq!(r["status"], "ok");
+    }
+    assert_eq!(results[0]["model"], "alpha");
+    assert_eq!(results[1]["model"], "beta");
+}
+
+#[test]
+fn a_single_model_is_not_a_fan_out() {
+    // One --model behaves exactly as before: no `models` list on the report, and
+    // the single result still records its model.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--model",
+            "solo",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    let v = json_stdout(&output);
+    assert!(v["models"].is_null(), "a single model is not a fan-out");
+    assert_eq!(v["model"], "solo");
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["model"], "solo");
+}
+
+#[test]
+fn config_models_list_drives_a_fan_out() {
+    // The `models` config key fans out just like repeated --model; a bare CLI
+    // (no --model) inherits it.
+    let fx = ConfigFixture::new(
+        "models-cfg",
+        "harnesses = [\"claude-code\"]\nmodels = [\"opus\", \"sonnet\"]\n",
+        "",
+    );
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    let v = json_stdout(&output);
+    assert_eq!(v["models"][0], "opus");
+    assert_eq!(v["models"][1], "sonnet");
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["model"], "opus");
+    assert_eq!(results[1]["model"], "sonnet");
+    // A CLI --model overrides the config list entirely.
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--model",
+            "cli-only",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    let v = json_stdout(&output);
+    assert!(v["models"].is_null());
+    assert_eq!(v["results"].as_array().unwrap()[0]["model"], "cli-only");
+}
+
+#[test]
+fn models_via_env_override_fans_out() {
+    // ONEHARNESS_MODELS is the env spelling of the fan-out list.
+    let fx = ConfigFixture::new("models-env", "harnesses = [\"claude-code\"]\n", "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--print-command",
+            "--compact",
+        ],
+        &[("ONEHARNESS_MODELS", "a, b")],
+        &fx.user_config(),
+    );
+    let v = json_stdout(&output);
+    assert_eq!(v["models"][0], "a");
+    assert_eq!(v["models"][1], "b");
+    assert_eq!(v["results"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn fallback_falls_through_a_bad_model_to_the_next_model() {
+    // A model list in fallback mode is a priority chain across models: a per-model
+    // rejection falls through to the next, which runs. Both widened reasons are
+    // covered — a missing model (`model_not_found`) and an over-limit one
+    // (`rate_limit`). A single-model fallback would STOP at either.
+    for (fail_stderr, kind, reason) in [
+        (
+            "error: model not found: bad-model",
+            "model_not_found",
+            "model-not-found",
+        ),
+        (
+            "Error 429: rate limit exceeded, too many requests",
+            "rate_limit",
+            "rate-limit",
+        ),
+    ] {
+        let output = run(
+            &[
+                "run",
+                "--run-mode",
+                "fallback",
+                "--harness",
+                "claude-code",
+                "--prompt",
+                "hi",
+                "--model",
+                "bad-model",
+                "--model",
+                "good-model",
+                "--bin",
+                &bin_override("claude-code"),
+                "--compact",
+            ],
+            &[
+                ("MOCK_FAIL_IF_MODEL", "bad-model"),
+                ("MOCK_FAIL_STDERR", fail_stderr),
+            ],
+        );
+        assert!(
+            output.status.success(),
+            "{kind}: exit {:?}",
+            output.status.code()
+        );
+        let v = json_stdout(&output);
+        assert_eq!(v["fallback"]["ran"], "claude-code", "{kind}");
+        let fell = v["fallback"]["fell_through"].as_array().unwrap();
+        assert_eq!(fell.len(), 1, "{kind}");
+        assert_eq!(fell[0]["harness"], "claude-code", "{kind}");
+        assert_eq!(fell[0]["reason"], reason, "{kind}");
+        // Both attempts are recorded, in priority order: the bad model, then good.
+        let results = v["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2, "{kind}");
+        assert_eq!(results[0]["model"], "bad-model", "{kind}");
+        assert_eq!(results[0]["status"], "nonzero", "{kind}");
+        assert_eq!(results[0]["failure_kind"], kind, "{kind}");
+        assert_eq!(results[1]["model"], "good-model", "{kind}");
+        assert_eq!(results[1]["status"], "ok", "{kind}");
+    }
+}
+
+#[test]
+fn fallback_tries_every_model_of_a_harness_before_the_next_harness() {
+    // The chain is harness-major, model-minor: with the `opus` model doomed on
+    // every harness, claude-code's SECOND model (`sonnet`) is tried before codex
+    // is reached — so the run stops at (claude-code, sonnet) and codex is never
+    // spawned. This is the direct proof of the fan-out ordering in fallback.
+    let output = run(
+        &[
+            "run",
+            "--run-mode",
+            "fallback",
+            "--harness",
+            "claude-code,codex",
+            "--prompt",
+            "hi",
+            "--model",
+            "opus",
+            "--model",
+            "sonnet",
+            "--bin",
+            &bin_override("claude-code"),
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[("MOCK_FAIL_IF_MODEL", "opus")],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let v = json_stdout(&output);
+    assert_eq!(v["fallback"]["ran"], "claude-code");
+    let fell = v["fallback"]["fell_through"].as_array().unwrap();
+    // Only (claude-code, opus) fell through; (claude-code, sonnet) then ran.
+    assert_eq!(fell.len(), 1);
+    assert_eq!(fell[0]["harness"], "claude-code");
+    assert_eq!(fell[0]["reason"], "model-not-found");
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2, "codex must never be attempted");
+    assert_eq!(
+        (
+            results[0]["harness"].as_str().unwrap(),
+            results[0]["model"].as_str().unwrap(),
+            results[0]["status"].as_str().unwrap(),
+        ),
+        ("claude-code", "opus", "nonzero")
+    );
+    assert_eq!(
+        (
+            results[1]["harness"].as_str().unwrap(),
+            results[1]["model"].as_str().unwrap(),
+            results[1]["status"].as_str().unwrap(),
+        ),
+        ("claude-code", "sonnet", "ok")
+    );
+    assert!(
+        results.iter().all(|r| r["harness"] != "codex"),
+        "codex is beyond the harness that ran and must be absent"
+    );
+}
+
+#[test]
+fn fallback_reports_no_run_when_every_model_of_every_harness_fails() {
+    // Every (harness, model) pair rejects with a per-model failure, so the whole
+    // chain falls through: `ran` is null, exit is 1, and the four attempts are
+    // recorded in harness-major/model-minor order.
+    let output = run(
+        &[
+            "run",
+            "--run-mode",
+            "fallback",
+            "--harness",
+            "claude-code,codex",
+            "--prompt",
+            "hi",
+            "--model",
+            "opus",
+            "--model",
+            "sonnet",
+            "--bin",
+            &bin_override("claude-code"),
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        // Every run fails with a model_not_found stderr regardless of the model.
+        &[
+            ("MOCK_EXIT", "1"),
+            ("MOCK_STDERR", "error: model not found"),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1), "no candidate ran → exit 1");
+    let v = json_stdout(&output);
+    assert!(v["fallback"]["ran"].is_null());
+    let fell = v["fallback"]["fell_through"].as_array().unwrap();
+    assert_eq!(fell.len(), 4);
+    let order: Vec<(&str, &str)> = v["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["harness"].as_str().unwrap(), r["model"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        order,
+        vec![
+            ("claude-code", "opus"),
+            ("claude-code", "sonnet"),
+            ("codex", "opus"),
+            ("codex", "sonnet"),
+        ]
+    );
+}
+
+#[test]
+fn all_selects_every_harness_by_model_cross_product() {
+    // `--all` composes with the model fan-out: every harness runs once per model,
+    // harness-major then model-minor. Pinned with --print-command (no spawning).
+    let output = run(
+        &[
+            "run",
+            "--all",
+            "--prompt",
+            "hi",
+            "--model",
+            "a",
+            "--model",
+            "b",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
+    let v = json_stdout(&output);
+    let results = v["results"].as_array().unwrap();
+    // Two models across all eight harnesses.
+    assert_eq!(results.len(), ALL_IDS.len() * 2);
+    assert_eq!(v["models"][0], "a");
+    assert_eq!(v["models"][1], "b");
+    // Each harness's two models are adjacent (model-minor within a harness).
+    for chunk in results.chunks(2) {
+        assert_eq!(chunk[0]["harness"], chunk[1]["harness"]);
+        assert_eq!(chunk[0]["model"], "a");
+        assert_eq!(chunk[1]["model"], "b");
+    }
+}
+
+#[test]
+fn multiple_models_apply_the_schema_to_every_pair() {
+    // A model fan-out composes with --schema: each (harness, model) pair is
+    // validated independently, so both results conform.
+    let schema = temp_file("models-schema", PERSON_SCHEMA);
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "crush",
+            "--prompt",
+            "describe ada",
+            "--model",
+            "m1",
+            "--model",
+            "m2",
+            "--schema",
+            &schema,
+            "--bin",
+            &bin_override("crush"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"name":"Ada","age":36}"#)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let v = json_stdout(&output);
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    for (i, model) in ["m1", "m2"].iter().enumerate() {
+        assert_eq!(results[i]["model"], *model);
+        assert_eq!(results[i]["schema_valid"], true, "pair {model}");
+        assert_eq!(results[i]["structured"]["name"], "Ada");
+    }
+}
+
+#[test]
+fn multiple_models_history_records_each_pair_model() {
+    // Each history record carries the model its result ran with, so a fan-out
+    // writes one record per model with the right model on each.
+    let hist = session_store_dir("models-hist");
+    let cwd = session_store_dir("models-hist-cwd");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--model",
+            "opus",
+            "--model",
+            "sonnet",
+            "--history",
+            "--history-dir",
+            &hist.display().to_string(),
+            "--cwd",
+            &cwd.display().to_string(),
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let v = json_stdout(&output);
+    let hist_file = v["history_file"].as_str().expect("history recorded");
+    let text = std::fs::read_to_string(hist_file).unwrap();
+    let models: Vec<String> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            serde_json::from_str::<Value>(l).unwrap()["model"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(models, vec!["opus".to_string(), "sonnet".to_string()]);
+    let _ = std::fs::remove_dir_all(&hist);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn multiple_models_output_dir_disambiguates_the_same_harness() {
+    // One harness fanned over two models writes two same-harness results, so the
+    // output-dir stems are indexed (neither overwrites the other).
+    let dir = std::env::temp_dir().join(format!("oneharness-modelsout-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--model",
+            "opus",
+            "--model",
+            "sonnet",
+            "--output-dir",
+            &dir.display().to_string(),
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"ok"}"#)],
+    );
+    assert!(output.status.success());
+    assert!(dir.join("claude-code-0.stdout").exists());
+    assert!(dir.join("claude-code-1.stdout").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_multi_model_run_refuses_single_unit_shapes() {
+    // A model fan-out multiplies the run into several units, so every single-unit
+    // shape is a loud usage error before anything spawns.
+    let base = [
+        "run",
+        "--harness",
+        "claude-code",
+        "--model",
+        "a",
+        "--model",
+        "b",
+        "--compact",
+    ];
+    let cases: &[(&[&str], &str)] = &[
+        (&["--resume", "sess"], "--resume/--fork"),
+        (&["--resume", "sess", "--fork"], "--resume/--fork"),
+        (&["--session", "sess"], "--session"),
+        (&["--stream"], "--stream"),
+        // A batch (two prompts) plus a model fan-out is refused too.
+        (&["--prompt", "one", "--prompt", "two"], "batch run"),
+    ];
+    for (extra, needle) in cases {
+        let mut args: Vec<&str> = base.to_vec();
+        // The batch case supplies its own prompts; others need one.
+        if !extra.contains(&"--prompt") {
+            args.extend(["--prompt", "hi"]);
+        }
+        args.extend(extra.iter().copied());
+        let output = run(&args, &[]);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{needle}: expected a usage error"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("multi-model") && stderr.contains(needle),
+            "{needle}: stderr was {stderr}"
+        );
+    }
 }
 
 #[test]

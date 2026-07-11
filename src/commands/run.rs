@@ -163,6 +163,18 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // harnesses" behavior.
     let batch_run = prompts.len() > 1;
     let batch_strategy = args.batch_strategy.unwrap_or(BatchStrategy::Speed);
+    // The model axis. An explicit list — repeated `--model` (CLI beats config)
+    // or config `models` — turns the run into a **model fan-out**: the harness ×
+    // model cross-product in parallel, or the (harness, model) priority chain in
+    // fallback. Absent, each harness resolves its own single model (`model_for`),
+    // exactly as before. A one-element list is not a fan-out (it behaves like the
+    // historical single `--model`), so `multi_model` gates on more than one.
+    let explicit_models: Option<Vec<String>> = if !args.model.is_empty() {
+        Some(args.model.clone())
+    } else {
+        cfg.models.clone()
+    };
+    let multi_model = explicit_models.as_ref().is_some_and(|m| m.len() > 1);
     // Structured output: an optional compiled schema and the per-harness retry
     // budget. Compiling here (once) turns an invalid schema into a loud usage
     // error before any harness is spawned.
@@ -198,6 +210,13 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let fallback_mode = run_mode == RunMode::Fallback;
     if fallback_mode {
         validate_fallback(batch_run, args)?;
+    }
+    // A model fan-out multiplies the run into several (harness, model) units, so —
+    // like a batch — it refuses every single-unit shape up front (loud usage
+    // errors). It is *compatible* with fallback: the model list is exactly the
+    // fallback chain there.
+    if multi_model {
+        validate_multi_model(batch_run, args)?;
     }
     // In fallback the run order is the priority chain: the caller's `--harness` /
     // config order (registry order under `--all`), not the registry order
@@ -261,7 +280,21 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // snapshotted project-scope install restored after the run.
     let mock_wiring = setup_mock(args, &specs, &project_start, &overrides)?;
     let cli_env = parse_env(&args.env)?;
-    let model = args.model.as_deref().or(cfg.model.as_deref());
+    // The effective top-level model for the report/history: the first fan-out
+    // model when a list was given, else the single configured/CLI model. Each
+    // result's own `model` (set per unit below) is authoritative on a fan-out.
+    let top_model: Option<String> = explicit_models
+        .as_ref()
+        .and_then(|l| l.first().cloned())
+        .or_else(|| cfg.model.clone());
+    let model = top_model.as_deref();
+    // Present on the report only for a real fan-out (more than one model), the
+    // signal a consumer keys on to read each result's own `model`.
+    let report_models: Option<Vec<String>> = if multi_model {
+        explicit_models.clone()
+    } else {
+        None
+    };
     // The effective system prompt comes from `--system` xor `--system-file` (the
     // argv-limit escape hatch, mirroring `--prompt-file`), then config `system`.
     let system_text: Option<String> = resolve_system(args)?.or_else(|| cfg.system.clone());
@@ -284,13 +317,43 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             .to_string()
     });
 
-    // The (harness, prompt) units to run. An ordinary run is each selected
-    // harness against the one prompt; a batch run is the single selected harness
-    // against each prompt (so `results` carries one entry per prompt, in order).
-    let units: Vec<(&'static HarnessSpec, &str)> = if batch_run {
-        prompts.iter().map(|p| (specs[0], p.as_str())).collect()
+    // The (harness, model, prompt) units to run:
+    //  - a **batch** run is the single selected harness against each prompt, one
+    //    model (batch refuses a fan-out), so `results` is one entry per prompt;
+    //  - a **model fan-out** is the harness × model cross-product (harness-major,
+    //    model-minor), one prompt, so each harness repeats once per model;
+    //  - an ordinary run is each selected harness against the one prompt, with its
+    //    own resolved model (`model_for`) — the historical behavior.
+    // In fallback mode `specs` is already in priority order, so this ordering is
+    // the fallback chain.
+    let units: Vec<(&'static HarnessSpec, Option<String>, &str)> = if batch_run {
+        let m = explicit_models
+            .as_ref()
+            .and_then(|l| l.first().cloned())
+            .or_else(|| cfg.model_for(specs[0].id).map(str::to_string));
+        prompts
+            .iter()
+            .map(|p| (specs[0], m.clone(), p.as_str()))
+            .collect()
+    } else if let Some(list) = &explicit_models {
+        let mut units = Vec::with_capacity(specs.len() * list.len());
+        for spec in &specs {
+            for m in list {
+                units.push((*spec, Some(m.clone()), prompts[0].as_str()));
+            }
+        }
+        units
     } else {
-        specs.iter().map(|s| (*s, prompts[0].as_str())).collect()
+        specs
+            .iter()
+            .map(|s| {
+                (
+                    *s,
+                    cfg.model_for(s.id).map(str::to_string),
+                    prompts[0].as_str(),
+                )
+            })
+            .collect()
     };
 
     // Build a plan entry for every unit; queue jobs only for the ones that are
@@ -304,7 +367,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // return path below). Never populated under --print-command (nothing spawns).
     let mut temp_files = TempPromptFiles::default();
 
-    for (spec, unit_prompt) in &units {
+    for (spec, unit_model, unit_prompt) in &units {
         let spec = *spec;
         // On a batch run each result records the prompt it ran (they differ);
         // on an ordinary run the single top-level `prompt` covers them all.
@@ -341,13 +404,10 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         let mut harness_plan = HarnessPlan {
             spec,
             bin: resolved.bin.clone(),
-            // A CLI --model beats config; within config, the harness's own
-            // [harness.<id>] model beats the top-level one.
-            model: args
-                .model
-                .as_deref()
-                .or_else(|| cfg.model_for(spec.id))
-                .map(str::to_string),
+            // The model for this unit, resolved when the units were built: a
+            // fan-out model, the batch's single model, or the harness's own
+            // `model_for` (per-harness `[harness.<id>]` beating the top-level).
+            model: unit_model.clone(),
             system: system.map(str::to_string),
             // A `--session` continue supplies the native token to resume with,
             // reusing the harness's verified `--resume` mapping; a create (or no
@@ -377,6 +437,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 harness_plan.build(schema.as_ref(), None).argv,
                 output_format,
                 result_prompt,
+                unit_model.clone(),
             ))));
         } else if !resolved.available {
             plan.push(Plan::Ready(Box::new(skipped_result(
@@ -385,6 +446,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 harness_plan.build(schema.as_ref(), None).argv,
                 output_format,
                 result_prompt,
+                unit_model.clone(),
             ))));
         } else {
             let job_index = jobs.len();
@@ -421,6 +483,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 output_format,
                 job_index,
                 prompt: result_prompt,
+                model: unit_model.clone(),
             });
             job_plans.push(harness_plan);
         }
@@ -441,12 +504,12 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 output_format,
                 job_index,
                 prompt,
-            } => stream_one_harness(&jobs[job_index], spec, &bin, output_format, prompt),
+                model,
+            } => stream_one_harness(&jobs[job_index], spec, &bin, output_format, prompt, model),
         };
         record_history(
             &history_writer,
             mode,
-            model,
             &prompts[0],
             std::slice::from_ref(&result),
         );
@@ -467,6 +530,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             vec![result],
             &prompts,
             model,
+            report_models.clone(),
             args,
             mode,
             schema.as_ref(),
@@ -497,7 +561,14 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         // Sequential fallback: run the priority chain until one harness runs.
         // The workspace-restoring mock finish happens below, after every spawn
         // this branch does is complete.
-        let (results, fb) = run_fallback(plan, &jobs, &job_plans, schema.as_ref(), max_retries);
+        let (results, fb) = run_fallback(
+            plan,
+            &jobs,
+            &job_plans,
+            schema.as_ref(),
+            max_retries,
+            multi_model,
+        );
         (results, Some(fb))
     } else {
         let max_parallel = args
@@ -573,6 +644,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                     output_format,
                     job_index,
                     prompt,
+                    model,
                 } => {
                     let outcome = &outcomes[job_index];
                     // The argv actually run (fork-batch rewrites the fan-out jobs
@@ -587,6 +659,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                         schema.as_ref(),
                         outcome.attempts,
                         prompt,
+                        model,
                     )
                 }
             })
@@ -599,7 +672,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // can fail, so a later I/O error never leaves the ephemeral hook behind.
     let mock_report = mock_wiring.map(MockWiring::finish);
 
-    record_history(&history_writer, mode, model, &prompts[0], &results);
+    record_history(&history_writer, mode, &prompts[0], &results);
     // Persist the captured session token (if `--session` was in play) and build
     // its report block. A session run is single-harness, so `results` holds one.
     let session_report = finalize_session(session_wiring, &results, args.print_command);
@@ -621,6 +694,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         results,
         &prompts,
         model,
+        report_models,
         args,
         mode,
         schema.as_ref(),
@@ -905,6 +979,7 @@ fn build_report(
     results: Vec<RunResult>,
     prompts: &[String],
     model: Option<&str>,
+    models: Option<Vec<String>>,
     args: &RunArgs,
     mode: PermissionMode,
     schema: Option<&Schema>,
@@ -922,9 +997,11 @@ fn build_report(
         // On a batch run the per-result `prompt` is authoritative; the top-level
         // field repeats the first prompt for back-compat (it is always present).
         prompt: prompts[0].clone(),
-        // The effective top-level model (CLI, else config); a per-harness config
-        // model is visible in that result's `command`.
+        // The effective top-level model (first fan-out model, else the single
+        // CLI/config model); each result's own `model` is authoritative.
         model: model.map(str::to_string),
+        // The model fan-out list, present only on a multi-model run.
+        models,
         resume: args.resume.clone(),
         fork: args.fork,
         session,
@@ -1119,17 +1196,17 @@ fn open_history_writer(
 
 /// Append each finished result to the session's history file, if history is on.
 /// Best-effort per record: a write failure warns and moves on (the run's stdout
-/// report is authoritative; history is a side channel).
+/// report is authoritative; history is a side channel). Each record carries the
+/// result's own `model`, so a model fan-out records the model each harness ran.
 fn record_history(
     writer: &Option<HistoryWriter>,
     mode: PermissionMode,
-    model: Option<&str>,
     run_prompt: &str,
     results: &[RunResult],
 ) {
     let Some(writer) = writer else { return };
     for r in results {
-        if let Err(err) = writer.append(mode, model, run_prompt, r) {
+        if let Err(err) = writer.append(mode, r.model.as_deref(), run_prompt, r) {
             eprintln!(
                 "oneharness: warning: could not write history record for `{}`: {err}",
                 r.harness
@@ -1151,6 +1228,7 @@ fn stream_one_harness(
     bin: &str,
     output_format: OutputFormat,
     prompt: Option<String>,
+    model: Option<String>,
 ) -> RunResult {
     use oneharness_core::io::runner::StreamStep;
     use serde_json::Value;
@@ -1193,6 +1271,7 @@ fn stream_one_harness(
         None,
         1,
         prompt,
+        model,
     )
 }
 
@@ -1382,6 +1461,42 @@ fn validate_fallback(batch_run: bool, args: &RunArgs) -> Result<(), OneharnessEr
     Ok(())
 }
 
+/// Refuse the run shapes a model fan-out cannot express, before anything spawns.
+/// Fanning over models multiplies the run into several (harness, model) units, so
+/// every single-unit shape is a loud usage error: a batch (its shared cache prefix
+/// is per harness/model, so it cannot also vary the model), and each single-harness
+/// continuation — `--resume` / `--fork` / `--session` (bound to one model context)
+/// and `--stream` (one incremental output). `--run-mode fallback` is deliberately
+/// *not* refused: the model list is exactly the fallback chain there.
+fn validate_multi_model(batch_run: bool, args: &RunArgs) -> Result<(), OneharnessError> {
+    let conflict = |with, why| Err(OneharnessError::MultiModelConflict { with, why });
+    if batch_run {
+        return conflict(
+            "a batch run (more than one prompt)",
+            "a batch shares one cacheable prefix, which is per harness/model — fan out over models or over prompts, not both",
+        );
+    }
+    if args.resume.is_some() || args.fork {
+        return conflict(
+            "--resume/--fork",
+            "a resumed session is tied to one model, so it cannot fan out over several",
+        );
+    }
+    if args.session.is_some() {
+        return conflict(
+            "--session",
+            "a named session is tied to one model, so it cannot fan out over several",
+        );
+    }
+    if args.stream {
+        return conflict(
+            "--stream",
+            "streaming emits one incremental output; a model fan-out produces several results",
+        );
+    }
+    Ok(())
+}
+
 /// Order the selected specs into the fallback priority chain. When the caller
 /// named harnesses (`--harness` / config `harnesses`), that order *is* the
 /// priority; under `--all` (no explicit list) the registry order `select_specs`
@@ -1439,6 +1554,7 @@ fn run_fallback(
     job_plans: &[HarnessPlan],
     schema: Option<&Schema>,
     max_retries: u32,
+    multi_model: bool,
 ) -> (Vec<RunResult>, FallbackReport) {
     let mut results: Vec<RunResult> = Vec::new();
     let mut fell_through: Vec<FallThrough> = Vec::new();
@@ -1452,6 +1568,7 @@ fn run_fallback(
                 output_format,
                 job_index,
                 prompt,
+                model,
             } => {
                 let outcome =
                     run_one_job(&jobs[job_index], &job_plans[job_index], schema, max_retries);
@@ -1465,10 +1582,15 @@ fn run_fallback(
                     schema,
                     outcome.attempts,
                     prompt,
+                    model,
                 )
             }
         };
-        match fallback::startup_failure_reason(result.status, result.failure_kind.as_deref()) {
+        match fallback::startup_failure_reason(
+            result.status,
+            result.failure_kind.as_deref(),
+            multi_model,
+        ) {
             // Could not run — record why and try the next candidate.
             Some(reason) => {
                 fell_through.push(FallThrough {
@@ -1517,6 +1639,9 @@ enum Plan {
         job_index: usize,
         /// The per-result prompt on a batch run; `None` otherwise.
         prompt: Option<String>,
+        /// The model this unit ran with (fan-out / per-harness); `None` when the
+        /// harness used its own default.
+        model: Option<String>,
     },
 }
 
@@ -1527,6 +1652,7 @@ fn planned_result(
     command: Vec<String>,
     output_format: OutputFormat,
     prompt: Option<String>,
+    model: Option<String>,
 ) -> RunResult {
     RunResult {
         harness: spec.id.to_string(),
@@ -1534,6 +1660,7 @@ fn planned_result(
         available,
         status: Status::Planned,
         prompt,
+        model,
         exit_code: None,
         duration_ms: None,
         command,
@@ -1563,6 +1690,7 @@ fn skipped_result(
     command: Vec<String>,
     output_format: OutputFormat,
     prompt: Option<String>,
+    model: Option<String>,
 ) -> RunResult {
     RunResult {
         harness: spec.id.to_string(),
@@ -1570,6 +1698,7 @@ fn skipped_result(
         available: false,
         status: Status::Skipped,
         prompt,
+        model,
         exit_code: None,
         duration_ms: None,
         command,
@@ -1606,6 +1735,7 @@ fn executed_result(
     schema: Option<&Schema>,
     attempts: u32,
     prompt: Option<String>,
+    model: Option<String>,
 ) -> RunResult {
     // Best-effort signals are extracted only from a run that actually produced
     // output (ok or non-zero), never fabricated for a timeout/spawn failure.
@@ -1676,6 +1806,7 @@ fn executed_result(
         available: true,
         status: capture.status,
         prompt,
+        model,
         exit_code: capture.exit_code,
         duration_ms: capture.duration_ms,
         command,
@@ -2177,6 +2308,7 @@ mod tests {
             available,
             status,
             prompt: None,
+            model: None,
             exit_code: None,
             duration_ms: None,
             command: vec![],
@@ -2334,12 +2466,14 @@ mod tests {
             Some(&schema),
             1,
             Some("the batch prompt".into()),
+            Some("sonnet".into()),
         );
         assert_eq!(r.schema_valid, Some(true));
         assert_eq!(r.schema_attempts, Some(1));
         assert!(r.structured.is_some());
-        // The per-result prompt is carried through verbatim (batch runs).
+        // The per-result prompt and model are carried through verbatim.
         assert_eq!(r.prompt.as_deref(), Some("the batch prompt"));
+        assert_eq!(r.model.as_deref(), Some("sonnet"));
         // Timed out under a schema: nothing to validate, attempts still recorded.
         let to = capture(Status::Timeout, "");
         let r = executed_result(
@@ -2351,11 +2485,13 @@ mod tests {
             Some(&schema),
             1,
             None,
+            None,
         );
         assert!(r.schema_valid.is_none());
         assert_eq!(r.schema_attempts, Some(1));
-        // No prompt recorded on an ordinary (non-batch) result.
+        // No prompt / model recorded on an ordinary (non-batch, no-model) result.
         assert!(r.prompt.is_none());
+        assert!(r.model.is_none());
         // No schema requested: every structured field is null.
         let r = executed_result(
             spec,
@@ -2365,6 +2501,7 @@ mod tests {
             &ok,
             None,
             1,
+            None,
             None,
         );
         assert!(r.schema_valid.is_none());

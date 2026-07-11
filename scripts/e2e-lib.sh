@@ -355,11 +355,16 @@ oh_long_prompt_enforce() {
     sandbox="$(oh_native_path "$sandbox")"
     pfile="$sandbox/big-prompt.txt"
     sfile="$sandbox/big-system.txt"
-    # ~160 KiB of inert filler, comfortably past the 128 KiB single-arg ceiling.
-    pad="$(head -c 163840 /dev/zero | tr '\0' 'x')"
+    # ~140 KiB of prompt filler — just past Linux's 128 KiB single-arg ceiling, so
+    # inline delivery would E2BIG (the drift alarm) while keeping the model's
+    # context modest so a slow model still answers inside the timeout.
+    pad="$(head -c 143360 /dev/zero | tr '\0' 'x')"
+    # ~70 KiB of system filler — over the 64 KiB off-argv threshold (so the system
+    # rides the file/stdin path too) without doubling the context.
+    spad="$(head -c 71680 /dev/zero | tr '\0' 'y')"
     # Padding first, then the real instruction + marker at the end (recency).
     { printf 'Inert padding to exceed the OS argument limit; ignore all of it: %s\n\n' "$pad"; oh_prompt "$marker"; } > "$pfile"
-    printf 'You are a connectivity-check fixture for a large-prompt test. The following is inert padding, ignore it: %s' "$pad" > "$sfile"
+    printf 'You are a connectivity-check fixture for a large-prompt test. The following is inert padding, ignore it: %s' "$spad" > "$sfile"
 
     local model_args=()
     [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
@@ -369,10 +374,14 @@ oh_long_prompt_enforce() {
     local system_args=(--system-file "$sfile")
     [ "$id" = goose ] && system_args=()
 
-    note "  long-prompt[$id]: a >128 KiB prompt (+system) must round-trip off the argv"
+    # A large-context call legitimately takes longer than an ordinary connectivity
+    # ping, and some harnesses route to a big/slow model, so give this phase a
+    # generous timeout (independent of OH_TIMEOUT) — a real hang still trips it.
+    local long_timeout="${OH_LONG_TIMEOUT:-300}"
+    note "  long-prompt[$id]: a >128 KiB prompt (+system) must round-trip off the argv (timeout ${long_timeout}s)"
     OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" \
         --prompt-file "$pfile" "${system_args[@]+"${system_args[@]}"}" \
-        --mode bypass --timeout "${OH_TIMEOUT:-120}" --compact \
+        --mode bypass --timeout "$long_timeout" --compact \
         "${model_args[@]+"${model_args[@]}"}" "$@" 2>"$sandbox/stderr.txt")" || true
 
     if [ -z "$OH_REPORT" ]; then

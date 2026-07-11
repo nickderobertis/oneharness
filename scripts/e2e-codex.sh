@@ -48,3 +48,9 @@ oh_events_assert codex "json:codex-items" --events
 # --events selecting exec --json), then a terminal result line.
 note "» stream: events must arrive incrementally, then a terminal result line"
 oh_stream_assert codex --events
+
+# Reasoning enforcement: `--reasoning high` maps to Codex's
+# `-c model_reasoning_effort=high` and must round-trip; a bogus effort should be
+# rejected (honoring evidence).
+note "» reasoning: --reasoning must be accepted (and a bogus effort rejected)"
+oh_reasoning_enforce codex high

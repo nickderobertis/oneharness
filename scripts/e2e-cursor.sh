@@ -77,3 +77,16 @@ fi
 note "» read-only / plan enforcement: each must block a write"
 oh_mode_enforce cursor read-only
 oh_mode_enforce cursor plan
+
+# Reasoning enforcement: Cursor's effort rides the model id
+# (`--model 'MODEL[effort=high]'`), so it needs a model to attach to. A forum
+# report says cursor-agent may reject the bracket syntax its own --help
+# advertises — so this phase is exactly the honoring proof: if the syntax is not
+# accepted, the run fails here. Only run when a model is configured (else there
+# is nothing to attach the suffix to); note-and-continue rather than skip().
+if [ -n "$OH_MODEL" ]; then
+    note "» reasoning: --reasoning must ride the model id and be accepted"
+    oh_reasoning_enforce cursor high
+else
+    note "» reasoning: SKIPPED (cursor effort rides the model id; set CURSOR_E2E_MODEL to test)"
+fi

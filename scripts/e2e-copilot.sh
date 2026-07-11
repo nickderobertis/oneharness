@@ -34,3 +34,10 @@ oh_mode_enforce copilot plan
 # bare `-p` would auto-deny must apply.
 note "» edit enforcement: a file edit is auto-approved under --mode edit"
 oh_edit_enforce copilot
+
+# Reasoning enforcement: `--reasoning high` maps to Copilot's `--reasoning-effort`.
+# This is the honoring proof that matters most for Copilot — it has a history of
+# headless features silently not firing under `-p` (its hooks were probe-refuted),
+# so a bogus effort SHOULD be rejected if the flag is really honored.
+note "» reasoning: --reasoning must be accepted (and a bogus effort rejected)"
+oh_reasoning_enforce copilot high

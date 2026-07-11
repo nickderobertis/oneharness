@@ -492,6 +492,39 @@ shape. When you add one:
   prompt-based structured-output path already works for every harness, and
   oneharness validates the result regardless. If a harness reports its conforming
   value somewhere other than the answer text, extend `structured::extract_value`.
+- Set its `reasoning` (`ReasoningDelivery`) only if the CLI takes a
+  reasoning/thinking-effort setting **on the argv** headlessly, sourced from that
+  CLI's docs (never guessed). Three shapes: `Flag("--effort")` for a dedicated
+  flag (claude-code, copilot's `--reasoning-effort`), `ConfigKv("model_reasoning_effort")`
+  for a `-c key=value` override (codex), or `ModelSuffix { key: "effort" }` when
+  effort rides the **model id** as a bracket option (cursor's
+  `--model 'sonnet[effort=high]'`). The value is an **opaque string** the caller
+  picks for their model and oneharness forwards verbatim (reasoning effort is a
+  provider/model capability with no shared spelling — OpenAI's `reasoning_effort`
+  enum vs. Anthropic's thinking-token budget — so it is per-harness delivery, not
+  a normalized spectrum; an effort the model rejects surfaces as that harness's
+  own `nonzero`, never a guess). `build_argv` is untouched: the command layer
+  renders the delivery — appending `ReasoningDelivery::args` to the harness's
+  override args (alongside config `args`/passthrough) for the flag/`-c` shapes, or
+  decorating the resolved `--model` value via `ReasoningDelivery::model_suffix` for
+  the model-suffix shape (which therefore needs a model — `ReasoningNeedsModel`, a
+  loud usage error, when none is set; the recorded result `model` stays the plain
+  id). It refuses (`ReasoningUnsupported`, a loud usage error) any selected harness
+  with `reasoning: None` that has an effective `--reasoning`/config value — never a
+  silent drop. `None` is the honest default (opencode/qwen/crush express effort
+  only through their own config file — the `sync`-path follow-up; goose has no
+  headless knob at all). Wired today: claude-code (`--effort`), codex
+  (`-c model_reasoning_effort=`), copilot (`--reasoning-effort`), cursor
+  (`ModelSuffix`). Pin the rendered argv with a `--print-command` assertion, add
+  the `reasoning`/`supports_reasoning` column to the README matrix, resolve it per
+  harness (`[harness.<id>] reasoning`, next to `model`, since effort values are
+  provider-specific), and add the `oh_reasoning_enforce <id> <effort>` live phase —
+  a real `--reasoning` run must complete cleanly (a bogus effort is best-effort
+  evidence of honoring). That live phase matters most for copilot (a history of
+  headless features silently not firing — its hooks were probe-refuted) and cursor
+  (a forum report says cursor-agent may reject the very bracket syntax its `--help`
+  advertises — the phase fails loudly if so). The config/env/CLI trio gained
+  `reasoning` / `ONEHARNESS_REASONING` / `--reasoning`.
 - Declare its `large_input` (`LargeInput`): how a **large** prompt/system reaches
   the harness without inlining it into the argv (past the OS ceiling → `E2BIG`;
   issue #1115). Three fields, all sourced from the CLI's headless docs, never

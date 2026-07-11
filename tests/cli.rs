@@ -7717,36 +7717,7 @@ fn small_prompt_keeps_the_inline_argv() {
     assert_eq!(v["results"][0]["stdout"].as_str().unwrap(), "");
 }
 
-#[test]
-fn large_prompt_on_an_unwired_harness_warns_and_stays_inline() {
-    // Cursor is not wired for off-argv delivery (its stdin-sole-prompt behavior is
-    // unverified), so a large prompt stays inline and oneharness warns loudly
-    // rather than silently risking E2BIG. The prompt is still on the argv.
-    let marker = "OHCURSORBIG-999";
-    let prompt = big_with_marker(marker);
-    let out = run(
-        &[
-            "run",
-            "--harness",
-            "cursor",
-            "--prompt",
-            &prompt,
-            "--bin",
-            &bin_override("cursor"),
-            "--compact",
-        ],
-        &[("MOCK_ECHO_STDIN", "1")],
-    );
-    assert!(out.status.success(), "{out:?}");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("cannot be delivered off the argv"),
-        "expected a large-prompt warning, got: {stderr}"
-    );
-    let v = json_stdout(&out);
-    let cmd = command_of(&v, 0);
-    assert!(
-        cmd.iter().any(|a| a.contains(marker)),
-        "unwired harness keeps the prompt inline: {cmd:?}"
-    );
-}
+// (The large-prompt warning path — a harness with no off-argv route — is now
+// covered by a unit test in src/commands/run.rs against a synthetic spec, since
+// every real harness is wired for off-argv delivery. See
+// `plan_large_input_warns_and_stays_inline_when_unwired`.)

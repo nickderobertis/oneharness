@@ -986,18 +986,15 @@ harness (sourced from each CLI's headless docs, drift-alarmed by the live
 | qwen | stdin (piped, `-p` omitted) | folded into the stdin prompt¹ |
 | crush | stdin (piped, positional omitted) | folded into the stdin prompt¹ |
 | copilot | stdin (piped, `-p` omitted) | folded into the stdin prompt¹ |
+| cursor | stdin (`-p`, positional omitted) | folded into the stdin prompt¹ |
 | goose | stdin (`-i -`) | **inline only** — no off-argv route² |
-| cursor | **inline only** — unverified³ | **inline only** — unverified³ |
 
 ¹ These CLIs have no system-prompt flag, so oneharness already prepends `--system`
-to the prompt; the combined text rides the same stdin stream.
+to the prompt; the combined text rides the same stdin stream. (Cursor's
+stdin-only-prompt behavior was verified live — see `scripts/explore-cursor-stdin.sh`.)
 ² Goose's `--system` takes inline text with no file/stdin route, so a >128 KiB
 *system* prompt for Goose still risks E2BIG — oneharness warns on stderr rather
 than failing silently. Its large *user* prompt is delivered via `-i -`.
-³ Cursor's docs confirm piped stdin infers print mode but document stdin as
-supplementary context beside a positional prompt; whether it can be the *sole*
-prompt is unverified (cursor-agent is closed-source), so oneharness keeps cursor
-inline (and warns for an over-limit value) until a probe confirms the path.
 `oneharness list` exposes `supports_prompt_stdin` / `supports_system_file` per
 harness.
 

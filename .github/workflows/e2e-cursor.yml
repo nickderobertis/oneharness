@@ -122,18 +122,6 @@ jobs:
             cursor-agent --version
           fi
 
-      # TEMP (issue #1115): probe cursor's stdin handling to settle whether it can
-      # take a stdin-only prompt (see scripts/explore-cursor-stdin.sh). Linux-only,
-      # never fails the e2e. Remove once the support matrix is filled from its
-      # VERDICT; the permanent home is the dispatch-only explore-cursor-stdin.yml.
-      - name: Probe cursor stdin handling (#1115)
-        if: runner.os == 'Linux'
-        continue-on-error: true
-        env:
-          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
-          CURSOR_E2E_MODEL: ${{ vars.CURSOR_E2E_MODEL }}
-        run: bash scripts/explore-cursor-stdin.sh
-
       - name: Live e2e against the real CLI
         env:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}

@@ -1086,17 +1086,17 @@ static REGISTRY: &[HarnessSpec] = &[
         mock_delivery: Some(MockDelivery::ProjectHooks { extra_args: &[] }),
         default_env: &[],
         native_schema: None,
-        // Large prompts stay inline (NONE) — pending verification. Cursor's docs
-        // confirm piped stdin infers print mode, but they document stdin as
-        // *supplementary context* alongside a positional prompt; whether the
-        // positional can be OMITTED so stdin becomes the SOLE prompt is unverified
-        // (cursor-agent is closed-source). Per "never guess", it is not wired until
-        // the explore probe / live e2e confirms `cursor-agent -p` with piped stdin
-        // and no positional round-trips the prompt. To wire: set
-        // `large_input.prompt_stdin = true`, add a `c.prompt_stdin` arm to
-        // `argv_cursor` (omit the positional; add any stdin flag), and add the
-        // `oh_long_prompt_enforce cursor` live phase.
-        large_input: LargeInput::NONE,
+        // Large prompts ride stdin: `cursor-agent -p` reads the prompt from stdin
+        // when the positional is omitted — probe-verified live (2026-07-11,
+        // scripts/explore-cursor-stdin.sh: piped stdin with no positional
+        // round-tripped the marker both with and without `-p`; the `-` sentinel did
+        // NOT). Cursor has no system-prompt flag, so `--system` is prepended and
+        // the combined text rides stdin (`system_rides_prompt`).
+        large_input: LargeInput {
+            prompt_stdin: true,
+            system_rides_prompt: true,
+            system_file_flag: None,
+        },
         // `--mode plan` is the read-only plan mode; `--mode ask` is read-only
         // Q&A (no plan workflow) → `read-only`; `--force` is bypass. Without
         // `--force` a gated tool stalls (Cursor proposes-not-applies, with no
@@ -1505,7 +1505,15 @@ fn argv_copilot(c: &BuildCtx) -> Vec<String> {
 /// --output-format stream-json` (Cursor continues a chat id with `--resume`; no
 /// system flag, so `--system` is prepended to the prompt)
 fn argv_cursor(c: &BuildCtx) -> Vec<String> {
-    let mut a = vec![c.bin.into(), "-p".into(), prompt_with_system(c)];
+    // `-p` is print mode. For a large prompt the command layer sets `prompt_stdin`
+    // and pipes the (system-prepended) prompt; cursor reads stdin as the prompt
+    // when the positional is omitted (probe-verified 2026-07-11 via
+    // scripts/explore-cursor-stdin.sh — piped stdin with `-p` and no positional
+    // round-trips; the `-` sentinel does NOT). Otherwise the prompt is the positional.
+    let mut a = vec![c.bin.into(), "-p".into()];
+    if !c.prompt_stdin {
+        a.push(prompt_with_system(c));
+    }
     // `--force` is bypass (it also implies trust). Otherwise a headless run still
     // needs `--trust` — Cursor refuses to run an untrusted workspace ("Workspace
     // Trust Required", observed live) — while leaving the permission system
@@ -2124,9 +2132,9 @@ mod tests {
         assert!(pair(&a, "-i", "-"), "{a:?}");
         assert!(!pair(&a, "-t", "hi"), "goose drops -t <prompt>: {a:?}");
 
-        // opencode / qwen / crush / copilot: the positional (system-prepended) is
-        // omitted entirely — the prompt is read from the piped stdin.
-        for id in ["opencode", "qwen", "crush", "copilot"] {
+        // opencode / qwen / crush / copilot / cursor: the positional
+        // (system-prepended) is omitted entirely — the prompt rides stdin.
+        for id in ["opencode", "qwen", "crush", "copilot", "cursor"] {
             let spec = by_id(id).unwrap();
             let a = (spec.build_argv)(&stdin_ctx(spec));
             assert!(
@@ -2135,19 +2143,17 @@ mod tests {
             );
         }
         // qwen and copilot must also drop `-p` (else the pipe is ignored / a
-        // positional is required).
+        // positional is required). cursor KEEPS `-p` (its stdin form uses it —
+        // probe-verified).
         for id in ["qwen", "copilot"] {
             let spec = by_id(id).unwrap();
             let a = (spec.build_argv)(&stdin_ctx(spec));
             assert!(!has(&a, "-p"), "{id} drops -p under stdin: {a:?}");
         }
-
-        // cursor is NOT wired (unverified) — it keeps the positional even under the
-        // flag, so a large prompt is not silently lost to a broken stdin path.
         let spec = by_id("cursor").unwrap();
         assert!(
-            !spec.large_input.prompt_stdin,
-            "cursor stays inline (unverified)"
+            has(&(spec.build_argv)(&stdin_ctx(spec)), "-p"),
+            "cursor keeps -p under stdin"
         );
     }
 

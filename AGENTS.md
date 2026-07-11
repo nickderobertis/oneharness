@@ -496,9 +496,12 @@ shape. When you add one:
   matrix, and add the `oh_long_prompt_enforce <id>` live phase (a >128 KiB
   prompt+system must round-trip and stay out of `.command`) — the drift alarm that
   the CLI still reads the off-argv input. `LargeInput::NONE` (inline only) is the
-  honest default when no stdin/file route is verified (cursor today — its
-  stdin-sole-prompt behavior is doc-unverified); a large value then stays inline
-  and the command layer warns loudly rather than risking a silent E2BIG.
+  honest default until a stdin/file route is *verified* from a real invocation —
+  a large value then stays inline and the command layer warns loudly rather than
+  risking a silent E2BIG. All eight harnesses are wired today (cursor's
+  stdin-only-prompt path was closed-source, so it was **probe-verified** via
+  `scripts/explore-cursor-stdin.sh` + the dispatch-only `explore-cursor-stdin.yml`
+  before wiring — the pattern to reuse for the next uncertain CLI).
 - Give the harness its `global_hook` (the user-global hook location, for `sync
   --global` / `install` at `Scope::Global`) and its `gate_deny` (how it expresses
   a pre-tool deny when it runs `oneharness gate <id>`). Both are registry data

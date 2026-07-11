@@ -1996,6 +1996,39 @@ mod tests {
     }
 
     #[test]
+    fn plan_large_input_warns_and_stays_inline_when_unwired() {
+        // A harness with LargeInput::NONE (a future/unverified adapter) has no
+        // off-argv route, so a large prompt AND system both stay inline —
+        // plan_large_input changes nothing and warns on both (the honest guard
+        // against a silent E2BIG). Every real harness is wired, so this synthetic
+        // no-capability spec is the only witness for the warning branches.
+        let big = "x".repeat(LARGE_INPUT_THRESHOLD + 1);
+        let mut plan = crush_plan();
+        plan.spec = unsupported_spec();
+        plan.base_prompt = big.clone();
+        let spec = plan.spec;
+        let mut temps = TempPromptFiles::default();
+        plan_large_input(&mut plan, spec, Some(&big), 0, &mut temps).unwrap();
+        assert!(!plan.prompt_stdin, "no stdin route → prompt stays inline");
+        assert!(
+            plan.system_file.is_none(),
+            "no file route → system stays inline"
+        );
+        assert!(temps.0.is_empty(), "nothing materialized");
+    }
+
+    #[test]
+    fn plan_large_input_is_a_noop_for_small_prompts() {
+        // Below the threshold, nothing moves off the argv even on a wired harness.
+        let mut plan = crush_plan(); // crush is wired (prompt_stdin)
+        let spec = plan.spec;
+        let mut temps = TempPromptFiles::default();
+        plan_large_input(&mut plan, spec, Some("small"), 0, &mut temps).unwrap();
+        assert!(!plan.prompt_stdin);
+        assert!(temps.0.is_empty());
+    }
+
+    #[test]
     fn schema_argv_prompt_stays_newline_free_including_on_retry() {
         // Windows passes the prompt as one argv element to a `.cmd` harness shim,
         // which Rust's std refuses if it contains `\n`/`\r`. The structured-output

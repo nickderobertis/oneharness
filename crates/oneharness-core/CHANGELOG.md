@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.4.0...oneharness-core-v0.4.1) - 2026-07-11
+
+### Fixed
+
+- *(cursor)* deliver reasoning as a model-id tier suffix ([#1125](https://github.com/nickderobertis/oneharness/pull/1125))
+
 ## [0.4.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.3.8...oneharness-core-v0.4.0) - 2026-07-11
 
 ### Added

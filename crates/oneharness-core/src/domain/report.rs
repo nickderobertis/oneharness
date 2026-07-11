@@ -76,6 +76,13 @@ pub struct RunResult {
     /// fanned over N prompts), where each result has its own prompt. `null` on an
     /// ordinary run, where the single top-level `prompt` applies to every result.
     pub prompt: Option<String>,
+    /// The model this result ran with (the value oneharness put on the harness's
+    /// model flag), or `null` when no model was requested and the harness used its
+    /// own default. On a **model fan-out** run (`RunReport::models`), this is what
+    /// distinguishes results that share a harness — each entry is one (harness,
+    /// model) pair. The model is also visible in `command`; this field surfaces it
+    /// without parsing the argv.
+    pub model: Option<String>,
     /// Process exit code; `null` when not run, timed out, or signalled.
     pub exit_code: Option<i32>,
     /// Wall-clock duration of the run; `null` when not executed.
@@ -151,7 +158,17 @@ pub struct RunReport {
     /// shares; on a **batch** run (see `batch`) it repeats the first prompt for
     /// back-compat, and each result's own `prompt` field is authoritative.
     pub prompt: String,
+    /// The effective top-level model: the first of the fan-out `models` list when
+    /// one was given, else the single configured/CLI model, else `null`. Each
+    /// result's own `model` is authoritative on a fan-out run.
     pub model: Option<String>,
+    /// The model fan-out list this run multiplied over (repeated `--model` /
+    /// config `models`), or `null` on an ordinary single-model run. Its presence
+    /// is the signal a consumer keys on to read each result's own `model`: in
+    /// `parallel` mode `results` holds one entry per (harness, model) pair; in
+    /// `fallback` mode the pairs were tried in priority order (harness-major,
+    /// model-minor).
+    pub models: Option<Vec<String>>,
     /// The session id being continued, when `--resume` was passed; else `null`.
     pub resume: Option<String>,
     /// Whether the resumed session was forked (`--fork`) rather than appended to.
@@ -236,7 +253,8 @@ pub struct FallbackReport {
     pub ran: Option<String>,
     /// The candidates fallen through because they could not run the task at all,
     /// in priority order, each with why (`not-installed`, `spawn-error`, `auth`,
-    /// `quota`; see [`crate::domain::fallback::startup_failure_reason`]).
+    /// `quota`, and — on a model fan-out — `model-not-found` / `rate-limit`; see
+    /// [`crate::domain::fallback::startup_failure_reason`]).
     pub fell_through: Vec<FallThrough>,
 }
 
@@ -245,7 +263,8 @@ pub struct FallbackReport {
 pub struct FallThrough {
     /// Canonical harness id.
     pub harness: String,
-    /// Short reason token (`not-installed` / `spawn-error` / `auth` / `quota`).
+    /// Short reason token (`not-installed` / `spawn-error` / `auth` / `quota` /
+    /// `model-not-found` / `rate-limit`).
     pub reason: String,
 }
 

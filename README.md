@@ -260,7 +260,10 @@ Useful `run` flags:
 - `--run-mode <parallel|fallback>` — how the selected harnesses are run
   (`parallel`, the default, or `fallback`); also `run_mode` in config /
   `ONEHARNESS_RUN_MODE`. See [Fallback mode](#fallback-mode-first-that-runs-wins).
-- `--model <m>` — passed to each harness that supports a model flag.
+- `--model <m>` — passed to each harness that supports a model flag. **Repeatable**:
+  pass it more than once (or set config `models` / `ONEHARNESS_MODELS`) to fan out
+  over several models — see [Multiple models](#multiple-models-fan-out-over-the-model-axis).
+  A CLI value overrides config `model`/`models`.
 - `--system <text>` or `--system-file <path|->` — portable system prompt for
   **every** harness: mapped to a native flag where one exists (Claude Code's
   `--append-system-prompt`, Goose's `--system`), and prepended to the prompt
@@ -353,7 +356,8 @@ Every top-level field with a `run` flag also has a standard
 **`ONEHARNESS_<FIELD>`** environment override, the field name upper-snake-cased
 so the env var, config key, and flag stay in sync (`model` → `ONEHARNESS_MODEL`,
 `schema_max_retries` → `ONEHARNESS_SCHEMA_MAX_RETRIES`). List fields are
-comma-separated like their repeatable flags (`ONEHARNESS_HARNESSES=claude-code,codex`),
+comma-separated like their repeatable flags (`ONEHARNESS_HARNESSES=claude-code,codex`,
+`ONEHARNESS_MODELS=opus,sonnet` for the model fan-out),
 booleans take `true`/`false` (or `1`/`0`), and an empty value counts as unset. A
 malformed value (bad boolean/integer/format, unknown harness id) is the same
 loud usage error a file would raise. The sync-policy fields (`allowed_tools`,
@@ -374,7 +378,8 @@ array records exactly which files shaped a run.
 # oneharness.toml — every field optional; shown with its CLI counterpart
 harnesses = ["claude-code", "codex"]  # --harness (or `all = true` for --all)
 exclude = ["cursor"]            # --exclude (applies to an `all` selection)
-model = "gpt-5"                 # --model
+model = "gpt-5"                 # --model (single model, per harness)
+models = ["opus", "sonnet"]     # repeated --model: fan out over the model axis
 system = "Be terse."            # --system
 bypass = true                   # legacy --bypass toggle (opt-in; default false)
 mode = "default"                # --mode; beats `bypass` (default: "default")
@@ -904,9 +909,15 @@ chain, so a long, genuine run can never be mistaken for "try the next one".
 | Ran, exited non-zero, classified `auth` | ✅ fall through — `auth` |
 | Ran, exited non-zero, classified `quota` (no credit) | ✅ fall through — `quota` |
 | Ran and succeeded (`ok`) | ⛔ stop — this is the answer |
-| Ran and failed the task (`nonzero`, incl. `rate_limit` / `model_not_found`) | ⛔ stop |
+| Ran and failed the task (`nonzero`, incl. `rate_limit` / `model_not_found`) | ⛔ stop¹ |
 | Timed out (`timeout`) — a slow but genuine run | ⛔ stop |
 | Never produced a schema-conforming answer (`--schema`) | ⛔ stop (the harness ran) |
+
+¹ **Exception — a model list.** When the run is fanning out over several models
+(repeated `--model` / config `models`; see [Multiple models](#multiple-models-fan-out-over-the-model-axis)),
+a per-model rejection means "try the next model", so `model_not_found` (fall
+through — `model-not-found`) and `rate_limit` (fall through — `rate-limit`) *do*
+fall through. With a single model both still stop the chain, as above.
 
 The report gains a `fallback` block, `{ "ran", "fell_through": [{ "harness",
 "reason" }] }`: `ran` is the harness that executed (or `null` when every
@@ -927,6 +938,48 @@ Fallback is single-outcome by nature, so it refuses a [batch](#batch-runs-same-p
 run and every single-harness continuation — `--resume` / `--fork` / `--session`
 / `--stream` — as loud usage errors. Exit code: `0` when the harness that ran
 succeeded, `1` when it ran but failed **or** when no candidate could run at all.
+
+### Multiple models (fan out over the model axis)
+
+By default a run uses one model per harness — a single `--model` (or config
+`model`, overridable per harness with `[harness.<id>].model`). Pass `--model` **more
+than once** (or set config `models = [...]` / `ONEHARNESS_MODELS`) and `run` fans
+out over the **model axis**, and it composes with the two run modes exactly as you
+would expect:
+
+- **`parallel` (the default) — the harness × model cross-product.** Every selected
+  harness runs once per model, all concurrently, and `results` holds one entry per
+  `(harness, model)` pair (harness-major, then model-minor). One harness × three
+  models is three runs; `--all` × two models is every harness twice.
+
+  ```console
+  # Compare two models across two harnesses — 4 runs in parallel:
+  oneharness run --harness claude-code,codex --model opus --model sonnet \
+    --prompt "Explain this diff" --compact | jq '.results[] | {harness, model, status}'
+  ```
+
+- **`fallback` — the (harness, model) priority chain.** The same cross-product
+  becomes the fallback order (harness-major, model-minor); the run stops at the
+  first pair that actually runs. Here a **per-model rejection falls through**: an
+  unavailable model (`model_not_found` → `model-not-found`) or an over-limit one
+  (`rate_limit` → `rate-limit`) tries the next model, exactly as a missing harness
+  tries the next harness — graceful degradation across models. (With a single
+  model those still stop the chain — see the [fallback table](#fallback-mode-first-that-runs-wins).)
+
+  ```console
+  # Prefer opus; if it's unavailable or rate-limited, fall through to sonnet:
+  oneharness run --run-mode fallback --harness claude-code --model opus --model sonnet \
+    --prompt "Explain this diff" --compact | jq '.fallback'
+  ```
+
+Each result carries its own `model` (the value put on the harness's model flag,
+also visible in `command`), and the report gains a `models` list — the presence of
+which is the signal a consumer keys on to read each result's `model`. The top-level
+`model` is the first of the list. A one-element list is **not** a fan-out (it
+behaves like a single `--model`). Because a fan-out multiplies the run into several
+units, more than one model is a loud usage error with a [batch](#batch-runs-same-prefix-prompt-caching)
+(its cache prefix is per harness/model) and with the single-unit continuations
+`--resume` / `--fork` / `--session` / `--stream`.
 
 ### Batch runs (same-prefix prompt caching)
 

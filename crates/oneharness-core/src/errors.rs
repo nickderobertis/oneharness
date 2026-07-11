@@ -35,6 +35,12 @@ pub enum OneharnessError {
         why: &'static str,
     },
 
+    #[error("a multi-model run (more than one --model / config `models`) is incompatible with {with} ({why})")]
+    MultiModelConflict {
+        with: &'static str,
+        why: &'static str,
+    },
+
     #[error("--resume needs exactly one harness (a session belongs to one harness), but {count} were selected: {selected}")]
     ResumeMultipleHarnesses { count: usize, selected: String },
 

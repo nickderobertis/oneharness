@@ -307,6 +307,7 @@ mod tests {
             available: true,
             status: Status::Ok,
             prompt: None,
+            model: None,
             exit_code: Some(0),
             duration_ms: Some(42),
             command: vec!["claude".to_string()],

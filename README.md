@@ -257,6 +257,9 @@ Useful `run` flags:
   scheduled to exploit the shared prefix cache (`speed`, the default, or
   `min-tokens`); see [batch runs](#batch-runs-same-prefix-prompt-caching). No
   effect on a single-prompt run.
+- `--run-mode <parallel|fallback>` — how the selected harnesses are run
+  (`parallel`, the default, or `fallback`); also `run_mode` in config /
+  `ONEHARNESS_RUN_MODE`. See [Fallback mode](#fallback-mode-first-that-runs-wins).
 - `--model <m>` — passed to each harness that supports a model flag.
 - `--system <text>` or `--system-file <path|->` — portable system prompt for
   **every** harness: mapped to a native flag where one exists (Claude Code's
@@ -380,6 +383,7 @@ output_format = "json"          # --output-format
 schema_file = "person.json"     # --schema (structured output; relative to project)
 schema_max_retries = 2          # --schema-max-retries (default 2)
 max_parallel = 4                # --max-parallel
+run_mode = "parallel"           # --run-mode ("parallel" or "fallback")
 require_available = false       # --require-available
 history = false                 # --history / --no-history (opt-in run history)
 history_dir = "~/logs/oh"       # --history-dir (default: platform state dir)
@@ -648,6 +652,11 @@ Which settings can reach which harness is the support table above: `model`,
 - `2` — usage/configuration error (bad args, unknown harness, no prompt, an
   unreadable or invalid `--schema` file).
 
+Under [`--run-mode fallback`](#fallback-mode-first-that-runs-wins) the rule is
+different: `0` when the harness that ran succeeded, `1` when it ran but failed
+**or** when no candidate could run at all — the fallen-through candidates never
+count against the run.
+
 ### The result envelope vs. the normalized signals
 
 The execution envelope — `command`, `exit_code`, `duration_ms`, `status`,
@@ -867,6 +876,57 @@ or a batch, and is supported only for harnesses that expose a session id headles
 fresh start. This is the substrate a multi-turn driver (e.g. a simulated-user /
 skill-testing framework) builds on: thread one handle, get faithful state, read
 `events` for what the agent *did*.
+
+### Fallback mode (first that runs wins)
+
+By default `run` drives every selected harness in **parallel** and reports them
+all. `--run-mode fallback` (or `run_mode = "fallback"` in config) instead runs
+them in **priority order** and stops at the **first harness that actually runs
+the task** — falling through only the candidates that *cannot run at all*. This
+is graceful degradation across a set of harnesses a repo declares it supports:
+list a few, and whichever one a given contributor (or CI runner) has installed
+and authenticated is the one that runs.
+
+```console
+# Try claude-code first; if it isn't set up, fall through to codex, then opencode.
+oneharness run --run-mode fallback --harness claude-code,codex,opencode \
+  --prompt "Explain the failing test" --compact | jq '.fallback, .results[].status'
+```
+
+**What falls through vs. what stops.** The distinction is deliberate: a *setup*
+problem tries the next harness; a *real run* — success or failure — stops the
+chain, so a long, genuine run can never be mistaken for "try the next one".
+
+| Outcome | Fallback? |
+| --- | --- |
+| Not installed (`skipped`) | ✅ fall through — `not-installed` |
+| Resolved but unspawnable (`spawn-error`) | ✅ fall through — `spawn-error` |
+| Ran, exited non-zero, classified `auth` | ✅ fall through — `auth` |
+| Ran, exited non-zero, classified `quota` (no credit) | ✅ fall through — `quota` |
+| Ran and succeeded (`ok`) | ⛔ stop — this is the answer |
+| Ran and failed the task (`nonzero`, incl. `rate_limit` / `model_not_found`) | ⛔ stop |
+| Timed out (`timeout`) — a slow but genuine run | ⛔ stop |
+| Never produced a schema-conforming answer (`--schema`) | ⛔ stop (the harness ran) |
+
+The report gains a `fallback` block, `{ "ran", "fell_through": [{ "harness",
+"reason" }] }`: `ran` is the harness that executed (or `null` when every
+candidate failed to start), and `results` holds only the harnesses **attempted**
+— the fallen-through ones in priority order, then the one that ran. Priority
+order is the `--harness` / config `harnesses` order (registry order under
+`--all`). Under `--print-command` nothing executes, so the block is `null` and
+every candidate's command is printed in priority order.
+
+**The command must be valid for the whole set.** Every listed harness is
+validated up front, so a flag no candidate could honor (an approval `--mode` a
+listed harness can't express, an unsupported `--mock-rules` action, …) is a loud
+usage error **before anything spawns** — even for a harness that is never
+reached. This keeps people and agents writing commands that work for every
+harness the fallback config supports, not just the one that happens to run.
+
+Fallback is single-outcome by nature, so it refuses a [batch](#batch-runs-same-prefix-prompt-caching)
+run and every single-harness continuation — `--resume` / `--fork` / `--session`
+/ `--stream` — as loud usage errors. Exit code: `0` when the harness that ran
+succeeded, `1` when it ran but failed **or** when no candidate could run at all.
 
 ### Batch runs (same-prefix prompt caching)
 

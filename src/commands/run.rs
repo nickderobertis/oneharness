@@ -5,11 +5,13 @@ use std::time::Duration;
 use crate::cli::RunArgs;
 use crate::commands::{print_json, select_specs};
 use oneharness_core::domain::batch::{self, BatchStrategy};
+use oneharness_core::domain::fallback::{self, RunMode};
 use oneharness_core::domain::harness::{self, BuildCtx, HarnessSpec};
 use oneharness_core::domain::mock::{self, MockDelivery};
 use oneharness_core::domain::mode::{ModeHeadless, PermissionMode};
 use oneharness_core::domain::report::{
-    BatchReport, Capture, OutputFormat, RunReport, RunResult, SessionReport, Status, SCHEMA_VERSION,
+    BatchReport, Capture, FallThrough, FallbackReport, OutputFormat, RunReport, RunResult,
+    SessionReport, Status, SCHEMA_VERSION,
 };
 use oneharness_core::domain::session::{self, SessionPlan, SessionRecord};
 use oneharness_core::domain::signals::Usage;
@@ -185,6 +187,26 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         args.exclude.clone()
     };
     let specs = select_specs(all, &include, &exclude)?;
+    // `--run-mode` (CLI beats config; default `parallel`). Fallback runs the
+    // selected harnesses in priority order, stopping at the first that runs and
+    // falling through only harnesses that cannot run at all. It is single-outcome
+    // by nature, so it refuses the multi-prompt / continuation shapes up front —
+    // but the *whole candidate set* still flows through every capability validator
+    // below, so a flag unsupported by ANY listed harness fails fast even though
+    // only one harness will run (the command must be valid for the whole set).
+    let run_mode = args.run_mode.or(cfg.run_mode).unwrap_or(RunMode::Parallel);
+    let fallback_mode = run_mode == RunMode::Fallback;
+    if fallback_mode {
+        validate_fallback(batch_run, args)?;
+    }
+    // In fallback the run order is the priority chain: the caller's `--harness` /
+    // config order (registry order under `--all`), not the registry order
+    // `select_specs` returns. Parallel keeps registry order.
+    let specs = if fallback_mode {
+        fallback_order(specs, &include)
+    } else {
+        specs
+    };
     // A batch (multi-prompt) run is single-harness by nature — a provider cache
     // prefix is per harness/model/tools — and is a fresh fan-out, not a session
     // continuation. Refuse both before anything spawns (loud usage errors).
@@ -450,6 +472,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             schema.as_ref(),
             max_retries,
             None,
+            None,
             loaded.files.clone(),
             mock_report,
             history_file,
@@ -461,106 +484,120 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         return Ok(exit);
     }
 
-    // Schedule and run the jobs. An ordinary run (and a batch under `speed`) is a
-    // single concurrent wave; a batch under `min-tokens` runs a one-call warm-up
-    // before the fanned-out rest, with a barrier between them.
-    let max_parallel = args
-        .max_parallel
-        .or(cfg.max_parallel)
-        .unwrap_or(jobs.len().max(1));
-    // Fork-based `min-tokens`: when a batch's single harness can fork, the warm-up
-    // (prompt[0]) establishes a session and the fan-out branches forks of it, so
-    // each reuses the warmed cached prefix — the realizable token saving on these
-    // CLIs (a static --system is re-created per process, so plain warm-then-fan
-    // saves nothing). It needs the warm-up's *runtime* session id, so it cannot
-    // run under --print-command (nothing executes, no session).
-    let fork_batch = batch_run
-        && batch_strategy == BatchStrategy::MinTokens
-        && specs[0].fork_reuses_cache
-        && !args.print_command
-        && !jobs.is_empty();
-    // `min-tokens` reduces tokens only when the harness has a *cache-reusing* fork
-    // (the warm-up writes the shared prefix, the forked fan-out reads it). When it
-    // does not — no fork at all, or a fork that re-sends the prefix cold, like
-    // OpenCode — `min-tokens` can only order the calls; say so rather than imply a
-    // saving the harness can't deliver.
-    if batch_run
-        && batch_strategy == BatchStrategy::MinTokens
-        && !specs[0].fork_reuses_cache
+    // Schedule and run the jobs. Parallel mode runs every job at once (an
+    // ordinary run and a batch under `speed`), or a batch's warm-then-fan waves
+    // under `min-tokens`. Fallback mode instead drives the harnesses one at a
+    // time in priority order, stopping at the first that actually runs — so it
+    // never uses the wave scheduler. `--print-command` never executes, so it
+    // always takes the parallel branch (which emits the planned rows).
+    let mut forked = false;
+    let (results, fallback_report): (Vec<RunResult>, Option<FallbackReport>) = if fallback_mode
         && !args.print_command
     {
-        eprintln!(
-            "oneharness: warning: `--batch-strategy min-tokens` cannot reduce tokens on `{}` \
-             (no cache-reusing fork available); it only orders the calls. Token savings need a \
-             harness whose fork reuses the prompt cache (see `fork_reuses_cache` in \
-             `oneharness list`).",
-            specs[0].id
-        );
-    }
-    let mut forked = false;
-    let outcomes = if fork_batch {
-        let o = run_fork_batch(
-            &mut jobs,
-            &mut job_plans,
-            schema.as_ref(),
-            max_retries,
-            max_parallel,
-        );
-        // The fan-out actually forked iff the warm-up exposed a session to branch
-        // (run_fork_batch sets the fan-out plans' `resume` only when it did).
-        forked = job_plans.len() > 1 && job_plans[1].resume.is_some();
-        o
+        // Sequential fallback: run the priority chain until one harness runs.
+        // The workspace-restoring mock finish happens below, after every spawn
+        // this branch does is complete.
+        let (results, fb) = run_fallback(plan, &jobs, &job_plans, schema.as_ref(), max_retries);
+        (results, Some(fb))
     } else {
-        let waves = if batch_run {
-            batch::waves(batch_strategy, jobs.len())
-        } else if jobs.is_empty() {
-            Vec::new()
+        let max_parallel = args
+            .max_parallel
+            .or(cfg.max_parallel)
+            .unwrap_or(jobs.len().max(1));
+        // Fork-based `min-tokens`: when a batch's single harness can fork, the
+        // warm-up (prompt[0]) establishes a session and the fan-out branches
+        // forks of it, so each reuses the warmed cached prefix — the realizable
+        // token saving on these CLIs (a static --system is re-created per
+        // process, so plain warm-then-fan saves nothing). It needs the warm-up's
+        // *runtime* session id, so it cannot run under --print-command.
+        let fork_batch = batch_run
+            && batch_strategy == BatchStrategy::MinTokens
+            && specs[0].fork_reuses_cache
+            && !args.print_command
+            && !jobs.is_empty();
+        // `min-tokens` reduces tokens only when the harness has a *cache-reusing*
+        // fork (the warm-up writes the shared prefix, the forked fan-out reads
+        // it). When it does not — no fork at all, or a fork that re-sends the
+        // prefix cold, like OpenCode — `min-tokens` can only order the calls; say
+        // so rather than imply a saving the harness can't deliver.
+        if batch_run
+            && batch_strategy == BatchStrategy::MinTokens
+            && !specs[0].fork_reuses_cache
+            && !args.print_command
+        {
+            eprintln!(
+                    "oneharness: warning: `--batch-strategy min-tokens` cannot reduce tokens on `{}` \
+                     (no cache-reusing fork available); it only orders the calls. Token savings need a \
+                     harness whose fork reuses the prompt cache (see `fork_reuses_cache` in \
+                     `oneharness list`).",
+                    specs[0].id
+                );
+        }
+        let outcomes = if fork_batch {
+            let o = run_fork_batch(
+                &mut jobs,
+                &mut job_plans,
+                schema.as_ref(),
+                max_retries,
+                max_parallel,
+            );
+            // The fan-out actually forked iff the warm-up exposed a session to
+            // branch (run_fork_batch sets the fan-out plans' `resume` only then).
+            forked = job_plans.len() > 1 && job_plans[1].resume.is_some();
+            o
         } else {
-            vec![(0..jobs.len()).collect()]
+            let waves = if batch_run {
+                batch::waves(batch_strategy, jobs.len())
+            } else if jobs.is_empty() {
+                Vec::new()
+            } else {
+                vec![(0..jobs.len()).collect()]
+            };
+            run_in_waves(
+                &jobs,
+                &job_plans,
+                schema.as_ref(),
+                max_retries,
+                max_parallel,
+                &waves,
+            )
         };
-        run_in_waves(
-            &jobs,
-            &job_plans,
-            schema.as_ref(),
-            max_retries,
-            max_parallel,
-            &waves,
-        )
+
+        let results: Vec<RunResult> = plan
+            .into_iter()
+            .map(|entry| match entry {
+                Plan::Ready(result) => *result,
+                Plan::Pending {
+                    spec,
+                    bin,
+                    output_format,
+                    job_index,
+                    prompt,
+                } => {
+                    let outcome = &outcomes[job_index];
+                    // The argv actually run (fork-batch rewrites the fan-out jobs
+                    // to resume+fork the warmed session, so read it back).
+                    let command = jobs[job_index].argv.clone();
+                    executed_result(
+                        spec,
+                        bin,
+                        command,
+                        output_format,
+                        &outcome.capture,
+                        schema.as_ref(),
+                        outcome.attempts,
+                        prompt,
+                    )
+                }
+            })
+            .collect();
+        (results, None)
     };
 
     // Every job is done (or nothing ran under --print-command, where mock
     // wiring is refused by clap): put the workspace back before anything else
     // can fail, so a later I/O error never leaves the ephemeral hook behind.
     let mock_report = mock_wiring.map(MockWiring::finish);
-
-    let results: Vec<RunResult> = plan
-        .into_iter()
-        .map(|entry| match entry {
-            Plan::Ready(result) => *result,
-            Plan::Pending {
-                spec,
-                bin,
-                output_format,
-                job_index,
-                prompt,
-            } => {
-                let outcome = &outcomes[job_index];
-                // The argv actually run (fork-batch rewrites the fan-out jobs to
-                // resume+fork the warmed session, so read it back from the job).
-                let command = jobs[job_index].argv.clone();
-                executed_result(
-                    spec,
-                    bin,
-                    command,
-                    output_format,
-                    &outcome.capture,
-                    schema.as_ref(),
-                    outcome.attempts,
-                    prompt,
-                )
-            }
-        })
-        .collect();
 
     record_history(&history_writer, mode, model, &prompts[0], &results);
     // Persist the captured session token (if `--session` was in play) and build
@@ -571,7 +608,14 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         write_output_dir(dir, &results)?;
     }
 
-    let exit = exit_code(&results, require_available);
+    // Fallback has its own success rule: a hard failure only when NO candidate
+    // could run (nothing executed), else the outcome of the one harness that ran
+    // — the fallen-through candidates never count against it. Parallel mode keeps
+    // the "any harness failed" rule.
+    let exit = match &fallback_report {
+        Some(fb) => fallback_exit(&results, fb.ran.is_some()),
+        None => exit_code(&results, require_available),
+    };
 
     let report = build_report(
         results,
@@ -586,6 +630,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             prompt_count: prompts.len(),
             forked,
         }),
+        fallback_report,
         loaded.files,
         mock_report,
         history_file,
@@ -594,15 +639,41 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     print_json(&report, args.compact)?;
 
     if exit != EXIT_OK {
-        let failed = report
-            .results
-            .iter()
-            .filter(|r| is_failure(r.status, r.available, require_available, r.schema_valid))
-            .count();
-        eprintln!(
-            "oneharness: {failed}/{} harness run(s) did not succeed (see results[].status and results[].error)",
-            report.results.len()
-        );
+        match &report.fallback {
+            // Fallback where nothing could run: every candidate failed to start.
+            Some(fb) if fb.ran.is_none() => {
+                let chain = fb
+                    .fell_through
+                    .iter()
+                    .map(|f| format!("{} [{}]", f.harness, f.reason))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                eprintln!(
+                    "oneharness: no selected harness could be run — all {} fallback candidate(s) \
+                     failed to start ({chain}); nothing executed",
+                    fb.fell_through.len()
+                );
+            }
+            // Fallback where a harness ran but its task failed.
+            Some(fb) => eprintln!(
+                "oneharness: fallback harness `{}` ran but did not succeed (see results[].status \
+                 and results[].error)",
+                fb.ran.as_deref().unwrap_or_default()
+            ),
+            None => {
+                let failed = report
+                    .results
+                    .iter()
+                    .filter(|r| {
+                        is_failure(r.status, r.available, require_available, r.schema_valid)
+                    })
+                    .count();
+                eprintln!(
+                    "oneharness: {failed}/{} harness run(s) did not succeed (see results[].status and results[].error)",
+                    report.results.len()
+                );
+            }
+        }
     }
     Ok(exit)
 }
@@ -839,6 +910,7 @@ fn build_report(
     schema: Option<&Schema>,
     max_retries: u32,
     batch: Option<BatchReport>,
+    fallback: Option<FallbackReport>,
     config_files: Vec<String>,
     mock: Option<MockReport>,
     history_file: Option<String>,
@@ -862,6 +934,7 @@ fn build_report(
         schema: schema.map(|s| s.as_value().clone()),
         schema_max_retries: schema.map(|_| max_retries),
         batch,
+        fallback,
         mock_rules: mock.as_ref().and_then(|m| m.rules.clone()),
         spy_file: mock.and_then(|m| m.spy_file),
         history_file,
@@ -1270,6 +1343,167 @@ fn run_fork_batch(
     outcomes.push(warm);
     outcomes.extend(fan);
     outcomes
+}
+
+/// Refuse the run shapes fallback mode cannot express, before anything spawns.
+/// Fallback drives several harnesses in priority order for one prompt, stopping
+/// at the first that runs — so a multi-prompt batch, every single-harness
+/// continuation (`--resume`/`--fork`/`--session`), and `--stream` are loud usage
+/// errors here. The *capability* validation of the requested features against
+/// every listed harness stays in the shared validators (`validate_modes`,
+/// `setup_mock`, …), which run over all specs regardless of mode — so a flag no
+/// candidate could honor still fails fast even though only one harness will run.
+fn validate_fallback(batch_run: bool, args: &RunArgs) -> Result<(), OneharnessError> {
+    let conflict = |with, why| Err(OneharnessError::FallbackConflict { with, why });
+    if batch_run {
+        return conflict(
+            "a batch run (more than one prompt)",
+            "fallback tries harnesses in order for one prompt; a batch fans one harness over many prompts",
+        );
+    }
+    if args.resume.is_some() || args.fork {
+        return conflict(
+            "--resume/--fork",
+            "a resumed session belongs to one specific harness, so it cannot fall through to another",
+        );
+    }
+    if args.session.is_some() {
+        return conflict(
+            "--session",
+            "a named session is bound to one harness, so it cannot fall through to another",
+        );
+    }
+    if args.stream {
+        return conflict(
+            "--stream",
+            "streaming drives a single harness incrementally; a fallback chain may run several in turn",
+        );
+    }
+    Ok(())
+}
+
+/// Order the selected specs into the fallback priority chain. When the caller
+/// named harnesses (`--harness` / config `harnesses`), that order *is* the
+/// priority; under `--all` (no explicit list) the registry order `select_specs`
+/// already returns is the priority. Every id in `include` is present in `specs`
+/// (both are validated the same way) and duplicates collapse to first mention.
+fn fallback_order(
+    specs: Vec<&'static HarnessSpec>,
+    include: &[String],
+) -> Vec<&'static HarnessSpec> {
+    if include.is_empty() {
+        return specs;
+    }
+    let mut ordered: Vec<&'static HarnessSpec> = Vec::with_capacity(specs.len());
+    for id in include {
+        if let Some(spec) = specs.iter().find(|s| s.id == id.as_str()) {
+            if !ordered.iter().any(|o| o.id == spec.id) {
+                ordered.push(*spec);
+            }
+        }
+    }
+    ordered
+}
+
+/// Run a single harness job under the structured-output retry loop — the
+/// one-harness analogue of a [`run_in_waves`] wave of size one — returning its
+/// outcome. Used by the fallback driver, which spawns harnesses one at a time.
+fn run_one_job(
+    job: &Job,
+    plan: &HarnessPlan,
+    schema: Option<&Schema>,
+    max_retries: u32,
+) -> Outcome {
+    let jobs = std::slice::from_ref(job);
+    let outs = match schema {
+        Some(sch) => runner::run_jobs_with(jobs, 1, |_, attempt, capture| {
+            retry_decision(plan, sch, attempt, max_retries, capture)
+        }),
+        None => runner::run_jobs_with(jobs, 1, |_, _, _| None),
+    };
+    outs.into_iter().next().expect("one job, one outcome")
+}
+
+/// Drive the selected harnesses in priority order, stopping at the first that
+/// actually runs the task (success OR real failure). A harness that could not run
+/// at all — not installed, unspawnable, or rejected before doing any work (auth /
+/// quota) — is fallen through to the next. Returns one result per *attempted*
+/// harness (the fallen-through ones in order, then the one that ran), plus the
+/// fallback report; candidates after the one that ran are never spawned and do
+/// not appear. `plan`/`jobs`/`job_plans` are the same structures the parallel
+/// path builds — a `Ready` entry is an already-resolved (here, always `Skipped`)
+/// row, a `Pending` entry carries a job to spawn.
+fn run_fallback(
+    plan: Vec<Plan>,
+    jobs: &[Job],
+    job_plans: &[HarnessPlan],
+    schema: Option<&Schema>,
+    max_retries: u32,
+) -> (Vec<RunResult>, FallbackReport) {
+    let mut results: Vec<RunResult> = Vec::new();
+    let mut fell_through: Vec<FallThrough> = Vec::new();
+    let mut ran: Option<String> = None;
+    for entry in plan {
+        let result = match entry {
+            Plan::Ready(result) => *result,
+            Plan::Pending {
+                spec,
+                bin,
+                output_format,
+                job_index,
+                prompt,
+            } => {
+                let outcome =
+                    run_one_job(&jobs[job_index], &job_plans[job_index], schema, max_retries);
+                let command = jobs[job_index].argv.clone();
+                executed_result(
+                    spec,
+                    bin,
+                    command,
+                    output_format,
+                    &outcome.capture,
+                    schema,
+                    outcome.attempts,
+                    prompt,
+                )
+            }
+        };
+        match fallback::startup_failure_reason(result.status, result.failure_kind.as_deref()) {
+            // Could not run — record why and try the next candidate.
+            Some(reason) => {
+                fell_through.push(FallThrough {
+                    harness: result.harness.clone(),
+                    reason: reason.to_string(),
+                });
+                results.push(result);
+            }
+            // Actually ran (well or badly) — this is the answer; stop here.
+            None => {
+                ran = Some(result.harness.clone());
+                results.push(result);
+                break;
+            }
+        }
+    }
+    (results, FallbackReport { ran, fell_through })
+}
+
+/// Exit code for a fallback run: a hard failure when no candidate could run at
+/// all (nothing executed), otherwise the success of the one harness that ran —
+/// which is always the last result. A real task failure or timeout there is a
+/// failure; the fallen-through candidates never count against it, which is the
+/// whole point of the mode. `require_available` does not apply (a missing harness
+/// is the expected, tolerated case in fallback).
+fn fallback_exit(results: &[RunResult], ran: bool) -> i32 {
+    if !ran {
+        return EXIT_FAILURE;
+    }
+    let last = results.last().expect("a harness ran, so there is a result");
+    if is_failure(last.status, last.available, false, last.schema_valid) {
+        EXIT_FAILURE
+    } else {
+        EXIT_OK
+    }
 }
 
 /// A planned harness: either fully resolved (skipped/planned) or awaiting a job.

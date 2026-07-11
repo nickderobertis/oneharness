@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::domain::fallback::RunMode;
 use crate::domain::harness;
 use crate::domain::hooks::HookSpec;
 use crate::domain::mode::PermissionMode;
@@ -59,6 +60,13 @@ pub struct FileConfig {
     pub schema_max_retries: Option<u32>,
     /// Concurrency cap (like `--max-parallel`).
     pub max_parallel: Option<usize>,
+    /// How the selected harnesses are run (like `--run-mode`): `parallel` (the
+    /// default) runs them all at once; `fallback` runs them in priority order,
+    /// stopping at the first that runs and falling through only harnesses that
+    /// cannot run at all. Most naturally set in a project `oneharness.toml` to
+    /// declare the harnesses a repo supports, so whichever a contributor has set
+    /// up is used.
+    pub run_mode: Option<RunMode>,
     /// Treat a missing harness as a failure (like `--require-available`).
     pub require_available: Option<bool>,
     /// Record a normalized, cross-harness history of each run to disk (opt-in,
@@ -294,6 +302,7 @@ pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Option<FileConfi
             "a non-negative integer",
         )?,
         max_parallel: env_num(&read, "ONEHARNESS_MAX_PARALLEL", "a non-negative integer")?,
+        run_mode: env_run_mode(&read)?,
         require_available: env_bool(&read, "ONEHARNESS_REQUIRE_AVAILABLE")?,
         history: env_bool(&read, "ONEHARNESS_HISTORY")?,
         history_dir: read("ONEHARNESS_HISTORY_DIR"),
@@ -361,6 +370,17 @@ fn env_mode<F: Fn(&str) -> Option<String>>(read: &F) -> Result<Option<Permission
     }
 }
 
+/// Read `ONEHARNESS_RUN_MODE`, accepting the same tokens as the `--run-mode` flag.
+fn env_run_mode<F: Fn(&str) -> Option<String>>(read: &F) -> Result<Option<RunMode>, String> {
+    let name = "ONEHARNESS_RUN_MODE";
+    match read(name) {
+        None => Ok(None),
+        Some(v) => RunMode::parse(&v)
+            .map(Some)
+            .ok_or_else(|| format!("`{name}` must be one of `parallel`, `fallback`, got `{v}`")),
+    }
+}
+
 /// Read `ONEHARNESS_OUTPUT_FORMAT`, accepting the same tokens as the CLI flag.
 fn env_output_format<F: Fn(&str) -> Option<String>>(
     read: &F,
@@ -424,6 +444,7 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
         schema_file: over.schema_file.or(base.schema_file),
         schema_max_retries: over.schema_max_retries.or(base.schema_max_retries),
         max_parallel: over.max_parallel.or(base.max_parallel),
+        run_mode: over.run_mode.or(base.run_mode),
         require_available: over.require_available.or(base.require_available),
         history: over.history.or(base.history),
         history_dir: over.history_dir.or(base.history_dir),
@@ -587,6 +608,9 @@ pub struct ConfigReport {
     pub schema_file: Field<String>,
     pub schema_max_retries: Field<u32>,
     pub max_parallel: Field<usize>,
+    /// The configured run mode, if any. Unset falls back to `parallel` (the
+    /// built-in default) at run time.
+    pub run_mode: Field<RunMode>,
     pub require_available: Field<bool>,
     pub history: Field<bool>,
     pub history_dir: Field<String>,
@@ -719,6 +743,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         schema_file: pick(layers, |c| c.schema_file.clone()),
         schema_max_retries: pick(layers, |c| c.schema_max_retries),
         max_parallel: pick(layers, |c| c.max_parallel),
+        run_mode: pick(layers, |c| c.run_mode),
         require_available: pick(layers, |c| c.require_available).or_default(false),
         history: pick(layers, |c| c.history).or_default(false),
         history_dir: pick(layers, |c| c.history_dir.clone()),
@@ -759,6 +784,7 @@ mod tests {
             schema_file = "schema.json"
             schema_max_retries = 4
             max_parallel = 2
+            run_mode = "fallback"
             require_available = true
             history = true
             history_dir = "/var/hist"
@@ -783,6 +809,7 @@ mod tests {
         assert_eq!(c.schema_file.as_deref(), Some("schema.json"));
         assert_eq!(c.schema_max_retries, Some(4));
         assert_eq!(c.max_parallel, Some(2));
+        assert_eq!(c.run_mode, Some(RunMode::Fallback));
         assert_eq!(c.require_available, Some(true));
         assert_eq!(c.history, Some(true));
         assert_eq!(c.history_dir.as_deref(), Some("/var/hist"));
@@ -1185,6 +1212,7 @@ mod tests {
             ("ONEHARNESS_SCHEMA_FILE", "schema.json"),
             ("ONEHARNESS_SCHEMA_MAX_RETRIES", "4"),
             ("ONEHARNESS_MAX_PARALLEL", "2"),
+            ("ONEHARNESS_RUN_MODE", "fallback"),
             ("ONEHARNESS_REQUIRE_AVAILABLE", "1"),
             ("ONEHARNESS_HISTORY", "true"),
             ("ONEHARNESS_HISTORY_DIR", "/var/hist"),
@@ -1202,9 +1230,38 @@ mod tests {
         assert_eq!(c.schema_file.as_deref(), Some("schema.json"));
         assert_eq!(c.schema_max_retries, Some(4));
         assert_eq!(c.max_parallel, Some(2));
+        assert_eq!(c.run_mode, Some(RunMode::Fallback));
         assert_eq!(c.require_available, Some(true));
         assert_eq!(c.history, Some(true));
         assert_eq!(c.history_dir.as_deref(), Some("/var/hist"));
+    }
+
+    #[test]
+    fn run_mode_layers_env_and_explains() {
+        // Layers like any scalar: a project value beats the user one.
+        let merged = merge(
+            parsed("run_mode = \"parallel\""),
+            parsed("run_mode = \"fallback\""),
+        );
+        assert_eq!(merged.run_mode, Some(RunMode::Fallback));
+
+        // `explain` attributes it to the winning file; unset stays null (the
+        // effective mode then defaults to `parallel` at run time).
+        let report = explain(&layers(
+            "run_mode = \"fallback\"",
+            "run_mode = \"parallel\"",
+        ));
+        assert_eq!(report.run_mode.value, Some(RunMode::Parallel));
+        assert_eq!(report.run_mode.source.as_deref(), Some("/project.toml"));
+        assert_eq!(explain(&[]).run_mode, Field::unset());
+
+        // The env layer parses the same tokens and rejects a bad one loudly.
+        let c = from_env(env_get(&[("ONEHARNESS_RUN_MODE", "fallback")]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(c.run_mode, Some(RunMode::Fallback));
+        let err = from_env(env_get(&[("ONEHARNESS_RUN_MODE", "nope")])).unwrap_err();
+        assert!(err.contains("parallel"), "{err}");
     }
 
     #[test]

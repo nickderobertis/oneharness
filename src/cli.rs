@@ -6,6 +6,7 @@ use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Args, Parser, Subcommand};
 
 use oneharness_core::domain::batch::BatchStrategy;
+use oneharness_core::domain::fallback::RunMode;
 use oneharness_core::domain::mode::PermissionMode;
 use oneharness_core::domain::report::OutputFormat;
 
@@ -34,6 +35,14 @@ fn mode_parser() -> impl TypedValueParser<Value = PermissionMode> {
 fn batch_strategy_parser() -> impl TypedValueParser<Value = BatchStrategy> {
     PossibleValuesParser::new(BatchStrategy::ALL.map(|s| s.as_str()))
         .map(|s| BatchStrategy::parse(&s).expect("clap restricts to valid strategy tokens"))
+}
+
+/// Parse `--run-mode` into the core [`RunMode`], keeping the possible-value list
+/// (and its `--help` listing + validation error) in the binary so
+/// `oneharness-core` need not depend on `clap`.
+fn run_mode_parser() -> impl TypedValueParser<Value = RunMode> {
+    PossibleValuesParser::new(RunMode::ALL.map(|m| m.as_str()))
+        .map(|s| RunMode::parse(&s).expect("clap restricts to valid run-mode tokens"))
 }
 
 /// How `oneharness history list`/`show` renders. Every other subcommand emits
@@ -468,6 +477,20 @@ pub struct RunArgs {
     /// (no saving, with a stderr warning), so `speed` is the safe default.
     #[arg(long, value_parser = batch_strategy_parser(), value_name = "STRATEGY")]
     pub batch_strategy: Option<BatchStrategy>,
+
+    /// How the selected harnesses are run (also `run_mode` in config /
+    /// ONEHARNESS_RUN_MODE). `parallel` (the DEFAULT) runs them all at once and
+    /// reports each. `fallback` runs them in **priority order** (the --harness /
+    /// config order, else registry order under --all) and stops at the first that
+    /// actually runs the task, falling through only harnesses that cannot run at
+    /// all — not installed, unspawnable, or rejected before doing any work (auth /
+    /// no-credit quota). A real task failure or a timeout does NOT fall through
+    /// (it would mask a real failure). Incompatible with a batch run and with
+    /// --resume / --fork / --session / --stream. Every listed harness is validated
+    /// up front, so a flag unsupported by ANY candidate is a usage error even if
+    /// that harness is never reached — keeping the command valid for the whole set.
+    #[arg(long, value_parser = run_mode_parser(), value_name = "MODE")]
+    pub run_mode: Option<RunMode>,
 
     /// Build and report each command without executing it (dry run).
     #[arg(long)]

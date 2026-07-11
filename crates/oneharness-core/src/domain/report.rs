@@ -181,6 +181,13 @@ pub struct RunReport {
     /// than one prompt; `null` on an ordinary run. Its presence is the signal a
     /// consumer keys on to read each result's own `prompt`.
     pub batch: Option<BatchReport>,
+    /// Fallback-mode metadata when this run drove the selected harnesses in
+    /// priority order, stopping at the first that ran (`--run-mode fallback`);
+    /// `null` on a parallel run (and under `--print-command`, where nothing
+    /// executes). Its presence tells a consumer that `results` holds only the
+    /// harnesses actually *attempted* — the fallen-through ones in order, then
+    /// the one that ran — not every selected harness.
+    pub fallback: Option<FallbackReport>,
     /// The parsed `--mock-rules` ruleset this run was intercepted with; `null`
     /// when no mocking was requested. Present so a consumer can tell a mocked
     /// run's report from a clean one without out-of-band state.
@@ -216,6 +223,30 @@ pub struct SessionReport {
     /// The session store file backing the handle (absolute); the programmatic
     /// handle to the persisted state.
     pub store_file: Option<String>,
+}
+
+/// Metadata for a fallback run (harnesses tried in priority order until one
+/// runs). Present on [`RunReport::fallback`] only in that mode. The per-harness
+/// detail lives in `results`; this block summarizes the outcome so a consumer
+/// need not re-derive it from statuses.
+#[derive(Debug, Clone, Serialize)]
+pub struct FallbackReport {
+    /// The harness that actually ran the task (the run stopped there), or `null`
+    /// when no candidate could run at all — every one was a startup failure.
+    pub ran: Option<String>,
+    /// The candidates fallen through because they could not run the task at all,
+    /// in priority order, each with why (`not-installed`, `spawn-error`, `auth`,
+    /// `quota`; see [`crate::domain::fallback::startup_failure_reason`]).
+    pub fell_through: Vec<FallThrough>,
+}
+
+/// One candidate a fallback run fell through, with the reason it could not run.
+#[derive(Debug, Clone, Serialize)]
+pub struct FallThrough {
+    /// Canonical harness id.
+    pub harness: String,
+    /// Short reason token (`not-installed` / `spawn-error` / `auth` / `quota`).
+    pub reason: String,
 }
 
 /// Metadata for a same-prefix batch run (one harness, N prompts sharing a

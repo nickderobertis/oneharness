@@ -29,6 +29,12 @@ pub enum OneharnessError {
     #[error("a batch run (more than one prompt) cannot be combined with --resume/--fork (those continue a single session with a single prompt)")]
     BatchResume,
 
+    #[error("`--run-mode fallback` is incompatible with {with} ({why})")]
+    FallbackConflict {
+        with: &'static str,
+        why: &'static str,
+    },
+
     #[error("--resume needs exactly one harness (a session belongs to one harness), but {count} were selected: {selected}")]
     ResumeMultipleHarnesses { count: usize, selected: String },
 

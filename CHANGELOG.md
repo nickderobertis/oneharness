@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.17](https://github.com/nickderobertis/oneharness/compare/v0.3.16...v0.3.17) - 2026-07-11
+
+### Added
+
+- configure reasoning/thinking effort per harness ([#1122](https://github.com/nickderobertis/oneharness/pull/1122))
+
 ## [0.3.16](https://github.com/nickderobertis/oneharness/compare/v0.3.15...v0.3.16) - 2026-07-11
 
 ### Added

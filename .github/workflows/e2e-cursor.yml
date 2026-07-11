@@ -126,4 +126,10 @@ jobs:
         env:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
           CURSOR_E2E_MODEL: ${{ vars.CURSOR_E2E_MODEL }}
+          # Reasoning effort rides the model id (`--model 'MODEL[effort=high]'`),
+          # so the reasoning phase needs a real model even when the other phases
+          # use cursor's default. Prefer a dedicated repo var, then the shared
+          # one, then a sensible default. Override with `vars.CURSOR_E2E_REASONING_MODEL`
+          # if this id isn't valid for the account/plan.
+          CURSOR_E2E_REASONING_MODEL: ${{ vars.CURSOR_E2E_REASONING_MODEL || vars.CURSOR_E2E_MODEL || 'sonnet-4.5' }}
         run: just live-cursor

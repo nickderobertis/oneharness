@@ -50,6 +50,11 @@ struct HarnessInfo {
     /// portable prompt-based path is used — structured output works either way;
     /// oneharness always validates and retries.
     supports_native_schema: bool,
+    /// Whether `run --reasoning <effort>` can be delivered on the argv for this
+    /// harness (Claude Code's `--effort`, Codex's `model_reasoning_effort`).
+    /// `false` means it has no headless reasoning flag — a reasoning request is
+    /// then a loud usage error (effort is provider/model config there).
+    supports_reasoning: bool,
     /// The project-scoped config file `oneharness sync` writes for this
     /// harness; `null` when it has none (sync settings are then rejected).
     sync_file: Option<&'static str>,
@@ -125,6 +130,7 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                     })
                     .collect(),
                 supports_native_schema: spec.native_schema.is_some(),
+                supports_reasoning: spec.reasoning.is_some(),
                 sync_file: sync.map(|s| s.file),
                 supports_allowed_tools: sync.is_some_and(|s| s.allow_path.is_some()),
                 supports_denied_tools: sync.is_some_and(|s| s.deny_path.is_some()),

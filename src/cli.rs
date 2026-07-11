@@ -318,6 +318,18 @@ pub struct RunArgs {
     #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
     pub system: Option<String>,
 
+    /// Reasoning / thinking effort, forwarded verbatim to each harness that
+    /// exposes it on the argv: Claude Code's --effort (low/medium/high/max/auto)
+    /// and Codex's model_reasoning_effort (minimal/low/medium/high/xhigh). Pick a
+    /// value your chosen model accepts — oneharness does not interpret it, so an
+    /// unsupported value surfaces as that harness's own error, not a guess. A
+    /// harness with no headless reasoning flag (every harness but claude-code and
+    /// codex; the rest set effort via config only) is a loud usage error rather
+    /// than a silent drop, so scope this per harness (config `[harness.<id>]
+    /// reasoning`) when a selection mixes them. Overrides config `reasoning`.
+    #[arg(long, value_name = "EFFORT")]
+    pub reasoning: Option<String>,
+
     /// Read the system prompt from a file, or '-' for stdin — the file-based
     /// counterpart to --system (mirroring --prompt-file), for a system prompt too
     /// large to pass as an argv string: a big --system value can trip the OS

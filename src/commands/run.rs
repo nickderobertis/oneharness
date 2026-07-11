@@ -258,6 +258,10 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // `timeout` result, never an infinite stall).
     let mode = resolve_mode(args, cfg);
     validate_modes(mode, &specs)?;
+    // A reasoning/effort setting for a harness that has no headless argv surface
+    // for it is refused here (no way to deliver it) — a loud usage error rather
+    // than a silent drop, mirroring an unsupported mode.
+    validate_reasoning(args, cfg, &specs)?;
     if !args.permit_prompts {
         for id in hang_prone(mode, &specs) {
             eprintln!(
@@ -396,7 +400,25 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         } else {
             chosen_format
         };
-        let mut extra = cfg.args_for(spec.id).to_vec();
+        // Reasoning / thinking effort is delivered as override args in the
+        // harness's native shape (Claude's `--effort`, Codex's `-c
+        // model_reasoning_effort=`), resolved per harness so effort can sit next
+        // to each harness's own model (CLI `--reasoning` beats config). It leads
+        // `extra` so a raw `--` passthrough can still override it. A harness with
+        // no headless reasoning surface was already refused by
+        // `validate_reasoning`, so `spec.reasoning` is `Some` whenever a value is.
+        let mut extra: Vec<String> = Vec::new();
+        if let Some(value) = args
+            .reasoning
+            .as_deref()
+            .or_else(|| cfg.reasoning_for(spec.id))
+        {
+            let delivery = spec.reasoning.expect(
+                "validate_reasoning refused a reasoning value for a harness without delivery",
+            );
+            extra.extend(delivery.args(value));
+        }
+        extra.extend(cfg.args_for(spec.id).iter().cloned());
         extra.extend(args.passthrough.iter().cloned());
         if let Some(wiring) = &mock_wiring {
             extra.extend(wiring.extra_args_for(spec.id));
@@ -2270,6 +2292,35 @@ fn validate_modes(
     Ok(())
 }
 
+/// Refuse — before anything spawns — a reasoning/effort setting for a selected
+/// harness that has no headless argv surface for it ([`HarnessSpec::reasoning`]
+/// is `None`): there is nothing to deliver it through, so it is a loud usage
+/// error ([`OneharnessError::ReasoningUnsupported`]) rather than a silent drop.
+/// Resolves the effective value per harness exactly as the run does (CLI
+/// `--reasoning` beats config `[harness.<id>]`/top-level `reasoning`), so a
+/// value scoped to a capable harness never trips one that isn't selected for it.
+fn validate_reasoning(
+    args: &RunArgs,
+    cfg: &oneharness_core::domain::config::FileConfig,
+    specs: &[&'static HarnessSpec],
+) -> Result<(), OneharnessError> {
+    for spec in specs {
+        let set = args.reasoning.is_some() || cfg.reasoning_for(spec.id).is_some();
+        if set && spec.reasoning.is_none() {
+            return Err(OneharnessError::ReasoningUnsupported {
+                id: spec.id.to_string(),
+                supported: harness::all()
+                    .iter()
+                    .filter(|h| h.reasoning.is_some())
+                    .map(|h| h.id)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// The selected harnesses for which `mode` is supported but would block on an
 /// interactive approval prompt headlessly (`ModeHeadless::Hangs`). The caller
 /// warns about each (unless `--permit-prompts`) but still runs them — the
@@ -2588,6 +2639,7 @@ mod tests {
             native_schema: None,
             large_input: oneharness_core::domain::harness::LargeInput::NONE,
             modes: &[],
+            reasoning: None,
             build_argv: noop_argv,
         }
     }

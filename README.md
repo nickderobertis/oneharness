@@ -59,16 +59,16 @@ The table doubles as the **config support matrix**: each column after the
 binary is a unified setting (CLI flag and/or `oneharness.toml` field) and shows
 how — or whether — it reaches that harness.
 
-| id | CLI | default binary | `model` | `system` | bypass mode requested | synced config file | allow / deny | hooks | output format | `--resume` (continue / fork) |
-|----|-----|----------------|:-------:|----------|-----------------------|--------------------|:------------:|:-----:|:-------------:|:---------:|
-| `claude-code` | Claude Code | `claude` | ✓ | native flag | `--permission-mode bypassPermissions` | `.claude/settings.json` | ✓ / ✓ | ✓ | ✓ | `--resume` + `--fork-session` |
-| `codex` | OpenAI Codex CLI | `codex` | ✓ | prepended | `--dangerously-bypass-approvals-and-sandbox` | — | — | — | — | `exec resume <id>` (linear) |
-| `opencode` | OpenCode | `opencode` | ✓ | prepended | `--dangerously-skip-permissions` | `opencode.json` | via `settings` | — | ✓ | `--session` + `--fork` |
-| `goose` | Goose | `goose` | — | native flag | (runs unattended) | — | — | — | — | `--resume --name` (linear)¹ |
-| `qwen` | Qwen Code | `qwen` | ✓ | prepended | `--yolo` | `.qwen/settings.json` | ✓ / ✓ (interactive) | — | — | `--resume` (linear) |
-| `crush` | Crush | `crush` | ✓ | prepended | `run -q` (non-interactive) | `crush.json` | ✓ / ✓ | — | — | `--session` (linear) |
-| `copilot` | GitHub Copilot CLI | `copilot` | ✓ | prepended | `--allow-all-tools --allow-all-paths --no-ask-user` | — | — | — | — | `--resume` (linear)¹ |
-| `cursor` | Cursor CLI | `cursor-agent` | ✓ | prepended | `--force` (`--trust` under `--no-bypass`) | `.cursor/cli.json` | ✓ / ✓ | — | ✓ | `--resume` (linear) |
+| id | CLI | default binary | `model` | `system` | `reasoning` | bypass mode requested | synced config file | allow / deny | hooks | output format | `--resume` (continue / fork) |
+|----|-----|----------------|:-------:|----------|-------------|-----------------------|--------------------|:------------:|:-----:|:-------------:|:---------:|
+| `claude-code` | Claude Code | `claude` | ✓ | native flag | `--effort` | `--permission-mode bypassPermissions` | `.claude/settings.json` | ✓ / ✓ | ✓ | ✓ | `--resume` + `--fork-session` |
+| `codex` | OpenAI Codex CLI | `codex` | ✓ | prepended | `model_reasoning_effort` | `--dangerously-bypass-approvals-and-sandbox` | — | — | — | — | `exec resume <id>` (linear) |
+| `opencode` | OpenCode | `opencode` | ✓ | prepended | config only | `--dangerously-skip-permissions` | `opencode.json` | via `settings` | — | ✓ | `--session` + `--fork` |
+| `goose` | Goose | `goose` | — | native flag | — | (runs unattended) | — | — | — | — | `--resume --name` (linear)¹ |
+| `qwen` | Qwen Code | `qwen` | ✓ | prepended | config only | `--yolo` | `.qwen/settings.json` | ✓ / ✓ (interactive) | — | — | `--resume` (linear) |
+| `crush` | Crush | `crush` | ✓ | prepended | config only | `run -q` (non-interactive) | `crush.json` | ✓ / ✓ | — | — | `--session` (linear) |
+| `copilot` | GitHub Copilot CLI | `copilot` | ✓ | prepended | config only | `--allow-all-tools --allow-all-paths --no-ask-user` | — | — | — | — | `--resume` (linear)¹ |
+| `cursor` | Cursor CLI | `cursor-agent` | ✓ | prepended | config only | `--force` (`--trust` under `--no-bypass`) | `.cursor/cli.json` | ✓ / ✓ | — | ✓ | `--resume` (linear) |
 
 The `--resume` column shows each harness's headless continuation flag and whether
 it can **fork** (`run --resume <id> --fork`: branch a new session from the resumed
@@ -94,6 +94,17 @@ rest (which have no id to bind a name to) `--session` is a loud usage error.
   (Claude Code's `--append-system-prompt`, Goose's `--system`); "prepended"
   means the harness has no such flag, so the text is prepended to the prompt —
   it always reaches the model, never silently dropped.
+- **`reasoning`** — reasoning / thinking effort (`--reasoning <effort>` /
+  `ONEHARNESS_REASONING` / config `reasoning`, and per harness next to its
+  `model`), an opaque string forwarded verbatim in each harness's native shape:
+  Claude Code's `--effort` (low/medium/high/max/auto) and Codex's `-c
+  model_reasoning_effort=` (minimal…xhigh). Effort is a provider/model
+  capability with no shared spelling, so oneharness does not interpret the value
+  — an effort the model rejects surfaces as that harness's own error, never a
+  guess. "config only" harnesses express effort in their own config file (not a
+  headless flag), so `--reasoning` is a **loud usage error** for them rather than
+  a silent drop; scope the setting per harness when a selection mixes capable and
+  incapable ones. (`supports_reasoning` in `oneharness list`.)
 - **synced config file** — the project-scoped file `oneharness sync` merges the
   unified settings into. Because the policy lands in each harness's *own*
   config, it also governs the tools when used directly — oneharness is not in
@@ -131,8 +142,8 @@ for **every** harness — as does `--schema` ([structured output](#structured-ou
 prompt-based where a harness has no native schema flag). `oneharness list` prints
 this registry as JSON, including each adapter's exact command, its `sync_file`,
 and `supports_resume` / `supports_fork` / `supports_native_schema` /
-`supports_allowed_tools` / `supports_denied_tools` / `supports_hooks` capability
-flags.
+`supports_reasoning` / `supports_allowed_tools` / `supports_denied_tools` /
+`supports_hooks` capability flags.
 
 ## Install
 

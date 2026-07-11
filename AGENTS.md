@@ -479,6 +479,28 @@ shape. When you add one:
   prompt-based structured-output path already works for every harness, and
   oneharness validates the result regardless. If a harness reports its conforming
   value somewhere other than the answer text, extend `structured::extract_value`.
+- Set its `reasoning` (`ReasoningDelivery`) only if the CLI takes a
+  reasoning/thinking-effort setting **on the argv** headlessly, sourced from that
+  CLI's docs (never guessed): `Flag("--effort")` for a dedicated flag (claude-code)
+  or `ConfigKv("model_reasoning_effort")` for a `-c key=value` override (codex).
+  The value is an **opaque string** the caller picks for their model and oneharness
+  forwards verbatim (reasoning effort is a provider/model capability with no shared
+  spelling — OpenAI's `reasoning_effort` enum vs. Anthropic's thinking-token
+  budget — so it is per-harness delivery, not a normalized spectrum; an
+  effort the model rejects surfaces as that harness's own `nonzero`, never a
+  guess). `build_argv` is untouched: the command layer renders `ReasoningDelivery::args`
+  into the harness's override args (alongside config `args`/passthrough), and
+  refuses (`ReasoningUnsupported`, a loud usage error) any selected harness with
+  `reasoning: None` that has an effective `--reasoning`/config value — never a
+  silent drop. `None` is the honest default (Cursor and Copilot express effort
+  only through their own config file — the `sync`-path follow-up; the plain
+  harnesses have no knob). Pin the rendered argv with a `--print-command`
+  assertion, add the `reasoning`/`supports_reasoning` column to the README matrix,
+  and resolve it per harness (`[harness.<id>] reasoning`, next to `model`, since
+  effort values are provider-specific). The config/env/CLI trio gained `reasoning`
+  / `ONEHARNESS_REASONING` / `--reasoning`. A live drift-alarm (`oh_reasoning_enforce`:
+  a real run with `--reasoning` accepts the value and reflects it) is the natural
+  follow-up but is not yet wired.
 - Declare its `large_input` (`LargeInput`): how a **large** prompt/system reaches
   the harness without inlining it into the argv (past the OS ceiling → `E2BIG`;
   issue #1115). Three fields, all sourced from the CLI's headless docs, never

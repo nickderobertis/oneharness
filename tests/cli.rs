@@ -58,6 +58,7 @@ const ENV_OVERRIDE_VARS: &[&str] = &[
     "ONEHARNESS_MODEL",
     "ONEHARNESS_MODELS",
     "ONEHARNESS_SYSTEM",
+    "ONEHARNESS_REASONING",
     "ONEHARNESS_BYPASS",
     "ONEHARNESS_TIMEOUT",
     "ONEHARNESS_OUTPUT_FORMAT",
@@ -1559,6 +1560,150 @@ fn resume_maps_for_the_text_output_harnesses() {
         crush.windows(2).any(|w| w == ["--session", "s-9"]),
         "{crush:?}"
     );
+}
+
+#[test]
+fn reasoning_maps_to_each_capable_harness_native_flag() {
+    // claude-code: `--effort <value>`; value forwarded verbatim.
+    let claude = print_command_for(&["--harness", "claude-code", "--reasoning", "high"]);
+    assert!(
+        claude.windows(2).any(|w| w == ["--effort", "high"]),
+        "{claude:?}"
+    );
+    // codex: `-c model_reasoning_effort=<value>` (bare value, Codex's `-c`
+    // override — the same mechanism the codex mock phase exercises live).
+    let codex = print_command_for(&["--harness", "codex", "--reasoning", "xhigh"]);
+    assert!(
+        codex
+            .windows(2)
+            .any(|w| w == ["-c", "model_reasoning_effort=xhigh"]),
+        "{codex:?}"
+    );
+}
+
+#[test]
+fn reasoning_leads_the_override_args_so_passthrough_can_win() {
+    // Reasoning args precede a raw `--` passthrough, so an explicit override wins.
+    let claude = print_command_for(&[
+        "--harness",
+        "claude-code",
+        "--reasoning",
+        "high",
+        "--",
+        "--effort",
+        "max",
+    ]);
+    let first = claude.iter().position(|t| t == "--effort").unwrap();
+    let last = claude.iter().rposition(|t| t == "--effort").unwrap();
+    assert_ne!(first, last, "expected two --effort occurrences: {claude:?}");
+    assert_eq!(
+        claude[last + 1],
+        "max",
+        "passthrough must come last: {claude:?}"
+    );
+}
+
+#[test]
+fn reasoning_without_the_flag_leaves_argv_untouched() {
+    // The common case is byte-identical to before the feature (no --effort/-c).
+    let claude = print_command_for(&["--harness", "claude-code"]);
+    assert!(!claude.iter().any(|t| t == "--effort"), "{claude:?}");
+    let codex = print_command_for(&["--harness", "codex"]);
+    assert!(
+        !codex
+            .iter()
+            .any(|t| t == "model_reasoning_effort=high" || t.starts_with("model_reasoning_effort")),
+        "{codex:?}"
+    );
+}
+
+#[test]
+fn reasoning_on_a_harness_without_a_flag_is_a_usage_error() {
+    // Every harness but claude-code/codex sets effort via config, not argv, so a
+    // reasoning request is refused loudly (never silently dropped) and points at
+    // the harnesses that can take it.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--reasoning",
+            "high",
+            "--print-command",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cannot take a reasoning"), "{stderr}");
+    assert!(
+        stderr.contains("claude-code, codex"),
+        "should list capable harnesses: {stderr}"
+    );
+}
+
+#[test]
+fn reasoning_scoped_to_a_capable_harness_does_not_trip_a_mixed_selection() {
+    // A value scoped per harness (`[harness.codex].reasoning`) reaches codex and
+    // leaves claude-code untouched — the mixed selection is NOT refused, because
+    // the incapable-in-selection harness has no effective reasoning value.
+    let fx = ConfigFixture::new(
+        "reasoning-scoped",
+        "[harness.codex]\nreasoning = \"high\"\n",
+        "",
+    );
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "go",
+            "--print-command",
+            "--compact",
+            "--cwd",
+            &fx.cwd(),
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(output.status.success(), "{output:?}");
+    let value = json_stdout(&output);
+    let by_harness = |id: &str| -> Vec<String> {
+        let results = value["results"].as_array().unwrap();
+        let idx = results.iter().position(|r| r["harness"] == id).unwrap();
+        command_of(&value, idx)
+    };
+    assert!(
+        by_harness("codex")
+            .windows(2)
+            .any(|w| w == ["-c", "model_reasoning_effort=high"]),
+        "codex should carry the scoped effort"
+    );
+    assert!(
+        !by_harness("claude-code").iter().any(|t| t == "--effort"),
+        "claude-code must be untouched by a codex-scoped value"
+    );
+}
+
+#[test]
+fn config_command_reports_reasoning_provenance() {
+    // `oneharness config` attributes both the top-level and per-harness reasoning
+    // to their winning layer, so a consumer can see the effective effort/source.
+    let fx = ConfigFixture::new(
+        "reasoning-provenance",
+        "reasoning = \"medium\"\n[harness.codex]\nreasoning = \"high\"\n",
+        "",
+    );
+    let output = run_with_config(&["config", "--cwd", &fx.cwd()], &[], &fx.user_config());
+    assert!(output.status.success(), "{output:?}");
+    let value = json_stdout(&output);
+    assert_eq!(value["reasoning"]["value"], "medium");
+    assert_eq!(value["harness"]["codex"]["reasoning"]["value"], "high");
 }
 
 #[test]

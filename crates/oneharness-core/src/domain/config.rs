@@ -48,6 +48,14 @@ pub struct FileConfig {
     pub models: Option<Vec<String>>,
     /// Portable system prompt (like `--system`).
     pub system: Option<String>,
+    /// Reasoning / thinking effort (like `--reasoning`), an opaque string chosen
+    /// for the model and forwarded verbatim to each harness that exposes effort
+    /// on the argv (Claude Code's `--effort`, Codex's `model_reasoning_effort`).
+    /// Naturally set per harness via `[harness.<id>].reasoning` next to that
+    /// harness's `model`, since effort values are provider-specific. A harness
+    /// with no headless reasoning surface is a loud usage error, never a silent
+    /// drop.
+    pub reasoning: Option<String>,
     /// Request each harness's bypass mode (default true; like `--no-bypass`
     /// when false). The CLI's `--bypass` / `--no-bypass` always win. Superseded
     /// by `mode` when both are set (`mode` is the richer spelling; `bypass =
@@ -122,6 +130,10 @@ pub struct FileConfig {
 pub struct HarnessConfig {
     /// Model for this harness (model names differ per provider).
     pub model: Option<String>,
+    /// Reasoning / thinking effort for this harness only; beats the top-level
+    /// `reasoning`. Its accepted values are provider-specific, so it usually
+    /// lives next to this harness's `model`.
+    pub reasoning: Option<String>,
     /// Binary name or path (like `--bin <id>=<path>`, lowest precedence:
     /// `--bin` and `ONEHARNESS_BIN_<ID>` both beat it).
     pub bin: Option<String>,
@@ -304,6 +316,7 @@ pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Option<FileConfi
         model: read("ONEHARNESS_MODEL"),
         models: env_list(&read, "ONEHARNESS_MODELS"),
         system: read("ONEHARNESS_SYSTEM"),
+        reasoning: read("ONEHARNESS_REASONING"),
         bypass: env_bool(&read, "ONEHARNESS_BYPASS")?,
         mode: env_mode(&read)?,
         timeout: env_num(&read, "ONEHARNESS_TIMEOUT", "a non-negative integer")?,
@@ -434,6 +447,7 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
         merged_env.extend(o.env);
         *entry = HarnessConfig {
             model: o.model.or(entry.model.take()),
+            reasoning: o.reasoning.or(entry.reasoning.take()),
             bin: o.bin.or(entry.bin.take()),
             args: o.args.or(entry.args.take()),
             allowed_tools: o.allowed_tools.or(entry.allowed_tools.take()),
@@ -451,6 +465,7 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
         model: over.model.or(base.model),
         models: over.models.or(base.models),
         system: over.system.or(base.system),
+        reasoning: over.reasoning.or(base.reasoning),
         bypass: over.bypass.or(base.bypass),
         mode: over.mode.or(base.mode),
         timeout: over.timeout.or(base.timeout),
@@ -478,6 +493,16 @@ impl FileConfig {
             .get(id)
             .and_then(|h| h.model.as_deref())
             .or(self.model.as_deref())
+    }
+
+    /// The reasoning/effort for one harness: its `[harness.<id>]` override, else
+    /// the top-level `reasoning`. (A CLI `--reasoning` beats both; the caller
+    /// applies it.)
+    pub fn reasoning_for(&self, id: &str) -> Option<&str> {
+        self.harness
+            .get(id)
+            .and_then(|h| h.reasoning.as_deref())
+            .or(self.reasoning.as_deref())
     }
 
     /// The configured binary override for one harness, if any.
@@ -616,6 +641,9 @@ pub struct ConfigReport {
     /// if any. Unset when the run uses a single per-harness model.
     pub models: Field<Vec<String>>,
     pub system: Field<String>,
+    /// Reasoning / thinking effort (`--reasoning` / `ONEHARNESS_REASONING`), if
+    /// any. Forwarded to reasoning-capable harnesses only.
+    pub reasoning: Field<String>,
     pub bypass: Field<bool>,
     /// The configured `mode`, if any. Unset when only the legacy `bypass` field
     /// (or neither) is set — the effective mode then derives from `bypass`.
@@ -644,6 +672,7 @@ pub struct ConfigReport {
 #[derive(Debug, Serialize)]
 pub struct HarnessReport {
     pub model: Field<String>,
+    pub reasoning: Field<String>,
     pub bin: Field<String>,
     pub args: Field<Vec<String>>,
     pub allowed_tools: Field<Vec<String>>,
@@ -732,6 +761,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
             id.clone(),
             HarnessReport {
                 model: pick(layers, |c| section(c).and_then(|h| h.model)),
+                reasoning: pick(layers, |c| section(c).and_then(|h| h.reasoning)),
                 bin: pick(layers, |c| section(c).and_then(|h| h.bin)),
                 args: pick(layers, |c| section(c).and_then(|h| h.args)),
                 allowed_tools: pick(layers, |c| section(c).and_then(|h| h.allowed_tools)),
@@ -752,6 +782,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         model: pick(layers, |c| c.model.clone()),
         models: pick(layers, |c| c.models.clone()),
         system: pick(layers, |c| c.system.clone()),
+        reasoning: pick(layers, |c| c.reasoning.clone()),
         // Legacy `bypass` is opt-in now (the default mode is `default`), so its
         // built-in default is false; `mode` is the richer field.
         bypass: pick(layers, |c| c.bypass).or_default(false),
@@ -1223,6 +1254,7 @@ mod tests {
             ("ONEHARNESS_EXCLUDE", "cursor"),
             ("ONEHARNESS_MODEL", "haiku"),
             ("ONEHARNESS_SYSTEM", "be terse"),
+            ("ONEHARNESS_REASONING", "high"),
             ("ONEHARNESS_BYPASS", "false"),
             ("ONEHARNESS_MODE", "plan"),
             ("ONEHARNESS_TIMEOUT", "90"),
@@ -1241,6 +1273,7 @@ mod tests {
         assert_eq!(c.exclude.as_deref().unwrap(), ["cursor"]);
         assert_eq!(c.model.as_deref(), Some("haiku"));
         assert_eq!(c.system.as_deref(), Some("be terse"));
+        assert_eq!(c.reasoning.as_deref(), Some("high"));
         assert_eq!(c.bypass, Some(false));
         assert_eq!(c.mode, Some(PermissionMode::Plan));
         assert_eq!(c.timeout, Some(90));

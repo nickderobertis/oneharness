@@ -7504,6 +7504,33 @@ fn big_with_marker(marker: &str) -> String {
     format!("{marker} {}", "x".repeat(70 * 1024))
 }
 
+/// A temp file (removed on drop) so a big prompt/system reaches oneharness via
+/// `--prompt-file`/`--system-file` — NOT on its own argv. Windows caps the whole
+/// command line at ~32 KiB, so a >64 KiB `--prompt`/`--system` value would fail to
+/// spawn oneharness itself (the caller→oneharness hop #1108 addressed), masking
+/// the harness-spawn delivery these tests actually exercise.
+struct BigFile(PathBuf);
+
+impl BigFile {
+    fn new(tag: &str, contents: &str) -> Self {
+        let p = std::env::temp_dir().join(format!(
+            "oneharness-bigtest-{tag}-{}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&p, contents).unwrap();
+        BigFile(p)
+    }
+    fn path(&self) -> String {
+        self.0.display().to_string()
+    }
+}
+
+impl Drop for BigFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 #[test]
 fn large_prompt_rides_stdin_not_the_argv() {
     // A > 64 KiB prompt on claude-code must be delivered on the child's stdin
@@ -7512,14 +7539,17 @@ fn large_prompt_rides_stdin_not_the_argv() {
     // marker surfacing in the captured stdout proves the prompt actually arrived
     // there, and its absence from `command` proves it left the argv.
     let marker = "OHBIGPROMPT-marker-777";
-    let prompt = big_with_marker(marker);
+    // Delivered to oneharness via a file (not argv) so the caller→oneharness spawn
+    // clears Windows' command-line limit; the harness-spawn stdin path is the SUT.
+    let pf = BigFile::new("prompt-stdin", &big_with_marker(marker));
+    let pfp = pf.path();
     let out = run(
         &[
             "run",
             "--harness",
             "claude-code",
-            "--prompt",
-            &prompt,
+            "--prompt-file",
+            &pfp,
             "--bin",
             &bin_override("claude-code"),
             "--compact",
@@ -7551,7 +7581,11 @@ fn large_system_rides_a_temp_file_that_is_cleaned_up() {
     // file named after that flag, so the marker in the captured stdout proves the
     // file held the system text; the temp file must be gone once the run returns.
     let marker = "OHBIGSYS-marker-555";
-    let system = big_with_marker(marker);
+    // Big system delivered to oneharness via a file (caller hop); oneharness then
+    // re-materializes it to its OWN temp file for `--append-system-prompt-file`
+    // (the file asserted-cleaned below is that one, not this input file).
+    let sf = BigFile::new("sys-file", &big_with_marker(marker));
+    let sfp = sf.path();
     let out = run(
         &[
             "run",
@@ -7559,8 +7593,8 @@ fn large_system_rides_a_temp_file_that_is_cleaned_up() {
             "claude-code",
             "--prompt",
             "hi",
-            "--system",
-            &system,
+            "--system-file",
+            &sfp,
             "--bin",
             &bin_override("claude-code"),
             "--compact",
@@ -7604,14 +7638,16 @@ fn large_prompt_folds_system_into_stdin_for_a_prepend_harness() {
     // the harness's stdin, and neither may appear on the argv.
     let pmark = "OHCODEXPROMPT-111";
     let smark = "OHCODEXSYS-222";
-    let prompt = big_with_marker(pmark);
+    // Big prompt via a file (caller hop); the small system stays an inline flag.
+    let pf = BigFile::new("codex-prompt", &big_with_marker(pmark));
+    let pfp = pf.path();
     let out = run(
         &[
             "run",
             "--harness",
             "codex",
-            "--prompt",
-            &prompt,
+            "--prompt-file",
+            &pfp,
             "--system",
             smark,
             "--bin",
@@ -7641,6 +7677,11 @@ fn large_prompt_folds_system_into_stdin_for_a_prepend_harness() {
     );
 }
 
+// Non-Windows only: goose keeps a large system on its inline `--system` argv, and
+// there is no size that is both over the 64 KiB threshold (to fire the branch) AND
+// under Windows' ~32 KiB command-line limit (to spawn the harness), so the inline
+// delivery this asserts can only be exercised where the argv ceiling is higher.
+#[cfg(not(windows))]
 #[test]
 fn large_system_on_goose_warns_no_off_argv_route() {
     // Goose's `--system` is inline TEXT with no file/stdin route, so a large
@@ -7648,7 +7689,9 @@ fn large_system_on_goose_warns_no_off_argv_route() {
     // silently) and keep it inline. Kept under 128 KiB so spawning the mock itself
     // doesn't E2BIG on Linux, but over the 64 KiB threshold so the branch fires.
     let marker = "OHGOOSESYS-333";
-    let system = format!("{marker} {}", "y".repeat(80 * 1024));
+    // Delivered to oneharness via a file (caller hop); goose still inlines it.
+    let sf = BigFile::new("goose-sys", &format!("{marker} {}", "y".repeat(80 * 1024)));
+    let sfp = sf.path();
     let out = run(
         &[
             "run",
@@ -7656,8 +7699,8 @@ fn large_system_on_goose_warns_no_off_argv_route() {
             "goose",
             "--prompt",
             "hi",
-            "--system",
-            &system,
+            "--system-file",
+            &sfp,
             "--bin",
             &bin_override("goose"),
             "--compact",

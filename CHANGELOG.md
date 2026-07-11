@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.16](https://github.com/nickderobertis/oneharness/compare/v0.3.15...v0.3.16) - 2026-07-11
+
+### Added
+
+- fan out over multiple models in parallel and fallback modes ([#1120](https://github.com/nickderobertis/oneharness/pull/1120))
+
 ## [0.3.15](https://github.com/nickderobertis/oneharness/compare/v0.3.14...v0.3.15) - 2026-07-11
 
 ### Added

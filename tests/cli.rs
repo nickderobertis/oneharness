@@ -63,6 +63,7 @@ const ENV_OVERRIDE_VARS: &[&str] = &[
     "ONEHARNESS_SCHEMA_FILE",
     "ONEHARNESS_SCHEMA_MAX_RETRIES",
     "ONEHARNESS_MAX_PARALLEL",
+    "ONEHARNESS_RUN_MODE",
     "ONEHARNESS_REQUIRE_AVAILABLE",
     "ONEHARNESS_HISTORY",
     "ONEHARNESS_HISTORY_DIR",
@@ -7764,3 +7765,337 @@ fn small_prompt_keeps_the_inline_argv() {
 // covered by a unit test in src/commands/run.rs against a synthetic spec, since
 // every real harness is wired for off-argv delivery. See
 // `plan_large_input_warns_and_stays_inline_when_unwired`.)
+
+// ---------------------------------------------------------------------------
+// Fallback run mode (`--run-mode fallback`): drive the selected harnesses in
+// priority order, stopping at the first that actually runs, and falling through
+// only the ones that cannot run at all (not installed / unspawnable / auth /
+// quota). A real task failure or a timeout does NOT fall through.
+// ---------------------------------------------------------------------------
+
+/// A `--bin ID=PATH` override pointing at a path that does not exist, so the
+/// harness resolves as unavailable (Status::Skipped) — the "not installed" case.
+fn missing_bin(id: &str) -> String {
+    let path = std::env::temp_dir().join(format!("oneharness-no-such-bin-{}", std::process::id()));
+    format!("{id}={}", path.display())
+}
+
+#[test]
+fn fallback_falls_through_a_not_installed_harness() {
+    // claude-code is "not installed"; the run falls through to codex, which runs.
+    let output = run(
+        &[
+            "run",
+            "--run-mode",
+            "fallback",
+            "--harness",
+            "claude-code,codex",
+            "--prompt",
+            "hi",
+            "--bin",
+            &missing_bin("claude-code"),
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let v = json_stdout(&output);
+    // The fallback block names the harness that ran and the ones fallen through.
+    assert_eq!(v["fallback"]["ran"], "codex");
+    assert_eq!(v["fallback"]["fell_through"][0]["harness"], "claude-code");
+    assert_eq!(v["fallback"]["fell_through"][0]["reason"], "not-installed");
+    assert!(v["batch"].is_null());
+    // results carry every *attempted* harness in priority order: the skipped
+    // one, then the one that ran. Candidates after it are never in the list.
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["harness"], "claude-code");
+    assert_eq!(results[0]["status"], "skipped");
+    assert_eq!(results[1]["harness"], "codex");
+    assert_eq!(results[1]["status"], "ok");
+}
+
+#[test]
+fn fallback_stops_at_a_real_task_failure_and_does_not_fall_through() {
+    // The first harness actually RUNS and exits non-zero (a plain task failure,
+    // not a setup problem). Fallback must stop there — the second harness is
+    // never spawned — so a long real run can never trigger a fallback.
+    let output = run(
+        &[
+            "run",
+            "--run-mode",
+            "fallback",
+            "--harness",
+            "claude-code,codex",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[("MOCK_EXIT", "1"), ("MOCK_STDERR", "boom: the task failed")],
+    );
+    assert_eq!(output.status.code(), Some(1), "a real failure exits 1");
+    let v = json_stdout(&output);
+    assert_eq!(v["fallback"]["ran"], "claude-code");
+    assert_eq!(v["fallback"]["fell_through"].as_array().unwrap().len(), 0);
+    // Only the harness that ran is present; codex was never attempted.
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["harness"], "claude-code");
+    assert_eq!(results[0]["status"], "nonzero");
+}
+
+#[test]
+fn fallback_stops_at_a_timeout_and_does_not_fall_through() {
+    // A slow real run that times out is a genuine run, not a setup failure:
+    // fallback stops there rather than masking it behind the next harness.
+    let output = run(
+        &[
+            "run",
+            "--run-mode",
+            "fallback",
+            "--harness",
+            "claude-code,codex",
+            "--prompt",
+            "hi",
+            "--timeout",
+            "1",
+            "--bin",
+            &bin_override("claude-code"),
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[("MOCK_SLEEP_MS", "4000")],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let v = json_stdout(&output);
+    assert_eq!(v["fallback"]["ran"], "claude-code");
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["status"], "timeout");
+}
+
+#[test]
+fn fallback_falls_through_an_auth_failure_to_a_working_harness() {
+    // The first harness spawns but is rejected before doing any work (an auth
+    // failure classified from its output) — a setup problem, so fallback tries
+    // the next. Per-harness behavior is scripted via config `[harness.<id>.env]`
+    // (global env would hit both). This also proves config drives run_mode.
+    let mock = mock_bin().display().to_string();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "codex"]
+        run_mode = "fallback"
+
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDERR = "Error: unauthorized (invalid api key)" }}
+
+        [harness.codex]
+        bin = '{mock}'
+        "#
+    );
+    let fx = ConfigFixture::new("fallback-auth", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let v = json_stdout(&output);
+    assert_eq!(v["fallback"]["ran"], "codex");
+    assert_eq!(v["fallback"]["fell_through"][0]["harness"], "claude-code");
+    assert_eq!(v["fallback"]["fell_through"][0]["reason"], "auth");
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["status"], "nonzero");
+    assert_eq!(results[0]["failure_kind"], "auth");
+    assert_eq!(results[1]["harness"], "codex");
+    assert_eq!(results[1]["status"], "ok");
+}
+
+#[test]
+fn fallback_with_no_runnable_harness_is_a_failure() {
+    // Every candidate is a startup failure (none installed): nothing ran, so the
+    // run is a hard failure (exit 1) and `ran` is null.
+    let output = run(
+        &[
+            "run",
+            "--run-mode",
+            "fallback",
+            "--harness",
+            "claude-code,codex",
+            "--prompt",
+            "hi",
+            "--bin",
+            &missing_bin("claude-code"),
+            "--bin",
+            &missing_bin("codex"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let v = json_stdout(&output);
+    assert!(v["fallback"]["ran"].is_null());
+    assert_eq!(v["fallback"]["fell_through"].as_array().unwrap().len(), 2);
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| r["status"] == "skipped"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no selected harness could be run"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn fallback_runs_harnesses_in_the_caller_priority_order() {
+    // The priority chain follows the --harness order, NOT the registry order
+    // select_specs returns (registry puts claude-code before cursor). Proven via
+    // --print-command, where every candidate is reported (nothing executes and
+    // the fallback block stays null on a dry run).
+    let output = run(
+        &[
+            "run",
+            "--run-mode",
+            "fallback",
+            "--harness",
+            "cursor,claude-code",
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
+    let v = json_stdout(&output);
+    assert!(v["fallback"].is_null(), "dry run emits no fallback block");
+    assert_eq!(v["dry_run"], true);
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results[0]["harness"], "cursor");
+    assert_eq!(results[1]["harness"], "claude-code");
+}
+
+#[test]
+fn fallback_refuses_incompatible_run_shapes() {
+    // Fallback is single-outcome, so a batch and every single-harness
+    // continuation / stream are loud usage errors (exit 2), each naming why.
+    let cases: &[(&[&str], &str)] = &[
+        (&["--prompt", "a", "--prompt", "b"], "batch"),
+        (&["--prompt", "a", "--resume", "sid"], "--resume"),
+        (&["--prompt", "a", "--session", "s"], "--session"),
+        (&["--prompt", "a", "--stream"], "--stream"),
+    ];
+    for (extra, needle) in cases {
+        let mut args = vec!["run", "--run-mode", "fallback", "--harness", "claude-code"];
+        args.extend_from_slice(extra);
+        let bin = bin_override("claude-code");
+        args.extend_from_slice(&["--bin", &bin, "--compact"]);
+        let output = run(&args, &[]);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "expected usage error for {extra:?}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("fallback"), "{extra:?} -> {stderr}");
+        assert!(stderr.contains(needle), "{extra:?} -> {stderr}");
+    }
+}
+
+#[test]
+fn fallback_validates_features_against_every_listed_harness() {
+    // The command must be valid for the WHOLE candidate set: crush has no `plan`
+    // mode, so `--mode plan` is a usage error even though claude-code (the first,
+    // and the one that would run) supports it and crush is never reached.
+    let output = run(
+        &[
+            "run",
+            "--run-mode",
+            "fallback",
+            "--harness",
+            "claude-code,crush",
+            "--prompt",
+            "hi",
+            "--mode",
+            "plan",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("does not support"), "{stderr}");
+    assert!(stderr.contains("crush"), "{stderr}");
+}
+
+#[test]
+fn fallback_with_all_uses_registry_order() {
+    // Under --all (no explicit list) the priority chain is registry order — the
+    // first-listed harness in `oneharness list`. Proven via --print-command.
+    let output = run(
+        &[
+            "run",
+            "--run-mode",
+            "fallback",
+            "--all",
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
+    let v = json_stdout(&output);
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), ALL_IDS.len());
+    let ids: Vec<&str> = results
+        .iter()
+        .map(|r| r["harness"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ALL_IDS, "fallback --all follows registry order");
+}
+
+#[test]
+fn fallback_applies_a_schema_to_the_harness_that_runs() {
+    // Structured output composes with fallback: the not-installed harness is
+    // skipped, and the one that runs is validated against the schema (exercising
+    // the schema arm of the single-harness fallback driver).
+    let schema = temp_file("fallback-schema", PERSON_SCHEMA);
+    let output = run(
+        &[
+            "run",
+            "--run-mode",
+            "fallback",
+            "--harness",
+            "claude-code,codex",
+            "--prompt",
+            "describe ada",
+            "--schema",
+            &schema,
+            "--bin",
+            &missing_bin("claude-code"),
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"name":"Ada","age":36}"#)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let v = json_stdout(&output);
+    assert_eq!(v["fallback"]["ran"], "codex");
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[1]["schema_valid"], true);
+    assert_eq!(results[1]["structured"]["name"], "Ada");
+}

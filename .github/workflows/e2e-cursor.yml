@@ -126,10 +126,11 @@ jobs:
         env:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
           CURSOR_E2E_MODEL: ${{ vars.CURSOR_E2E_MODEL }}
-          # Reasoning effort rides the model id (`--model 'MODEL[effort=high]'`),
-          # so the reasoning phase needs a real model even when the other phases
-          # use cursor's default. Prefer a dedicated repo var, then the shared
-          # one, then a sensible default. Override with `vars.CURSOR_E2E_REASONING_MODEL`
-          # if this id isn't valid for the account/plan.
-          CURSOR_E2E_REASONING_MODEL: ${{ vars.CURSOR_E2E_REASONING_MODEL || vars.CURSOR_E2E_MODEL || 'sonnet-4.5' }}
+          # Reasoning effort is a `-<tier>` suffix on the model id, so `--reasoning
+          # high` turns this BASE model into `<base>-high` (e.g. `gpt-5.4-mini` →
+          # `gpt-5.4-mini-high`, a real cursor id). Must be a base whose family
+          # accepts the tier suffix; override with `vars.CURSOR_E2E_REASONING_MODEL`
+          # for the account/plan. NOT the shared CURSOR_E2E_MODEL (that one may be a
+          # tier-less id like `auto` that `-high` would make invalid).
+          CURSOR_E2E_REASONING_MODEL: ${{ vars.CURSOR_E2E_REASONING_MODEL || 'gpt-5.4-mini' }}
         run: just live-cursor

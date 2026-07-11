@@ -15,6 +15,12 @@ marker="$(oh_marker)"
 oh_run crush "$(oh_prompt "$marker")"
 oh_assert_echoed crush "$marker"
 
+# Large prompt + system (issue #1115): oneharness pipes a >128 KiB prompt to
+# `crush run`'s stdin (positional omitted), with the system prepended — so it
+# never trips the argv ceiling. The marker must still round-trip.
+note "» long prompt: a >128 KiB prompt+system must round-trip off the argv"
+oh_long_prompt_enforce crush
+
 # Sync enforcement: crush's permissions are tool-coarse — allowed_tools admits
 # the bash tool (crush.json permissions.allowed_tools), denied_tools disables
 # it entirely (options.disabled_tools) — so each phase gets its own sandbox.

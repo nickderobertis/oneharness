@@ -16,6 +16,13 @@ marker="$(oh_marker)"
 oh_run copilot "$(oh_prompt "$marker")"
 oh_assert_echoed copilot "$marker"
 
+# Large prompt + system (issue #1115): oneharness pipes a >128 KiB prompt to
+# copilot's stdin (`-p` dropped — a `-p` value makes it ignore the pipe), with
+# the system prepended — so it never trips the argv ceiling. The marker must
+# still round-trip.
+note "» long prompt: a >128 KiB prompt+system must round-trip off the argv"
+oh_long_prompt_enforce copilot
+
 # Approval-mode enforcement: `read-only` denies the `shell`/`write` tools (deny
 # beats allow-all) and `plan` is `--mode plan` — each must block a write that
 # `--mode bypass` allows.

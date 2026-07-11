@@ -21,6 +21,10 @@
 //!                   received argv and write the contents of the file named by
 //!                   the NEXT argument to stdout, then exit — proving an
 //!                   argv-delivered temp file existed and what it carried.
+//!   MOCK_ECHO_STDIN if set, read ALL of stdin and write it verbatim to stdout,
+//!                   then exit — proving a prompt delivered on the child's stdin
+//!                   (the large-prompt escape hatch) actually arrived, and with
+//!                   what content.
 //!   MOCK_ATTEMPT_FILE  if set, a counter file: each invocation reads the prior
 //!                   count, increments it, writes it back, and (when
 //!                   MOCK_STDOUT_<n> is set for that 1-based attempt) emits that
@@ -82,6 +86,14 @@ fn main() {
     if let Ok(path) = std::env::var("MOCK_CAT_FILE") {
         let contents = std::fs::read_to_string(&path).unwrap_or_default();
         let _ = write!(std::io::stdout(), "{contents}");
+        let _ = std::io::stdout().flush();
+        std::process::exit(0);
+    }
+
+    if std::env::var_os("MOCK_ECHO_STDIN").is_some() {
+        let mut buf = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf);
+        let _ = std::io::stdout().write_all(&buf);
         let _ = std::io::stdout().flush();
         std::process::exit(0);
     }

@@ -16,6 +16,12 @@ marker="$(oh_marker)"
 oh_run qwen "$(oh_prompt "$marker")"
 oh_assert_echoed qwen "$marker"
 
+# Large prompt + system (issue #1115): oneharness pipes a >128 KiB prompt to
+# qwen's stdin (`-p` omitted), with the system prepended — so it never trips the
+# argv ceiling. The marker must still round-trip.
+note "» long prompt: a >128 KiB prompt+system must round-trip off the argv"
+oh_long_prompt_enforce qwen
+
 # Sync enforcement is NOT provable headlessly for qwen — live findings:
 # without -y/--yolo on the CLI, qwen never auto-approves tools from settings.
 # permissions.allow rules left the tool excluded or the call waiting for an

@@ -21,6 +21,21 @@ pub struct Job {
     pub cwd: Option<PathBuf>,
     pub env: Vec<(String, String)>,
     pub timeout: Duration,
+    /// Bytes to pipe to the child's stdin, when the prompt is delivered that way
+    /// instead of on the argv (the large-prompt escape hatch — a prompt too big
+    /// for a single argv string trips `E2BIG` at spawn). `None` leaves stdin
+    /// closed (`Stdio::null()`), the ordinary case. When `Some`, it is written on
+    /// a dedicated thread so a child that fills its stdout can never deadlock the
+    /// write.
+    pub stdin: Option<String>,
+}
+
+/// The next attempt a retry policy asks for: a fresh argv and its stdin (the
+/// prompt may ride stdin for a large-prompt run, so a re-prompt has to rewrite
+/// both). Reuses the original job's cwd/env/timeout.
+pub struct NextRun {
+    pub argv: Vec<String>,
+    pub stdin: Option<String>,
 }
 
 /// One job's final result plus how many times it was invoked. `attempts` is 1
@@ -51,7 +66,7 @@ pub fn run_jobs(jobs: &[Job], max_parallel: usize) -> Vec<Capture> {
 /// validation it performs is pure, keeping this layer free of parsing logic.
 pub fn run_jobs_with<F>(jobs: &[Job], max_parallel: usize, retry: F) -> Vec<Outcome>
 where
-    F: Fn(usize, u32, &Capture) -> Option<Vec<String>> + Sync,
+    F: Fn(usize, u32, &Capture) -> Option<NextRun> + Sync,
 {
     let n = jobs.len();
     if n == 0 {
@@ -88,16 +103,17 @@ where
 /// Run one job, then loop while `retry` asks for another attempt with a new argv.
 fn run_job_with_retry<F>(job: &Job, index: usize, retry: &F) -> Outcome
 where
-    F: Fn(usize, u32, &Capture) -> Option<Vec<String>>,
+    F: Fn(usize, u32, &Capture) -> Option<NextRun>,
 {
     let mut capture = run_job(job);
     let mut attempts = 1u32;
-    while let Some(next_argv) = retry(index, attempts, &capture) {
+    while let Some(next) = retry(index, attempts, &capture) {
         let next = Job {
-            argv: next_argv,
+            argv: next.argv,
             cwd: job.cwd.clone(),
             env: job.env.clone(),
             timeout: job.timeout,
+            stdin: next.stdin,
         };
         capture = run_job(&next);
         attempts += 1;
@@ -183,14 +199,38 @@ fn windows_shim_plan(
     Some((resolve_program(&target.interpreter), full))
 }
 
+/// Configure the child's stdin: pipe it when the job carries prompt bytes to
+/// deliver that way (the large-prompt escape hatch), else close it. Returns the
+/// bytes to write once the child is spawned, if any.
+fn stdin_stdio(job: &Job) -> (Stdio, Option<String>) {
+    match &job.stdin {
+        Some(text) => (Stdio::piped(), Some(text.clone())),
+        None => (Stdio::null(), None),
+    }
+}
+
+/// Write `bytes` to a spawned child's stdin on a dedicated thread, then close it
+/// (drop closes the pipe, signalling EOF). Off-thread so a child that fills its
+/// stdout mid-write can never deadlock the parent. A write failure (the child
+/// exited early / closed stdin) is ignored — its exit/output is the real signal.
+fn feed_stdin(child: &mut std::process::Child, bytes: String) {
+    if let Some(mut stdin) = child.stdin.take() {
+        std::thread::spawn(move || {
+            let _ = std::io::Write::write_all(&mut stdin, bytes.as_bytes());
+            // Dropping `stdin` here closes the pipe → EOF for the child.
+        });
+    }
+}
+
 /// Run a single job, returning its raw capture. Never panics on harness behavior.
 pub fn run_job(job: &Job) -> Capture {
     let start = Instant::now();
     let (program, args) = spawn_target(&job.argv);
+    let (stdin_cfg, stdin_bytes) = stdin_stdio(job);
     let mut command = Command::new(program);
     command
         .args(&args)
-        .stdin(Stdio::null())
+        .stdin(stdin_cfg)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(cwd) = &job.cwd {
@@ -230,6 +270,11 @@ pub fn run_job(job: &Job) -> Capture {
             };
         }
     };
+
+    // Feed the prompt to stdin (off-thread) when the job delivers it that way.
+    if let Some(bytes) = stdin_bytes {
+        feed_stdin(&mut child, bytes);
+    }
 
     // Drain both pipes on their own threads so wait never blocks on a full buffer.
     let mut out = child.stdout.take().expect("piped stdout");
@@ -323,10 +368,11 @@ where
 
     let start = Instant::now();
     let (program, args) = spawn_target(&job.argv);
+    let (stdin_cfg, stdin_bytes) = stdin_stdio(job);
     let mut command = Command::new(program);
     command
         .args(&args)
-        .stdin(Stdio::null())
+        .stdin(stdin_cfg)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(cwd) = &job.cwd {
@@ -360,6 +406,10 @@ where
             };
         }
     };
+
+    if let Some(bytes) = stdin_bytes {
+        feed_stdin(&mut child, bytes);
+    }
 
     let out = child.stdout.take().expect("piped stdout");
     let mut err = child.stderr.take().expect("piped stderr");
@@ -477,6 +527,7 @@ mod tests {
             cwd: None,
             env: Vec::new(),
             timeout: Duration::from_secs(5),
+            stdin: None,
         }
     }
 
@@ -514,7 +565,10 @@ mod tests {
         let outcomes = run_jobs_with(&jobs, 1, |i, attempt, cap| {
             assert_eq!(i, 0);
             assert_eq!(cap.status, Status::SpawnError);
-            (attempt < 3).then(|| vec![format!("/no/such/retry-{attempt}")])
+            (attempt < 3).then(|| NextRun {
+                argv: vec![format!("/no/such/retry-{attempt}")],
+                stdin: None,
+            })
         });
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].attempts, 3);
@@ -523,6 +577,29 @@ mod tests {
             err.contains("retry-2"),
             "final capture should be last retry: {err}"
         );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn stdin_is_piped_to_the_child_without_deadlock() {
+        // A prompt delivered via stdin must reach the child even when it is large
+        // enough to fill the OS pipe buffer while the child echoes it straight
+        // back to stdout — the classic writer/reader deadlock the off-thread
+        // stdin write (paired with the off-thread stdout drain) avoids. `cat`
+        // streams stdin→stdout, so a naive same-thread write would wedge at the
+        // ~64 KB pipe buffer; this payload is far larger.
+        let payload = "oneharness-stdin-probe\n".repeat(8000); // ~180 KB
+        let job = Job {
+            argv: vec!["cat".to_string()],
+            cwd: None,
+            env: Vec::new(),
+            timeout: Duration::from_secs(30),
+            stdin: Some(payload.clone()),
+        };
+        let cap = run_job(&job);
+        assert_eq!(cap.status, Status::Ok, "stderr: {}", cap.stderr);
+        // `cat` is a byte-faithful echo, so stdout is exactly what we fed to stdin.
+        assert_eq!(cap.stdout, payload);
     }
 
     #[test]
@@ -554,6 +631,7 @@ mod tests {
             cwd: None,
             env: Vec::new(),
             timeout: Duration::from_secs(10),
+            stdin: None,
         }
     }
 

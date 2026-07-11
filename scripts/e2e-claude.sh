@@ -31,6 +31,13 @@ oh_assert_echoed claude-code "$sysmarker"
 # second run within the TTL reads it back. Assert oneharness surfaces the
 # provider's cache_read_tokens (read from `cache_read_input_tokens`) — the live
 # drift alarm for cache-token extraction.
+# Large prompt + system (issue #1115): a >128 KiB prompt would trip the argv
+# ceiling (E2BIG) if inlined. oneharness delivers the prompt on claude's stdin
+# (`-p --input-format text`) and the system via `--append-system-prompt-file`, so
+# the marker must still round-trip — the live drift alarm for the off-argv fix.
+note "» long prompt: a >128 KiB prompt+system must round-trip off the argv"
+oh_long_prompt_enforce claude-code
+
 note "» cache reporting: a second run must surface cache_read_tokens"
 oh_cache_assert claude-code
 

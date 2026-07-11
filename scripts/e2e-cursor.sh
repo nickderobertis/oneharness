@@ -16,6 +16,16 @@ marker="$(oh_marker)"
 oh_run cursor "$(oh_prompt "$marker")"
 oh_assert_echoed cursor "$marker"
 
+# Large prompt (issue #1115): cursor is intentionally NOT wired for off-argv
+# delivery. Its docs confirm piped stdin infers print mode, but document stdin as
+# *supplementary context* alongside a positional prompt; whether the positional
+# can be omitted so stdin becomes the SOLE prompt is unverified (cursor-agent is
+# closed-source). Per "never guess", a large prompt stays inline for cursor until
+# a probe confirms the stdin-sole-prompt path — so there is no long-prompt phase
+# here (adding one would test an unwired path). See the registry note on cursor's
+# `large_input` and the README large-prompt matrix.
+note "» long prompt: cursor is inline-only pending stdin verification (no phase)"
+
 # Normalized tool events: Cursor's default `stream-json` carries its own
 # `type:"tool_call"` transcript (nested `shellToolCall` payload), so a shell-tool
 # turn must surface a normalized `tool_call` via `stream-json:cursor-tool-calls`

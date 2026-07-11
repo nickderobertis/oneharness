@@ -20,13 +20,121 @@ use oneharness_core::io::config as config_io;
 use oneharness_core::io::detect::{self, BinOverrides};
 use oneharness_core::io::history::{self, HistoryWriter};
 use oneharness_core::io::hooks::{self as hooks_io, HookSnapshot, Scope};
-use oneharness_core::io::runner::{self, Job, Outcome};
+use oneharness_core::io::runner::{self, Job, NextRun, Outcome};
 use oneharness_core::io::session as session_io;
 use std::path::PathBuf;
 
 /// Exit codes (clap uses 2 for argument errors).
 const EXIT_OK: i32 = 0;
 const EXIT_FAILURE: i32 = 1;
+
+/// Byte length past which a prompt or system prompt is delivered off the argv
+/// (temp file / stdin) for a harness that supports it, instead of inline — so a
+/// large value never trips the OS argument ceiling (`E2BIG`: Linux caps a single
+/// argv string at 128 KiB, macOS/Windows cap the whole argv+env). 64 KiB is well
+/// under every ceiling (leaving headroom for the rest of the argv and env) yet far
+/// above any ordinary prompt, so the common case keeps its byte-identical inline
+/// argv and only genuinely-large prompts switch delivery. See `LargeInput` and
+/// issue #1115.
+const LARGE_INPUT_THRESHOLD: usize = 64 * 1024;
+
+/// Temp files holding off-argv prompt/system text for the duration of a run,
+/// removed on drop — so every early return (stream path, an I/O error, normal
+/// completion) cleans them up, like the mock hook's snapshot-and-restore. Writes
+/// are best-effort; a removal failure is ignored (a leftover temp file is
+/// harmless and the OS reclaims its temp dir).
+#[derive(Default)]
+struct TempPromptFiles(Vec<PathBuf>);
+
+impl Drop for TempPromptFiles {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+impl TempPromptFiles {
+    /// Write `contents` to a fresh temp file (labelled by harness id + a unique
+    /// index) and return its path, registering it for cleanup. The path is
+    /// process- and index-unique so concurrent units never collide.
+    fn write(
+        &mut self,
+        id: &str,
+        index: usize,
+        contents: &str,
+    ) -> Result<PathBuf, OneharnessError> {
+        let path = std::env::temp_dir().join(format!(
+            "oneharness-input-{id}-{}-{index}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&path, contents).map_err(|source| OneharnessError::PromptFile {
+            path: path.display().to_string(),
+            source,
+        })?;
+        self.0.push(path.clone());
+        Ok(path)
+    }
+}
+
+/// Decide and apply off-argv delivery for a unit whose prompt or system prompt is
+/// large enough to risk the argv ceiling. Mutates `plan` in place (setting
+/// `system_file` / `prompt_stdin`, which the structured-output retry then reuses)
+/// and, for a system prompt on a harness with a system-file flag, writes it to a
+/// temp file. Small prompts return with `plan` untouched (byte-identical inline
+/// argv). When a large value cannot be moved off the argv for the harness (no
+/// stdin/file route), it stays inline and a warning names the risk rather than
+/// silently letting the spawn fail later.
+fn plan_large_input(
+    plan: &mut HarnessPlan,
+    spec: &HarnessSpec,
+    system: Option<&str>,
+    index: usize,
+    temp_files: &mut TempPromptFiles,
+) -> Result<(), OneharnessError> {
+    let prompt_large = plan.base_prompt.len() > LARGE_INPUT_THRESHOLD;
+    let system_large = system.is_some_and(|s| s.len() > LARGE_INPUT_THRESHOLD);
+    if !prompt_large && !system_large {
+        return Ok(());
+    }
+    let li = &spec.large_input;
+    // System prompt via a file flag (Claude Code): materialize it and let
+    // build_argv emit the flag instead of the inline value.
+    let use_system_file = system_large && li.system_file_flag.is_some();
+    if use_system_file {
+        let path = temp_files.write(spec.id, index, system.unwrap_or_default())?;
+        plan.system_file = Some(path.display().to_string());
+    }
+    // User prompt (and, for a system-rides-prompt harness, the system with it) via
+    // stdin. Also triggered by a large *system* alone on such a harness, since its
+    // system rides the same stream.
+    let use_stdin = li.prompt_stdin && (prompt_large || (li.system_rides_prompt && system_large));
+    if use_stdin {
+        plan.prompt_stdin = true;
+    }
+    // Loud when a large value is stuck on the argv anyway (e.g. Goose's inline
+    // `--system`, or any harness oneharness has not wired for off-argv input).
+    if prompt_large && !use_stdin {
+        eprintln!(
+            "oneharness: warning: the prompt for harness `{}` is {} KiB and cannot be delivered \
+             off the argv (no stdin/file route wired) — it stays inline and may exceed the OS \
+             argument limit (E2BIG) at spawn.",
+            spec.id,
+            plan.base_prompt.len() / 1024
+        );
+    }
+    let system_off_argv = use_system_file || (use_stdin && li.system_rides_prompt);
+    if system_large && !system_off_argv {
+        eprintln!(
+            "oneharness: warning: the --system prompt for harness `{}` is {} KiB and cannot be \
+             delivered off the argv (no system file flag; its system does not ride the prompt) — \
+             it stays inline and may exceed the OS argument limit (E2BIG) at spawn.",
+            spec.id,
+            system.map_or(0, str::len) / 1024
+        );
+    }
+    Ok(())
+}
 
 pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // Project config is discovered from where the harnesses will run (--cwd,
@@ -170,6 +278,9 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let mut plan: Vec<Plan> = Vec::with_capacity(units.len());
     let mut jobs: Vec<Job> = Vec::new();
     let mut job_plans: Vec<HarnessPlan> = Vec::new();
+    // Temp files backing off-argv system prompts, cleaned up on drop (covers every
+    // return path below). Never populated under --print-command (nothing spawns).
+    let mut temp_files = TempPromptFiles::default();
 
     for (spec, unit_prompt) in &units {
         let spec = *spec;
@@ -205,7 +316,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         if let Some(wiring) = &mock_wiring {
             extra.extend(wiring.extra_args_for(spec.id));
         }
-        let harness_plan = HarnessPlan {
+        let mut harness_plan = HarnessPlan {
             spec,
             bin: resolved.bin.clone(),
             // A CLI --model beats config; within config, the harness's own
@@ -229,15 +340,19 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             native,
             base_prompt: unit_prompt.to_string(),
             extra,
+            system_file: None,
+            prompt_stdin: false,
         };
-        let command = harness_plan.argv(schema.as_ref(), None);
 
         if args.print_command {
+            // --print-command never spawns, so nothing is materialized off-argv:
+            // the printed command is the deterministic inline form (large prompts
+            // that would actually run via file/stdin are shown inline).
             plan.push(Plan::Ready(Box::new(planned_result(
                 spec,
                 &resolved.bin,
                 resolved.available,
-                command,
+                harness_plan.build(schema.as_ref(), None).argv,
                 output_format,
                 result_prompt,
             ))));
@@ -245,12 +360,18 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             plan.push(Plan::Ready(Box::new(skipped_result(
                 spec,
                 &resolved.bin,
-                command,
+                harness_plan.build(schema.as_ref(), None).argv,
                 output_format,
                 result_prompt,
             ))));
         } else {
             let job_index = jobs.len();
+            // Large prompt / system: deliver it off the argv (temp file / stdin)
+            // where the harness supports it, so it never trips the OS argv ceiling.
+            // Mutates `harness_plan` (so the structured-output retry rebuilds the
+            // same delivery) and may write a temp file for the system prompt.
+            plan_large_input(&mut harness_plan, spec, system, job_index, &mut temp_files)?;
+            let built = harness_plan.build(schema.as_ref(), None);
             // Env layers, applied in order (the runner is last-write-wins):
             // the harness's declared defaults, then any env that delivers the
             // approval mode (Goose's GOOSE_MODE), then config ([env], then
@@ -266,10 +387,11 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             job_env.extend(cfg.env_for(spec.id));
             job_env.extend(cli_env.iter().cloned());
             jobs.push(Job {
-                argv: command.clone(),
+                argv: built.argv,
                 cwd: args.cwd.clone(),
                 env: job_env,
                 timeout: Duration::from_secs(timeout),
+                stdin: built.stdin,
             });
             plan.push(Plan::Pending {
                 spec,
@@ -1127,9 +1249,12 @@ fn run_fork_batch(
                 plan.resume = Some(sid.clone());
                 plan.fork = true;
                 plan.system = None; // the session already carries --system
+                plan.system_file = None; // ...so drop any off-argv system delivery too
             }
             for (i, job) in jobs.iter_mut().enumerate().skip(1) {
-                job.argv = job_plans[i].argv(schema, None);
+                let built = job_plans[i].build(schema, None);
+                job.argv = built.argv;
+                job.stdin = built.stdin;
             }
         }
         None => eprintln!(
@@ -1358,14 +1483,35 @@ struct HarnessPlan {
     base_prompt: String,
     /// Config `args` + CLI passthrough, appended verbatim after the built argv.
     extra: Vec<String>,
+    /// Path to a temp file holding the system prompt, when it is large enough to
+    /// deliver off the argv on a harness with a system-file flag (Claude Code).
+    /// `None` keeps the system inline. Set by the command layer before spawning.
+    system_file: Option<String>,
+    /// When true, deliver the user prompt on the child's stdin (a large prompt on
+    /// a stdin-capable harness): `build` omits the positional and returns the
+    /// assembled prompt as [`BuiltCommand::stdin`]. `false` keeps it on the argv.
+    prompt_stdin: bool,
+}
+
+/// The result of building one attempt: the argv to spawn and, when the prompt is
+/// delivered off the argv, the bytes to pipe to stdin.
+struct BuiltCommand {
+    argv: Vec<String>,
+    stdin: Option<String>,
 }
 
 impl HarnessPlan {
-    /// Build the argv for one attempt. `schema` drives structured output:
-    /// non-native harnesses get the schema instruction appended to the prompt,
-    /// native ones get it on the flag. `feedback` (the prior answer + validation
-    /// errors) is appended on a retry so the model can correct itself.
-    fn argv(&self, schema: Option<&Schema>, feedback: Option<(&str, &[String])>) -> Vec<String> {
+    /// Build the argv (and any stdin payload) for one attempt. `schema` drives
+    /// structured output: non-native harnesses get the schema instruction appended
+    /// to the prompt, native ones get it on the flag. `feedback` (the prior answer
+    /// + validation errors) is appended on a retry so the model can correct itself.
+    ///
+    /// When `prompt_stdin` is set, the assembled prompt is returned as
+    /// [`BuiltCommand::stdin`] instead of riding the argv (the adapter omits the
+    /// positional), with the system prompt folded in for a harness whose system
+    /// rides the prompt ([`LargeInput::system_rides_prompt`]) — so the bytes the
+    /// model sees are identical to the inline path.
+    fn build(&self, schema: Option<&Schema>, feedback: Option<(&str, &[String])>) -> BuiltCommand {
         let mut prompt = self.base_prompt.clone();
         // A mode that synthesizes a behavioral posture from an instruction
         // (Codex's `plan`) prepends it so it frames the task. Single-line +
@@ -1392,6 +1538,19 @@ impl HarnessPlan {
                 ));
             }
         }
+        // When the prompt rides stdin, assemble the exact payload the adapter would
+        // have inlined: for a harness whose system rides the prompt, prepend the
+        // system (mirroring `prompt_with_system`); otherwise the system is carried
+        // separately (Claude's file flag, Goose's inline `--system`).
+        let stdin = if self.prompt_stdin {
+            Some(if self.spec.large_input.system_rides_prompt {
+                harness::prompt_with_system_text(self.system.as_deref(), &prompt)
+            } else {
+                prompt.clone()
+            })
+        } else {
+            None
+        };
         let ctx = BuildCtx {
             bin: &self.bin,
             prompt: &prompt,
@@ -1406,10 +1565,12 @@ impl HarnessPlan {
             } else {
                 None
             },
+            system_file: self.system_file.as_deref(),
+            prompt_stdin: self.prompt_stdin,
         };
         let mut argv = (self.spec.build_argv)(&ctx);
         argv.extend(self.extra.iter().cloned());
-        argv
+        BuiltCommand { argv, stdin }
     }
 }
 
@@ -1422,7 +1583,7 @@ fn retry_decision(
     attempt: u32,
     max_retries: u32,
     capture: &Capture,
-) -> Option<Vec<String>> {
+) -> Option<NextRun> {
     // Only a run that produced output can be validated; a timeout / spawn error
     // is not a validation failure and re-running it would just burn the budget.
     if !matches!(capture.status, Status::Ok | Status::Nonzero) {
@@ -1439,12 +1600,17 @@ fn retry_decision(
         return None;
     }
     // Feed back what the harness actually said (its extracted answer, else the
-    // raw stdout) so the correction prompt is grounded in its own output.
+    // raw stdout) so the correction prompt is grounded in its own output. The
+    // rebuild reuses the unit's delivery (a stdin prompt re-prompts via stdin).
     let previous = match &answer {
         Some(text) if !text.is_empty() => text.clone(),
         _ => capture.stdout.trim().to_string(),
     };
-    Some(plan.argv(Some(schema), Some((&previous, &check.errors))))
+    let built = plan.build(Some(schema), Some((&previous, &check.errors)));
+    Some(NextRun {
+        argv: built.argv,
+        stdin: built.stdin,
+    })
 }
 
 /// Load and compile the structured-output schema, if one was requested. A
@@ -1813,6 +1979,8 @@ mod tests {
             native: false,
             base_prompt: "p".into(),
             extra: Vec::new(),
+            system_file: None,
+            prompt_stdin: false,
         }
     }
 
@@ -1836,16 +2004,18 @@ mod tests {
         let schema = Schema::compile(r#"{"type":"object"}"#).unwrap();
         // Prompt-based (non-native): first attempt appends the instruction.
         let plan = crush_plan();
-        let argv = plan.argv(Some(&schema), None);
+        let argv = plan.build(Some(&schema), None).argv;
         assert!(argv.iter().all(|a| !a.contains('\n')), "{argv:?}");
         // ... and a retry with a multi-line prior answer + errors.
-        let argv = plan.argv(
-            Some(&schema),
-            Some((
-                "multi\nline\r\nanswer",
-                &["e1".to_string(), "e2".to_string()],
-            )),
-        );
+        let argv = plan
+            .build(
+                Some(&schema),
+                Some((
+                    "multi\nline\r\nanswer",
+                    &["e1".to_string(), "e2".to_string()],
+                )),
+            )
+            .argv;
         assert!(
             argv.iter().all(|a| !a.contains('\n') && !a.contains('\r')),
             "{argv:?}"
@@ -1855,7 +2025,9 @@ mod tests {
         native.spec = harness::by_id("claude-code").unwrap();
         native.native = true;
         native.output_format = OutputFormat::Json;
-        let argv = native.argv(Some(&schema), Some(("multi\nline", &["e".to_string()])));
+        let argv = native
+            .build(Some(&schema), Some(("multi\nline", &["e".to_string()])))
+            .argv;
         assert!(argv.iter().all(|a| !a.contains('\n')), "{argv:?}");
     }
 
@@ -1871,7 +2043,7 @@ mod tests {
         // Non-conforming with budget left → re-run with a feedback prompt.
         let next = retry_decision(&plan, &schema, 1, 2, &capture(Status::Ok, r#"{"a":"x"}"#))
             .expect("should retry");
-        assert!(next.iter().any(|a| a.contains("did not conform")));
+        assert!(next.argv.iter().any(|a| a.contains("did not conform")));
         // Budget spent → stop even though still invalid.
         assert!(retry_decision(&plan, &schema, 3, 2, &capture(Status::Ok, "{}")).is_none());
         // A timeout is not a validation failure, so it is never retried.
@@ -2010,6 +2182,7 @@ mod tests {
             mock_delivery: None,
             default_env: &[],
             native_schema: None,
+            large_input: oneharness_core::domain::harness::LargeInput::NONE,
             modes: &[],
             build_argv: noop_argv,
         }

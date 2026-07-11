@@ -18,6 +18,12 @@ oh_run opencode "$(oh_prompt "$marker")"
 # answer from its `text` parts, so require that exact extraction method here.
 oh_assert_echoed opencode "$marker" "json:opencode-parts"
 
+# Large prompt + system (issue #1115): oneharness pipes a >128 KiB prompt to
+# `opencode run`'s stdin (positional omitted), with the system prepended — so it
+# never trips the argv ceiling. The marker must still round-trip.
+note "» long prompt: a >128 KiB prompt+system must round-trip off the argv"
+oh_long_prompt_enforce opencode
+
 # Cache-token reporting: with an Anthropic model OpenCode caches its tools+system
 # prefix, so a second run reads it back. Assert oneharness surfaces the summed
 # `part.tokens.cache.read` as cache_read_tokens — the live drift alarm for the

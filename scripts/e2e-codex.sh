@@ -15,6 +15,12 @@ marker="$(oh_marker)"
 oh_run codex "$(oh_prompt "$marker")"
 oh_assert_echoed codex "$marker"
 
+# Large prompt + system (issue #1115): oneharness pipes a >128 KiB prompt to
+# `codex exec -` (stdin sentinel), with the system prepended into that stream —
+# so it never trips the argv ceiling. The marker must still round-trip.
+note "» long prompt: a >128 KiB prompt+system must round-trip off the argv"
+oh_long_prompt_enforce codex
+
 # Approval-mode enforcement: `read-only` is Codex's OS-enforced read-only
 # sandbox, and `plan` is that same sandbox plus a prepended plan instruction —
 # each must block a write that `--mode bypass` allows.

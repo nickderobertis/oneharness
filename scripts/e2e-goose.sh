@@ -21,6 +21,12 @@ marker="$(oh_marker)"
 oh_run goose "$(oh_prompt "$marker")"
 oh_assert_echoed goose "$marker"
 
+# Large prompt (issue #1115): oneharness delivers a >128 KiB prompt to goose via
+# the `-i -` stdin sentinel, so it never trips the argv ceiling. Goose's `--system`
+# is inline-only (no off-argv route), so the helper drives a large prompt only.
+note "» long prompt: a >128 KiB prompt must round-trip off the argv (via -i -)"
+oh_long_prompt_enforce goose
+
 # Hook enforcement: a synced `[[hooks]]` gate, installed as a Goose plugin, must
 # block a marked command and let an unmarked one through (Goose fires PreToolUse
 # hooks even under GOOSE_MODE=auto, which oneharness's bypass requests).

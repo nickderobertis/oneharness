@@ -7495,3 +7495,272 @@ fn history_list_scopes_by_project() {
     let _ = std::fs::remove_dir_all(&pa);
     let _ = std::fs::remove_dir_all(&pb);
 }
+
+// --- large prompts / system (issue #1115): off-argv delivery ----------------
+
+/// A prompt/system value bigger than the 64 KiB off-argv threshold, carrying a
+/// unique marker so the test can prove exactly which text reached the harness.
+fn big_with_marker(marker: &str) -> String {
+    format!("{marker} {}", "x".repeat(70 * 1024))
+}
+
+/// A temp file (removed on drop) so a big prompt/system reaches oneharness via
+/// `--prompt-file`/`--system-file` — NOT on its own argv. Windows caps the whole
+/// command line at ~32 KiB, so a >64 KiB `--prompt`/`--system` value would fail to
+/// spawn oneharness itself (the caller→oneharness hop #1108 addressed), masking
+/// the harness-spawn delivery these tests actually exercise.
+struct BigFile(PathBuf);
+
+impl BigFile {
+    fn new(tag: &str, contents: &str) -> Self {
+        let p = std::env::temp_dir().join(format!(
+            "oneharness-bigtest-{tag}-{}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&p, contents).unwrap();
+        BigFile(p)
+    }
+    fn path(&self) -> String {
+        self.0.display().to_string()
+    }
+}
+
+impl Drop for BigFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+#[test]
+fn large_prompt_rides_stdin_not_the_argv() {
+    // A > 64 KiB prompt on claude-code must be delivered on the child's stdin
+    // (`-p --input-format text`, positional dropped), never inlined — so it can't
+    // trip the OS argv ceiling (E2BIG, issue #1115). The mock echoes stdin, so the
+    // marker surfacing in the captured stdout proves the prompt actually arrived
+    // there, and its absence from `command` proves it left the argv.
+    let marker = "OHBIGPROMPT-marker-777";
+    // Delivered to oneharness via a file (not argv) so the caller→oneharness spawn
+    // clears Windows' command-line limit; the harness-spawn stdin path is the SUT.
+    let pf = BigFile::new("prompt-stdin", &big_with_marker(marker));
+    let pfp = pf.path();
+    let out = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt-file",
+            &pfp,
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_ECHO_STDIN", "1")],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let v = json_stdout(&out);
+    assert_eq!(v["results"][0]["status"], "ok");
+    // The prompt arrived on stdin (mock echoed it back).
+    let stdout = v["results"][0]["stdout"].as_str().unwrap();
+    assert!(stdout.contains(marker), "prompt did not reach stdin");
+    // The command switched to stdin mode and carries no giant argument.
+    let cmd = command_of(&v, 0);
+    assert!(
+        cmd.windows(2).any(|w| w == ["--input-format", "text"]),
+        "{cmd:?}"
+    );
+    assert!(
+        !cmd.iter().any(|a| a.contains(marker)),
+        "the prompt must not be on the argv: {cmd:?}"
+    );
+}
+
+#[test]
+fn large_system_rides_a_temp_file_that_is_cleaned_up() {
+    // A > 64 KiB `--system` on claude-code must be materialized to a temp file and
+    // delivered via `--append-system-prompt-file`, off the argv. The mock cats the
+    // file named after that flag, so the marker in the captured stdout proves the
+    // file held the system text; the temp file must be gone once the run returns.
+    let marker = "OHBIGSYS-marker-555";
+    // Big system delivered to oneharness via a file (caller hop); oneharness then
+    // re-materializes it to its OWN temp file for `--append-system-prompt-file`
+    // (the file asserted-cleaned below is that one, not this input file).
+    let sf = BigFile::new("sys-file", &big_with_marker(marker));
+    let sfp = sf.path();
+    let out = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--system-file",
+            &sfp,
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_CAT_ARG_AFTER", "--append-system-prompt-file")],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let v = json_stdout(&out);
+    let stdout = v["results"][0]["stdout"].as_str().unwrap();
+    assert!(
+        stdout.contains(marker),
+        "system file did not carry the text"
+    );
+    let cmd = command_of(&v, 0);
+    // The file flag replaced the inline one, and the inline value is absent.
+    let pos = cmd
+        .iter()
+        .position(|a| a == "--append-system-prompt-file")
+        .expect("file flag present");
+    assert!(
+        !cmd.iter().any(|a| a == "--append-system-prompt"),
+        "inline flag must be gone: {cmd:?}"
+    );
+    assert!(
+        !cmd.iter().any(|a| a.contains(marker)),
+        "system text must not be on the argv: {cmd:?}"
+    );
+    // The temp file is removed on drop once the run completes.
+    let temp_path = &cmd[pos + 1];
+    assert!(
+        !std::path::Path::new(temp_path).exists(),
+        "temp system file `{temp_path}` should be cleaned up after the run"
+    );
+}
+
+#[test]
+fn large_prompt_folds_system_into_stdin_for_a_prepend_harness() {
+    // On a harness with no system flag (codex), a large prompt rides stdin via the
+    // `-` sentinel, and the `--system` text is prepended into that same stdin
+    // payload (mirroring the inline `prompt_with_system`). Both markers must reach
+    // the harness's stdin, and neither may appear on the argv.
+    let pmark = "OHCODEXPROMPT-111";
+    let smark = "OHCODEXSYS-222";
+    // Big prompt via a file (caller hop); the small system stays an inline flag.
+    let pf = BigFile::new("codex-prompt", &big_with_marker(pmark));
+    let pfp = pf.path();
+    let out = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt-file",
+            &pfp,
+            "--system",
+            smark,
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[("MOCK_ECHO_STDIN", "1")],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let v = json_stdout(&out);
+    let stdout = v["results"][0]["stdout"].as_str().unwrap();
+    assert!(stdout.contains(pmark), "prompt missing from stdin");
+    assert!(stdout.contains(smark), "system missing from stdin");
+    // The system is prepended, then the prompt (prompt_with_system order).
+    assert!(
+        stdout.find(smark).unwrap() < stdout.find(pmark).unwrap(),
+        "system should precede the prompt on stdin"
+    );
+    let cmd = command_of(&v, 0);
+    assert!(
+        cmd.iter().any(|a| a == "-"),
+        "codex stdin sentinel: {cmd:?}"
+    );
+    assert!(
+        !cmd.iter().any(|a| a.contains(pmark) || a.contains(smark)),
+        "neither prompt nor system may be on the argv: {cmd:?}"
+    );
+}
+
+// Non-Windows only: goose keeps a large system on its inline `--system` argv, and
+// there is no size that is both over the 64 KiB threshold (to fire the branch) AND
+// under Windows' ~32 KiB command-line limit (to spawn the harness), so the inline
+// delivery this asserts can only be exercised where the argv ceiling is higher.
+#[cfg(not(windows))]
+#[test]
+fn large_system_on_goose_warns_no_off_argv_route() {
+    // Goose's `--system` is inline TEXT with no file/stdin route, so a large
+    // system prompt cannot leave the argv — oneharness must warn loudly (not fail
+    // silently) and keep it inline. Kept under 128 KiB so spawning the mock itself
+    // doesn't E2BIG on Linux, but over the 64 KiB threshold so the branch fires.
+    let marker = "OHGOOSESYS-333";
+    // Delivered to oneharness via a file (caller hop); goose still inlines it.
+    let sf = BigFile::new("goose-sys", &format!("{marker} {}", "y".repeat(80 * 1024)));
+    let sfp = sf.path();
+    let out = run(
+        &[
+            "run",
+            "--harness",
+            "goose",
+            "--prompt",
+            "hi",
+            "--system-file",
+            &sfp,
+            "--bin",
+            &bin_override("goose"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--system prompt for harness `goose`")
+            && stderr.contains("cannot be delivered off the argv"),
+        "expected a large-system warning, got: {stderr}"
+    );
+    // It stays on goose's inline `--system` flag.
+    let v = json_stdout(&out);
+    let cmd = command_of(&v, 0);
+    let pos = cmd
+        .iter()
+        .position(|a| a == "--system")
+        .expect("inline flag");
+    assert!(
+        cmd[pos + 1].contains(marker),
+        "system stays inline: {cmd:?}"
+    );
+}
+
+#[test]
+fn small_prompt_keeps_the_inline_argv() {
+    // The common case is unperturbed: a prompt under the threshold stays a
+    // positional argv argument (no stdin, no --input-format), so `--print-command`
+    // and every existing assertion keep their byte-identical shape.
+    let out = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "just a small prompt",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_ECHO_STDIN", "1")],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let v = json_stdout(&out);
+    let cmd = command_of(&v, 0);
+    assert!(
+        cmd.iter().any(|a| a == "just a small prompt"),
+        "small prompt stays inline: {cmd:?}"
+    );
+    assert!(
+        !cmd.iter().any(|a| a == "--input-format"),
+        "no stdin mode for a small prompt: {cmd:?}"
+    );
+    // Nothing was piped, so the mock's echo produced empty stdout.
+    assert_eq!(v["results"][0]["stdout"].as_str().unwrap(), "");
+}
+
+// (The large-prompt warning path — a harness with no off-argv route — is now
+// covered by a unit test in src/commands/run.rs against a synthetic spec, since
+// every real harness is wired for off-argv delivery. See
+// `plan_large_input_warns_and_stays_inline_when_unwired`.)

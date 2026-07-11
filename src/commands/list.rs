@@ -66,6 +66,14 @@ struct HarnessInfo {
     /// the harness has no verified rewrite — a rewrite rule for it is then a
     /// loud usage error (see the README mock support matrix).
     mock_rewrite: Option<&'static str>,
+    /// Whether a large user prompt can be delivered off the argv (piped to the
+    /// harness's stdin) so it never trips the OS argument ceiling (`E2BIG`).
+    supports_prompt_stdin: bool,
+    /// Whether a large system prompt can be delivered off the argv via a file
+    /// flag (Claude Code's `--append-system-prompt-file`). `false` does not mean a
+    /// large system is unhandled — for a harness whose system rides the prompt it
+    /// travels on stdin with the prompt; see the README large-prompt matrix.
+    supports_system_file: bool,
     /// The argv oneharness would build, with placeholders, so the adapter's
     /// shape is visible without running anything.
     example_command: Vec<String>,
@@ -91,6 +99,8 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 mode: PermissionMode::Bypass,
                 output_format: spec.output_format,
                 schema: None,
+                system_file: None,
+                prompt_stdin: false,
             };
             let sync = spec.sync.as_ref();
             HarnessInfo {
@@ -121,6 +131,8 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 supports_hooks: sync.is_some_and(|s| s.hooks_path.is_some()),
                 supports_mock_deny: spec.gate_deny.is_some(),
                 mock_rewrite: spec.mock_rewrite.map(|s| s.as_str()),
+                supports_prompt_stdin: spec.large_input.prompt_stdin,
+                supports_system_file: spec.large_input.system_file_flag.is_some(),
                 example_command: (spec.build_argv)(&ctx),
             }
         })

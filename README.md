@@ -250,6 +250,9 @@ Useful `run` flags:
   run](#batch-runs-same-prefix-prompt-caching) (one harness, N prompts). Each
   `--prompt-file` is read whole as one prompt (not split per line); `-` (stdin)
   may appear once. Combined order is every `--prompt`, then every `--prompt-file`.
+  A **large** prompt is delivered to the harness off the argv (piped to its stdin)
+  so it never trips the OS argument limit at the harness spawn either — see
+  [Large prompts](#large-prompts-off-argv-delivery).
 - `--batch-strategy <speed|min-tokens>` — for a batch run, how the calls are
   scheduled to exploit the shared prefix cache (`speed`, the default, or
   `min-tokens`); see [batch runs](#batch-runs-same-prefix-prompt-caching). No
@@ -264,7 +267,11 @@ Useful `run` flags:
   `-` for stdin) for a system prompt too large to pass as an argv string — a big
   `--system` value can trip the OS single-argument limit and fail at spawn with
   `Argument list too long` (E2BIG) before any harness runs. Only one input may
-  read stdin, so `--system-file -` cannot combine with `--prompt-file -`.
+  read stdin, so `--system-file -` cannot combine with `--prompt-file -`. However
+  the system prompt reaches oneharness, a **large** one is also delivered to the
+  harness off the argv (a temp file on Claude Code, folded into the stdin prompt
+  elsewhere), so it clears the harness-spawn ceiling too — see
+  [Large prompts](#large-prompts-off-argv-delivery).
 - `--resume <session>` — continue a prior session, sending the prompt as its next
   turn. **Single-harness only** (a session belongs to one harness); every harness
   supports it, but multi-harness selections are still a usage error. The continued
@@ -952,6 +959,44 @@ on hit, a minimum prefix length, a byte-identical prefix), so the reuse only lan
 when the warmed session's prefix clears the minimum and the fan-out runs within
 its TTL. Use `speed` when you want N strictly-independent answers with no shared
 context.
+
+### Large prompts (off-argv delivery)
+
+Passing a prompt or system prompt as a command-line argument is bounded by the
+OS: Linux caps a single argv string at 128 KiB (`MAX_ARG_STRLEN`), and macOS /
+Windows cap the whole argv+env. A prompt past that limit fails the spawn with
+`Argument list too long` (E2BIG). `--prompt-file` / `--system-file` clear the
+*caller → oneharness* hop (the value arrives in a file, not on oneharness's own
+argv); oneharness then clears the *oneharness → harness* hop too, delivering a
+large prompt (or system prompt) to the harness **off its argv** rather than
+re-inlining it (issue #1115).
+
+The switch is automatic and size-gated at **64 KiB**: below it, the argv is
+byte-identical to before (so `--print-command` and small runs are unchanged);
+above it, oneharness routes the value off-argv where the harness's CLI supports
+it. The user/system text the model sees is identical either way. Delivery per
+harness (sourced from each CLI's headless docs, drift-alarmed by the live
+`oh_long_prompt_enforce` e2e phase):
+
+| Harness | Large user prompt | Large system prompt |
+| --- | --- | --- |
+| claude-code | stdin (`-p --input-format text`) | temp file (`--append-system-prompt-file`) |
+| codex | stdin (`codex exec -`) | folded into the stdin prompt¹ |
+| opencode | stdin (piped, positional omitted) | folded into the stdin prompt¹ |
+| qwen | stdin (piped, `-p` omitted) | folded into the stdin prompt¹ |
+| crush | stdin (piped, positional omitted) | folded into the stdin prompt¹ |
+| copilot | stdin (piped, `-p` omitted) | folded into the stdin prompt¹ |
+| cursor | stdin (`-p`, positional omitted) | folded into the stdin prompt¹ |
+| goose | stdin (`-i -`) | **inline only** — no off-argv route² |
+
+¹ These CLIs have no system-prompt flag, so oneharness already prepends `--system`
+to the prompt; the combined text rides the same stdin stream. (Cursor's
+stdin-only-prompt behavior was verified live — see `scripts/explore-cursor-stdin.sh`.)
+² Goose's `--system` takes inline text with no file/stdin route, so a >128 KiB
+*system* prompt for Goose still risks E2BIG — oneharness warns on stderr rather
+than failing silently. Its large *user* prompt is delivered via `-i -`.
+`oneharness list` exposes `supports_prompt_stdin` / `supports_system_file` per
+harness.
 
 ### Run history
 

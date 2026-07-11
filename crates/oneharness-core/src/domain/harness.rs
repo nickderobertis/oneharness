@@ -53,6 +53,21 @@ pub struct BuildCtx<'a> {
     /// without native support ignore it — the command layer instead appends the
     /// schema instruction to the prompt — so it is never silently dropped.
     pub schema: Option<&'a str>,
+    /// Path to a temp file holding the system prompt, set by the command layer
+    /// when the system prompt is large enough to risk the argv ceiling (`E2BIG`)
+    /// AND the harness declares [`LargeInput::system_file`]. When `Some`, an
+    /// adapter delivers the system prompt through its file flag (Claude Code's
+    /// `--append-system-prompt-file`) instead of inline `--append-system-prompt`;
+    /// `system` is left unread. `None` keeps the ordinary inline path.
+    pub system_file: Option<&'a str>,
+    /// When true, the user prompt is delivered on the child's **stdin** rather
+    /// than an argv positional — set by the command layer for a large prompt on a
+    /// harness that declares [`LargeInput::prompt_stdin`]. The adapter then omits
+    /// the positional prompt (and adds any stdin-selecting flags, e.g. Claude
+    /// Code's `--input-format text`); the command layer pipes `prompt` to stdin.
+    /// `prompt` still holds the text so a non-stdin adapter and the report are
+    /// unaffected. `false` keeps the ordinary argv path.
+    pub prompt_stdin: bool,
 }
 
 /// The CLI token for a format, as the harnesses spell it.
@@ -71,9 +86,64 @@ fn format_flag(format: OutputFormat) -> &'static str {
 /// no-op. Adapters with a native flag (claude-code, goose) pass `c.prompt`
 /// directly and map `c.system` separately instead of calling this.
 fn prompt_with_system(c: &BuildCtx) -> String {
-    match c.system {
-        Some(s) if !s.is_empty() => format!("{s}\n\n{}", c.prompt),
-        _ => c.prompt.to_string(),
+    prompt_with_system_text(c.system, c.prompt)
+}
+
+/// The text form of [`prompt_with_system`], for the command layer to assemble the
+/// **stdin** payload for a large-prompt run (where `build_argv` omits the
+/// positional): the same system-prepended string the adapter would otherwise have
+/// inlined, so stdin delivery is byte-for-byte what the model would have seen on
+/// the argv. Consulted only for a harness whose system rides the prompt
+/// ([`LargeInput::system_rides_prompt`]).
+pub fn prompt_with_system_text(system: Option<&str>, prompt: &str) -> String {
+    match system {
+        Some(s) if !s.is_empty() => format!("{s}\n\n{prompt}"),
+        _ => prompt.to_string(),
+    }
+}
+
+/// How a harness can accept a **large** prompt without inlining it into the argv
+/// (which trips `E2BIG` past the OS ceiling). Pure capability data on
+/// [`HarnessSpec::large_input`]; the delivery *mechanism* (which flags to add,
+/// whether to omit the positional) lives in the per-harness `build_argv`. Sourced
+/// from each CLI's headless docs, never guessed.
+pub struct LargeInput {
+    /// The user prompt can be delivered on the child's **stdin** instead of an
+    /// argv positional. When the command layer sets [`BuildCtx::prompt_stdin`],
+    /// `build_argv` omits the positional (and adds any stdin-selecting flags —
+    /// Claude Code's `--input-format text`, Goose's `-i -`) and the command layer
+    /// pipes the assembled prompt to stdin.
+    pub prompt_stdin: bool,
+    /// When the prompt rides stdin, whether the **system** prompt must be folded
+    /// into that stdin payload. `true` for a harness with no native system flag
+    /// (its system normally rides the prompt via `prompt_with_system` — Codex,
+    /// OpenCode, Qwen, Crush, Copilot, Cursor); `false` for one that carries the
+    /// system separately (Claude Code's file flag, Goose's inline `--system`),
+    /// whose system is not part of the user-prompt stream. Only consulted when
+    /// `prompt_stdin` is set.
+    pub system_rides_prompt: bool,
+    /// A CLI flag that reads the **system** prompt from a file, for a harness
+    /// whose system prompt is a *separate* argv argument that would itself hit the
+    /// ceiling (Claude Code's `--append-system-prompt-file`). When the command
+    /// layer sets [`BuildCtx::system_file`], `build_argv` emits this flag with the
+    /// temp-file path instead of the inline system flag. `None` when the harness
+    /// has no per-run system file mechanism (its large system rides the prompt via
+    /// `system_rides_prompt`, or — Goose — has no file route at all).
+    pub system_file_flag: Option<&'static str>,
+}
+
+impl LargeInput {
+    /// Inline only: no off-argv path, so a large prompt/system stays subject to
+    /// the argv ceiling. The safe default for a CLI without file/stdin input.
+    pub const NONE: LargeInput = LargeInput {
+        prompt_stdin: false,
+        system_rides_prompt: false,
+        system_file_flag: None,
+    };
+
+    /// Whether the harness offers any off-argv delivery at all.
+    pub fn any(&self) -> bool {
+        self.prompt_stdin || self.system_file_flag.is_some()
     }
 }
 
@@ -197,6 +267,19 @@ pub struct HarnessSpec {
     /// works for every harness). Either way oneharness validates the result
     /// itself, so a native flag the harness ignores is still caught.
     pub native_schema: Option<NativeSchema>,
+    /// How this harness can take a **large** prompt without inlining it into the
+    /// argv, where a single argument over the OS ceiling (`MAX_ARG_STRLEN`, 128
+    /// KiB on Linux; the total argv+env cap on macOS/Windows) fails the spawn
+    /// with `E2BIG`. Pure capability data: the command layer materializes the
+    /// system prompt to a temp file / pipes the user prompt to stdin only when a
+    /// prompt clears the size threshold *and* the flag here says the harness can
+    /// receive it that way, then `build_argv` reads the matching [`BuildCtx`]
+    /// fields ([`BuildCtx::system_file`] / [`BuildCtx::prompt_stdin`]). A small
+    /// prompt keeps the byte-identical inline argv, so the common case (and every
+    /// `--print-command`) is unchanged. Sourced from each CLI's headless docs,
+    /// never guessed; [`LargeInput::NONE`] (inline only) is the safe default for a
+    /// CLI with no file/stdin input. Introspectable via `oneharness list`.
+    pub large_input: LargeInput,
     /// The approval modes this harness can express, each with how it behaves in
     /// a headless run. A [`PermissionMode`] absent from this list is unsupported
     /// for the harness — the command layer turns a request for it into a loud
@@ -487,6 +570,16 @@ static REGISTRY: &[HarnessSpec] = &[
         mock_delivery: Some(MockDelivery::SettingsFlag { flag: "--settings" }),
         default_env: &[],
         native_schema: Some(NativeSchema::ClaudeJsonSchema),
+        // Large prompts bypass the argv ceiling: the system prompt rides
+        // `--append-system-prompt-file <file>` and the user prompt rides stdin
+        // (`-p --input-format text`, positional omitted). Both are documented
+        // headless flags (claude 2.1.207). System is carried separately (the file
+        // flag), so it is NOT folded into the stdin payload.
+        large_input: LargeInput {
+            prompt_stdin: true,
+            system_rides_prompt: false,
+            system_file_flag: Some("--append-system-prompt-file"),
+        },
         // `--permission-mode` covers the whole spectrum, all honored under `-p`.
         // `default` maps to `dontAsk` (deny-and-continue), not `default` (which
         // aborts on an un-allowed tool), so the ask flow never hangs headless.
@@ -550,6 +643,16 @@ static REGISTRY: &[HarnessSpec] = &[
             ],
         }),
         default_env: &[],
+        // Large prompts ride stdin: `codex exec -` (the `-` sentinel forces the
+        // prompt to be read from stdin, and works with `resume <id> -` too —
+        // sourced from the exec CLI's clap docs). Codex has no system-prompt flag,
+        // so oneharness prepends `--system` into the prompt; that combined text is
+        // what rides stdin (`system_rides_prompt`).
+        large_input: LargeInput {
+            prompt_stdin: true,
+            system_rides_prompt: true,
+            system_file_flag: None,
+        },
         // Codex `exec` *does* have a native schema flag (`--output-schema <file>`),
         // but it takes a schema FILE (not inline) and is reportedly ignored once
         // the agent uses tools: https://github.com/openai/codex/issues/15451 — so
@@ -620,6 +723,15 @@ static REGISTRY: &[HarnessSpec] = &[
         mock_delivery: Some(MockDelivery::ProjectHooks { extra_args: &[] }),
         default_env: &[],
         native_schema: None,
+        // Large prompts ride stdin: `opencode run` reads the prompt from stdin
+        // when no positional message is given and stdin is piped (auto-detected,
+        // no flag/sentinel — sourced from `run.ts`). No system flag, so `--system`
+        // is prepended and the combined text rides stdin (`system_rides_prompt`).
+        large_input: LargeInput {
+            prompt_stdin: true,
+            system_rides_prompt: true,
+            system_file_flag: None,
+        },
         // The built-in `plan` agent is read-only, so `plan` and `read-only` both
         // map to it. `default` is clean headless: OpenCode's out-of-box default
         // is `allow`, and even an `ask` permission *auto-rejects* (deny-and-
@@ -680,6 +792,18 @@ static REGISTRY: &[HarnessSpec] = &[
         mock_delivery: Some(MockDelivery::ProjectHooks { extra_args: &[] }),
         default_env: &[],
         native_schema: None,
+        // Large prompts ride stdin via the `-i -` sentinel (`--instructions -`
+        // reads the whole prompt from stdin — sourced from goose-cli's clap defs);
+        // build_argv swaps `-t <prompt>` for `-i -`. Goose's `--system` is inline
+        // TEXT with no file/stdin route, so a large *system* prompt has no off-argv
+        // path here (goosehints is the file mechanism, but it is project-scoped,
+        // not per-run) — hence `system_rides_prompt: false` and no file flag; the
+        // command layer warns if a system prompt is too large to inline.
+        large_input: LargeInput {
+            prompt_stdin: true,
+            system_rides_prompt: false,
+            system_file_flag: None,
+        },
         // Goose has no mode flag on `goose run`; the mode is the `GOOSE_MODE`
         // environment variable (highest precedence over its config.yaml). None of
         // these hang headlessly: `approve`/`smart_approve` fail *closed* with an
@@ -760,6 +884,18 @@ static REGISTRY: &[HarnessSpec] = &[
         mock_delivery: None,
         default_env: &[("QWEN_CODE_SUPPRESS_YOLO_WARNING", "1")],
         native_schema: None,
+        // Large prompts ride stdin: `qwen` reads the prompt from stdin when piped
+        // and `-p` is omitted (sourced from qwen-code's `gemini.tsx`). oneharness
+        // has no system flag mapping for qwen (it prepends `--system`), so the
+        // combined text rides stdin (`system_rides_prompt`). (Qwen also has a
+        // file-based system override via the `QWEN_SYSTEM_MD` env var, but it
+        // *replaces* the whole system prompt — the prepend-into-stdin path is
+        // simpler and consistent with the other prependers.)
+        large_input: LargeInput {
+            prompt_stdin: true,
+            system_rides_prompt: true,
+            system_file_flag: None,
+        },
         // `--approval-mode` spans the whole spectrum, all clean headless: current
         // qwen-code *deny-and-continues* a gated tool in non-interactive mode
         // (auto-deny + the agent loop proceeds, process exits 0) rather than
@@ -815,6 +951,16 @@ static REGISTRY: &[HarnessSpec] = &[
         mock_delivery: Some(MockDelivery::ProjectHooks { extra_args: &[] }),
         default_env: &[],
         native_schema: None,
+        // Large prompts ride stdin: `crush run` prepends piped stdin to any
+        // positional, so with the positional omitted the prompt IS the stdin
+        // content (`cat file | crush run` / `crush run < file` — sourced from
+        // `MaybePrependStdin` in root.go). No system flag, so `--system` is
+        // prepended and the combined text rides stdin (`system_rides_prompt`).
+        large_input: LargeInput {
+            prompt_stdin: true,
+            system_rides_prompt: true,
+            system_file_flag: None,
+        },
         // `crush run` auto-approves the whole session, so it never hangs — but it
         // also cannot gate, so `default` and `bypass` behave the same (bypass
         // adds the explicit `--yolo`). There is no plan/edit/auto mode on `run`.
@@ -861,6 +1007,16 @@ static REGISTRY: &[HarnessSpec] = &[
         mock_delivery: None,
         default_env: &[],
         native_schema: None,
+        // Large prompts ride stdin: piping into `copilot` with NO `-p` is read as
+        // the prompt (a `-p` value makes the pipe be ignored — sourced from the
+        // Copilot CLI docs), so build_argv drops `-p`/the positional entirely. No
+        // system flag, so `--system` is prepended and the combined text rides
+        // stdin (`system_rides_prompt`).
+        large_input: LargeInput {
+            prompt_stdin: true,
+            system_rides_prompt: true,
+            system_file_flag: None,
+        },
         // `--mode plan` is a real read-only plan mode; `read-only` is allow-all
         // with `write`/`shell` denied (deny beats allow); `edit` allows
         // `write`/`read` but not `shell`, so edits run and shell is auto-denied
@@ -930,6 +1086,17 @@ static REGISTRY: &[HarnessSpec] = &[
         mock_delivery: Some(MockDelivery::ProjectHooks { extra_args: &[] }),
         default_env: &[],
         native_schema: None,
+        // Large prompts ride stdin: `cursor-agent -p` reads the prompt from stdin
+        // when the positional is omitted — probe-verified live (2026-07-11,
+        // scripts/explore-cursor-stdin.sh: piped stdin with no positional
+        // round-tripped the marker both with and without `-p`; the `-` sentinel did
+        // NOT). Cursor has no system-prompt flag, so `--system` is prepended and
+        // the combined text rides stdin (`system_rides_prompt`).
+        large_input: LargeInput {
+            prompt_stdin: true,
+            system_rides_prompt: true,
+            system_file_flag: None,
+        },
         // `--mode plan` is the read-only plan mode; `--mode ask` is read-only
         // Q&A (no plan workflow) → `read-only`; `--force` is bypass. Without
         // `--force` a gated tool stalls (Cursor proposes-not-applies, with no
@@ -968,7 +1135,17 @@ fn claude_permission_mode(mode: PermissionMode) -> &'static str {
 /// from it instead of appending — the session id is read from the result JSON's
 /// `session_id`).
 fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
-    let mut a = vec![c.bin.into(), "-p".into(), c.prompt.into()];
+    // `-p` is print mode. Normally the prompt is the positional after it; for a
+    // large prompt the command layer sets `prompt_stdin`, so we drop the positional
+    // and add `--input-format text` — claude then reads the prompt from stdin,
+    // off the argv (no `E2BIG`). Sourced from `claude --help` (2.1.207).
+    let mut a = vec![c.bin.into(), "-p".into()];
+    if c.prompt_stdin {
+        a.push("--input-format".into());
+        a.push("text".into());
+    } else {
+        a.push(c.prompt.into());
+    }
     a.push("--permission-mode".into());
     a.push(claude_permission_mode(c.mode).into());
     // read-only: deny the mutating tools (Bash covers destructive shell; reads
@@ -983,7 +1160,14 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
         a.push("--model".into());
         a.push(m.into());
     }
-    if let Some(s) = c.system {
+    // System prompt: for a large one the command layer materializes it to a temp
+    // file and sets `system_file`, delivered via `--append-system-prompt-file`
+    // (off the argv); otherwise it rides inline `--append-system-prompt`. The file
+    // form wins when both are set.
+    if let Some(path) = c.system_file {
+        a.push("--append-system-prompt-file".into());
+        a.push(path.into());
+    } else if let Some(s) = c.system {
         a.push("--append-system-prompt".into());
         a.push(s.into());
     }
@@ -1076,7 +1260,15 @@ fn argv_codex(c: &BuildCtx) -> Vec<String> {
     if let Some(sid) = c.resume {
         a.push(sid.into());
     }
-    a.push(prompt_with_system(c));
+    // For a large prompt the command layer sets `prompt_stdin` and pipes the
+    // (system-prepended) prompt; the `-` sentinel forces `codex exec` to read it
+    // from stdin (works with `resume <id> -` too). Otherwise the prompt is the
+    // positional.
+    if c.prompt_stdin {
+        a.push("-".into());
+    } else {
+        a.push(prompt_with_system(c));
+    }
     a
 }
 
@@ -1113,7 +1305,12 @@ fn argv_opencode(c: &BuildCtx) -> Vec<String> {
             a.push("--fork".into());
         }
     }
-    a.push(prompt_with_system(c));
+    // For a large prompt the command layer sets `prompt_stdin` and pipes the
+    // (system-prepended) prompt; `opencode run` reads stdin when the positional
+    // message is omitted, so drop it. Otherwise the prompt is the positional.
+    if !c.prompt_stdin {
+        a.push(prompt_with_system(c));
+    }
     a
 }
 
@@ -1146,8 +1343,17 @@ fn argv_goose(c: &BuildCtx) -> Vec<String> {
         a.push("--name".into());
         a.push(name.into());
     }
-    a.push("-t".into());
-    a.push(c.prompt.into());
+    // For a large prompt the command layer sets `prompt_stdin` and pipes it; the
+    // `-i -` sentinel (`--instructions -`) makes goose read the prompt from stdin,
+    // off the argv. Otherwise the prompt rides `-t`. (`--system` stays inline
+    // either way — goose has no per-run system file route.)
+    if c.prompt_stdin {
+        a.push("-i".into());
+        a.push("-".into());
+    } else {
+        a.push("-t".into());
+        a.push(c.prompt.into());
+    }
     a
 }
 
@@ -1195,8 +1401,13 @@ fn argv_qwen(c: &BuildCtx) -> Vec<String> {
         a.push("--resume".into());
         a.push(sid.into());
     }
-    a.push("-p".into());
-    a.push(prompt_with_system(c));
+    // For a large prompt the command layer sets `prompt_stdin` and pipes the
+    // (system-prepended) prompt; qwen reads stdin as the prompt when `-p` is
+    // omitted, so drop it. Otherwise the prompt rides `-p`.
+    if !c.prompt_stdin {
+        a.push("-p".into());
+        a.push(prompt_with_system(c));
+    }
     a
 }
 
@@ -1217,7 +1428,12 @@ fn argv_crush(c: &BuildCtx) -> Vec<String> {
         a.push("-m".into());
         a.push(m.into());
     }
-    a.push(prompt_with_system(c));
+    // For a large prompt the command layer sets `prompt_stdin` and pipes the
+    // (system-prepended) prompt; `crush run` reads stdin when the positional is
+    // omitted, so drop it. Otherwise the prompt is the positional.
+    if !c.prompt_stdin {
+        a.push(prompt_with_system(c));
+    }
     a
 }
 
@@ -1230,7 +1446,15 @@ fn argv_crush(c: &BuildCtx) -> Vec<String> {
 /// the session when the id is new (create-or-resume) — so the caller mints and
 /// reuses a UUID; `session_id` stays null (nothing to extract).
 fn argv_copilot(c: &BuildCtx) -> Vec<String> {
-    let mut a = vec![c.bin.into(), "-p".into(), prompt_with_system(c)];
+    // For a large prompt the command layer sets `prompt_stdin` and pipes the
+    // (system-prepended) prompt; copilot reads stdin as the prompt only when `-p`
+    // is ABSENT (a `-p` value makes the pipe be ignored), so drop `-p` entirely.
+    // Otherwise the prompt rides `-p`.
+    let mut a = if c.prompt_stdin {
+        vec![c.bin.into()]
+    } else {
+        vec![c.bin.into(), "-p".into(), prompt_with_system(c)]
+    };
     // Bypass is the allow-all trio; `plan` is the read-only plan mode;
     // `read-only` is allow-all with `write`/`shell` denied (deny beats allow).
     // Without any, `-p` auto-denies gated tools and continues. Unsupported modes
@@ -1281,7 +1505,15 @@ fn argv_copilot(c: &BuildCtx) -> Vec<String> {
 /// --output-format stream-json` (Cursor continues a chat id with `--resume`; no
 /// system flag, so `--system` is prepended to the prompt)
 fn argv_cursor(c: &BuildCtx) -> Vec<String> {
-    let mut a = vec![c.bin.into(), "-p".into(), prompt_with_system(c)];
+    // `-p` is print mode. For a large prompt the command layer sets `prompt_stdin`
+    // and pipes the (system-prepended) prompt; cursor reads stdin as the prompt
+    // when the positional is omitted (probe-verified 2026-07-11 via
+    // scripts/explore-cursor-stdin.sh — piped stdin with `-p` and no positional
+    // round-trips; the `-` sentinel does NOT). Otherwise the prompt is the positional.
+    let mut a = vec![c.bin.into(), "-p".into()];
+    if !c.prompt_stdin {
+        a.push(prompt_with_system(c));
+    }
     // `--force` is bypass (it also implies trust). Otherwise a headless run still
     // needs `--trust` — Cursor refuses to run an untrusted workspace ("Workspace
     // Trust Required", observed live) — while leaving the permission system
@@ -1339,6 +1571,8 @@ mod tests {
             mode,
             output_format,
             schema: None,
+            system_file: None,
+            prompt_stdin: false,
         }
     }
 
@@ -1778,6 +2012,8 @@ mod tests {
             mode: PermissionMode::Bypass,
             output_format: OutputFormat::Json,
             schema: None,
+            system_file: None,
+            prompt_stdin: false,
         };
         let argv = (spec.build_argv)(&ctx);
         assert!(
@@ -1856,7 +2092,99 @@ mod tests {
             mode: PermissionMode::Bypass,
             output_format: spec.output_format,
             schema: None,
+            system_file: None,
+            prompt_stdin: false,
         }
+    }
+
+    #[test]
+    fn large_prompt_rides_stdin_off_the_argv_per_harness() {
+        // With `prompt_stdin` set (the command layer's large-prompt decision), a
+        // stdin-capable adapter must omit the positional prompt — so the prompt
+        // never touches the argv (`E2BIG`) — and add whatever stdin-selecting
+        // flags its CLI needs. Sourced per-adapter (see each `build_argv` comment).
+        let stdin_ctx = |spec: &'static HarnessSpec| BuildCtx {
+            prompt_stdin: true,
+            // A system prompt too, to prove it is never inlined either.
+            system: Some("be terse"),
+            ..base_ctx(spec)
+        };
+        let has = |a: &[String], t: &str| a.iter().any(|x| x == t);
+        let pair = |a: &[String], x: &str, y: &str| a.windows(2).any(|w| w == [x, y]);
+
+        // claude: keep `-p` (print mode), add `--input-format text`, drop the
+        // positional. (System rides its own file flag, tested separately.)
+        let spec = by_id("claude-code").unwrap();
+        let a = (spec.build_argv)(&stdin_ctx(spec));
+        assert!(pair(&a, "--input-format", "text"), "{a:?}");
+        assert!(has(&a, "-p"), "{a:?}");
+        assert!(!has(&a, "hi"), "claude drops the positional prompt: {a:?}");
+
+        // codex: the `-` sentinel forces stdin, replacing the positional.
+        let spec = by_id("codex").unwrap();
+        let a = (spec.build_argv)(&stdin_ctx(spec));
+        assert!(has(&a, "-"), "codex uses the stdin sentinel: {a:?}");
+        assert!(!has(&a, "be terse\n\nhi") && !has(&a, "hi"), "{a:?}");
+
+        // goose: `-i -` replaces `-t <prompt>` (system stays on its inline flag).
+        let spec = by_id("goose").unwrap();
+        let a = (spec.build_argv)(&stdin_ctx(spec));
+        assert!(pair(&a, "-i", "-"), "{a:?}");
+        assert!(!pair(&a, "-t", "hi"), "goose drops -t <prompt>: {a:?}");
+
+        // opencode / qwen / crush / copilot / cursor: the positional
+        // (system-prepended) is omitted entirely — the prompt rides stdin.
+        for id in ["opencode", "qwen", "crush", "copilot", "cursor"] {
+            let spec = by_id(id).unwrap();
+            let a = (spec.build_argv)(&stdin_ctx(spec));
+            assert!(
+                !has(&a, "hi") && !has(&a, "be terse\n\nhi"),
+                "{id} drops the positional prompt: {a:?}"
+            );
+        }
+        // qwen and copilot must also drop `-p` (else the pipe is ignored / a
+        // positional is required). cursor KEEPS `-p` (its stdin form uses it —
+        // probe-verified).
+        for id in ["qwen", "copilot"] {
+            let spec = by_id(id).unwrap();
+            let a = (spec.build_argv)(&stdin_ctx(spec));
+            assert!(!has(&a, "-p"), "{id} drops -p under stdin: {a:?}");
+        }
+        let spec = by_id("cursor").unwrap();
+        assert!(
+            has(&(spec.build_argv)(&stdin_ctx(spec)), "-p"),
+            "cursor keeps -p under stdin"
+        );
+    }
+
+    #[test]
+    fn large_system_rides_the_file_flag_for_claude() {
+        // A large system prompt on claude-code is delivered via
+        // `--append-system-prompt-file <tempfile>` (the command layer materializes
+        // it), never inline `--append-system-prompt` — off the argv.
+        let spec = by_id("claude-code").unwrap();
+        let a = (spec.build_argv)(&BuildCtx {
+            system: Some("be terse"),
+            system_file: Some("/tmp/oneharness-sys.txt"),
+            ..base_ctx(spec)
+        });
+        assert!(
+            a.windows(2)
+                .any(|w| w == ["--append-system-prompt-file", "/tmp/oneharness-sys.txt"]),
+            "{a:?}"
+        );
+        // The inline flag and value are absent when the file is used.
+        assert!(!a.iter().any(|t| t == "--append-system-prompt"), "{a:?}");
+        assert!(!a.iter().any(|t| t == "be terse"), "{a:?}");
+    }
+
+    #[test]
+    fn prompt_with_system_text_matches_the_inline_prepend() {
+        // The stdin payload assembly must mirror `prompt_with_system` exactly, so
+        // stdin delivery is byte-identical to the inline path it replaces.
+        assert_eq!(prompt_with_system_text(Some("sys"), "usr"), "sys\n\nusr");
+        assert_eq!(prompt_with_system_text(Some(""), "usr"), "usr");
+        assert_eq!(prompt_with_system_text(None, "usr"), "usr");
     }
 
     #[test]

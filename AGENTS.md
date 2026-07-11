@@ -479,6 +479,29 @@ shape. When you add one:
   prompt-based structured-output path already works for every harness, and
   oneharness validates the result regardless. If a harness reports its conforming
   value somewhere other than the answer text, extend `structured::extract_value`.
+- Declare its `large_input` (`LargeInput`): how a **large** prompt/system reaches
+  the harness without inlining it into the argv (past the OS ceiling → `E2BIG`;
+  issue #1115). Three fields, all sourced from the CLI's headless docs, never
+  guessed: `prompt_stdin` (the harness reads the user prompt from stdin — add a
+  `c.prompt_stdin` arm to `build_argv` that omits the positional and adds any
+  stdin-selecting flags, e.g. Claude's `--input-format text`, Goose's `-i -`);
+  `system_rides_prompt` (for a harness with no system flag, whose `--system` is
+  already prepended to the prompt — so the combined text rides the same stdin);
+  and `system_file_flag` (a CLI flag that reads the system prompt from a file,
+  Claude's `--append-system-prompt-file`). The command layer materializes/pipes
+  only when a value clears the 64 KiB `LARGE_INPUT_THRESHOLD` (small prompts keep
+  the byte-identical inline argv, so `--print-command` is unchanged); `build_argv`
+  reads the `BuildCtx::system_file`/`prompt_stdin` fields. Pin the stdin/file arms
+  with a `build_argv` assertion, add the harness to the README large-prompt
+  matrix, and add the `oh_long_prompt_enforce <id>` live phase (a >128 KiB
+  prompt+system must round-trip and stay out of `.command`) — the drift alarm that
+  the CLI still reads the off-argv input. `LargeInput::NONE` (inline only) is the
+  honest default until a stdin/file route is *verified* from a real invocation —
+  a large value then stays inline and the command layer warns loudly rather than
+  risking a silent E2BIG. All eight harnesses are wired today (cursor's
+  stdin-only-prompt path was closed-source, so it was **probe-verified** via
+  `scripts/explore-cursor-stdin.sh` + the dispatch-only `explore-cursor-stdin.yml`
+  before wiring — the pattern to reuse for the next uncertain CLI).
 - Give the harness its `global_hook` (the user-global hook location, for `sync
   --global` / `install` at `Scope::Global`) and its `gate_deny` (how it expresses
   a pre-tool deny when it runs `oneharness gate <id>`). Both are registry data

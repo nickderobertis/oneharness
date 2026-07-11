@@ -16,6 +16,13 @@ marker="$(oh_marker)"
 oh_run cursor "$(oh_prompt "$marker")"
 oh_assert_echoed cursor "$marker"
 
+# Large prompt + system (issue #1115): oneharness pipes a >128 KiB prompt to
+# `cursor-agent -p`'s stdin (positional omitted), with the system prepended — so
+# it never trips the argv ceiling. Verified live that cursor reads a stdin-only
+# prompt (scripts/explore-cursor-stdin.sh); the marker must still round-trip.
+note "» long prompt: a >128 KiB prompt+system must round-trip off the argv"
+oh_long_prompt_enforce cursor
+
 # Normalized tool events: Cursor's default `stream-json` carries its own
 # `type:"tool_call"` transcript (nested `shellToolCall` payload), so a shell-tool
 # turn must surface a normalized `tool_call` via `stream-json:cursor-tool-calls`

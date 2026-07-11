@@ -1,0 +1,58 @@
+name: Explore (cursor stdin)
+
+# Investigative, DISPATCH-ONLY probe (issue #1115). Installs and authenticates
+# the real cursor-agent CLI, then runs scripts/explore-cursor-stdin.sh to source
+# — from live behavior, never guessed — whether cursor can take the user prompt
+# SOLELY from stdin (positional omitted), the one thing that would let a >128 KiB
+# prompt ride stdin instead of the argv. Read the VERDICT SUMMARY in the logs,
+# then wire (or keep inline) cursor's `large_input.prompt_stdin` accordingly.
+# Gated like the e2e workflows: canonical repo only, so its secret is never
+# reachable by untrusted code.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: explore-cursor-stdin-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  explore:
+    name: probe cursor stdin handling
+    if: github.repository == 'nickderobertis/oneharness'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 20
+    env:
+      CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+      CURSOR_E2E_MODEL: ${{ vars.CURSOR_E2E_MODEL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify the API key is present
+        run: |
+          if [ -z "${CURSOR_API_KEY:-}" ]; then
+            echo "::error::CURSOR_API_KEY secret is not set."
+            exit 1
+          fi
+
+      - name: Install Cursor CLI
+        run: |
+          curl https://cursor.com/install -fsS | bash
+          if [ -x "$HOME/.local/bin/cursor-agent" ]; then
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          else
+            dir="$(dirname "$(find "$HOME" -name cursor-agent -type f 2>/dev/null | head -1)")"
+            [ -n "$dir" ] && echo "$dir" >> "$GITHUB_PATH"
+          fi
+
+      - name: Show cursor-agent version
+        run: cursor-agent --version
+
+      - name: Probe cursor stdin handling
+        run: bash scripts/explore-cursor-stdin.sh

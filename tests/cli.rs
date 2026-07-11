@@ -7851,6 +7851,168 @@ fn fallback_stops_at_a_real_task_failure_and_does_not_fall_through() {
 }
 
 #[test]
+fn fallback_stops_at_a_classified_rate_limit_and_does_not_fall_through() {
+    // The core guarantee: a non-zero exit that is *classified* (here rate_limit,
+    // a transient hiccup of a WORKING, authenticated harness) is still a real
+    // run — fallback must STOP, not fall through, so a working harness's 429 is
+    // never masked behind the next candidate. Same for an unknown model.
+    for (needle, kind) in [
+        (
+            "Error 429: rate limit exceeded, too many requests",
+            "rate_limit",
+        ),
+        (
+            "model not found: no such model 'gpt-nope'",
+            "model_not_found",
+        ),
+    ] {
+        let output = run(
+            &[
+                "run",
+                "--run-mode",
+                "fallback",
+                "--harness",
+                "claude-code,codex",
+                "--prompt",
+                "hi",
+                "--bin",
+                &bin_override("claude-code"),
+                "--bin",
+                &bin_override("codex"),
+                "--compact",
+            ],
+            &[("MOCK_EXIT", "1"), ("MOCK_STDERR", needle)],
+        );
+        assert_eq!(output.status.code(), Some(1), "{kind}: should stop, exit 1");
+        let v = json_stdout(&output);
+        // Stopped at the first harness — it ran (badly), so it is the answer.
+        assert_eq!(v["fallback"]["ran"], "claude-code", "{kind}");
+        assert_eq!(
+            v["fallback"]["fell_through"].as_array().unwrap().len(),
+            0,
+            "{kind}"
+        );
+        let results = v["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1, "{kind}: codex must never be attempted");
+        assert_eq!(results[0]["failure_kind"], kind);
+    }
+}
+
+#[test]
+fn fallback_falls_through_quota_across_a_multi_harness_chain() {
+    // Two setup failures in a row before a working harness: not-installed, then a
+    // quota/no-credit rejection (a provisioning problem, like auth), then a run.
+    // Proves quota falls through AND that a chain of >1 fall-through works, with
+    // per-harness behavior scripted via config env.
+    let mock = mock_bin().display().to_string();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "codex", "opencode"]
+        run_mode = "fallback"
+
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDERR = "Error: insufficient_quota — your credit balance is too low" }}
+
+        [harness.opencode]
+        bin = '{mock}'
+        "#
+    );
+    let fx = ConfigFixture::new("fallback-quota", &project, "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            // claude-code is not installed (points at a missing path).
+            "--bin",
+            &missing_bin("claude-code"),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let v = json_stdout(&output);
+    assert_eq!(v["fallback"]["ran"], "opencode");
+    let fell = v["fallback"]["fell_through"].as_array().unwrap();
+    assert_eq!(fell.len(), 2);
+    assert_eq!(fell[0]["harness"], "claude-code");
+    assert_eq!(fell[0]["reason"], "not-installed");
+    assert_eq!(fell[1]["harness"], "codex");
+    assert_eq!(fell[1]["reason"], "quota");
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[1]["failure_kind"], "quota");
+    assert_eq!(results[2]["status"], "ok");
+}
+
+#[test]
+fn fallback_via_env_override_and_cli_beats_config() {
+    let mock = mock_bin().display().to_string();
+
+    // ONEHARNESS_RUN_MODE drives fallback with no config/CLI flag: the missing
+    // first harness falls through to the mock second. The presence of a
+    // `fallback` block (parallel emits none) proves the env override took.
+    let fx = ConfigFixture::new("fallback-env", "", "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "claude-code,codex",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--bin",
+            &missing_bin("claude-code"),
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[("ONEHARNESS_RUN_MODE", "fallback")],
+        &fx.user_config(),
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let v = json_stdout(&output);
+    assert_eq!(
+        v["fallback"]["ran"], "codex",
+        "env override should select fallback"
+    );
+
+    // CLI `--run-mode parallel` overrides config `run_mode = "fallback"`: both
+    // harnesses run and there is no fallback block.
+    let project = format!(
+        "run_mode = \"fallback\"\nharnesses = [\"claude-code\", \"codex\"]\n\
+         [harness.claude-code]\nbin = '{mock}'\n[harness.codex]\nbin = '{mock}'\n"
+    );
+    let fx = ConfigFixture::new("fallback-cli-wins", &project, "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--run-mode",
+            "parallel",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let v = json_stdout(&output);
+    assert!(
+        v["fallback"].is_null(),
+        "CLI parallel must beat config fallback"
+    );
+    assert_eq!(v["results"].as_array().unwrap().len(), 2);
+}
+
+#[test]
 fn fallback_stops_at_a_timeout_and_does_not_fall_through() {
     // A slow real run that times out is a genuine run, not a setup failure:
     // fallback stops there rather than masking it behind the next harness.

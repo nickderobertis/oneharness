@@ -1097,10 +1097,14 @@ static REGISTRY: &[HarnessSpec] = &[
             mode(PermissionMode::Edit, ModeHeadless::Clean),
             mode(PermissionMode::Bypass, ModeHeadless::Clean),
         ],
-        // Copilot exposes reasoning effort only as persistent config
-        // (`~/.copilot/settings.json` `effortLevel`) — no non-interactive flag or
-        // env var (doc-confirmed) — so no argv delivery.
-        reasoning: None,
+        // `--reasoning-effort <low|medium|high>` (alias `--effort`), documented in
+        // Copilot's CLI flags reference + changelog. NOTE: the docs don't
+        // explicitly confirm it is honored under `-p`, and Copilot has a history
+        // of headless features silently not firing here (its hooks were
+        // probe-refuted headlessly) — so the live `oh_reasoning_enforce` drift
+        // alarm is the honoring proof this one especially wants. The full flag
+        // name is used (not the `--effort` alias) to stay unambiguous on the argv.
+        reasoning: Some(ReasoningDelivery::Flag("--reasoning-effort")),
         build_argv: argv_copilot,
     },
     HarnessSpec {
@@ -1677,15 +1681,16 @@ mod tests {
 
     #[test]
     fn only_argv_capable_harnesses_declare_reasoning() {
-        // Exactly the two harnesses with a doc-sourced headless argv surface for
-        // reasoning; the rest express effort only via config (sync-path follow-up)
-        // or not at all, and are `None` so the command layer refuses loudly.
+        // Exactly the harnesses with a doc-sourced headless reasoning flag; the
+        // rest express effort only via config (opencode/qwen/crush — sync-path
+        // follow-up), or not at all (goose/cursor have no headless flag), and are
+        // `None` so the command layer refuses loudly.
         let with: Vec<&str> = all()
             .iter()
             .filter(|h| h.reasoning.is_some())
             .map(|h| h.id)
             .collect();
-        assert_eq!(with, vec!["claude-code", "codex"]);
+        assert_eq!(with, vec!["claude-code", "codex", "copilot"]);
     }
 
     /// Pin each harness's mock input-rewrite capability: the live-verified

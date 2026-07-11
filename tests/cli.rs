@@ -1579,6 +1579,14 @@ fn reasoning_maps_to_each_capable_harness_native_flag() {
             .any(|w| w == ["-c", "model_reasoning_effort=xhigh"]),
         "{codex:?}"
     );
+    // copilot: `--reasoning-effort <value>` (its documented headless flag).
+    let copilot = print_command_for(&["--harness", "copilot", "--reasoning", "medium"]);
+    assert!(
+        copilot
+            .windows(2)
+            .any(|w| w == ["--reasoning-effort", "medium"]),
+        "{copilot:?}"
+    );
 }
 
 #[test]
@@ -1639,7 +1647,7 @@ fn reasoning_on_a_harness_without_a_flag_is_a_usage_error() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("cannot take a reasoning"), "{stderr}");
     assert!(
-        stderr.contains("claude-code, codex"),
+        stderr.contains("claude-code, codex, copilot"),
         "should list capable harnesses: {stderr}"
     );
 }

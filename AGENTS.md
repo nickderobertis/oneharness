@@ -492,9 +492,13 @@ shape. When you add one:
   into the harness's override args (alongside config `args`/passthrough), and
   refuses (`ReasoningUnsupported`, a loud usage error) any selected harness with
   `reasoning: None` that has an effective `--reasoning`/config value — never a
-  silent drop. `None` is the honest default (Cursor and Copilot express effort
-  only through their own config file — the `sync`-path follow-up; the plain
-  harnesses have no knob). Pin the rendered argv with a `--print-command`
+  silent drop. `None` is the honest default (opencode/qwen/crush express effort
+  only through their own config file — the `sync`-path follow-up; goose/cursor
+  have no headless reasoning flag at all). Wired today: claude-code
+  (`--effort`), codex (`-c model_reasoning_effort=`), copilot
+  (`--reasoning-effort` — doc-sourced but its headless *honoring* is unproven and
+  Copilot has a track record of headless features not firing, so its live
+  `oh_reasoning_enforce` matters most). Pin the rendered argv with a `--print-command`
   assertion, add the `reasoning`/`supports_reasoning` column to the README matrix,
   and resolve it per harness (`[harness.<id>] reasoning`, next to `model`, since
   effort values are provider-specific). The config/env/CLI trio gained `reasoning`

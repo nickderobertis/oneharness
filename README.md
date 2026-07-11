@@ -67,7 +67,7 @@ how — or whether — it reaches that harness.
 | `goose` | Goose | `goose` | — | native flag | — | (runs unattended) | — | — | — | — | `--resume --name` (linear)¹ |
 | `qwen` | Qwen Code | `qwen` | ✓ | prepended | config only | `--yolo` | `.qwen/settings.json` | ✓ / ✓ (interactive) | — | — | `--resume` (linear) |
 | `crush` | Crush | `crush` | ✓ | prepended | config only | `run -q` (non-interactive) | `crush.json` | ✓ / ✓ | — | — | `--session` (linear) |
-| `copilot` | GitHub Copilot CLI | `copilot` | ✓ | prepended | config only | `--allow-all-tools --allow-all-paths --no-ask-user` | — | — | — | — | `--resume` (linear)¹ |
+| `copilot` | GitHub Copilot CLI | `copilot` | ✓ | prepended | `--reasoning-effort` | `--allow-all-tools --allow-all-paths --no-ask-user` | — | — | — | — | `--resume` (linear)¹ |
 | `cursor` | Cursor CLI | `cursor-agent` | ✓ | prepended | config only | `--force` (`--trust` under `--no-bypass`) | `.cursor/cli.json` | ✓ / ✓ | — | ✓ | `--resume` (linear) |
 
 The `--resume` column shows each harness's headless continuation flag and whether
@@ -97,14 +97,16 @@ rest (which have no id to bind a name to) `--session` is a loud usage error.
 - **`reasoning`** — reasoning / thinking effort (`--reasoning <effort>` /
   `ONEHARNESS_REASONING` / config `reasoning`, and per harness next to its
   `model`), an opaque string forwarded verbatim in each harness's native shape:
-  Claude Code's `--effort` (low/medium/high/max/auto) and Codex's `-c
-  model_reasoning_effort=` (minimal…xhigh). Effort is a provider/model
-  capability with no shared spelling, so oneharness does not interpret the value
-  — an effort the model rejects surfaces as that harness's own error, never a
-  guess. "config only" harnesses express effort in their own config file (not a
-  headless flag), so `--reasoning` is a **loud usage error** for them rather than
-  a silent drop; scope the setting per harness when a selection mixes capable and
-  incapable ones. (`supports_reasoning` in `oneharness list`.)
+  Claude Code's `--effort` (low/medium/high/max/auto), Codex's `-c
+  model_reasoning_effort=` (minimal…xhigh), and Copilot's `--reasoning-effort`
+  (low/medium/high). Effort is a provider/model capability with no shared
+  spelling, so oneharness does not interpret the value — an effort the model
+  rejects surfaces as that harness's own error, never a guess. "config only"
+  harnesses (OpenCode, Qwen, Crush) express effort in their own config file, and
+  Goose/Cursor have no headless reasoning flag at all, so `--reasoning` is a
+  **loud usage error** for those rather than a silent drop; scope the setting per
+  harness when a selection mixes capable and incapable ones. (`supports_reasoning`
+  in `oneharness list`.)
 - **synced config file** — the project-scoped file `oneharness sync` merges the
   unified settings into. Because the policy lands in each harness's *own*
   config, it also governs the tools when used directly — oneharness is not in

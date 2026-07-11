@@ -126,4 +126,11 @@ jobs:
         env:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
           CURSOR_E2E_MODEL: ${{ vars.CURSOR_E2E_MODEL }}
+          # Reasoning effort is a `-<tier>` suffix on the model id, so `--reasoning
+          # high` turns this BASE model into `<base>-high` (e.g. `gpt-5.4-mini` →
+          # `gpt-5.4-mini-high`, a real cursor id). Must be a base whose family
+          # accepts the tier suffix; override with `vars.CURSOR_E2E_REASONING_MODEL`
+          # for the account/plan. NOT the shared CURSOR_E2E_MODEL (that one may be a
+          # tier-less id like `auto` that `-high` would make invalid).
+          CURSOR_E2E_REASONING_MODEL: ${{ vars.CURSOR_E2E_REASONING_MODEL || 'gpt-5.4-mini' }}
         run: just live-cursor

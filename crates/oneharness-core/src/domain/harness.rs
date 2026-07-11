@@ -323,15 +323,19 @@ pub enum ReasoningDelivery {
     /// bare word — Codex parses a `-c` value as JSON and falls back to a string,
     /// so `model_reasoning_effort=high` lands as the string `"high"`.
     ConfigKv(&'static str),
-    /// Effort rides the **model id** itself as a bracketed option:
-    /// `<model>[<key>=<value>]` (Cursor's `--model 'sonnet[effort=high]'`). Unlike
-    /// the append-style deliveries this decorates the existing `--model` value
-    /// rather than adding args, so it *requires* a model to attach to (the command
-    /// layer refuses `--reasoning` without a model for such a harness). Sourced
-    /// from `cursor-agent`'s own `--help`; its headless honoring is the live
-    /// `oh_reasoning_enforce` drift alarm (a forum report suggests the CLI may
-    /// reject the syntax, so this one especially wants the live proof).
-    ModelSuffix { key: &'static str },
+    /// Effort is baked into the **model id** as a `-<value>` tier suffix:
+    /// `<model>-<value>` (Cursor — `claude-opus-4-8` + `high` →
+    /// `claude-opus-4-8-high`). cursor-agent has **no** separate effort flag and
+    /// REJECTS a bracketed `model[effort=…]` option — verified live: it answers
+    /// "Cannot use this model" and lists ids that bake the tier into the name
+    /// (`-low`/`-medium`/`-high`/`-xhigh`/`-max`). Unlike the append-style
+    /// deliveries this decorates the existing `--model` value rather than adding
+    /// args, so it *requires* a model to attach to (the command layer refuses
+    /// `--reasoning` without a model). The base model must belong to a family that
+    /// accepts the tier suffix (opus-4-8, gpt-5.x, sonnet-5, grok-4.5, …); an
+    /// unsupported base surfaces as cursor's own `nonzero` (the opaque-value
+    /// contract), and the live `oh_reasoning_enforce` phase is the drift alarm.
+    ModelSuffix,
 }
 
 impl ReasoningDelivery {
@@ -343,17 +347,17 @@ impl ReasoningDelivery {
         match self {
             ReasoningDelivery::Flag(flag) => vec![(*flag).to_string(), value.to_string()],
             ReasoningDelivery::ConfigKv(key) => vec!["-c".to_string(), format!("{key}={value}")],
-            ReasoningDelivery::ModelSuffix { .. } => Vec::new(),
+            ReasoningDelivery::ModelSuffix => Vec::new(),
         }
     }
 
-    /// The bracketed option appended to the model id for a
-    /// [`ReasoningDelivery::ModelSuffix`] harness (`[key=value]`), or `None` for
-    /// the append-style deliveries (which leave the model untouched). The command
-    /// layer appends it to the resolved `--model` value.
+    /// The tier suffix appended to the model id for a
+    /// [`ReasoningDelivery::ModelSuffix`] harness (`-<value>`, e.g. `-high`), or
+    /// `None` for the append-style deliveries (which leave the model untouched).
+    /// The command layer appends it to the resolved `--model` value.
     pub fn model_suffix(&self, value: &str) -> Option<String> {
         match self {
-            ReasoningDelivery::ModelSuffix { key } => Some(format!("[{key}={value}]")),
+            ReasoningDelivery::ModelSuffix => Some(format!("-{value}")),
             _ => None,
         }
     }
@@ -1206,12 +1210,12 @@ static REGISTRY: &[HarnessSpec] = &[
             mode(PermissionMode::Default, ModeHeadless::Hangs),
             mode(PermissionMode::Bypass, ModeHeadless::Clean),
         ],
-        // Cursor has no standalone reasoning flag; effort rides the model id as a
-        // bracketed option, `--model 'sonnet[effort=high]'` (documented in
-        // `cursor-agent --help`). Requires a model to attach to; the live
-        // `oh_reasoning_enforce cursor` phase is the honoring proof (a forum
-        // report suggests the CLI may reject the bracket syntax — drift alarm).
-        reasoning: Some(ReasoningDelivery::ModelSuffix { key: "effort" }),
+        // Cursor has no standalone reasoning flag; effort is a `-<tier>` suffix on
+        // the model id, `--model 'claude-opus-4-8-high'` (verified live — the CLI
+        // rejects a bracketed `model[effort=…]` and lists ids that bake the tier
+        // into the name). Requires a model to attach to; the live
+        // `oh_reasoning_enforce cursor` phase is the honoring proof + drift alarm.
+        reasoning: Some(ReasoningDelivery::ModelSuffix),
         build_argv: argv_cursor,
     },
 ];
@@ -1703,13 +1707,11 @@ mod tests {
             ReasoningDelivery::ConfigKv("model_reasoning_effort").args("xhigh"),
             vec!["-c".to_string(), "model_reasoning_effort=xhigh".to_string()]
         );
-        // ModelSuffix appends no args; it decorates the model id instead.
-        let suffix = ReasoningDelivery::ModelSuffix { key: "effort" };
+        // ModelSuffix appends no args; it decorates the model id with a `-<tier>`
+        // suffix instead (Cursor: `claude-opus-4-8` + `high` → `-high`).
+        let suffix = ReasoningDelivery::ModelSuffix;
         assert!(suffix.args("high").is_empty());
-        assert_eq!(
-            suffix.model_suffix("high").as_deref(),
-            Some("[effort=high]")
-        );
+        assert_eq!(suffix.model_suffix("high").as_deref(), Some("-high"));
         // The append-style deliveries never decorate the model.
         assert_eq!(
             ReasoningDelivery::Flag("--effort").model_suffix("high"),

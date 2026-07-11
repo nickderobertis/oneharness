@@ -1587,19 +1587,21 @@ fn reasoning_maps_to_each_capable_harness_native_flag() {
             .any(|w| w == ["--reasoning-effort", "medium"]),
         "{copilot:?}"
     );
-    // cursor: effort rides the model id — `--model 'sonnet[effort=high]'`.
+    // cursor: effort is a `-<tier>` suffix on the model id — `claude-opus-4-8`
+    // + `high` → `--model claude-opus-4-8-high` (cursor-agent rejects a bracketed
+    // `model[effort=…]`; the tier is baked into the id — verified live).
     let cursor = print_command_for(&[
         "--harness",
         "cursor",
         "--model",
-        "sonnet",
+        "claude-opus-4-8",
         "--reasoning",
         "high",
     ]);
     assert!(
         cursor
             .windows(2)
-            .any(|w| w == ["--model", "sonnet[effort=high]"]),
+            .any(|w| w == ["--model", "claude-opus-4-8-high"]),
         "{cursor:?}"
     );
 }

@@ -496,9 +496,10 @@ shape. When you add one:
   reasoning/thinking-effort setting **on the argv** headlessly, sourced from that
   CLI's docs (never guessed). Three shapes: `Flag("--effort")` for a dedicated
   flag (claude-code, copilot's `--reasoning-effort`), `ConfigKv("model_reasoning_effort")`
-  for a `-c key=value` override (codex), or `ModelSuffix { key: "effort" }` when
-  effort rides the **model id** as a bracket option (cursor's
-  `--model 'sonnet[effort=high]'`). The value is an **opaque string** the caller
+  for a `-c key=value` override (codex), or `ModelSuffix` when effort is a
+  `-<tier>` suffix baked into the **model id** (cursor's `claude-opus-4-8` +
+  `high` → `--model claude-opus-4-8-high`; cursor-agent rejects a bracketed
+  `model[effort=…]` — verified live). The value is an **opaque string** the caller
   picks for their model and oneharness forwards verbatim (reasoning effort is a
   provider/model capability with no shared spelling — OpenAI's `reasoning_effort`
   enum vs. Anthropic's thinking-token budget — so it is per-harness delivery, not

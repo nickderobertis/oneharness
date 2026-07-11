@@ -68,7 +68,7 @@ how — or whether — it reaches that harness.
 | `qwen` | Qwen Code | `qwen` | ✓ | prepended | config only | `--yolo` | `.qwen/settings.json` | ✓ / ✓ (interactive) | — | — | `--resume` (linear) |
 | `crush` | Crush | `crush` | ✓ | prepended | config only | `run -q` (non-interactive) | `crush.json` | ✓ / ✓ | — | — | `--session` (linear) |
 | `copilot` | GitHub Copilot CLI | `copilot` | ✓ | prepended | `--reasoning-effort` | `--allow-all-tools --allow-all-paths --no-ask-user` | — | — | — | — | `--resume` (linear)¹ |
-| `cursor` | Cursor CLI | `cursor-agent` | ✓ | prepended | `--model 'M[effort=…]'` | `--force` (`--trust` under `--no-bypass`) | `.cursor/cli.json` | ✓ / ✓ | — | ✓ | `--resume` (linear) |
+| `cursor` | Cursor CLI | `cursor-agent` | ✓ | prepended | `--model 'M-<effort>'` | `--force` (`--trust` under `--no-bypass`) | `.cursor/cli.json` | ✓ / ✓ | — | ✓ | `--resume` (linear) |
 
 The `--resume` column shows each harness's headless continuation flag and whether
 it can **fork** (`run --resume <id> --fork`: branch a new session from the resumed
@@ -99,9 +99,11 @@ rest (which have no id to bind a name to) `--session` is a loud usage error.
   `model`), an opaque string forwarded verbatim in each harness's native shape:
   Claude Code's `--effort` (low/medium/high/max/auto), Codex's `-c
   model_reasoning_effort=` (minimal…xhigh), Copilot's `--reasoning-effort`
-  (low/medium/high), and Cursor's model-id suffix `--model 'sonnet[effort=high]'`
-  (so Cursor needs a model for `--reasoning` to attach to — a loud usage error
-  otherwise). Effort is a provider/model capability with no shared spelling, so
+  (low/medium/high), and Cursor's model-id tier suffix (`--model claude-opus-4-8`
+  + `--reasoning high` → `--model claude-opus-4-8-high`; cursor-agent bakes the
+  effort into the model name and rejects a bracketed `[effort=…]`, so Cursor needs
+  a base model whose family accepts the tier suffix, and a loud usage error when
+  no model is set). Effort is a provider/model capability with no shared spelling, so
   oneharness does not interpret the value — an effort the model rejects surfaces
   as that harness's own error, never a guess. The remaining harnesses set effort
   only in their own config file (OpenCode, Qwen, Crush) or expose no headless

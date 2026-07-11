@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.15](https://github.com/nickderobertis/oneharness/compare/v0.3.14...v0.3.15) - 2026-07-11
+
+### Added
+
+- add fallback run mode (--run-mode fallback) ([#1118](https://github.com/nickderobertis/oneharness/pull/1118))
+
 ## [0.3.14](https://github.com/nickderobertis/oneharness/compare/v0.3.13...v0.3.14) - 2026-07-11
 
 ### Added

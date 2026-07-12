@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.20](https://github.com/nickderobertis/oneharness/compare/v0.3.19...v0.3.20) - 2026-07-12
+
+### Added
+
+- add init subcommand to scaffold a starter config ([#1129](https://github.com/nickderobertis/oneharness/pull/1129))
+
 ## [0.3.19](https://github.com/nickderobertis/oneharness/compare/v0.3.18...v0.3.19) - 2026-07-12
 
 ### Fixed

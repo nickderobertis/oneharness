@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.4.2...oneharness-core-v0.4.3) - 2026-07-12
+
+### Added
+
+- add init subcommand to scaffold a starter config ([#1129](https://github.com/nickderobertis/oneharness/pull/1129))
+
 ## [0.4.2](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.4.1...oneharness-core-v0.4.2) - 2026-07-12
 
 ### Fixed

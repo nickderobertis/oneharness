@@ -57,6 +57,29 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - name: Install llmlint toolchain
         run: ./scripts/setup-llmlint.sh
+      # llmlint runs its LLM judge THROUGH oneharness, whose committed
+      # `oneharness.toml` selects codex (primary) → claude-code (fallback). The
+      # runner has neither harness by default, so without this the judge falls
+      # through the whole chain and errors ("codex not found on PATH"). Install +
+      # authenticate the primary (codex), mirroring e2e-codex.yml.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - name: Install Codex CLI
+        run: |
+          npm install -g @openai/codex
+          codex --version
+      # Codex ignores OPENAI_API_KEY for headless runs; the documented CI pattern
+      # is `codex login --with-api-key` (writes ~/.codex/auth.json). Guarded so a
+      # fork PR — which GitHub withholds the secret from — skips it rather than
+      # failing here (the lint step below still errors loudly on the missing key).
+      - name: Authenticate Codex with the API key (headless)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -n "${OPENAI_API_KEY:-}" ]; then
+            printenv OPENAI_API_KEY | codex login --with-api-key
+          fi
       - name: Validate llmlint config
         run: just lint-llm-validate --diff-base origin/main
       - name: Lint changed files

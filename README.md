@@ -241,11 +241,13 @@ of silently degrading installs to the checksum fallback.
 
 ## Usage
 
-Six subcommands; `list`/`detect`/`config`/`sync`/`run` emit JSON to **stdout**
-(diagnostics go to **stderr**), and `gate` speaks a harness's hook protocol on
-stdin/stdout.
+`list`/`detect`/`config`/`sync`/`run` emit JSON to **stdout** (diagnostics go to
+**stderr**), `gate` speaks a harness's hook protocol on stdin/stdout, and `init`
+scaffolds a starter config with a plain confirmation line.
 
 ```console
+oneharness init                                   # scaffold a starter oneharness.toml (refuses to overwrite; --force to replace)
+oneharness init oneharness.judge.toml             # scaffold under a specific name
 oneharness list                                   # describe the registry
 oneharness detect --all                           # which harnesses are installed (+ versions)
 oneharness config                                 # effective layered config + where each value came from
@@ -357,8 +359,12 @@ Useful `run` flags:
 ### Configuration
 
 Most `run` flags have a persistent counterpart in **`oneharness.toml`**, so a
-project (or a user) states its defaults once instead of repeating flags. Several
-sources layer per field, lowest precedence first:
+project (or a user) states its defaults once instead of repeating flags.
+**`oneharness init`** scaffolds a commented starter `oneharness.toml` (a
+fallback-mode chain) to edit from; it refuses to overwrite an existing file
+unless `--force`, and takes an explicit path (`oneharness init oneharness.judge.toml`)
+to scaffold a differently named config. Several sources layer per field, lowest
+precedence first:
 
 1. **Built-in defaults.**
 2. **User-level** — `~/.config/oneharness/config.toml` (honoring

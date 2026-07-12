@@ -140,6 +140,16 @@ pub enum OneharnessError {
         source: std::io::Error,
     },
 
+    #[error("{path} already exists; pass --force to overwrite it (nothing was written)")]
+    InitFileExists { path: String },
+
+    #[error("could not write starter config `{path}`: {source}")]
+    InitWrite {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("could not read prompt file `{path}`: {source}")]
     PromptFile {
         path: String,

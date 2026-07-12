@@ -112,6 +112,11 @@ pub enum Command {
     /// also applies when the tools are used directly, without oneharness.
     /// Non-destructive: unrelated keys are preserved, lists are unioned.
     Sync(SyncArgs),
+    /// Scaffold a starter `oneharness.toml` (a commented fallback-mode chain) at
+    /// PATH (default `oneharness.toml`). Refuses to overwrite an existing file
+    /// unless --force. Prints the path written; this is the one subcommand that
+    /// CREATES config rather than reading it, so it takes no --config/--no-config.
+    Init(InitArgs),
     /// Run the pre-tool gate for a harness: read that harness's hook event on
     /// stdin and, when it matches, emit the harness's native *deny* verdict on
     /// stdout (otherwise nothing — the call proceeds). This is what an installed
@@ -624,6 +629,20 @@ pub struct SyncArgs {
     /// Emit compact single-line JSON instead of pretty-printed.
     #[arg(long)]
     pub compact: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct InitArgs {
+    /// Where to write the starter config (default: `oneharness.toml` in the
+    /// current directory). An explicit path lets a tool scaffold differently
+    /// named configs, e.g. `oneharness init oneharness.judge.toml`.
+    #[arg(value_name = "PATH", default_value = "oneharness.toml")]
+    pub path: PathBuf,
+
+    /// Overwrite PATH if it already exists. Without it, an existing file is a
+    /// loud error (nothing is written) so a scaffold never clobbers real config.
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Args, Debug)]

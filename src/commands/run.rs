@@ -238,14 +238,19 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // instead of appending; refused before spawning for a harness that can't fork.
     validate_fork(args.fork, &specs)?;
     // `--session <name>`: resolve the uniform handle to the harness's native
-    // token (via the session store) before building argv. Validates single-harness
-    // + capability + no-batch loudly; on a continue it yields the token to resume
-    // with, reusing the harness's verified `--resume` mapping. `None` when the flag
-    // was not passed.
-    let session_wiring = setup_session(args, &specs, batch_run, &project_start)?;
+    // token (via the session store) before building argv. Validates capability +
+    // no-batch loudly; in parallel it is single-harness, in fallback it binds to
+    // the anchor (the first session-capable harness in the chain). On a continue it
+    // yields the token to resume with, reusing the harness's verified `--resume`
+    // mapping. `None` when the flag was not passed.
+    let session_wiring = setup_session(args, &specs, batch_run, fallback_mode, &project_start)?;
     let session_resume: Option<String> = session_wiring
         .as_ref()
         .and_then(|w| w.plan.resume_token.clone());
+    // The harness the session is bound to (the anchor in fallback, the single
+    // harness in parallel). The resume token is applied ONLY to this harness's
+    // argv below, never to a different fallback candidate that happens to win.
+    let session_anchor: Option<&'static str> = session_wiring.as_ref().map(|w| w.harness);
     // `--stream` emits events incrementally for a *single* harness/prompt; the
     // validate/retry loop and the batch fan-out both need the whole output at
     // once, so they are mutually exclusive. Refused loudly before spawning.
@@ -450,9 +455,15 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             // A `--session` continue supplies the native token to resume with,
             // reusing the harness's verified `--resume` mapping; a create (or no
             // session) leaves it to the explicit `--resume` value (they are
-            // mutually exclusive, so at most one is `Some`).
+            // mutually exclusive, so at most one is `Some`). The session token is
+            // scoped to the anchor harness: in fallback the chain holds several
+            // harnesses, but a native token belongs to exactly one of them, so a
+            // *different* candidate that ends up winning must never be handed it
+            // (it would resume the wrong harness with a foreign id). In parallel
+            // the anchor is the only harness, so this filter is a no-op there.
             resume: session_resume
                 .clone()
+                .filter(|_| session_anchor == Some(spec.id))
                 .or_else(|| resume.map(str::to_string)),
             fork: args.fork,
             mode,
@@ -1070,16 +1081,46 @@ struct SessionWiring {
     plan: SessionPlan,
 }
 
+/// The comma-joined ids of every session-capable harness, for the "supported:"
+/// hint on a `--session` capability error.
+fn session_capable_ids() -> String {
+    harness::all()
+        .iter()
+        .filter(|s| s.session_capable)
+        .map(|s| s.id)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Validate and resolve a `--session <name>` request against the store, or
 /// `Ok(None)` when the flag was not passed. Loud usage errors up front (nothing
-/// spawns): a batch run, more than one harness, a harness that exposes no session
-/// id (`session_capable`), an unresolvable store directory, or a name already
-/// bound to a different harness. On success the returned plan says whether to
-/// create fresh or continue a stored token.
+/// spawns): a batch run, a harness that exposes no session id (`session_capable`),
+/// an unresolvable store directory, or a name already bound to a different harness.
+/// On success the returned plan says whether to create fresh or continue a stored
+/// token.
+///
+/// Which harness the session binds to depends on the run mode:
+///
+/// * **Parallel** — the run is single-harness by contract, so more than one
+///   selected harness makes a single session name ambiguous
+///   ([`OneharnessError::SessionMultipleHarnesses`]).
+/// * **Fallback** — the whole priority chain is selected, but exactly ONE harness
+///   ultimately runs (fallback stops at the first that runs), so `--session` is
+///   allowed. It binds to the *anchor*: the first session-capable harness in the
+///   chain. Fallback deterministically settles on the same harness across repeated
+///   runs given stable availability, so the anchor is the harness the session
+///   naturally lives on. A chain with no session-capable harness at all cannot
+///   carry a named handle ([`OneharnessError::SessionUnsupported`]).
+///
+/// The anchor's native token is applied to the anchor's argv *only* (see the job
+/// loop's `session_anchor` filter) and captured from the anchor's own result only
+/// (see [`finalize_session`]), so a transient fall-through to a different harness
+/// never resumes it with the anchor's token.
 fn setup_session(
     args: &RunArgs,
     specs: &[&'static HarnessSpec],
     batch_run: bool,
+    fallback_mode: bool,
     project: &std::path::Path,
 ) -> Result<Option<SessionWiring>, OneharnessError> {
     let Some(name) = args.session.as_deref() else {
@@ -1088,24 +1129,34 @@ fn setup_session(
     if batch_run {
         return Err(OneharnessError::SessionBatch);
     }
-    if specs.len() != 1 {
-        return Err(OneharnessError::SessionMultipleHarnesses {
-            count: specs.len(),
-            selected: specs.iter().map(|s| s.id).collect::<Vec<_>>().join(", "),
-        });
-    }
-    let spec = specs[0];
-    if !spec.session_capable {
-        return Err(OneharnessError::SessionUnsupported {
-            id: spec.id.to_string(),
-            supported: harness::all()
-                .iter()
-                .filter(|s| s.session_capable)
-                .map(|s| s.id)
-                .collect::<Vec<_>>()
-                .join(", "),
-        });
-    }
+    let spec = if fallback_mode {
+        // Bind to the first session-capable harness in the priority chain; a chain
+        // with none cannot carry a named handle (list the whole selection in the
+        // error, since no single harness is the offender).
+        specs
+            .iter()
+            .copied()
+            .find(|s| s.session_capable)
+            .ok_or_else(|| OneharnessError::SessionUnsupported {
+                id: specs.iter().map(|s| s.id).collect::<Vec<_>>().join(", "),
+                supported: session_capable_ids(),
+            })?
+    } else {
+        if specs.len() != 1 {
+            return Err(OneharnessError::SessionMultipleHarnesses {
+                count: specs.len(),
+                selected: specs.iter().map(|s| s.id).collect::<Vec<_>>().join(", "),
+            });
+        }
+        let spec = specs[0];
+        if !spec.session_capable {
+            return Err(OneharnessError::SessionUnsupported {
+                id: spec.id.to_string(),
+                supported: session_capable_ids(),
+            });
+        }
+        spec
+    };
     let dir = session_io::resolve_dir(args.session_dir.as_deref().and_then(|p| p.to_str()))
         .ok_or(OneharnessError::SessionNoStore)?;
     let path = session_io::session_path(&dir, project, name);
@@ -1140,7 +1191,19 @@ fn finalize_session(
     dry_run: bool,
 ) -> Option<SessionReport> {
     let wiring = wiring?;
-    let captured = results.first().and_then(|r| r.session_id.clone());
+    // Capture the token from the *anchor* harness's own result — the harness the
+    // session is bound to (`wiring.harness`). In parallel single-harness mode the
+    // anchor is the only result, so this is exactly `results.first()`. In fallback
+    // `results` lists every *attempted* harness in priority order (fell-through
+    // candidates first), so `results.first()` would be a candidate that ran
+    // nothing and exposed no id; find the anchor's result instead. If the anchor
+    // never ran (it fell through, or a non-session-capable harness earlier in the
+    // chain won), there is no new token: nothing is captured, the existing stored
+    // token is preserved, and the no-id warning below fires — never a wrong token.
+    let captured = results
+        .iter()
+        .find(|r| r.harness == wiring.harness)
+        .and_then(|r| r.session_id.clone());
     if !dry_run {
         match &captured {
             Some(token) => {
@@ -1464,12 +1527,16 @@ fn run_fork_batch(
 
 /// Refuse the run shapes fallback mode cannot express, before anything spawns.
 /// Fallback drives several harnesses in priority order for one prompt, stopping
-/// at the first that runs — so a multi-prompt batch, every single-harness
-/// continuation (`--resume`/`--fork`/`--session`), and `--stream` are loud usage
-/// errors here. The *capability* validation of the requested features against
-/// every listed harness stays in the shared validators (`validate_modes`,
-/// `setup_mock`, …), which run over all specs regardless of mode — so a flag no
-/// candidate could honor still fails fast even though only one harness will run.
+/// at the first that runs — so a multi-prompt batch, the explicit `--resume` /
+/// `--fork` continuations (each pins one *specific* harness's native id), and
+/// `--stream` are loud usage errors here. `--session` is *not* refused: the
+/// higher-level named handle binds to the anchor (the first session-capable
+/// harness in the chain), which fallback settles on under stable availability —
+/// see [`setup_session`], which does the capability check for it. The *capability*
+/// validation of the requested features against every listed harness stays in the
+/// shared validators (`validate_modes`, `setup_mock`, …), which run over all specs
+/// regardless of mode — so a flag no candidate could honor still fails fast even
+/// though only one harness will run.
 fn validate_fallback(batch_run: bool, args: &RunArgs) -> Result<(), OneharnessError> {
     let conflict = |with, why| Err(OneharnessError::FallbackConflict { with, why });
     if batch_run {
@@ -1481,13 +1548,7 @@ fn validate_fallback(batch_run: bool, args: &RunArgs) -> Result<(), OneharnessEr
     if args.resume.is_some() || args.fork {
         return conflict(
             "--resume/--fork",
-            "a resumed session belongs to one specific harness, so it cannot fall through to another",
-        );
-    }
-    if args.session.is_some() {
-        return conflict(
-            "--session",
-            "a named session is bound to one harness, so it cannot fall through to another",
+            "a resumed session belongs to one specific harness, so it cannot fall through to another (use --session, which binds to the fallback anchor)",
         );
     }
     if args.stream {
@@ -2798,5 +2859,77 @@ mod tests {
             parsed,
             vec![("A".into(), "".into()), ("B".into(), "x=y".into())]
         );
+    }
+
+    /// A `RunArgs` carrying a `--session <name>` request pointed at an isolated,
+    /// non-existent store directory. `resolve_dir` returns the path verbatim and
+    /// the (absent) record reads back as `None`, so `setup_session` resolves a
+    /// fresh *create* without touching a real store — enough to assert which
+    /// harness the session anchors to.
+    fn session_args(name: &str) -> RunArgs {
+        let mut a = run_args();
+        a.session = Some(name.to_string());
+        a.session_dir = Some(std::env::temp_dir().join("oh-unit-no-such-session-store"));
+        a
+    }
+
+    #[test]
+    fn setup_session_in_fallback_anchors_to_first_session_capable() {
+        // A fallback chain with more than one harness is ACCEPTED (unlike parallel)
+        // and the session binds to the first *session-capable* harness in priority
+        // order — here `codex`, skipping the non-capable `goose` ahead of it.
+        let goose = harness::by_id("goose").unwrap();
+        let codex = harness::by_id("codex").unwrap();
+        let claude = harness::by_id("claude-code").unwrap();
+        let wiring = setup_session(
+            &session_args("greet"),
+            &[goose, codex, claude],
+            false,
+            true,
+            std::path::Path::new("/proj"),
+        )
+        .expect("fallback + multi-harness --session is allowed")
+        .expect("a wiring is returned when --session is set");
+        assert_eq!(wiring.harness, "codex");
+        // A fresh store means a create plan (no token to resume).
+        assert_eq!(wiring.plan.phase, session::SessionPhase::Create);
+        assert!(wiring.plan.resume_token.is_none());
+    }
+
+    #[test]
+    fn setup_session_parallel_still_rejects_multiple_harnesses() {
+        // Parallel mode is single-harness by contract: more than one selected
+        // harness makes a single session name ambiguous, exactly as before.
+        let claude = harness::by_id("claude-code").unwrap();
+        let codex = harness::by_id("codex").unwrap();
+        assert!(matches!(
+            setup_session(
+                &session_args("x"),
+                &[claude, codex],
+                false,
+                false,
+                std::path::Path::new("/proj"),
+            ),
+            Err(OneharnessError::SessionMultipleHarnesses { count: 2, .. })
+        ));
+    }
+
+    #[test]
+    fn setup_session_fallback_with_no_session_capable_harness_rejects() {
+        // A fallback chain where NO harness exposes a session id headlessly cannot
+        // carry a named handle — a loud SessionUnsupported, never a silent fresh
+        // start on whichever harness happens to win.
+        let goose = harness::by_id("goose").unwrap();
+        let crush = harness::by_id("crush").unwrap();
+        assert!(matches!(
+            setup_session(
+                &session_args("x"),
+                &[goose, crush],
+                false,
+                true,
+                std::path::Path::new("/proj"),
+            ),
+            Err(OneharnessError::SessionUnsupported { .. })
+        ));
     }
 }

@@ -312,11 +312,13 @@ Useful `run` flags:
   caller-owned handle: oneharness maps `<name>` to the harness's native session id
   in a small store, so you thread **one name** across turns instead of extracting
   and re-passing the id yourself. The first `--session <name>` run starts fresh and
-  captures the id; later runs with the same name resume it. **Single-harness only**,
-  and only for harnesses that expose a session id headlessly (`session_capable` in
-  `oneharness list`) — others are a loud usage error. The higher-level counterpart
-  to `--resume`; mutually exclusive with `--resume`/`--fork`/`--all` and with a
-  batch. See [Session handle](#session-handle).
+  captures the id; later runs with the same name resume it. **Single-harness** in
+  the default parallel mode; under `--run-mode fallback` it binds to the first
+  session-capable harness in the chain. Only for harnesses that expose a session id
+  headlessly (`session_capable` in `oneharness list`) — others are a loud usage
+  error. The higher-level counterpart to `--resume`; mutually exclusive with
+  `--resume`/`--fork`/`--all` and with a batch. See
+  [Session handle](#session-handle).
 - `--session-dir <dir>` — directory the `--session` store lives in (default:
   `<platform state dir>/oneharness/sessions`). Like `--resume`/`--fork`, a
   per-invocation knob with no config/env layer; mainly for isolating the store in
@@ -891,13 +893,19 @@ oneharness run --harness claude-code --session triage --prompt "Now propose a fi
 The report's `session` block echoes `{name, phase, token, store_file}` — `phase`
 is `create` on the first run and `continue` after, `token` is the bound native id.
 A named session is **bound to one harness** (reusing the name on another is a loud
-error), is **single-harness** and cannot combine with `--resume`/`--fork`/`--all`
-or a batch, and is supported only for harnesses that expose a session id headlessly
-(`session_capable` in `oneharness list`: `claude-code`, `opencode`, `codex`,
-`cursor`, `qwen`) — for the rest, `--session` is a usage error rather than a silent
-fresh start. This is the substrate a multi-turn driver (e.g. a simulated-user /
-skill-testing framework) builds on: thread one handle, get faithful state, read
-`events` for what the agent *did*.
+error) and cannot combine with `--resume`/`--fork`/`--all` or a batch, and is
+supported only for harnesses that expose a session id headlessly (`session_capable`
+in `oneharness list`: `claude-code`, `opencode`, `codex`, `cursor`, `qwen`) — for
+the rest, `--session` is a usage error rather than a silent fresh start. In the
+default **parallel** run mode it is single-harness; under
+[`--run-mode fallback`](#fallback-mode-first-that-runs-wins) it is allowed on a
+multi-harness chain and binds to the **anchor** — the first session-capable harness
+in the priority order, which fallback deterministically settles on given stable
+availability (the token is applied to, and captured from, that harness only, so a
+transient fall-through to a different harness never resumes it with a foreign id).
+This is the substrate a multi-turn driver (e.g. a simulated-user / skill-testing
+framework) builds on: thread one handle, get faithful state, read `events` for what
+the agent *did*.
 
 ### Fallback mode (first that runs wins)
 
@@ -952,8 +960,11 @@ reached. This keeps people and agents writing commands that work for every
 harness the fallback config supports, not just the one that happens to run.
 
 Fallback is single-outcome by nature, so it refuses a [batch](#batch-runs-same-prefix-prompt-caching)
-run and every single-harness continuation — `--resume` / `--fork` / `--session`
-/ `--stream` — as loud usage errors. Exit code: `0` when the harness that ran
+run, the low-level `--resume` / `--fork` continuations (each pins one specific
+harness's native id), and `--stream` as loud usage errors. The higher-level
+[`--session`](#session-handle) handle **is** allowed: it binds to the anchor (the
+first session-capable harness in the chain), so a named conversation degrades
+gracefully across the same priority set. Exit code: `0` when the harness that ran
 succeeded, `1` when it ran but failed **or** when no candidate could run at all.
 
 ### Multiple models (fan out over the model axis)

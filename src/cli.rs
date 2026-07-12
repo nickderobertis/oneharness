@@ -359,11 +359,14 @@ pub struct RunArgs {
     /// oneharness maps <NAME> to the harness's native session id in a small store,
     /// so you thread ONE name across turns instead of extracting and re-passing
     /// the id yourself: the first `--session <name>` run starts fresh and captures
-    /// the id; later runs with the same name resume it. Single-harness only, and
-    /// only for harnesses that expose a session id headlessly (see `session_capable`
-    /// in `oneharness list`); others are a loud usage error. The lower-level,
-    /// per-invocation counterpart to `--resume` — mutually exclusive with
-    /// --resume/--fork/--all and with a batch (multi-prompt) run.
+    /// the id; later runs with the same name resume it. In the default parallel
+    /// run mode it is single-harness; in `--run-mode fallback` it binds to the
+    /// first session-capable harness in the priority chain (the one fallback
+    /// settles on under stable availability). Only for harnesses that expose a
+    /// session id headlessly (see `session_capable` in `oneharness list`); others
+    /// are a loud usage error. The lower-level, per-invocation counterpart to
+    /// --resume — mutually exclusive with --resume/--fork/--all and with a batch
+    /// (multi-prompt) run.
     #[arg(long, value_name = "NAME", conflicts_with_all = ["resume", "fork", "all"])]
     pub session: Option<String>,
 

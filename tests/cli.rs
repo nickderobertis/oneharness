@@ -1107,6 +1107,86 @@ fn session_cannot_combine_with_a_batch() {
 }
 
 #[test]
+fn session_in_fallback_mode_anchors_to_the_first_session_capable_harness() {
+    // Unlike parallel (which is single-harness), `--session` is allowed on a
+    // multi-harness fallback chain: it binds to the anchor — the first
+    // session-capable harness in priority order. Here `goose` (not session-capable
+    // and not installed) falls through, and `codex` (the anchor) runs; its native
+    // id is captured. This also proves the token is read from the ANCHOR's result,
+    // not `results.first()` (the fell-through `goose`, which exposes no id).
+    let store = session_store_dir("fallback");
+    let store_arg = store.display().to_string();
+    let cwd = session_store_dir("fallback-cwd");
+    let cwd_arg = cwd.display().to_string();
+
+    // Run 1 — create. goose is not installed (falls through); codex runs.
+    let first = run(
+        &[
+            "run",
+            "--run-mode",
+            "fallback",
+            "--harness",
+            "goose,codex",
+            "--session",
+            "triage",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "hi",
+            "--bin",
+            &missing_bin("goose"),
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"thread_id":"th-1","result":"hi"}"#)],
+    );
+    assert!(first.status.success(), "{first:?}");
+    let v1 = json_stdout(&first);
+    assert_eq!(v1["fallback"]["ran"], "codex");
+    assert_eq!(v1["session"]["name"], "triage");
+    assert_eq!(v1["session"]["phase"], "create");
+    // The captured token is the anchor's (codex's) id, not the fell-through goose's.
+    assert_eq!(v1["session"]["token"], "th-1");
+
+    // Run 2 — continue. Same name resolves to codex's stored token (the anchor is
+    // stable across runs given stable availability).
+    let second = run(
+        &[
+            "run",
+            "--run-mode",
+            "fallback",
+            "--harness",
+            "goose,codex",
+            "--session",
+            "triage",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "again",
+            "--bin",
+            &missing_bin("goose"),
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"thread_id":"th-1","result":"ok"}"#)],
+    );
+    assert!(second.status.success(), "{second:?}");
+    let v2 = json_stdout(&second);
+    assert_eq!(v2["fallback"]["ran"], "codex");
+    assert_eq!(v2["session"]["phase"], "continue");
+    assert_eq!(v2["session"]["token"], "th-1");
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
 fn session_print_command_reports_the_handle_without_writing_the_store() {
     // `--print-command` builds argv but runs nothing, so a create must not write
     // a store record, yet still report the (as-yet tokenless) handle.
@@ -8918,12 +8998,13 @@ fn fallback_runs_harnesses_in_the_caller_priority_order() {
 
 #[test]
 fn fallback_refuses_incompatible_run_shapes() {
-    // Fallback is single-outcome, so a batch and every single-harness
-    // continuation / stream are loud usage errors (exit 2), each naming why.
+    // Fallback is single-outcome, so a batch, the low-level `--resume` continuation,
+    // and `--stream` are loud usage errors (exit 2), each naming why. (The
+    // higher-level `--session` handle is instead *allowed* — it binds to the
+    // anchor; see `session_in_fallback_mode_anchors_to_the_first_session_capable_harness`.)
     let cases: &[(&[&str], &str)] = &[
         (&["--prompt", "a", "--prompt", "b"], "batch"),
         (&["--prompt", "a", "--resume", "sid"], "--resume"),
-        (&["--prompt", "a", "--session", "s"], "--session"),
         (&["--prompt", "a", "--stream"], "--stream"),
     ];
     for (extra, needle) in cases {

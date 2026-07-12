@@ -50,7 +50,7 @@ pub enum OneharnessError {
     #[error("harness `{id}` does not support --fork (it resumes linearly, appending in place). supported: {supported}")]
     ForkUnsupported { id: String, supported: String },
 
-    #[error("--session needs exactly one harness (a named session belongs to one harness), but {count} were selected: {selected}")]
+    #[error("--session needs exactly one harness in the parallel run mode (a named session belongs to one harness), but {count} were selected: {selected}. Use --run-mode fallback to bind a named session to a priority chain (it anchors to the first session-capable harness).")]
     SessionMultipleHarnesses { count: usize, selected: String },
 
     #[error("--session cannot be combined with a batch run (more than one prompt): a named session is one continued conversation, not a fan-out")]

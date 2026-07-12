@@ -23,6 +23,7 @@ pub fn dispatch(cli: Cli) -> i32 {
         Command::Detect(args) => commands::detect::run(&args),
         Command::Config(args) => commands::config::run(&args),
         Command::Sync(args) => commands::sync::run(&args),
+        Command::Init(args) => commands::init::run(&args),
         Command::Gate(args) => commands::gate::run(&args),
         Command::Mock(args) => commands::mock::run(&args),
         Command::History(args) => commands::history::run(&args),

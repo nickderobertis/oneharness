@@ -5001,6 +5001,35 @@ fn gate_unknown_harness_is_a_usage_error() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("unknown harness"));
 }
 
+#[test]
+fn init_scaffolds_and_refuses_overwrite() {
+    let dir = std::env::temp_dir().join(format!("oneharness-inittest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("oneharness.judge.toml");
+    let path_str = path.display().to_string();
+
+    // First write: exit 0, a plain confirmation line on stdout, real file on disk.
+    let out = run(&["init", &path_str], &[]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("wrote"));
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(written.contains("run_mode = \"fallback\""));
+    assert!(written.contains("[harness.claude-code]"));
+
+    // Second write without --force: refused (exit 2), original file untouched.
+    let out = run(&["init", &path_str], &[]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("already exists"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
+
+    // With --force: overwrites and succeeds.
+    let out = run(&["init", &path_str, "--force"], &[]);
+    assert_eq!(out.status.code(), Some(0));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A throwaway directory for the mock responder's rules/spy files, plus the
 /// standard ruleset the tests share: rule 0 denies `git push`, rule 1 rewrites
 /// `git status` to a stub that prints canned output.

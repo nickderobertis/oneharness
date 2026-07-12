@@ -292,8 +292,31 @@ out="$("$oh" history list --all-projects --history-dir "$hist_dir" --compact)" \
 assert_contains "$out" '"harnesses":["claude-code"]' "history list did not surface the recorded session"
 rm -rf "$hist_dir"
 
+# 7. `init` — scaffold a starter oneharness.toml, prove it parses via `config`,
+#    and prove the safe-by-default overwrite refusal (and --force).
+init_dir="$(mktemp -d)"
+init_path="$init_dir/oneharness.toml"
+LAST_CMD="$oh init $init_path"
+out="$("$oh" init "$init_path")" || fail "init exited non-zero" "$LAST_CMD" "$out"
+assert_contains "$out" "wrote" "init did not confirm the written path"
+grep -qF 'run_mode = "fallback"' "$init_path" \
+  || fail "scaffolded config missing run_mode" "$LAST_CMD" "$(cat "$init_path" 2>/dev/null)"
+# The scaffold must be a config the loader accepts (round-trip through `config`).
+LAST_CMD="$oh config --config $init_path --compact"
+out="$(ONEHARNESS_NO_CONFIG='' ONEHARNESS_RUN_MODE='' "$oh" config --config "$init_path" --compact)" \
+  || fail "scaffolded config does not parse via 'oneharness config'" "$LAST_CMD" "$out"
+assert_contains "$out" '"value":"fallback"' "scaffolded run_mode did not load"
+# Safe by default: a second init without --force is refused (exit 2), with --force it succeeds.
+LAST_CMD="$oh init $init_path"
+if "$oh" init "$init_path" >/dev/null 2>&1; then
+  fail "init overwrote an existing file without --force" "$LAST_CMD"
+fi
+"$oh" init "$init_path" --force >/dev/null \
+  || fail "init --force did not overwrite" "$oh init $init_path --force"
+rm -rf "$init_dir"
+
 if [ "$LIVE" -eq 0 ]; then
-  echo "smoke: ok (hermetic — install, list, detect, print-command, config, sync, mock run, schema, history)"
+  echo "smoke: ok (hermetic — install, list, detect, print-command, config, sync, mock run, schema, history, init)"
   exit 0
 fi
 

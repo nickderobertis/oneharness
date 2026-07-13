@@ -10,7 +10,7 @@ use crate::domain::batch::BatchStrategy;
 use crate::domain::events::ActionEvent;
 use crate::domain::mode::PermissionMode;
 use crate::domain::session::SessionPhase;
-use crate::domain::signals::Usage;
+use crate::domain::signals::{FailureKind, Usage};
 
 /// Bumped when the JSON shape changes in a way consumers must notice.
 pub const SCHEMA_VERSION: &str = "0.1";
@@ -143,7 +143,8 @@ pub struct RunResult {
     /// (Claude Code bridge/managed deployments), so it did no useful work. The
     /// deferred case is the only `failure_kind` that can appear on a `status: ok`
     /// run, and it also marks the run as failed for exit-code purposes.
-    pub failure_kind: Option<String>,
+    /// Serialized as its snake_case token (see [`FailureKind`]).
+    pub failure_kind: Option<FailureKind>,
     /// Where `failure_kind` was read (`stderr`/`stdout`); `null` when absent.
     pub failure_kind_source: Option<String>,
     /// Raw captured stdout (empty for skipped/planned).

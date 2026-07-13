@@ -21,7 +21,7 @@
 //!   snake_case `session_id`; it does not emit token usage today, so usage stays
 //!   absent rather than fabricated.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Normalized token/cost accounting. Every field is best-effort and independently
@@ -62,10 +62,51 @@ pub struct UsageReading {
     pub source: String,
 }
 
-/// A coarse failure reason plus where it was read from (`stderr`/`stdout`).
+/// The normalized, closed set of failure reasons oneharness can classify from a
+/// harness's output. It is the single source for the `failure_kind` contract
+/// value: serialized as the snake_case token a consumer reads in the report
+/// (`auth`, `rate_limit`, `model_not_found`, `quota`, `tool_deferred`), so the
+/// wire shape is unchanged — modeling it as an enum keeps a misspelled or
+/// invalid kind unrepresentable and gives every producer/consumer (classifier,
+/// `is_failure`, the fallback fall-through rule, the report, history) one
+/// definition to share instead of scattered string literals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureKind {
+    /// Authentication / authorization rejected the request (401/403, missing or
+    /// invalid credentials).
+    Auth,
+    /// Rate limited (429, too many requests) — a transient condition of an
+    /// otherwise working, authenticated harness.
+    RateLimit,
+    /// The requested model was not found / is invalid — a configuration mistake.
+    ModelNotFound,
+    /// Out of quota / credits, or a billing problem — a provisioning failure.
+    Quota,
+    /// The harness deferred a builtin tool call instead of executing it, so a
+    /// clean-exit run did no useful work (Claude Code bridge deployments; issue
+    /// #1114). The only kind that can appear on a `status: ok` run.
+    ToolDeferred,
+}
+
+impl FailureKind {
+    /// The snake_case token this kind serializes to — for the few call sites
+    /// (stderr diagnostics, the fallback reason map) that need the raw string.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FailureKind::Auth => "auth",
+            FailureKind::RateLimit => "rate_limit",
+            FailureKind::ModelNotFound => "model_not_found",
+            FailureKind::Quota => "quota",
+            FailureKind::ToolDeferred => "tool_deferred",
+        }
+    }
+}
+
+/// A classified failure reason plus where it was read from (`stderr`/`stdout`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FailureReading {
-    pub kind: String,
+    pub kind: FailureKind,
     pub source: String,
 }
 
@@ -206,7 +247,7 @@ pub fn classify_failure(stdout: &str, stderr: &str) -> Option<FailureReading> {
     for (source, text) in [("stderr", stderr), ("stdout", stdout)] {
         if let Some(kind) = match_failure(text) {
             return Some(FailureReading {
-                kind: kind.to_string(),
+                kind,
                 source: source.to_string(),
             });
         }
@@ -216,11 +257,11 @@ pub fn classify_failure(stdout: &str, stderr: &str) -> Option<FailureReading> {
 
 /// Match the first known failure signal in `text` (case-insensitive). Ordered
 /// most-specific first so a 429 reads as `rate_limit`, not `auth`.
-fn match_failure(text: &str) -> Option<&'static str> {
+fn match_failure(text: &str) -> Option<FailureKind> {
     let h = text.to_lowercase();
-    const SIGNALS: &[(&str, &[&str])] = &[
+    const SIGNALS: &[(FailureKind, &[&str])] = &[
         (
-            "model_not_found",
+            FailureKind::ModelNotFound,
             &[
                 "model not found",
                 "model_not_found",
@@ -231,7 +272,7 @@ fn match_failure(text: &str) -> Option<&'static str> {
             ],
         ),
         (
-            "rate_limit",
+            FailureKind::RateLimit,
             &[
                 "rate limit",
                 "rate-limit",
@@ -241,7 +282,7 @@ fn match_failure(text: &str) -> Option<&'static str> {
             ],
         ),
         (
-            "quota",
+            FailureKind::Quota,
             &[
                 "insufficient_quota",
                 "quota",
@@ -251,7 +292,7 @@ fn match_failure(text: &str) -> Option<&'static str> {
             ],
         ),
         (
-            "auth",
+            FailureKind::Auth,
             &[
                 "unauthorized",
                 "authentication",
@@ -475,30 +516,47 @@ mod tests {
             classify_failure("", "Error: 401 Unauthorized")
                 .unwrap()
                 .kind,
-            "auth"
+            FailureKind::Auth
         );
         assert_eq!(
             classify_failure("", "HTTP 429: rate limit exceeded")
                 .unwrap()
                 .kind,
-            "rate_limit"
+            FailureKind::RateLimit
         );
         assert_eq!(
             classify_failure("", "model not found: gpt-9").unwrap().kind,
-            "model_not_found"
+            FailureKind::ModelNotFound
         );
         assert_eq!(
             classify_failure("", "insufficient_quota; check billing")
                 .unwrap()
                 .kind,
-            "quota"
+            FailureKind::Quota
         );
+    }
+
+    #[test]
+    fn failure_kind_serializes_to_its_snake_case_token() {
+        // The wire contract: the enum must serialize to exactly the strings a
+        // consumer reads in `failure_kind`, and `as_str` must agree with serde.
+        for kind in [
+            FailureKind::Auth,
+            FailureKind::RateLimit,
+            FailureKind::ModelNotFound,
+            FailureKind::Quota,
+            FailureKind::ToolDeferred,
+        ] {
+            let json = serde_json::to_string(&kind).unwrap();
+            assert_eq!(json, format!("\"{}\"", kind.as_str()));
+        }
+        assert_eq!(FailureKind::ToolDeferred.as_str(), "tool_deferred");
     }
 
     #[test]
     fn classify_records_source_and_prefers_stderr() {
         let got = classify_failure("rate limit in stdout", "unauthorized in stderr").unwrap();
-        assert_eq!(got.kind, "auth");
+        assert_eq!(got.kind, FailureKind::Auth);
         assert_eq!(got.source, "stderr");
         let got = classify_failure("model not found", "").unwrap();
         assert_eq!(got.source, "stdout");

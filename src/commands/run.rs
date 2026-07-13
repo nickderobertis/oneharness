@@ -793,7 +793,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                             r.available,
                             require_available,
                             r.schema_valid,
-                            r.failure_kind.as_deref(),
+                            r.failure_kind,
                         )
                     })
                     .count();
@@ -1691,11 +1691,7 @@ fn run_fallback(
                 )
             }
         };
-        match fallback::startup_failure_reason(
-            result.status,
-            result.failure_kind.as_deref(),
-            multi_model,
-        ) {
+        match fallback::startup_failure_reason(result.status, result.failure_kind, multi_model) {
             // Could not run — record why and try the next candidate.
             Some(reason) => {
                 fell_through.push(FallThrough {
@@ -1731,7 +1727,7 @@ fn fallback_exit(results: &[RunResult], ran: bool) -> i32 {
         last.available,
         false,
         last.schema_valid,
-        last.failure_kind.as_deref(),
+        last.failure_kind,
     ) {
         EXIT_FAILURE
     } else {
@@ -1916,7 +1912,7 @@ fn executed_result(
     // deferral is more specific and actionable, so it wins over a coarse match.
     let failure = match (&deferred, capture.status) {
         (Some(_), _) => Some(signals::FailureReading {
-            kind: "tool_deferred".to_string(),
+            kind: signals::FailureKind::ToolDeferred,
             source: "stdout".to_string(),
         }),
         (None, Status::Nonzero) => signals::classify_failure(&capture.stdout, &capture.stderr),
@@ -2170,12 +2166,12 @@ fn is_failure(
     available: bool,
     require_available: bool,
     schema_valid: Option<bool>,
-    failure_kind: Option<&str>,
+    failure_kind: Option<signals::FailureKind>,
 ) -> bool {
     if schema_valid == Some(false) {
         return true;
     }
-    if failure_kind == Some("tool_deferred") {
+    if failure_kind == Some(signals::FailureKind::ToolDeferred) {
         return true;
     }
     match status {
@@ -2192,7 +2188,7 @@ fn exit_code(results: &[RunResult], require_available: bool) -> i32 {
             r.available,
             require_available,
             r.schema_valid,
-            r.failure_kind.as_deref(),
+            r.failure_kind,
         )
     });
     if failed {
@@ -2676,9 +2672,15 @@ mod tests {
             true,
             false,
             None,
-            Some("tool_deferred")
+            Some(signals::FailureKind::ToolDeferred)
         ));
-        assert!(!is_failure(Status::Ok, true, false, None, Some("auth")));
+        assert!(!is_failure(
+            Status::Ok,
+            true,
+            false,
+            None,
+            Some(signals::FailureKind::Auth)
+        ));
         assert!(!is_failure(Status::Ok, true, false, None, None));
     }
 
@@ -2704,7 +2706,7 @@ mod tests {
             None,
         );
         assert_eq!(r.status, Status::Ok);
-        assert_eq!(r.failure_kind.as_deref(), Some("tool_deferred"));
+        assert_eq!(r.failure_kind, Some(signals::FailureKind::ToolDeferred));
         assert_eq!(r.failure_kind_source.as_deref(), Some("stdout"));
         assert!(r.error.as_deref().unwrap().contains("`Read`"));
     }

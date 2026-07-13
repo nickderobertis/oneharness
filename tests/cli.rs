@@ -934,6 +934,43 @@ fn deferred_tool_is_classified_on_the_streaming_path() {
 }
 
 #[test]
+fn deferred_tool_counts_toward_the_batch_failure_summary() {
+    // A batch (one harness, N prompts) whose prompts all dead-end must count every
+    // deferred result as failed in the run's stderr summary and exit non-zero —
+    // the multi-result failure-count path, not just the single-result case.
+    let deferred = r#"{"type":"result","stop_reason":"tool_deferred","result":"","deferred_tool_use":{"name":"Read"}}"#;
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "read file a",
+            "--prompt",
+            "read file b",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", deferred)],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let value = json_stdout(&output);
+    let results = value["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    for r in results {
+        assert_eq!(r["status"], "ok");
+        assert_eq!(r["failure_kind"], "tool_deferred");
+    }
+    // The summary counts both deferred results as failures.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("2/2 harness run(s) did not succeed"),
+        "batch failure count in stderr: {stderr}"
+    );
+}
+
+#[test]
 fn resume_maps_to_resume_flag_and_echoes_session() {
     let output = run(
         &[

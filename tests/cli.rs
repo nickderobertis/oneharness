@@ -863,6 +863,77 @@ fn deferred_tool_dead_end_is_classified_not_silent() {
 }
 
 #[test]
+fn deferred_tool_stops_a_fallback_chain_and_fails() {
+    // A deferred-tool dead-end is a harness that *ran* (exit 0), so a fallback
+    // chain must STOP at it — not fall through to the next candidate — and the
+    // run must still fail, since the harness that ran did no useful work.
+    let deferred = r#"{"type":"result","stop_reason":"tool_deferred","result":"","deferred_tool_use":{"name":"Bash"}}"#;
+    let output = run(
+        &[
+            "run",
+            "--run-mode",
+            "fallback",
+            "--harness",
+            "claude-code,codex",
+            "--prompt",
+            "run echo hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", deferred)],
+    );
+    assert_eq!(output.status.code(), Some(1), "a dead-end fails the run");
+    let v = json_stdout(&output);
+    // Stopped at the first harness — it ran (and dead-ended), so it is the answer;
+    // codex was never attempted.
+    assert_eq!(v["fallback"]["ran"], "claude-code");
+    assert_eq!(v["fallback"]["fell_through"].as_array().unwrap().len(), 0);
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["harness"], "claude-code");
+    assert_eq!(results[0]["status"], "ok");
+    assert_eq!(results[0]["failure_kind"], "tool_deferred");
+}
+
+#[test]
+fn deferred_tool_is_classified_on_the_streaming_path() {
+    // `--stream` is a separate execution path (stream_one_harness), but it funnels
+    // through the same result assembly: a deferral must be classified there too,
+    // surfaced in the terminal report line, and fail the run.
+    let deferred = r#"{"type":"result","stop_reason":"tool_deferred","result":"","deferred_tool_use":{"name":"Read"}}"#;
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "read a file",
+            "--bin",
+            &bin_override("claude-code"),
+            "--stream",
+        ],
+        &[("MOCK_STDOUT", deferred)],
+    );
+    assert_eq!(output.status.code(), Some(1), "a dead-end fails the stream");
+    // The terminal `{"type":"result","report":{…}}` line carries the classified
+    // result (there are no tool_call event lines to emit for a deferred turn).
+    let text = String::from_utf8_lossy(&output.stdout);
+    let terminal: Value = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("each stream line is JSON"))
+        .find(|v: &Value| v["type"] == "result")
+        .expect("a terminal result line");
+    let result = &terminal["report"]["results"][0];
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["failure_kind"], "tool_deferred");
+    assert!(result["error"].as_str().unwrap().contains("`Read`"));
+}
+
+#[test]
 fn resume_maps_to_resume_flag_and_echoes_session() {
     let output = run(
         &[

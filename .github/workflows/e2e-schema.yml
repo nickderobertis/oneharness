@@ -12,10 +12,18 @@ name: E2E (Structured output)
 # the token ever being exposed (GitHub also withholds secrets from fork PRs).
 
 on:
-  push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      os:
+        description: "Platform(s): 'default' = this workflow's PR matrix, 'all' = every supported OS, or a single OS. Check one harness/platform without a full rerun."
+        type: choice
+        default: default
+        options:
+          - default
+          - all
+          - ubuntu-latest
+          - macos-latest
 
 permissions:
   contents: read
@@ -40,14 +48,12 @@ jobs:
        github.event.pull_request.head.repo.full_name == github.repository)
     strategy:
       fail-fast: false
+      # Linux-only on PR (schema is a Claude-only feature; its live check is
+      # Linux/macOS-only — quote-heavy JSON argv is mangled by the Windows .cmd
+      # shim, so windows is not an option here). workflow_dispatch can widen to
+      # 'all' (ubuntu+macos) or a single OS. See AGENTS.md > "Live e2e in CI".
       matrix:
-        # Linux + macOS only. The native delivery passes the schema as a
-        # quote-heavy JSON argument (`--json-schema '{...}'`), and an npm-installed
-        # harness is a `.cmd` shim on Windows where cmd.exe's `%*` forwarding
-        # mangles quote-containing arguments — a platform limitation, not a
-        # oneharness bug. The hermetic `check` job (ci.yml) still exercises the
-        # full structured-output argv + validation path on windows-latest.
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.os != 'default' && (inputs.os == 'all' && '["ubuntu-latest","macos-latest"]' || format('["{0}"]', inputs.os)) || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:

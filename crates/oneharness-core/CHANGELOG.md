@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.4.3...oneharness-core-v0.4.4) - 2026-07-13
+
+### Added
+
+- detect and classify claude-code deferred-tool dead-ends (tool_deferred)
+
 ## [0.4.3](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.4.2...oneharness-core-v0.4.3) - 2026-07-12
 
 ### Added

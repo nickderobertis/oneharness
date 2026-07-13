@@ -21,7 +21,7 @@
 //!   snake_case `session_id`; it does not emit token usage today, so usage stays
 //!   absent rather than fabricated.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Normalized token/cost accounting. Every field is best-effort and independently
@@ -62,11 +62,65 @@ pub struct UsageReading {
     pub source: String,
 }
 
-/// A coarse failure reason plus where it was read from (`stderr`/`stdout`).
+/// The normalized, closed set of failure reasons oneharness can classify from a
+/// harness's output. It is the single source for the `failure_kind` contract
+/// value: serialized as the snake_case token a consumer reads in the report
+/// (`auth`, `rate_limit`, `model_not_found`, `quota`, `tool_deferred`), so the
+/// wire shape is unchanged — modeling it as an enum keeps a misspelled or
+/// invalid kind unrepresentable and gives every producer/consumer (classifier,
+/// `is_failure`, the fallback fall-through rule, the report, history) one
+/// definition to share instead of scattered string literals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureKind {
+    /// Authentication / authorization rejected the request (401/403, missing or
+    /// invalid credentials).
+    Auth,
+    /// Rate limited (429, too many requests) — a transient condition of an
+    /// otherwise working, authenticated harness.
+    RateLimit,
+    /// The requested model was not found / is invalid — a configuration mistake.
+    ModelNotFound,
+    /// Out of quota / credits, or a billing problem — a provisioning failure.
+    Quota,
+    /// The harness deferred a builtin tool call instead of executing it, so a
+    /// clean-exit run did no useful work (Claude Code bridge deployments; issue
+    /// #1114). The only kind that can appear on a `status: ok` run.
+    ToolDeferred,
+}
+
+impl FailureKind {
+    /// The snake_case token this kind serializes to — for the few call sites
+    /// (stderr diagnostics, the fallback reason map) that need the raw string.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FailureKind::Auth => "auth",
+            FailureKind::RateLimit => "rate_limit",
+            FailureKind::ModelNotFound => "model_not_found",
+            FailureKind::Quota => "quota",
+            FailureKind::ToolDeferred => "tool_deferred",
+        }
+    }
+}
+
+/// A classified failure reason plus where it was read from (`stderr`/`stdout`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FailureReading {
-    pub kind: String,
+    pub kind: FailureKind,
     pub source: String,
+}
+
+/// A deferred-tool dead-end detected in a harness's output: the harness ended a
+/// turn by *deferring* a builtin tool call instead of executing it, so the run
+/// exits cleanly (status `ok`) with an empty result. This is Claude Code's
+/// behavior in a bridged/managed deployment (where `tengu_non_deferrable_builtins`
+/// is empty), and without detection it masquerades as a schema/output failure —
+/// see issue #1114.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeferredTool {
+    /// The name of the tool the harness deferred (e.g. `Read`), when the output
+    /// named it; `None` when the shape signalled a deferral without a name.
+    pub tool: Option<String>,
 }
 
 /// Best-effort token/cost usage from a harness's stdout. Tries the two known
@@ -193,7 +247,7 @@ pub fn classify_failure(stdout: &str, stderr: &str) -> Option<FailureReading> {
     for (source, text) in [("stderr", stderr), ("stdout", stdout)] {
         if let Some(kind) = match_failure(text) {
             return Some(FailureReading {
-                kind: kind.to_string(),
+                kind,
                 source: source.to_string(),
             });
         }
@@ -203,11 +257,11 @@ pub fn classify_failure(stdout: &str, stderr: &str) -> Option<FailureReading> {
 
 /// Match the first known failure signal in `text` (case-insensitive). Ordered
 /// most-specific first so a 429 reads as `rate_limit`, not `auth`.
-fn match_failure(text: &str) -> Option<&'static str> {
+fn match_failure(text: &str) -> Option<FailureKind> {
     let h = text.to_lowercase();
-    const SIGNALS: &[(&str, &[&str])] = &[
+    const SIGNALS: &[(FailureKind, &[&str])] = &[
         (
-            "model_not_found",
+            FailureKind::ModelNotFound,
             &[
                 "model not found",
                 "model_not_found",
@@ -218,7 +272,7 @@ fn match_failure(text: &str) -> Option<&'static str> {
             ],
         ),
         (
-            "rate_limit",
+            FailureKind::RateLimit,
             &[
                 "rate limit",
                 "rate-limit",
@@ -228,7 +282,7 @@ fn match_failure(text: &str) -> Option<&'static str> {
             ],
         ),
         (
-            "quota",
+            FailureKind::Quota,
             &[
                 "insufficient_quota",
                 "quota",
@@ -238,7 +292,7 @@ fn match_failure(text: &str) -> Option<&'static str> {
             ],
         ),
         (
-            "auth",
+            FailureKind::Auth,
             &[
                 "unauthorized",
                 "authentication",
@@ -257,6 +311,52 @@ fn match_failure(text: &str) -> Option<&'static str> {
         .iter()
         .find(|(_, needles)| needles.iter().any(|n| h.contains(n)))
         .map(|(kind, _)| *kind)
+}
+
+/// Best-effort detection of a **deferred-tool dead-end** in `stdout`: a run that
+/// ended a turn by deferring a builtin tool call rather than executing it, so it
+/// completed with an empty result and no useful work done. This is distinct from
+/// [`classify_failure`] because a deferred run exits *cleanly* (status `ok`), so
+/// it needs its own detection independent of the exit code.
+///
+/// Two equivalent signals of the same Claude Code shape (bridged/managed
+/// deployments), scanned terminal-event-first so a stream's final event wins:
+/// a `stop_reason`/`terminal_reason` of `"tool_deferred"`, or a non-empty
+/// `deferred_tool_use` object alongside an empty/absent `result`. The tool name
+/// is lifted from `deferred_tool_use.name` when present, never fabricated.
+/// `None` when neither signal is found (the ordinary case for every harness).
+pub fn detect_deferred_tool(stdout: &str) -> Option<DeferredTool> {
+    json_candidates(stdout)
+        .iter()
+        .rev()
+        .find_map(deferred_from_object)
+}
+
+/// Detect the deferred-tool shape in one JSON object. `None` unless the object
+/// carries a `"tool_deferred"` reason or a `deferred_tool_use` with an empty
+/// result — so a normal `result` document (which has neither) never matches.
+fn deferred_from_object(value: &Value) -> Option<DeferredTool> {
+    let obj = value.as_object()?;
+    let reason_deferred = ["stop_reason", "terminal_reason"]
+        .iter()
+        .any(|k| obj.get(*k).and_then(Value::as_str) == Some("tool_deferred"));
+    let deferred_use = obj.get("deferred_tool_use").and_then(Value::as_object);
+    // A `deferred_tool_use` present with an empty/absent `result` is the same
+    // dead-end even when the reason field is absent; a normal answer carries a
+    // non-empty `result` and no `deferred_tool_use`, so it never trips this.
+    let result_empty = obj
+        .get("result")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty);
+    if !(reason_deferred || (deferred_use.is_some() && result_empty)) {
+        return None;
+    }
+    let tool = deferred_use
+        .and_then(|d| d.get("name"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    Some(DeferredTool { tool })
 }
 
 /// Candidate JSON objects in `stdout`: the whole document when it parses, else
@@ -416,30 +516,47 @@ mod tests {
             classify_failure("", "Error: 401 Unauthorized")
                 .unwrap()
                 .kind,
-            "auth"
+            FailureKind::Auth
         );
         assert_eq!(
             classify_failure("", "HTTP 429: rate limit exceeded")
                 .unwrap()
                 .kind,
-            "rate_limit"
+            FailureKind::RateLimit
         );
         assert_eq!(
             classify_failure("", "model not found: gpt-9").unwrap().kind,
-            "model_not_found"
+            FailureKind::ModelNotFound
         );
         assert_eq!(
             classify_failure("", "insufficient_quota; check billing")
                 .unwrap()
                 .kind,
-            "quota"
+            FailureKind::Quota
         );
+    }
+
+    #[test]
+    fn failure_kind_serializes_to_its_snake_case_token() {
+        // The wire contract: the enum must serialize to exactly the strings a
+        // consumer reads in `failure_kind`, and `as_str` must agree with serde.
+        for kind in [
+            FailureKind::Auth,
+            FailureKind::RateLimit,
+            FailureKind::ModelNotFound,
+            FailureKind::Quota,
+            FailureKind::ToolDeferred,
+        ] {
+            let json = serde_json::to_string(&kind).unwrap();
+            assert_eq!(json, format!("\"{}\"", kind.as_str()));
+        }
+        assert_eq!(FailureKind::ToolDeferred.as_str(), "tool_deferred");
     }
 
     #[test]
     fn classify_records_source_and_prefers_stderr() {
         let got = classify_failure("rate limit in stdout", "unauthorized in stderr").unwrap();
-        assert_eq!(got.kind, "auth");
+        assert_eq!(got.kind, FailureKind::Auth);
         assert_eq!(got.source, "stderr");
         let got = classify_failure("model not found", "").unwrap();
         assert_eq!(got.source, "stdout");
@@ -448,6 +565,62 @@ mod tests {
     #[test]
     fn classify_none_when_no_signal() {
         assert!(classify_failure("just some output", "a normal error").is_none());
+    }
+
+    #[test]
+    fn detects_deferred_tool_with_named_tool() {
+        // Claude Code's bridge-deployment shape: a clean (exit 0) result whose
+        // `stop_reason` is `tool_deferred`, empty `result`, and a named
+        // `deferred_tool_use`. The tool name is lifted, never fabricated.
+        let raw = r#"{"type":"result","num_turns":1,"stop_reason":"tool_deferred",
+            "terminal_reason":"tool_deferred","result":"","permission_denials":[],
+            "deferred_tool_use":{"name":"Read","input":{"file_path":"/x/usage.rs"}}}"#;
+        let got = detect_deferred_tool(raw).unwrap();
+        assert_eq!(got.tool.as_deref(), Some("Read"));
+    }
+
+    #[test]
+    fn detects_deferred_tool_from_deferred_use_without_reason() {
+        // Even without a reason field, a `deferred_tool_use` alongside an empty
+        // result is the same dead-end.
+        let raw = r#"{"result":"","deferred_tool_use":{"name":"Bash"}}"#;
+        assert_eq!(
+            detect_deferred_tool(raw).unwrap().tool.as_deref(),
+            Some("Bash")
+        );
+    }
+
+    #[test]
+    fn detects_deferred_tool_without_a_name() {
+        // A deferral signalled only by the reason, with no tool named, still
+        // detects — the name stays `None` rather than being invented.
+        let raw = r#"{"stop_reason":"tool_deferred","result":""}"#;
+        assert_eq!(detect_deferred_tool(raw), Some(DeferredTool { tool: None }));
+    }
+
+    #[test]
+    fn no_deferred_tool_on_a_normal_result() {
+        // A normal answer (non-empty `result`, no `deferred_tool_use`) never trips
+        // the detector, and neither does non-JSON or empty output.
+        assert!(detect_deferred_tool(r#"{"type":"result","result":"pong"}"#).is_none());
+        assert!(detect_deferred_tool(r#"{"stop_reason":"end_turn","result":"hi"}"#).is_none());
+        assert!(detect_deferred_tool("not json").is_none());
+        assert!(detect_deferred_tool("").is_none());
+    }
+
+    #[test]
+    fn deferred_tool_prefers_terminal_stream_event() {
+        // In a stream, the terminal event carries the deferral; scanning from the
+        // end finds it even after ordinary earlier events.
+        let raw = concat!(
+            "{\"type\":\"system\",\"session_id\":\"s\"}\n",
+            "{\"type\":\"result\",\"stop_reason\":\"tool_deferred\",\"result\":\"\",\
+             \"deferred_tool_use\":{\"name\":\"Read\"}}\n",
+        );
+        assert_eq!(
+            detect_deferred_tool(raw).unwrap().tool.as_deref(),
+            Some("Read")
+        );
     }
 
     #[test]

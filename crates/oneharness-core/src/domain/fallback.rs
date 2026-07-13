@@ -15,6 +15,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::domain::report::Status;
+use crate::domain::signals::FailureKind;
 
 /// How the selected harnesses are run. Accepted as a CLI value (`--run-mode`,
 /// parsed in the `oneharness` binary) and a config-file value (`run_mode`, via
@@ -87,19 +88,19 @@ impl RunMode {
 /// historical rule stands: both stop the chain.
 pub fn startup_failure_reason(
     status: Status,
-    failure_kind: Option<&str>,
+    failure_kind: Option<FailureKind>,
     model_fallback: bool,
 ) -> Option<&'static str> {
     match status {
         Status::Skipped => Some("not-installed"),
         Status::SpawnError => Some("spawn-error"),
         Status::Nonzero => match failure_kind {
-            Some("auth") => Some("auth"),
-            Some("quota") => Some("quota"),
+            Some(FailureKind::Auth) => Some("auth"),
+            Some(FailureKind::Quota) => Some("quota"),
             // Only when a model list is being tried: an unusable/over-limit model
             // means "try the next model", not "stop with a real failure".
-            Some("model_not_found") if model_fallback => Some("model-not-found"),
-            Some("rate_limit") if model_fallback => Some("rate-limit"),
+            Some(FailureKind::ModelNotFound) if model_fallback => Some("model-not-found"),
+            Some(FailureKind::RateLimit) if model_fallback => Some("rate-limit"),
             _ => None,
         },
         Status::Ok | Status::Timeout | Status::Planned => None,
@@ -111,7 +112,7 @@ pub fn startup_failure_reason(
 /// [`startup_failure_reason`].
 pub fn is_startup_failure(
     status: Status,
-    failure_kind: Option<&str>,
+    failure_kind: Option<FailureKind>,
     model_fallback: bool,
 ) -> bool {
     startup_failure_reason(status, failure_kind, model_fallback).is_some()
@@ -151,18 +152,26 @@ mod tests {
         );
         // Provisioning "could not run": rejected before any work.
         assert_eq!(
-            startup_failure_reason(Status::Nonzero, Some("auth"), false),
+            startup_failure_reason(Status::Nonzero, Some(FailureKind::Auth), false),
             Some("auth")
         );
         assert_eq!(
-            startup_failure_reason(Status::Nonzero, Some("quota"), false),
+            startup_failure_reason(Status::Nonzero, Some(FailureKind::Quota), false),
             Some("quota")
         );
         for status in [Status::Skipped, Status::SpawnError] {
             assert!(is_startup_failure(status, None, false));
         }
-        assert!(is_startup_failure(Status::Nonzero, Some("auth"), false));
-        assert!(is_startup_failure(Status::Nonzero, Some("quota"), false));
+        assert!(is_startup_failure(
+            Status::Nonzero,
+            Some(FailureKind::Auth),
+            false
+        ));
+        assert!(is_startup_failure(
+            Status::Nonzero,
+            Some(FailureKind::Quota),
+            false
+        ));
     }
 
     #[test]
@@ -180,14 +189,19 @@ mod tests {
         // A plain non-zero task failure (no classified reason) is a real run.
         assert_eq!(startup_failure_reason(Status::Nonzero, None, false), None);
         assert!(!is_startup_failure(Status::Nonzero, None, false));
-        // Transient / configuration reasons are NOT setup failures for a
+        // Transient / configuration / did-run reasons are NOT setup failures for a
         // single-model run: falling through a 429 would mask a working harness's
-        // real hiccup, and an unknown model is a config mistake the user sees.
-        for kind in ["rate_limit", "model_not_found", "something-else"] {
+        // real hiccup, an unknown model is a config mistake the user sees, and a
+        // deferred-tool dead-end is a harness that *ran* (so the chain stops there).
+        for kind in [
+            FailureKind::RateLimit,
+            FailureKind::ModelNotFound,
+            FailureKind::ToolDeferred,
+        ] {
             assert_eq!(
                 startup_failure_reason(Status::Nonzero, Some(kind), false),
                 None,
-                "failure_kind {kind} must not fall through without a model list"
+                "failure_kind {kind:?} must not fall through without a model list"
             );
             assert!(!is_startup_failure(Status::Nonzero, Some(kind), false));
         }
@@ -198,28 +212,29 @@ mod tests {
         // Trying several models in order: an unusable or over-limit model is
         // "try the next model", so both fall through with their own reason.
         assert_eq!(
-            startup_failure_reason(Status::Nonzero, Some("model_not_found"), true),
+            startup_failure_reason(Status::Nonzero, Some(FailureKind::ModelNotFound), true),
             Some("model-not-found")
         );
         assert_eq!(
-            startup_failure_reason(Status::Nonzero, Some("rate_limit"), true),
+            startup_failure_reason(Status::Nonzero, Some(FailureKind::RateLimit), true),
             Some("rate-limit")
         );
         assert!(is_startup_failure(
             Status::Nonzero,
-            Some("model_not_found"),
+            Some(FailureKind::ModelNotFound),
             true
         ));
         assert!(is_startup_failure(
             Status::Nonzero,
-            Some("rate_limit"),
+            Some(FailureKind::RateLimit),
             true
         ));
         // A plain task failure still stops the chain even with a model list — it
-        // is a real run, not a per-model provisioning problem.
+        // is a real run, not a per-model provisioning problem. A deferred-tool
+        // dead-end likewise ran, so it stops the chain too.
         assert_eq!(startup_failure_reason(Status::Nonzero, None, true), None);
         assert_eq!(
-            startup_failure_reason(Status::Nonzero, Some("something-else"), true),
+            startup_failure_reason(Status::Nonzero, Some(FailureKind::ToolDeferred), true),
             None
         );
         // The structural/provisioning reasons are unchanged by the model flag.
@@ -228,7 +243,7 @@ mod tests {
             Some("not-installed")
         );
         assert_eq!(
-            startup_failure_reason(Status::Nonzero, Some("auth"), true),
+            startup_failure_reason(Status::Nonzero, Some(FailureKind::Auth), true),
             Some("auth")
         );
     }

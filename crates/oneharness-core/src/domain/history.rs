@@ -16,7 +16,7 @@ use serde::Serialize;
 use crate::domain::events::ActionEvent;
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::{RunResult, Status};
-use crate::domain::signals::Usage;
+use crate::domain::signals::{FailureKind, Usage};
 
 /// Bumped when the history record shape changes in a way a consumer must notice.
 /// Independent of [`crate::domain::report::SCHEMA_VERSION`] — the history file and
@@ -62,9 +62,9 @@ pub struct HistoryRecord {
     /// Best-effort normalized tool-call events; `null` when the harness exposes
     /// no machine-readable trace.
     pub events: Option<Vec<ActionEvent>>,
-    /// Best-effort classified failure reason for a non-zero run; `null` when
+    /// Best-effort classified failure reason (see [`FailureKind`]); `null` when
     /// unclassified.
-    pub failure_kind: Option<String>,
+    pub failure_kind: Option<FailureKind>,
 }
 
 impl HistoryRecord {
@@ -102,7 +102,7 @@ impl HistoryRecord {
             usage: r.usage.clone(),
             session_id: r.session_id.clone(),
             events: r.events.clone(),
-            failure_kind: r.failure_kind.clone(),
+            failure_kind: r.failure_kind,
         }
     }
 }

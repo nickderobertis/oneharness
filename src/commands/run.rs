@@ -788,7 +788,13 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                     .results
                     .iter()
                     .filter(|r| {
-                        is_failure(r.status, r.available, require_available, r.schema_valid)
+                        is_failure(
+                            r.status,
+                            r.available,
+                            require_available,
+                            r.schema_valid,
+                            r.failure_kind,
+                        )
                     })
                     .count();
                 eprintln!(
@@ -1685,11 +1691,7 @@ fn run_fallback(
                 )
             }
         };
-        match fallback::startup_failure_reason(
-            result.status,
-            result.failure_kind.as_deref(),
-            multi_model,
-        ) {
+        match fallback::startup_failure_reason(result.status, result.failure_kind, multi_model) {
             // Could not run — record why and try the next candidate.
             Some(reason) => {
                 fell_through.push(FallThrough {
@@ -1720,7 +1722,13 @@ fn fallback_exit(results: &[RunResult], ran: bool) -> i32 {
         return EXIT_FAILURE;
     }
     let last = results.last().expect("a harness ran, so there is a result");
-    if is_failure(last.status, last.available, false, last.schema_valid) {
+    if is_failure(
+        last.status,
+        last.available,
+        false,
+        last.schema_valid,
+        last.failure_kind,
+    ) {
         EXIT_FAILURE
     } else {
         EXIT_OK
@@ -1889,15 +1897,36 @@ fn executed_result(
         Some(r) => (Some(r.events), Some(r.source)),
         None => (None, None),
     };
-    // Classify only an actual non-zero run: timeouts/spawn failures already carry
-    // a oneharness-generated `error`, and `status` explains them.
-    let failure = match capture.status {
-        Status::Nonzero => signals::classify_failure(&capture.stdout, &capture.stderr),
+    // A deferred-tool dead-end: the harness completed cleanly (exit 0) but only
+    // *deferred* a builtin tool call instead of running it (Claude Code bridge
+    // deployments — issue #1114). It exits 0, so it is not caught by the non-zero
+    // classification below; detect it from the output shape and give it a distinct
+    // `tool_deferred` kind + an actionable `error`, rather than letting it look
+    // like an empty/invalid answer. Checked for any run that produced output.
+    let deferred = match capture.status {
+        Status::Ok | Status::Nonzero => signals::detect_deferred_tool(&capture.stdout),
         _ => None,
+    };
+    // Classify only an actual non-zero run: timeouts/spawn failures already carry
+    // a oneharness-generated `error`, and `status` explains them. A detected
+    // deferral is more specific and actionable, so it wins over a coarse match.
+    let failure = match (&deferred, capture.status) {
+        (Some(_), _) => Some(signals::FailureReading {
+            kind: signals::FailureKind::ToolDeferred,
+            source: "stdout".to_string(),
+        }),
+        (None, Status::Nonzero) => signals::classify_failure(&capture.stdout, &capture.stderr),
+        (None, _) => None,
     };
     let (failure_kind, failure_kind_source) = match failure {
         Some(f) => (Some(f.kind), Some(f.source)),
         None => (None, None),
+    };
+    // A deferral produced no answer, so surface an actionable `error` in place of
+    // the harness's (absent) one — even though the process exited 0.
+    let error = match &deferred {
+        Some(d) => Some(deferred_tool_error(spec.id, d.tool.as_deref())),
+        None => capture.error.clone(),
     };
     RunResult {
         harness: spec.id.to_string(),
@@ -1925,8 +1954,25 @@ fn executed_result(
         failure_kind_source,
         stdout: capture.stdout.clone(),
         stderr: capture.stderr.clone(),
-        error: capture.error.clone(),
+        error,
     }
+}
+
+/// The actionable `error` for a deferred-tool dead-end (issue #1114): the harness
+/// deferred `tool` (when named) instead of executing it, so the run produced
+/// nothing. Names the cause (a bridged/managed deployment) and the way out.
+fn deferred_tool_error(harness_id: &str, tool: Option<&str>) -> String {
+    let what = match tool {
+        Some(name) => format!("a `{name}` tool call"),
+        None => "a builtin tool call".to_string(),
+    };
+    format!(
+        "harness `{harness_id}` deferred {what} instead of executing it, so the run produced no \
+         result — you appear to be in a bridged/managed deployment where builtin tools are \
+         deferred (empty `tengu_non_deferrable_builtins`). Tool-using runs need a deployment that \
+         executes tools inline: run from a standalone environment/CI, or select a harness that \
+         executes tools inline."
+    )
 }
 
 /// Everything needed to (re)build one harness's argv, retained so the
@@ -2053,6 +2099,13 @@ fn retry_decision(
     if !matches!(capture.status, Status::Ok | Status::Nonzero) {
         return None;
     }
+    // A deferred-tool dead-end (issue #1114) is deterministic — the deployment
+    // will defer again on every retry — so re-prompting only burns real model
+    // calls without ever producing a value. Stop immediately; the result carries
+    // the `tool_deferred` classification either way.
+    if signals::detect_deferred_tool(&capture.stdout).is_some() {
+        return None;
+    }
     let answer = normalize::extract(&capture.stdout, plan.output_format).map(|e| e.text);
     let check = structured::check(
         schema,
@@ -2103,17 +2156,22 @@ fn load_schema(
 }
 
 /// A harness "failed" when it ran and did not exit cleanly, when it could not be
-/// spawned, when — under `--require-available` — it was skipped as missing, or
-/// when a structured-output run never produced a schema-conforming answer (a
-/// run you asked for JSON from and didn't get is a failure, regardless of exit
-/// code).
+/// spawned, when — under `--require-available` — it was skipped as missing, when
+/// a structured-output run never produced a schema-conforming answer (a run you
+/// asked for JSON from and didn't get is a failure, regardless of exit code), or
+/// when it dead-ended by deferring a tool call (`tool_deferred`) — a clean exit
+/// that nonetheless did no useful work (issue #1114).
 fn is_failure(
     status: Status,
     available: bool,
     require_available: bool,
     schema_valid: Option<bool>,
+    failure_kind: Option<signals::FailureKind>,
 ) -> bool {
     if schema_valid == Some(false) {
+        return true;
+    }
+    if failure_kind == Some(signals::FailureKind::ToolDeferred) {
         return true;
     }
     match status {
@@ -2124,9 +2182,15 @@ fn is_failure(
 }
 
 fn exit_code(results: &[RunResult], require_available: bool) -> i32 {
-    let failed = results
-        .iter()
-        .any(|r| is_failure(r.status, r.available, require_available, r.schema_valid));
+    let failed = results.iter().any(|r| {
+        is_failure(
+            r.status,
+            r.available,
+            require_available,
+            r.schema_valid,
+            r.failure_kind,
+        )
+    });
     if failed {
         EXIT_FAILURE
     } else {
@@ -2577,6 +2641,74 @@ mod tests {
         assert!(retry_decision(&plan, &schema, 1, 2, &capture(Status::Timeout, "")).is_none());
         // No extractable answer falls back to the raw stdout in the feedback.
         assert!(retry_decision(&plan, &schema, 1, 2, &capture(Status::Ok, "  ")).is_some());
+        // A deferred-tool dead-end is deterministic, so it is never retried even
+        // with budget left (issue #1114) — re-prompting would only burn calls.
+        let deferred = capture(
+            Status::Ok,
+            r#"{"stop_reason":"tool_deferred","result":"","deferred_tool_use":{"name":"Read"}}"#,
+        );
+        assert!(retry_decision(&plan, &schema, 1, 2, &deferred).is_none());
+    }
+
+    #[test]
+    fn deferred_tool_error_names_the_tool_or_stays_generic() {
+        // Both arms of the actionable message: a named tool is quoted; an unnamed
+        // deferral falls back to "a builtin tool call" (never a fabricated name).
+        let named = deferred_tool_error("claude-code", Some("Read"));
+        assert!(named.contains("`Read`"), "{named}");
+        assert!(named.contains("inline"), "actionable: {named}");
+        let generic = deferred_tool_error("claude-code", None);
+        assert!(generic.contains("a builtin tool call"), "{generic}");
+        assert!(!generic.contains("``"), "no empty backtick pair: {generic}");
+    }
+
+    #[test]
+    fn is_failure_treats_tool_deferred_as_failure_on_a_clean_exit() {
+        // A tool_deferred run exits 0 (Status::Ok), which is normally a success;
+        // the typed signal is what makes it fail (so exit_code / fallback_exit see
+        // the dead-end). Without the signal the same ok run is a success.
+        assert!(is_failure(
+            Status::Ok,
+            true,
+            false,
+            None,
+            Some(signals::FailureKind::ToolDeferred)
+        ));
+        assert!(!is_failure(
+            Status::Ok,
+            true,
+            false,
+            None,
+            Some(signals::FailureKind::Auth)
+        ));
+        assert!(!is_failure(Status::Ok, true, false, None, None));
+    }
+
+    #[test]
+    fn executed_result_classifies_a_deferred_dead_end() {
+        // A clean (exit 0) capture that only deferred a tool becomes a
+        // tool_deferred result with an actionable error — not an empty answer.
+        let spec = harness::by_id("claude-code").unwrap();
+        let cap = capture(
+            Status::Ok,
+            r#"{"type":"result","stop_reason":"tool_deferred","result":"",
+               "deferred_tool_use":{"name":"Read"}}"#,
+        );
+        let r = executed_result(
+            spec,
+            "claude".into(),
+            vec!["claude".into()],
+            OutputFormat::Json,
+            &cap,
+            None,
+            1,
+            None,
+            None,
+        );
+        assert_eq!(r.status, Status::Ok);
+        assert_eq!(r.failure_kind, Some(signals::FailureKind::ToolDeferred));
+        assert_eq!(r.failure_kind_source.as_deref(), Some("stdout"));
+        assert!(r.error.as_deref().unwrap().contains("`Read`"));
     }
 
     #[test]

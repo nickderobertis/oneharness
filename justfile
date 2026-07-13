@@ -28,7 +28,7 @@ bootstrap:
 # coverage*, build, artifact smoke. Fails on any issue. `coverage` re-runs the
 # workspace suite under instrumentation and fails below {{COVERAGE_MIN}}% lines;
 # `test` stays in the gate as the fast, un-instrumented pass/fail signal.
-check: fmt-check lint lint-sh test coverage build smoke
+check: fmt-check lint lint-sh lint-workflows test coverage build smoke
     @echo "check: ok"
 
 # Verify formatting without modifying files.
@@ -52,6 +52,14 @@ clippy: lint
 lint-sh:
     if ! command -v shellcheck >/dev/null 2>&1; then echo "shellcheck not installed: 'apt-get install shellcheck' / 'brew install shellcheck' / https://github.com/koalaman/shellcheck#installing" >&2; exit 1; fi
     shellcheck scripts/*.sh
+
+# Drift gate for the live-e2e CI matrix contract: assert every .github/workflows/
+# e2e-*.yml matches the single source in scripts/check-e2e-matrix.sh (no push
+# trigger; claude/codex cross-platform, the rest Linux-only on PR; on-demand os
+# dispatch). Keeps the matrix duplication GitHub Actions forces (literal dispatch
+# options, per-job matrix) from drifting. See AGENTS.md > "Live e2e in CI".
+lint-workflows:
+    bash scripts/check-e2e-matrix.sh
 
 # Run the test suite across the workspace (core unit tests + binary unit and
 # integration tests; prefers nextest, falls back to cargo test).

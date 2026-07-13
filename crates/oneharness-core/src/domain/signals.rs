@@ -69,6 +69,19 @@ pub struct FailureReading {
     pub source: String,
 }
 
+/// A deferred-tool dead-end detected in a harness's output: the harness ended a
+/// turn by *deferring* a builtin tool call instead of executing it, so the run
+/// exits cleanly (status `ok`) with an empty result. This is Claude Code's
+/// behavior in a bridged/managed deployment (where `tengu_non_deferrable_builtins`
+/// is empty), and without detection it masquerades as a schema/output failure —
+/// see issue #1114.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeferredTool {
+    /// The name of the tool the harness deferred (e.g. `Read`), when the output
+    /// named it; `None` when the shape signalled a deferral without a name.
+    pub tool: Option<String>,
+}
+
 /// Best-effort token/cost usage from a harness's stdout. Tries the two known
 /// shapes in order: a single terminal event whose totals are self-contained
 /// (Claude Code), else a sum across per-step events (OpenCode). `None` when
@@ -257,6 +270,52 @@ fn match_failure(text: &str) -> Option<&'static str> {
         .iter()
         .find(|(_, needles)| needles.iter().any(|n| h.contains(n)))
         .map(|(kind, _)| *kind)
+}
+
+/// Best-effort detection of a **deferred-tool dead-end** in `stdout`: a run that
+/// ended a turn by deferring a builtin tool call rather than executing it, so it
+/// completed with an empty result and no useful work done. This is distinct from
+/// [`classify_failure`] because a deferred run exits *cleanly* (status `ok`), so
+/// it needs its own detection independent of the exit code.
+///
+/// Two equivalent signals of the same Claude Code shape (bridged/managed
+/// deployments), scanned terminal-event-first so a stream's final event wins:
+/// a `stop_reason`/`terminal_reason` of `"tool_deferred"`, or a non-empty
+/// `deferred_tool_use` object alongside an empty/absent `result`. The tool name
+/// is lifted from `deferred_tool_use.name` when present, never fabricated.
+/// `None` when neither signal is found (the ordinary case for every harness).
+pub fn detect_deferred_tool(stdout: &str) -> Option<DeferredTool> {
+    json_candidates(stdout)
+        .iter()
+        .rev()
+        .find_map(deferred_from_object)
+}
+
+/// Detect the deferred-tool shape in one JSON object. `None` unless the object
+/// carries a `"tool_deferred"` reason or a `deferred_tool_use` with an empty
+/// result — so a normal `result` document (which has neither) never matches.
+fn deferred_from_object(value: &Value) -> Option<DeferredTool> {
+    let obj = value.as_object()?;
+    let reason_deferred = ["stop_reason", "terminal_reason"]
+        .iter()
+        .any(|k| obj.get(*k).and_then(Value::as_str) == Some("tool_deferred"));
+    let deferred_use = obj.get("deferred_tool_use").and_then(Value::as_object);
+    // A `deferred_tool_use` present with an empty/absent `result` is the same
+    // dead-end even when the reason field is absent; a normal answer carries a
+    // non-empty `result` and no `deferred_tool_use`, so it never trips this.
+    let result_empty = obj
+        .get("result")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty);
+    if !(reason_deferred || (deferred_use.is_some() && result_empty)) {
+        return None;
+    }
+    let tool = deferred_use
+        .and_then(|d| d.get("name"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    Some(DeferredTool { tool })
 }
 
 /// Candidate JSON objects in `stdout`: the whole document when it parses, else
@@ -448,6 +507,62 @@ mod tests {
     #[test]
     fn classify_none_when_no_signal() {
         assert!(classify_failure("just some output", "a normal error").is_none());
+    }
+
+    #[test]
+    fn detects_deferred_tool_with_named_tool() {
+        // Claude Code's bridge-deployment shape: a clean (exit 0) result whose
+        // `stop_reason` is `tool_deferred`, empty `result`, and a named
+        // `deferred_tool_use`. The tool name is lifted, never fabricated.
+        let raw = r#"{"type":"result","num_turns":1,"stop_reason":"tool_deferred",
+            "terminal_reason":"tool_deferred","result":"","permission_denials":[],
+            "deferred_tool_use":{"name":"Read","input":{"file_path":"/x/usage.rs"}}}"#;
+        let got = detect_deferred_tool(raw).unwrap();
+        assert_eq!(got.tool.as_deref(), Some("Read"));
+    }
+
+    #[test]
+    fn detects_deferred_tool_from_deferred_use_without_reason() {
+        // Even without a reason field, a `deferred_tool_use` alongside an empty
+        // result is the same dead-end.
+        let raw = r#"{"result":"","deferred_tool_use":{"name":"Bash"}}"#;
+        assert_eq!(
+            detect_deferred_tool(raw).unwrap().tool.as_deref(),
+            Some("Bash")
+        );
+    }
+
+    #[test]
+    fn detects_deferred_tool_without_a_name() {
+        // A deferral signalled only by the reason, with no tool named, still
+        // detects — the name stays `None` rather than being invented.
+        let raw = r#"{"stop_reason":"tool_deferred","result":""}"#;
+        assert_eq!(detect_deferred_tool(raw), Some(DeferredTool { tool: None }));
+    }
+
+    #[test]
+    fn no_deferred_tool_on_a_normal_result() {
+        // A normal answer (non-empty `result`, no `deferred_tool_use`) never trips
+        // the detector, and neither does non-JSON or empty output.
+        assert!(detect_deferred_tool(r#"{"type":"result","result":"pong"}"#).is_none());
+        assert!(detect_deferred_tool(r#"{"stop_reason":"end_turn","result":"hi"}"#).is_none());
+        assert!(detect_deferred_tool("not json").is_none());
+        assert!(detect_deferred_tool("").is_none());
+    }
+
+    #[test]
+    fn deferred_tool_prefers_terminal_stream_event() {
+        // In a stream, the terminal event carries the deferral; scanning from the
+        // end finds it even after ordinary earlier events.
+        let raw = concat!(
+            "{\"type\":\"system\",\"session_id\":\"s\"}\n",
+            "{\"type\":\"result\",\"stop_reason\":\"tool_deferred\",\"result\":\"\",\
+             \"deferred_tool_use\":{\"name\":\"Read\"}}\n",
+        );
+        assert_eq!(
+            detect_deferred_tool(raw).unwrap().tool.as_deref(),
+            Some("Read")
+        );
     }
 
     #[test]

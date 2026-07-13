@@ -788,7 +788,18 @@ more than one possible method) records how it was found:
 - `failure_kind` / `failure_kind_source` — on a non-zero run, a coarse reason
   (`auth`, `rate_limit`, `model_not_found`, `quota`) so a caller can tell a
   retryable condition from a broken request. This is **distinct from `status`**,
-  which only records oneharness's relationship to the process.
+  which only records oneharness's relationship to the process. One kind,
+  `tool_deferred`, is reported even on a `status: ok` run: the harness exited
+  cleanly but only **deferred** a builtin tool call (`Read`, `Bash`, …) instead
+  of executing it, so it produced no result. This happens in **bridged/managed
+  Claude Code deployments** (where `tengu_non_deferrable_builtins` is empty and
+  every builtin is deferred) — a tool-using run there silently dead-ends. When
+  detected, oneharness sets `failure_kind: "tool_deferred"`, writes an actionable
+  `error` naming the tool, and fails the run (non-zero exit) instead of letting it
+  look like an empty or schema-invalid answer. **Agentic / tool-using runs against
+  `claude-code` require a deployment that executes tools inline** (a standalone
+  environment or CI); a deferring deployment is unsupported for them, and there is
+  no consumer-side flag to force inline execution.
 
 Coverage is keyed off each harness's documented output shape — Claude Code's
 `result` JSON, OpenCode's JSONL (`text` parts for the answer, `step_finish` for

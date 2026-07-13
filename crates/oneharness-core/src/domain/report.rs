@@ -135,9 +135,14 @@ pub struct RunResult {
     /// Structured-output run only: the validation errors from the final attempt,
     /// joined for display; `null` when valid or no schema was requested.
     pub schema_error: Option<String>,
-    /// Best-effort failure reason (`auth`, `rate_limit`, `model_not_found`,
-    /// `quota`) for a non-zero run; `null` when unclassified. Distinct from
-    /// `status`, which records oneharness's relationship to the process.
+    /// Best-effort failure reason; `null` when unclassified. Distinct from
+    /// `status`, which records oneharness's relationship to the process. Two
+    /// families: coarse reasons for a non-zero run (`auth`, `rate_limit`,
+    /// `model_not_found`, `quota`), and `tool_deferred` — a run that exited
+    /// *cleanly* but only deferred a builtin tool call instead of executing it
+    /// (Claude Code bridge/managed deployments), so it did no useful work. The
+    /// deferred case is the only `failure_kind` that can appear on a `status: ok`
+    /// run, and it also marks the run as failed for exit-code purposes.
     pub failure_kind: Option<String>,
     /// Where `failure_kind` was read (`stderr`/`stdout`); `null` when absent.
     pub failure_kind_source: Option<String>,

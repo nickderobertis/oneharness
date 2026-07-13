@@ -816,6 +816,53 @@ fn classifies_failure_kind_on_nonzero_exit() {
 }
 
 #[test]
+fn deferred_tool_dead_end_is_classified_not_silent() {
+    // A Claude Code bridge deployment defers a builtin tool instead of running it:
+    // the process exits 0 with an empty result and a `deferred_tool_use`. Without
+    // detection this masquerades as an empty/invalid answer (issue #1114). It must
+    // instead surface a distinct `tool_deferred` failure_kind, an actionable error
+    // naming the tool, and a non-zero exit — a clean dead-end is still a failure.
+    let stdout = r#"{"type":"result","num_turns":1,"stop_reason":"tool_deferred",
+        "terminal_reason":"tool_deferred","result":"","permission_denials":[],
+        "deferred_tool_use":{"name":"Read","input":{"file_path":"/x/usage.rs"}}}"#;
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "Read ./src/usage.rs and tell me about it",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    // The run dead-ended: a clean exit-0 process, but no useful work → exit 1.
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a dead-end must fail the run"
+    );
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    // The process itself exited 0 — status reflects that; the failure is carried
+    // by the typed signal, distinct from `status` per the contract.
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["failure_kind"], "tool_deferred");
+    assert_eq!(result["failure_kind_source"], "stdout");
+    let error = result["error"].as_str().unwrap();
+    assert!(
+        error.contains("`Read`"),
+        "error names the deferred tool: {error}"
+    );
+    assert!(
+        error.contains("deferred") && error.contains("inline"),
+        "error is actionable: {error}"
+    );
+}
+
+#[test]
 fn resume_maps_to_resume_flag_and_echoes_session() {
     let output = run(
         &[
@@ -6465,6 +6512,47 @@ fn schema_invalid_after_retries_is_a_failure() {
     assert!(!result["schema_error"].as_str().unwrap().is_empty());
     // The non-conforming value is still surfaced for inspection.
     assert_eq!(result["structured"]["name"], "Ada");
+}
+
+#[test]
+fn schema_deferred_tool_does_not_burn_retries() {
+    // Under `--schema`, a deferred-tool dead-end (issue #1114) is deterministic:
+    // the deployment defers every time, so re-prompting only burns real model
+    // calls. The retry loop must stop after the first attempt and classify it as
+    // `tool_deferred` — not exhaust the whole `--schema-max-retries` budget.
+    let schema = temp_file("schema-deferred", PERSON_SCHEMA);
+    let counter = temp_counter("deferred");
+    let deferred = r#"{"type":"result","stop_reason":"tool_deferred","result":"",
+        "deferred_tool_use":{"name":"Read"}}"#;
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "describe ada",
+            "--schema",
+            &schema,
+            "--schema-max-retries",
+            "3",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_ATTEMPT_FILE", &counter), ("MOCK_STDOUT", deferred)],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["failure_kind"], "tool_deferred");
+    assert_eq!(result["schema_valid"], false);
+    assert_eq!(
+        result["schema_attempts"], 1,
+        "a deterministic deferral must not be retried"
+    );
+    // The harness binary was actually invoked exactly once (no wasted calls).
+    let count = std::fs::read_to_string(&counter).unwrap();
+    assert_eq!(count.trim(), "1", "harness should run exactly once");
 }
 
 #[test]

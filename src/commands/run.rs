@@ -2645,6 +2645,68 @@ mod tests {
         assert!(retry_decision(&plan, &schema, 1, 2, &capture(Status::Timeout, "")).is_none());
         // No extractable answer falls back to the raw stdout in the feedback.
         assert!(retry_decision(&plan, &schema, 1, 2, &capture(Status::Ok, "  ")).is_some());
+        // A deferred-tool dead-end is deterministic, so it is never retried even
+        // with budget left (issue #1114) — re-prompting would only burn calls.
+        let deferred = capture(
+            Status::Ok,
+            r#"{"stop_reason":"tool_deferred","result":"","deferred_tool_use":{"name":"Read"}}"#,
+        );
+        assert!(retry_decision(&plan, &schema, 1, 2, &deferred).is_none());
+    }
+
+    #[test]
+    fn deferred_tool_error_names_the_tool_or_stays_generic() {
+        // Both arms of the actionable message: a named tool is quoted; an unnamed
+        // deferral falls back to "a builtin tool call" (never a fabricated name).
+        let named = deferred_tool_error("claude-code", Some("Read"));
+        assert!(named.contains("`Read`"), "{named}");
+        assert!(named.contains("inline"), "actionable: {named}");
+        let generic = deferred_tool_error("claude-code", None);
+        assert!(generic.contains("a builtin tool call"), "{generic}");
+        assert!(!generic.contains("``"), "no empty backtick pair: {generic}");
+    }
+
+    #[test]
+    fn is_failure_treats_tool_deferred_as_failure_on_a_clean_exit() {
+        // A tool_deferred run exits 0 (Status::Ok), which is normally a success;
+        // the typed signal is what makes it fail (so exit_code / fallback_exit see
+        // the dead-end). Without the signal the same ok run is a success.
+        assert!(is_failure(
+            Status::Ok,
+            true,
+            false,
+            None,
+            Some("tool_deferred")
+        ));
+        assert!(!is_failure(Status::Ok, true, false, None, Some("auth")));
+        assert!(!is_failure(Status::Ok, true, false, None, None));
+    }
+
+    #[test]
+    fn executed_result_classifies_a_deferred_dead_end() {
+        // A clean (exit 0) capture that only deferred a tool becomes a
+        // tool_deferred result with an actionable error — not an empty answer.
+        let spec = harness::by_id("claude-code").unwrap();
+        let cap = capture(
+            Status::Ok,
+            r#"{"type":"result","stop_reason":"tool_deferred","result":"",
+               "deferred_tool_use":{"name":"Read"}}"#,
+        );
+        let r = executed_result(
+            spec,
+            "claude".into(),
+            vec!["claude".into()],
+            OutputFormat::Json,
+            &cap,
+            None,
+            1,
+            None,
+            None,
+        );
+        assert_eq!(r.status, Status::Ok);
+        assert_eq!(r.failure_kind.as_deref(), Some("tool_deferred"));
+        assert_eq!(r.failure_kind_source.as_deref(), Some("stdout"));
+        assert!(r.error.as_deref().unwrap().contains("`Read`"));
     }
 
     #[test]

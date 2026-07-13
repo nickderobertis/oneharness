@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.21](https://github.com/nickderobertis/oneharness/compare/v0.3.20...v0.3.21) - 2026-07-13
+
+### Added
+
+- detect and classify claude-code deferred-tool dead-ends (tool_deferred)
+
 ## [0.3.20](https://github.com/nickderobertis/oneharness/compare/v0.3.19...v0.3.20) - 2026-07-12
 
 ### Added

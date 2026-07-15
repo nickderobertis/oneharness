@@ -155,6 +155,7 @@ sdk-check: build
     bun run --cwd npm/oneharness-sdk typecheck
     bun run --cwd npm/oneharness-sdk test
     bun run --cwd npm/oneharness-sdk build
+    bun run --cwd npm/oneharness-sdk test:package
 
 # Verbose, install-free diagnostics (kept out of the gate).
 doctor:

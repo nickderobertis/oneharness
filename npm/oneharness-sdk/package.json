@@ -23,7 +23,8 @@
     "lint": "biome check --no-errors-on-unmatched src test scripts",
     "format": "biome format --write --no-errors-on-unmatched src test scripts",
     "format:check": "biome format --no-errors-on-unmatched src test scripts",
-    "test": "bun test --coverage"
+    "test": "bun test --coverage",
+    "test:package": "node test/package-e2e.mjs"
   },
   "dependencies": {
     "ajv": "^8.20.0",

@@ -26,6 +26,7 @@ export type RunOptions = {
 	harnesses?: readonly string[];
 	models?: readonly string[];
 	system?: string;
+	reasoning?: string;
 	resume?: string;
 	session?: string;
 	fork?: boolean;
@@ -47,7 +48,33 @@ export type HistoryLookup = {
 	allProjects?: boolean;
 	historyDir?: string;
 };
-export type HarnessInfo = Readonly<Record<string, unknown>> & { id: string };
+export type ModeInfo = {
+	mode: PermissionMode;
+	headless: "clean" | "hangs";
+};
+export type HarnessInfo = {
+	id: string;
+	display: string;
+	default_bin: string;
+	install_hint: string;
+	output_format: "text" | "json" | "stream-json";
+	supports_resume: boolean;
+	session_capable: boolean;
+	supports_fork: boolean;
+	fork_reuses_cache: boolean;
+	modes: ModeInfo[];
+	supports_native_schema: boolean;
+	supports_reasoning: boolean;
+	sync_file: string | null;
+	supports_allowed_tools: boolean;
+	supports_denied_tools: boolean;
+	supports_hooks: boolean;
+	supports_mock_deny: boolean;
+	mock_rewrite: string | null;
+	supports_prompt_stdin: boolean;
+	supports_system_file: boolean;
+	example_command: string[];
+};
 export type Detection = {
 	id: string;
 	bin: string;
@@ -58,6 +85,7 @@ export type Detection = {
 export type OneHarnessOptions = {
 	executable?: string;
 	executableArgs?: readonly string[];
+	env?: Readonly<Record<string, string>>;
 };
 
 const Ajv2020 = Ajv2020Module.default;
@@ -91,12 +119,13 @@ async function invokeWith(
 	options: OneHarnessOptions,
 	args: readonly string[],
 	cwd?: string,
+	acceptJsonOnNonzero = false,
 ): Promise<unknown> {
 	const bin = executable(options);
 	return await new Promise((resolve, reject) => {
 		const child = spawn(bin.command, [...bin.prefix, ...args], {
 			cwd,
-			env: process.env,
+			env: { ...process.env, ...options.env },
 			windowsHide: true,
 		});
 		let stdout = "";
@@ -109,11 +138,15 @@ async function invokeWith(
 			.on("data", (chunk: string) => (stderr += chunk));
 		child.on("error", reject);
 		child.on("close", (code) => {
-			if (code !== 0)
+			if (code !== 0 && !acceptJsonOnNonzero)
 				return reject(new Error(`oneharness exited ${code}: ${stderr.trim()}`));
 			try {
 				resolve(JSON.parse(stdout));
 			} catch (error) {
+				if (code !== 0)
+					return reject(
+						new Error(`oneharness exited ${code}: ${stderr.trim()}`),
+					);
 				reject(new Error(`oneharness returned invalid JSON: ${String(error)}`));
 			}
 		});
@@ -137,6 +170,8 @@ export class OneHarness {
 		pushMany(args, "--harness", options.harnesses);
 		pushMany(args, "--model", options.models);
 		if (options.system !== undefined) args.push("--system", options.system);
+		if (options.reasoning !== undefined)
+			args.push("--reasoning", options.reasoning);
 		if (options.resume !== undefined) args.push("--resume", options.resume);
 		if (options.session !== undefined) args.push("--session", options.session);
 		if (options.fork) args.push("--fork");
@@ -153,7 +188,7 @@ export class OneHarness {
 			args.push("--env", `${key}=${value}`);
 		for (const [key, value] of Object.entries(options.bins ?? {}))
 			args.push("--bin", `${key}=${value}`);
-		const value = await invokeWith(this.options, args, options.cwd);
+		const value = await invokeWith(this.options, args, options.cwd, true);
 		if (!validateRun(value))
 			throw new Error(
 				`invalid oneharness run contract: ${ajv.errorsText(validateRun.errors)}`,

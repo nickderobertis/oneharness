@@ -8,6 +8,7 @@ import { OneHarness } from "../src/index.js";
 const here = dirname(fileURLToPath(import.meta.url));
 const binary = resolve(here, "../../../target/debug/oneharness");
 const mock = resolve(here, "../../../target/debug/oneharness-mock-harness");
+const invalidCli = resolve(here, "invalid-cli-fixture.mjs");
 
 function sdk(): OneHarness {
 	return new OneHarness({
@@ -214,6 +215,26 @@ describe("OneHarness", () => {
 	test("requires an explicit history selector", async () => {
 		await expect(sdk().history()).rejects.toThrow(
 			"history requires session or last",
+		);
+	});
+
+	test("rejects malformed list and detect elements from an external CLI", async () => {
+		const listClient = new OneHarness({
+			executable: process.execPath,
+			executableArgs: [invalidCli],
+			env: { SDK_FIXTURE_MODE: "list" },
+		});
+		await expect(listClient.list()).rejects.toThrow(
+			"invalid oneharness list contract",
+		);
+
+		const detectClient = new OneHarness({
+			executable: process.execPath,
+			executableArgs: [invalidCli],
+			env: { SDK_FIXTURE_MODE: "detect" },
+		});
+		await expect(detectClient.detect()).rejects.toThrow(
+			"invalid oneharness detect contract",
 		);
 	});
 });

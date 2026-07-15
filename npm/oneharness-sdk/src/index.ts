@@ -2,7 +2,9 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import Ajv2020Module from "ajv/dist/2020.js";
 import type { RunReport } from "./generated/contracts.js";
+import type { DetectInfo, DetectReport } from "./generated/detection.js";
 import type { HistoryRecord } from "./generated/history.js";
+import type { HarnessInfo, ListReport } from "./generated/registry.js";
 import schemas from "./generated/schemas.json" with { type: "json" };
 
 export type {
@@ -12,7 +14,14 @@ export type {
 	RunResult,
 	Usage,
 } from "./generated/contracts.js";
+export type { DetectInfo, DetectReport } from "./generated/detection.js";
 export type { HistoryRecord } from "./generated/history.js";
+export type Detection = DetectInfo;
+export type {
+	HarnessInfo,
+	ListReport,
+	ModeInfo,
+} from "./generated/registry.js";
 
 export type PermissionMode =
 	| "read-only"
@@ -48,40 +57,6 @@ export type HistoryLookup = {
 	allProjects?: boolean;
 	historyDir?: string;
 };
-export type ModeInfo = {
-	mode: PermissionMode;
-	headless: "clean" | "hangs";
-};
-export type HarnessInfo = {
-	id: string;
-	display: string;
-	default_bin: string;
-	install_hint: string;
-	output_format: "text" | "json" | "stream-json";
-	supports_resume: boolean;
-	session_capable: boolean;
-	supports_fork: boolean;
-	fork_reuses_cache: boolean;
-	modes: ModeInfo[];
-	supports_native_schema: boolean;
-	supports_reasoning: boolean;
-	sync_file: string | null;
-	supports_allowed_tools: boolean;
-	supports_denied_tools: boolean;
-	supports_hooks: boolean;
-	supports_mock_deny: boolean;
-	mock_rewrite: string | null;
-	supports_prompt_stdin: boolean;
-	supports_system_file: boolean;
-	example_command: string[];
-};
-export type Detection = {
-	id: string;
-	bin: string;
-	available: boolean;
-	path: string | null;
-	version: string | null;
-};
 export type OneHarnessOptions = {
 	executable?: string;
 	executableArgs?: readonly string[];
@@ -96,6 +71,8 @@ for (const format of ["int32", "uint", "uint32", "uint64", "uint128"]) {
 ajv.addFormat("double", { type: "number", validate: Number.isFinite });
 const validateRun = ajv.compile(schemas.run_report);
 const validateHistory = ajv.compile(schemas.history_record);
+const validateList = ajv.compile(schemas.list_report);
+const validateDetect = ajv.compile(schemas.detect_report);
 
 function executable(options: OneHarnessOptions): {
 	command: string;
@@ -198,26 +175,22 @@ export class OneHarness {
 
 	async list(): Promise<HarnessInfo[]> {
 		const value = await invokeWith(this.options, ["list", "--compact"]);
-		if (
-			!value ||
-			typeof value !== "object" ||
-			!Array.isArray((value as { harnesses?: unknown }).harnesses)
-		)
-			throw new Error("invalid list response");
-		return (value as { harnesses: HarnessInfo[] }).harnesses;
+		if (!validateList(value))
+			throw new Error(
+				`invalid oneharness list contract: ${ajv.errorsText(validateList.errors)}`,
+			);
+		return (value as unknown as ListReport).harnesses;
 	}
 
 	async detect(harnesses: readonly string[] = []): Promise<Detection[]> {
 		const args = ["detect", "--compact"];
 		pushMany(args, "--harness", harnesses);
 		const value = await invokeWith(this.options, args);
-		if (
-			!value ||
-			typeof value !== "object" ||
-			!Array.isArray((value as { detected?: unknown }).detected)
-		)
-			throw new Error("invalid detect response");
-		return (value as { detected: Detection[] }).detected;
+		if (!validateDetect(value))
+			throw new Error(
+				`invalid oneharness detect contract: ${ajv.errorsText(validateDetect.errors)}`,
+			);
+		return (value as unknown as DetectReport).detected;
 	}
 
 	async history(lookup: HistoryLookup = {}): Promise<HistoryRecord[]> {

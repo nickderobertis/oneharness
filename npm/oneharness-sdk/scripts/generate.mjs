@@ -14,7 +14,7 @@ const bundle = JSON.parse(
 			"run",
 			"-q",
 			"-p",
-			"oneharness-core",
+			"oneharness",
 			"--features",
 			"sdk-schema",
 			"--example",
@@ -31,10 +31,20 @@ const history = await compile(bundle.history_record, "HistoryRecord", {
 	bannerComment: "/* Generated from oneharness-core. Do not edit. */",
 	additionalProperties: false,
 });
+const registry = await compile(bundle.list_report, "ListReport", {
+	bannerComment: "/* Generated from oneharness. Do not edit. */",
+	additionalProperties: false,
+});
+const detection = await compile(bundle.detect_report, "DetectReport", {
+	bannerComment: "/* Generated from oneharness. Do not edit. */",
+	additionalProperties: false,
+});
 const files = {
 	"schemas.json": `${JSON.stringify(bundle, null, 2)}\n`,
 	"contracts.ts": run,
 	"history.ts": history,
+	"registry.ts": registry,
+	"detection.ts": detection,
 };
 let stale = false;
 for (const [name, content] of Object.entries(files)) {

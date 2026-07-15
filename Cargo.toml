@@ -25,9 +25,15 @@ name = "oneharness-mock-harness"
 path = "tests/support/mock_harness.rs"
 required-features = ["mock-harness"]
 
+[[example]]
+name = "generate_sdk_schema"
+required-features = ["sdk-schema"]
+
 [features]
 # Builds the mock harness fixture. Enabled by `just test`/`just check` and CI.
 mock-harness = []
+# Builds the schema generator for the Node SDK's public CLI response contracts.
+sdk-schema = []
 
 # Depended on by path for local builds, with a `version` requirement so the
 # crate is publishable: `cargo publish` rewrites the path dep to this registry
@@ -37,6 +43,7 @@ oneharness-core = { path = "crates/oneharness-core", version = "0.4.4" }
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+schemars = "1"
 
 # Integration tests drive the binaries directly via the cargo-provided
 # CARGO_BIN_EXE_* paths and parse JSON with serde_json (already a dependency),

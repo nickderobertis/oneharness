@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Idempotent, non-blocking setup for fresh interactive coding sessions.
-# llmlint: ignore-file[robust_shell, tool_output_is_signal, boundary_inputs_validated] startup provisioning must log-and-continue, and installs the pinned tool through uv.
+# llmlint: ignore-file[tool_output_is_signal, boundary_inputs_validated] startup provisioning must log-and-continue, and installs the pinned tool through uv.
 set -uo pipefail
 
 readonly JUST_MIN="1.51.0"

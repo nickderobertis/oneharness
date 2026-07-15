@@ -104,21 +104,15 @@ delete consumerEnv.ONEHARNESS_BIN;
 const installedLauncher = resolve(
 	install,
 	"node_modules/.bin",
-	process.platform === "win32" ? "oneharness.cmd" : "oneharness",
+	// Bun uses a native .exe/.bunx bin shim on Windows, not npm's .cmd shim.
+	process.platform === "win32" ? "oneharness.exe" : "oneharness",
 );
 const launcherArgs = ["list", "--compact"];
-const launcherOutput =
-	process.platform === "win32"
-		? execFileSync(
-				process.env.ComSpec ?? "cmd.exe",
-				["/d", "/s", "/c", installedLauncher, ...launcherArgs],
-				{ cwd: install, env: consumerEnv, encoding: "utf8" },
-			)
-		: execFileSync(installedLauncher, launcherArgs, {
-				cwd: install,
-				env: consumerEnv,
-				encoding: "utf8",
-			});
+const launcherOutput = execFileSync(installedLauncher, launcherArgs, {
+	cwd: install,
+	env: consumerEnv,
+	encoding: "utf8",
+});
 const list = JSON.parse(launcherOutput);
 if (!list.harnesses?.some(({ id }) => id === "claude-code")) {
 	throw new Error(`installed launcher returned an invalid list: ${launcherOutput}`);

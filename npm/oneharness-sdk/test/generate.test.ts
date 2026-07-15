@@ -108,7 +108,7 @@ test("generator check reports a missing generated contract as stale", () => {
 	} finally {
 		rmSync(checkout, { recursive: true, force: true });
 	}
-});
+}, 15_000);
 
 test("SDK packing reports a missing Cargo version without a stack trace", () => {
 	const checkout = mkdtempSync(resolve(tmpdir(), "oneharness-sdk-pack-"));

@@ -38,7 +38,7 @@ publish_if_missing() {
     404)
       if ! output="$(cargo publish --locked --manifest-path "$manifest" 2>&1)"; then
         printf '%s\n' "$output" >&2
-        fail "cargo could not publish $package $version"
+        fail "cargo could not publish $package $version; fix the reported authentication or manifest error, then retry the release"
       fi
       ;;
     *)

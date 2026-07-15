@@ -41,7 +41,7 @@ for package in "$@"; do
   elif grep -Eq 'E404|404 Not Found' "$work/view-error"; then
     if ! npm publish "$package" --access public >"$work/publish-output" 2>&1; then
       cat "$work/publish-output" >&2
-      fail "npm could not publish '$identity'"
+      fail "npm could not publish '$identity'; fix the reported authentication or package error, then retry the release"
     fi
   else
     cat "$work/view-error" >&2

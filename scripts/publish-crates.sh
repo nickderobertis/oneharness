@@ -26,7 +26,7 @@ manifest_version() {
 }
 
 publish_if_missing() {
-  local manifest="$1" package="$2" version="$3" status
+  local manifest="$1" package="$2" version="$3" status output
   if ! status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
     "https://crates.io/api/v1/crates/${package}/${version}")"; then
     fail "could not query crates.io for $package $version; retry when the registry is reachable"
@@ -36,7 +36,10 @@ publish_if_missing() {
     200)
       ;;
     404)
-      cargo publish --locked --manifest-path "$manifest"
+      if ! output="$(cargo publish --locked --manifest-path "$manifest" 2>&1)"; then
+        printf '%s\n' "$output" >&2
+        fail "cargo could not publish $package $version"
+      fi
       ;;
     *)
       fail "crates.io returned HTTP $status for $package $version; retry after the registry recovers"

@@ -39,7 +39,10 @@ for package in "$@"; do
   if npm view "$identity" version >/dev/null 2>"$work/view-error"; then
     printf 'publish-npm: %s already exists; skipping\n' "$identity"
   elif grep -Eq 'E404|404 Not Found' "$work/view-error"; then
-    npm publish "$package" --access public
+    if ! npm publish "$package" --access public >"$work/publish-output" 2>&1; then
+      cat "$work/publish-output" >&2
+      fail "npm could not publish '$identity'"
+    fi
   else
     cat "$work/view-error" >&2
     fail "cannot query '$identity'; retry when the npm registry is reachable"

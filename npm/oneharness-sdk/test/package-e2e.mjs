@@ -37,11 +37,11 @@ writeFileSync(
 	resolve(install, "consume.mjs"),
 	`import { OneHarness } from "@oneharness/sdk";
 const executable = process.env.ONEHARNESS_TEST_BIN;
-const paidProvider = process.env.ONEHARNESS_TEST_MOCK;
-if (!executable || !paidProvider) throw new Error("package e2e requires ONEHARNESS_TEST_BIN and ONEHARNESS_TEST_MOCK");
+const mockProvider = process.env.ONEHARNESS_TEST_MOCK;
+if (!executable || !mockProvider) throw new Error("package e2e requires ONEHARNESS_TEST_BIN and ONEHARNESS_TEST_MOCK");
 const sdk = new OneHarness({ executable, env: { ONEHARNESS_NO_CONFIG: "1" } });
 // llmlint: ignore-block[e2e_not_mocked] this packaged-user test crosses the real Node package -> SDK -> built CLI -> oneharness subprocess boundary; only the paid Claude model is replaced through oneharness's deterministic provider seam.
-const report = await sdk.run({ prompt: "installed package", harnesses: ["claude-code"], mode: "bypass", env: { MOCK_STDOUT: '{"result":"installed sdk works"}' }, bins: { "claude-code": paidProvider } });
+const report = await sdk.run({ prompt: "installed package", harnesses: ["claude-code"], mode: "bypass", env: { MOCK_STDOUT: '{"result":"installed sdk works"}' }, bins: { "claude-code": mockProvider } });
 // llmlint: ignore-end[e2e_not_mocked]
 if (report.results[0]?.text !== "installed sdk works") throw new Error(JSON.stringify(report));
 `,

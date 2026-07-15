@@ -967,8 +967,8 @@ fn setup_mock(
         Ok(text)
     };
     let exe = embed(&exe)?;
-    let rules_str = rules_abs.as_deref().map(&embed).transpose()?;
-    let spy_str = spy_abs.as_deref().map(&embed).transpose()?;
+    let rules_str = rules_abs.as_deref().map(embed).transpose()?;
+    let spy_str = spy_abs.as_deref().map(embed).transpose()?;
 
     let mut wiring = MockWiring {
         extra_args: std::collections::HashMap::new(),

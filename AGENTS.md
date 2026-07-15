@@ -233,8 +233,8 @@ aren't re-litigated each session:
   versioning — see *Releasing* — driven directly with a `RELEASE_PLZ_TOKEN` PAT,
   reversing the earlier "hand-versioned only" choice.)
 - **crates.io publish** (*now enabled* — reversing the earlier "distribute the
-  binary via GitHub Releases / `cargo install --git` only" choice). release-plz
-  runs `cargo publish` on release for **both** crates in dependency order
+  binary via GitHub Releases / `cargo install --git` only" choice). The tag's
+  `release.yml` runs idempotent `cargo publish` for **both** crates in dependency order
   (`oneharness-core` then the `oneharness` binary), so a release ships via
   crates.io *and* the GitHub Release binaries *and* `git`. Publishing the binary
   forces the engine onto crates.io too: a path dependency must resolve to a
@@ -724,8 +724,8 @@ shape. When you add one:
 - **Manual fallback.** Creating a GitHub Release by hand (the UI, or
   `gh release create vX.Y.Z`) fires the same `release: published` event and builds
   the binaries — use it only if the automation is wedged. It does NOT publish to
-  crates.io (only `release-plz release` does); run `cargo publish` by hand if a
-  crates.io version is missing. Never publish by editing a release mid-flight.
+  crates.io through the same idempotent `release.yml` publish job. Never publish
+  by editing a release mid-flight.
 - The JSON `schema_version` is independent of the crate version: bump it only when
   the report shape changes incompatibly, and document it in the changelog.
 

@@ -63,7 +63,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.86.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -73,6 +73,25 @@ jobs:
       - run: just lint
       - run: just lint-sh
       - run: just test
+
+  publish-crates:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.86.0
+      - name: Publish crates in dependency order, idempotently
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          core_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' crates/oneharness-core/Cargo.toml | head -n1)"
+          cli_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
+          if ! curl -fsS "https://crates.io/api/v1/crates/oneharness-core/${core_version}" >/dev/null; then
+            cargo publish --locked --manifest-path crates/oneharness-core/Cargo.toml
+          fi
+          if ! curl -fsS "https://crates.io/api/v1/crates/oneharness/${cli_version}" >/dev/null; then
+            cargo publish --locked
+          fi
 
   upload:
     name: upload (${{ matrix.target }})
@@ -333,7 +352,7 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.86.0
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -358,7 +377,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.86.0
       - uses: oven-sh/setup-bun@v2
       - run: bun install --cwd npm/oneharness-sdk --frozen-lockfile
       - run: bun run --cwd npm/oneharness-sdk generate:check

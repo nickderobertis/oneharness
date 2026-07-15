@@ -12,6 +12,7 @@ FEATURES := "mock-harness"
 # Minimum line coverage the gate enforces. The skill's default is 95%; see
 # AGENTS.md "Tests are context engineering" for why this is a hard gate.
 COVERAGE_MIN := "95"
+COVERAGE_LINKER := justfile_directory() / "scripts/coverage-linker.sh"
 
 # List available recipes.
 default:
@@ -89,9 +90,9 @@ coverage:
         exit 0
     fi
     if command -v cargo-nextest >/dev/null 2>&1; then
-        cargo llvm-cov nextest --workspace --features {{FEATURES}} --locked --fail-under-lines {{COVERAGE_MIN}}
+        RUSTFLAGS="${RUSTFLAGS:-} -C linker={{COVERAGE_LINKER}}" cargo llvm-cov nextest --workspace --features {{FEATURES}} --locked --fail-under-lines {{COVERAGE_MIN}}
     else
-        cargo llvm-cov --workspace --features {{FEATURES}} --locked --fail-under-lines {{COVERAGE_MIN}}
+        RUSTFLAGS="${RUSTFLAGS:-} -C linker={{COVERAGE_LINKER}}" cargo llvm-cov --workspace --features {{FEATURES}} --locked --fail-under-lines {{COVERAGE_MIN}}
     fi
 
 # Browsable coverage report (kept out of the gate; opens uncovered lines per file).
@@ -131,7 +132,9 @@ npm-e2e: build
 # Advisory + license audit. Separate from `check`: needs a network advisory DB.
 deps-check:
     if ! command -v cargo-deny >/dev/null 2>&1; then echo "cargo-deny not installed: cargo install cargo-deny --locked" >&2; exit 1; fi
+    if ! command -v cargo-machete >/dev/null 2>&1; then echo "cargo-machete not installed: cargo install cargo-machete --locked" >&2; exit 1; fi
     cargo deny check
+    cargo machete
 
 # Upgrade dependencies, then re-run the full gate.
 upgrade:

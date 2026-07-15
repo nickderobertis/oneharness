@@ -2,7 +2,7 @@
 name = "oneharness-core"
 version = "0.4.4"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.86"
 description = "Reusable engine behind the oneharness CLI: harness registry, hook rendering/installation, and harness config sync."
 license = "MIT"
 repository = "https://github.com/nickderobertis/oneharness"

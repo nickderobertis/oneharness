@@ -1473,6 +1473,7 @@ writes the changelog. That PR auto-merges once the gate is green, then release-p
    [crates.io](https://crates.io/crates/oneharness);
 2. tags `vX.Y.Z` and cuts the GitHub Release;
 3. that Release fires `.github/workflows/release.yml`, which re-runs the gate,
+   publishes both Cargo crates idempotently in dependency order,
    attaches archived, sha256-checksummed binaries for Linux, macOS, and Windows,
    signs each archive with a keyless Sigstore build-provenance attestation and
    publishes its `.sigstore.json` bundle (see
@@ -1510,8 +1511,8 @@ the `@oneharness` scope).
 Two repo secrets gate the automation (the workflow no-ops until both are set):
 `RELEASE_PLZ_TOKEN` (a PAT with `contents: write` + `pull-requests: write`) and
 `CARGO_REGISTRY_TOKEN` (a crates.io API token). Creating a GitHub Release by hand
-(`gh release create vX.Y.Z`) is the supported fallback for the binaries if the
-automation is wedged, but it does **not** publish to crates.io.
+(`gh release create vX.Y.Z`) is the supported fallback if the automation is
+wedged; it triggers the same idempotent registry publication and artifact jobs.
 
 ## License
 

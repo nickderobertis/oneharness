@@ -18,7 +18,7 @@
 # that tags and cuts the GitHub Release. crates.io publishing is additive: the
 # binary is still distributed via GitHub Releases and `cargo install --git`.
 # The publish needs a CARGO_REGISTRY_TOKEN secret (see release-plz.yml).
-publish = true
+publish = false
 
 # Only release on release-worthy conventional commits. Without this, release-plz
 # treats every commit as eligible, so generated `chore(...): release v...`

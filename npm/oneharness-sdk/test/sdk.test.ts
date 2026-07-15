@@ -23,6 +23,26 @@ describe("OneHarness", () => {
 		});
 		expect(report.results[0]?.text).toBe("hello from sdk");
 		expect(report.results[0]?.usage.input_tokens).toBeNull();
+
+		const traced = await sdk.run({
+			prompt: "sdk trace",
+			harnesses: ["claude-code"],
+			mode: "bypass",
+			events: true,
+			env: {
+				MOCK_STDOUT: [
+					'{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo hi"}}]}}',
+					'{"type":"result","result":"done","usage":{"input_tokens":0,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":2}}',
+				].join("\n"),
+			},
+			bins: { "claude-code": mock },
+		});
+		expect(traced.results[0]?.usage.input_tokens).toBe(0);
+		expect(traced.results[0]?.usage.cache_read_tokens).toBe(0);
+		expect(traced.results[0]?.events?.[0]?.name).toBe("Bash");
+		expect(traced.results[0]?.events?.[0]?.input).toEqual({
+			command: "echo hi",
+		});
 	});
 
 	test("lists and detects the open harness registry", async () => {

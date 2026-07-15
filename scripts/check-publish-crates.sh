@@ -25,6 +25,10 @@ case "$1" in
     ;;
   publish)
     printf '%s\n' "$*" >>"$PUBLISH_LOG"
+    if [ "${PUBLISH_FAILURE:-}" = cargo ]; then
+      echo 'simulated cargo publish failure' >&2
+      exit 101
+    fi
     ;;
   *) exit 2 ;;
 esac
@@ -51,7 +55,7 @@ export PUBLISH_LOG="$work/published"
 
 reset_case() {
   : >"$PUBLISH_LOG"
-  unset CORE_VERSION CLI_VERSION GITHUB_REF_NAME PKGID_FAILURE
+  unset CORE_VERSION CLI_VERSION GITHUB_REF_NAME PKGID_FAILURE PUBLISH_FAILURE
   export CORE_HTTP=200 CLI_HTTP=200
 }
 
@@ -114,6 +118,13 @@ expect_publish_log 'publish --locked --manifest-path Cargo.toml'
 reset_case
 CORE_HTTP=404 CLI_HTTP=404 scripts/publish-crates.sh
 expect_publish_order
+
+reset_case
+expect_failure "publish-crates: cargo could not publish oneharness-core 0.4.4" env CORE_HTTP=404 PUBLISH_FAILURE=cargo scripts/publish-crates.sh
+grep -Fq 'simulated cargo publish failure' "$work/stderr" || {
+  echo 'check-publish-crates: cargo publish failure output was hidden' >&2
+  exit 1
+}
 
 reset_case
 expect_failure "release tag 'v9.9.9' does not match" env GITHUB_REF_NAME=v9.9.9 scripts/publish-crates.sh

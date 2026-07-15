@@ -17,8 +17,8 @@ require_line() {
 }
 
 # rust-toolchain.toml is canonical. Cargo requires an MSRV in each publishable
-# manifest and the setup action requires a literal ref, so validate those forced
-# copies against the canonical channel.
+# manifest, while actions-rust-lang/setup-rust-toolchain reads the committed
+# toolchain file directly.
 toolchain="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)"
 if ! [[ "$toolchain" =~ ^[0-9]+\.[0-9]+\.0$ ]]; then
   fail "rust-toolchain.toml must contain one stable x.y.0 channel"
@@ -29,11 +29,13 @@ else
     [ "$declared" = "$msrv" ] || fail "$manifest rust-version '$declared' must match canonical toolchain '$toolchain'"
   done
 
-  while IFS=: read -r file line rest; do
-    pin="${rest##*@}"
-    [ "$pin" = "$toolchain" ] || fail "$file:$line rust-toolchain pin '$pin' must match '$toolchain'"
-  done < <(grep -nH 'uses: dtolnay/rust-toolchain@' .github/workflows/*.yml)
 fi
+if grep -q 'dtolnay/rust-toolchain@' .github/workflows/*.yml; then
+  fail "workflows must read rust-toolchain.toml through actions-rust-lang/setup-rust-toolchain"
+fi
+for workflow in .github/workflows/ci.yml .github/workflows/e2e-*.yml .github/workflows/release-plz.yml .github/workflows/release.yml; do
+  require_line "$workflow" 'uses: actions-rust-lang/setup-rust-toolchain@v1' "install Rust from rust-toolchain.toml"
+done
 
 # Tagging and release-PR creation must share one guarded workflow and one
 # release-plz version. The published Release then enters the complete project
@@ -55,6 +57,8 @@ require_line .github/workflows/release.yml 'types: [published]' "start distribut
 require_line .github/workflows/release.yml 'run: just check' "run the complete repository gate before publishing"
 require_line .github/workflows/release.yml 'run: scripts/publish-crates.sh' "use the validated crates.io publisher"
 require_line .github/workflows/release.yml 'run: just sdk-check' "use the Node SDK command surface"
+require_line .github/workflows/ci.yml 'run: just deps-check' "use the dependency-audit command surface"
+require_line .github/workflows/ci.yml 'run: scripts/check-pr-title.sh' "validate the release-driving PR title"
 if grep -qE 'run: just (lint|lint-sh|test)$|run: bun run --cwd npm/oneharness-sdk (generate:check|build)$' .github/workflows/release.yml; then
   fail "release.yml must use just check/sdk-check instead of re-listing their stages"
 fi

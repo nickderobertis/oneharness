@@ -93,8 +93,8 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.RELEASE_PLZ_TOKEN }}
 
-      - uses: dtolnay/rust-toolchain@1.86.0
-      - uses: Swatinem/rust-cache@v2
+      # Reads the pinned channel + components from rust-toolchain.toml.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
 
       - name: Install release-plz
         run: |

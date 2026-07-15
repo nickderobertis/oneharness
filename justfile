@@ -63,9 +63,11 @@ lint-sh:
 # Drift gates for the live-e2e matrix, Rust toolchain, and release lifecycle,
 # plus the hermetic behavioral test of the idempotent crates.io publisher.
 lint-workflows:
+    bash scripts/check-pr-title-e2e.sh
     bash scripts/check-e2e-matrix.sh
     bash scripts/check-workflows.sh
-    bash scripts/publish-crates-e2e.sh
+    bash scripts/check-publish-crates.sh
+    bash scripts/check-publish-npm.sh
 
 # Run the test suite across the workspace (core unit tests + binary unit and
 # integration tests; prefers nextest, falls back to cargo test).

@@ -62,14 +62,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.86.0
-        with:
-          components: rustfmt, clippy, llvm-tools-preview
+      # Reads the pinned channel + components from rust-toolchain.toml.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
       - uses: oven-sh/setup-bun@v2
-      - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
           tool: just,nextest,cargo-llvm-cov,shellcheck
@@ -81,7 +79,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.86.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Publish crates in dependency order, idempotently
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -185,8 +183,9 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
         run: |
-          tag="${{ github.event.release.tag_name }}"
+          tag="$TAG"
           target="x86_64-unknown-linux-gnu"
           base="oneharness-${tag}-${target}"
           # No checkout here, so gh cannot infer the repo from git — name it.
@@ -346,7 +345,7 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.86.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -371,7 +370,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.86.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: oven-sh/setup-bun@v2
       - uses: taiki-e/install-action@v2
         with:
@@ -427,14 +426,12 @@ jobs:
           # treats a bare `dir/file.tgz` as a `user/repo` GitHub spec (and tries to
           # git-clone it), not a local tarball — an absolute path is unambiguous.
           for tgz in "$GITHUB_WORKSPACE"/npm-artifacts/*.tgz; do
-            echo "publishing $tgz"
-            npm publish "$tgz" --access public
+            scripts/publish-npm.sh "$tgz"
           done
           # Build and publish the launcher (oneharness-cli). It carries no binary,
           # so it needs no prebuilt target — just the version-stamped manifest.
           launcher="$(node scripts/npm-build.mjs launcher --out npm/dist)"
-          (cd "$launcher" && npm publish --access public)
-          npm publish "$GITHUB_WORKSPACE"/sdk-artifact/*.tgz --access public
+          scripts/publish-npm.sh "$launcher" "$GITHUB_WORKSPACE"/sdk-artifact/*.tgz
 
   # Post-publish gate: prove the just-published CLI and SDK are installable from
   # npm. Registry propagation is not instant, so poll until both resolve, then

@@ -6,7 +6,12 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cargo = readFileSync(resolve(root, "Cargo.toml"), "utf8");
 const version = cargo.match(/\[package\][\s\S]*?^version\s*=\s*"([^"]+)"/m)?.[1];
-if (!version) throw new Error("could not read Cargo package version");
+if (!version) {
+  console.error(
+    "sdk-pack: Cargo.toml has no [package] version; restore the root manifest before packing the SDK",
+  );
+  process.exit(1);
+}
 const source = resolve(root, "npm/oneharness-sdk");
 const output = resolve(root, "npm/dist/sdk");
 rmSync(output, { recursive: true, force: true });

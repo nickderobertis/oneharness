@@ -113,7 +113,7 @@ impl PermissionMode {
 
 /// How a harness honors one [`PermissionMode`] in a *headless* run — the
 /// classification that lets oneharness refuse a hang instead of waiting it out.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum ModeHeadless {
     /// Never blocks: the harness denies-and-continues, fails closed, or runs

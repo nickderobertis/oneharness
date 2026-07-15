@@ -5,11 +5,12 @@ name: Release
 #
 # The Release itself is created by release-plz (see release-plz.yml) when a
 # version-bump PR merges. Because release-plz uses a PAT, that Release fires the
-# `release: published` event below; this workflow then re-gates on the test suite
-# and uploads the archives + checksums. Creating a Release by hand in the GitHub
-# UI is the supported manual fallback — it triggers the same event.
+# `release: published` event below; this workflow then re-gates on the complete
+# project gate, publishes the crates idempotently, and uploads the archives +
+# checksums. Creating a Release by hand in the GitHub UI is the supported manual
+# fallback — it triggers the same validated path.
 #
-#   * test               — the deterministic gate (lint + shellcheck + tests),
+#   * test               — the complete deterministic project gate,
 #                           so untested artifacts never publish.
 #   * upload             — build each target on a native runner, attach the
 #                           archive + sha256 checksum, sign a keyless Sigstore
@@ -40,8 +41,6 @@ name: Release
 #                           platform packages first, then the launcher.
 #   * verify-npm         — prove the just-published version is npm-installable.
 #
-# crates.io publishing stays in release-plz (release-plz.yml), not here.
-
 on:
   release:
     types: [published]
@@ -65,14 +64,17 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.86.0
         with:
-          components: clippy
+          components: rustfmt, clippy, llvm-tools-preview
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: just,nextest,shellcheck
-      - run: just lint
-      - run: just lint-sh
-      - run: just test
+          tool: just,nextest,cargo-llvm-cov,shellcheck
+      - run: just bootstrap
+      - run: just check
 
   publish-crates:
     needs: test
@@ -83,15 +85,7 @@ jobs:
       - name: Publish crates in dependency order, idempotently
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          core_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' crates/oneharness-core/Cargo.toml | head -n1)"
-          cli_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
-          if ! curl -fsS "https://crates.io/api/v1/crates/oneharness-core/${core_version}" >/dev/null; then
-            cargo publish --locked --manifest-path crates/oneharness-core/Cargo.toml
-          fi
-          if ! curl -fsS "https://crates.io/api/v1/crates/oneharness/${cli_version}" >/dev/null; then
-            cargo publish --locked
-          fi
+        run: scripts/publish-crates.sh
 
   upload:
     name: upload (${{ matrix.target }})
@@ -379,9 +373,11 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.86.0
       - uses: oven-sh/setup-bun@v2
-      - run: bun install --cwd npm/oneharness-sdk --frozen-lockfile
-      - run: bun run --cwd npm/oneharness-sdk generate:check
-      - run: bun run --cwd npm/oneharness-sdk build
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: just bootstrap
+      - run: just sdk-check
       - name: Pack the version-synchronized SDK
         run: |
           pkgdir="$(node scripts/sdk-pack.mjs)"

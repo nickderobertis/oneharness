@@ -15,10 +15,10 @@ use oneharness_core::errors::OneharnessError;
 /// unsupported for it (a `--mode` request would be refused).
 #[derive(JsonSchema, Serialize)]
 pub struct ModeInfo {
-    mode: &'static str,
+    mode: PermissionMode,
     /// `"clean"` (never blocks headless) or `"hangs"` (would block on an
     /// approval prompt; refused without --permit-prompts).
-    headless: &'static str,
+    headless: ModeHeadless,
 }
 
 #[derive(JsonSchema, Serialize)]
@@ -123,11 +123,8 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                     .modes
                     .iter()
                     .map(|m| ModeInfo {
-                        mode: m.mode.as_str(),
-                        headless: match m.headless {
-                            ModeHeadless::Clean => "clean",
-                            ModeHeadless::Hangs => "hangs",
-                        },
+                        mode: m.mode,
+                        headless: m.headless,
                     })
                     .collect(),
                 supports_native_schema: spec.native_schema.is_some(),

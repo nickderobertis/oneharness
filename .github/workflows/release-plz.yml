@@ -3,7 +3,8 @@ name: Release-plz
 # Conventional-commit release automation, mirroring the proven setup in
 # nickderobertis/allowlister. On every push to main:
 #   * release     — if a merged version-bump PR left Cargo.toml at a version with
-#                   no tag yet, tag vX.Y.Z and cut the GitHub Release.
+#                   no tag yet, tag vX.Y.Z and cut the GitHub Release. The
+#                   release event runs the validated crates.io publisher.
 #   * release-pr  — open/update a "release vX.Y.Z" PR that bumps the version and
 #                   writes the CHANGELOG for the commits since the last release.
 #   * auto-merge  — enable auto-merge on that PR so it merges once the required
@@ -19,10 +20,9 @@ name: Release-plz
 #   * RELEASE_PLZ_TOKEN — a PAT (contents:write + pull-requests:write), NOT the
 #     default GITHUB_TOKEN: a tag or release created by GITHUB_TOKEN does NOT
 #     trigger other workflows, so release.yml would never build the binaries.
-#   * CARGO_REGISTRY_TOKEN — a crates.io API token; `release` runs `cargo publish`
-#     for both crates, so without it a release would hard-fail mid-run (after
-#     publishing the engine but before the binary). Requiring it up front keeps
-#     releases all-or-nothing instead of leaving a partial publish behind.
+#   * CARGO_REGISTRY_TOKEN — a crates.io API token used by the downstream
+#     release workflow. Requiring it before tagging prevents a GitHub Release
+#     whose crates cannot be published.
 # Until both are set, the guard keeps this workflow dormant instead of failing
 # on every push to main.
 #
@@ -117,6 +117,14 @@ jobs:
             echo "No release tag yet; the first release uses the current version."
           fi
 
+      # Workspace publishing is disabled in release-plz.toml: this step owns the
+      # tag + GitHub Release, whose event runs release.yml's validated,
+      # idempotent crates.io publisher and the other distribution jobs.
+      - name: Tag and cut the GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+        run: release-plz release --git-token "$GITHUB_TOKEN"
+
       - name: Open or update the release PR
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
@@ -124,8 +132,8 @@ jobs:
 
       # Enable GitHub auto-merge on the release PR so it merges itself once the
       # required status checks (the deterministic gate) pass. That merge
-      # re-triggers the `release` step above, which tags vX.Y.Z and cuts the
-      # Release — no manual merge, no gating skipped.
+      # re-triggers this workflow, whose release step above tags vX.Y.Z and cuts
+      # the Release — no manual merge, no gating skipped.
       - name: Auto-merge the release PR when the gate is green
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}

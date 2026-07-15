@@ -1466,14 +1466,12 @@ by [release-plz](https://release-plz.dev) — do not hand-bump the version or
 `CHANGELOG.md`. Land commits on `main` (`feat` → minor, `fix`/`perf` → patch,
 `!`/`BREAKING` → major; `docs`/`test`/`chore`/`ci` do not release), and
 release-plz opens a `release vX.Y.Z` PR that bumps `Cargo.toml`/`Cargo.lock` and
-writes the changelog. That PR auto-merges once the gate is green, then release-plz:
+writes the changelog. That PR auto-merges once the gate is green, then:
 
-1. runs `cargo publish` for **both crates** — `oneharness-core` first, then the
-   `oneharness` binary that depends on it — so they land on
-   [crates.io](https://crates.io/crates/oneharness);
-2. tags `vX.Y.Z` and cuts the GitHub Release;
-3. that Release fires `.github/workflows/release.yml`, which re-runs the gate,
-   publishes both Cargo crates idempotently in dependency order,
+1. release-plz tags `vX.Y.Z` and cuts the GitHub Release;
+2. that Release fires `.github/workflows/release.yml`, which re-runs the complete
+   gate, publishes both Cargo crates idempotently in dependency order
+   (`oneharness-core` first, then the `oneharness` binary that depends on it),
    attaches archived, sha256-checksummed binaries for Linux, macOS, and Windows,
    signs each archive with a keyless Sigstore build-provenance attestation and
    publishes its `.sigstore.json` bundle (see

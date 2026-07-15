@@ -1,3 +1,7 @@
 # Shell scripts must stay LF, or Windows checkout (core.autocrlf=true) rewrites
 # them to CRLF — which breaks `bash scripts/*.sh` and trips shellcheck (SC1017).
 *.sh text eol=lf
+
+# The SDK drift gate compares generated contracts byte-for-byte. Keep their
+# checkout bytes identical to the generator's canonical LF output on Windows.
+/npm/oneharness-sdk/src/generated/* text eol=lf

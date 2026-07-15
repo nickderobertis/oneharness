@@ -1,18 +1,30 @@
 import { expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../../..");
-const generatedDirectory = "npm/oneharness-sdk/src/generated";
+const sdkDirectory = "npm/oneharness-sdk";
+const generatedDirectory = `${sdkDirectory}/src/generated`;
+const lfSdkFile = /\.(?:m?js|ts|json)$/u;
 
-test("generated contracts stay LF under Windows checkout semantics", () => {
+test("SDK inputs stay LF under Windows checkout semantics", () => {
 	const checkout = mkdtempSync(resolve(tmpdir(), "oneharness-sdk-checkout-"));
-	const generated = readdirSync(resolve(root, generatedDirectory)).map(
-		(name) => `${generatedDirectory}/${name}`,
+	const checkoutInputs = execFileSync("git", ["ls-files", "--", sdkDirectory], {
+		cwd: root,
+		encoding: "utf8",
+	})
+		.trimEnd()
+		.split("\n")
+		.filter((path) => lfSdkFile.test(path));
+	const generated = checkoutInputs.filter((path) =>
+		path.startsWith(`${generatedDirectory}/`),
+	);
+	const authored = checkoutInputs.filter(
+		(path) => !path.startsWith(`${generatedDirectory}/`),
 	);
 
 	try {
@@ -26,12 +38,14 @@ test("generated contracts stay LF under Windows checkout semantics", () => {
 				"checkout-index",
 				`--prefix=${checkout.replaceAll("\\", "/")}/`,
 				"--",
-				...generated,
+				...checkoutInputs,
 			],
 			{ cwd: root },
 		);
 
-		for (const path of generated) {
+		expect(generated.length).toBeGreaterThan(0);
+		expect(authored.length).toBeGreaterThan(0);
+		for (const path of checkoutInputs) {
 			const content = readFileSync(resolve(checkout, path));
 			expect(content.includes(Buffer.from("\r\n"))).toBe(false);
 			expect(content.at(-1)).toBe("\n".charCodeAt(0));

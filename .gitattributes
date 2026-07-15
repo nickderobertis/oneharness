@@ -2,6 +2,10 @@
 # them to CRLF — which breaks `bash scripts/*.sh` and trips shellcheck (SC1017).
 *.sh text eol=lf
 
-# The SDK drift gate compares generated contracts byte-for-byte. Keep their
-# checkout bytes identical to the generator's canonical LF output on Windows.
-/npm/oneharness-sdk/src/generated/* text eol=lf
+# The SDK drift gate compares generated contracts byte-for-byte, and Biome
+# formats authored SDK sources as LF. Keep those scoped text formats identical
+# on Windows without changing checkout semantics for the rest of the repo.
+/npm/oneharness-sdk/**/*.ts text eol=lf
+/npm/oneharness-sdk/**/*.js text eol=lf
+/npm/oneharness-sdk/**/*.mjs text eol=lf
+/npm/oneharness-sdk/**/*.json text eol=lf

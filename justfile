@@ -66,6 +66,7 @@ lint-workflows:
     bash scripts/check-pr-title-e2e.sh
     bash scripts/check-e2e-matrix.sh
     bash scripts/check-workflows.sh
+    bash scripts/check-workflows-e2e.sh
     bash scripts/check-publish-crates.sh
     bash scripts/check-publish-npm.sh
 

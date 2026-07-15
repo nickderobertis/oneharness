@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
 	copyFileSync,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -69,6 +71,43 @@ test("a missing generated contract is reported as stale", () => {
 		`oneharness-missing-${crypto.randomUUID()}`,
 	);
 	expect(generatedFileMatches(missing, Buffer.from("expected"))).toBe(false);
+});
+
+test("generator check reports a missing generated contract as stale", () => {
+	const checkout = mkdtempSync(resolve(tmpdir(), "oneharness-sdk-generate-"));
+
+	try {
+		execFileSync(
+			"git",
+			["checkout-index", `--prefix=${checkout.replaceAll("\\", "/")}/`, "-a"],
+			{ cwd: root },
+		);
+		symlinkSync(
+			resolve(root, sdkDirectory, "node_modules"),
+			resolve(checkout, sdkDirectory, "node_modules"),
+			process.platform === "win32" ? "junction" : "dir",
+		);
+
+		const missing = resolve(checkout, generatedDirectory, "contracts.ts");
+		rmSync(missing);
+		const result = spawnSync(
+			"node",
+			[`${sdkDirectory}/scripts/generate.mjs`, "--check"],
+			{
+				cwd: checkout,
+				encoding: "utf8",
+				env: { ...process.env, CARGO_TARGET_DIR: resolve(root, "target") },
+			},
+		);
+
+		expect(result.status).toBe(1);
+		expect(result.stderr.trim()).toBe(
+			"generated SDK contracts are stale; run just sdk-generate",
+		);
+		expect(existsSync(missing)).toBe(false);
+	} finally {
+		rmSync(checkout, { recursive: true, force: true });
+	}
 });
 
 test("SDK packing reports a missing Cargo version without a stack trace", () => {

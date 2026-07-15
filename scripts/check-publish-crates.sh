@@ -79,6 +79,17 @@ expect_publish_log() {
   fi
 }
 
+expect_publish_order() {
+  local actual expected
+  actual="$(cat "$PUBLISH_LOG")"
+  expected=$'publish --locked --manifest-path crates/oneharness-core/Cargo.toml\npublish --locked --manifest-path Cargo.toml'
+  if [ "$actual" != "$expected" ]; then
+    printf 'check-publish-crates: expected core then CLI publish; got:\n' >&2
+    cat "$PUBLISH_LOG" >&2
+    exit 1
+  fi
+}
+
 expect_no_publish() {
   local context="$1"
   if [ -s "$PUBLISH_LOG" ]; then
@@ -99,6 +110,10 @@ expect_publish_log 'publish --locked --manifest-path crates/oneharness-core/Carg
 reset_case
 CLI_HTTP=404 scripts/publish-crates.sh
 expect_publish_log 'publish --locked --manifest-path Cargo.toml'
+
+reset_case
+CORE_HTTP=404 CLI_HTTP=404 scripts/publish-crates.sh
+expect_publish_order
 
 reset_case
 expect_failure "release tag 'v9.9.9' does not match" env GITHUB_REF_NAME=v9.9.9 scripts/publish-crates.sh

@@ -18,7 +18,7 @@ trap restore EXIT
 node -e '
   const fs = require("node:fs");
   const path = process.argv[1];
-  const source = fs.readFileSync(path, "utf8");
+  const source = fs.readFileSync(path, "utf8").replaceAll("\r\n", "\n");
   const line = "          if ! [[ \"$tag\" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then\n";
   if (!source.includes(line)) throw new Error("release tag validation fixture is missing");
   fs.writeFileSync(path, source.replace(line, ""));

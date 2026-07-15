@@ -23,12 +23,13 @@ default:
 bootstrap:
     rustup component add rustfmt clippy llvm-tools-preview
     cargo fetch --locked
+    bun install --cwd npm/oneharness-sdk --frozen-lockfile
 
 # Full quality gate: format check, lint (Rust + shell), tests *with enforced
 # coverage*, build, artifact smoke. Fails on any issue. `coverage` re-runs the
 # workspace suite under instrumentation and fails below {{COVERAGE_MIN}}% lines;
 # `test` stays in the gate as the fast, un-instrumented pass/fail signal.
-check: fmt-check lint lint-sh lint-workflows test coverage build smoke
+check: fmt-check lint lint-sh lint-workflows sdk-check test coverage build smoke
     @echo "check: ok"
 
 # Verify formatting without modifying files.
@@ -135,7 +136,22 @@ deps-check:
 # Upgrade dependencies, then re-run the full gate.
 upgrade:
     cargo update
+    bun update --cwd npm/oneharness-sdk
     @just check
+
+# Regenerate TypeScript declarations and runtime schemas from Rust wire types.
+sdk-generate:
+    bun run --cwd npm/oneharness-sdk generate
+
+# Strict Node SDK gate, including the Rust->TypeScript drift check and real CLI e2e.
+sdk-check: build
+    cargo build --features {{FEATURES}} --bin oneharness-mock-harness
+    bun run --cwd npm/oneharness-sdk generate:check
+    bun run --cwd npm/oneharness-sdk format:check
+    bun run --cwd npm/oneharness-sdk lint
+    bun run --cwd npm/oneharness-sdk typecheck
+    bun run --cwd npm/oneharness-sdk test
+    bun run --cwd npm/oneharness-sdk build
 
 # Verbose, install-free diagnostics (kept out of the gate).
 doctor:

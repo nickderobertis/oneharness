@@ -1,0 +1,974 @@
+{
+  "run_report": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "RunReport",
+    "description": "The top-level `run` report written to stdout.",
+    "type": "object",
+    "properties": {
+      "batch": {
+        "description": "Same-prefix batch metadata when this run fanned **one** harness over more\nthan one prompt; `null` on an ordinary run. Its presence is the signal a\nconsumer keys on to read each result's own `prompt`.",
+        "anyOf": [
+          {
+            "$ref": "#/$defs/BatchReport"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "bypass_permissions": {
+        "description": "Back-compat convenience: `true` exactly when `permission_mode` is\n`bypass`. Retained so existing consumers keep working; new consumers\nshould read `permission_mode`.",
+        "type": "boolean"
+      },
+      "config_files": {
+        "description": "Config files that shaped this run, in layering order (user first,\nproject last); empty under `--no-config` or when none exist.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "dry_run": {
+        "type": "boolean"
+      },
+      "fallback": {
+        "description": "Fallback-mode metadata when this run drove the selected harnesses in\npriority order, stopping at the first that ran (`--run-mode fallback`);\n`null` on a parallel run (and under `--print-command`, where nothing\nexecutes). Its presence tells a consumer that `results` holds only the\nharnesses actually *attempted* — the fallen-through ones in order, then\nthe one that ran — not every selected harness.",
+        "anyOf": [
+          {
+            "$ref": "#/$defs/FallbackReport"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "fork": {
+        "description": "Whether the resumed session was forked (`--fork`) rather than appended to.\n`false` unless `--resume` was given with `--fork`.",
+        "type": "boolean"
+      },
+      "history_file": {
+        "description": "The history session file this run streamed normalized records to\n(absolute); `null` when history was not enabled (or under `--print-command`,\nwhere nothing runs). The programmatic handle a consumer captures to read the\nsession back later with `oneharness history show`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "mock_rules": {
+        "description": "The parsed `--mock-rules` ruleset this run was intercepted with; `null`\nwhen no mocking was requested. Present so a consumer can tell a mocked\nrun's report from a clean one without out-of-band state."
+      },
+      "model": {
+        "description": "The effective top-level model: the first of the fan-out `models` list when\none was given, else the single configured/CLI model, else `null`. Each\nresult's own `model` is authoritative on a fan-out run.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "models": {
+        "description": "The model fan-out list this run multiplied over (repeated `--model` /\nconfig `models`), or `null` on an ordinary single-model run. Its presence\nis the signal a consumer keys on to read each result's own `model`: in\n`parallel` mode `results` holds one entry per (harness, model) pair; in\n`fallback` mode the pairs were tried in priority order (harness-major,\nmodel-minor).",
+        "type": [
+          "array",
+          "null"
+        ],
+        "items": {
+          "type": "string"
+        }
+      },
+      "oneharness_version": {
+        "type": "string"
+      },
+      "permission_mode": {
+        "description": "The normalized approval mode requested for this run (see the README\nsupport matrix). Each harness maps it to its own mechanism.",
+        "$ref": "#/$defs/PermissionMode"
+      },
+      "prompt": {
+        "description": "The prompt sent. On an ordinary run this is *the* prompt every result\nshares; on a **batch** run (see `batch`) it repeats the first prompt for\nback-compat, and each result's own `prompt` field is authoritative.",
+        "type": "string"
+      },
+      "results": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/RunResult"
+        }
+      },
+      "resume": {
+        "description": "The session id being continued, when `--resume` was passed; else `null`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "schema": {
+        "description": "The JSON Schema applied to this run (structured output), or `null` when\nnone was requested. Echoed so a consumer sees the exact constraint each\nresult was validated against."
+      },
+      "schema_max_retries": {
+        "description": "Maximum retries allowed per harness under the validate/retry loop; `null`\nwhen no schema was requested.",
+        "type": [
+          "integer",
+          "null"
+        ],
+        "format": "uint32",
+        "minimum": 0
+      },
+      "schema_version": {
+        "type": "string"
+      },
+      "session": {
+        "description": "The uniform session handle in play (`--session <name>`), or `null` when\nnone was requested. Lets a consumer thread one stable name across turns\ninstead of extracting each harness's native session id. Distinct from the\nlow-level `resume` field above, which echoes an explicit `--resume` id.",
+        "anyOf": [
+          {
+            "$ref": "#/$defs/SessionReport"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "spy_file": {
+        "description": "The spy-log path the mock hook appended tool-call records to (absolute);\n`null` when none was requested.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "schema_version",
+      "oneharness_version",
+      "prompt",
+      "fork",
+      "permission_mode",
+      "bypass_permissions",
+      "dry_run",
+      "config_files",
+      "results"
+    ],
+    "$defs": {
+      "ActionEvent": {
+        "description": "One normalized action a harness took, harness-agnostic so a single consumer\nassertion works across harnesses. Every field is always serialized (null when\nabsent) so the shape is stable, mirroring the `usage` contract.",
+        "type": "object",
+        "properties": {
+          "index": {
+            "description": "Position of this event within the run, so \"≤ N tool calls\" and \"did X\nbefore Y\" are expressible from a stable ordering (also array order).",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "input": {
+            "description": "Structured, tool-shaped arguments (the command string, the file path),\nso a consumer asserts on specific args without re-parsing; `null` when the\nevent carries none (e.g. a `tool_result`)."
+          },
+          "kind": {
+            "description": "The kind of event: `tool_call` (the model invoked a tool) or\n`tool_result` (the observation returned to the model). Left open for\nfuture kinds rather than an enum, so a new shape never breaks the field.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Normalized tool name where knowable (e.g. `bash`, `Edit`); `null` for a\n`tool_result`, or when the harness did not name the tool.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "output": {
+            "description": "The result/observation text, when the trace exposes it; `null` otherwise.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "index"
+        ]
+      },
+      "BatchReport": {
+        "description": "Metadata for a same-prefix batch run (one harness, N prompts sharing a\ncacheable prefix). Present on [`RunReport::batch`] only in that mode.",
+        "type": "object",
+        "properties": {
+          "forked": {
+            "description": "Whether the fan-out actually **forked** the warm-up's session to reuse its\ncached prefix (`min-tokens` on a fork-capable harness whose warm-up exposed\na session id). `false` for `speed`, for `min-tokens` on a harness that\ncannot fork, or when the warm-up exposed no session to fork. When `true`,\nthe fan-out results' `command` carries the resume/fork flags and their\n`usage.cache_read_tokens` reflect the reused prefix.",
+            "type": "boolean"
+          },
+          "prompt_count": {
+            "description": "How many prompts were run (equals `results.len()`).",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "strategy": {
+            "description": "How the prompts were scheduled across the parallel runner.",
+            "$ref": "#/$defs/BatchStrategy"
+          }
+        },
+        "required": [
+          "strategy",
+          "prompt_count",
+          "forked"
+        ]
+      },
+      "BatchStrategy": {
+        "description": "How a batch of same-prefix prompts is scheduled across the parallel runner.\nAlso accepted as a CLI value (`--batch-strategy`, parsed in the `oneharness`\nbinary) — the parsing lives there so this core crate stays free of `clap`.",
+        "oneOf": [
+          {
+            "description": "Fire all prompts at once (a single wave): minimum wall-clock. Every call\nmay race to *write* the shared prefix to the provider cache (none exists\nyet), so this optimizes latency, not tokens. The default.",
+            "type": "string",
+            "const": "speed"
+          },
+          {
+            "description": "Warm-then-fan: run one prompt first to *write* the shared prefix to cache,\nwait for it, then fan the rest out concurrently so they *read* the warmed\nprefix instead of each re-writing it. Optimizes cost at some wall-clock\nexpense.",
+            "type": "string",
+            "const": "min-tokens"
+          }
+        ]
+      },
+      "FailureKind": {
+        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `tool_deferred`), so the\nwire shape is unchanged — modeling it as an enum keeps a misspelled or\ninvalid kind unrepresentable and gives every producer/consumer (classifier,\n`is_failure`, the fallback fall-through rule, the report, history) one\ndefinition to share instead of scattered string literals.",
+        "oneOf": [
+          {
+            "description": "Authentication / authorization rejected the request (401/403, missing or\ninvalid credentials).",
+            "type": "string",
+            "const": "auth"
+          },
+          {
+            "description": "Rate limited (429, too many requests) — a transient condition of an\notherwise working, authenticated harness.",
+            "type": "string",
+            "const": "rate_limit"
+          },
+          {
+            "description": "The requested model was not found / is invalid — a configuration mistake.",
+            "type": "string",
+            "const": "model_not_found"
+          },
+          {
+            "description": "Out of quota / credits, or a billing problem — a provisioning failure.",
+            "type": "string",
+            "const": "quota"
+          },
+          {
+            "description": "The harness deferred a builtin tool call instead of executing it, so a\nclean-exit run did no useful work (Claude Code bridge deployments; issue\n#1114). The only kind that can appear on a `status: ok` run.",
+            "type": "string",
+            "const": "tool_deferred"
+          }
+        ]
+      },
+      "FallThrough": {
+        "description": "One candidate a fallback run fell through, with the reason it could not run.",
+        "type": "object",
+        "properties": {
+          "harness": {
+            "description": "Canonical harness id.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Short reason token (`not-installed` / `spawn-error` / `auth` / `quota` /\n`model-not-found` / `rate-limit`).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "harness",
+          "reason"
+        ]
+      },
+      "FallbackReport": {
+        "description": "Metadata for a fallback run (harnesses tried in priority order until one\nruns). Present on [`RunReport::fallback`] only in that mode. The per-harness\ndetail lives in `results`; this block summarizes the outcome so a consumer\nneed not re-derive it from statuses.",
+        "type": "object",
+        "properties": {
+          "fell_through": {
+            "description": "The candidates fallen through because they could not run the task at all,\nin priority order, each with why (`not-installed`, `spawn-error`, `auth`,\n`quota`, and — on a model fan-out — `model-not-found` / `rate-limit`; see\n[`crate::domain::fallback::startup_failure_reason`]).",
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/FallThrough"
+            }
+          },
+          "ran": {
+            "description": "The harness that actually ran the task (the run stopped there), or `null`\nwhen no candidate could run at all — every one was a startup failure.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "fell_through"
+        ]
+      },
+      "OutputFormat": {
+        "description": "How a harness emits its result, which decides how `text` is extracted.\n\nAlso accepted as a CLI value (`--output-format`, parsed in the `oneharness`\nbinary) and a config-file value (`output_format`, via `Deserialize`). The\nCLI parsing lives in the binary so this core crate stays free of `clap`.",
+        "oneOf": [
+          {
+            "description": "Plain text on stdout; `text` is the trimmed stdout.",
+            "type": "string",
+            "const": "text"
+          },
+          {
+            "description": "A single JSON document on stdout.",
+            "type": "string",
+            "const": "json"
+          },
+          {
+            "description": "Line-delimited JSON events on stdout.",
+            "type": "string",
+            "const": "stream-json"
+          }
+        ]
+      },
+      "PermissionMode": {
+        "description": "The unified approval mode, from least to most autonomy. A harness may not\nsupport every value (see [`crate::domain::harness::HarnessSpec::mode`]); the\ncommand layer refuses an unsupported one before spawning, never silently\ndowngrading it.",
+        "oneOf": [
+          {
+            "description": "No mutations — the agent may read but not edit files or run commands —\n*without* the plan workflow: it just does whatever read-only work the task\nallows. Mapped to each harness's strongest per-run no-mutation enforcement\n(Codex's read-only sandbox, Claude's deny rules, Copilot's `--deny-tool`,\nCursor's `ask` mode). The enforced counterpart to [`Self::Plan`].",
+            "type": "string",
+            "const": "read-only"
+          },
+          {
+            "description": "Read and propose only — like [`Self::ReadOnly`], but additionally engages\nthe harness's *plan* workflow: research the task and write a plan rather\nthan act. Supported only where a native plan mode exists (Claude/Qwen/\nCursor/Copilot, OpenCode's `plan` agent); harnesses with no plan workflow\n(Codex, Goose, Crush) reject it — use [`Self::ReadOnly`] for those.",
+            "type": "string",
+            "const": "plan"
+          },
+          {
+            "description": "The harness's normal ask flow, mapped to its cleanest *non-interactive*\nvariant so a headless run never blocks waiting for input (Claude's\n`dontAsk` deny-and-continue, Goose's fail-closed `approve`, Copilot's\nauto-deny). Where no such variant exists the harness's [`ModeHeadless`]\nis [`ModeHeadless::Hangs`].",
+            "type": "string",
+            "const": "default"
+          },
+          {
+            "description": "Auto-approve file edits, still gate shell/commands. (Claude's\n`acceptEdits`, Qwen's `auto-edit`.)",
+            "type": "string",
+            "const": "edit"
+          },
+          {
+            "description": "Auto-approve operations the harness deems safe (a classifier), gate the\nrisky ones. (Claude's `auto`, Qwen's `auto`, Goose's `smart_approve`.)",
+            "type": "string",
+            "const": "auto"
+          },
+          {
+            "description": "Approve everything — no prompts, no gating. The headless default, because\nan unattended agent otherwise hangs on the first approval. Every harness\nsupports it. (Claude's `bypassPermissions`, Codex's\n`--dangerously-bypass-approvals-and-sandbox`, Qwen/Crush `--yolo`, …)",
+            "type": "string",
+            "const": "bypass"
+          }
+        ]
+      },
+      "RunResult": {
+        "description": "One harness's entry in the report.",
+        "type": "object",
+        "properties": {
+          "available": {
+            "description": "Whether that binary was found.",
+            "type": "boolean"
+          },
+          "bin": {
+            "description": "The binary name or path oneharness resolved and would invoke.",
+            "type": "string"
+          },
+          "command": {
+            "description": "The exact argv oneharness built (argv[0] is the binary).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "duration_ms": {
+            "description": "Wall-clock duration of the run; `null` when not executed.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint128",
+            "minimum": 0
+          },
+          "error": {
+            "description": "Human-readable problem + suggested action; `null` on success.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "events": {
+            "description": "Best-effort normalized tool-call / action events the harness took (shell\ncommands, file edits, tool uses), in order — so consumers can assert on\n*behavior*, not just the final `text`. `null` when the harness's output\nexposes no machine-readable trace (a plain-text harness, or Claude Code's\nsingle-document `json` result), distinct from `[]` — an empty array is not\ncurrently emitted; absence is signalled by `null` + a null `events_source`.\nNever fabricated. See [`crate::domain::events`].",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/$defs/ActionEvent"
+            }
+          },
+          "events_source": {
+            "description": "How `events` was recovered (e.g. `json:opencode-parts`,\n`stream-json:content-blocks`), parallel to `text_source`; `null` when no\nevents were found. Lets a consumer tell \"harness doesn't support it\" from\n\"no tools were used.\"",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exit_code": {
+            "description": "Process exit code; `null` when not run, timed out, or signalled.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "failure_kind": {
+            "description": "Best-effort failure reason; `null` when unclassified. Distinct from\n`status`, which records oneharness's relationship to the process. Two\nfamilies: coarse reasons for a non-zero run (`auth`, `rate_limit`,\n`model_not_found`, `quota`), and `tool_deferred` — a run that exited\n*cleanly* but only deferred a builtin tool call instead of executing it\n(Claude Code bridge/managed deployments), so it did no useful work. The\ndeferred case is the only `failure_kind` that can appear on a `status: ok`\nrun, and it also marks the run as failed for exit-code purposes.\nSerialized as its snake_case token (see [`FailureKind`]).",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FailureKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "failure_kind_source": {
+            "description": "Where `failure_kind` was read (`stderr`/`stdout`); `null` when absent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "harness": {
+            "description": "Canonical harness id (e.g. `claude-code`).",
+            "type": "string"
+          },
+          "model": {
+            "description": "The model this result ran with (the value oneharness put on the harness's\nmodel flag), or `null` when no model was requested and the harness used its\nown default. On a **model fan-out** run (`RunReport::models`), this is what\ndistinguishes results that share a harness — each entry is one (harness,\nmodel) pair. The model is also visible in `command`; this field surfaces it\nwithout parsing the argv.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "output_format": {
+            "$ref": "#/$defs/OutputFormat"
+          },
+          "prompt": {
+            "description": "The prompt this result ran, set only on a **batch** run (one harness\nfanned over N prompts), where each result has its own prompt. `null` on an\nordinary run, where the single top-level `prompt` applies to every result.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schema_attempts": {
+            "description": "Structured-output run only: how many times this harness was invoked under\nthe validate/retry loop (1 + retries). `null` when no schema was\nrequested or the harness did not run.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 0
+          },
+          "schema_error": {
+            "description": "Structured-output run only: the validation errors from the final attempt,\njoined for display; `null` when valid or no schema was requested.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schema_valid": {
+            "description": "Structured-output run only: whether `structured` conformed to the schema\non the final attempt. `null` when no schema was requested (or the harness\ndid not run); `false` when a schema was requested but the result never\nconformed (including \"no JSON found\").",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "session_id": {
+            "description": "Best-effort harness session id for continuation; `null` when none is\nexposed. Surfaced for a consumer to thread into `--resume`, and consumed\nby oneharness itself when `--session` is in play (it is captured into the\nsession store to back the uniform handle — see [`RunReport::session`]).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/$defs/Status"
+          },
+          "stderr": {
+            "description": "Raw captured stderr (empty for skipped/planned).",
+            "type": "string"
+          },
+          "stdout": {
+            "description": "Raw captured stdout (empty for skipped/planned).",
+            "type": "string"
+          },
+          "structured": {
+            "description": "Structured-output run only: the JSON value extracted from the final\nanswer and validated against the requested schema. `null` when no schema\nwas requested, or when no JSON value could be extracted. Carries the\nlast-attempted value even when it failed validation, so a consumer can\nsee what the harness produced."
+          },
+          "text": {
+            "description": "Best-effort final assistant text; `null` when extraction is impossible.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text_source": {
+            "description": "How `text` was extracted (e.g. `json:result`, `raw`); `null` when absent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "usage": {
+            "description": "Best-effort token/cost accounting; every field is `null` when the harness\ndoes not report it. Always present so consumers can read a stable shape.",
+            "$ref": "#/$defs/Usage"
+          },
+          "usage_source": {
+            "description": "How `usage` was read (e.g. `json`); `null` when nothing was found.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "harness",
+          "bin",
+          "available",
+          "status",
+          "command",
+          "output_format",
+          "usage",
+          "stdout",
+          "stderr"
+        ]
+      },
+      "SessionPhase": {
+        "description": "Whether a run starts a new named session or continues an existing one.",
+        "oneOf": [
+          {
+            "description": "No stored token yet — the harness runs fresh and its emitted session id is\ncaptured for next time.",
+            "type": "string",
+            "const": "create"
+          },
+          {
+            "description": "A stored token exists — the run resumes it.",
+            "type": "string",
+            "const": "continue"
+          }
+        ]
+      },
+      "SessionReport": {
+        "description": "The uniform session handle for a run (`--session`). Present on\n[`RunReport::session`] only when `--session <name>` was requested.",
+        "type": "object",
+        "properties": {
+          "name": {
+            "description": "The caller's stable handle (`--session <name>`, sanitized for the store).",
+            "type": "string"
+          },
+          "phase": {
+            "description": "Whether this run created the named session (no prior token) or continued\nan existing one.",
+            "$ref": "#/$defs/SessionPhase"
+          },
+          "store_file": {
+            "description": "The session store file backing the handle (absolute); the programmatic\nhandle to the persisted state.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token": {
+            "description": "The harness native token now bound to the name: the id resumed on a\ncontinue, or the id captured on a create. `null` only when a create run\nexposed no session id (the handle then cannot be continued — a warning is\nemitted), or under `--print-command` on a create (nothing ran).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "phase"
+        ]
+      },
+      "Status": {
+        "description": "The outcome of attempting to run one harness.",
+        "oneOf": [
+          {
+            "description": "Spawned and exited 0.",
+            "type": "string",
+            "const": "ok"
+          },
+          {
+            "description": "Spawned and exited non-zero.",
+            "type": "string",
+            "const": "nonzero"
+          },
+          {
+            "description": "Killed after exceeding the per-harness timeout.",
+            "type": "string",
+            "const": "timeout"
+          },
+          {
+            "description": "The binary was resolved but could not be executed.",
+            "type": "string",
+            "const": "spawn-error"
+          },
+          {
+            "description": "The binary was not found, so the harness was not run.",
+            "type": "string",
+            "const": "skipped"
+          },
+          {
+            "description": "`--print-command`: the command was built but not executed.",
+            "type": "string",
+            "const": "planned"
+          }
+        ]
+      },
+      "Usage": {
+        "description": "Normalized token/cost accounting. Every field is best-effort and independently\nnullable: a harness may report tokens but not dollar cost (cost is commonly\nabsent on subscription auth), or report nothing at all (plain-text harnesses).",
+        "type": "object",
+        "properties": {
+          "cache_read_tokens": {
+            "description": "Prompt tokens served from the provider's prompt cache (a cheap read of a\npreviously-written prefix), when the harness reports them. `None` when the\nharness does not surface cache counts — never `0` as a guess.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "cache_write_tokens": {
+            "description": "Prompt tokens written to the provider's prompt cache (a.k.a. cache\ncreation), when the harness reports them. `None` when not surfaced.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "cost_usd": {
+            "description": "Total cost in USD, when the harness reports it (often absent on\nsubscription auth, where there is no per-call dollar figure).",
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "input_tokens": {
+            "description": "Prompt/input tokens billed, when the harness reports them.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "output_tokens": {
+            "description": "Completion/output tokens billed, when the harness reports them.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  },
+  "history_record": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "HistoryRecord",
+    "description": "One harness run, normalized and frozen for the history log. Serialized as one\nJSONL line per harness run, appended as the run finalizes. Carries only the\nnormalized cross-harness signals — no raw stdout/stderr.",
+    "type": "object",
+    "properties": {
+      "duration_ms": {
+        "type": [
+          "integer",
+          "null"
+        ],
+        "format": "uint128",
+        "minimum": 0
+      },
+      "events": {
+        "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
+        "type": [
+          "array",
+          "null"
+        ],
+        "items": {
+          "$ref": "#/$defs/ActionEvent"
+        }
+      },
+      "exit_code": {
+        "type": [
+          "integer",
+          "null"
+        ],
+        "format": "int32"
+      },
+      "failure_kind": {
+        "description": "Best-effort classified failure reason (see [`FailureKind`]); `null` when\nunclassified.",
+        "anyOf": [
+          {
+            "$ref": "#/$defs/FailureKind"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "harness": {
+        "description": "Canonical harness id (e.g. `claude-code`).",
+        "type": "string"
+      },
+      "model": {
+        "description": "The effective top-level model for the run, if any.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "name": {
+        "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
+        "type": "string"
+      },
+      "permission_mode": {
+        "description": "The normalized approval mode requested for the run.",
+        "$ref": "#/$defs/PermissionMode"
+      },
+      "project": {
+        "description": "The project directory the run operated in (the real path, not the\non-disk slug), so the list view can show where a session ran.",
+        "type": "string"
+      },
+      "prompt": {
+        "description": "The prompt this harness run received (its own, on a batch run; else the\nrun's single prompt).",
+        "type": "string"
+      },
+      "schema_version": {
+        "type": "string"
+      },
+      "session": {
+        "description": "The oneharness session id this run belongs to (the history file's stem).",
+        "type": "string"
+      },
+      "session_id": {
+        "description": "The harness's own continuation id, when it exposed one; `null` otherwise.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "status": {
+        "$ref": "#/$defs/Status"
+      },
+      "text": {
+        "description": "Best-effort final assistant text; `null` when extraction was impossible.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "text_source": {
+        "description": "How `text` was extracted; `null` when absent.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "timestamp": {
+        "description": "RFC3339 UTC instant the record was written (append time).",
+        "type": "string"
+      },
+      "usage": {
+        "description": "Best-effort token/cost accounting (every field `null` when unreported).",
+        "$ref": "#/$defs/Usage"
+      }
+    },
+    "required": [
+      "schema_version",
+      "session",
+      "name",
+      "project",
+      "timestamp",
+      "harness",
+      "prompt",
+      "permission_mode",
+      "status",
+      "usage"
+    ],
+    "$defs": {
+      "ActionEvent": {
+        "description": "One normalized action a harness took, harness-agnostic so a single consumer\nassertion works across harnesses. Every field is always serialized (null when\nabsent) so the shape is stable, mirroring the `usage` contract.",
+        "type": "object",
+        "properties": {
+          "index": {
+            "description": "Position of this event within the run, so \"≤ N tool calls\" and \"did X\nbefore Y\" are expressible from a stable ordering (also array order).",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "input": {
+            "description": "Structured, tool-shaped arguments (the command string, the file path),\nso a consumer asserts on specific args without re-parsing; `null` when the\nevent carries none (e.g. a `tool_result`)."
+          },
+          "kind": {
+            "description": "The kind of event: `tool_call` (the model invoked a tool) or\n`tool_result` (the observation returned to the model). Left open for\nfuture kinds rather than an enum, so a new shape never breaks the field.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Normalized tool name where knowable (e.g. `bash`, `Edit`); `null` for a\n`tool_result`, or when the harness did not name the tool.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "output": {
+            "description": "The result/observation text, when the trace exposes it; `null` otherwise.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "index"
+        ]
+      },
+      "FailureKind": {
+        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `tool_deferred`), so the\nwire shape is unchanged — modeling it as an enum keeps a misspelled or\ninvalid kind unrepresentable and gives every producer/consumer (classifier,\n`is_failure`, the fallback fall-through rule, the report, history) one\ndefinition to share instead of scattered string literals.",
+        "oneOf": [
+          {
+            "description": "Authentication / authorization rejected the request (401/403, missing or\ninvalid credentials).",
+            "type": "string",
+            "const": "auth"
+          },
+          {
+            "description": "Rate limited (429, too many requests) — a transient condition of an\notherwise working, authenticated harness.",
+            "type": "string",
+            "const": "rate_limit"
+          },
+          {
+            "description": "The requested model was not found / is invalid — a configuration mistake.",
+            "type": "string",
+            "const": "model_not_found"
+          },
+          {
+            "description": "Out of quota / credits, or a billing problem — a provisioning failure.",
+            "type": "string",
+            "const": "quota"
+          },
+          {
+            "description": "The harness deferred a builtin tool call instead of executing it, so a\nclean-exit run did no useful work (Claude Code bridge deployments; issue\n#1114). The only kind that can appear on a `status: ok` run.",
+            "type": "string",
+            "const": "tool_deferred"
+          }
+        ]
+      },
+      "PermissionMode": {
+        "description": "The unified approval mode, from least to most autonomy. A harness may not\nsupport every value (see [`crate::domain::harness::HarnessSpec::mode`]); the\ncommand layer refuses an unsupported one before spawning, never silently\ndowngrading it.",
+        "oneOf": [
+          {
+            "description": "No mutations — the agent may read but not edit files or run commands —\n*without* the plan workflow: it just does whatever read-only work the task\nallows. Mapped to each harness's strongest per-run no-mutation enforcement\n(Codex's read-only sandbox, Claude's deny rules, Copilot's `--deny-tool`,\nCursor's `ask` mode). The enforced counterpart to [`Self::Plan`].",
+            "type": "string",
+            "const": "read-only"
+          },
+          {
+            "description": "Read and propose only — like [`Self::ReadOnly`], but additionally engages\nthe harness's *plan* workflow: research the task and write a plan rather\nthan act. Supported only where a native plan mode exists (Claude/Qwen/\nCursor/Copilot, OpenCode's `plan` agent); harnesses with no plan workflow\n(Codex, Goose, Crush) reject it — use [`Self::ReadOnly`] for those.",
+            "type": "string",
+            "const": "plan"
+          },
+          {
+            "description": "The harness's normal ask flow, mapped to its cleanest *non-interactive*\nvariant so a headless run never blocks waiting for input (Claude's\n`dontAsk` deny-and-continue, Goose's fail-closed `approve`, Copilot's\nauto-deny). Where no such variant exists the harness's [`ModeHeadless`]\nis [`ModeHeadless::Hangs`].",
+            "type": "string",
+            "const": "default"
+          },
+          {
+            "description": "Auto-approve file edits, still gate shell/commands. (Claude's\n`acceptEdits`, Qwen's `auto-edit`.)",
+            "type": "string",
+            "const": "edit"
+          },
+          {
+            "description": "Auto-approve operations the harness deems safe (a classifier), gate the\nrisky ones. (Claude's `auto`, Qwen's `auto`, Goose's `smart_approve`.)",
+            "type": "string",
+            "const": "auto"
+          },
+          {
+            "description": "Approve everything — no prompts, no gating. The headless default, because\nan unattended agent otherwise hangs on the first approval. Every harness\nsupports it. (Claude's `bypassPermissions`, Codex's\n`--dangerously-bypass-approvals-and-sandbox`, Qwen/Crush `--yolo`, …)",
+            "type": "string",
+            "const": "bypass"
+          }
+        ]
+      },
+      "Status": {
+        "description": "The outcome of attempting to run one harness.",
+        "oneOf": [
+          {
+            "description": "Spawned and exited 0.",
+            "type": "string",
+            "const": "ok"
+          },
+          {
+            "description": "Spawned and exited non-zero.",
+            "type": "string",
+            "const": "nonzero"
+          },
+          {
+            "description": "Killed after exceeding the per-harness timeout.",
+            "type": "string",
+            "const": "timeout"
+          },
+          {
+            "description": "The binary was resolved but could not be executed.",
+            "type": "string",
+            "const": "spawn-error"
+          },
+          {
+            "description": "The binary was not found, so the harness was not run.",
+            "type": "string",
+            "const": "skipped"
+          },
+          {
+            "description": "`--print-command`: the command was built but not executed.",
+            "type": "string",
+            "const": "planned"
+          }
+        ]
+      },
+      "Usage": {
+        "description": "Normalized token/cost accounting. Every field is best-effort and independently\nnullable: a harness may report tokens but not dollar cost (cost is commonly\nabsent on subscription auth), or report nothing at all (plain-text harnesses).",
+        "type": "object",
+        "properties": {
+          "cache_read_tokens": {
+            "description": "Prompt tokens served from the provider's prompt cache (a cheap read of a\npreviously-written prefix), when the harness reports them. `None` when the\nharness does not surface cache counts — never `0` as a guess.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "cache_write_tokens": {
+            "description": "Prompt tokens written to the provider's prompt cache (a.k.a. cache\ncreation), when the harness reports them. `None` when not surfaced.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "cost_usd": {
+            "description": "Total cost in USD, when the harness reports it (often absent on\nsubscription auth, where there is no per-call dollar figure).",
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "input_tokens": {
+            "description": "Prompt/input tokens billed, when the harness reports them.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "output_tokens": {
+            "description": "Completion/output tokens billed, when the harness reports them.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  }
+}

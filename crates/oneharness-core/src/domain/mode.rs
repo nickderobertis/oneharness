@@ -11,12 +11,13 @@
 //! and the command/io layers.
 
 use serde::{Deserialize, Serialize};
+use schemars::JsonSchema;
 
 /// The unified approval mode, from least to most autonomy. A harness may not
 /// support every value (see [`crate::domain::harness::HarnessSpec::mode`]); the
 /// command layer refuses an unsupported one before spawning, never silently
 /// downgrading it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum PermissionMode {
     /// No mutations — the agent may read but not edit files or run commands —

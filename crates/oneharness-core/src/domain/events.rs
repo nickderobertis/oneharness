@@ -41,13 +41,14 @@
 
 use serde::Serialize;
 use serde_json::Value;
+use schemars::JsonSchema;
 
 use crate::domain::report::OutputFormat;
 
 /// One normalized action a harness took, harness-agnostic so a single consumer
 /// assertion works across harnesses. Every field is always serialized (null when
 /// absent) so the shape is stable, mirroring the `usage` contract.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct ActionEvent {
     /// The kind of event: `tool_call` (the model invoked a tool) or
     /// `tool_result` (the observation returned to the model). Left open for

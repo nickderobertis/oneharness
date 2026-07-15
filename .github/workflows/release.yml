@@ -353,13 +353,33 @@ jobs:
           name: npm-${{ matrix.target }}
           path: npm-artifacts/*.tgz
 
+  build-node-sdk:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --cwd npm/oneharness-sdk --frozen-lockfile
+      - run: bun run --cwd npm/oneharness-sdk generate:check
+      - run: bun run --cwd npm/oneharness-sdk build
+      - name: Pack the version-synchronized SDK
+        run: |
+          pkgdir="$(node scripts/sdk-pack.mjs)"
+          mkdir -p sdk-artifact
+          (cd "$pkgdir" && npm pack --pack-destination "$GITHUB_WORKSPACE/sdk-artifact")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: node-sdk
+          path: sdk-artifact/*.tgz
+
   # npm publishing activates when the NPM_PUBLISH repository variable is 'true'
   # AND the NPM_TOKEN secret is present (an npm automation/granular-access token
   # with publish rights to oneharness-cli and the @oneharness scope). Publishes
   # the per-platform packages first, then the launcher that depends on them.
   # Until both are set, publishing stays dormant while the packages still build.
   publish-npm:
-    needs: build-npm
+    needs: [build-npm, build-node-sdk]
     if: ${{ vars.NPM_PUBLISH == 'true' }}
     runs-on: ubuntu-latest
     defaults:
@@ -378,6 +398,10 @@ jobs:
           pattern: npm-*
           path: npm-artifacts
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: node-sdk
+          path: sdk-artifact
       - name: Publish platform packages, then the launcher
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -395,6 +419,7 @@ jobs:
           # so it needs no prebuilt target — just the version-stamped manifest.
           launcher="$(node scripts/npm-build.mjs launcher --out npm/dist)"
           (cd "$launcher" && npm publish --access public)
+          npm publish "$GITHUB_WORKSPACE"/sdk-artifact/*.tgz --access public
 
   # Post-publish gate: prove the just-published version is installable from npm.
   # Registry propagation is not instant, so poll until the version resolves, then

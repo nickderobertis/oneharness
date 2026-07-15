@@ -158,6 +158,8 @@ and `supports_resume` / `supports_fork` / `supports_native_schema` /
 pip install oneharness-cli          # installs the `oneharness` command
 # or from npm (per-platform package wrapping the prebuilt binary — same promise)
 npm install -g oneharness-cli       # also installs the `oneharness` command
+# typed Node API (includes the matching CLI package)
+npm install @oneharness/sdk
 # or the latest prebuilt release for your platform via the install script
 curl -fsSL https://raw.githubusercontent.com/nickderobertis/oneharness/main/scripts/install.sh | sh
 # or pin a release tag / install directory
@@ -184,6 +186,12 @@ platform-specific binary in a per-platform artifact (a wheel; an
 `@oneharness/cli-<platform>-<arch>` optional dependency) that the package manager
 selects for your OS and CPU. Building from source requires a stable Rust
 toolchain and [`just`](https://github.com/casey/just).
+
+Node applications can use `@oneharness/sdk` for typed `run`, registry
+`list`/`detect`, continuation (`resume` or named `session`), and standardized
+history lookup. Its declarations and runtime JSON Schema validators are generated
+from the Rust wire types and drift-checked by `just check`; see
+[`npm/oneharness-sdk/README.md`](npm/oneharness-sdk/README.md).
 The install script honors `ONEHARNESS_VERSION`, `ONEHARNESS_INSTALL_DIR`,
 `ONEHARNESS_RELEASE_BASE_URL`/`--base-url`, `ONEHARNESS_CHECKSUM_BASE_URL`, and
 `GITHUB_TOKEN` (for higher GitHub API rate limits when resolving the latest

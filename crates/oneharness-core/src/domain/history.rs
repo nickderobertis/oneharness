@@ -12,6 +12,7 @@
 //! signal, so a history record reads like a report result frozen in time.
 
 use serde::Serialize;
+use schemars::JsonSchema;
 
 use crate::domain::events::ActionEvent;
 use crate::domain::mode::PermissionMode;
@@ -26,7 +27,7 @@ pub const SCHEMA_VERSION: &str = "0.1";
 /// One harness run, normalized and frozen for the history log. Serialized as one
 /// JSONL line per harness run, appended as the run finalizes. Carries only the
 /// normalized cross-harness signals — no raw stdout/stderr.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct HistoryRecord {
     pub schema_version: &'static str,
     /// The oneharness session id this run belongs to (the history file's stem).

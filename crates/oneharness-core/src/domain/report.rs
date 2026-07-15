@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use schemars::JsonSchema;
 
 use crate::domain::batch::BatchStrategy;
 use crate::domain::events::ActionEvent;
@@ -20,7 +21,7 @@ pub const SCHEMA_VERSION: &str = "0.1";
 /// Also accepted as a CLI value (`--output-format`, parsed in the `oneharness`
 /// binary) and a config-file value (`output_format`, via `Deserialize`). The
 /// CLI parsing lives in the binary so this core crate stays free of `clap`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum OutputFormat {
     /// Plain text on stdout; `text` is the trimmed stdout.
@@ -32,7 +33,7 @@ pub enum OutputFormat {
 }
 
 /// The outcome of attempting to run one harness.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Status {
     /// Spawned and exited 0.
@@ -63,7 +64,7 @@ pub struct Capture {
 }
 
 /// One harness's entry in the report.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct RunResult {
     /// Canonical harness id (e.g. `claude-code`).
     pub harness: String,
@@ -156,7 +157,7 @@ pub struct RunResult {
 }
 
 /// The top-level `run` report written to stdout.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct RunReport {
     pub schema_version: &'static str,
     pub oneharness_version: &'static str,
@@ -231,7 +232,7 @@ pub struct RunReport {
 
 /// The uniform session handle for a run (`--session`). Present on
 /// [`RunReport::session`] only when `--session <name>` was requested.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SessionReport {
     /// The caller's stable handle (`--session <name>`, sanitized for the store).
     pub name: String,
@@ -252,7 +253,7 @@ pub struct SessionReport {
 /// runs). Present on [`RunReport::fallback`] only in that mode. The per-harness
 /// detail lives in `results`; this block summarizes the outcome so a consumer
 /// need not re-derive it from statuses.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct FallbackReport {
     /// The harness that actually ran the task (the run stopped there), or `null`
     /// when no candidate could run at all — every one was a startup failure.
@@ -265,7 +266,7 @@ pub struct FallbackReport {
 }
 
 /// One candidate a fallback run fell through, with the reason it could not run.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct FallThrough {
     /// Canonical harness id.
     pub harness: String,
@@ -276,7 +277,7 @@ pub struct FallThrough {
 
 /// Metadata for a same-prefix batch run (one harness, N prompts sharing a
 /// cacheable prefix). Present on [`RunReport::batch`] only in that mode.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct BatchReport {
     /// How the prompts were scheduled across the parallel runner.
     pub strategy: BatchStrategy,

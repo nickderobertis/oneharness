@@ -39,9 +39,9 @@
 //! invented. Which format yields a transcript per harness is declared by
 //! `HarnessSpec.events_format` and selected by `run --events` / `--stream`.
 
+use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
-use schemars::JsonSchema;
 
 use crate::domain::report::OutputFormat;
 

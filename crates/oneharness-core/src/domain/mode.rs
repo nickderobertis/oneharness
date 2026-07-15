@@ -10,8 +10,8 @@
 //! pure data + parsing; the mapping and the spawn live in the harness registry
 //! and the command/io layers.
 
-use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 /// The unified approval mode, from least to most autonomy. A harness may not
 /// support every value (see [`crate::domain::harness::HarnessSpec::mode`]); the

@@ -21,9 +21,9 @@
 //!   snake_case `session_id`; it does not emit token usage today, so usage stays
 //!   absent rather than fabricated.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use schemars::JsonSchema;
 
 /// Normalized token/cost accounting. Every field is best-effort and independently
 /// nullable: a harness may report tokens but not dollar cost (cost is commonly

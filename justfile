@@ -136,7 +136,7 @@ deps-check:
 # Upgrade dependencies, then re-run the full gate.
 upgrade:
     cargo update
-    bun update --cwd npm/oneharness-sdk
+    cd npm/oneharness-sdk && bun update
     @just check
 
 # Regenerate TypeScript declarations and runtime schemas from Rust wire types.

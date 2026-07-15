@@ -3,9 +3,9 @@
 //! The JSON report carries a `schema_version`: consumers depend on it, so fields
 //! are added, never repurposed or removed, without bumping the version.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use schemars::JsonSchema;
 
 use crate::domain::batch::BatchStrategy;
 use crate::domain::events::ActionEvent;

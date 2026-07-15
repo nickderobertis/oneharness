@@ -11,8 +11,8 @@
 //! harness's own transcript). Every field mirrors a [`crate::domain::report`]
 //! signal, so a history record reads like a report result frozen in time.
 
-use serde::Serialize;
 use schemars::JsonSchema;
+use serde::Serialize;
 
 use crate::domain::events::ActionEvent;
 use crate::domain::mode::PermissionMode;

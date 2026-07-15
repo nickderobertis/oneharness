@@ -49,6 +49,9 @@ follow-ups (see "After the main task").
 - **Product shape:** CLI plus Rust and Node libraries (`shapes/cli.md`,
   `shapes/library.md`, `intersections/rust-cli.md`).
 - **Language(s):** Rust and TypeScript; Bash is limited to setup/live e2e.
+- **References composed:** `base.md`, `shapes/cli.md`, `shapes/library.md`,
+  `languages/rust.md`, `languages/typescript.md`, `intersections/rust-cli.md`,
+  `ci.md`, `llmlint.md`, `releasing.md`, `monorepo.md`.
 - **Cross-cutting:** `ci.md`, `releasing.md`, and `monorepo.md`; root `just`
   delegates to Cargo/Bun without Nx because this small two-package graph is static.
 - **Excluded, and why:** web-app/React/Next.js/asdf-plugin/skills-repo guidance

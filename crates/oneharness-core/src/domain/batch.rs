@@ -14,8 +14,8 @@
 //!   cost. The barrier between the warm-up and the fan-out is the whole point, so
 //!   it lives here in the schedule, not in the spawning layer.
 
-use serde::Serialize;
 use schemars::JsonSchema;
+use serde::Serialize;
 
 /// How a batch of same-prefix prompts is scheduled across the parallel runner.
 /// Also accepted as a CLI value (`--batch-strategy`, parsed in the `oneharness`

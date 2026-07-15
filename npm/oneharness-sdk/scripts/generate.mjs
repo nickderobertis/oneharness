@@ -10,7 +10,16 @@ mkdirSync(out, { recursive: true });
 const bundle = JSON.parse(
 	execFileSync(
 		"cargo",
-		["run", "-q", "-p", "oneharness-core", "--example", "generate_sdk_schema"],
+		[
+			"run",
+			"-q",
+			"-p",
+			"oneharness-core",
+			"--features",
+			"sdk-schema",
+			"--example",
+			"generate_sdk_schema",
+		],
 		{ cwd: root, encoding: "utf8" },
 	),
 );

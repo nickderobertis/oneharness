@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "ES2022", "module": "NodeNext", "moduleResolution": "NodeNext",
     "strict": true, "noUncheckedIndexedAccess": true, "exactOptionalPropertyTypes": true,
-    "resolveJsonModule": true, "allowSyntheticDefaultImports": true, "skipLibCheck": true,
+    "resolveJsonModule": true, "allowSyntheticDefaultImports": true, "allowJs": true, "checkJs": true, "skipLibCheck": true,
     "declaration": true, "outDir": "dist"
   },
   "include": ["src/**/*.ts", "src/**/*.json", "test/**/*.ts"]

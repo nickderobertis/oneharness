@@ -5,11 +5,12 @@ name: Release
 #
 # The Release itself is created by release-plz (see release-plz.yml) when a
 # version-bump PR merges. Because release-plz uses a PAT, that Release fires the
-# `release: published` event below; this workflow then re-gates on the test suite
-# and uploads the archives + checksums. Creating a Release by hand in the GitHub
-# UI is the supported manual fallback — it triggers the same event.
+# `release: published` event below; this workflow then re-gates on the complete
+# project gate, publishes the crates idempotently, and uploads the archives +
+# checksums. Creating a Release by hand in the GitHub UI is the supported manual
+# fallback — it triggers the same validated path.
 #
-#   * test               — the deterministic gate (lint + shellcheck + tests),
+#   * test               — the complete deterministic project gate,
 #                           so untested artifacts never publish.
 #   * upload             — build each target on a native runner, attach the
 #                           archive + sha256 checksum, sign a keyless Sigstore
@@ -40,8 +41,6 @@ name: Release
 #                           platform packages first, then the launcher.
 #   * verify-npm         — prove the just-published version is npm-installable.
 #
-# crates.io publishing stays in release-plz (release-plz.yml), not here.
-
 on:
   release:
     types: [published]
@@ -63,35 +62,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.86.0
+      # Reads the pinned channel + components from rust-toolchain.toml.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/setup-node@v4
         with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: just,nextest,shellcheck
-      - run: just lint
-      - run: just lint-sh
-      - run: just test
+          tool: just,nextest,cargo-llvm-cov,shellcheck
+      - run: just bootstrap
+      - run: just check
 
   publish-crates:
     needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.86.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Publish crates in dependency order, idempotently
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          core_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' crates/oneharness-core/Cargo.toml | head -n1)"
-          cli_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
-          if ! curl -fsS "https://crates.io/api/v1/crates/oneharness-core/${core_version}" >/dev/null; then
-            cargo publish --locked --manifest-path crates/oneharness-core/Cargo.toml
-          fi
-          if ! curl -fsS "https://crates.io/api/v1/crates/oneharness/${cli_version}" >/dev/null; then
-            cargo publish --locked
-          fi
+        run: scripts/publish-crates.sh
 
   upload:
     name: upload (${{ matrix.target }})
@@ -191,8 +183,13 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
         run: |
-          tag="${{ github.event.release.tag_name }}"
+          tag="$TAG"
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::release tag '$tag' is not a supported vX.Y.Z tag" >&2
+            exit 1
+          fi
           target="x86_64-unknown-linux-gnu"
           base="oneharness-${tag}-${target}"
           # No checkout here, so gh cannot infer the repo from git — name it.
@@ -352,7 +349,7 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.86.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -377,11 +374,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.86.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: oven-sh/setup-bun@v2
-      - run: bun install --cwd npm/oneharness-sdk --frozen-lockfile
-      - run: bun run --cwd npm/oneharness-sdk generate:check
-      - run: bun run --cwd npm/oneharness-sdk build
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: just bootstrap
+      - run: just sdk-check
       - name: Pack the version-synchronized SDK
         run: |
           pkgdir="$(node scripts/sdk-pack.mjs)"
@@ -431,14 +430,12 @@ jobs:
           # treats a bare `dir/file.tgz` as a `user/repo` GitHub spec (and tries to
           # git-clone it), not a local tarball — an absolute path is unambiguous.
           for tgz in "$GITHUB_WORKSPACE"/npm-artifacts/*.tgz; do
-            echo "publishing $tgz"
-            npm publish "$tgz" --access public
+            scripts/publish-npm.sh "$tgz"
           done
           # Build and publish the launcher (oneharness-cli). It carries no binary,
           # so it needs no prebuilt target — just the version-stamped manifest.
           launcher="$(node scripts/npm-build.mjs launcher --out npm/dist)"
-          (cd "$launcher" && npm publish --access public)
-          npm publish "$GITHUB_WORKSPACE"/sdk-artifact/*.tgz --access public
+          scripts/publish-npm.sh "$launcher" "$GITHUB_WORKSPACE"/sdk-artifact/*.tgz
 
   # Post-publish gate: prove the just-published CLI and SDK are installable from
   # npm. Registry propagation is not instant, so poll until both resolve, then

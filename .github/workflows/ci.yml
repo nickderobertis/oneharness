@@ -14,6 +14,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  pr-title:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate the release-driving squash subject
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: scripts/check-pr-title.sh
+
   # Prove the artifact the way a future maintainer meets it: clean checkout ->
   # bootstrap -> the full gate, on every supported platform.
   check:
@@ -24,14 +34,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.86.0
-        with:
-          components: rustfmt, clippy, llvm-tools-preview
+      # Reads the pinned channel + components from rust-toolchain.toml.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
       - uses: oven-sh/setup-bun@v2
-      - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
           tool: just,nextest,cargo-llvm-cov,shellcheck
@@ -47,9 +55,8 @@ jobs:
       - uses: actions/checkout@v5
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny,cargo-machete
-      - run: cargo deny check
-      - run: cargo machete
+          tool: just,cargo-deny,cargo-machete
+      - run: just deps-check
 
   llmlint:
     if: github.event_name == 'pull_request'

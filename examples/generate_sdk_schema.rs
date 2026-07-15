@@ -11,15 +11,13 @@ struct SchemaBundle {
     detect_report: schemars::Schema,
 }
 
-fn main() {
+fn main() -> Result<(), serde_json::Error> {
     let bundle = SchemaBundle {
         run_report: schema_for!(RunReport),
         history_record: schema_for!(HistoryRecord),
         list_report: schema_for!(ListReport),
         detect_report: schema_for!(DetectReport),
     };
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&bundle).expect("schema serializes")
-    );
+    println!("{}", serde_json::to_string_pretty(&bundle)?);
+    Ok(())
 }

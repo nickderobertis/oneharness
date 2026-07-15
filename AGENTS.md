@@ -65,6 +65,8 @@ Use the `just` recipes; do not hand-roll equivalents.
 - `just bootstrap` — set up from a clean clone (toolchain components + fetch).
 - `just check` — full gate: format check, clippy (`-D warnings`), tests, line
   coverage (hard-gated at 95%), build, smoke. Must pass before any commit or PR.
+- `just gate` — pre-push superset: `check`, dependency/license audit, and the
+  deterministic llmlint config/ignore validation.
 - `just test` / `just lint` / `just format` — individual gate steps.
 - `just coverage` — run the workspace suite under `cargo llvm-cov` and fail below
   95% line coverage (the `COVERAGE_MIN` gate, also part of `just check` and CI).
@@ -692,12 +694,12 @@ shape. When you add one:
   do not release — so commit subjects are load-bearing for both the bump and the
   generated `CHANGELOG.md`). release-plz opens a `release vX.Y.Z` PR that bumps
   `Cargo.toml`/`Cargo.lock` and writes the changelog section, auto-merges it once
-  the required checks are green, then — in one `release-plz release` run —
-  `cargo publish`es both crates in dependency order (`oneharness-core`, then the
-  `oneharness` binary), tags `vX.Y.Z`, and cuts the GitHub Release. That Release
-  fires `release.yml`, which re-gates on the tests, attaches the checksummed
-  cross-platform binaries + their Sigstore `.sigstore.json` bundles, builds &
-  publishes the PyPI wheels, and builds & publishes the per-platform npm packages.
+  the required checks are green, then `release-plz release` tags `vX.Y.Z` and
+  cuts the GitHub Release. That Release fires `release.yml`, which re-runs the
+  complete gate, idempotently publishes both crates in dependency order
+  (`oneharness-core`, then `oneharness`), attaches the checksummed cross-platform
+  binaries + their Sigstore `.sigstore.json` bundles, and builds/publishes the
+  PyPI wheels and npm packages.
   So a release lands five ways: **PyPI** (`pip install oneharness-cli`), **npm**
   (`npm install -g oneharness-cli`), **crates.io**, the GitHub Release binaries,
   and `cargo install --git` (see the PyPI-wheels, npm-packages, and Sigstore
@@ -714,18 +716,17 @@ shape. When you add one:
   `RELEASE_PLZ_TOKEN` is a PAT (classic or fine-grained, `contents: write` +
   `pull-requests: write`): a tag/Release made with the default `GITHUB_TOKEN`
   would not retrigger `release.yml`, so the binaries would never build.
-  `CARGO_REGISTRY_TOKEN` is a crates.io API token for `cargo publish`; without it
-  the release fails before publishing anything, so the guard requires it up
-  front. `CARGO_REGISTRY_TOKEN` is synced from Bitwarden via the
+  `CARGO_REGISTRY_TOKEN` is a crates.io API token used by the downstream release
+  workflow; the guard requires it before creating a GitHub Release.
+  `CARGO_REGISTRY_TOKEN` is synced from Bitwarden via the
   `gh-secrets.json` manifest (`just secrets-sync`); `RELEASE_PLZ_TOKEN` is a
   GitHub PAT set by hand (a PAT can't live in the harness-auth manifest's
   Bitwarden flow). The crate version and `CHANGELOG.md` are managed by
   release-plz — do not hand-bump them.
 - **Manual fallback.** Creating a GitHub Release by hand (the UI, or
   `gh release create vX.Y.Z`) fires the same `release: published` event and builds
-  the binaries — use it only if the automation is wedged. It does NOT publish to
-  crates.io through the same idempotent `release.yml` publish job. Never publish
-  by editing a release mid-flight.
+  every distribution, including the validated idempotent crates.io job — use it
+  only if the automation is wedged. Never publish by editing a release mid-flight.
 - The JSON `schema_version` is independent of the crate version: bump it only when
   the report shape changes incompatibly, and document it in the changelog.
 

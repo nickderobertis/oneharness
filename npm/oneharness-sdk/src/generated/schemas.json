@@ -1106,16 +1106,31 @@
           "example_command"
         ]
       },
+      "ModeHeadless": {
+        "description": "How a harness honors one [`PermissionMode`] in a *headless* run — the\nclassification that lets oneharness refuse a hang instead of waiting it out.",
+        "oneOf": [
+          {
+            "description": "Never blocks: the harness denies-and-continues, fails closed, or runs\nfully autonomously. Safe to spawn unattended.",
+            "type": "string",
+            "const": "clean"
+          },
+          {
+            "description": "May block on an interactive approval prompt that a headless run cannot\nanswer (the harness has no clean non-interactive variant of this mode).\nThe command layer refuses this combination unless `--permit-prompts` is\nset, turning a silent hang into a loud, immediate error.",
+            "type": "string",
+            "const": "hangs"
+          }
+        ]
+      },
       "ModeInfo": {
         "description": "One supported approval mode for a harness, with its headless behavior, in\n`oneharness list`. A [`PermissionMode`] absent from a harness's array is\nunsupported for it (a `--mode` request would be refused).",
         "type": "object",
         "properties": {
           "headless": {
             "description": "`\"clean\"` (never blocks headless) or `\"hangs\"` (would block on an\napproval prompt; refused without --permit-prompts).",
-            "type": "string"
+            "$ref": "#/$defs/ModeHeadless"
           },
           "mode": {
-            "type": "string"
+            "$ref": "#/$defs/PermissionMode"
           }
         },
         "required": [
@@ -1140,6 +1155,41 @@
             "description": "Line-delimited JSON events on stdout.",
             "type": "string",
             "const": "stream-json"
+          }
+        ]
+      },
+      "PermissionMode": {
+        "description": "The unified approval mode, from least to most autonomy. A harness may not\nsupport every value (see [`crate::domain::harness::HarnessSpec::mode`]); the\ncommand layer refuses an unsupported one before spawning, never silently\ndowngrading it.",
+        "oneOf": [
+          {
+            "description": "No mutations — the agent may read but not edit files or run commands —\n*without* the plan workflow: it just does whatever read-only work the task\nallows. Mapped to each harness's strongest per-run no-mutation enforcement\n(Codex's read-only sandbox, Claude's deny rules, Copilot's `--deny-tool`,\nCursor's `ask` mode). The enforced counterpart to [`Self::Plan`].",
+            "type": "string",
+            "const": "read-only"
+          },
+          {
+            "description": "Read and propose only — like [`Self::ReadOnly`], but additionally engages\nthe harness's *plan* workflow: research the task and write a plan rather\nthan act. Supported only where a native plan mode exists (Claude/Qwen/\nCursor/Copilot, OpenCode's `plan` agent); harnesses with no plan workflow\n(Codex, Goose, Crush) reject it — use [`Self::ReadOnly`] for those.",
+            "type": "string",
+            "const": "plan"
+          },
+          {
+            "description": "The harness's normal ask flow, mapped to its cleanest *non-interactive*\nvariant so a headless run never blocks waiting for input (Claude's\n`dontAsk` deny-and-continue, Goose's fail-closed `approve`, Copilot's\nauto-deny). Where no such variant exists the harness's [`ModeHeadless`]\nis [`ModeHeadless::Hangs`].",
+            "type": "string",
+            "const": "default"
+          },
+          {
+            "description": "Auto-approve file edits, still gate shell/commands. (Claude's\n`acceptEdits`, Qwen's `auto-edit`.)",
+            "type": "string",
+            "const": "edit"
+          },
+          {
+            "description": "Auto-approve operations the harness deems safe (a classifier), gate the\nrisky ones. (Claude's `auto`, Qwen's `auto`, Goose's `smart_approve`.)",
+            "type": "string",
+            "const": "auto"
+          },
+          {
+            "description": "Approve everything — no prompts, no gating. The headless default, because\nan unattended agent otherwise hangs on the first approval. Every harness\nsupports it. (Claude's `bypassPermissions`, Codex's\n`--dangerously-bypass-approvals-and-sandbox`, Qwen/Crush `--yolo`, …)",
+            "type": "string",
+            "const": "bypass"
           }
         ]
       }

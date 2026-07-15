@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { compile } from "json-schema-to-typescript";
+import { generatedFileMatches } from "./generated-file.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const out = resolve(root, "npm/oneharness-sdk/src/generated");
@@ -60,7 +61,7 @@ let stale = false;
 for (const [name, content] of Object.entries(files)) {
 	const path = resolve(out, name);
 	if (process.argv.includes("--check")) {
-		if (!readFileSync(path).equals(content)) stale = true;
+		if (!generatedFileMatches(path, content)) stale = true;
 	} else writeFileSync(path, content);
 }
 if (stale) {

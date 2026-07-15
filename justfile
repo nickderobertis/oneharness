@@ -33,6 +33,11 @@ bootstrap:
 check: fmt-check lint lint-sh lint-workflows sdk-check test coverage build smoke
     @echo "check: ok"
 
+# Complete pre-push gate: the deterministic product gate, dependency audit, and
+# deterministic llmlint config/ignore validation.
+gate: check deps-check
+    @just lint-llm-validate
+
 # Verify formatting without modifying files.
 fmt-check:
     cargo fmt --all -- --check
@@ -55,13 +60,16 @@ lint-sh:
     if ! command -v shellcheck >/dev/null 2>&1; then echo "shellcheck not installed: 'apt-get install shellcheck' / 'brew install shellcheck' / https://github.com/koalaman/shellcheck#installing" >&2; exit 1; fi
     shellcheck scripts/*.sh
 
-# Drift gate for the live-e2e CI matrix contract: assert every .github/workflows/
-# e2e-*.yml matches the single source in scripts/check-e2e-matrix.sh (no push
-# trigger; claude/codex cross-platform, the rest Linux-only on PR; on-demand os
-# dispatch). Keeps the matrix duplication GitHub Actions forces (literal dispatch
-# options, per-job matrix) from drifting. See AGENTS.md > "Live e2e in CI".
+# Drift gates for the live-e2e matrix, Rust toolchain, and release lifecycle,
+# plus the hermetic behavioral test of the idempotent crates.io publisher.
 lint-workflows:
-    bash scripts/check-e2e-matrix.sh
+    @bash scripts/check-pr-title-e2e.sh >/dev/null
+    @bash scripts/check-e2e-matrix.sh >/dev/null
+    @bash scripts/check-workflows.sh >/dev/null
+    @bash scripts/check-workflows-e2e.sh >/dev/null
+    @bash scripts/check-publish-crates.sh >/dev/null
+    @bash scripts/check-publish-npm.sh >/dev/null
+    @echo 'lint-workflows: ok'
 
 # Run the test suite across the workspace (core unit tests + binary unit and
 # integration tests; prefers nextest, falls back to cargo test).
@@ -244,12 +252,12 @@ setup-llmlint:
 
 # Optional LLM-as-judge lint; non-deterministic and out of `check`.
 lint-llm *paths:
-    llmlint {{paths}}
+    PATH="$HOME/.local/bin:$PATH"; export PATH; if ! command -v llmlint >/dev/null 2>&1; then echo "llmlint not installed: run 'just setup-llmlint'" >&2; exit 1; fi; llmlint {{paths}}
 
 # Deterministic llmlint config/ignore/version-bump validation.
 lint-llm-validate *args:
-    PATH="$HOME/.local/bin:$PATH" llmlint validate {{args}}
+    PATH="$HOME/.local/bin:$PATH"; export PATH; if ! command -v llmlint >/dev/null 2>&1; then echo "llmlint not installed: run 'just setup-llmlint'" >&2; exit 1; fi; llmlint validate {{args}}
 
 # llmlint scoped to changed files since the merge-base with main.
 lint-llm-diff base="origin/main" *args:
-    llmlint --diff --diff-base "{{base}}" {{args}}
+    PATH="$HOME/.local/bin:$PATH"; export PATH; if ! command -v llmlint >/dev/null 2>&1; then echo "llmlint not installed: run 'just setup-llmlint'" >&2; exit 1; fi; llmlint --diff --diff-base "{{base}}" {{args}}

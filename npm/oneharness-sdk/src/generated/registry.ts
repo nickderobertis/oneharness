@@ -1,6 +1,13 @@
 /* Generated from oneharness. Do not edit. */
 
 /**
+ * The unified approval mode, from least to most autonomy. A harness may not
+ * support every value (see [`crate::domain::harness::HarnessSpec::mode`]); the
+ * command layer refuses an unsupported one before spawning, never silently
+ * downgrading it.
+ */
+export type PermissionMode = "read-only" | "plan" | "default" | "edit" | "auto" | "bypass";
+/**
  * How a harness emits its result, which decides how `text` is extracted.
  *
  * Also accepted as a CLI value (`--output-format`, parsed in the `oneharness`
@@ -113,6 +120,6 @@ export interface ModeInfo {
    * `"clean"` (never blocks headless) or `"hangs"` (would block on an
    * approval prompt; refused without --permit-prompts).
    */
-  headless: string;
-  mode: string;
+  headless: "clean" | "hangs";
+  mode: PermissionMode;
 }

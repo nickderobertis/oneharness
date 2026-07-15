@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -36,11 +36,34 @@ execFileSync("bun", ["add", "--offline", `./${tarball}`], {
 writeFileSync(
 	resolve(install, "consume.mjs"),
 	`import { OneHarness } from "@oneharness/sdk";
-const sdk = new OneHarness({ executable: process.env.ONEHARNESS_TEST_BIN, env: { ONEHARNESS_NO_CONFIG: "1" } });
-const report = await sdk.run({ prompt: "installed package", harnesses: ["claude-code"], mode: "bypass", env: { MOCK_STDOUT: '{"result":"installed sdk works"}' }, bins: { "claude-code": process.env.ONEHARNESS_TEST_MOCK } });
+const executable = process.env.ONEHARNESS_TEST_BIN;
+const mockProvider = process.env.ONEHARNESS_TEST_MOCK;
+if (!executable || !mockProvider) throw new Error("package e2e requires ONEHARNESS_TEST_BIN and ONEHARNESS_TEST_MOCK");
+const sdk = new OneHarness({ executable, env: { ONEHARNESS_NO_CONFIG: "1" } });
+// llmlint: ignore-block[e2e_not_mocked] this packaged-user test crosses the real Node package -> SDK -> built CLI -> oneharness subprocess boundary; only the paid Claude model is replaced through oneharness's deterministic provider seam.
+const report = await sdk.run({ prompt: "installed package", harnesses: ["claude-code"], mode: "bypass", env: { MOCK_STDOUT: '{"result":"installed sdk works"}' }, bins: { "claude-code": mockProvider } });
+// llmlint: ignore-end[e2e_not_mocked]
 if (report.results[0]?.text !== "installed sdk works") throw new Error(JSON.stringify(report));
 `,
 );
+const missingProvider = spawnSync(process.execPath, ["consume.mjs"], {
+	cwd: install,
+	env: {
+		...process.env,
+		ONEHARNESS_TEST_BIN: resolve(
+			root,
+			`target/debug/oneharness${executableSuffix}`,
+		),
+		ONEHARNESS_TEST_MOCK: "",
+	},
+	encoding: "utf8",
+});
+if (
+	missingProvider.status === 0 ||
+	!missingProvider.stderr.includes("package e2e requires ONEHARNESS_TEST_BIN")
+) {
+	throw new Error(`missing provider was not rejected: ${missingProvider.stderr}`);
+}
 execFileSync(process.execPath, ["consume.mjs"], {
 	cwd: install,
 	env: {

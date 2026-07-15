@@ -209,7 +209,7 @@ describe("OneHarness", () => {
 		);
 		await expect(
 			new OneHarness({ executable: missing }).list(),
-		).rejects.toThrow("ENOENT");
+		).rejects.toThrow("missing-oneharness");
 	});
 
 	test("requires an explicit history selector", async () => {

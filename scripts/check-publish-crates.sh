@@ -14,6 +14,9 @@ cat >"$work/bin/cargo" <<'EOF'
 set -euo pipefail
 case "$1" in
   pkgid)
+    if [[ " $* " == *" --package ${PKGID_FAILURE:-__never__} "* ]]; then
+      exit 101
+    fi
     case " $* " in
       *" --package oneharness-core "*) printf 'path+file:///repo/crates/oneharness-core#%s\n' "${CORE_VERSION:-0.4.4}" ;;
       *" --package oneharness "*) printf 'path+file:///repo#oneharness@%s\n' "${CLI_VERSION:-0.3.21}" ;;
@@ -48,7 +51,7 @@ export PUBLISH_LOG="$work/published"
 
 reset_case() {
   : >"$PUBLISH_LOG"
-  unset CORE_VERSION CLI_VERSION GITHUB_REF_NAME
+  unset CORE_VERSION CLI_VERSION GITHUB_REF_NAME PKGID_FAILURE
   export CORE_HTTP=200 CLI_HTTP=200
 }
 
@@ -100,6 +103,10 @@ expect_publish_log 'publish --locked --manifest-path Cargo.toml'
 reset_case
 expect_failure "release tag 'v9.9.9' does not match" env GITHUB_REF_NAME=v9.9.9 scripts/publish-crates.sh
 expect_no_publish "a mismatched release tag"
+
+reset_case
+expect_failure "publish-crates: cannot validate oneharness-core's version in crates/oneharness-core/Cargo.toml; run 'cargo metadata --no-deps' and fix the manifest" env PKGID_FAILURE=oneharness-core scripts/publish-crates.sh
+expect_no_publish "a cargo pkgid failure"
 
 reset_case
 expect_failure "crates.io returned HTTP 503" env CORE_HTTP=503 scripts/publish-crates.sh

@@ -19,6 +19,7 @@ case "$1" in
       existing.tgz) identity='@oneharness/existing@1.2.3' ;;
       missing.tgz) identity='@oneharness/missing@1.2.3' ;;
       outage.tgz) identity='@oneharness/outage@1.2.3' ;;
+      unreadable.tgz) echo 'npm error could not read package metadata' >&2; exit 2 ;;
       invalid.tgz) printf '{}\n'; exit 0 ;;
       *) exit 2 ;;
     esac
@@ -56,6 +57,23 @@ expect_publish_count() {
   fi
 }
 
+expect_failure() {
+  local expected="$1"
+  shift
+  if "$@" >"$work/stdout" 2>"$work/stderr"; then
+    printf 'check-publish-npm: expected failure containing %q\n' "$expected" >&2
+    exit 1
+  fi
+  if ! grep -Fqx "$expected" "$work/stderr"; then
+    printf 'check-publish-npm: missing error %q; got:\n' "$expected" >&2
+    cat "$work/stderr" >&2
+    exit 1
+  fi
+}
+
+expect_failure "publish-npm: pass at least one package directory or tarball" scripts/publish-npm.sh
+expect_publish_count 0 "a missing package argument"
+
 scripts/publish-npm.sh existing.tgz missing.tgz >"$work/stdout"
 if ! grep -Fq '@oneharness/existing@1.2.3 already exists; skipping' "$work/stdout" ||
    ! grep -Fxq 'missing.tgz' "$PUBLISH_LOG"; then
@@ -73,6 +91,9 @@ if ! grep -Fq "cannot query '@oneharness/outage@1.2.3'" "$work/stderr"; then
   exit 1
 fi
 expect_publish_count 1 "a registry outage"
+
+expect_failure "publish-npm: cannot read package metadata from 'unreadable.tgz'; rebuild the npm artifact" scripts/publish-npm.sh unreadable.tgz
+expect_publish_count 1 "an npm pack metadata-read failure"
 
 if scripts/publish-npm.sh invalid.tgz >"$work/stdout" 2>"$work/stderr"; then
   echo "check-publish-npm: invalid metadata unexpectedly permitted publishing" >&2

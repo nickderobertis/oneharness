@@ -89,6 +89,41 @@ execFileSync("bun", ["install", "--offline"], {
 	cwd: install,
 	stdio: "pipe",
 });
+const consumerEnv = {
+	...process.env,
+	ONEHARNESS_NO_CONFIG: "1",
+	ONEHARNESS_TEST_MOCK: resolve(
+		root,
+		`target/debug/oneharness-mock-harness${executableSuffix}`,
+	),
+};
+// An ambient override would let the workspace binary mask a broken installed
+// launcher, so the consumer journey must exercise normal package resolution.
+delete consumerEnv.ONEHARNESS_BIN;
+
+const installedLauncher = resolve(
+	install,
+	"node_modules/.bin",
+	process.platform === "win32" ? "oneharness.cmd" : "oneharness",
+);
+const launcherArgs = ["list", "--compact"];
+const launcherOutput =
+	process.platform === "win32"
+		? execFileSync(
+				process.env.ComSpec ?? "cmd.exe",
+				["/d", "/s", "/c", `"${installedLauncher}" ${launcherArgs.join(" ")}`],
+				{ cwd: install, env: consumerEnv, encoding: "utf8" },
+			)
+		: execFileSync(installedLauncher, launcherArgs, {
+				cwd: install,
+				env: consumerEnv,
+				encoding: "utf8",
+			});
+const list = JSON.parse(launcherOutput);
+if (!list.harnesses?.some(({ id }) => id === "claude-code")) {
+	throw new Error(`installed launcher returned an invalid list: ${launcherOutput}`);
+}
+
 writeFileSync(
 	resolve(install, "consume.mjs"),
 	`import { OneHarness } from "@oneharness/sdk";
@@ -99,14 +134,7 @@ if (report.results[0]?.text !== "installed sdk works") throw new Error(JSON.stri
 );
 execFileSync(process.execPath, ["consume.mjs"], {
 	cwd: install,
-	env: {
-		...process.env,
-		ONEHARNESS_BIN: "",
-		ONEHARNESS_TEST_MOCK: resolve(
-			root,
-			`target/debug/oneharness-mock-harness${executableSuffix}`,
-		),
-	},
+	env: consumerEnv,
 	stdio: "pipe",
 });
 

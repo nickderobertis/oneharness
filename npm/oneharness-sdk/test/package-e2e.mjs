@@ -111,7 +111,7 @@ const launcherOutput =
 	process.platform === "win32"
 		? execFileSync(
 				process.env.ComSpec ?? "cmd.exe",
-				["/d", "/s", "/c", `"${installedLauncher}" ${launcherArgs.join(" ")}`],
+				["/d", "/s", "/c", installedLauncher, ...launcherArgs],
 				{ cwd: install, env: consumerEnv, encoding: "utf8" },
 			)
 		: execFileSync(installedLauncher, launcherArgs, {

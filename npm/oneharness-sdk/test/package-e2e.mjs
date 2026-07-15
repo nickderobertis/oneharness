@@ -6,12 +6,22 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const install = mkdtempSync(resolve(tmpdir(), "oneharness-sdk-package-"));
-const packageDir = execFileSync("node", ["scripts/sdk-pack.mjs"], {
+const executableSuffix = process.platform === "win32" ? ".exe" : "";
+
+function runNpm(args, options) {
+	if (process.platform !== "win32") return execFileSync("npm", args, options);
+	const npmCli = resolve(
+		dirname(process.execPath),
+		"node_modules/npm/bin/npm-cli.js",
+	);
+	return execFileSync(process.execPath, [npmCli, ...args], options);
+}
+
+const packageDir = execFileSync(process.execPath, ["scripts/sdk-pack.mjs"], {
 	cwd: root,
 	encoding: "utf8",
 }).trim();
-const tarball = execFileSync(
-	"npm",
+const tarball = runNpm(
 	["pack", "--silent", "--pack-destination", install],
 	{ cwd: packageDir, encoding: "utf8" },
 ).trim();
@@ -31,14 +41,17 @@ const report = await sdk.run({ prompt: "installed package", harnesses: ["claude-
 if (report.results[0]?.text !== "installed sdk works") throw new Error(JSON.stringify(report));
 `,
 );
-execFileSync("node", ["consume.mjs"], {
+execFileSync(process.execPath, ["consume.mjs"], {
 	cwd: install,
 	env: {
 		...process.env,
-		ONEHARNESS_TEST_BIN: resolve(root, "target/debug/oneharness"),
+		ONEHARNESS_TEST_BIN: resolve(
+			root,
+			`target/debug/oneharness${executableSuffix}`,
+		),
 		ONEHARNESS_TEST_MOCK: resolve(
 			root,
-			"target/debug/oneharness-mock-harness",
+			`target/debug/oneharness-mock-harness${executableSuffix}`,
 		),
 	},
 	stdio: "pipe",

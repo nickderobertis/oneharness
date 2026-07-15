@@ -1,5 +1,6 @@
 //! `oneharness list` — describe the supported harnesses as JSON.
 
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::cli::ListArgs;
@@ -12,16 +13,16 @@ use oneharness_core::errors::OneharnessError;
 /// One supported approval mode for a harness, with its headless behavior, in
 /// `oneharness list`. A [`PermissionMode`] absent from a harness's array is
 /// unsupported for it (a `--mode` request would be refused).
-#[derive(Serialize)]
-struct ModeInfo {
+#[derive(JsonSchema, Serialize)]
+pub struct ModeInfo {
     mode: &'static str,
     /// `"clean"` (never blocks headless) or `"hangs"` (would block on an
     /// approval prompt; refused without --permit-prompts).
     headless: &'static str,
 }
 
-#[derive(Serialize)]
-struct HarnessInfo {
+#[derive(JsonSchema, Serialize)]
+pub struct HarnessInfo {
     id: &'static str,
     display: &'static str,
     default_bin: &'static str,
@@ -84,8 +85,8 @@ struct HarnessInfo {
     example_command: Vec<String>,
 }
 
-#[derive(Serialize)]
-struct ListReport {
+#[derive(JsonSchema, Serialize)]
+pub struct ListReport {
     schema_version: &'static str,
     harnesses: Vec<HarnessInfo>,
 }

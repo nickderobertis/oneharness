@@ -21,13 +21,14 @@
 //!   snake_case `session_id`; it does not emit token usage today, so usage stays
 //!   absent rather than fabricated.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Normalized token/cost accounting. Every field is best-effort and independently
 /// nullable: a harness may report tokens but not dollar cost (cost is commonly
 /// absent on subscription auth), or report nothing at all (plain-text harnesses).
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, JsonSchema)]
 pub struct Usage {
     /// Prompt/input tokens billed, when the harness reports them.
     pub input_tokens: Option<u64>,
@@ -70,7 +71,7 @@ pub struct UsageReading {
 /// invalid kind unrepresentable and gives every producer/consumer (classifier,
 /// `is_failure`, the fallback fall-through rule, the report, history) one
 /// definition to share instead of scattered string literals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureKind {
     /// Authentication / authorization rejected the request (401/403, missing or

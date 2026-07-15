@@ -10,13 +10,14 @@
 //! pure data + parsing; the mapping and the spawn live in the harness registry
 //! and the command/io layers.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// The unified approval mode, from least to most autonomy. A harness may not
 /// support every value (see [`crate::domain::harness::HarnessSpec::mode`]); the
 /// command layer refuses an unsupported one before spawning, never silently
 /// downgrading it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum PermissionMode {
     /// No mutations — the agent may read but not edit files or run commands —

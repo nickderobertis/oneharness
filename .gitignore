@@ -11,6 +11,7 @@ __pycache__/
 # npm packaging build outputs (per-platform packages + stamped launcher assembled
 # by scripts/npm-build.mjs). npm/oneharness/ IS committed; these are not.
 /npm/dist
+/npm/oneharness-sdk/dist
 node_modules/
 
 # Local secrets synced from Bitwarden (gh-secrets.json -> env_file destination)

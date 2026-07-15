@@ -63,7 +63,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.86.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -73,6 +73,25 @@ jobs:
       - run: just lint
       - run: just lint-sh
       - run: just test
+
+  publish-crates:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.86.0
+      - name: Publish crates in dependency order, idempotently
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          core_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' crates/oneharness-core/Cargo.toml | head -n1)"
+          cli_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
+          if ! curl -fsS "https://crates.io/api/v1/crates/oneharness-core/${core_version}" >/dev/null; then
+            cargo publish --locked --manifest-path crates/oneharness-core/Cargo.toml
+          fi
+          if ! curl -fsS "https://crates.io/api/v1/crates/oneharness/${cli_version}" >/dev/null; then
+            cargo publish --locked
+          fi
 
   upload:
     name: upload (${{ matrix.target }})
@@ -333,7 +352,7 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.86.0
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -353,13 +372,33 @@ jobs:
           name: npm-${{ matrix.target }}
           path: npm-artifacts/*.tgz
 
+  build-node-sdk:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.86.0
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --cwd npm/oneharness-sdk --frozen-lockfile
+      - run: bun run --cwd npm/oneharness-sdk generate:check
+      - run: bun run --cwd npm/oneharness-sdk build
+      - name: Pack the version-synchronized SDK
+        run: |
+          pkgdir="$(node scripts/sdk-pack.mjs)"
+          mkdir -p sdk-artifact
+          (cd "$pkgdir" && npm pack --pack-destination "$GITHUB_WORKSPACE/sdk-artifact")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: node-sdk
+          path: sdk-artifact/*.tgz
+
   # npm publishing activates when the NPM_PUBLISH repository variable is 'true'
   # AND the NPM_TOKEN secret is present (an npm automation/granular-access token
   # with publish rights to oneharness-cli and the @oneharness scope). Publishes
   # the per-platform packages first, then the launcher that depends on them.
   # Until both are set, publishing stays dormant while the packages still build.
   publish-npm:
-    needs: build-npm
+    needs: [build-npm, build-node-sdk]
     if: ${{ vars.NPM_PUBLISH == 'true' }}
     runs-on: ubuntu-latest
     defaults:
@@ -378,6 +417,10 @@ jobs:
           pattern: npm-*
           path: npm-artifacts
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: node-sdk
+          path: sdk-artifact
       - name: Publish platform packages, then the launcher
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -395,10 +438,11 @@ jobs:
           # so it needs no prebuilt target — just the version-stamped manifest.
           launcher="$(node scripts/npm-build.mjs launcher --out npm/dist)"
           (cd "$launcher" && npm publish --access public)
+          npm publish "$GITHUB_WORKSPACE"/sdk-artifact/*.tgz --access public
 
-  # Post-publish gate: prove the just-published version is installable from npm.
-  # Registry propagation is not instant, so poll until the version resolves, then
-  # install it globally and smoke-test the `oneharness` command.
+  # Post-publish gate: prove the just-published CLI and SDK are installable from
+  # npm. Registry propagation is not instant, so poll until both resolve, then
+  # exercise each artifact through its public entry point.
   verify-npm:
     needs: publish-npm
     if: ${{ vars.NPM_PUBLISH == 'true' }}
@@ -407,19 +451,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Wait for the version to land on npm
+      - name: Wait for the CLI and SDK versions to land on npm
         run: |
           ver="${GITHUB_REF_NAME#v}"
-          echo "Waiting for oneharness-cli@$ver on npm..."
+          echo "Waiting for oneharness-cli@$ver and @oneharness/sdk@$ver on npm..."
           for i in $(seq 1 30); do
-            if npm view "oneharness-cli@${ver}" version >/dev/null 2>&1; then
-              echo "oneharness-cli@$ver is available on npm."
+            if npm view "oneharness-cli@${ver}" version >/dev/null 2>&1 && \
+               npm view "@oneharness/sdk@${ver}" version >/dev/null 2>&1; then
+              echo "oneharness-cli@$ver and @oneharness/sdk@$ver are available on npm."
               exit 0
             fi
             echo "  attempt $i: not indexed yet; sleeping 10s..."
             sleep 10
           done
-          echo "::error::oneharness-cli@$ver did not appear on npm within ~5 minutes"
+          echo "::error::oneharness-cli@$ver and/or @oneharness/sdk@$ver did not appear on npm within ~5 minutes"
           exit 1
       - name: Install from npm and smoke-test
         run: |
@@ -434,3 +479,24 @@ jobs:
           oneharness --help >/dev/null
           oneharness list >/dev/null
           echo "npm install + smoke test passed for oneharness-cli $ver"
+      - name: Install the SDK from npm and exercise its packaged CLI dependency
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          work="$(mktemp -d)"
+          cd "$work"
+          npm init -y >/dev/null
+          npm install "@oneharness/sdk@${ver}"
+          node --input-type=module - <<'NODE'
+          import { OneHarness } from "@oneharness/sdk";
+          const harnesses = await new OneHarness().list();
+          if (!harnesses.some(({ id }) => id === "codex")) {
+            throw new Error("installed SDK did not return the packaged CLI registry");
+          }
+          NODE
+          installed="$(npm ls @oneharness/sdk --json | node -e \
+            'let s=""; process.stdin.on("data", c => s += c).on("end", () => process.stdout.write(JSON.parse(s).dependencies["@oneharness/sdk"].version))')"
+          [ "$installed" = "$ver" ] || {
+            echo "::error::installed SDK version '$installed' does not match '$ver'"
+            exit 1
+          }
+          echo "npm install + packaged-CLI smoke test passed for @oneharness/sdk $ver"

@@ -11,6 +11,7 @@
 //! [`crate::domain::harness::HarnessSpec::session_capable`]); for the rest the
 //! command layer refuses `--session` loudly rather than silently starting fresh.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// The on-disk session record's schema version, independent of the report's and
@@ -42,7 +43,7 @@ pub struct SessionRecord {
 }
 
 /// Whether a run starts a new named session or continues an existing one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SessionPhase {
     /// No stored token yet — the harness runs fresh and its emitted session id is

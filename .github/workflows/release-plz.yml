@@ -93,7 +93,7 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.RELEASE_PLZ_TOKEN }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.86.0
       - uses: Swatinem/rust-cache@v2
 
       - name: Install release-plz
@@ -116,20 +116,6 @@ jobs:
             echo "arg=" >> "$GITHUB_OUTPUT"
             echo "No release tag yet; the first release uses the current version."
           fi
-
-      # `release` publishes any package whose manifest version isn't on crates.io
-      # yet, then tags it and cuts its GitHub Release. In practice the version
-      # only changes when the release PR (below) merges, so ordinary pushes find
-      # nothing unreleased and no-op; but running it every push (release-plz.toml
-      # `release_always = true`) makes a failed publish RECOVERABLE — a fix lands
-      # as a normal commit and the next push finishes the pending release. It runs
-      # `cargo publish` for both crates (CARGO_REGISTRY_TOKEN), then tags and cuts
-      # the GitHub Release (RELEASE_PLZ_TOKEN).
-      - name: Publish to crates.io, tag, and cut the GitHub Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: release-plz release --git-token "$GITHUB_TOKEN"
 
       - name: Open or update the release PR
         env:

@@ -14,12 +14,13 @@
 //!   cost. The barrier between the warm-up and the fan-out is the whole point, so
 //!   it lives here in the schedule, not in the spawning layer.
 
+use schemars::JsonSchema;
 use serde::Serialize;
 
 /// How a batch of same-prefix prompts is scheduled across the parallel runner.
 /// Also accepted as a CLI value (`--batch-strategy`, parsed in the `oneharness`
 /// binary) — the parsing lives there so this core crate stays free of `clap`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum BatchStrategy {
     /// Fire all prompts at once (a single wave): minimum wall-clock. Every call

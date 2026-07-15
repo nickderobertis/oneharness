@@ -1,5 +1,6 @@
 //! `oneharness detect` — probe which harnesses are installed (binary + version).
 
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::cli::DetectArgs;
@@ -8,8 +9,8 @@ use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::config as config_io;
 use oneharness_core::io::detect::{self, BinOverrides};
 
-#[derive(Serialize)]
-struct DetectInfo {
+#[derive(JsonSchema, Serialize)]
+pub struct DetectInfo {
     id: &'static str,
     bin: String,
     available: bool,
@@ -17,8 +18,8 @@ struct DetectInfo {
     version: Option<String>,
 }
 
-#[derive(Serialize)]
-struct DetectReport {
+#[derive(JsonSchema, Serialize)]
+pub struct DetectReport {
     schema_version: &'static str,
     detected: Vec<DetectInfo>,
 }

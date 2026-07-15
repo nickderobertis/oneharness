@@ -2,14 +2,22 @@
 name = "oneharness-core"
 version = "0.4.4"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.86"
 description = "Reusable engine behind the oneharness CLI: harness registry, hook rendering/installation, and harness config sync."
 license = "MIT"
 repository = "https://github.com/nickderobertis/oneharness"
 
+[features]
+sdk-schema = []
+
+[[example]]
+name = "generate_sdk_schema"
+required-features = ["sdk-schema"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+schemars = "1"
 thiserror = "2"
 which = "7"
 wait-timeout = "0.2"

@@ -186,6 +186,10 @@ jobs:
           TAG: ${{ github.event.release.tag_name }}
         run: |
           tag="$TAG"
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::release tag '$tag' is not a supported vX.Y.Z tag" >&2
+            exit 1
+          fi
           target="x86_64-unknown-linux-gnu"
           base="oneharness-${tag}-${target}"
           # No checkout here, so gh cannot infer the repo from git — name it.

@@ -81,8 +81,7 @@ expect_failure "publish-npm: pass at least one package directory or tarball" scr
 expect_publish_count 0 "a missing package argument"
 
 scripts/publish-npm.sh existing.tgz missing.tgz >"$work/stdout"
-if ! grep -Fq '@oneharness/existing@1.2.3 already exists; skipping' "$work/stdout" ||
-   ! grep -Fxq 'missing.tgz' "$PUBLISH_LOG"; then
+if [ -s "$work/stdout" ] || ! grep -Fxq 'missing.tgz' "$PUBLISH_LOG"; then
   echo "check-publish-npm: existing/missing registry decisions were incorrect" >&2
   exit 1
 fi

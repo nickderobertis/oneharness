@@ -37,7 +37,7 @@ for package in "$@"; do
   fi
 
   if npm view "$identity" version >/dev/null 2>"$work/view-error"; then
-    printf 'publish-npm: %s already exists; skipping\n' "$identity"
+    :
   elif grep -Eq 'E404|404 Not Found' "$work/view-error"; then
     if ! npm publish "$package" --access public >"$work/publish-output" 2>&1; then
       cat "$work/publish-output" >&2

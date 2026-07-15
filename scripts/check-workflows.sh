@@ -57,6 +57,9 @@ require_line .github/workflows/release.yml 'types: [published]' "start distribut
 require_line .github/workflows/release.yml 'run: just check' "run the complete repository gate before publishing"
 require_line .github/workflows/release.yml 'run: scripts/publish-crates.sh' "use the validated crates.io publisher"
 require_line .github/workflows/release.yml 'run: just sdk-check' "use the Node SDK command surface"
+# This is a literal shell expression in YAML.
+# shellcheck disable=SC2016
+require_line .github/workflows/release.yml 'if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then' "validate release-event tags before using them in paths"
 require_line .github/workflows/ci.yml 'run: just deps-check' "use the dependency-audit command surface"
 require_line .github/workflows/ci.yml 'run: scripts/check-pr-title.sh' "validate the release-driving PR title"
 if grep -qE 'run: just (lint|lint-sh|test)$|run: bun run --cwd npm/oneharness-sdk (generate:check|build)$' .github/workflows/release.yml; then

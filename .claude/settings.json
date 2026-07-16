@@ -3,6 +3,9 @@
     "allow": [
       "Bash(just bootstrap)",
       "Bash(just check)",
+      "Bash(just gate)",
+      "Bash(just sdk-check)",
+      "Bash(just coverage)",
       "Bash(just test)",
       "Bash(just lint)",
       "Bash(just lint-sh)",

@@ -42,8 +42,6 @@
       "Bash(cargo tree:*)",
       "Bash(cargo run:*)",
       "Bash(cargo deny:*)",
-      "Bash(bun:*)",
-      "Bash(node:*)",
       "Bash(gh-secrets:*)",
       "Bash(shellcheck:*)",
       "Bash(actionlint:*)",

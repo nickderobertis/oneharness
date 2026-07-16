@@ -130,8 +130,12 @@ test("Zod generation is deterministic and encodes deliberate unknown-key behavio
 		output: {
 			title: "Output",
 			type: "object",
-			properties: { value: { type: "integer", minimum: 0 } },
-			required: ["value"],
+			properties: {
+				value: { type: "integer", minimum: 0 },
+				requiredUnknown: true,
+				optionalUnknown: true,
+			},
+			required: ["value", "requiredUnknown"],
 		},
 	};
 	const roots = [
@@ -142,7 +146,13 @@ test("Zod generation is deterministic and encodes deliberate unknown-key behavio
 	expect(generateZodModule(bundle, roots)).toBe(first);
 	expect(first).toContain("InputSchema: z.ZodType<Input> = z.strictObject");
 	expect(first).toContain("OutputSchema: z.ZodType<Output> = z.looseObject");
-	expect(first).toContain('"value": z.int().gte(0)');
+	expect(first).toContain(
+		'"value": z.int().gte(0).refine((value) => value !== undefined, { message: "Required" })',
+	);
+	expect(first).toContain(
+		'"requiredUnknown": z.unknown().refine((value) => value !== undefined, { message: "Required" })',
+	);
+	expect(first).toContain('"optionalUnknown": z.unknown().optional()');
 });
 
 test("focused Zod generator covers the complete checked-in Rust schema bundle", () => {

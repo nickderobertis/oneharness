@@ -37,6 +37,18 @@ EOF
 cat >"$work/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+expected_user_agent="oneharness-release/${CLI_VERSION:-0.3.21} (https://github.com/nickderobertis/oneharness)"
+user_agent=
+for arg in "$@"; do
+  if [ "${previous:-}" = --user-agent ]; then
+    user_agent="$arg"
+  fi
+  previous="$arg"
+done
+if [ "$user_agent" != "$expected_user_agent" ]; then
+  printf 'curl: expected User-Agent %q, got %q\n' "$expected_user_agent" "$user_agent" >&2
+  exit 2
+fi
 url="${*: -1}"
 case "$url" in
   */oneharness-core/*) status="${CORE_HTTP:-200}" ;;

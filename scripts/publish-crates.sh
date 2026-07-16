@@ -26,8 +26,9 @@ manifest_version() {
 }
 
 publish_if_missing() {
-  local manifest="$1" package="$2" version="$3" status output
+  local manifest="$1" package="$2" version="$3" user_agent="$4" status output
   if ! status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+    --user-agent "$user_agent" \
     "https://crates.io/api/v1/crates/${package}/${version}")"; then
     fail "could not query crates.io for $package $version; retry when the registry is reachable"
   fi
@@ -49,10 +50,11 @@ publish_if_missing() {
 
 core_version="$(manifest_version crates/oneharness-core/Cargo.toml oneharness-core)"
 cli_version="$(manifest_version Cargo.toml oneharness)"
+crates_io_user_agent="oneharness-release/${cli_version} (https://github.com/nickderobertis/oneharness)"
 
 if [ -n "${GITHUB_REF_NAME:-}" ] && [ "$GITHUB_REF_NAME" != "v$cli_version" ]; then
   fail "release tag '$GITHUB_REF_NAME' does not match the CLI manifest version 'v$cli_version'; publish the matching release tag"
 fi
 
-publish_if_missing crates/oneharness-core/Cargo.toml oneharness-core "$core_version"
-publish_if_missing Cargo.toml oneharness "$cli_version"
+publish_if_missing crates/oneharness-core/Cargo.toml oneharness-core "$core_version" "$crates_io_user_agent"
+publish_if_missing Cargo.toml oneharness "$cli_version" "$crates_io_user_agent"

@@ -7,22 +7,64 @@
 
 use std::collections::BTreeMap;
 
-use schemars::{generate::SchemaSettings, JsonSchema, Schema};
+use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::domain::mode::PermissionMode;
 
 /// Generate a schema for a value emitted by oneharness.
 ///
-/// Schemars defaults to a deserialization contract, where an [`Option`] field
-/// may be omitted. oneharness's output structs serialize those fields as
-/// required keys whose values may be `null`, so SDK response schemas must use
-/// the serialization contract to describe the real wire shape.
+/// Schemars defaults to treating an [`Option`] field as omissible. oneharness's
+/// output structs serialize every field, so this normalizes every object schema
+/// to require its declared properties while retaining each option's nullable
+/// value schema.
 pub fn schema_for_serialize<T: ?Sized + JsonSchema>() -> Schema {
-    SchemaSettings::draft2020_12()
-        .for_serialize()
-        .into_generator()
-        .into_root_schema_for::<T>()
+    let mut schema = SchemaGenerator::default().into_root_schema_for::<T>();
+    if let Some(object) = schema.as_object_mut() {
+        require_declared_properties(object);
+    }
+    schema
+}
+
+fn require_declared_properties(object: &mut Map<String, Value>) {
+    if let Some(required) = object
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|properties| properties.keys().cloned().map(Value::String).collect())
+    {
+        object.insert("required".to_string(), Value::Array(required));
+    }
+
+    for keyword in ["properties", "$defs"] {
+        if let Some(children) = object.get_mut(keyword).and_then(Value::as_object_mut) {
+            for child in children.values_mut() {
+                visit_schema(child);
+            }
+        }
+    }
+    for keyword in ["oneOf", "anyOf", "allOf"] {
+        if let Some(children) = object.get_mut(keyword).and_then(Value::as_array_mut) {
+            for child in children {
+                visit_schema(child);
+            }
+        }
+    }
+    for keyword in ["items", "additionalProperties"] {
+        if let Some(child) = object.get_mut(keyword) {
+            visit_schema(child);
+        }
+    }
+}
+
+fn visit_schema(schema: &mut Value) {
+    if let Some(object) = schema.as_object_mut() {
+        require_declared_properties(object);
+    } else if let Some(items) = schema.as_array_mut() {
+        for item in items {
+            visit_schema(item);
+        }
+    }
 }
 
 /// Options accepted by `OneHarness.run()` in the published Node SDK.

@@ -131,26 +131,26 @@
       }
     },
     "required": [
-      "schema_version",
-      "oneharness_version",
-      "prompt",
+      "batch",
+      "bypass_permissions",
+      "config_files",
+      "dry_run",
+      "fallback",
+      "fork",
+      "history_file",
+      "mock_rules",
       "model",
       "models",
-      "resume",
-      "fork",
-      "session",
+      "oneharness_version",
       "permission_mode",
-      "bypass_permissions",
-      "dry_run",
+      "prompt",
+      "results",
+      "resume",
       "schema",
       "schema_max_retries",
-      "batch",
-      "fallback",
-      "mock_rules",
-      "spy_file",
-      "history_file",
-      "config_files",
-      "results"
+      "schema_version",
+      "session",
+      "spy_file"
     ],
     "$defs": {
       "ActionEvent": {
@@ -186,11 +186,11 @@
           }
         },
         "required": [
+          "index",
+          "input",
           "kind",
           "name",
-          "input",
-          "output",
-          "index"
+          "output"
         ]
       },
       "BatchReport": {
@@ -213,9 +213,9 @@
           }
         },
         "required": [
-          "strategy",
+          "forked",
           "prompt_count",
-          "forked"
+          "strategy"
         ]
       },
       "BatchStrategy": {
@@ -301,8 +301,8 @@
           }
         },
         "required": [
-          "ran",
-          "fell_through"
+          "fell_through",
+          "ran"
         ]
       },
       "OutputFormat": {
@@ -530,32 +530,32 @@
           }
         },
         "required": [
-          "harness",
-          "bin",
           "available",
-          "status",
-          "prompt",
-          "model",
-          "exit_code",
-          "duration_ms",
+          "bin",
           "command",
+          "duration_ms",
+          "error",
+          "events",
+          "events_source",
+          "exit_code",
+          "failure_kind",
+          "failure_kind_source",
+          "harness",
+          "model",
           "output_format",
+          "prompt",
+          "schema_attempts",
+          "schema_error",
+          "schema_valid",
+          "session_id",
+          "status",
+          "stderr",
+          "stdout",
+          "structured",
           "text",
           "text_source",
           "usage",
-          "usage_source",
-          "session_id",
-          "events",
-          "events_source",
-          "structured",
-          "schema_valid",
-          "schema_attempts",
-          "schema_error",
-          "failure_kind",
-          "failure_kind_source",
-          "stdout",
-          "stderr",
-          "error"
+          "usage_source"
         ]
       },
       "SessionPhase": {
@@ -603,8 +603,8 @@
         "required": [
           "name",
           "phase",
-          "token",
-          "store_file"
+          "store_file",
+          "token"
         ]
       },
       "Status": {
@@ -692,11 +692,11 @@
           }
         },
         "required": [
-          "input_tokens",
-          "output_tokens",
           "cache_read_tokens",
           "cache_write_tokens",
-          "cost_usd"
+          "cost_usd",
+          "input_tokens",
+          "output_tokens"
         ]
       }
     }
@@ -927,24 +927,24 @@
       }
     },
     "required": [
-      "schema_version",
-      "session",
-      "name",
-      "project",
-      "timestamp",
+      "duration_ms",
+      "events",
+      "exit_code",
+      "failure_kind",
       "harness",
       "model",
-      "prompt",
+      "name",
       "permission_mode",
+      "project",
+      "prompt",
+      "schema_version",
+      "session",
+      "session_id",
       "status",
-      "exit_code",
-      "duration_ms",
       "text",
       "text_source",
-      "usage",
-      "session_id",
-      "events",
-      "failure_kind"
+      "timestamp",
+      "usage"
     ],
     "$defs": {
       "ActionEvent": {
@@ -980,11 +980,11 @@
           }
         },
         "required": [
+          "index",
+          "input",
           "kind",
           "name",
-          "input",
-          "output",
-          "index"
+          "output"
         ]
       },
       "FailureKind": {
@@ -1137,11 +1137,11 @@
           }
         },
         "required": [
-          "input_tokens",
-          "output_tokens",
           "cache_read_tokens",
           "cache_write_tokens",
-          "cost_usd"
+          "cost_usd",
+          "input_tokens",
+          "output_tokens"
         ]
       }
     }
@@ -1187,11 +1187,11 @@
           }
         },
         "required": [
+          "index",
+          "input",
           "kind",
           "name",
-          "input",
-          "output",
-          "index"
+          "output"
         ]
       },
       "FailureKind": {
@@ -1332,24 +1332,24 @@
           }
         },
         "required": [
-          "schema_version",
-          "session",
-          "name",
-          "project",
-          "timestamp",
+          "duration_ms",
+          "events",
+          "exit_code",
+          "failure_kind",
           "harness",
           "model",
-          "prompt",
+          "name",
           "permission_mode",
+          "project",
+          "prompt",
+          "schema_version",
+          "session",
+          "session_id",
           "status",
-          "exit_code",
-          "duration_ms",
           "text",
           "text_source",
-          "usage",
-          "session_id",
-          "events",
-          "failure_kind"
+          "timestamp",
+          "usage"
         ]
       },
       "PermissionMode": {
@@ -1472,11 +1472,11 @@
           }
         },
         "required": [
-          "input_tokens",
-          "output_tokens",
           "cache_read_tokens",
           "cache_write_tokens",
-          "cost_usd"
+          "cost_usd",
+          "input_tokens",
+          "output_tokens"
         ]
       }
     }
@@ -1528,13 +1528,13 @@
           }
         },
         "required": [
+          "harnesses",
           "id",
           "name",
+          "path",
           "project",
-          "started",
           "record_count",
-          "harnesses",
-          "path"
+          "started"
         ]
       }
     }
@@ -1555,8 +1555,8 @@
       }
     },
     "required": [
-      "schema_version",
-      "harnesses"
+      "harnesses",
+      "schema_version"
     ],
     "$defs": {
       "HarnessInfo": {
@@ -1653,27 +1653,27 @@
           }
         },
         "required": [
-          "id",
-          "display",
           "default_bin",
-          "install_hint",
-          "output_format",
-          "supports_resume",
-          "session_capable",
-          "supports_fork",
+          "display",
+          "example_command",
           "fork_reuses_cache",
+          "id",
+          "install_hint",
+          "mock_rewrite",
           "modes",
-          "supports_native_schema",
-          "supports_reasoning",
-          "sync_file",
+          "output_format",
+          "session_capable",
           "supports_allowed_tools",
           "supports_denied_tools",
+          "supports_fork",
           "supports_hooks",
           "supports_mock_deny",
-          "mock_rewrite",
+          "supports_native_schema",
           "supports_prompt_stdin",
+          "supports_reasoning",
+          "supports_resume",
           "supports_system_file",
-          "example_command"
+          "sync_file"
         ]
       },
       "ModeHeadless": {
@@ -1704,8 +1704,8 @@
           }
         },
         "required": [
-          "mode",
-          "headless"
+          "headless",
+          "mode"
         ]
       },
       "OutputFormat": {
@@ -1781,8 +1781,8 @@
       }
     },
     "required": [
-      "schema_version",
-      "detected"
+      "detected",
+      "schema_version"
     ],
     "$defs": {
       "DetectInfo": {
@@ -1811,9 +1811,9 @@
           }
         },
         "required": [
-          "id",
-          "bin",
           "available",
+          "bin",
+          "id",
           "path",
           "version"
         ]

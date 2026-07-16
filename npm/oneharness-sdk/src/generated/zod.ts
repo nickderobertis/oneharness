@@ -18,7 +18,7 @@ import type { DetectInfo, DetectReport } from "./detection.js";
 import type { HistoryRecord } from "./history.js";
 import type { HistoryList, HistorySessionSummary } from "./history-list.js";
 import type { HistoryListOptions } from "./history-list-options.js";
-import type { HistoryLookup } from "./history-lookup.js";
+import type { HistoryLookup, HistoryLookupByLast, HistoryLookupBySession } from "./history-lookup.js";
 import type { HistoryRecords } from "./history-records.js";
 import type { PermissionMode, RunOptions } from "./options.js";
 import type { HarnessInfo, ListReport, ModeInfo } from "./registry.js";
@@ -114,12 +114,28 @@ export const HistoryListOptionsSchema: z.ZodType<HistoryListOptions> = z.strictO
   project: z.string().optional(),
 });
 
-export const HistoryLookupSchema: z.ZodType<HistoryLookup> = z.strictObject({
+export const HistoryLookupSchema: z.ZodType<HistoryLookup> = z.union([
+  z.lazy(() => HistoryLookupByLastSchema),
+  z.lazy(() => HistoryLookupBySessionSchema),
+]);
+
+export const HistoryLookupByLastSchema: z.ZodType<HistoryLookupByLast> = z.strictObject({
   allProjects: z.boolean().optional(),
   historyDir: z.string().optional(),
-  last: z.boolean().optional(),
+  last: z.literal(true).refine((value) => value !== undefined, { message: "Required" }),
   project: z.string().optional(),
-  session: z.string().optional(),
+  session: z.string().min(1).optional(),
+});
+
+export const HistoryLookupBySessionSchema: z.ZodType<HistoryLookupBySession> = z.strictObject({
+  allProjects: z.boolean().optional(),
+  historyDir: z.string().optional(),
+  last: z.literal(false).optional(),
+  project: z.string().optional(),
+  session: z
+    .string()
+    .min(1)
+    .refine((value) => value !== undefined, { message: "Required" }),
 });
 
 export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.looseObject({

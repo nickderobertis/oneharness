@@ -172,6 +172,8 @@ test("focused Zod generator covers the complete checked-in Rust schema bundle", 
 	for (const name of [
 		"RunOptions",
 		"HistoryLookup",
+		"HistoryLookupBySession",
+		"HistoryLookupByLast",
 		"HistoryListOptions",
 		"RunReport",
 		"RunResult",

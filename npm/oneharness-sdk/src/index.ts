@@ -40,7 +40,11 @@ export type {
 	HistorySessionSummary,
 } from "./generated/history-list.js";
 export type { HistoryListOptions } from "./generated/history-list-options.js";
-export type { HistoryLookup } from "./generated/history-lookup.js";
+export type {
+	HistoryLookup,
+	HistoryLookupByLast,
+	HistoryLookupBySession,
+} from "./generated/history-lookup.js";
 export type { HistoryRecords } from "./generated/history-records.js";
 export type { PermissionMode, RunOptions } from "./generated/options.js";
 export type Detection = DetectInfo;
@@ -193,19 +197,19 @@ export class OneHarness {
 		).detected;
 	}
 
-	async history(lookup: HistoryLookup = {}): Promise<HistoryRecord[]> {
+	async history(lookup: HistoryLookup): Promise<HistoryRecord[]> {
 		const input = parseContract(
 			HistoryLookupSchema,
 			lookup,
 			"invalid oneharness history options",
 		);
 		const args = ["history", "show", "--compact"];
-		// The structural schema cannot state this: it holds across fields, and the
-		// SDK reads `last` for truthiness before falling back to a non-empty
-		// `session`. See HistoryLookup in oneharness-core.
-		if (input.last) args.push("--last");
-		else if (input.session) args.push(input.session);
-		else throw new TypeError("history requires session or last");
+		// A lookup that selects no session is not a HistoryLookup, so the union
+		// leaves only these two cases. `last: true` keeps its long-standing
+		// priority over a name, which is why it is the union's first variant; the
+		// other variant then has the session the type guarantees is there.
+		if (input.last === true) args.push("--last");
+		else args.push(input.session);
 		if (input.project) args.push("--project", input.project);
 		if (input.allProjects) args.push("--all-projects");
 		if (input.historyDir) args.push("--history-dir", input.historyDir);

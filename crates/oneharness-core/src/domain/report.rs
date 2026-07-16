@@ -4,7 +4,7 @@
 //! are added, never repurposed or removed, without bumping the version.
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::domain::batch::BatchStrategy;
@@ -290,4 +290,55 @@ pub struct BatchReport {
     /// the fan-out results' `command` carries the resume/fork flags and their
     /// `usage.cache_read_tokens` reflect the reused prefix.
     pub forked: bool,
+}
+
+/// One line of `oneharness run --stream` output.
+///
+/// Event lines carry normalized actions as they arrive. Exactly one terminal
+/// result line carries the complete report unless the consumer closes the
+/// stream early. This is an output contract, so deserialization deliberately
+/// tolerates additive fields from newer producers.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RunStreamEnvelope {
+    /// A normalized action observed while the harness is still running.
+    Event { event: ActionEvent },
+    /// The complete report that terminates a normally consumed stream.
+    Result { report: RunReport },
+}
+
+impl<'de> Deserialize<'de> for RunStreamEnvelope {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // Serde's internally-tagged-enum buffer does not support u128, while a
+        // RunReport legitimately carries millisecond durations as u128. Decode
+        // the small JSON envelope first so the nested report is deserialized by
+        // serde_json's number-aware value deserializer instead.
+        let value = Value::deserialize(deserializer)?;
+        let kind = value.get("type").and_then(Value::as_str).ok_or_else(|| {
+            serde::de::Error::custom("run stream envelope is missing string field `type`")
+        })?;
+        match kind {
+            "event" => serde_json::from_value(
+                value
+                    .get("event")
+                    .cloned()
+                    .ok_or_else(|| serde::de::Error::custom("event envelope is missing `event`"))?,
+            )
+            .map(|event| Self::Event { event })
+            .map_err(serde::de::Error::custom),
+            "result" => {
+                serde_json::from_value(value.get("report").cloned().ok_or_else(|| {
+                    serde::de::Error::custom("result envelope is missing `report`")
+                })?)
+                .map(|report| Self::Result { report })
+                .map_err(serde::de::Error::custom)
+            }
+            other => Err(serde::de::Error::custom(format!(
+                "unknown run stream envelope type `{other}`"
+            ))),
+        }
+    }
 }

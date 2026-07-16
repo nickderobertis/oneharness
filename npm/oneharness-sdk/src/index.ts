@@ -46,7 +46,9 @@ export type {
 	HistoryLookupBySession,
 } from "./generated/history-lookup.js";
 export type { HistoryRecords } from "./generated/history-records.js";
+export type { HistoryStreamEnvelope } from "./generated/history-stream-envelope.js";
 export type { PermissionMode, RunOptions } from "./generated/options.js";
+export type { RunStreamEnvelope } from "./generated/run-stream-envelope.js";
 export type Detection = DetectInfo;
 export type {
 	HarnessInfo,

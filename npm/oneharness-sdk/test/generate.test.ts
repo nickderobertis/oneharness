@@ -176,10 +176,12 @@ test("focused Zod generator covers the complete checked-in Rust schema bundle", 
 		"HistoryLookupByLast",
 		"HistoryListOptions",
 		"RunReport",
+		"RunStreamEnvelope",
 		"RunResult",
 		"ActionEvent",
 		"Usage",
 		"HistoryRecord",
+		"HistoryStreamEnvelope",
 		"HistoryRecords",
 		"HistoryList",
 		"HistorySessionSummary",
@@ -191,6 +193,12 @@ test("focused Zod generator covers the complete checked-in Rust schema bundle", 
 	expect(generated).not.toContain("as unknown as z.ZodType");
 	expect(generated).toContain(
 		"export const RunReportSchema: z.ZodType<RunReport>",
+	);
+	expect(generated).toContain(
+		"export const RunStreamEnvelopeSchema: z.ZodType<RunStreamEnvelope>",
+	);
+	expect(generated).toContain(
+		"export const HistoryStreamEnvelopeSchema: z.ZodType<HistoryStreamEnvelope>",
 	);
 	expect(generated).toContain("z.lazy(() => RunResultSchema)");
 	expect(generated).toContain("z.record(z.string(), z.string())");

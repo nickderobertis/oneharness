@@ -8,6 +8,8 @@ use std::io::BufRead;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
+use oneharness_core::domain::history::HistoryStreamEnvelope;
+use oneharness_core::domain::report::RunStreamEnvelope;
 use serde_json::Value;
 
 const ALL_IDS: &[&str] = &[
@@ -2529,6 +2531,11 @@ fn stream_mode_emits_event_lines_then_a_terminal_report() {
         .filter(|l| !l.trim().is_empty())
         .map(|l| serde_json::from_str(l).expect("each stream line is JSON"))
         .collect();
+    let typed: Vec<RunStreamEnvelope> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("each stream line matches the Rust contract"))
+        .collect();
     // Two event lines, then one result line.
     assert_eq!(lines.len(), 3, "lines: {text}");
     assert_eq!(lines[0]["type"], "event");
@@ -2545,6 +2552,19 @@ fn stream_mode_emits_event_lines_then_a_terminal_report() {
     assert_eq!(result["events_source"], "json:opencode-parts");
     assert_eq!(result["events"].as_array().unwrap().len(), 2);
     assert_eq!(result["text"], "working");
+    assert!(matches!(typed[0], RunStreamEnvelope::Event { .. }));
+    assert!(matches!(typed[1], RunStreamEnvelope::Event { .. }));
+    assert!(matches!(typed[2], RunStreamEnvelope::Result { .. }));
+
+    // Stream envelopes are producer output: new additive fields from a newer
+    // oneharness remain readable by this Rust contract.
+    let mut future = lines[2].clone();
+    future["future_output_field"] = Value::Bool(true);
+    assert!(serde_json::from_value::<RunStreamEnvelope>(future).is_ok());
+    assert!(serde_json::from_value::<RunStreamEnvelope>(
+        serde_json::json!({ "type": "future_variant" })
+    )
+    .is_err());
 }
 
 #[test]
@@ -8095,9 +8115,19 @@ fn history_watch_filters_and_resumes_as_jsonl() {
     child.kill().unwrap();
     let _ = child.wait();
     let envelope: Value = serde_json::from_str(&line).unwrap();
+    let typed: HistoryStreamEnvelope = serde_json::from_str(&line).unwrap();
     assert_eq!(envelope["type"], "record");
     assert_eq!(envelope["record"]["history_id"], ids[1]);
     assert_eq!(envelope["record"]["prompt"], "second");
+    match typed {
+        HistoryStreamEnvelope::Record { record } => {
+            assert_eq!(record.history_id.to_string(), ids[1]);
+            assert_eq!(record.prompt, "second");
+        }
+    }
+    let mut future = envelope;
+    future["future_output_field"] = Value::Bool(true);
+    assert!(serde_json::from_value::<HistoryStreamEnvelope>(future).is_ok());
 
     let missing = run(
         &[

@@ -20,8 +20,10 @@ import type { HistoryList, HistorySessionSummary } from "./history-list.js";
 import type { HistoryListOptions } from "./history-list-options.js";
 import type { HistoryLookup, HistoryLookupByLast, HistoryLookupBySession } from "./history-lookup.js";
 import type { HistoryRecords } from "./history-records.js";
+import type { HistoryStreamEnvelope } from "./history-stream-envelope.js";
 import type { PermissionMode, RunOptions } from "./options.js";
 import type { HarnessInfo, ListReport, ModeInfo } from "./registry.js";
+import type { RunStreamEnvelope } from "./run-stream-envelope.js";
 
 export type BatchStrategy = BatchReport["strategy"];
 export type ModeHeadless = ModeInfo["headless"];
@@ -189,6 +191,11 @@ export const HistorySessionSummarySchema: z.ZodType<HistorySessionSummary> = z.l
   started: z.string().refine((value) => value !== undefined, { message: "Required" }),
 });
 
+export const HistoryStreamEnvelopeSchema: z.ZodType<HistoryStreamEnvelope> = z.looseObject({
+  record: z.lazy(() => HistoryRecordSchema).refine((value) => value !== undefined, { message: "Required" }),
+  type: z.literal("record").refine((value) => value !== undefined, { message: "Required" }),
+});
+
 export const ListReportSchema: z.ZodType<ListReport> = z.looseObject({
   harnesses: z.array(z.lazy(() => HarnessInfoSchema)).refine((value) => value !== undefined, { message: "Required" }),
   schema_version: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -302,6 +309,17 @@ export const RunResultSchema: z.ZodType<RunResult> = z.looseObject({
   usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
   usage_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
 });
+
+export const RunStreamEnvelopeSchema: z.ZodType<RunStreamEnvelope> = z.union([
+  z.looseObject({
+    event: z.lazy(() => ActionEventSchema).refine((value) => value !== undefined, { message: "Required" }),
+    type: z.literal("event").refine((value) => value !== undefined, { message: "Required" }),
+  }),
+  z.looseObject({
+    report: z.lazy(() => RunReportSchema).refine((value) => value !== undefined, { message: "Required" }),
+    type: z.literal("result").refine((value) => value !== undefined, { message: "Required" }),
+  }),
+]);
 
 export const SessionPhaseSchema: z.ZodType<SessionPhase> = z.union([z.literal("create"), z.literal("continue")]);
 

@@ -52,7 +52,17 @@ export const SDK_SCHEMA_ROOTS = Object.freeze([
 		module: "history-list-options",
 	},
 	{ key: "run_report", type: "RunReport", module: "contracts" },
+	{
+		key: "run_stream_envelope",
+		type: "RunStreamEnvelope",
+		module: "run-stream-envelope",
+	},
 	{ key: "history_record", type: "HistoryRecord", module: "history" },
+	{
+		key: "history_stream_envelope",
+		type: "HistoryStreamEnvelope",
+		module: "history-stream-envelope",
+	},
 	{
 		key: "history_records",
 		type: "HistoryRecords",

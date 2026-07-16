@@ -1343,6 +1343,7 @@ fn stream_one_harness(
     prompt: Option<String>,
     model: Option<String>,
 ) -> RunResult {
+    use oneharness_core::domain::report::RunStreamEnvelope;
     use oneharness_core::io::runner::StreamStep;
     use serde_json::Value;
     use std::io::Write;
@@ -1359,7 +1360,7 @@ fn stream_one_harness(
         next_index += evs.len();
         let mut out = std::io::stdout().lock();
         for ev in &evs {
-            let envelope = serde_json::json!({ "type": "event", "event": ev });
+            let envelope = RunStreamEnvelope::Event { event: ev.clone() };
             // A broken pipe (consumer closed the stream) is the short-circuit
             // signal: stop reading and tear the child down.
             if serde_json::to_string(&envelope)
@@ -1393,8 +1394,11 @@ fn stream_one_harness(
 /// that ignored the incremental events still gets the full report. A broken pipe
 /// (the consumer already short-circuited and left) is not an error.
 fn emit_stream_result(report: &RunReport) -> Result<(), OneharnessError> {
+    use oneharness_core::domain::report::RunStreamEnvelope;
     use std::io::Write;
-    let line = serde_json::to_string(&serde_json::json!({ "type": "result", "report": report }))?;
+    let line = serde_json::to_string(&RunStreamEnvelope::Result {
+        report: report.clone(),
+    })?;
     // A broken pipe (the consumer already short-circuited and left) is expected,
     // not an error; any other write failure on the terminal line is non-fatal.
     let _ = writeln!(std::io::stdout(), "{line}");

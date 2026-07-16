@@ -26,6 +26,8 @@ import {
 	HistoryRecordsSchema,
 	type HistorySessionSummary,
 	HistorySessionSummarySchema,
+	type HistoryStreamEnvelope,
+	HistoryStreamEnvelopeSchema,
 	type ListReport,
 	ListReportSchema,
 	OneHarness,
@@ -35,6 +37,8 @@ import {
 	RunReportSchema,
 	type RunResult,
 	RunResultSchema,
+	type RunStreamEnvelope,
+	RunStreamEnvelopeSchema,
 	SessionReportSchema,
 	type Usage,
 	UsageSchema,
@@ -65,13 +69,17 @@ const inferredSchemasMatchGeneratedTypes: [
 	Equal<z.infer<typeof ActionEventSchema>, ActionEvent>,
 	Equal<z.infer<typeof UsageSchema>, Usage>,
 	Equal<z.infer<typeof HistoryRecordSchema>, HistoryRecord>,
+	Equal<z.infer<typeof HistoryStreamEnvelopeSchema>, HistoryStreamEnvelope>,
 	Equal<z.infer<typeof HistoryRecordsSchema>, HistoryRecords>,
 	Equal<z.infer<typeof HistoryListSchema>, HistoryList>,
 	Equal<z.infer<typeof HistorySessionSummarySchema>, HistorySessionSummary>,
 	Equal<z.infer<typeof ListReportSchema>, ListReport>,
 	Equal<z.infer<typeof HarnessInfoSchema>, HarnessInfo>,
 	Equal<z.infer<typeof DetectReportSchema>, DetectReport>,
+	Equal<z.infer<typeof RunStreamEnvelopeSchema>, RunStreamEnvelope>,
 ] = [
+	true,
+	true,
 	true,
 	true,
 	true,
@@ -154,6 +162,13 @@ describe("OneHarness", () => {
 		const incompleteReport: Partial<RunReport> = { ...report };
 		delete incompleteReport.history_file;
 		expect(RunReportSchema.safeParse(incompleteReport).success).toBe(false);
+		expect(
+			RunStreamEnvelopeSchema.parse({
+				type: "result",
+				report,
+				future_output_field: true,
+			}),
+		).toMatchObject({ type: "result", future_output_field: true });
 
 		const traced = await client.run({
 			prompt: "sdk trace",
@@ -177,6 +192,15 @@ describe("OneHarness", () => {
 		expect(traced.results[0]?.events?.[0]?.kind).toBe("tool_call");
 		expect(traced.results[0]?.events?.[0]?.index).toBe(0);
 		expect(traced.results[0]?.events?.[0]?.output).toBeNull();
+		expect(
+			RunStreamEnvelopeSchema.safeParse({
+				type: "event",
+				event: traced.results[0]?.events?.[0],
+			}).success,
+		).toBe(true);
+		expect(
+			RunStreamEnvelopeSchema.safeParse({ type: "future_variant" }).success,
+		).toBe(false);
 		expect(traced.results[0]?.structured).toBeNull();
 		expect(
 			ActionEventSchema.safeParse(traced.results[0]?.events?.[0]).success,
@@ -388,6 +412,13 @@ describe("OneHarness", () => {
 		}
 		expect(HistoryRecordsSchema.safeParse(records).success).toBe(true);
 		expect(HistoryRecordSchema.safeParse(records[0]).success).toBe(true);
+		expect(
+			HistoryStreamEnvelopeSchema.parse({
+				type: "record",
+				record: records[0],
+				future_output_field: true,
+			}),
+		).toMatchObject({ type: "record", future_output_field: true });
 		const incompleteRecord: Partial<HistoryRecord> = { ...records[0] };
 		delete incompleteRecord.text;
 		expect(HistoryRecordSchema.safeParse(incompleteRecord).success).toBe(false);

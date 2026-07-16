@@ -127,10 +127,13 @@ Use the `just` recipes; do not hand-roll equivalents.
   run history — one normalized record per harness run (the report's signals, no
   raw stdout/stderr) — to `<history_dir>/<project-slug>/<session>.jsonl` (one file
   per run; `history_dir` defaults to the platform state dir). It is its own output
-  contract with its own `domain::history::SCHEMA_VERSION` (independent of the
-  report's), so the shape versions on its own cadence. The record shape + slug +
-  name + timestamp formatting are pure (`domain::history`); the clock reads that
-  mint the session id/timestamps and all file writes/reads are I/O
+  v0.2 contract with its own `domain::history::SCHEMA_VERSION` (independent of
+  the report's): each record has a UUIDv7 `history_id` and validated `labels`
+  (`history_labels` / `ONEHARNESS_HISTORY_LABELS` / repeated `--history-label`,
+  merged by key with CLI > env > project > user precedence). v0.1 remains
+  readable with a deterministic UUIDv5 id and empty labels. The record shape +
+  slug + name + timestamp formatting are pure (`domain::history`); the clock
+  reads that mint the session id/timestamps and all file writes/reads are I/O
   (`io::history`). The writer is **best-effort** — a store that can't be opened or
   a record that can't be written warns on stderr and disables history for the run,
   never taking the results down (like the mock restore). The session `name` is
@@ -138,10 +141,14 @@ Use the `just` recipes; do not hand-roll equivalents.
   the harness — headless harnesses expose only an opaque `session_id` (already
   captured per record), never a readable title; don't fabricate one. The report
   echoes the session file as `history_file` (the programmatic handle). The
-  `oneharness history list/show/clear` verb views/manages the store: JSON on
-  stdout by default (the contract), `--format text` for humans; `show` resolves by
-  id OR name; `clear` is a dry run until `--yes`. Adding `history`/`history_dir`
-  extended the config/env/CLI trio (`from_env` gained `ONEHARNESS_HISTORY`/`_DIR`).
+  `oneharness history list/show/watch/clear` verb views/manages the store: JSON on
+  stdout by default (the contract), `--format text` for humans; `show` resolves a
+  record UUID exactly before its back-compatible session id/name lookup; `watch`
+  emits typed JSONL envelopes with label filters and `--after` cursor resume.
+  Its process-locked append-only `.index.jsonl` is reconciled once on startup
+  (including partial-tail recovery), then followed by byte offset without repeated
+  tree scans. `clear` is a dry run until `--yes`. History paths are canonicalized
+  before writing so `cwd=..` remains discoverable.
   `gate <id>` is the odd one out: the runtime pre-tool gate an
   installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It
@@ -618,7 +625,10 @@ shape. When you add one:
   harness whose transcript needs the upgraded format. Streaming
   (`run --stream`, `io::runner::run_job_streaming` + `events::events_from_value`)
   emits events incrementally so a consumer can short-circuit on bad behavior;
-  `oh_stream_assert` is its live proof. See the README *events* matrix.
+  its lines are the typed Rust `RunStreamEnvelope` contract and
+  `oh_stream_assert` is its live proof. `sdk_schema::bundle` is the single Rust
+  generation source for that envelope, `HistoryStreamEnvelope`, and the shared
+  SDK contracts. See the README *events* matrix.
 
 ## Scripts and output are context
 

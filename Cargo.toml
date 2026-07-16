@@ -32,8 +32,8 @@ required-features = ["sdk-schema"]
 [features]
 # Builds the mock harness fixture. Enabled by `just test`/`just check` and CI.
 mock-harness = []
-# Builds the schema generator for the Node SDK's public CLI response contracts.
-sdk-schema = []
+# Builds the Rust-owned schema generator shared by language SDKs.
+sdk-schema = ["oneharness-core/sdk-schema"]
 
 # Depended on by path for local builds, with a `version` requirement so the
 # crate is publishable: `cargo publish` rewrites the path dep to this registry

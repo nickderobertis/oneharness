@@ -15,7 +15,11 @@ import {
 	type HarnessInfo,
 	HarnessInfoSchema,
 	type HistoryList,
+	type HistoryListOptions,
+	HistoryListOptionsSchema,
 	HistoryListSchema,
+	type HistoryLookup,
+	HistoryLookupSchema,
 	type HistoryRecord,
 	HistoryRecordSchema,
 	type HistoryRecords,
@@ -40,6 +44,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const binary = resolve(here, "../../../target/debug/oneharness");
 const mock = resolve(here, "../../../target/debug/oneharness-mock-harness");
 const invalidCli = resolve(here, "invalid-cli-fixture.mjs");
+// Deliberately absent: a client pointed here can validate but never spawn, so a
+// boundary check that runs before the subprocess is the only way to see the
+// validation error rather than this path's spawn failure.
+const unspawnable = resolve(here, "missing-oneharness-fixture");
 
 type Equal<Left, Right> =
 	(<Value>() => Value extends Left ? 1 : 2) extends <
@@ -50,6 +58,8 @@ type Equal<Left, Right> =
 
 const inferredSchemasMatchGeneratedTypes: [
 	Equal<z.infer<typeof RunOptionsSchema>, RunOptions>,
+	Equal<z.infer<typeof HistoryListOptionsSchema>, HistoryListOptions>,
+	Equal<z.infer<typeof HistoryLookupSchema>, HistoryLookup>,
 	Equal<z.infer<typeof RunReportSchema>, RunReport>,
 	Equal<z.infer<typeof RunResultSchema>, RunResult>,
 	Equal<z.infer<typeof ActionEventSchema>, ActionEvent>,
@@ -61,7 +71,22 @@ const inferredSchemasMatchGeneratedTypes: [
 	Equal<z.infer<typeof ListReportSchema>, ListReport>,
 	Equal<z.infer<typeof HarnessInfoSchema>, HarnessInfo>,
 	Equal<z.infer<typeof DetectReportSchema>, DetectReport>,
-] = [true, true, true, true, true, true, true, true, true, true, true, true];
+] = [
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+];
 
 function sdk(): OneHarness {
 	return new OneHarness({
@@ -201,6 +226,91 @@ describe("OneHarness", () => {
 		);
 	});
 
+	test("rejects unusable public options before spawning the CLI", async () => {
+		// This client can never spawn, so an option that reached the CLI would
+		// surface that spawn failure instead. Only a check that runs before the
+		// subprocess can produce the validation error each case asserts.
+		const client = new OneHarness({ executable: unspawnable });
+		const runRejects = async (options: unknown) => {
+			await expect(client.run(options as RunOptions)).rejects.toThrow(
+				"invalid oneharness run options",
+			);
+		};
+		const listRejects = async (options: unknown) => {
+			await expect(
+				client.historyList(options as HistoryListOptions),
+			).rejects.toThrow("invalid oneharness history list options");
+		};
+		const historyRejects = async (lookup: unknown) => {
+			await expect(client.history(lookup as HistoryLookup)).rejects.toThrow(
+				"invalid oneharness history options",
+			);
+		};
+
+		// Non-object: nothing to read an option off of.
+		for (const nonObject of [null, "run", 42, true, [], () => "run"]) {
+			await runRejects(nonObject);
+			await listRejects(nonObject);
+			await historyRejects(nonObject);
+		}
+
+		// Empty: run needs a prompt, while every history list option is optional.
+		await runRejects({});
+		expect(HistoryListOptionsSchema.safeParse({}).success).toBe(true);
+
+		// Misspelled: a near-miss key this SDK version cannot forward.
+		await runRejects({ prompt: "typo", harneses: ["codex"] });
+		await listRejects({ allProject: true });
+		await historyRejects({ sesion: "node-session" });
+		await historyRejects({ session: "node-session", lastest: true });
+
+		// Malformed: a known key carrying the wrong type.
+		await runRejects({ prompt: 42 });
+		await runRejects({ prompt: "wrong shape", harnesses: "codex" });
+		await listRejects({ project: 42 });
+		await listRejects({ allProjects: "yes" });
+		await historyRejects({ session: 42 });
+		await historyRejects({ last: "yes" });
+		await historyRejects({ last: true, historyDir: 42 });
+	});
+
+	test("requires a history selector the structural schema cannot demand", async () => {
+		// Same unspawnable client: every rejection below happens before a process.
+		const client = new OneHarness({ executable: unspawnable });
+		const selectorRejects = async (lookup: HistoryLookup | undefined) => {
+			await expect(client.history(lookup)).rejects.toThrow(
+				"history requires session or last",
+			);
+		};
+
+		// Structurally valid, semantically unusable: no field names a session, so
+		// the schema passes and the SDK's own selector rule is what rejects these.
+		for (const selectorless of [
+			{},
+			{ historyDir: "/tmp/oneharness-history" },
+		]) {
+			expect(HistoryLookupSchema.safeParse(selectorless).success).toBe(true);
+			await selectorRejects(selectorless);
+		}
+		await selectorRejects(undefined);
+
+		// Present but not selecting: the SDK reads these for truthiness, so an
+		// empty session and an explicit `last: false` select nothing.
+		await selectorRejects({ session: "" });
+		await selectorRejects({ last: false });
+		await selectorRejects({ session: "", last: false });
+
+		// A valid selector clears both checks, so this client fails on the spawn it
+		// reached rather than on validation — the proof the rejections above are
+		// the boundary talking, not a missing binary.
+		for (const selector of [{ session: "node-session" }, { last: true }]) {
+			expect(HistoryLookupSchema.safeParse(selector).success).toBe(true);
+			await expect(client.history(selector)).rejects.toThrow(
+				"missing-oneharness-fixture",
+			);
+		}
+	});
+
 	test("lists and detects the open harness registry", async () => {
 		const client = sdk();
 		const listed = await client.list();
@@ -276,6 +386,10 @@ describe("OneHarness", () => {
 		expect(HistorySessionSummarySchema.safeParse(sessions[0]).success).toBe(
 			true,
 		);
+		expect(
+			HistoryListOptionsSchema.safeParse({ allProjects: true, historyDir })
+				.success,
+		).toBe(true);
 	});
 
 	test("continues a native session with the new user message", async () => {
@@ -387,7 +501,7 @@ describe("OneHarness", () => {
 
 	test("rejects an empty prompt before spawning", async () => {
 		await expect(new OneHarness().run({ prompt: "" })).rejects.toThrow(
-			"prompt must not be empty",
+			"invalid oneharness run options",
 		);
 	});
 
@@ -399,12 +513,6 @@ describe("OneHarness", () => {
 		await expect(
 			new OneHarness({ executable: missing }).list(),
 		).rejects.toThrow("missing-oneharness");
-	});
-
-	test("requires an explicit history selector", async () => {
-		await expect(sdk().history()).rejects.toThrow(
-			"history requires session or last",
-		);
 	});
 
 	test("rejects malformed run, history, list, and detect data from an external CLI", async () => {
@@ -431,7 +539,12 @@ describe("OneHarness", () => {
 			executableArgs: [invalidCli],
 			env: { SDK_FIXTURE_MODE: "history-list" },
 		});
+		// Both spellings of "no options" clear validation and reach the CLI, so the
+		// only contract they can fail is the response one.
 		await expect(historyListClient.historyList()).rejects.toThrow(
+			"invalid history list contract",
+		);
+		await expect(historyListClient.historyList({})).rejects.toThrow(
 			"invalid history list contract",
 		);
 

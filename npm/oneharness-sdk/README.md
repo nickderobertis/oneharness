@@ -13,11 +13,11 @@ console.log(checked.results[0]?.text, checked.results[0]?.usage.input_tokens);
 
 `null` usage fields mean the harness did not report the value; zero remains a real measured zero. String-valued harness/model/event identifiers should be treated as open sets for forward compatibility.
 
-Named exports include `RunOptionsSchema`, `RunReportSchema`, `RunResultSchema`, `ActionEventSchema`, `UsageSchema`, `HistoryRecordSchema`, `HistoryRecordsSchema`, `HistoryListSchema`, `HistorySessionSummarySchema`, `ListReportSchema`, `HarnessInfoSchema`, and the registry/detection enum and object schemas. Each schema's `z.infer` type is compile-time checked against its generated TypeScript type.
+Named exports include `RunOptionsSchema`, `HistoryLookupSchema`, `HistoryListOptionsSchema`, `RunReportSchema`, `RunResultSchema`, `ActionEventSchema`, `UsageSchema`, `HistoryRecordSchema`, `HistoryRecordsSchema`, `HistoryListSchema`, `HistorySessionSummarySchema`, `ListReportSchema`, `HarnessInfoSchema`, and the registry/detection enum and object schemas. Each schema's `z.infer` type is compile-time checked against its generated TypeScript type.
 
-Output objects accept and preserve unknown fields. That deliberate loose-object behavior lets an older SDK validate a newer additive CLI response without erasing fields before an application can inspect them. Known fields are still validated recursively. `RunOptionsSchema` is deliberately strict instead: unknown input keys are rejected because this SDK version cannot forward an option it does not understand, which also catches misspellings.
+Output objects accept and preserve unknown fields. That deliberate loose-object behavior lets an older SDK validate a newer additive CLI response without erasing fields before an application can inspect them. Known fields are still validated recursively. The input schemas `RunOptionsSchema`, `HistoryLookupSchema`, and `HistoryListOptionsSchema` are deliberately strict instead: unknown input keys are rejected because this SDK version cannot forward an option it does not understand, which also catches misspellings. `run`, `history`, and `historyList` validate against them before reading any option, so an unusable input raises `invalid oneharness run options` / `invalid oneharness history options` / `invalid oneharness history list options` rather than reaching the CLI.
 
-Nullable CLI fields remain required object keys: the generated response schemas model Rust's serialization contract, so an unavailable value is `null`, while an omitted guaranteed field is malformed. Optional `RunOptions` fields may be absent or explicitly `undefined`.
+Nullable CLI fields remain required object keys: the generated response schemas model Rust's serialization contract, so an unavailable value is `null`, while an omitted guaranteed field is malformed. Optional `RunOptions`, `HistoryLookup`, and `HistoryListOptions` fields may be absent or explicitly `undefined`; every `HistoryListOptions` field is optional, so `historyList()` and `historyList({})` both list the default store.
 
 Continuation passes the prior result's native session id with a new user message:
 
@@ -40,3 +40,5 @@ const sessions = await oneharness.historyList({ allProjects: true });
 HistoryRecordSchema.parse(records[0]);
 HistoryListSchema.parse(sessions);
 ```
+
+`HistoryLookupSchema` is structural: it makes every field optional, so it accepts a lookup that names no session. `history()` therefore adds one rule the schema deliberately does not state — a lookup must select a session with a non-empty `session` or a truthy `last`, and `history({})`, `history({ last: false })`, or `history({ session: "" })` raise `history requires session or last`. That rule holds across fields rather than within one, and `last` is read for truthiness before `session`, which is not what an `anyOf` over required keys would express.

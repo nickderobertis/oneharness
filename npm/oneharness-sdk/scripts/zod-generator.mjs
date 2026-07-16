@@ -44,6 +44,12 @@ const METADATA_KEYS = new Set([
 
 export const SDK_SCHEMA_ROOTS = Object.freeze([
 	{ key: "run_options", type: "RunOptions", module: "options" },
+	{ key: "history_lookup", type: "HistoryLookup", module: "history-lookup" },
+	{
+		key: "history_list_options",
+		type: "HistoryListOptions",
+		module: "history-list-options",
+	},
 	{ key: "run_report", type: "RunReport", module: "contracts" },
 	{ key: "history_record", type: "HistoryRecord", module: "history" },
 	{

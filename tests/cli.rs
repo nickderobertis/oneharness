@@ -70,6 +70,7 @@ const ENV_OVERRIDE_VARS: &[&str] = &[
     "ONEHARNESS_REQUIRE_AVAILABLE",
     "ONEHARNESS_HISTORY",
     "ONEHARNESS_HISTORY_DIR",
+    "ONEHARNESS_HISTORY_LABELS",
 ];
 
 /// Run with config loading enabled but still hermetic: the user-level config is
@@ -7889,6 +7890,140 @@ fn history_enabled_and_dir_via_environment() {
 }
 
 #[test]
+fn history_labels_layer_cli_over_environment_over_config_and_validate() {
+    let dir = hist_dir("labels");
+    let ds = dir.display().to_string();
+    let fixture = ConfigFixture::new(
+        "history-labels",
+        "history_labels = { graph = \"project\", project = \"kept\" }",
+        "history_labels = { graph = \"user\", user = \"kept\" }",
+    );
+    let out = run_with_config(
+        &[
+            "run",
+            "--cwd",
+            &fixture.cwd(),
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--prompt",
+            "labeled run",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-label",
+            "graph=cli",
+            "--history-label",
+            "cli=kept",
+            "--bypass",
+            "--compact",
+        ],
+        &[
+            ("MOCK_STDOUT", r#"{"result":"x"}"#),
+            ("ONEHARNESS_HISTORY_LABELS", "graph=environment,env=kept"),
+        ],
+        &fixture.user_config(),
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let path = json_stdout(&out)["history_file"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let record: Value = serde_json::from_str(
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["schema_version"], "0.2");
+    assert_eq!(record["labels"]["graph"], "cli");
+    for key in ["user", "project", "env", "cli"] {
+        assert_eq!(record["labels"][key], "kept", "label {key}");
+    }
+
+    let invalid = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "invalid",
+            "--history-label",
+            "bad/key=value",
+        ],
+        &[],
+    );
+    assert_eq!(invalid.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("invalid history label"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn history_canonicalizes_relative_cwd_for_project_lookup() {
+    let dir = hist_dir("canonical-cwd");
+    let ds = dir.display().to_string();
+    let root = hist_dir("canonical-project");
+    let project = root.join("project");
+    let child = project.join("child");
+    std::fs::create_dir_all(&child).unwrap();
+    let relative = child.join("..");
+    let out = run(
+        &[
+            "run",
+            "--cwd",
+            &relative.display().to_string(),
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--prompt",
+            "canonical",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"x"}"#)],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let listed = json_stdout(&run(
+        &[
+            "history",
+            "list",
+            "--project",
+            &project.display().to_string(),
+            "--history-dir",
+            &ds,
+            "--compact",
+        ],
+        &[],
+    ));
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(
+        listed[0]["project"],
+        std::fs::canonicalize(&project)
+            .unwrap()
+            .display()
+            .to_string()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn history_records_a_failed_run_and_shows_by_id() {
     let dir = hist_dir("failed");
     let ds = dir.display().to_string();
@@ -7951,6 +8086,22 @@ fn history_records_a_failed_run_and_shows_by_id() {
         &[],
     ));
     assert_eq!(show[0]["status"], "nonzero");
+    // A record's UUID is a second, exact lookup surface and returns only that
+    // record rather than resolving the containing session.
+    let history_id = rec["history_id"].as_str().unwrap();
+    let exact = json_stdout(&run(
+        &[
+            "history",
+            "show",
+            history_id,
+            "--history-dir",
+            &ds,
+            "--compact",
+        ],
+        &[],
+    ));
+    assert_eq!(exact.as_array().unwrap().len(), 1);
+    assert_eq!(exact[0]["history_id"], history_id);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -131,26 +131,26 @@
       }
     },
     "required": [
-      "batch",
-      "bypass_permissions",
-      "config_files",
-      "dry_run",
-      "fallback",
-      "fork",
-      "history_file",
-      "mock_rules",
+      "schema_version",
+      "oneharness_version",
+      "prompt",
       "model",
       "models",
-      "oneharness_version",
-      "permission_mode",
-      "prompt",
-      "results",
       "resume",
+      "fork",
+      "session",
+      "permission_mode",
+      "bypass_permissions",
+      "dry_run",
       "schema",
       "schema_max_retries",
-      "schema_version",
-      "session",
-      "spy_file"
+      "batch",
+      "fallback",
+      "mock_rules",
+      "spy_file",
+      "history_file",
+      "config_files",
+      "results"
     ],
     "$defs": {
       "ActionEvent": {
@@ -186,11 +186,11 @@
           }
         },
         "required": [
-          "index",
-          "input",
           "kind",
           "name",
-          "output"
+          "input",
+          "output",
+          "index"
         ]
       },
       "BatchReport": {
@@ -213,9 +213,9 @@
           }
         },
         "required": [
-          "forked",
+          "strategy",
           "prompt_count",
-          "strategy"
+          "forked"
         ]
       },
       "BatchStrategy": {
@@ -301,8 +301,8 @@
           }
         },
         "required": [
-          "fell_through",
-          "ran"
+          "ran",
+          "fell_through"
         ]
       },
       "OutputFormat": {
@@ -530,32 +530,32 @@
           }
         },
         "required": [
-          "available",
-          "bin",
-          "command",
-          "duration_ms",
-          "error",
-          "events",
-          "events_source",
-          "exit_code",
-          "failure_kind",
-          "failure_kind_source",
           "harness",
-          "model",
-          "output_format",
-          "prompt",
-          "schema_attempts",
-          "schema_error",
-          "schema_valid",
-          "session_id",
+          "bin",
+          "available",
           "status",
-          "stderr",
-          "stdout",
-          "structured",
+          "prompt",
+          "model",
+          "exit_code",
+          "duration_ms",
+          "command",
+          "output_format",
           "text",
           "text_source",
           "usage",
-          "usage_source"
+          "usage_source",
+          "session_id",
+          "events",
+          "events_source",
+          "structured",
+          "schema_valid",
+          "schema_attempts",
+          "schema_error",
+          "failure_kind",
+          "failure_kind_source",
+          "stdout",
+          "stderr",
+          "error"
         ]
       },
       "SessionPhase": {
@@ -603,8 +603,8 @@
         "required": [
           "name",
           "phase",
-          "store_file",
-          "token"
+          "token",
+          "store_file"
         ]
       },
       "Status": {
@@ -692,11 +692,11 @@
           }
         },
         "required": [
+          "input_tokens",
+          "output_tokens",
           "cache_read_tokens",
           "cache_write_tokens",
-          "cost_usd",
-          "input_tokens",
-          "output_tokens"
+          "cost_usd"
         ]
       }
     }
@@ -954,6 +954,15 @@
         "description": "Canonical harness id (e.g. `claude-code`).",
         "type": "string"
       },
+      "history_id": {
+        "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+      },
+      "labels": {
+        "description": "Caller-supplied metadata used to select related task-graph records.\nOmitted on the wire when empty for additive compatibility.",
+        "$ref": "#/$defs/HistoryLabels"
+      },
       "model": {
         "description": "The effective top-level model for the run, if any.",
         "type": [
@@ -1018,24 +1027,25 @@
       }
     },
     "required": [
-      "duration_ms",
-      "events",
-      "exit_code",
-      "failure_kind",
+      "schema_version",
+      "history_id",
+      "session",
+      "name",
+      "project",
+      "timestamp",
       "harness",
       "model",
-      "name",
-      "permission_mode",
-      "project",
       "prompt",
-      "schema_version",
-      "session",
-      "session_id",
+      "permission_mode",
       "status",
+      "exit_code",
+      "duration_ms",
       "text",
       "text_source",
-      "timestamp",
-      "usage"
+      "usage",
+      "session_id",
+      "events",
+      "failure_kind"
     ],
     "$defs": {
       "ActionEvent": {
@@ -1071,11 +1081,11 @@
           }
         },
         "required": [
-          "index",
-          "input",
           "kind",
           "name",
-          "output"
+          "input",
+          "output",
+          "index"
         ]
       },
       "FailureKind": {
@@ -1107,6 +1117,19 @@
             "const": "tool_deferred"
           }
         ]
+      },
+      "HistoryLabels": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+        },
+        "propertyNames": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        }
       },
       "PermissionMode": {
         "description": "The unified approval mode, from least to most autonomy. A harness may not\nsupport every value (see [`crate::domain::harness::HarnessSpec::mode`]); the\ncommand layer refuses an unsupported one before spawning, never silently\ndowngrading it.",
@@ -1228,11 +1251,11 @@
           }
         },
         "required": [
+          "input_tokens",
+          "output_tokens",
           "cache_read_tokens",
           "cache_write_tokens",
-          "cost_usd",
-          "input_tokens",
-          "output_tokens"
+          "cost_usd"
         ]
       }
     }
@@ -1278,11 +1301,11 @@
           }
         },
         "required": [
-          "index",
-          "input",
           "kind",
           "name",
-          "output"
+          "input",
+          "output",
+          "index"
         ]
       },
       "FailureKind": {
@@ -1314,6 +1337,19 @@
             "const": "tool_deferred"
           }
         ]
+      },
+      "HistoryLabels": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+        },
+        "propertyNames": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        }
       },
       "HistoryRecord": {
         "description": "One harness run, normalized and frozen for the history log. Serialized as one\nJSONL line per harness run, appended as the run finalizes. Carries only the\nnormalized cross-harness signals — no raw stdout/stderr.",
@@ -1358,6 +1394,15 @@
           "harness": {
             "description": "Canonical harness id (e.g. `claude-code`).",
             "type": "string"
+          },
+          "history_id": {
+            "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          },
+          "labels": {
+            "description": "Caller-supplied metadata used to select related task-graph records.\nOmitted on the wire when empty for additive compatibility.",
+            "$ref": "#/$defs/HistoryLabels"
           },
           "model": {
             "description": "The effective top-level model for the run, if any.",
@@ -1423,24 +1468,25 @@
           }
         },
         "required": [
-          "duration_ms",
-          "events",
-          "exit_code",
-          "failure_kind",
+          "schema_version",
+          "history_id",
+          "session",
+          "name",
+          "project",
+          "timestamp",
           "harness",
           "model",
-          "name",
-          "permission_mode",
-          "project",
           "prompt",
-          "schema_version",
-          "session",
-          "session_id",
+          "permission_mode",
           "status",
+          "exit_code",
+          "duration_ms",
           "text",
           "text_source",
-          "timestamp",
-          "usage"
+          "usage",
+          "session_id",
+          "events",
+          "failure_kind"
         ]
       },
       "PermissionMode": {
@@ -1563,11 +1609,11 @@
           }
         },
         "required": [
+          "input_tokens",
+          "output_tokens",
           "cache_read_tokens",
           "cache_write_tokens",
-          "cost_usd",
-          "input_tokens",
-          "output_tokens"
+          "cost_usd"
         ]
       }
     }
@@ -1580,6 +1626,19 @@
       "$ref": "#/$defs/HistorySessionSummary"
     },
     "$defs": {
+      "HistoryLabels": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+        },
+        "propertyNames": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        }
+      },
       "HistorySessionSummary": {
         "description": "A one-line summary of a session, for `oneharness history list`. Read from the\nsession's records: `name`/`project`/`started` come from the first record,\n`harnesses` is the distinct set across all records.",
         "type": "object",
@@ -1594,6 +1653,10 @@
           "id": {
             "description": "The session id (the file stem), unique and sortable by start time.",
             "type": "string"
+          },
+          "labels": {
+            "description": "Labels shared by every record in the session. Omitted when empty.",
+            "$ref": "#/$defs/HistoryLabels"
           },
           "name": {
             "description": "The human-meaningful session name (non-unique).",
@@ -1619,13 +1682,13 @@
           }
         },
         "required": [
-          "harnesses",
           "id",
           "name",
-          "path",
           "project",
+          "started",
           "record_count",
-          "started"
+          "harnesses",
+          "path"
         ]
       }
     }
@@ -1646,8 +1709,8 @@
       }
     },
     "required": [
-      "harnesses",
-      "schema_version"
+      "schema_version",
+      "harnesses"
     ],
     "$defs": {
       "HarnessInfo": {
@@ -1744,27 +1807,27 @@
           }
         },
         "required": [
-          "default_bin",
-          "display",
-          "example_command",
-          "fork_reuses_cache",
           "id",
+          "display",
+          "default_bin",
           "install_hint",
-          "mock_rewrite",
-          "modes",
           "output_format",
+          "supports_resume",
           "session_capable",
+          "supports_fork",
+          "fork_reuses_cache",
+          "modes",
+          "supports_native_schema",
+          "supports_reasoning",
+          "sync_file",
           "supports_allowed_tools",
           "supports_denied_tools",
-          "supports_fork",
           "supports_hooks",
           "supports_mock_deny",
-          "supports_native_schema",
+          "mock_rewrite",
           "supports_prompt_stdin",
-          "supports_reasoning",
-          "supports_resume",
           "supports_system_file",
-          "sync_file"
+          "example_command"
         ]
       },
       "ModeHeadless": {
@@ -1795,8 +1858,8 @@
           }
         },
         "required": [
-          "headless",
-          "mode"
+          "mode",
+          "headless"
         ]
       },
       "OutputFormat": {
@@ -1872,8 +1935,8 @@
       }
     },
     "required": [
-      "detected",
-      "schema_version"
+      "schema_version",
+      "detected"
     ],
     "$defs": {
       "DetectInfo": {
@@ -1902,9 +1965,9 @@
           }
         },
         "required": [
-          "available",
-          "bin",
           "id",
+          "bin",
+          "available",
           "path",
           "version"
         ]

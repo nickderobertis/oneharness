@@ -16,6 +16,7 @@ export interface HistorySessionSummary {
    * The session id (the file stem), unique and sortable by start time.
    */
   id: string;
+  labels?: HistoryLabels | undefined;
   /**
    * The human-meaningful session name (non-unique).
    */
@@ -37,4 +38,10 @@ export interface HistorySessionSummary {
    */
   started: string;
   [k: string]: unknown;
+}
+/**
+ * Labels shared by every record in the session. Omitted when empty.
+ */
+export interface HistoryLabels {
+  [k: string]: string;
 }

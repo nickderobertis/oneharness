@@ -318,7 +318,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // history problem never takes the results down (see "never panic on a
     // harness's behavior"). The absolute path is echoed in the report as the
     // programmatic handle a consumer reads the session back with.
-    let history_writer = open_history_writer(args, cfg, &project_start, &prompts);
+    let history_writer = open_history_writer(args, cfg, &project_start, &prompts)?;
     let history_file = history_writer.as_ref().map(|w| {
         std::path::absolute(w.path())
             .unwrap_or_else(|_| w.path().to_path_buf())
@@ -1047,8 +1047,8 @@ fn build_report(
     session: Option<SessionReport>,
 ) -> RunReport {
     RunReport {
-        schema_version: SCHEMA_VERSION,
-        oneharness_version: env!("CARGO_PKG_VERSION"),
+        schema_version: SCHEMA_VERSION.to_string(),
+        oneharness_version: env!("CARGO_PKG_VERSION").to_string(),
         // On a batch run the per-result `prompt` is authoritative; the top-level
         // field repeats the first prompt for back-compat (it is always present).
         prompt: prompts[0].clone(),
@@ -1256,9 +1256,15 @@ fn open_history_writer(
     cfg: &oneharness_core::domain::config::FileConfig,
     project_start: &std::path::Path,
     prompts: &[String],
-) -> Option<HistoryWriter> {
+) -> Result<Option<HistoryWriter>, OneharnessError> {
+    let cli_labels = oneharness_core::domain::history::parse_labels(
+        args.history_label.iter().map(String::as_str),
+    )
+    .map_err(OneharnessError::HistoryLabelInvalid)?;
+    let mut labels = cfg.history_labels.clone().unwrap_or_default();
+    labels.extend(&cli_labels);
     if args.print_command {
-        return None;
+        return Ok(None);
     }
     let enabled = if args.history {
         true
@@ -1268,7 +1274,7 @@ fn open_history_writer(
         cfg.history.unwrap_or(false)
     };
     if !enabled {
-        return None;
+        return Ok(None);
     }
     let configured = args
         .history_dir
@@ -1281,22 +1287,22 @@ fn open_history_writer(
              (pass --history-dir, set `history_dir`, or ONEHARNESS_HISTORY_DIR); \
              skipping history for this run"
         );
-        return None;
+        return Ok(None);
     };
     let name = args.history_name.clone().unwrap_or_else(|| {
         oneharness_core::domain::history::session_name(
             prompts.first().map(String::as_str).unwrap_or(""),
         )
     });
-    match HistoryWriter::open(&dir, project_start, &name) {
-        Ok(writer) => Some(writer),
+    match HistoryWriter::open(&dir, project_start, &name, labels) {
+        Ok(writer) => Ok(Some(writer)),
         Err(err) => {
             eprintln!(
                 "oneharness: warning: could not open a history file under `{}`: {err}; \
                  skipping history for this run",
                 dir.display()
             );
-            None
+            Ok(None)
         }
     }
 }

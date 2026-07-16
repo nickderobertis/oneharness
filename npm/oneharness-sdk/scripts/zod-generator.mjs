@@ -21,6 +21,7 @@ const METADATA_KEYS = new Set([
  * @property {JsonSchemaNode[]=} anyOf
  * @property {JsonSchemaNode[]=} allOf
  * @property {Record<string, JsonSchemaNode>=} properties
+ * @property {JsonSchemaNode=} propertyNames
  * @property {string[]=} required
  * @property {JsonSchemaNode | JsonSchemaNode[]=} items
  * @property {boolean | JsonSchemaNode=} additionalProperties
@@ -217,6 +218,7 @@ function objectExpression(schema, path) {
 		new Set([
 			"type",
 			"properties",
+			"propertyNames",
 			"required",
 			"additionalProperties",
 			"minProperties",
@@ -255,10 +257,21 @@ function objectExpression(schema, path) {
 	const shape = `{${fields.length === 0 ? "" : `\n\t\t${fields.join(",\n\t\t")},\n\t`}}`;
 	if (schema.additionalProperties === false) return `z.strictObject(${shape})`;
 	if (schema.additionalProperties && schema.additionalProperties !== true) {
+		const keySchema = schema.propertyNames
+			? schemaExpression(schema.propertyNames, `${path}.propertyNames`)
+			: "z.string()";
 		if (fields.length === 0) {
-			return `z.record(z.string(), ${schemaExpression(schema.additionalProperties, `${path}.additionalProperties`)})`;
+			return `z.record(${keySchema}, ${schemaExpression(schema.additionalProperties, `${path}.additionalProperties`)})`;
+		}
+		if (schema.propertyNames) {
+			throw new Error(
+				`propertyNames with declared properties is unsupported at ${path}`,
+			);
 		}
 		return `z.object(${shape}).catchall(${schemaExpression(schema.additionalProperties, `${path}.additionalProperties`)})`;
+	}
+	if (schema.propertyNames) {
+		throw new Error(`propertyNames requires additionalProperties at ${path}`);
 	}
 	// Rust output structs intentionally omit `additionalProperties: false`.
 	// Preserve future fields instead of Zod's default stripping behavior.

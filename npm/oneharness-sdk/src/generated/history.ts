@@ -39,6 +39,12 @@ export interface HistoryRecord {
    */
   harness: string;
   /**
+   * Globally unique, time-ordered record id. This is also the cursor accepted
+   * by `history watch --after` and the exact id accepted by history lookup.
+   */
+  history_id: string;
+  labels?: HistoryLabels | undefined;
+  /**
    * The effective top-level model for the run, if any.
    */
   model: string | null;
@@ -119,6 +125,13 @@ export interface ActionEvent {
    */
   output: string | null;
   [k: string]: unknown;
+}
+/**
+ * Caller-supplied metadata used to select related task-graph records.
+ * Omitted on the wire when empty for additive compatibility.
+ */
+export interface HistoryLabels {
+  [k: string]: string;
 }
 /**
  * Best-effort token/cost accounting (every field `null` when unreported).

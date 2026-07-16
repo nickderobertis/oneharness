@@ -34,3 +34,10 @@ jsonschema = { version = "0.33", default-features = false }
 # hang the responder — and is already in the tree via `jsonschema`, so this adds
 # no new download.
 regex = "1"
+# History records use time-ordered UUIDv7 identifiers for resumable cursors and
+# UUIDv5 identifiers when deterministically migrating legacy v0.1 records.
+uuid = { version = "1", features = ["serde", "v5", "v7"] }
+# The history index is shared by independent oneharness processes. `fs2` keeps
+# the locking primitive portable across Unix and Windows without leaking I/O
+# into the pure domain layer.
+fs2 = "0.4"

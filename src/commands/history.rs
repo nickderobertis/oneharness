@@ -9,7 +9,7 @@ use crate::cli::{
     HistoryClearArgs, HistoryCommand, HistoryFormat, HistoryListArgs, HistoryShowArgs,
 };
 use crate::commands::print_json;
-use oneharness_core::domain::history;
+use oneharness_core::domain::history::{self, HistoryId, HistoryRecord};
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::config as config_io;
 use oneharness_core::io::history as history_io;
@@ -58,7 +58,8 @@ fn project_slug(all_projects: bool, project: Option<&Path>) -> Option<String> {
         Some(p) => p.to_path_buf(),
         None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
     };
-    Some(history::project_slug(&dir.display().to_string()))
+    let canonical = std::fs::canonicalize(&dir).unwrap_or(dir);
+    Some(history::project_slug(&canonical.display().to_string()))
 }
 
 fn list(args: &HistoryListArgs) -> Result<i32, OneharnessError> {
@@ -82,6 +83,25 @@ fn show(args: &HistoryShowArgs) -> Result<i32, OneharnessError> {
         args.config.as_deref(),
         args.no_config,
     )?;
+    // A UUID is an exact record lookup, independent of session names and project
+    // scoping. Preserve the existing id-or-name session lookup for every other
+    // spelling.
+    if !args.last {
+        let needle = args.session.as_deref().unwrap_or_default();
+        if let Ok(id) = needle.parse::<HistoryId>() {
+            match history_io::find_record_by_id(&dir, id) {
+                Ok(record) => {
+                    return render_records(args.format, args.compact, &[record]);
+                }
+                Err(OneharnessError::HistoryNotFound { .. }) => {
+                    eprintln!("oneharness: history record `{id}` was not found");
+                    return Ok(EXIT_NOT_FOUND);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     let slug = project_slug(args.all_projects, args.project.as_deref());
     let sessions = history_io::list_sessions(&dir, slug.as_deref())?;
 
@@ -114,9 +134,23 @@ fn show(args: &HistoryShowArgs) -> Result<i32, OneharnessError> {
     for s in &chosen {
         records.extend(history_io::read_session(Path::new(&s.path))?);
     }
-    match args.format {
-        HistoryFormat::Json => print_json(&records, args.compact)?,
-        HistoryFormat::Text => print!("{}", render_show_text(&records)),
+    render_records(args.format, args.compact, &records)
+}
+
+fn render_records(
+    format: HistoryFormat,
+    compact: bool,
+    records: &[HistoryRecord],
+) -> Result<i32, OneharnessError> {
+    match format {
+        HistoryFormat::Json => print_json(&records.to_vec(), compact)?,
+        HistoryFormat::Text => {
+            let values = records
+                .iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()?;
+            print!("{}", render_show_text(&values));
+        }
     }
     Ok(EXIT_OK)
 }
@@ -184,7 +218,7 @@ fn render_show_text(records: &[serde_json::Value]) -> String {
     }
     let mut out = String::new();
     for r in records {
-        let get = |k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("");
+        let get = |key: &str| r.get(key).and_then(|value| value.as_str()).unwrap_or("");
         let status = get("status");
         out.push_str(&format!(
             "{ts}  [{harness}] {status}\n",
@@ -195,7 +229,7 @@ fn render_show_text(records: &[serde_json::Value]) -> String {
         if !prompt.is_empty() {
             out.push_str(&format!("  prompt: {}\n", first_line(prompt)));
         }
-        if let Some(text) = r.get("text").and_then(|v| v.as_str()) {
+        if let Some(text) = r.get("text").and_then(|value| value.as_str()) {
             out.push_str(&format!("  text: {}\n", first_line(text)));
         }
         out.push('\n');
@@ -216,6 +250,7 @@ mod tests {
         SessionSummary {
             id: id.to_string(),
             name: name.to_string(),
+            labels: Default::default(),
             project: "/p".to_string(),
             started: started.to_string(),
             record_count: harnesses.len(),

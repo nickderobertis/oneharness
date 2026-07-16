@@ -15,7 +15,7 @@ import type {
   Usage,
 } from "./contracts.js";
 import type { DetectInfo, DetectReport } from "./detection.js";
-import type { HistoryRecord } from "./history.js";
+import type { HistoryLabels, HistoryRecord } from "./history.js";
 import type { HistoryList, HistorySessionSummary } from "./history-list.js";
 import type { HistoryListOptions } from "./history-list-options.js";
 import type { HistoryLookup, HistoryLookupByLast, HistoryLookupBySession } from "./history-lookup.js";
@@ -106,6 +106,11 @@ export const HarnessInfoSchema: z.ZodType<HarnessInfo> = z.looseObject({
   sync_file: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
 });
 
+export const HistoryLabelsSchema: z.ZodType<HistoryLabels> = z.record(
+  z.string().regex(new RegExp("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", "u")),
+  z.string().min(1).max(256).regex(new RegExp("^[^\\u0000-\\u001f\\u007f]*$", "u")),
+);
+
 export const HistoryListSchema: z.ZodType<HistoryList> = z.array(z.lazy(() => HistorySessionSummarySchema));
 
 export const HistoryListOptionsSchema: z.ZodType<HistoryListOptions> = z.strictObject({
@@ -148,6 +153,11 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.looseObject({
     .union([z.lazy(() => FailureKindSchema), z.null()])
     .refine((value) => value !== undefined, { message: "Required" }),
   harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  history_id: z
+    .string()
+    .regex(new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"))
+    .refine((value) => value !== undefined, { message: "Required" }),
+  labels: z.lazy(() => HistoryLabelsSchema).optional(),
   model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   name: z.string().refine((value) => value !== undefined, { message: "Required" }),
   permission_mode: z.lazy(() => PermissionModeSchema).refine((value) => value !== undefined, { message: "Required" }),
@@ -168,6 +178,7 @@ export const HistoryRecordsSchema: z.ZodType<HistoryRecords> = z.array(z.lazy(()
 export const HistorySessionSummarySchema: z.ZodType<HistorySessionSummary> = z.looseObject({
   harnesses: z.array(z.string()).refine((value) => value !== undefined, { message: "Required" }),
   id: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  labels: z.lazy(() => HistoryLabelsSchema).optional(),
   name: z.string().refine((value) => value !== undefined, { message: "Required" }),
   path: z.string().refine((value) => value !== undefined, { message: "Required" }),
   project: z.string().refine((value) => value !== undefined, { message: "Required" }),

@@ -213,6 +213,12 @@ pub enum OneharnessError {
     #[error("no history directory: pass --history-dir, set `history_dir` in config, or ONEHARNESS_HISTORY_DIR (a default under the platform state dir could not be resolved)")]
     HistoryNoDir,
 
+    #[error("history record `{id}` was not found")]
+    HistoryNotFound { id: String },
+
+    #[error("invalid history label: {0}")]
+    HistoryLabelInvalid(String),
+
     #[error("failed to write JSON output: {0}")]
     Serialize(#[from] serde_json::Error),
 }

@@ -556,6 +556,12 @@ pub struct RunArgs {
     #[arg(long, value_name = "NAME")]
     pub history_name: Option<String>,
 
+    /// Attach a validated KEY=VALUE label to every history record (repeatable).
+    /// Labels from the CLI override the same keys from
+    /// ONEHARNESS_HISTORY_LABELS and config `history_labels`.
+    #[arg(long = "history-label", value_name = "KEY=VALUE")]
+    pub history_label: Vec<String>,
+
     /// Emit compact single-line JSON instead of pretty-printed.
     #[arg(long)]
     pub compact: bool,

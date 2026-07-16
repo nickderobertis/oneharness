@@ -11,8 +11,15 @@
 //! harness's own transcript). Every field mirrors a [`crate::domain::report`]
 //! signal, so a history record reads like a report result frozen in time.
 
-use schemars::JsonSchema;
-use serde::Serialize;
+use std::borrow::Cow;
+use std::collections::BTreeMap;
+use std::fmt;
+use std::str::FromStr;
+
+use schemars::{JsonSchema, Schema, SchemaGenerator};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
+use uuid::Uuid;
 
 use crate::domain::events::ActionEvent;
 use crate::domain::mode::PermissionMode;
@@ -22,19 +29,233 @@ use crate::domain::signals::{FailureKind, Usage};
 /// Bumped when the history record shape changes in a way a consumer must notice.
 /// Independent of [`crate::domain::report::SCHEMA_VERSION`] — the history file and
 /// the run report are separate contracts and version on their own cadence.
-pub const SCHEMA_VERSION: &str = "0.1";
+pub const SCHEMA_VERSION: &str = "0.2";
+
+/// The legacy record contract accepted by the migration reader.
+pub const LEGACY_SCHEMA_VERSION: &str = "0.1";
+
+const LABEL_KEY_MAX: usize = 64;
+const LABEL_VALUE_MAX: usize = 256;
+const UUID_PATTERN: &str =
+    "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$";
+const LABEL_KEY_PATTERN: &str = "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$";
+
+/// A validated history-record identifier. New records are minted as UUIDv7 in
+/// the I/O layer; legacy records are assigned deterministic UUIDv5 values while
+/// being read, so the same v0.1 line always receives the same stable id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct HistoryId(Uuid);
+
+impl HistoryId {
+    /// Wrap an already-generated UUID. The I/O layer uses this after its clock /
+    /// randomness read; pure migration uses [`Self::legacy`].
+    #[must_use]
+    pub fn from_uuid(value: Uuid) -> Self {
+        Self(value)
+    }
+
+    /// Deterministically identify one legacy record from a stable source key.
+    #[must_use]
+    pub fn legacy(stable_key: &[u8]) -> Self {
+        Self(Uuid::new_v5(&Uuid::NAMESPACE_OID, stable_key))
+    }
+
+    /// The underlying UUID.
+    #[must_use]
+    pub fn as_uuid(self) -> Uuid {
+        self.0
+    }
+}
+
+impl fmt::Display for HistoryId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl FromStr for HistoryId {
+    type Err = uuid::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Uuid::parse_str(value).map(Self)
+    }
+}
+
+impl<'de> Deserialize<'de> for HistoryId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for HistoryId {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("HistoryId")
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "pattern": UUID_PATTERN,
+        })
+    }
+}
+
+/// A validated, deterministically ordered label set attached to every record in
+/// one history session. Keys are portable identifier-like strings; values are
+/// non-empty, bounded strings without control characters.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct HistoryLabels(BTreeMap<String, String>);
+
+impl HistoryLabels {
+    /// Validate and construct a label set at a config/env/CLI boundary.
+    pub fn new(labels: BTreeMap<String, String>) -> Result<Self, String> {
+        for (key, value) in &labels {
+            validate_label(key, value)?;
+        }
+        Ok(Self(labels))
+    }
+
+    /// Borrow the ordered map.
+    #[must_use]
+    pub fn as_map(&self) -> &BTreeMap<String, String> {
+        &self.0
+    }
+
+    /// Whether no labels are present.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Overlay higher-precedence labels on this set, key by key.
+    pub fn extend(&mut self, higher: &Self) {
+        self.0.extend(higher.0.clone());
+    }
+
+    /// Whether every filter pair appears with the same value.
+    #[must_use]
+    pub fn matches(&self, filters: &Self) -> bool {
+        filters
+            .0
+            .iter()
+            .all(|(key, value)| self.0.get(key) == Some(value))
+    }
+}
+
+impl<'de> Deserialize<'de> for HistoryLabels {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let labels = BTreeMap::<String, String>::deserialize(deserializer)?;
+        Self::new(labels).map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for HistoryLabels {
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("HistoryLabels")
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({
+            "type": "object",
+            "propertyNames": {
+                "type": "string",
+                "pattern": LABEL_KEY_PATTERN,
+            },
+            "additionalProperties": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": LABEL_VALUE_MAX,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]*$",
+            },
+        })
+    }
+}
+
+/// Parse one `key=value` label spelling used by the CLI and environment.
+pub fn parse_label(input: &str) -> Result<(String, String), String> {
+    let Some((key, value)) = input.split_once('=') else {
+        return Err(format!(
+            "invalid history label `{input}`: expected KEY=VALUE"
+        ));
+    };
+    validate_label(key, value)?;
+    Ok((key.to_string(), value.to_string()))
+}
+
+/// Parse repeated `key=value` spellings into a validated set. Later duplicate
+/// keys win, matching repeated CLI flags and layer precedence.
+pub fn parse_labels<'a>(
+    values: impl IntoIterator<Item = &'a str>,
+) -> Result<HistoryLabels, String> {
+    let mut labels = BTreeMap::new();
+    for value in values {
+        let (key, value) = parse_label(value)?;
+        labels.insert(key, value);
+    }
+    HistoryLabels::new(labels)
+}
+
+fn validate_label(key: &str, value: &str) -> Result<(), String> {
+    let valid_key = !key.is_empty()
+        && key.len() <= LABEL_KEY_MAX
+        && key.chars().enumerate().all(|(index, c)| {
+            c.is_ascii_alphanumeric() || (index > 0 && matches!(c, '.' | '_' | '-'))
+        });
+    if !valid_key {
+        return Err(format!(
+            "invalid history label key `{key}`: expected 1-{LABEL_KEY_MAX} ASCII letters, digits, `.`, `_`, or `-`, beginning with a letter or digit"
+        ));
+    }
+    if value.is_empty() {
+        return Err(format!(
+            "invalid history label `{key}`: value must not be empty"
+        ));
+    }
+    if value.len() > LABEL_VALUE_MAX {
+        return Err(format!(
+            "invalid history label `{key}`: value exceeds {LABEL_VALUE_MAX} bytes"
+        ));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(format!(
+            "invalid history label `{key}`: value must not contain control characters"
+        ));
+    }
+    Ok(())
+}
 
 /// One harness run, normalized and frozen for the history log. Serialized as one
 /// JSONL line per harness run, appended as the run finalizes. Carries only the
 /// normalized cross-harness signals — no raw stdout/stderr.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct HistoryRecord {
-    pub schema_version: &'static str,
+    pub schema_version: String,
+    /// Globally unique, time-ordered record id. This is also the cursor accepted
+    /// by `history watch --after` and the exact id accepted by history lookup.
+    pub history_id: HistoryId,
     /// The oneharness session id this run belongs to (the history file's stem).
     pub session: String,
     /// The human-meaningful session name (see [`session_name`]); repeated on
     /// every record so a reader can resolve a session by name from any line.
     pub name: String,
+    /// Caller-supplied metadata used to select related task-graph records.
+    /// Omitted on the wire when empty for additive compatibility.
+    #[serde(default, skip_serializing_if = "HistoryLabels::is_empty")]
+    pub labels: HistoryLabels,
     /// The project directory the run operated in (the real path, not the
     /// on-disk slug), so the list view can show where a session ran.
     pub project: String,
@@ -76,8 +297,10 @@ impl HistoryRecord {
     /// ordinary run — a batch result carries its own `prompt`, which wins.
     #[allow(clippy::too_many_arguments)]
     pub fn from_result(
+        history_id: HistoryId,
         session: &str,
         name: &str,
+        labels: &HistoryLabels,
         project: &str,
         timestamp: String,
         mode: PermissionMode,
@@ -86,9 +309,11 @@ impl HistoryRecord {
         r: &RunResult,
     ) -> Self {
         HistoryRecord {
-            schema_version: SCHEMA_VERSION,
+            schema_version: SCHEMA_VERSION.to_string(),
+            history_id,
             session: session.to_string(),
             name: name.to_string(),
+            labels: labels.clone(),
             project: project.to_string(),
             timestamp,
             harness: r.harness.clone(),
@@ -106,6 +331,98 @@ impl HistoryRecord {
             failure_kind: r.failure_kind,
         }
     }
+
+    /// Deserialize a current or legacy record. `legacy_identity` should name the
+    /// source line (for example `<relative-path>:<line>`); when supplied it makes
+    /// otherwise-identical v0.1 lines distinct while remaining deterministic.
+    pub fn from_value_with_legacy_identity(
+        value: Value,
+        legacy_identity: Option<&str>,
+    ) -> Result<Self, serde_json::Error> {
+        let fallback = serde_json::to_vec(&value)?;
+        let wire: HistoryRecordWire = serde_json::from_value(value)?;
+        let history_id = match wire.schema_version.as_str() {
+            SCHEMA_VERSION => wire.history_id.ok_or_else(|| {
+                serde_json::Error::io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "history schema v0.2 record is missing `history_id`",
+                ))
+            })?,
+            LEGACY_SCHEMA_VERSION => {
+                let stable = legacy_identity
+                    .map(str::as_bytes)
+                    .unwrap_or(fallback.as_slice());
+                HistoryId::legacy(stable)
+            }
+            version => {
+                return Err(serde_json::Error::io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("unsupported history schema version `{version}`"),
+                )))
+            }
+        };
+        Ok(Self {
+            schema_version: SCHEMA_VERSION.to_string(),
+            history_id,
+            session: wire.session,
+            name: wire.name,
+            labels: if wire.schema_version == LEGACY_SCHEMA_VERSION {
+                HistoryLabels::default()
+            } else {
+                wire.labels
+            },
+            project: wire.project,
+            timestamp: wire.timestamp,
+            harness: wire.harness,
+            model: wire.model,
+            prompt: wire.prompt,
+            permission_mode: wire.permission_mode,
+            status: wire.status,
+            exit_code: wire.exit_code,
+            duration_ms: wire.duration_ms,
+            text: wire.text,
+            text_source: wire.text_source,
+            usage: wire.usage,
+            session_id: wire.session_id,
+            events: wire.events,
+            failure_kind: wire.failure_kind,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for HistoryRecord {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        Self::from_value_with_legacy_identity(value, None).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Deserialize)]
+struct HistoryRecordWire {
+    schema_version: String,
+    history_id: Option<HistoryId>,
+    session: String,
+    name: String,
+    #[serde(default)]
+    labels: HistoryLabels,
+    project: String,
+    timestamp: String,
+    harness: String,
+    model: Option<String>,
+    prompt: String,
+    permission_mode: PermissionMode,
+    status: Status,
+    exit_code: Option<i32>,
+    duration_ms: Option<u128>,
+    text: Option<String>,
+    text_source: Option<String>,
+    usage: Usage,
+    session_id: Option<String>,
+    events: Option<Vec<ActionEvent>>,
+    failure_kind: Option<FailureKind>,
 }
 
 /// A filesystem-safe slug for a project directory, so history is partitioned by
@@ -336,8 +653,10 @@ mod tests {
     fn from_result_maps_normalized_signals() {
         let r = result();
         let rec = HistoryRecord::from_result(
+            HistoryId::legacy(b"record-1"),
             "fix-bug-20260707T131415Z-9",
             "fix-bug",
+            &parse_labels(["graph=deploy"]).unwrap(),
             "/home/user/proj",
             "2026-07-07T13:14:15Z".to_string(),
             PermissionMode::Bypass,
@@ -348,6 +667,7 @@ mod tests {
         assert_eq!(rec.schema_version, SCHEMA_VERSION);
         assert_eq!(rec.session, "fix-bug-20260707T131415Z-9");
         assert_eq!(rec.name, "fix-bug");
+        assert_eq!(rec.labels.as_map().get("graph").unwrap(), "deploy");
         assert_eq!(rec.project, "/home/user/proj");
         assert_eq!(rec.harness, "claude-code");
         assert_eq!(rec.model.as_deref(), Some("sonnet"));
@@ -362,8 +682,10 @@ mod tests {
         let mut r = result();
         r.prompt = Some("batch prompt 2".to_string());
         let rec = HistoryRecord::from_result(
+            HistoryId::legacy(b"record-2"),
             "s",
             "n",
+            &HistoryLabels::default(),
             "/p",
             "t".to_string(),
             PermissionMode::Default,
@@ -373,5 +695,78 @@ mod tests {
         );
         assert_eq!(rec.prompt, "batch prompt 2");
         assert_eq!(rec.model, None);
+    }
+
+    #[test]
+    fn labels_validate_and_later_values_win() {
+        let labels = parse_labels(["graph=release", "task=build", "task=test"]).unwrap();
+        assert_eq!(labels.as_map().get("graph").unwrap(), "release");
+        assert_eq!(labels.as_map().get("task").unwrap(), "test");
+
+        for invalid in ["missing-equals", "=value", "bad/key=value", "key="] {
+            assert!(parse_label(invalid).is_err(), "{invalid} should fail");
+        }
+        assert!(parse_label("key=line\nbreak").is_err());
+    }
+
+    #[test]
+    fn legacy_record_migration_is_stable_and_empty_labeled() {
+        let current = HistoryRecord::from_result(
+            HistoryId::legacy(b"discarded"),
+            "legacy-session",
+            "legacy",
+            &HistoryLabels::default(),
+            "/project",
+            "2026-01-01T00:00:00Z".to_string(),
+            PermissionMode::Default,
+            None,
+            "prompt",
+            &result(),
+        );
+        let mut legacy = serde_json::to_value(current).unwrap();
+        legacy["schema_version"] = Value::String(LEGACY_SCHEMA_VERSION.to_string());
+        legacy.as_object_mut().unwrap().remove("history_id");
+        legacy["future_output_field"] = serde_json::json!(true);
+
+        let first = HistoryRecord::from_value_with_legacy_identity(
+            legacy.clone(),
+            Some("project/session.jsonl:1"),
+        )
+        .unwrap();
+        let second =
+            HistoryRecord::from_value_with_legacy_identity(legacy, Some("project/session.jsonl:1"))
+                .unwrap();
+        assert_eq!(first.history_id, second.history_id);
+        assert_eq!(first.schema_version, SCHEMA_VERSION);
+        assert!(first.labels.is_empty());
+    }
+
+    #[test]
+    fn current_record_requires_a_valid_id_but_tolerates_additive_fields() {
+        let current = HistoryRecord::from_result(
+            HistoryId::legacy(b"current"),
+            "session",
+            "name",
+            &HistoryLabels::default(),
+            "/project",
+            "2026-01-01T00:00:00Z".to_string(),
+            PermissionMode::Default,
+            None,
+            "prompt",
+            &result(),
+        );
+        let mut value = serde_json::to_value(&current).unwrap();
+        value["future_output_field"] = serde_json::json!({ "accepted": true });
+        assert_eq!(
+            serde_json::from_value::<HistoryRecord>(value).unwrap(),
+            current
+        );
+
+        let mut missing = serde_json::to_value(&current).unwrap();
+        missing.as_object_mut().unwrap().remove("history_id");
+        assert!(serde_json::from_value::<HistoryRecord>(missing).is_err());
+        let mut malformed = serde_json::to_value(current).unwrap();
+        malformed["history_id"] = Value::String("not-a-uuid".to_string());
+        assert!(serde_json::from_value::<HistoryRecord>(malformed).is_err());
     }
 }

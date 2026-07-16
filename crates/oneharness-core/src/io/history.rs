@@ -18,7 +18,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::domain::history::{self, HistoryRecord};
+use crate::domain::history::{self, HistoryId, HistoryLabels, HistoryRecord};
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::RunResult;
 use crate::errors::OneharnessError;
@@ -70,6 +70,7 @@ pub struct HistoryWriter {
     path: PathBuf,
     session: String,
     name: String,
+    labels: HistoryLabels,
     project: String,
 }
 
@@ -79,8 +80,14 @@ impl HistoryWriter {
     /// so concurrent runs never collide: `<name>-<YYYYMMDDThhmmssZ>-<pid>`. The
     /// project subdirectory is created now; the file itself is created on the
     /// first [`append`](Self::append).
-    pub fn open(dir: &Path, project: &Path, name: &str) -> std::io::Result<HistoryWriter> {
+    pub fn open(
+        dir: &Path,
+        project: &Path,
+        name: &str,
+        labels: HistoryLabels,
+    ) -> std::io::Result<HistoryWriter> {
         let name = history::sanitize_name(name);
+        let project = fs::canonicalize(project)?;
         let project_display = project.display().to_string();
         let slug = history::project_slug(&project_display);
         let session = format!(
@@ -88,6 +95,8 @@ impl HistoryWriter {
             history::format_compact_utc(now_epoch_secs()),
             std::process::id()
         );
+        fs::create_dir_all(dir)?;
+        let dir = fs::canonicalize(dir)?;
         let project_dir = dir.join(&slug);
         fs::create_dir_all(&project_dir)?;
         let path = project_dir.join(format!("{session}.{SESSION_EXT}"));
@@ -95,6 +104,7 @@ impl HistoryWriter {
             path,
             session,
             name,
+            labels,
             project: project_display,
         })
     }
@@ -114,8 +124,10 @@ impl HistoryWriter {
         result: &RunResult,
     ) -> std::io::Result<()> {
         let record = HistoryRecord::from_result(
+            HistoryId::from_uuid(uuid::Uuid::now_v7()),
             &self.session,
             &self.name,
+            &self.labels,
             &self.project,
             history::format_rfc3339(now_epoch_secs()),
             mode,
@@ -144,6 +156,9 @@ pub struct SessionSummary {
     pub id: String,
     /// The human-meaningful session name (non-unique).
     pub name: String,
+    /// Labels shared by every record in the session. Omitted when empty.
+    #[serde(default, skip_serializing_if = "HistoryLabels::is_empty")]
+    pub labels: HistoryLabels,
     /// The project directory the run operated in.
     pub project: String,
     /// The RFC3339 UTC start time (first record's timestamp); empty if unknown.
@@ -194,13 +209,30 @@ pub fn match_sessions<'a>(sessions: &'a [SessionSummary], needle: &str) -> Vec<&
         .collect()
 }
 
-/// Read a session file into its records (one JSON value per non-empty line).
-pub fn read_session(path: &Path) -> Result<Vec<Value>, OneharnessError> {
+/// Read a session file into typed current records. Legacy v0.1 lines are
+/// migrated deterministically; malformed or partial lines are skipped.
+pub fn read_session(path: &Path) -> Result<Vec<HistoryRecord>, OneharnessError> {
     let text = fs::read_to_string(path).map_err(|source| OneharnessError::HistoryIo {
         path: path.display().to_string(),
         source,
     })?;
-    Ok(parse_lines(&text))
+    Ok(parse_records(path, &text))
+}
+
+/// Find exactly one history record by its UUID, across all projects. A missing
+/// id is a typed error so library callers need not parse diagnostics.
+pub fn find_record_by_id(dir: &Path, id: HistoryId) -> Result<HistoryRecord, OneharnessError> {
+    for project_dir in read_subdirs_if_present(dir)? {
+        for path in read_session_files(&project_dir)? {
+            if let Some(record) = read_session(&path)?
+                .into_iter()
+                .find(|record| record.history_id == id)
+            {
+                return Ok(record);
+            }
+        }
+    }
+    Err(OneharnessError::HistoryNotFound { id: id.to_string() })
 }
 
 /// Delete every session file under `dir` (optionally restricted to one project
@@ -250,6 +282,14 @@ fn read_subdirs(dir: &Path) -> Result<Vec<PathBuf>, OneharnessError> {
     Ok(dirs)
 }
 
+fn read_subdirs_if_present(dir: &Path) -> Result<Vec<PathBuf>, OneharnessError> {
+    if dir.exists() {
+        read_subdirs(dir)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
 /// The `*.jsonl` session files directly inside a project subdirectory.
 fn read_session_files(pdir: &Path) -> Result<Vec<PathBuf>, OneharnessError> {
     let mut files = Vec::new();
@@ -290,7 +330,7 @@ fn summarize(path: &Path) -> Result<SessionSummary, OneharnessError> {
         .and_then(|s| s.to_str())
         .unwrap_or_default()
         .to_string();
-    let records = read_session(path)?;
+    let records = read_values(path)?;
 
     let field = |key: &str| -> Option<String> {
         records
@@ -309,6 +349,11 @@ fn summarize(path: &Path) -> Result<SessionSummary, OneharnessError> {
     }
     Ok(SessionSummary {
         name: field("name").unwrap_or_else(|| id.clone()),
+        labels: records
+            .first()
+            .and_then(|record| record.get("labels").cloned())
+            .and_then(|labels| serde_json::from_value(labels).ok())
+            .unwrap_or_default(),
         project: field("project").unwrap_or(slug),
         started: field("timestamp").unwrap_or_default(),
         record_count: records.len(),
@@ -318,12 +363,37 @@ fn summarize(path: &Path) -> Result<SessionSummary, OneharnessError> {
     })
 }
 
-/// Parse a JSONL blob into one value per non-empty line, skipping lines that do
-/// not parse (a truncated last line from an interrupted run is not fatal).
-fn parse_lines(text: &str) -> Vec<Value> {
+fn read_values(path: &Path) -> Result<Vec<Value>, OneharnessError> {
+    let text = fs::read_to_string(path).map_err(|source| OneharnessError::HistoryIo {
+        path: path.display().to_string(),
+        source,
+    })?;
+    Ok(parse_values(&text))
+}
+
+/// Parse a JSONL blob into values, skipping malformed or partial lines.
+fn parse_values(text: &str) -> Vec<Value> {
     text.lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
+}
+
+fn parse_records(path: &Path, text: &str) -> Vec<HistoryRecord> {
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .filter_map(|(index, line)| {
+            let value = serde_json::from_str(line).ok()?;
+            let identity = format!(
+                "{}:{}",
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default(),
+                index + 1
+            );
+            HistoryRecord::from_value_with_legacy_identity(value, Some(&identity)).ok()
+        })
         .collect()
 }
 
@@ -392,10 +462,14 @@ mod tests {
     #[test]
     fn open_creates_project_subdir_and_expected_path() {
         let dir = temp_dir("open");
-        let project = PathBuf::from("/home/user/My Proj");
-        let w = HistoryWriter::open(&dir, &project, "Fix Bug!").unwrap();
+        let project = dir.join("My Proj");
+        fs::create_dir_all(&project).unwrap();
+        let canonical = fs::canonicalize(&project).unwrap();
+        let w = HistoryWriter::open(&dir, &project, "Fix Bug!", HistoryLabels::default()).unwrap();
         // Project slug subdir exists.
-        assert!(dir.join("home-user-My-Proj").is_dir());
+        assert!(dir
+            .join(history::project_slug(&canonical.display().to_string()))
+            .is_dir());
         // Session id: sanitized name, compact UTC, pid.
         let stem = w.path().file_stem().unwrap().to_str().unwrap();
         assert!(stem.starts_with("fix-bug-"), "{stem}");
@@ -406,8 +480,15 @@ mod tests {
     #[test]
     fn append_writes_parseable_jsonl_lines() {
         let dir = temp_dir("append");
-        let project = PathBuf::from("/proj/a");
-        let w = HistoryWriter::open(&dir, &project, "my-session").unwrap();
+        let project = dir.join("project-a");
+        fs::create_dir_all(&project).unwrap();
+        let w = HistoryWriter::open(
+            &dir,
+            &project,
+            "my-session",
+            history::parse_labels(["graph=deploy"]).unwrap(),
+        )
+        .unwrap();
         w.append(
             PermissionMode::Bypass,
             Some("sonnet"),
@@ -424,11 +505,16 @@ mod tests {
         .unwrap();
         let records = read_session(w.path()).unwrap();
         assert_eq!(records.len(), 2);
-        assert_eq!(records[0]["harness"], "claude-code");
-        assert_eq!(records[0]["name"], "my-session");
-        assert_eq!(records[0]["project"], "/proj/a");
-        assert_eq!(records[0]["model"], "sonnet");
-        assert_eq!(records[1]["harness"], "codex");
+        assert_eq!(records[0].harness, "claude-code");
+        assert_eq!(records[0].name, "my-session");
+        assert_eq!(
+            records[0].project,
+            fs::canonicalize(&project).unwrap().display().to_string()
+        );
+        assert_eq!(records[0].model.as_deref(), Some("sonnet"));
+        assert_eq!(records[0].labels.as_map().get("graph").unwrap(), "deploy");
+        assert_eq!(records[1].harness, "codex");
+        assert_eq!(records[0].history_id.as_uuid().get_version_num(), 7);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -515,6 +601,7 @@ mod tests {
             .map(|(id, name, started)| SessionSummary {
                 id: id.to_string(),
                 name: name.to_string(),
+                labels: HistoryLabels::default(),
                 project: "/p".to_string(),
                 started: started.to_string(),
                 record_count: 1,
@@ -529,7 +616,9 @@ mod tests {
     #[test]
     fn remove_sessions_deletes_and_prunes() {
         let dir = temp_dir("remove");
-        let w = HistoryWriter::open(&dir, &PathBuf::from("/proj/x"), "s").unwrap();
+        let project = dir.join("project-x");
+        fs::create_dir_all(&project).unwrap();
+        let w = HistoryWriter::open(&dir, &project, "s", HistoryLabels::default()).unwrap();
         w.append(PermissionMode::Default, None, "p", &result("codex"))
             .unwrap();
         assert_eq!(list_sessions(&dir, None).unwrap().len(), 1);
@@ -537,14 +626,14 @@ mod tests {
         assert_eq!(removed.len(), 1);
         assert!(list_sessions(&dir, None).unwrap().is_empty());
         // The now-empty project subdir was pruned.
-        assert!(!dir.join("proj-x").exists());
+        assert!(list_sessions(&dir, None).unwrap().is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn parse_lines_skips_blank_and_bad_lines() {
+    fn parse_values_skips_blank_and_bad_lines() {
         let text = "{\"a\":1}\n\n  \nnot json\n{\"b\":2}\n";
-        let vals = parse_lines(text);
+        let vals = parse_values(text);
         assert_eq!(vals.len(), 2);
         assert_eq!(vals[0]["a"], 1);
         assert_eq!(vals[1]["b"], 2);

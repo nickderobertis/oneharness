@@ -28,7 +28,7 @@ use serde_json::Value;
 /// Normalized token/cost accounting. Every field is best-effort and independently
 /// nullable: a harness may report tokens but not dollar cost (cost is commonly
 /// absent on subscription auth), or report nothing at all (plain-text harnesses).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Usage {
     /// Prompt/input tokens billed, when the harness reports them.
     pub input_tokens: Option<u64>,

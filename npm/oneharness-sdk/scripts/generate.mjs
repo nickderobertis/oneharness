@@ -30,7 +30,7 @@ const readonlyArrayProperties = (declarations, schema) => {
 		const pattern = new RegExp(`^(\\s*${escaped}\\?: )([^;]+\\[\\]);$`, "mu");
 		if (!pattern.test(output)) {
 			throw new Error(
-				`generated RunOptions array ${name} was not found in TypeScript output`,
+				`generated RunOptions array ${name} was not found in TypeScript output; update the Rust schema or extend scripts/generate.mjs for the new declaration shape, then rerun just sdk-generate`,
 			);
 		}
 		output = output.replace(pattern, "$1readonly $2;");

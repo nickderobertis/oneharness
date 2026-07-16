@@ -93,6 +93,11 @@ test("generated optional properties remain exact-optional compatible", () => {
 	expect(() =>
 		exactOptionalProperties("type Broken = {\n  value?: {\n"),
 	).toThrow("generated optional property has no terminator");
+	expect(() =>
+		exactOptionalProperties("type Broken = {\n  value?: {\n"),
+	).toThrow(
+		"extend scripts/typescript-generator.mjs for this declaration shape, then rerun just sdk-generate",
+	);
 });
 
 test("TypeScript generation preserves unconstrained JSON values", () => {
@@ -130,8 +135,12 @@ test("Zod generation is deterministic and encodes deliberate unknown-key behavio
 		output: {
 			title: "Output",
 			type: "object",
-			properties: { value: { type: "integer", minimum: 0 } },
-			required: ["value"],
+			properties: {
+				value: { type: "integer", minimum: 0 },
+				requiredUnknown: true,
+				optionalUnknown: true,
+			},
+			required: ["value", "requiredUnknown"],
 		},
 	};
 	const roots = [
@@ -142,7 +151,13 @@ test("Zod generation is deterministic and encodes deliberate unknown-key behavio
 	expect(generateZodModule(bundle, roots)).toBe(first);
 	expect(first).toContain("InputSchema: z.ZodType<Input> = z.strictObject");
 	expect(first).toContain("OutputSchema: z.ZodType<Output> = z.looseObject");
-	expect(first).toContain('"value": z.int().gte(0)');
+	expect(first).toContain(
+		'"value": z.int().gte(0).refine((value) => value !== undefined, { message: "Required" })',
+	);
+	expect(first).toContain(
+		'"requiredUnknown": z.unknown().refine((value) => value !== undefined, { message: "Required" })',
+	);
+	expect(first).toContain('"optionalUnknown": z.unknown().optional()');
 });
 
 test("focused Zod generator covers the complete checked-in Rust schema bundle", () => {
@@ -157,6 +172,8 @@ test("focused Zod generator covers the complete checked-in Rust schema bundle", 
 	for (const name of [
 		"RunOptions",
 		"HistoryLookup",
+		"HistoryLookupBySession",
+		"HistoryLookupByLast",
 		"HistoryListOptions",
 		"RunReport",
 		"RunResult",
@@ -216,6 +233,10 @@ test("Zod generation validates every supported schema boundary", () => {
 	reject(
 		{ type: "string", minItems: 1 },
 		"unsupported JSON Schema keyword boundary.minItems",
+	);
+	reject(
+		{ type: "string", minItems: 1 },
+		"extend scripts/zod-generator.mjs to enforce it, then rerun just sdk-generate",
 	);
 	reject({ $ref: "other.json" }, "unsupported non-local JSON Schema reference");
 	reject(

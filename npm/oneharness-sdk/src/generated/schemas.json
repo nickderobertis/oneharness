@@ -820,28 +820,75 @@
   "history_lookup": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "HistoryLookup",
-    "description": "The session selector accepted by `OneHarness.history()` in the published Node\nSDK.\n\nThis type carries the *structural* contract only. `history()` also enforces a\nsemantic rule this schema deliberately does not express — a lookup must\nselect a session with either `session` or `last`. JSON Schema states that as\n`anyOf` over required-key subschemas, which would accept `{\"last\": false}`\nand reject the equivalent-but-explicit `{\"session\": \"x\", \"last\": false}`\ndifferently than the SDK does: the SDK reads `last` for truthiness and falls\nback to a non-empty `session`. Encoding a rule the SDK does not actually\napply would be worse than not encoding it, so the selector rule stays a\ndocumented check in the SDK, run immediately after this structural\nvalidation and before any field is read.",
-    "type": "object",
-    "properties": {
-      "allProjects": {
-        "type": "boolean"
+    "description": "The session selector accepted by `OneHarness.history()` in the published Node\nSDK.\n\nA lookup must select a session, so the contract is a union of the only two\nways to do that: ask for the most recent one ([`HistoryLookupByLast`]), or\nname one ([`HistoryLookupBySession`]). A lookup that selects nothing — `{}`,\n`{\"session\": \"\"}`, or `{\"last\": false}` — matches neither variant and fails\nat the boundary, so `history()` never has to re-check for one.\n\nThe variants overlap on purpose, and the order is load-bearing: an untagged\nenum takes the first match, so `Last` coming first is what gives `last: true`\npriority over a name. `{\"session\": \"x\", \"last\": true}` satisfies *both*\nvariants and resolves to `Last`, selecting the most recent session rather\nthan `x`; `{\"session\": \"x\", \"last\": false}` fails `Last` and resolves to\n`Session`. That is exactly the reading of the `if (last) … else if (session)`\nrule this replaces, now decided by the union rather than re-derived after\nparsing. Zod resolves its generated union in the same order, so the Node SDK\nagrees with Rust by construction.\n\nBecause `Last` ignores the name it carries, that name is a plain `String`:\n`{\"session\": \"\", \"last\": true}` stays valid and still selects the most recent\nsession, as it always has. Only a name that actually selects has to be\nnon-empty.",
+    "anyOf": [
+      {
+        "description": "Select the most recent session.",
+        "$ref": "#/$defs/HistoryLookupByLast"
       },
-      "historyDir": {
-        "type": "string"
-      },
-      "last": {
-        "description": "Select the most recent session instead of naming one.",
-        "type": "boolean"
-      },
-      "project": {
-        "type": "string"
-      },
-      "session": {
-        "description": "The oneharness-derived session name recorded by `run --history`.",
-        "type": "string"
+      {
+        "description": "Select the session named by `session`.",
+        "$ref": "#/$defs/HistoryLookupBySession"
       }
-    },
-    "additionalProperties": false
+    ],
+    "$defs": {
+      "HistoryLookupByLast": {
+        "description": "A [`HistoryLookup`] that selects the most recent session.",
+        "type": "object",
+        "properties": {
+          "allProjects": {
+            "type": "boolean"
+          },
+          "historyDir": {
+            "type": "string"
+          },
+          "last": {
+            "description": "Select the most recent session. Only `true` selects, so this variant\naccepts no other value.",
+            "type": "boolean",
+            "const": true
+          },
+          "project": {
+            "type": "string"
+          },
+          "session": {
+            "description": "A name may accompany `last: true` — it is what the caller would have\nlooked up otherwise — but `last` takes priority, so it never selects.\nIt is therefore unconstrained: an empty name is meaningless here rather\nthan invalid, so `{\"session\": \"\", \"last\": true}` stays accepted.",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "last"
+        ]
+      },
+      "HistoryLookupBySession": {
+        "description": "A [`HistoryLookup`] that names its session.",
+        "type": "object",
+        "properties": {
+          "allProjects": {
+            "type": "boolean"
+          },
+          "historyDir": {
+            "type": "string"
+          },
+          "last": {
+            "description": "Whether the most recent session was asked for instead. An ordinary\n`bool`, so a caller holding a `boolean` can pass it straight through.\n`true` here also satisfies [`HistoryLookup::Last`], which the union tries\nfirst — so a lookup that reaches this variant always meant the name.",
+            "type": "boolean"
+          },
+          "project": {
+            "type": "string"
+          },
+          "session": {
+            "description": "The oneharness-derived session name recorded by `run --history`. This is\nthe name that selects, so it must be non-empty.",
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "session"
+        ]
+      }
+    }
   },
   "history_list_options": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",

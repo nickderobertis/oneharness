@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -274,36 +274,40 @@ describe("OneHarness", () => {
 		await historyRejects({ last: true, historyDir: 42 });
 	});
 
-	test("requires a history selector the structural schema cannot demand", async () => {
+	test("rejects a history lookup that selects no session", async () => {
 		// Same unspawnable client: every rejection below happens before a process.
 		const client = new OneHarness({ executable: unspawnable });
-		const selectorRejects = async (lookup: HistoryLookup | undefined) => {
-			await expect(client.history(lookup)).rejects.toThrow(
-				"history requires session or last",
+		const selectorRejects = async (lookup: unknown) => {
+			expect(HistoryLookupSchema.safeParse(lookup).success).toBe(false);
+			await expect(client.history(lookup as HistoryLookup)).rejects.toThrow(
+				"invalid oneharness history options",
 			);
 		};
 
-		// Structurally valid, semantically unusable: no field names a session, so
-		// the schema passes and the SDK's own selector rule is what rejects these.
+		// The union has no variant for a lookup that neither names a session nor
+		// asks for the last one, so validation rejects these — an SDK-side selector
+		// rule no longer has to. An empty session and an explicit `last: false`
+		// select nothing, so they are not spellings of a selector.
 		for (const selectorless of [
 			{},
 			{ historyDir: "/tmp/oneharness-history" },
+			{ session: "" },
+			{ last: false },
+			{ session: "", last: false },
 		]) {
-			expect(HistoryLookupSchema.safeParse(selectorless).success).toBe(true);
 			await selectorRejects(selectorless);
 		}
-		await selectorRejects(undefined);
 
-		// Present but not selecting: the SDK reads these for truthiness, so an
-		// empty session and an explicit `last: false` select nothing.
-		await selectorRejects({ session: "" });
-		await selectorRejects({ last: false });
-		await selectorRejects({ session: "", last: false });
-
-		// A valid selector clears both checks, so this client fails on the spawn it
-		// reached rather than on validation — the proof the rejections above are
+		// Every valid selector clears validation, so this client fails on the spawn
+		// it reached rather than on validation — the proof the rejections above are
 		// the boundary talking, not a missing binary.
-		for (const selector of [{ session: "node-session" }, { last: true }]) {
+		const selectors = [
+			{ session: "node-session" },
+			{ last: true },
+			{ session: "node-session", last: false },
+			{ session: "node-session", last: true },
+		] satisfies HistoryLookup[];
+		for (const selector of selectors) {
 			expect(HistoryLookupSchema.safeParse(selector).success).toBe(true);
 			await expect(client.history(selector)).rejects.toThrow(
 				"missing-oneharness-fixture",
@@ -372,6 +376,16 @@ describe("OneHarness", () => {
 		expect(records[0]?.prompt).toBe("history sdk");
 		expect(records[0]?.name).toBe("node-session");
 		expect(records[0]?.status).toBe("ok");
+
+		// Only one session exists, so every way to select reaches the same records
+		// across the real CLI boundary.
+		for (const lookup of [
+			{ last: true, historyDir },
+			{ session: "node-session", last: false, historyDir },
+			{ session: "node-session", last: true, historyDir },
+		] satisfies HistoryLookup[]) {
+			expect((await client.history(lookup))[0]?.name).toBe("node-session");
+		}
 		expect(HistoryRecordsSchema.safeParse(records).success).toBe(true);
 		expect(HistoryRecordSchema.safeParse(records[0]).success).toBe(true);
 		const incompleteRecord: Partial<HistoryRecord> = { ...records[0] };
@@ -390,6 +404,85 @@ describe("OneHarness", () => {
 			HistoryListOptionsSchema.safeParse({ allProjects: true, historyDir })
 				.success,
 		).toBe(true);
+	});
+
+	test("gives last priority over a named session across the CLI boundary", async () => {
+		const historyDir = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-last-"));
+		const client = sdk();
+		const older = await client.run({
+			prompt: "the older session",
+			harnesses: ["claude-code"],
+			mode: "bypass",
+			history: true,
+			historyName: "older-session",
+			historyDir,
+			bins: { "claude-code": mock },
+		});
+
+		// A session's start time is its first record's timestamp, at whole-second
+		// precision — so two real runs could tie and make "last" ambiguous. Deriving
+		// the newer session from this run's own recorded file keeps every other
+		// field real while pinning the one thing this test turns on.
+		const olderFile = older.history_file;
+		if (!olderFile) throw new Error("run --history recorded no history file");
+		const [line] = (await readFile(olderFile, "utf8")).trim().split("\n");
+		if (!line) throw new Error(`history file ${olderFile} recorded no run`);
+		await writeFile(
+			resolve(dirname(olderFile), "newer-session-id.jsonl"),
+			`${JSON.stringify({
+				...JSON.parse(line),
+				session: "newer-session-id",
+				name: "newer-session",
+				prompt: "the newer session",
+				timestamp: "2099-01-01T00:00:00Z",
+			})}\n`,
+		);
+
+		// `last: true` selects the most recent session even though the lookup also
+		// carries an older name: `last` has priority, and the name rides along
+		// unselected. Dropping it to `false` is what asks for the name instead.
+		expect((await client.history({ last: true, historyDir }))[0]?.name).toBe(
+			"newer-session",
+		);
+		expect(
+			(
+				await client.history({
+					session: "older-session",
+					last: true,
+					historyDir,
+				})
+			)[0]?.name,
+		).toBe("newer-session");
+		expect(
+			(
+				await client.history({
+					session: "older-session",
+					last: false,
+					historyDir,
+				})
+			)[0]?.name,
+		).toBe("older-session");
+
+		// The name beside `last: true` never selects, so it is unconstrained: an
+		// empty one is meaningless rather than invalid, and still gets the last
+		// session.
+		expect(
+			(await client.history({ session: "", last: true, historyDir }))[0]?.name,
+		).toBe("newer-session");
+
+		// `last` beside a named session is an ordinary boolean, not a literal, so a
+		// caller holding a widened `boolean` type-checks without a cast — this line
+		// failing to compile is the regression this guards.
+		const wantsLast: boolean = false;
+		expect(
+			(
+				await client.history({
+					session: "older-session",
+					last: wantsLast,
+					historyDir,
+				})
+			)[0]?.name,
+		).toBe("older-session");
 	});
 
 	test("continues a native session with the new user message", async () => {

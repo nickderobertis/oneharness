@@ -1,78 +1,78 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import Ajv2020Module from "ajv/dist/2020.js";
+import type { ZodType } from "zod";
 import type { RunReport } from "./generated/contracts.js";
-import type { DetectInfo, DetectReport } from "./generated/detection.js";
+import type { DetectInfo } from "./generated/detection.js";
 import type { HistoryRecord } from "./generated/history.js";
-import type { HarnessInfo, ListReport } from "./generated/registry.js";
-import schemas from "./generated/schemas.json" with { type: "json" };
+import type { HistorySessionSummary } from "./generated/history-list.js";
+import type { HistoryListOptions } from "./generated/history-list-options.js";
+import type { HistoryLookup } from "./generated/history-lookup.js";
+import type { RunOptions } from "./generated/options.js";
+import type { HarnessInfo } from "./generated/registry.js";
+import {
+	DetectReportSchema,
+	HistoryListOptionsSchema,
+	HistoryListSchema,
+	HistoryLookupSchema,
+	HistoryRecordsSchema,
+	ListReportSchema,
+	RunOptionsSchema,
+	RunReportSchema,
+} from "./generated/zod.js";
 
 export type {
 	ActionEvent,
+	BatchReport,
 	FailureKind,
+	FallbackReport,
+	FallThrough,
+	OutputFormat,
 	RunReport,
 	RunResult,
+	SessionReport,
+	Status,
 	Usage,
 } from "./generated/contracts.js";
 export type { DetectInfo, DetectReport } from "./generated/detection.js";
 export type { HistoryRecord } from "./generated/history.js";
+export type {
+	HistoryList,
+	HistorySessionSummary,
+} from "./generated/history-list.js";
+export type { HistoryListOptions } from "./generated/history-list-options.js";
+export type {
+	HistoryLookup,
+	HistoryLookupByLast,
+	HistoryLookupBySession,
+} from "./generated/history-lookup.js";
+export type { HistoryRecords } from "./generated/history-records.js";
+export type { PermissionMode, RunOptions } from "./generated/options.js";
 export type Detection = DetectInfo;
 export type {
 	HarnessInfo,
 	ListReport,
 	ModeInfo,
 } from "./generated/registry.js";
+export * from "./generated/zod.js";
 
-export type PermissionMode =
-	| "read-only"
-	| "plan"
-	| "default"
-	| "edit"
-	| "auto"
-	| "bypass";
-export type RunOptions = {
-	prompt: string;
-	harnesses?: readonly string[];
-	models?: readonly string[];
-	system?: string;
-	reasoning?: string;
-	resume?: string;
-	session?: string;
-	fork?: boolean;
-	mode?: PermissionMode;
-	cwd?: string;
-	timeoutSeconds?: number;
-	events?: boolean;
-	history?: boolean;
-	historyName?: string;
-	historyDir?: string;
-	env?: Readonly<Record<string, string>>;
-	bins?: Readonly<Record<string, string>>;
-};
-
-export type HistoryLookup = {
-	session?: string;
-	last?: boolean;
-	project?: string;
-	allProjects?: boolean;
-	historyDir?: string;
-};
 export type OneHarnessOptions = {
 	executable?: string;
 	executableArgs?: readonly string[];
 	env?: Readonly<Record<string, string>>;
 };
 
-const Ajv2020 = Ajv2020Module.default;
-const ajv = new Ajv2020({ strict: true });
-for (const format of ["int32", "uint", "uint32", "uint64", "uint128"]) {
-	ajv.addFormat(format, { type: "number", validate: Number.isSafeInteger });
+function parseContract<T>(
+	schema: ZodType<T>,
+	value: unknown,
+	label: string,
+): T {
+	const parsed = schema.safeParse(value);
+	if (parsed.success) return parsed.data;
+	const details = parsed.error.issues
+		.map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
+		.join("; ");
+	throw new Error(`${label}: ${details}`);
 }
-ajv.addFormat("double", { type: "number", validate: Number.isFinite });
-const validateRun = ajv.compile(schemas.run_report);
-const validateHistory = ajv.compile(schemas.history_record);
-const validateList = ajv.compile(schemas.list_report);
-const validateDetect = ajv.compile(schemas.detect_report);
 
 function executable(options: OneHarnessOptions): {
 	command: string;
@@ -142,73 +142,104 @@ export class OneHarness {
 	constructor(private readonly options: OneHarnessOptions = {}) {}
 
 	async run(options: RunOptions): Promise<RunReport> {
-		if (!options.prompt) throw new TypeError("prompt must not be empty");
-		const args = ["run", "--prompt", options.prompt, "--compact"];
-		pushMany(args, "--harness", options.harnesses);
-		pushMany(args, "--model", options.models);
-		if (options.system !== undefined) args.push("--system", options.system);
-		if (options.reasoning !== undefined)
-			args.push("--reasoning", options.reasoning);
-		if (options.resume !== undefined) args.push("--resume", options.resume);
-		if (options.session !== undefined) args.push("--session", options.session);
-		if (options.fork) args.push("--fork");
-		if (options.mode) args.push("--mode", options.mode);
-		if (options.timeoutSeconds !== undefined)
-			args.push("--timeout", String(options.timeoutSeconds));
-		if (options.events) args.push("--events");
-		if (options.history) args.push("--history");
-		if (options.historyName !== undefined)
-			args.push("--history-name", options.historyName);
-		if (options.historyDir !== undefined)
-			args.push("--history-dir", options.historyDir);
-		for (const [key, value] of Object.entries(options.env ?? {}))
+		const input = parseContract(
+			RunOptionsSchema,
+			options,
+			"invalid oneharness run options",
+		);
+		const args = ["run", "--prompt", input.prompt, "--compact"];
+		pushMany(args, "--harness", input.harnesses);
+		pushMany(args, "--model", input.models);
+		if (input.system !== undefined) args.push("--system", input.system);
+		if (input.reasoning !== undefined)
+			args.push("--reasoning", input.reasoning);
+		if (input.resume !== undefined) args.push("--resume", input.resume);
+		if (input.session !== undefined) args.push("--session", input.session);
+		if (input.fork) args.push("--fork");
+		if (input.mode) args.push("--mode", input.mode);
+		if (input.timeoutSeconds !== undefined)
+			args.push("--timeout", String(input.timeoutSeconds));
+		if (input.events) args.push("--events");
+		if (input.history) args.push("--history");
+		if (input.historyName !== undefined)
+			args.push("--history-name", input.historyName);
+		if (input.historyDir !== undefined)
+			args.push("--history-dir", input.historyDir);
+		for (const [key, value] of Object.entries(input.env ?? {}))
 			args.push("--env", `${key}=${value}`);
-		for (const [key, value] of Object.entries(options.bins ?? {}))
+		for (const [key, value] of Object.entries(input.bins ?? {}))
 			args.push("--bin", `${key}=${value}`);
-		const value = await invokeWith(this.options, args, options.cwd, true);
-		if (!validateRun(value))
-			throw new Error(
-				`invalid oneharness run contract: ${ajv.errorsText(validateRun.errors)}`,
-			);
-		return value as unknown as RunReport;
+		const value = await invokeWith(this.options, args, input.cwd, true);
+		return parseContract(
+			RunReportSchema,
+			value,
+			"invalid oneharness run contract",
+		);
 	}
 
 	async list(): Promise<HarnessInfo[]> {
 		const value = await invokeWith(this.options, ["list", "--compact"]);
-		if (!validateList(value))
-			throw new Error(
-				`invalid oneharness list contract: ${ajv.errorsText(validateList.errors)}`,
-			);
-		return (value as unknown as ListReport).harnesses;
+		return parseContract(
+			ListReportSchema,
+			value,
+			"invalid oneharness list contract",
+		).harnesses;
 	}
 
 	async detect(harnesses: readonly string[] = []): Promise<Detection[]> {
 		const args = ["detect", "--compact"];
 		pushMany(args, "--harness", harnesses);
 		const value = await invokeWith(this.options, args);
-		if (!validateDetect(value))
-			throw new Error(
-				`invalid oneharness detect contract: ${ajv.errorsText(validateDetect.errors)}`,
-			);
-		return (value as unknown as DetectReport).detected;
+		return parseContract(
+			DetectReportSchema,
+			value,
+			"invalid oneharness detect contract",
+		).detected;
 	}
 
-	async history(lookup: HistoryLookup = {}): Promise<HistoryRecord[]> {
+	async history(lookup: HistoryLookup): Promise<HistoryRecord[]> {
+		const input = parseContract(
+			HistoryLookupSchema,
+			lookup,
+			"invalid oneharness history options",
+		);
 		const args = ["history", "show", "--compact"];
-		if (lookup.last) args.push("--last");
-		else if (lookup.session) args.push(lookup.session);
-		else throw new TypeError("history requires session or last");
-		if (lookup.project) args.push("--project", lookup.project);
-		if (lookup.allProjects) args.push("--all-projects");
-		if (lookup.historyDir) args.push("--history-dir", lookup.historyDir);
+		// A lookup that selects no session is not a HistoryLookup, so only these
+		// two cases remain. The variants overlap on `{session, last: true}`, and
+		// `last: true` keeps its long-standing priority over a name — which is why
+		// the union tries the last-session variant first, in Rust and in the
+		// generated Zod alike. Ruling that case out here leaves the variant whose
+		// session the type guarantees is present.
+		if (input.last === true) args.push("--last");
+		else args.push(input.session);
+		if (input.project) args.push("--project", input.project);
+		if (input.allProjects) args.push("--all-projects");
+		if (input.historyDir) args.push("--history-dir", input.historyDir);
 		const value = await invokeWith(this.options, args);
-		if (
-			!Array.isArray(value) ||
-			value.some((record) => !validateHistory(record))
-		)
-			throw new Error(
-				`invalid history contract: ${ajv.errorsText(validateHistory.errors)}`,
-			);
-		return value as HistoryRecord[];
+		return parseContract(
+			HistoryRecordsSchema,
+			value,
+			"invalid history contract",
+		);
+	}
+
+	async historyList(
+		options: HistoryListOptions = {},
+	): Promise<HistorySessionSummary[]> {
+		const input = parseContract(
+			HistoryListOptionsSchema,
+			options,
+			"invalid oneharness history list options",
+		);
+		const args = ["history", "list", "--compact"];
+		if (input.project) args.push("--project", input.project);
+		if (input.allProjects) args.push("--all-projects");
+		if (input.historyDir) args.push("--history-dir", input.historyDir);
+		const value = await invokeWith(this.options, args);
+		return parseContract(
+			HistoryListSchema,
+			value,
+			"invalid history list contract",
+		);
 	}
 }

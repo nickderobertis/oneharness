@@ -3,11 +3,13 @@
 export interface DetectReport {
   detected: DetectInfo[];
   schema_version: string;
+  [k: string]: unknown;
 }
 export interface DetectInfo {
   available: boolean;
   bin: string;
   id: string;
-  path?: string | null;
-  version?: string | null;
+  path: string | null;
+  version: string | null;
+  [k: string]: unknown;
 }

@@ -15,6 +15,7 @@ export type FailureKind = "auth" | "rate_limit" | "model_not_found" | "quota" | 
  * The outcome of attempting to run one harness.
  */
 export type Status = "ok" | "nonzero" | "timeout" | "spawn-error" | "skipped" | "planned";
+export type HistoryRecords = HistoryRecord[];
 
 /**
  * One harness run, normalized and frozen for the history log. Serialized as one

@@ -14,6 +14,15 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { generatedFileMatches } from "../scripts/generated-file.mjs";
+import {
+	exactOptionalProperties,
+	typescriptSchema,
+} from "../scripts/typescript-generator.mjs";
+import {
+	generateZodModule,
+	SDK_SCHEMA_ALIASES,
+	SDK_SCHEMA_ROOTS,
+} from "../scripts/zod-generator.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../../..");
@@ -73,6 +82,245 @@ test("a missing generated contract is reported as stale", () => {
 	expect(generatedFileMatches(missing, Buffer.from("expected"))).toBe(false);
 });
 
+test("generated optional properties remain exact-optional compatible", () => {
+	expect(
+		exactOptionalProperties(
+			"export interface Options {\n  name?: string;\n  env?: {\n    [key: string]: string;\n  };\n}\n",
+		),
+	).toBe(
+		"export interface Options {\n  name?: string | undefined;\n  env?: {\n    [key: string]: string;\n  } | undefined;\n}\n",
+	);
+	expect(() =>
+		exactOptionalProperties("type Broken = {\n  value?: {\n"),
+	).toThrow("generated optional property has no terminator");
+	expect(() =>
+		exactOptionalProperties("type Broken = {\n  value?: {\n"),
+	).toThrow(
+		"extend scripts/typescript-generator.mjs for this declaration shape, then rerun just sdk-generate",
+	);
+});
+
+test("TypeScript generation preserves unconstrained JSON values", () => {
+	const unconstrained = { description: "any JSON value" };
+	const transformed = typescriptSchema({
+		type: "object",
+		properties: { value: unconstrained },
+		$defs: { Defined: unconstrained },
+		oneOf: [unconstrained],
+		anyOf: [unconstrained],
+		allOf: [unconstrained],
+		items: unconstrained,
+		additionalProperties: unconstrained,
+	});
+	expect(transformed.properties.value.tsType).toBe("unknown");
+	expect(transformed.$defs.Defined.tsType).toBe("unknown");
+	expect(transformed.oneOf[0].tsType).toBe("unknown");
+	expect(transformed.anyOf[0].tsType).toBe("unknown");
+	expect(transformed.allOf[0].tsType).toBe("unknown");
+	expect(transformed.items.tsType).toBe("unknown");
+	expect(transformed.additionalProperties.tsType).toBe("unknown");
+	expect(typescriptSchema(true)).toBe(true);
+	expect(typescriptSchema([unconstrained])).toEqual([unconstrained]);
+});
+
+test("Zod generation is deterministic and encodes deliberate unknown-key behavior", () => {
+	const bundle = {
+		input: {
+			title: "Input",
+			type: "object",
+			properties: { prompt: { type: "string", minLength: 1 } },
+			required: ["prompt"],
+			additionalProperties: false,
+		},
+		output: {
+			title: "Output",
+			type: "object",
+			properties: {
+				value: { type: "integer", minimum: 0 },
+				requiredUnknown: true,
+				optionalUnknown: true,
+			},
+			required: ["value", "requiredUnknown"],
+		},
+	};
+	const roots = [
+		{ key: "input", type: "Input", module: "input" },
+		{ key: "output", type: "Output", module: "output" },
+	];
+	const first = generateZodModule(bundle, roots);
+	expect(generateZodModule(bundle, roots)).toBe(first);
+	expect(first).toContain("InputSchema: z.ZodType<Input> = z.strictObject");
+	expect(first).toContain("OutputSchema: z.ZodType<Output> = z.looseObject");
+	expect(first).toContain(
+		'"value": z.int().gte(0).refine((value) => value !== undefined, { message: "Required" })',
+	);
+	expect(first).toContain(
+		'"requiredUnknown": z.unknown().refine((value) => value !== undefined, { message: "Required" })',
+	);
+	expect(first).toContain('"optionalUnknown": z.unknown().optional()');
+});
+
+test("focused Zod generator covers the complete checked-in Rust schema bundle", () => {
+	const bundle = JSON.parse(
+		readFileSync(resolve(root, generatedDirectory, "schemas.json"), "utf8"),
+	);
+	const generated = generateZodModule(
+		bundle,
+		SDK_SCHEMA_ROOTS,
+		SDK_SCHEMA_ALIASES,
+	);
+	for (const name of [
+		"RunOptions",
+		"HistoryLookup",
+		"HistoryLookupBySession",
+		"HistoryLookupByLast",
+		"HistoryListOptions",
+		"RunReport",
+		"RunResult",
+		"ActionEvent",
+		"Usage",
+		"HistoryRecord",
+		"HistoryRecords",
+		"HistoryList",
+		"HistorySessionSummary",
+		"ListReport",
+		"DetectReport",
+	]) {
+		expect(generated).toContain(`export const ${name}Schema`);
+	}
+	expect(generated).not.toContain("as unknown as z.ZodType");
+	expect(generated).toContain(
+		"export const RunReportSchema: z.ZodType<RunReport>",
+	);
+	expect(generated).toContain("z.lazy(() => RunResultSchema)");
+	expect(generated).toContain("z.record(z.string(), z.string())");
+	const options = readFileSync(
+		resolve(root, generatedDirectory, "options.ts"),
+		"utf8",
+	);
+	expect(options).toContain("cwd?: string | undefined;");
+	const contracts = readFileSync(
+		resolve(root, generatedDirectory, "contracts.ts"),
+		"utf8",
+	);
+	expect(contracts).toContain("input: unknown;");
+	expect(contracts).toContain("[k: string]: unknown;");
+});
+
+test("Zod generation rejects schema keywords it cannot enforce", () => {
+	expect(() =>
+		generateZodModule(
+			{
+				instant: {
+					title: "Instant",
+					type: "string",
+					format: "date-time",
+				},
+			},
+			[{ key: "instant", type: "Instant", module: "instant" }],
+		),
+	).toThrow("unsupported JSON Schema string format date-time");
+});
+
+test("Zod generation validates every supported schema boundary", () => {
+	const render = (schema: object) =>
+		generateZodModule({ boundary: schema }, [
+			{ key: "boundary", type: "Boundary", module: "boundary" },
+		]);
+	const reject = (schema: object, message: string) =>
+		expect(() => render(schema)).toThrow(message);
+
+	reject(
+		{ type: "string", minItems: 1 },
+		"unsupported JSON Schema keyword boundary.minItems",
+	);
+	reject(
+		{ type: "string", minItems: 1 },
+		"extend scripts/zod-generator.mjs to enforce it, then rerun just sdk-generate",
+	);
+	reject({ $ref: "other.json" }, "unsupported non-local JSON Schema reference");
+	reject(
+		{ $ref: "#/$defs/not/a/name" },
+		"unsupported JSON Schema definition name",
+	);
+	reject(
+		{ type: "number", format: "decimal128" },
+		"unsupported JSON Schema number format decimal128",
+	);
+	expect(
+		render({
+			type: "number",
+			minimum: 1,
+			maximum: 10,
+			exclusiveMinimum: 0,
+			exclusiveMaximum: 11,
+			multipleOf: 0.5,
+		}),
+	).toContain("z.number().gte(1).lte(10).gt(0).lt(11).multipleOf(0.5)");
+	reject({ type: "array" }, "array schema needs one items schema");
+	reject(
+		{ type: "array", items: [{ type: "string" }] },
+		"array schema needs one items schema",
+	);
+	reject(
+		{ type: "array", items: { type: "string" }, uniqueItems: true },
+		"unsupported JSON Schema keyword boundary.uniqueItems",
+	);
+	reject(
+		{ type: "object", minProperties: 1 },
+		"unsupported JSON Schema object size constraint",
+	);
+	reject(
+		{ type: "object", properties: {}, required: ["missing"] },
+		"required property boundary.missing has no schema",
+	);
+	reject(
+		{ type: "object", properties: { broken: undefined } },
+		"property boundary.broken has no schema",
+	);
+	expect(
+		render({
+			type: "object",
+			properties: { known: { type: "string" } },
+			additionalProperties: { type: "boolean" },
+		}),
+	).toContain(".catchall(z.boolean())");
+	reject(
+		{ type: "object", properties: { broken: null } },
+		"invalid JSON Schema node",
+	);
+	expect(render({ enum: ["one", "two"] })).toContain(
+		'z.union([z.literal("one"), z.literal("two")])',
+	);
+	expect(
+		render({ allOf: [{ type: "string" }, { enum: ["value"] }] }),
+	).toContain('z.intersection(z.string(), z.literal("value"))');
+	expect(render({ allOf: [] })).toContain("z.unknown()");
+	reject({ type: "date" }, "unsupported JSON Schema type date");
+	expect(() =>
+		generateZodModule({}, [
+			{ key: "missing", type: "Missing", module: "missing" },
+		]),
+	).toThrow("Rust schema bundle is missing missing");
+	expect(() =>
+		generateZodModule(
+			{
+				first: { type: "object", $defs: { Shared: { type: "string" } } },
+				second: { type: "object", $defs: { Shared: { type: "number" } } },
+			},
+			[
+				{ key: "first", type: "First", module: "first" },
+				{ key: "second", type: "Second", module: "second" },
+			],
+		),
+	).toThrow("conflicting Rust schemas named Shared");
+	expect(() =>
+		generateZodModule({ invalid: { type: "object", $defs: { Flag: true } } }, [
+			{ key: "invalid", type: "Invalid", module: "invalid" },
+		]),
+	).toThrow("Rust schema definition invalid.Flag is not an object");
+});
+
 test("generator check reports a missing generated contract as stale", () => {
 	const checkout = mkdtempSync(resolve(tmpdir(), "oneharness-sdk-generate-"));
 
@@ -88,7 +336,8 @@ test("generator check reports a missing generated contract as stale", () => {
 			process.platform === "win32" ? "junction" : "dir",
 		);
 
-		const missing = resolve(checkout, generatedDirectory, "contracts.ts");
+		const missing = resolve(checkout, generatedDirectory, "zod.ts");
+		copyFileSync(resolve(root, generatedDirectory, "zod.ts"), missing);
 		rmSync(missing);
 		const result = spawnSync(
 			"node",

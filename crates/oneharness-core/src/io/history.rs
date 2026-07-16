@@ -14,6 +14,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -136,7 +137,8 @@ impl HistoryWriter {
 /// A one-line summary of a session, for `oneharness history list`. Read from the
 /// session's records: `name`/`project`/`started` come from the first record,
 /// `harnesses` is the distinct set across all records.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[schemars(rename = "HistorySessionSummary")]
 pub struct SessionSummary {
     /// The session id (the file stem), unique and sortable by start time.
     pub id: String,

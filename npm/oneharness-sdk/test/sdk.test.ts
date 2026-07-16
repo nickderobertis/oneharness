@@ -1,14 +1,92 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { OneHarness } from "../src/index.js";
+import type { z } from "zod";
+import {
+	type ActionEvent,
+	ActionEventSchema,
+	BatchReportSchema,
+	type DetectReport,
+	DetectReportSchema,
+	FallbackReportSchema,
+	type HarnessInfo,
+	HarnessInfoSchema,
+	type HistoryList,
+	type HistoryListOptions,
+	HistoryListOptionsSchema,
+	HistoryListSchema,
+	type HistoryLookup,
+	HistoryLookupSchema,
+	type HistoryRecord,
+	HistoryRecordSchema,
+	type HistoryRecords,
+	HistoryRecordsSchema,
+	type HistorySessionSummary,
+	HistorySessionSummarySchema,
+	type ListReport,
+	ListReportSchema,
+	OneHarness,
+	type RunOptions,
+	RunOptionsSchema,
+	type RunReport,
+	RunReportSchema,
+	type RunResult,
+	RunResultSchema,
+	SessionReportSchema,
+	type Usage,
+	UsageSchema,
+} from "../src/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const binary = resolve(here, "../../../target/debug/oneharness");
 const mock = resolve(here, "../../../target/debug/oneharness-mock-harness");
 const invalidCli = resolve(here, "invalid-cli-fixture.mjs");
+// Deliberately absent: a client pointed here can validate but never spawn, so a
+// boundary check that runs before the subprocess is the only way to see the
+// validation error rather than this path's spawn failure.
+const unspawnable = resolve(here, "missing-oneharness-fixture");
+
+type Equal<Left, Right> =
+	(<Value>() => Value extends Left ? 1 : 2) extends <
+		Value,
+	>() => Value extends Right ? 1 : 2
+		? true
+		: false;
+
+const inferredSchemasMatchGeneratedTypes: [
+	Equal<z.infer<typeof RunOptionsSchema>, RunOptions>,
+	Equal<z.infer<typeof HistoryListOptionsSchema>, HistoryListOptions>,
+	Equal<z.infer<typeof HistoryLookupSchema>, HistoryLookup>,
+	Equal<z.infer<typeof RunReportSchema>, RunReport>,
+	Equal<z.infer<typeof RunResultSchema>, RunResult>,
+	Equal<z.infer<typeof ActionEventSchema>, ActionEvent>,
+	Equal<z.infer<typeof UsageSchema>, Usage>,
+	Equal<z.infer<typeof HistoryRecordSchema>, HistoryRecord>,
+	Equal<z.infer<typeof HistoryRecordsSchema>, HistoryRecords>,
+	Equal<z.infer<typeof HistoryListSchema>, HistoryList>,
+	Equal<z.infer<typeof HistorySessionSummarySchema>, HistorySessionSummary>,
+	Equal<z.infer<typeof ListReportSchema>, ListReport>,
+	Equal<z.infer<typeof HarnessInfoSchema>, HarnessInfo>,
+	Equal<z.infer<typeof DetectReportSchema>, DetectReport>,
+] = [
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+];
 
 function sdk(): OneHarness {
 	return new OneHarness({
@@ -18,6 +96,47 @@ function sdk(): OneHarness {
 }
 
 describe("OneHarness", () => {
+	test("generated schema inference matches every generated public type", () => {
+		expect(inferredSchemasMatchGeneratedTypes.every(Boolean)).toBe(true);
+		const readonlyOptions = {
+			prompt: "typed caller",
+			harnesses: ["codex"] as const,
+			models: ["provider/model"] as const,
+		} satisfies RunOptions;
+		expect(RunOptionsSchema.parse(readonlyOptions).harnesses).toEqual([
+			"codex",
+		]);
+		expect(
+			BatchReportSchema.parse({
+				forked: false,
+				prompt_count: 1,
+				strategy: "speed",
+			}),
+		).toEqual({ forked: false, prompt_count: 1, strategy: "speed" });
+		expect(
+			FallbackReportSchema.parse({
+				fell_through: [{ harness: "codex", reason: "auth" }],
+				ran: null,
+			}),
+		).toEqual({
+			fell_through: [{ harness: "codex", reason: "auth" }],
+			ran: null,
+		});
+		expect(
+			SessionReportSchema.parse({
+				name: "named",
+				phase: "create",
+				token: null,
+				store_file: null,
+			}),
+		).toEqual({
+			name: "named",
+			phase: "create",
+			token: null,
+			store_file: null,
+		});
+	});
+
 	test("crosses the Node to CLI boundary and preserves absent usage", async () => {
 		const client = sdk();
 		const report = await client.run({
@@ -29,6 +148,12 @@ describe("OneHarness", () => {
 		});
 		expect(report.results[0]?.text).toBe("hello from sdk");
 		expect(report.results[0]?.usage.input_tokens).toBeNull();
+		expect(RunReportSchema.safeParse(report).success).toBe(true);
+		expect(RunResultSchema.safeParse(report.results[0]).success).toBe(true);
+		expect(UsageSchema.safeParse(report.results[0]?.usage).success).toBe(true);
+		const incompleteReport: Partial<RunReport> = { ...report };
+		delete incompleteReport.history_file;
+		expect(RunReportSchema.safeParse(incompleteReport).success).toBe(false);
 
 		const traced = await client.run({
 			prompt: "sdk trace",
@@ -53,6 +178,141 @@ describe("OneHarness", () => {
 		expect(traced.results[0]?.events?.[0]?.index).toBe(0);
 		expect(traced.results[0]?.events?.[0]?.output).toBeNull();
 		expect(traced.results[0]?.structured).toBeNull();
+		expect(
+			ActionEventSchema.safeParse(traced.results[0]?.events?.[0]).success,
+		).toBe(true);
+	});
+
+	test("preserves unknown output fields but rejects unknown run options", async () => {
+		const report = await sdk().run({
+			prompt: "future contract",
+			harnesses: ["claude-code"],
+			mode: "bypass",
+			bins: { "claude-code": mock },
+		});
+		const result = report.results[0];
+		if (!result) throw new Error("real CLI fixture had no result");
+		const future = {
+			...report,
+			future_report: { enabled: true },
+			results: [
+				{
+					...result,
+					future_result: "kept",
+					usage: { ...result.usage, future_usage: 7 },
+				},
+			],
+		};
+		const parsed = RunReportSchema.parse(future) as RunReport & {
+			future_report: { enabled: boolean };
+			results: Array<
+				RunResult & {
+					future_result: string;
+					usage: Usage & { future_usage: number };
+				}
+			>;
+		};
+		expect(parsed.future_report.enabled).toBe(true);
+		expect(parsed.results[0]?.future_result).toBe("kept");
+		expect(parsed.results[0]?.usage.future_usage).toBe(7);
+
+		const misspelled = {
+			prompt: "typo",
+			harneses: ["codex"],
+		} as unknown as RunOptions;
+		expect(RunOptionsSchema.safeParse(misspelled).success).toBe(false);
+		await expect(sdk().run(misspelled)).rejects.toThrow(
+			"invalid oneharness run options",
+		);
+	});
+
+	test("rejects unusable public options before spawning the CLI", async () => {
+		// This client can never spawn, so an option that reached the CLI would
+		// surface that spawn failure instead. Only a check that runs before the
+		// subprocess can produce the validation error each case asserts.
+		const client = new OneHarness({ executable: unspawnable });
+		const runRejects = async (options: unknown) => {
+			await expect(client.run(options as RunOptions)).rejects.toThrow(
+				"invalid oneharness run options",
+			);
+		};
+		const listRejects = async (options: unknown) => {
+			await expect(
+				client.historyList(options as HistoryListOptions),
+			).rejects.toThrow("invalid oneharness history list options");
+		};
+		const historyRejects = async (lookup: unknown) => {
+			await expect(client.history(lookup as HistoryLookup)).rejects.toThrow(
+				"invalid oneharness history options",
+			);
+		};
+
+		// Non-object: nothing to read an option off of.
+		for (const nonObject of [null, "run", 42, true, [], () => "run"]) {
+			await runRejects(nonObject);
+			await listRejects(nonObject);
+			await historyRejects(nonObject);
+		}
+
+		// Empty: run needs a prompt, while every history list option is optional.
+		await runRejects({});
+		expect(HistoryListOptionsSchema.safeParse({}).success).toBe(true);
+
+		// Misspelled: a near-miss key this SDK version cannot forward.
+		await runRejects({ prompt: "typo", harneses: ["codex"] });
+		await listRejects({ allProject: true });
+		await historyRejects({ sesion: "node-session" });
+		await historyRejects({ session: "node-session", lastest: true });
+
+		// Malformed: a known key carrying the wrong type.
+		await runRejects({ prompt: 42 });
+		await runRejects({ prompt: "wrong shape", harnesses: "codex" });
+		await listRejects({ project: 42 });
+		await listRejects({ allProjects: "yes" });
+		await historyRejects({ session: 42 });
+		await historyRejects({ last: "yes" });
+		await historyRejects({ last: true, historyDir: 42 });
+	});
+
+	test("rejects a history lookup that selects no session", async () => {
+		// Same unspawnable client: every rejection below happens before a process.
+		const client = new OneHarness({ executable: unspawnable });
+		const selectorRejects = async (lookup: unknown) => {
+			expect(HistoryLookupSchema.safeParse(lookup).success).toBe(false);
+			await expect(client.history(lookup as HistoryLookup)).rejects.toThrow(
+				"invalid oneharness history options",
+			);
+		};
+
+		// The union has no variant for a lookup that neither names a session nor
+		// asks for the last one, so validation rejects these — an SDK-side selector
+		// rule no longer has to. An empty session and an explicit `last: false`
+		// select nothing, so they are not spellings of a selector.
+		for (const selectorless of [
+			{},
+			{ historyDir: "/tmp/oneharness-history" },
+			{ session: "" },
+			{ last: false },
+			{ session: "", last: false },
+		]) {
+			await selectorRejects(selectorless);
+		}
+
+		// Every valid selector clears validation, so this client fails on the spawn
+		// it reached rather than on validation — the proof the rejections above are
+		// the boundary talking, not a missing binary.
+		const selectors = [
+			{ session: "node-session" },
+			{ last: true },
+			{ session: "node-session", last: false },
+			{ session: "node-session", last: true },
+		] satisfies HistoryLookup[];
+		for (const selector of selectors) {
+			expect(HistoryLookupSchema.safeParse(selector).success).toBe(true);
+			await expect(client.history(selector)).rejects.toThrow(
+				"missing-oneharness-fixture",
+			);
+		}
 	});
 
 	test("lists and detects the open harness registry", async () => {
@@ -66,6 +326,35 @@ describe("OneHarness", () => {
 		const detected = await client.detect(["claude-code"]);
 		expect(detected).toHaveLength(1);
 		expect(detected[0]?.id).toBe("claude-code");
+
+		const rawList = JSON.parse(
+			execFileSync(binary, ["list", "--compact"], {
+				encoding: "utf8",
+				env: { ...process.env, ONEHARNESS_NO_CONFIG: "1" },
+			}),
+		);
+		expect(ListReportSchema.safeParse(rawList).success).toBe(true);
+		expect(HarnessInfoSchema.safeParse(rawList.harnesses[0]).success).toBe(
+			true,
+		);
+		const rawDetect = JSON.parse(
+			execFileSync(
+				binary,
+				[
+					"detect",
+					"--compact",
+					"--harness",
+					"claude-code",
+					"--bin",
+					`claude-code=${mock}`,
+				],
+				{
+					encoding: "utf8",
+					env: { ...process.env, ONEHARNESS_NO_CONFIG: "1" },
+				},
+			),
+		);
+		expect(DetectReportSchema.safeParse(rawDetect).success).toBe(true);
 	});
 
 	test("looks up standardized history created across the CLI boundary", async () => {
@@ -87,6 +376,113 @@ describe("OneHarness", () => {
 		expect(records[0]?.prompt).toBe("history sdk");
 		expect(records[0]?.name).toBe("node-session");
 		expect(records[0]?.status).toBe("ok");
+
+		// Only one session exists, so every way to select reaches the same records
+		// across the real CLI boundary.
+		for (const lookup of [
+			{ last: true, historyDir },
+			{ session: "node-session", last: false, historyDir },
+			{ session: "node-session", last: true, historyDir },
+		] satisfies HistoryLookup[]) {
+			expect((await client.history(lookup))[0]?.name).toBe("node-session");
+		}
+		expect(HistoryRecordsSchema.safeParse(records).success).toBe(true);
+		expect(HistoryRecordSchema.safeParse(records[0]).success).toBe(true);
+		const incompleteRecord: Partial<HistoryRecord> = { ...records[0] };
+		delete incompleteRecord.text;
+		expect(HistoryRecordSchema.safeParse(incompleteRecord).success).toBe(false);
+		const sessions = await client.historyList({
+			historyDir,
+			allProjects: true,
+		});
+		expect(sessions[0]?.name).toBe("node-session");
+		expect(HistoryListSchema.safeParse(sessions).success).toBe(true);
+		expect(HistorySessionSummarySchema.safeParse(sessions[0]).success).toBe(
+			true,
+		);
+		expect(
+			HistoryListOptionsSchema.safeParse({ allProjects: true, historyDir })
+				.success,
+		).toBe(true);
+	});
+
+	test("gives last priority over a named session across the CLI boundary", async () => {
+		const historyDir = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-last-"));
+		const client = sdk();
+		const older = await client.run({
+			prompt: "the older session",
+			harnesses: ["claude-code"],
+			mode: "bypass",
+			history: true,
+			historyName: "older-session",
+			historyDir,
+			bins: { "claude-code": mock },
+		});
+
+		// A session's start time is its first record's timestamp, at whole-second
+		// precision — so two real runs could tie and make "last" ambiguous. Deriving
+		// the newer session from this run's own recorded file keeps every other
+		// field real while pinning the one thing this test turns on.
+		const olderFile = older.history_file;
+		if (!olderFile) throw new Error("run --history recorded no history file");
+		const [line] = (await readFile(olderFile, "utf8")).trim().split("\n");
+		if (!line) throw new Error(`history file ${olderFile} recorded no run`);
+		await writeFile(
+			resolve(dirname(olderFile), "newer-session-id.jsonl"),
+			`${JSON.stringify({
+				...JSON.parse(line),
+				session: "newer-session-id",
+				name: "newer-session",
+				prompt: "the newer session",
+				timestamp: "2099-01-01T00:00:00Z",
+			})}\n`,
+		);
+
+		// `last: true` selects the most recent session even though the lookup also
+		// carries an older name: `last` has priority, and the name rides along
+		// unselected. Dropping it to `false` is what asks for the name instead.
+		expect((await client.history({ last: true, historyDir }))[0]?.name).toBe(
+			"newer-session",
+		);
+		expect(
+			(
+				await client.history({
+					session: "older-session",
+					last: true,
+					historyDir,
+				})
+			)[0]?.name,
+		).toBe("newer-session");
+		expect(
+			(
+				await client.history({
+					session: "older-session",
+					last: false,
+					historyDir,
+				})
+			)[0]?.name,
+		).toBe("older-session");
+
+		// The name beside `last: true` never selects, so it is unconstrained: an
+		// empty one is meaningless rather than invalid, and still gets the last
+		// session.
+		expect(
+			(await client.history({ session: "", last: true, historyDir }))[0]?.name,
+		).toBe("newer-session");
+
+		// `last` beside a named session is an ordinary boolean, not a literal, so a
+		// caller holding a widened `boolean` type-checks without a cast — this line
+		// failing to compile is the regression this guards.
+		const wantsLast: boolean = false;
+		expect(
+			(
+				await client.history({
+					session: "older-session",
+					last: wantsLast,
+					historyDir,
+				})
+			)[0]?.name,
+		).toBe("older-session");
 	});
 
 	test("continues a native session with the new user message", async () => {
@@ -198,7 +594,7 @@ describe("OneHarness", () => {
 
 	test("rejects an empty prompt before spawning", async () => {
 		await expect(new OneHarness().run({ prompt: "" })).rejects.toThrow(
-			"prompt must not be empty",
+			"invalid oneharness run options",
 		);
 	});
 
@@ -212,13 +608,39 @@ describe("OneHarness", () => {
 		).rejects.toThrow("missing-oneharness");
 	});
 
-	test("requires an explicit history selector", async () => {
-		await expect(sdk().history()).rejects.toThrow(
-			"history requires session or last",
+	test("rejects malformed run, history, list, and detect data from an external CLI", async () => {
+		const runClient = new OneHarness({
+			executable: process.execPath,
+			executableArgs: [invalidCli],
+			env: { SDK_FIXTURE_MODE: "run" },
+		});
+		await expect(runClient.run({ prompt: "malformed" })).rejects.toThrow(
+			"invalid oneharness run contract",
 		);
-	});
 
-	test("rejects malformed list and detect elements from an external CLI", async () => {
+		const historyClient = new OneHarness({
+			executable: process.execPath,
+			executableArgs: [invalidCli],
+			env: { SDK_FIXTURE_MODE: "history" },
+		});
+		await expect(historyClient.history({ last: true })).rejects.toThrow(
+			"invalid history contract",
+		);
+
+		const historyListClient = new OneHarness({
+			executable: process.execPath,
+			executableArgs: [invalidCli],
+			env: { SDK_FIXTURE_MODE: "history-list" },
+		});
+		// Both spellings of "no options" clear validation and reach the CLI, so the
+		// only contract they can fail is the response one.
+		await expect(historyListClient.historyList()).rejects.toThrow(
+			"invalid history list contract",
+		);
+		await expect(historyListClient.historyList({})).rejects.toThrow(
+			"invalid history list contract",
+		);
+
 		const listClient = new OneHarness({
 			executable: process.execPath,
 			executableArgs: [invalidCli],

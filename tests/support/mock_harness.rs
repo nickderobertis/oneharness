@@ -51,6 +51,12 @@
 //!                   rest) shows `S E` before any further `S`. Used to pin the
 //!                   batch `speed` vs `min-tokens` wave ordering. Small single-byte
 //!                   lines + O_APPEND keep cross-process writes from interleaving.
+//!   MOCK_NATIVE_GRANDCHILD_MS  Unix-only: act like a launcher which starts a
+//!                   TERM-ignoring native child. The child emits MOCK_STDOUT /
+//!                   MOCK_STDERR, then ticks for this many milliseconds while
+//!                   inheriting both output pipes; MOCK_TICK_FILE receives one
+//!                   byte per tick when set. The launcher waits for it. This
+//!                   reproduces the process-tree timeout boundary of npm shims.
 
 use std::io::Write;
 
@@ -75,6 +81,35 @@ fn main() {
             }
         }
     };
+
+    #[cfg(unix)]
+    if let Ok(ms) = std::env::var("MOCK_NATIVE_GRANDCHILD_MS") {
+        let count = ms
+            .parse::<u64>()
+            .ok()
+            .map(|value| (value / 50).max(1))
+            .unwrap_or(1);
+        // The shell receives transcript bytes through inherited environment, not
+        // interpolation, so arbitrary JSON remains data. Ignoring TERM forces
+        // oneharness to exercise the group-wide KILL fallback after its grace.
+        let script = r#"
+            trap '' TERM
+            printf '%s' "${MOCK_STDOUT:-}"
+            printf '%s' "${MOCK_STDERR:-}" >&2
+            i=0
+            while [ "$i" -lt "$1" ]; do
+                if [ -n "${MOCK_TICK_FILE:-}" ]; then
+                    printf x >> "$MOCK_TICK_FILE"
+                fi
+                i=$((i + 1))
+                sleep 0.05
+            done
+        "#;
+        let status = std::process::Command::new("sh")
+            .args(["-c", script, "oneharness-native-child", &count.to_string()])
+            .status();
+        std::process::exit(status.ok().and_then(|s| s.code()).unwrap_or(1));
+    }
 
     if std::env::var_os("MOCK_ECHO_PWD").is_some() {
         let pwd = std::env::var("PWD").unwrap_or_default();

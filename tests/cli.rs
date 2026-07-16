@@ -3020,6 +3020,106 @@ fn slow_harness_times_out() {
     assert!(result["error"].as_str().unwrap().contains("timeout"));
 }
 
+#[cfg(unix)]
+#[test]
+fn timeout_preserves_partial_telemetry_in_report_and_history() {
+    // Reproduce an npm-like launcher plus a TERM-ignoring native grandchild. The
+    // grandchild emits a real OpenCode-shaped transcript (including a
+    // task_complete record), leaves a truncated final JSONL record, then keeps
+    // both pipes open well beyond the deadline.
+    let history = hist_dir("timeout-telemetry");
+    let history_arg = history.display().to_string();
+    let ticks = std::env::temp_dir().join(format!(
+        "oneharness-timeout-cli-{}.ticks",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&ticks);
+    let transcript = concat!(
+        "{\"type\":\"text\",\"sessionID\":\"ses-timeout\",\"part\":",
+        "{\"type\":\"text\",\"text\":\"partial answer\"}}\n",
+        "{\"type\":\"tool_use\",\"sessionID\":\"ses-timeout\",\"part\":",
+        "{\"type\":\"tool\",\"tool\":\"bash\",\"state\":",
+        "{\"input\":{\"command\":\"echo hi\"},\"output\":\"hi\"}}}\n",
+        "{\"type\":\"step_finish\",\"sessionID\":\"ses-timeout\",\"part\":",
+        "{\"cost\":0.01,\"tokens\":{\"input\":12,\"output\":3,",
+        "\"cache\":{\"read\":9,\"write\":4}}}}\n",
+        "{\"type\":\"task_complete\",\"text\":\"emitted before exit\"}\n",
+        "{\"type\":\"incomplete\"",
+    );
+
+    let started = std::time::Instant::now();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "capture timeout evidence",
+            "--timeout",
+            "1",
+            "--bin",
+            &bin_override("opencode"),
+            "--history",
+            "--history-dir",
+            &history_arg,
+            "--compact",
+        ],
+        &[
+            ("MOCK_STDOUT", transcript),
+            ("MOCK_NATIVE_GRANDCHILD_MS", "5000"),
+            ("MOCK_TICK_FILE", &ticks.display().to_string()),
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(3),
+        "timeout should return near deadline plus teardown grace, took {:?}",
+        started.elapsed()
+    );
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["status"], "timeout");
+    assert_eq!(result["text"], "partial answer");
+    assert_eq!(result["text_source"], "json:opencode-parts");
+    assert_eq!(result["usage"]["input_tokens"], 12);
+    assert_eq!(result["usage"]["output_tokens"], 3);
+    assert_eq!(result["usage"]["cache_read_tokens"], 9);
+    assert_eq!(result["usage"]["cache_write_tokens"], 4);
+    assert_eq!(result["usage"]["cost_usd"], 0.01);
+    assert_eq!(result["session_id"], "ses-timeout");
+    assert_eq!(result["events_source"], "json:opencode-parts");
+    assert_eq!(result["events"][0]["name"], "bash");
+    assert!(
+        result["stdout"]
+            .as_str()
+            .unwrap()
+            .ends_with("{\"type\":\"incomplete\""),
+        "raw capture retains the truncated tail"
+    );
+
+    // History freezes the same normalized evidence while omitting raw streams.
+    let history_file = value["history_file"].as_str().expect("history file");
+    let history_text = std::fs::read_to_string(history_file).unwrap();
+    let record: Value = serde_json::from_str(history_text.lines().next().unwrap()).unwrap();
+    assert_eq!(record["status"], "timeout");
+    assert_eq!(record["text"], "partial answer");
+    assert_eq!(record["usage"]["input_tokens"], 12);
+    assert_eq!(record["session_id"], "ses-timeout");
+    assert_eq!(record["events"][0]["name"], "bash");
+    assert!(record.get("stdout").is_none());
+
+    // The native-like descendant is gone when oneharness returns; it cannot keep
+    // doing work under PID 1 after the report/history have been emitted.
+    let ticks_at_return = std::fs::metadata(&ticks).map(|m| m.len()).unwrap_or(0);
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    let ticks_after = std::fs::metadata(&ticks).map(|m| m.len()).unwrap_or(0);
+    assert_eq!(ticks_at_return, ticks_after);
+
+    let _ = std::fs::remove_file(ticks);
+    let _ = std::fs::remove_dir_all(history);
+}
+
 #[test]
 fn missing_binary_is_skipped_not_failed() {
     let args = [

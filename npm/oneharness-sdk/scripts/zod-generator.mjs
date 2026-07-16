@@ -464,7 +464,7 @@ export function generateZodModule(bundle, roots, aliases = {}) {
 		const value = named.get(name);
 		if (!value) throw new Error(`missing collected schema ${name}`);
 		lines.push(
-			`export const ${name}Schema = ${schemaExpression(value.schema, value.path)} as unknown as z.ZodType<${name}>;`,
+			`export const ${name}Schema: z.ZodType<${name}> = ${schemaExpression(value.schema, value.path)};`,
 			"",
 		);
 	}

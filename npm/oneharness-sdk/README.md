@@ -17,6 +17,8 @@ Named exports include `RunOptionsSchema`, `RunReportSchema`, `RunResultSchema`, 
 
 Output objects accept and preserve unknown fields. That deliberate loose-object behavior lets an older SDK validate a newer additive CLI response without erasing fields before an application can inspect them. Known fields are still validated recursively. `RunOptionsSchema` is deliberately strict instead: unknown input keys are rejected because this SDK version cannot forward an option it does not understand, which also catches misspellings.
 
+Nullable CLI fields remain required object keys: the generated response schemas model Rust's serialization contract, so an unavailable value is `null`, while an omitted guaranteed field is malformed. Optional `RunOptions` fields may be absent or explicitly `undefined`.
+
 Continuation passes the prior result's native session id with a new user message:
 
 ```ts

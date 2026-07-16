@@ -126,6 +126,9 @@ describe("OneHarness", () => {
 		expect(RunReportSchema.safeParse(report).success).toBe(true);
 		expect(RunResultSchema.safeParse(report.results[0]).success).toBe(true);
 		expect(UsageSchema.safeParse(report.results[0]?.usage).success).toBe(true);
+		const incompleteReport: Partial<RunReport> = { ...report };
+		delete incompleteReport.history_file;
+		expect(RunReportSchema.safeParse(incompleteReport).success).toBe(false);
 
 		const traced = await client.run({
 			prompt: "sdk trace",
@@ -261,6 +264,9 @@ describe("OneHarness", () => {
 		expect(records[0]?.status).toBe("ok");
 		expect(HistoryRecordsSchema.safeParse(records).success).toBe(true);
 		expect(HistoryRecordSchema.safeParse(records[0]).success).toBe(true);
+		const incompleteRecord: Partial<HistoryRecord> = { ...records[0] };
+		delete incompleteRecord.text;
+		expect(HistoryRecordSchema.safeParse(incompleteRecord).success).toBe(false);
 		const sessions = await client.historyList({
 			historyDir,
 			allProjects: true,

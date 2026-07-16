@@ -18,26 +18,26 @@ export type PermissionMode = "read-only" | "plan" | "default" | "edit" | "auto" 
 export interface RunOptions {
   bins?: {
     [k: string]: string;
-  };
-  cwd?: string;
+  } | undefined;
+  cwd?: string | undefined;
   env?: {
     [k: string]: string;
-  };
-  events?: boolean;
-  fork?: boolean;
-  harnesses?: readonly string[];
-  history?: boolean;
-  historyDir?: string;
-  historyName?: string;
-  mode?: PermissionMode;
-  models?: readonly string[];
+  } | undefined;
+  events?: boolean | undefined;
+  fork?: boolean | undefined;
+  harnesses?: readonly string[] | undefined;
+  history?: boolean | undefined;
+  historyDir?: string | undefined;
+  historyName?: string | undefined;
+  mode?: PermissionMode | undefined;
+  models?: readonly string[] | undefined;
   /**
    * The user message sent to the selected harnesses.
    */
   prompt: string;
-  reasoning?: string;
-  resume?: string;
-  session?: string;
-  system?: string;
-  timeoutSeconds?: number;
+  reasoning?: string | undefined;
+  resume?: string | undefined;
+  session?: string | undefined;
+  system?: string | undefined;
+  timeoutSeconds?: number | undefined;
 }

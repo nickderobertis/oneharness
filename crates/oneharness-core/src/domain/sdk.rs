@@ -7,10 +7,23 @@
 
 use std::collections::BTreeMap;
 
-use schemars::JsonSchema;
+use schemars::{generate::SchemaSettings, JsonSchema, Schema};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::mode::PermissionMode;
+
+/// Generate a schema for a value emitted by oneharness.
+///
+/// Schemars defaults to a deserialization contract, where an [`Option`] field
+/// may be omitted. oneharness's output structs serialize those fields as
+/// required keys whose values may be `null`, so SDK response schemas must use
+/// the serialization contract to describe the real wire shape.
+pub fn schema_for_serialize<T: ?Sized + JsonSchema>() -> Schema {
+    SchemaSettings::draft2020_12()
+        .for_serialize()
+        .into_generator()
+        .into_root_schema_for::<T>()
+}
 
 /// Options accepted by `OneHarness.run()` in the published Node SDK.
 ///
@@ -77,6 +90,22 @@ pub struct RunOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(JsonSchema, Serialize)]
+    struct OutputFixture {
+        value: Option<String>,
+    }
+
+    #[test]
+    fn output_schema_requires_serialized_option_keys_and_allows_null() {
+        let schema = schema_for_serialize::<OutputFixture>();
+        let value = schema.as_value();
+        assert_eq!(value["required"], serde_json::json!(["value"]));
+        assert_eq!(
+            value["properties"]["value"]["type"],
+            serde_json::json!(["string", "null"])
+        );
+    }
 
     #[test]
     fn optional_fields_round_trip_and_are_omitted_when_absent() {

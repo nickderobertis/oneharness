@@ -15,6 +15,10 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { generatedFileMatches } from "../scripts/generated-file.mjs";
 import {
+	exactOptionalProperties,
+	typescriptSchema,
+} from "../scripts/typescript-generator.mjs";
+import {
 	generateZodModule,
 	SDK_SCHEMA_ALIASES,
 	SDK_SCHEMA_ROOTS,
@@ -78,6 +82,42 @@ test("a missing generated contract is reported as stale", () => {
 	expect(generatedFileMatches(missing, Buffer.from("expected"))).toBe(false);
 });
 
+test("generated optional properties remain exact-optional compatible", () => {
+	expect(
+		exactOptionalProperties(
+			"export interface Options {\n  name?: string;\n  env?: {\n    [key: string]: string;\n  };\n}\n",
+		),
+	).toBe(
+		"export interface Options {\n  name?: string | undefined;\n  env?: {\n    [key: string]: string;\n  } | undefined;\n}\n",
+	);
+	expect(() =>
+		exactOptionalProperties("type Broken = {\n  value?: {\n"),
+	).toThrow("generated optional property has no terminator");
+});
+
+test("TypeScript generation preserves unconstrained JSON values", () => {
+	const unconstrained = { description: "any JSON value" };
+	const transformed = typescriptSchema({
+		type: "object",
+		properties: { value: unconstrained },
+		$defs: { Defined: unconstrained },
+		oneOf: [unconstrained],
+		anyOf: [unconstrained],
+		allOf: [unconstrained],
+		items: unconstrained,
+		additionalProperties: unconstrained,
+	});
+	expect(transformed.properties.value.tsType).toBe("unknown");
+	expect(transformed.$defs.Defined.tsType).toBe("unknown");
+	expect(transformed.oneOf[0].tsType).toBe("unknown");
+	expect(transformed.anyOf[0].tsType).toBe("unknown");
+	expect(transformed.allOf[0].tsType).toBe("unknown");
+	expect(transformed.items.tsType).toBe("unknown");
+	expect(transformed.additionalProperties.tsType).toBe("unknown");
+	expect(typescriptSchema(true)).toBe(true);
+	expect(typescriptSchema([unconstrained])).toEqual([unconstrained]);
+});
+
 test("Zod generation is deterministic and encodes deliberate unknown-key behavior", () => {
 	const bundle = {
 		input: {
@@ -100,8 +140,8 @@ test("Zod generation is deterministic and encodes deliberate unknown-key behavio
 	];
 	const first = generateZodModule(bundle, roots);
 	expect(generateZodModule(bundle, roots)).toBe(first);
-	expect(first).toContain("InputSchema = z.strictObject");
-	expect(first).toContain("OutputSchema = z.looseObject");
+	expect(first).toContain("InputSchema: z.ZodType<Input> = z.strictObject");
+	expect(first).toContain("OutputSchema: z.ZodType<Output> = z.looseObject");
 	expect(first).toContain('"value": z.int().gte(0)');
 });
 
@@ -129,8 +169,23 @@ test("focused Zod generator covers the complete checked-in Rust schema bundle", 
 	]) {
 		expect(generated).toContain(`export const ${name}Schema`);
 	}
+	expect(generated).not.toContain("as unknown as z.ZodType");
+	expect(generated).toContain(
+		"export const RunReportSchema: z.ZodType<RunReport>",
+	);
 	expect(generated).toContain("z.lazy(() => RunResultSchema)");
 	expect(generated).toContain("z.record(z.string(), z.string())");
+	const options = readFileSync(
+		resolve(root, generatedDirectory, "options.ts"),
+		"utf8",
+	);
+	expect(options).toContain("cwd?: string | undefined;");
+	const contracts = readFileSync(
+		resolve(root, generatedDirectory, "contracts.ts"),
+		"utf8",
+	);
+	expect(contracts).toContain("input: unknown;");
+	expect(contracts).toContain("[k: string]: unknown;");
 });
 
 test("Zod generation rejects schema keywords it cannot enforce", () => {

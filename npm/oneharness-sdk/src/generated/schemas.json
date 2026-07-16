@@ -134,10 +134,21 @@
       "schema_version",
       "oneharness_version",
       "prompt",
+      "model",
+      "models",
+      "resume",
       "fork",
+      "session",
       "permission_mode",
       "bypass_permissions",
       "dry_run",
+      "schema",
+      "schema_max_retries",
+      "batch",
+      "fallback",
+      "mock_rules",
+      "spy_file",
+      "history_file",
       "config_files",
       "results"
     ],
@@ -176,6 +187,9 @@
         },
         "required": [
           "kind",
+          "name",
+          "input",
+          "output",
           "index"
         ]
       },
@@ -287,6 +301,7 @@
           }
         },
         "required": [
+          "ran",
           "fell_through"
         ]
       },
@@ -519,11 +534,28 @@
           "bin",
           "available",
           "status",
+          "prompt",
+          "model",
+          "exit_code",
+          "duration_ms",
           "command",
           "output_format",
+          "text",
+          "text_source",
           "usage",
+          "usage_source",
+          "session_id",
+          "events",
+          "events_source",
+          "structured",
+          "schema_valid",
+          "schema_attempts",
+          "schema_error",
+          "failure_kind",
+          "failure_kind_source",
           "stdout",
-          "stderr"
+          "stderr",
+          "error"
         ]
       },
       "SessionPhase": {
@@ -570,7 +602,9 @@
         },
         "required": [
           "name",
-          "phase"
+          "phase",
+          "token",
+          "store_file"
         ]
       },
       "Status": {
@@ -656,7 +690,14 @@
             "format": "uint64",
             "minimum": 0
           }
-        }
+        },
+        "required": [
+          "input_tokens",
+          "output_tokens",
+          "cache_read_tokens",
+          "cache_write_tokens",
+          "cost_usd"
+        ]
       }
     }
   },
@@ -892,10 +933,18 @@
       "project",
       "timestamp",
       "harness",
+      "model",
       "prompt",
       "permission_mode",
       "status",
-      "usage"
+      "exit_code",
+      "duration_ms",
+      "text",
+      "text_source",
+      "usage",
+      "session_id",
+      "events",
+      "failure_kind"
     ],
     "$defs": {
       "ActionEvent": {
@@ -932,6 +981,9 @@
         },
         "required": [
           "kind",
+          "name",
+          "input",
+          "output",
           "index"
         ]
       },
@@ -1083,7 +1135,14 @@
             "format": "uint64",
             "minimum": 0
           }
-        }
+        },
+        "required": [
+          "input_tokens",
+          "output_tokens",
+          "cache_read_tokens",
+          "cache_write_tokens",
+          "cost_usd"
+        ]
       }
     }
   },
@@ -1129,6 +1188,9 @@
         },
         "required": [
           "kind",
+          "name",
+          "input",
+          "output",
           "index"
         ]
       },
@@ -1276,10 +1338,18 @@
           "project",
           "timestamp",
           "harness",
+          "model",
           "prompt",
           "permission_mode",
           "status",
-          "usage"
+          "exit_code",
+          "duration_ms",
+          "text",
+          "text_source",
+          "usage",
+          "session_id",
+          "events",
+          "failure_kind"
         ]
       },
       "PermissionMode": {
@@ -1400,7 +1470,14 @@
             "format": "uint64",
             "minimum": 0
           }
-        }
+        },
+        "required": [
+          "input_tokens",
+          "output_tokens",
+          "cache_read_tokens",
+          "cache_write_tokens",
+          "cost_usd"
+        ]
       }
     }
   },
@@ -1588,10 +1665,12 @@
           "modes",
           "supports_native_schema",
           "supports_reasoning",
+          "sync_file",
           "supports_allowed_tools",
           "supports_denied_tools",
           "supports_hooks",
           "supports_mock_deny",
+          "mock_rewrite",
           "supports_prompt_stdin",
           "supports_system_file",
           "example_command"
@@ -1734,7 +1813,9 @@
         "required": [
           "id",
           "bin",
-          "available"
+          "available",
+          "path",
+          "version"
         ]
       }
     }

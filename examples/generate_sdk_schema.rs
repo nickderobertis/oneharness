@@ -1,5 +1,9 @@
 use oneharness::commands::{detect::DetectReport, list::ListReport};
-use oneharness_core::domain::{history::HistoryRecord, report::RunReport, sdk::RunOptions};
+use oneharness_core::domain::{
+    history::HistoryRecord,
+    report::RunReport,
+    sdk::{schema_for_serialize, RunOptions},
+};
 use oneharness_core::io::history::SessionSummary;
 use schemars::{schema_for, JsonSchema};
 use serde::Serialize;
@@ -17,13 +21,13 @@ struct SchemaBundle {
 
 fn main() -> Result<(), serde_json::Error> {
     let bundle = SchemaBundle {
-        run_report: schema_for!(RunReport),
+        run_report: schema_for_serialize::<RunReport>(),
         run_options: schema_for!(RunOptions),
-        history_record: schema_for!(HistoryRecord),
-        history_records: schema_for!(Vec<HistoryRecord>),
-        history_list: schema_for!(Vec<SessionSummary>),
-        list_report: schema_for!(ListReport),
-        detect_report: schema_for!(DetectReport),
+        history_record: schema_for_serialize::<HistoryRecord>(),
+        history_records: schema_for_serialize::<Vec<HistoryRecord>>(),
+        history_list: schema_for_serialize::<Vec<SessionSummary>>(),
+        list_report: schema_for_serialize::<ListReport>(),
+        detect_report: schema_for_serialize::<DetectReport>(),
     };
     println!("{}", serde_json::to_string_pretty(&bundle)?);
     Ok(())

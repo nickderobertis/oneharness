@@ -6,6 +6,10 @@ import { compile } from "json-schema-to-typescript";
 import { format } from "prettier";
 import { generatedFileMatches } from "./generated-file.mjs";
 import {
+	exactOptionalProperties,
+	typescriptSchema,
+} from "./typescript-generator.mjs";
+import {
 	generateZodModule,
 	SDK_SCHEMA_ALIASES,
 	SDK_SCHEMA_ROOTS,
@@ -51,52 +55,66 @@ const bundle = JSON.parse(
 	(_key, value) =>
 		typeof value === "string" ? normalizeNewlines(value) : value,
 );
-const run = await compile(bundle.run_report, "RunReport", {
-	bannerComment: "/* Generated from oneharness-core. Do not edit. */",
-	additionalProperties: false,
-	style: { endOfLine: "lf" },
-});
-const options = readonlyArrayProperties(
-	await compile(bundle.run_options, "RunOptions", {
+const run = exactOptionalProperties(
+	await compile(typescriptSchema(bundle.run_report), "RunReport", {
 		bannerComment: "/* Generated from oneharness-core. Do not edit. */",
-		additionalProperties: false,
+		additionalProperties: true,
 		style: { endOfLine: "lf" },
 	}),
-	bundle.run_options,
 );
-const history = await compile(bundle.history_record, "HistoryRecord", {
-	bannerComment: "/* Generated from oneharness-core. Do not edit. */",
-	additionalProperties: false,
-	style: { endOfLine: "lf" },
-});
-const historyRecords = await compile(
-	{ ...bundle.history_records, title: "HistoryRecords" },
-	"HistoryRecords",
-	{
+const options = exactOptionalProperties(
+	readonlyArrayProperties(
+		await compile(bundle.run_options, "RunOptions", {
+			bannerComment: "/* Generated from oneharness-core. Do not edit. */",
+			additionalProperties: true,
+			style: { endOfLine: "lf" },
+		}),
+		bundle.run_options,
+	),
+);
+const history = exactOptionalProperties(
+	await compile(typescriptSchema(bundle.history_record), "HistoryRecord", {
 		bannerComment: "/* Generated from oneharness-core. Do not edit. */",
-		additionalProperties: false,
+		additionalProperties: true,
 		style: { endOfLine: "lf" },
-	},
+	}),
 );
-const historyList = await compile(
-	{ ...bundle.history_list, title: "HistoryList" },
-	"HistoryList",
-	{
-		bannerComment: "/* Generated from oneharness-core. Do not edit. */",
-		additionalProperties: false,
+const historyRecords = exactOptionalProperties(
+	await compile(
+		{ ...typescriptSchema(bundle.history_records), title: "HistoryRecords" },
+		"HistoryRecords",
+		{
+			bannerComment: "/* Generated from oneharness-core. Do not edit. */",
+			additionalProperties: true,
+			style: { endOfLine: "lf" },
+		},
+	),
+);
+const historyList = exactOptionalProperties(
+	await compile(
+		{ ...typescriptSchema(bundle.history_list), title: "HistoryList" },
+		"HistoryList",
+		{
+			bannerComment: "/* Generated from oneharness-core. Do not edit. */",
+			additionalProperties: true,
+			style: { endOfLine: "lf" },
+		},
+	),
+);
+const registry = exactOptionalProperties(
+	await compile(typescriptSchema(bundle.list_report), "ListReport", {
+		bannerComment: "/* Generated from oneharness. Do not edit. */",
+		additionalProperties: true,
 		style: { endOfLine: "lf" },
-	},
+	}),
 );
-const registry = await compile(bundle.list_report, "ListReport", {
-	bannerComment: "/* Generated from oneharness. Do not edit. */",
-	additionalProperties: false,
-	style: { endOfLine: "lf" },
-});
-const detection = await compile(bundle.detect_report, "DetectReport", {
-	bannerComment: "/* Generated from oneharness. Do not edit. */",
-	additionalProperties: false,
-	style: { endOfLine: "lf" },
-});
+const detection = exactOptionalProperties(
+	await compile(typescriptSchema(bundle.detect_report), "DetectReport", {
+		bannerComment: "/* Generated from oneharness. Do not edit. */",
+		additionalProperties: true,
+		style: { endOfLine: "lf" },
+	}),
+);
 const zod = await format(
 	generateZodModule(bundle, SDK_SCHEMA_ROOTS, SDK_SCHEMA_ALIASES),
 	{

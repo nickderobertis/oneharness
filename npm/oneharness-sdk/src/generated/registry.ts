@@ -19,6 +19,7 @@ export type OutputFormat = "text" | "json" | "stream-json";
 export interface ListReport {
   harnesses: HarnessInfo[];
   schema_version: string;
+  [k: string]: unknown;
 }
 export interface HarnessInfo {
   default_bin: string;
@@ -43,7 +44,7 @@ export interface HarnessInfo {
    * the harness has no verified rewrite — a rewrite rule for it is then a
    * loud usage error (see the README mock support matrix).
    */
-  mock_rewrite?: string | null;
+  mock_rewrite: string | null;
   /**
    * The approval modes (`--mode`) this harness can express, each with its
    * headless behavior. Modes not listed are unsupported for the harness.
@@ -108,7 +109,8 @@ export interface HarnessInfo {
    * The project-scoped config file `oneharness sync` writes for this
    * harness; `null` when it has none (sync settings are then rejected).
    */
-  sync_file?: string | null;
+  sync_file: string | null;
+  [k: string]: unknown;
 }
 /**
  * One supported approval mode for a harness, with its headless behavior, in
@@ -122,4 +124,5 @@ export interface ModeInfo {
    */
   headless: "clean" | "hangs";
   mode: PermissionMode;
+  [k: string]: unknown;
 }

@@ -36,4 +36,5 @@ export interface HistorySessionSummary {
    * The RFC3339 UTC start time (first record's timestamp); empty if unknown.
    */
   started: string;
+  [k: string]: unknown;
 }

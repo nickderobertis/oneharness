@@ -237,7 +237,7 @@ if (!installedSdk.dependencies?.zod) {
 
 writeFileSync(
 	resolve(install, "consume.mjs"),
-	`import { HistoryListSchema, HistoryRecordSchema, OneHarness, RunOptionsSchema, RunReportSchema } from "@oneharness/sdk";
+	`import { HistoryListSchema, HistoryRecordSchema, OneHarness, RunOptionsSchema, RunReportSchema, RunStreamEnvelopeSchema } from "@oneharness/sdk";
 const mockProvider = process.env.ONEHARNESS_TEST_MOCK;
 const historyDir = process.env.ONEHARNESS_TEST_HISTORY;
 if (!mockProvider || !historyDir) throw new Error("package e2e fixture environment is incomplete");
@@ -250,6 +250,11 @@ const records = await sdk.history({ session: "installed-session", historyDir });
 HistoryRecordSchema.parse(records[0]);
 const sessions = await sdk.historyList({ historyDir, allProjects: true });
 HistoryListSchema.parse(sessions);
+const streamed = [];
+for await (const envelope of sdk.runStream({ prompt: "installed stream", harnesses: ["opencode"], mode: "bypass", env: { MOCK_STDOUT: '{"type":"text","part":{"type":"text","text":"installed stream works"}}' }, bins: { opencode: mockProvider } })) {
+  streamed.push(RunStreamEnvelopeSchema.parse(envelope));
+}
+if (streamed.at(-1)?.type !== "result") throw new Error(JSON.stringify(streamed));
 if (RunOptionsSchema.safeParse({ prompt: "typo", harneses: ["codex"] }).success) throw new Error("RunOptionsSchema accepted an unknown option");
 `,
 );

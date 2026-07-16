@@ -20,6 +20,7 @@ import {
 	HistoryListSchema,
 	type HistoryLookup,
 	HistoryLookupSchema,
+	HistoryNotFoundError,
 	type HistoryRecord,
 	HistoryRecordSchema,
 	type HistoryRecords,
@@ -28,6 +29,8 @@ import {
 	HistorySessionSummarySchema,
 	type HistoryStreamEnvelope,
 	HistoryStreamEnvelopeSchema,
+	type HistoryWatchOptions,
+	HistoryWatchOptionsSchema,
 	type ListReport,
 	ListReportSchema,
 	OneHarness,
@@ -64,6 +67,7 @@ const inferredSchemasMatchGeneratedTypes: [
 	Equal<z.infer<typeof RunOptionsSchema>, RunOptions>,
 	Equal<z.infer<typeof HistoryListOptionsSchema>, HistoryListOptions>,
 	Equal<z.infer<typeof HistoryLookupSchema>, HistoryLookup>,
+	Equal<z.infer<typeof HistoryWatchOptionsSchema>, HistoryWatchOptions>,
 	Equal<z.infer<typeof RunReportSchema>, RunReport>,
 	Equal<z.infer<typeof RunResultSchema>, RunResult>,
 	Equal<z.infer<typeof ActionEventSchema>, ActionEvent>,
@@ -78,6 +82,7 @@ const inferredSchemasMatchGeneratedTypes: [
 	Equal<z.infer<typeof DetectReportSchema>, DetectReport>,
 	Equal<z.infer<typeof RunStreamEnvelopeSchema>, RunStreamEnvelope>,
 ] = [
+	true,
 	true,
 	true,
 	true,
@@ -205,6 +210,66 @@ describe("OneHarness", () => {
 		expect(
 			ActionEventSchema.safeParse(traced.results[0]?.events?.[0]).success,
 		).toBe(true);
+	});
+
+	test("streams every validated envelope across the real CLI boundary", async () => {
+		const envelopes: RunStreamEnvelope[] = [];
+		for await (const envelope of sdk().runStream({
+			prompt: "stream from sdk",
+			harnesses: ["opencode"],
+			mode: "bypass",
+			env: {
+				MOCK_STDOUT: [
+					'{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"echo hi"},"output":"hi"}}}',
+					'{"type":"text","part":{"type":"text","text":"stream finished"}}',
+				].join("\n"),
+			},
+			bins: { opencode: mock },
+		})) {
+			envelopes.push(envelope);
+		}
+
+		expect(envelopes.map(({ type }) => type)).toEqual(["event", "result"]);
+		expect(envelopes[0]).toMatchObject({
+			type: "event",
+			event: { name: "bash", input: { command: "echo hi" } },
+		});
+		expect(envelopes[1]).toMatchObject({
+			type: "result",
+			report: { results: [{ text: "stream finished" }] },
+		});
+		for (const envelope of envelopes)
+			expect(RunStreamEnvelopeSchema.safeParse(envelope).success).toBe(true);
+	});
+
+	test("terminates a streaming subprocess when the iterator closes early", async () => {
+		const directory = await mkdtemp(
+			resolve(tmpdir(), "oneharness-sdk-cancel-"),
+		);
+		const log = resolve(directory, "mock.log");
+		const stream = sdk().runStream({
+			prompt: "stop after the first action",
+			harnesses: ["opencode"],
+			mode: "bypass",
+			env: {
+				MOCK_LOG_FILE: log,
+				MOCK_STREAM_DELAY_MS: "500",
+				MOCK_STDOUT: [
+					'{"type":"tool_use","part":{"type":"tool","tool":"first","state":{"input":{}}}}',
+					'{"type":"tool_use","part":{"type":"tool","tool":"second","state":{"input":{}}}}',
+					'{"type":"tool_use","part":{"type":"tool","tool":"third","state":{"input":{}}}}',
+				].join("\n"),
+			},
+			bins: { opencode: mock },
+		});
+
+		expect(await stream.next()).toMatchObject({
+			done: false,
+			value: { type: "event", event: { name: "first" } },
+		});
+		await stream.return(undefined);
+		await Bun.sleep(700);
+		expect(await readFile(log, "utf8")).not.toContain("COMPLETE");
 	});
 
 	test("preserves unknown output fields but rejects unknown run options", async () => {
@@ -437,6 +502,50 @@ describe("OneHarness", () => {
 		).toBe(true);
 	});
 
+	test("watches history with labels and closes the live subprocess", async () => {
+		const historyDir = await mkdtemp(
+			resolve(tmpdir(), "oneharness-sdk-watch-"),
+		);
+		const client = sdk();
+		await client.run({
+			prompt: "watch this history",
+			harnesses: ["claude-code"],
+			mode: "bypass",
+			history: true,
+			historyDir,
+			historyLabels: { graph: "release", task: "sdk" },
+			bins: { "claude-code": mock },
+		});
+
+		const watch = client.historyWatch({
+			allProjects: true,
+			historyDir,
+			labels: { graph: "release", task: "sdk" },
+		});
+		expect(
+			HistoryWatchOptionsSchema.safeParse({
+				allProjects: true,
+				historyDir,
+				labels: { graph: "release", task: "sdk" },
+			}).success,
+		).toBe(true);
+		const first = await watch.next();
+		expect(first).toMatchObject({
+			done: false,
+			value: {
+				type: "record",
+				record: {
+					prompt: "watch this history",
+					labels: { graph: "release", task: "sdk" },
+				},
+			},
+		});
+		expect(HistoryStreamEnvelopeSchema.safeParse(first.value).success).toBe(
+			true,
+		);
+		await watch.return(undefined);
+	});
+
 	test("gives last priority over a named session across the CLI boundary", async () => {
 		const historyDir = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-last-"));
 		const client = sdk();
@@ -558,7 +667,16 @@ describe("OneHarness", () => {
 		const client = sdk();
 		await expect(
 			client.history({ session: "does-not-exist", historyDir }),
-		).rejects.toThrow("oneharness exited 1");
+		).rejects.toBeInstanceOf(HistoryNotFoundError);
+		await expect(
+			client
+				.historyWatch({
+					after: "00000000-0000-7000-8000-000000000000",
+					allProjects: true,
+					historyDir,
+				})
+				.next(),
+		).rejects.toBeInstanceOf(HistoryNotFoundError);
 		await expect(
 			client.run({
 				prompt: "cannot continue two providers",
@@ -566,6 +684,34 @@ describe("OneHarness", () => {
 				resume: "sdk-session-1",
 			}),
 		).rejects.toThrow("--resume needs exactly one harness");
+	});
+
+	test("rejects invalid stream inputs and envelopes at their boundaries", async () => {
+		const client = new OneHarness({ executable: unspawnable });
+		expect(() =>
+			client.runStream({ prompt: "typo", harneses: ["codex"] } as never),
+		).toThrow("invalid oneharness run options");
+		expect(() => client.historyWatch({ allProject: true } as never)).toThrow(
+			"invalid oneharness history watch options",
+		);
+
+		const invalidRun = new OneHarness({
+			executable: process.execPath,
+			executableArgs: [invalidCli],
+			env: { SDK_FIXTURE_MODE: "run-stream" },
+		});
+		await expect(
+			Array.fromAsync(invalidRun.runStream({ prompt: "malformed" })),
+		).rejects.toThrow("invalid oneharness run stream contract");
+
+		const invalidHistory = new OneHarness({
+			executable: process.execPath,
+			executableArgs: [invalidCli],
+			env: { SDK_FIXTURE_MODE: "history-watch" },
+		});
+		await expect(
+			invalidHistory.historyWatch({ allProjects: true }).next(),
+		).rejects.toThrow("invalid oneharness history watch contract");
 	});
 
 	test("classifies provider failures and tolerates malformed provider output", async () => {

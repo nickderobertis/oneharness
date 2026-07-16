@@ -1,6 +1,6 @@
 # @oneharness/sdk
 
-Typed Node.js access to the `oneharness` engine. The SDK launches the packaged CLI and validates every response with named Zod schemas generated from the Rust wire types. The corresponding TypeScript declarations come from the same Rust JSON Schema bundle.
+Typed Node.js access to the `oneharness` engine. The SDK launches its exact-version packaged CLI dependency and validates every response and stream envelope with named Zod schemas generated from the Rust wire types. The corresponding TypeScript declarations come from the same Rust JSON Schema bundle.
 
 ```ts
 import { OneHarness, RunReportSchema, type RunReport } from "@oneharness/sdk";
@@ -11,11 +11,31 @@ const checked: RunReport = RunReportSchema.parse(report);
 console.log(checked.results[0]?.text, checked.results[0]?.usage.input_tokens);
 ```
 
-`null` usage fields mean the harness did not report the value; zero remains a real measured zero. String-valued harness/model/event identifiers should be treated as open sets for forward compatibility.
+The complete client surface is `run`, `runStream`, `list`, `detect`, `history`, `historyList`, and `historyWatch`. Both streaming methods return async iterators:
 
-Named exports include `RunOptionsSchema`, `HistoryLookupSchema`, `HistoryListOptionsSchema`, `RunReportSchema`, `RunStreamEnvelopeSchema`, `RunResultSchema`, `ActionEventSchema`, `UsageSchema`, `HistoryRecordSchema`, `HistoryStreamEnvelopeSchema`, `HistoryRecordsSchema`, `HistoryListSchema`, `HistorySessionSummarySchema`, `ListReportSchema`, `HarnessInfoSchema`, and the registry/detection enum and object schemas. `RunStreamEnvelope` and `HistoryStreamEnvelope` are also exported TypeScript types for consumers building JSONL clients. Each schema's `z.infer` type is compile-time checked against its generated TypeScript type.
+```ts
+for await (const envelope of oneharness.runStream({
+  prompt: "Inspect this repository",
+  harnesses: ["codex"],
+})) {
+  if (envelope.type === "event" && envelope.event.name === "shell") break;
+}
 
-Output objects accept and preserve unknown fields. That deliberate loose-object behavior lets an older SDK validate a newer additive CLI response without erasing fields before an application can inspect them. Known fields are still validated recursively. The input schemas `RunOptionsSchema`, `HistoryLookupSchema`, and `HistoryListOptionsSchema` are deliberately strict instead: unknown input keys are rejected because this SDK version cannot forward an option it does not understand, which also catches misspellings. `run`, `history`, and `historyList` validate against them before reading any option, so an unusable input raises `invalid oneharness run options` / `invalid oneharness history options` / `invalid oneharness history list options` rather than reaching the CLI.
+for await (const envelope of oneharness.historyWatch({
+  labels: { graph: "release" },
+  after: lastHistoryId,
+})) {
+  console.log(envelope.record.history_id, envelope.record.status);
+}
+```
+
+Breaking or returning from either iterator terminates its oneharness subprocess. Every line is validated before it is yielded; malformed or unknown envelope variants fail the iterator. Additive fields within known output envelopes are accepted and preserved.
+
+`null` usage fields mean the harness did not report the value; zero remains a real measured zero. String-valued harness/model/event identifiers should be treated as open sets for forward compatibility. `history` and `historyWatch` raise the exported `HistoryNotFoundError` when a session, record, or watch cursor cannot be resolved.
+
+Named exports include `RunOptionsSchema`, `HistoryLookupSchema`, `HistoryListOptionsSchema`, `HistoryWatchOptionsSchema`, `RunReportSchema`, `RunStreamEnvelopeSchema`, `RunResultSchema`, `ActionEventSchema`, `UsageSchema`, `HistoryRecordSchema`, `HistoryStreamEnvelopeSchema`, `HistoryRecordsSchema`, `HistoryListSchema`, `HistorySessionSummarySchema`, `ListReportSchema`, `HarnessInfoSchema`, and the registry/detection enum and object schemas. `RunStreamEnvelope` and `HistoryStreamEnvelope` are also exported TypeScript types for consumers building JSONL clients. Each schema's `z.infer` type is compile-time checked against its generated TypeScript type.
+
+Output objects accept and preserve unknown fields. That deliberate loose-object behavior lets an older SDK validate a newer additive CLI response without erasing fields before an application can inspect them. Known fields are still validated recursively. The input schemas `RunOptionsSchema`, `HistoryLookupSchema`, `HistoryListOptionsSchema`, and `HistoryWatchOptionsSchema` are deliberately strict instead: unknown input keys are rejected because this SDK version cannot forward an option it does not understand, which also catches misspellings. Every method validates its input before spawning the CLI.
 
 Nullable CLI fields remain required object keys: the generated response schemas model Rust's serialization contract, so an unavailable value is `null`, while an omitted guaranteed field is malformed. Optional `RunOptions`, `HistoryLookup`, and `HistoryListOptions` fields may be absent or explicitly `undefined`; every `HistoryListOptions` field is optional, so `historyList()` and `historyList({})` both list the default store.
 

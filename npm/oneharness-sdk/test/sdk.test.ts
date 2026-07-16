@@ -1,14 +1,67 @@
 import { describe, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { OneHarness } from "../src/index.js";
+import type { z } from "zod";
+import {
+	type ActionEvent,
+	ActionEventSchema,
+	BatchReportSchema,
+	type DetectReport,
+	DetectReportSchema,
+	FallbackReportSchema,
+	type HarnessInfo,
+	HarnessInfoSchema,
+	type HistoryList,
+	HistoryListSchema,
+	type HistoryRecord,
+	HistoryRecordSchema,
+	type HistoryRecords,
+	HistoryRecordsSchema,
+	type HistorySessionSummary,
+	HistorySessionSummarySchema,
+	type ListReport,
+	ListReportSchema,
+	OneHarness,
+	type RunOptions,
+	RunOptionsSchema,
+	type RunReport,
+	RunReportSchema,
+	type RunResult,
+	RunResultSchema,
+	SessionReportSchema,
+	type Usage,
+	UsageSchema,
+} from "../src/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const binary = resolve(here, "../../../target/debug/oneharness");
 const mock = resolve(here, "../../../target/debug/oneharness-mock-harness");
 const invalidCli = resolve(here, "invalid-cli-fixture.mjs");
+
+type Equal<Left, Right> =
+	(<Value>() => Value extends Left ? 1 : 2) extends <
+		Value,
+	>() => Value extends Right ? 1 : 2
+		? true
+		: false;
+
+const inferredSchemasMatchGeneratedTypes: [
+	Equal<z.infer<typeof RunOptionsSchema>, RunOptions>,
+	Equal<z.infer<typeof RunReportSchema>, RunReport>,
+	Equal<z.infer<typeof RunResultSchema>, RunResult>,
+	Equal<z.infer<typeof ActionEventSchema>, ActionEvent>,
+	Equal<z.infer<typeof UsageSchema>, Usage>,
+	Equal<z.infer<typeof HistoryRecordSchema>, HistoryRecord>,
+	Equal<z.infer<typeof HistoryRecordsSchema>, HistoryRecords>,
+	Equal<z.infer<typeof HistoryListSchema>, HistoryList>,
+	Equal<z.infer<typeof HistorySessionSummarySchema>, HistorySessionSummary>,
+	Equal<z.infer<typeof ListReportSchema>, ListReport>,
+	Equal<z.infer<typeof HarnessInfoSchema>, HarnessInfo>,
+	Equal<z.infer<typeof DetectReportSchema>, DetectReport>,
+] = [true, true, true, true, true, true, true, true, true, true, true, true];
 
 function sdk(): OneHarness {
 	return new OneHarness({
@@ -18,6 +71,47 @@ function sdk(): OneHarness {
 }
 
 describe("OneHarness", () => {
+	test("generated schema inference matches every generated public type", () => {
+		expect(inferredSchemasMatchGeneratedTypes.every(Boolean)).toBe(true);
+		const readonlyOptions = {
+			prompt: "typed caller",
+			harnesses: ["codex"] as const,
+			models: ["provider/model"] as const,
+		} satisfies RunOptions;
+		expect(RunOptionsSchema.parse(readonlyOptions).harnesses).toEqual([
+			"codex",
+		]);
+		expect(
+			BatchReportSchema.parse({
+				forked: false,
+				prompt_count: 1,
+				strategy: "speed",
+			}),
+		).toEqual({ forked: false, prompt_count: 1, strategy: "speed" });
+		expect(
+			FallbackReportSchema.parse({
+				fell_through: [{ harness: "codex", reason: "auth" }],
+				ran: null,
+			}),
+		).toEqual({
+			fell_through: [{ harness: "codex", reason: "auth" }],
+			ran: null,
+		});
+		expect(
+			SessionReportSchema.parse({
+				name: "named",
+				phase: "create",
+				token: null,
+				store_file: null,
+			}),
+		).toEqual({
+			name: "named",
+			phase: "create",
+			token: null,
+			store_file: null,
+		});
+	});
+
 	test("crosses the Node to CLI boundary and preserves absent usage", async () => {
 		const client = sdk();
 		const report = await client.run({
@@ -29,6 +123,9 @@ describe("OneHarness", () => {
 		});
 		expect(report.results[0]?.text).toBe("hello from sdk");
 		expect(report.results[0]?.usage.input_tokens).toBeNull();
+		expect(RunReportSchema.safeParse(report).success).toBe(true);
+		expect(RunResultSchema.safeParse(report.results[0]).success).toBe(true);
+		expect(UsageSchema.safeParse(report.results[0]?.usage).success).toBe(true);
 
 		const traced = await client.run({
 			prompt: "sdk trace",
@@ -53,6 +150,52 @@ describe("OneHarness", () => {
 		expect(traced.results[0]?.events?.[0]?.index).toBe(0);
 		expect(traced.results[0]?.events?.[0]?.output).toBeNull();
 		expect(traced.results[0]?.structured).toBeNull();
+		expect(
+			ActionEventSchema.safeParse(traced.results[0]?.events?.[0]).success,
+		).toBe(true);
+	});
+
+	test("preserves unknown output fields but rejects unknown run options", async () => {
+		const report = await sdk().run({
+			prompt: "future contract",
+			harnesses: ["claude-code"],
+			mode: "bypass",
+			bins: { "claude-code": mock },
+		});
+		const result = report.results[0];
+		if (!result) throw new Error("real CLI fixture had no result");
+		const future = {
+			...report,
+			future_report: { enabled: true },
+			results: [
+				{
+					...result,
+					future_result: "kept",
+					usage: { ...result.usage, future_usage: 7 },
+				},
+			],
+		};
+		const parsed = RunReportSchema.parse(future) as RunReport & {
+			future_report: { enabled: boolean };
+			results: Array<
+				RunResult & {
+					future_result: string;
+					usage: Usage & { future_usage: number };
+				}
+			>;
+		};
+		expect(parsed.future_report.enabled).toBe(true);
+		expect(parsed.results[0]?.future_result).toBe("kept");
+		expect(parsed.results[0]?.usage.future_usage).toBe(7);
+
+		const misspelled = {
+			prompt: "typo",
+			harneses: ["codex"],
+		} as unknown as RunOptions;
+		expect(RunOptionsSchema.safeParse(misspelled).success).toBe(false);
+		await expect(sdk().run(misspelled)).rejects.toThrow(
+			"invalid oneharness run options",
+		);
 	});
 
 	test("lists and detects the open harness registry", async () => {
@@ -66,6 +209,35 @@ describe("OneHarness", () => {
 		const detected = await client.detect(["claude-code"]);
 		expect(detected).toHaveLength(1);
 		expect(detected[0]?.id).toBe("claude-code");
+
+		const rawList = JSON.parse(
+			execFileSync(binary, ["list", "--compact"], {
+				encoding: "utf8",
+				env: { ...process.env, ONEHARNESS_NO_CONFIG: "1" },
+			}),
+		);
+		expect(ListReportSchema.safeParse(rawList).success).toBe(true);
+		expect(HarnessInfoSchema.safeParse(rawList.harnesses[0]).success).toBe(
+			true,
+		);
+		const rawDetect = JSON.parse(
+			execFileSync(
+				binary,
+				[
+					"detect",
+					"--compact",
+					"--harness",
+					"claude-code",
+					"--bin",
+					`claude-code=${mock}`,
+				],
+				{
+					encoding: "utf8",
+					env: { ...process.env, ONEHARNESS_NO_CONFIG: "1" },
+				},
+			),
+		);
+		expect(DetectReportSchema.safeParse(rawDetect).success).toBe(true);
 	});
 
 	test("looks up standardized history created across the CLI boundary", async () => {
@@ -87,6 +259,17 @@ describe("OneHarness", () => {
 		expect(records[0]?.prompt).toBe("history sdk");
 		expect(records[0]?.name).toBe("node-session");
 		expect(records[0]?.status).toBe("ok");
+		expect(HistoryRecordsSchema.safeParse(records).success).toBe(true);
+		expect(HistoryRecordSchema.safeParse(records[0]).success).toBe(true);
+		const sessions = await client.historyList({
+			historyDir,
+			allProjects: true,
+		});
+		expect(sessions[0]?.name).toBe("node-session");
+		expect(HistoryListSchema.safeParse(sessions).success).toBe(true);
+		expect(HistorySessionSummarySchema.safeParse(sessions[0]).success).toBe(
+			true,
+		);
 	});
 
 	test("continues a native session with the new user message", async () => {
@@ -218,7 +401,34 @@ describe("OneHarness", () => {
 		);
 	});
 
-	test("rejects malformed list and detect elements from an external CLI", async () => {
+	test("rejects malformed run, history, list, and detect data from an external CLI", async () => {
+		const runClient = new OneHarness({
+			executable: process.execPath,
+			executableArgs: [invalidCli],
+			env: { SDK_FIXTURE_MODE: "run" },
+		});
+		await expect(runClient.run({ prompt: "malformed" })).rejects.toThrow(
+			"invalid oneharness run contract",
+		);
+
+		const historyClient = new OneHarness({
+			executable: process.execPath,
+			executableArgs: [invalidCli],
+			env: { SDK_FIXTURE_MODE: "history" },
+		});
+		await expect(historyClient.history({ last: true })).rejects.toThrow(
+			"invalid history contract",
+		);
+
+		const historyListClient = new OneHarness({
+			executable: process.execPath,
+			executableArgs: [invalidCli],
+			env: { SDK_FIXTURE_MODE: "history-list" },
+		});
+		await expect(historyListClient.historyList()).rejects.toThrow(
+			"invalid history list contract",
+		);
+
 		const listClient = new OneHarness({
 			executable: process.execPath,
 			executableArgs: [invalidCli],

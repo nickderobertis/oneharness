@@ -189,8 +189,10 @@ toolchain and [`just`](https://github.com/casey/just).
 
 Node applications can use `@oneharness/sdk` for typed `run`, registry
 `list`/`detect`, continuation (`resume` or named `session`), and standardized
-history lookup. Its declarations and runtime JSON Schema validators are generated
-from the Rust wire types and drift-checked by `just check`; see
+history lookup/listing. Its TypeScript declarations and named Zod runtime schemas
+are generated from the Rust JSON Schema metadata and drift-checked by `just
+check`; output schemas preserve unknown fields for additive forward compatibility,
+while `RunOptionsSchema` rejects unknown option names. See
 [`npm/oneharness-sdk/README.md`](npm/oneharness-sdk/README.md).
 The install script honors `ONEHARNESS_VERSION`, `ONEHARNESS_INSTALL_DIR`,
 `ONEHARNESS_RELEASE_BASE_URL`/`--base-url`, `ONEHARNESS_CHECKSUM_BASE_URL`, and

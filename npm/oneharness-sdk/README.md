@@ -1,16 +1,21 @@
 # @oneharness/sdk
 
-Typed Node.js access to the `oneharness` engine. The SDK launches the packaged CLI, validates every run/history response against JSON Schemas generated from the Rust wire types, and returns generated TypeScript declarations.
+Typed Node.js access to the `oneharness` engine. The SDK launches the packaged CLI and validates every response with named Zod schemas generated from the Rust wire types. The corresponding TypeScript declarations come from the same Rust JSON Schema bundle.
 
 ```ts
-import { OneHarness } from "@oneharness/sdk";
+import { OneHarness, RunReportSchema, type RunReport } from "@oneharness/sdk";
 
 const oneharness = new OneHarness();
 const report = await oneharness.run({ prompt: "Summarize this repository", harnesses: ["codex"], events: true });
-console.log(report.results[0]?.text, report.results[0]?.usage.input_tokens);
+const checked: RunReport = RunReportSchema.parse(report);
+console.log(checked.results[0]?.text, checked.results[0]?.usage.input_tokens);
 ```
 
 `null` usage fields mean the harness did not report the value; zero remains a real measured zero. String-valued harness/model/event identifiers should be treated as open sets for forward compatibility.
+
+Named exports include `RunOptionsSchema`, `RunReportSchema`, `RunResultSchema`, `ActionEventSchema`, `UsageSchema`, `HistoryRecordSchema`, `HistoryRecordsSchema`, `HistoryListSchema`, `HistorySessionSummarySchema`, `ListReportSchema`, `HarnessInfoSchema`, and the registry/detection enum and object schemas. Each schema's `z.infer` type is compile-time checked against its generated TypeScript type.
+
+Output objects accept and preserve unknown fields. That deliberate loose-object behavior lets an older SDK validate a newer additive CLI response without erasing fields before an application can inspect them. Known fields are still validated recursively. `RunOptionsSchema` is deliberately strict instead: unknown input keys are rejected because this SDK version cannot forward an option it does not understand, which also catches misspellings.
 
 Continuation passes the prior result's native session id with a new user message:
 
@@ -21,4 +26,15 @@ const next = await oneharness.run({
   harnesses: ["codex"],
   resume: first.results[0]?.session_id ?? undefined,
 });
+```
+
+Standardized history records and session summaries use their generated schemas too:
+
+```ts
+import { HistoryListSchema, HistoryRecordSchema } from "@oneharness/sdk";
+
+const records = await oneharness.history({ last: true });
+const sessions = await oneharness.historyList({ allProjects: true });
+HistoryRecordSchema.parse(records[0]);
+HistoryListSchema.parse(sessions);
 ```

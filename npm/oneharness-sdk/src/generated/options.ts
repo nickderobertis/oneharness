@@ -28,6 +28,7 @@ export interface RunOptions {
   harnesses?: readonly string[] | undefined;
   history?: boolean | undefined;
   historyDir?: string | undefined;
+  historyLabels?: HistoryLabels | undefined;
   historyName?: string | undefined;
   mode?: PermissionMode | undefined;
   models?: readonly string[] | undefined;
@@ -40,4 +41,7 @@ export interface RunOptions {
   session?: string | undefined;
   system?: string | undefined;
   timeoutSeconds?: number | undefined;
+}
+export interface HistoryLabels {
+  [k: string]: string;
 }

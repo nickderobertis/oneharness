@@ -15,6 +15,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::domain::history::{HistoryId, HistoryLabels};
 use crate::domain::mode::PermissionMode;
 
 /// Generate a schema for a value emitted by oneharness.
@@ -212,6 +213,9 @@ pub struct RunOptions {
     #[schemars(with = "String")]
     pub history_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "HistoryLabels")]
+    pub history_labels: Option<HistoryLabels>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "BTreeMap<String, String>")]
     pub env: Option<BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -320,6 +324,32 @@ pub struct HistoryListOptions {
     pub history_dir: Option<String>,
 }
 
+/// Options accepted by the language SDKs' continuous history iterators.
+///
+/// The CLI spells `labels` as repeated `--label key=value` arguments, while an
+/// SDK can expose the validated map directly. Unknown fields remain a boundary
+/// error, as they are for every other SDK input contract.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "HistoryWatchOptions")]
+pub struct HistoryWatchOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "HistoryId")]
+    pub after: Option<HistoryId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "HistoryLabels")]
+    pub labels: Option<HistoryLabels>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub all_projects: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub history_dir: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,6 +441,33 @@ mod tests {
     }
 
     #[test]
+    fn watch_options_validate_cursors_labels_and_unknown_fields() {
+        let parsed = serde_json::from_value::<HistoryWatchOptions>(serde_json::json!({
+            "after": "00000000-0000-7000-8000-000000000000",
+            "labels": { "graph": "release" },
+            "allProjects": true,
+        }))
+        .expect("valid watch options");
+        assert_eq!(
+            parsed
+                .labels
+                .expect("labels")
+                .as_map()
+                .get("graph")
+                .map(String::as_str),
+            Some("release")
+        );
+
+        for invalid in [
+            serde_json::json!({ "after": "not-a-cursor" }),
+            serde_json::json!({ "labels": { "bad key": "release" } }),
+            serde_json::json!({ "unknown": true }),
+        ] {
+            assert!(serde_json::from_value::<HistoryWatchOptions>(invalid).is_err());
+        }
+    }
+
+    #[test]
     fn run_options_schema_requires_a_non_empty_prompt() {
         let schema = schemars::schema_for!(RunOptions);
         let value = schema.as_value();
@@ -437,6 +494,7 @@ mod tests {
             history: None,
             history_name: None,
             history_dir: None,
+            history_labels: None,
             env: None,
             bins: None,
         };

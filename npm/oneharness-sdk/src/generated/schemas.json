@@ -1481,6 +1481,9 @@
       "historyDir": {
         "type": "string"
       },
+      "historyLabels": {
+        "$ref": "#/$defs/HistoryLabels"
+      },
       "historyName": {
         "type": "string"
       },
@@ -1521,6 +1524,19 @@
       "prompt"
     ],
     "$defs": {
+      "HistoryLabels": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+        },
+        "propertyNames": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        }
+      },
       "PermissionMode": {
         "description": "The unified approval mode, from least to most autonomy. A harness may not\nsupport every value (see [`crate::domain::harness::HarnessSpec::mode`]); the\ncommand layer refuses an unsupported one before spawning, never silently\ndowngrading it.",
         "oneOf": [
@@ -1648,6 +1664,46 @@
       }
     },
     "additionalProperties": false
+  },
+  "history_watch_options": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "HistoryWatchOptions",
+    "description": "Options accepted by the language SDKs' continuous history iterators.\n\nThe CLI spells `labels` as repeated `--label key=value` arguments, while an\nSDK can expose the validated map directly. Unknown fields remain a boundary\nerror, as they are for every other SDK input contract.",
+    "type": "object",
+    "properties": {
+      "after": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+      },
+      "allProjects": {
+        "type": "boolean"
+      },
+      "historyDir": {
+        "type": "string"
+      },
+      "labels": {
+        "$ref": "#/$defs/HistoryLabels"
+      },
+      "project": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": false,
+    "$defs": {
+      "HistoryLabels": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+        },
+        "propertyNames": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        }
+      }
+    }
   },
   "history_record": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",

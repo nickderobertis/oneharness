@@ -9,7 +9,9 @@ use serde::Serialize;
 
 use crate::domain::history::{HistoryRecord, HistoryStreamEnvelope};
 use crate::domain::report::{RunReport, RunStreamEnvelope};
-use crate::domain::sdk::{schema_for_serialize, HistoryListOptions, HistoryLookup, RunOptions};
+use crate::domain::sdk::{
+    schema_for_serialize, HistoryListOptions, HistoryLookup, HistoryWatchOptions, RunOptions,
+};
 use crate::io::history::SessionSummary;
 
 /// All core schemas shared by oneharness SDKs.
@@ -20,6 +22,7 @@ pub struct SdkSchemaBundle {
     pub run_options: Schema,
     pub history_lookup: Schema,
     pub history_list_options: Schema,
+    pub history_watch_options: Schema,
     pub history_record: Schema,
     pub history_stream_envelope: Schema,
     pub history_records: Schema,
@@ -34,6 +37,7 @@ pub fn bundle() -> SdkSchemaBundle {
         run_options: schema_for!(RunOptions),
         history_lookup: schema_for!(HistoryLookup),
         history_list_options: schema_for!(HistoryListOptions),
+        history_watch_options: schema_for!(HistoryWatchOptions),
         history_record: schema_for_serialize::<HistoryRecord>(),
         history_stream_envelope: schema_for_serialize::<HistoryStreamEnvelope>(),
         history_records: schema_for_serialize::<Vec<HistoryRecord>>(),

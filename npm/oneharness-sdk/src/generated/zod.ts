@@ -15,13 +15,14 @@ import type {
   Usage,
 } from "./contracts.js";
 import type { DetectInfo, DetectReport } from "./detection.js";
-import type { HistoryLabels, HistoryRecord } from "./history.js";
+import type { HistoryRecord } from "./history.js";
 import type { HistoryList, HistorySessionSummary } from "./history-list.js";
 import type { HistoryListOptions } from "./history-list-options.js";
 import type { HistoryLookup, HistoryLookupByLast, HistoryLookupBySession } from "./history-lookup.js";
 import type { HistoryRecords } from "./history-records.js";
 import type { HistoryStreamEnvelope } from "./history-stream-envelope.js";
-import type { PermissionMode, RunOptions } from "./options.js";
+import type { HistoryWatchOptions } from "./history-watch-options.js";
+import type { HistoryLabels, PermissionMode, RunOptions } from "./options.js";
 import type { HarnessInfo, ListReport, ModeInfo } from "./registry.js";
 import type { RunStreamEnvelope } from "./run-stream-envelope.js";
 
@@ -196,6 +197,17 @@ export const HistoryStreamEnvelopeSchema: z.ZodType<HistoryStreamEnvelope> = z.l
   type: z.literal("record").refine((value) => value !== undefined, { message: "Required" }),
 });
 
+export const HistoryWatchOptionsSchema: z.ZodType<HistoryWatchOptions> = z.strictObject({
+  after: z
+    .string()
+    .regex(new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"))
+    .optional(),
+  allProjects: z.boolean().optional(),
+  historyDir: z.string().optional(),
+  labels: z.lazy(() => HistoryLabelsSchema).optional(),
+  project: z.string().optional(),
+});
+
 export const ListReportSchema: z.ZodType<ListReport> = z.looseObject({
   harnesses: z.array(z.lazy(() => HarnessInfoSchema)).refine((value) => value !== undefined, { message: "Required" }),
   schema_version: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -232,6 +244,7 @@ export const RunOptionsSchema: z.ZodType<RunOptions> = z.strictObject({
   harnesses: z.array(z.string()).optional(),
   history: z.boolean().optional(),
   historyDir: z.string().optional(),
+  historyLabels: z.lazy(() => HistoryLabelsSchema).optional(),
   historyName: z.string().optional(),
   mode: z.lazy(() => PermissionModeSchema).optional(),
   models: z.array(z.string()).optional(),

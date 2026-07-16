@@ -209,6 +209,38 @@ mod tests {
     }
 
     #[test]
+    fn history_list_optional_fields_round_trip_and_are_omitted_when_absent() {
+        let options = HistoryListOptions {
+            project: None,
+            all_projects: Some(true),
+            history_dir: Some("/tmp/oneharness-history".to_string()),
+        };
+
+        let value = serde_json::to_value(&options).expect("serialize history list options");
+        assert_eq!(value["allProjects"], true);
+        assert_eq!(value["historyDir"], "/tmp/oneharness-history");
+        assert!(value.get("project").is_none());
+        assert_eq!(
+            serde_json::from_value::<HistoryListOptions>(value)
+                .expect("deserialize history list options"),
+            options
+        );
+    }
+
+    #[test]
+    fn history_list_options_default_to_every_field_absent() {
+        assert_eq!(
+            serde_json::from_value::<HistoryListOptions>(serde_json::json!({}))
+                .expect("empty options are valid"),
+            HistoryListOptions {
+                project: None,
+                all_projects: None,
+                history_dir: None,
+            }
+        );
+    }
+
+    #[test]
     fn history_list_options_reject_unknown_fields() {
         let error = serde_json::from_value::<HistoryListOptions>(serde_json::json!({
             "allProject": true

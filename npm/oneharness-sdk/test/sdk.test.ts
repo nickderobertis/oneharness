@@ -42,6 +42,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const binary = resolve(here, "../../../target/debug/oneharness");
 const mock = resolve(here, "../../../target/debug/oneharness-mock-harness");
 const invalidCli = resolve(here, "invalid-cli-fixture.mjs");
+// Deliberately absent: a client pointed here can validate but never spawn, so a
+// boundary check that runs before the subprocess is the only way to see the
+// validation error rather than this path's spawn failure.
+const unspawnable = resolve(here, "missing-oneharness-fixture");
 
 type Equal<Left, Right> =
 	(<Value>() => Value extends Left ? 1 : 2) extends <
@@ -216,9 +220,43 @@ describe("OneHarness", () => {
 		await expect(sdk().run(misspelled)).rejects.toThrow(
 			"invalid oneharness run options",
 		);
-		await expect(sdk().run(null as unknown as RunOptions)).rejects.toThrow(
-			"invalid oneharness run options",
-		);
+	});
+
+	test("rejects unusable public options before spawning the CLI", async () => {
+		// This client can never spawn, so an option that reached the CLI would
+		// surface that spawn failure instead. Only a check that runs before the
+		// subprocess can produce the validation error each case asserts.
+		const client = new OneHarness({ executable: unspawnable });
+		const runRejects = async (options: unknown) => {
+			await expect(client.run(options as RunOptions)).rejects.toThrow(
+				"invalid oneharness run options",
+			);
+		};
+		const listRejects = async (options: unknown) => {
+			await expect(
+				client.historyList(options as HistoryListOptions),
+			).rejects.toThrow("invalid oneharness history list options");
+		};
+
+		// Non-object: nothing to read an option off of.
+		for (const nonObject of [null, "run", 42, true, [], () => "run"]) {
+			await runRejects(nonObject);
+			await listRejects(nonObject);
+		}
+
+		// Empty: run needs a prompt, while every history list option is optional.
+		await runRejects({});
+		expect(HistoryListOptionsSchema.safeParse({}).success).toBe(true);
+
+		// Misspelled: a near-miss key this SDK version cannot forward.
+		await runRejects({ prompt: "typo", harneses: ["codex"] });
+		await listRejects({ allProject: true });
+
+		// Malformed: a known key carrying the wrong type.
+		await runRejects({ prompt: 42 });
+		await runRejects({ prompt: "wrong shape", harnesses: "codex" });
+		await listRejects({ project: 42 });
+		await listRejects({ allProjects: "yes" });
 	});
 
 	test("lists and detects the open harness registry", async () => {
@@ -300,9 +338,6 @@ describe("OneHarness", () => {
 			HistoryListOptionsSchema.safeParse({ allProjects: true, historyDir })
 				.success,
 		).toBe(true);
-		await expect(
-			client.historyList({ allProject: true } as unknown as HistoryListOptions),
-		).rejects.toThrow("invalid oneharness history list options");
 	});
 
 	test("continues a native session with the new user message", async () => {
@@ -458,7 +493,12 @@ describe("OneHarness", () => {
 			executableArgs: [invalidCli],
 			env: { SDK_FIXTURE_MODE: "history-list" },
 		});
+		// Both spellings of "no options" clear validation and reach the CLI, so the
+		// only contract they can fail is the response one.
 		await expect(historyListClient.historyList()).rejects.toThrow(
+			"invalid history list contract",
+		);
+		await expect(historyListClient.historyList({})).rejects.toThrow(
 			"invalid history list contract",
 		);
 

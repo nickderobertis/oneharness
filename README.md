@@ -192,7 +192,8 @@ Node applications can use `@oneharness/sdk` for typed `run`, registry
 history lookup/listing. Its TypeScript declarations and named Zod runtime schemas
 are generated from the Rust JSON Schema metadata and drift-checked by `just
 check`; output schemas preserve unknown fields for additive forward compatibility,
-while `RunOptionsSchema` rejects unknown option names. See
+while the input schemas `RunOptionsSchema` and `HistoryListOptionsSchema` reject
+unknown option names before the SDK reads an option. See
 [`npm/oneharness-sdk/README.md`](npm/oneharness-sdk/README.md).
 The install script honors `ONEHARNESS_VERSION`, `ONEHARNESS_INSTALL_DIR`,
 `ONEHARNESS_RELEASE_BASE_URL`/`--base-url`, `ONEHARNESS_CHECKSUM_BASE_URL`, and

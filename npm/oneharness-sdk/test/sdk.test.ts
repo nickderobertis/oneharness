@@ -462,6 +462,27 @@ describe("OneHarness", () => {
 				})
 			)[0]?.name,
 		).toBe("older-session");
+
+		// The name beside `last: true` never selects, so it is unconstrained: an
+		// empty one is meaningless rather than invalid, and still gets the last
+		// session.
+		expect(
+			(await client.history({ session: "", last: true, historyDir }))[0]?.name,
+		).toBe("newer-session");
+
+		// `last` beside a named session is an ordinary boolean, not a literal, so a
+		// caller holding a widened `boolean` type-checks without a cast — this line
+		// failing to compile is the regression this guards.
+		const wantsLast: boolean = false;
+		expect(
+			(
+				await client.history({
+					session: "older-session",
+					last: wantsLast,
+					historyDir,
+				})
+			)[0]?.name,
+		).toBe("older-session");
 	});
 
 	test("continues a native session with the new user message", async () => {

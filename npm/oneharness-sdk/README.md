@@ -41,4 +41,6 @@ HistoryRecordSchema.parse(records[0]);
 HistoryListSchema.parse(sessions);
 ```
 
-`HistoryLookupSchema` is structural: it makes every field optional, so it accepts a lookup that names no session. `history()` therefore adds one rule the schema deliberately does not state — a lookup must select a session with a non-empty `session` or a truthy `last`, and `history({})`, `history({ last: false })`, or `history({ session: "" })` raise `history requires session or last`. That rule holds across fields rather than within one, and `last` is read for truthiness before `session`, which is not what an `anyOf` over required keys would express.
+`HistoryLookupSchema` states the selector rule itself: a lookup is a union of the only two ways to select a session, so it accepts `last: true` or a non-empty `session` and rejects a lookup that selects neither. `history({})`, `history({ last: false })`, and `history({ session: "" })` fail validation rather than reaching the CLI, and `HistoryLookup` rejects them at compile time too.
+
+`last: true` has priority over a name, so `history({ session: "old", last: true })` returns the most recent session and `history({ session: "old", last: false })` returns `old`. The two cases overlap deliberately — the union resolves `last: true` to its last-session variant first — which keeps `last` an ordinary `boolean` beside a named session, so a caller can pass one straight through.

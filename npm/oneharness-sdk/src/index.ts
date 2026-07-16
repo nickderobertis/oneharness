@@ -204,10 +204,12 @@ export class OneHarness {
 			"invalid oneharness history options",
 		);
 		const args = ["history", "show", "--compact"];
-		// A lookup that selects no session is not a HistoryLookup, so the union
-		// leaves only these two cases. `last: true` keeps its long-standing
-		// priority over a name, which is why it is the union's first variant; the
-		// other variant then has the session the type guarantees is there.
+		// A lookup that selects no session is not a HistoryLookup, so only these
+		// two cases remain. The variants overlap on `{session, last: true}`, and
+		// `last: true` keeps its long-standing priority over a name — which is why
+		// the union tries the last-session variant first, in Rust and in the
+		// generated Zod alike. Ruling that case out here leaves the variant whose
+		// session the type guarantees is present.
 		if (input.last === true) args.push("--last");
 		else args.push(input.session);
 		if (input.project) args.push("--project", input.project);

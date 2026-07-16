@@ -10,13 +10,20 @@
  * `{"session": ""}`, or `{"last": false}` — matches neither variant and fails
  * at the boundary, so `history()` never has to re-check for one.
  *
- * Variant order is load-bearing, because the variants overlap and an untagged
- * enum takes the first match. `Last` comes first so that `last: true` keeps the
- * priority the SDK has always given it: `{"session": "x", "last": true}`
- * selects the most recent session, not `x`. Dropping `last` to `false` is what
- * asks for the named session instead, so `{"session": "x", "last": false}`
- * selects `x` — the same reading as the previous `if (last) … else if (session)`
- * rule, now stated in the type rather than re-derived after parsing.
+ * The variants overlap on purpose, and the order is load-bearing: an untagged
+ * enum takes the first match, so `Last` coming first is what gives `last: true`
+ * priority over a name. `{"session": "x", "last": true}` satisfies *both*
+ * variants and resolves to `Last`, selecting the most recent session rather
+ * than `x`; `{"session": "x", "last": false}` fails `Last` and resolves to
+ * `Session`. That is exactly the reading of the `if (last) … else if (session)`
+ * rule this replaces, now decided by the union rather than re-derived after
+ * parsing. Zod resolves its generated union in the same order, so the Node SDK
+ * agrees with Rust by construction.
+ *
+ * Because `Last` ignores the name it carries, that name is a plain `String`:
+ * `{"session": "", "last": true}` stays valid and still selects the most recent
+ * session, as it always has. Only a name that actually selects has to be
+ * non-empty.
  */
 export type HistoryLookup = HistoryLookupByLast | HistoryLookupBySession;
 
@@ -34,7 +41,9 @@ export interface HistoryLookupByLast {
   project?: string | undefined;
   /**
    * A name may accompany `last: true` — it is what the caller would have
-   * looked up otherwise — but `last` takes priority, so it does not select.
+   * looked up otherwise — but `last` takes priority, so it never selects.
+   * It is therefore unconstrained: an empty name is meaningless here rather
+   * than invalid, so `{"session": "", "last": true}` stays accepted.
    */
   session?: string | undefined;
 }
@@ -45,14 +54,16 @@ export interface HistoryLookupBySession {
   allProjects?: boolean | undefined;
   historyDir?: string | undefined;
   /**
-   * An explicit "not the most recent session". `last: true` takes priority
-   * over a name, so it selects [`HistoryLookup::Last`] instead and cannot
-   * appear here — which is why this is the literal `false`, not a `bool`.
+   * Whether the most recent session was asked for instead. An ordinary
+   * `bool`, so a caller holding a `boolean` can pass it straight through.
+   * `true` here also satisfies [`HistoryLookup::Last`], which the union tries
+   * first — so a lookup that reaches this variant always meant the name.
    */
-  last?: false | undefined;
+  last?: boolean | undefined;
   project?: string | undefined;
   /**
-   * The oneharness-derived session name recorded by `run --history`.
+   * The oneharness-derived session name recorded by `run --history`. This is
+   * the name that selects, so it must be non-empty.
    */
   session: string;
 }

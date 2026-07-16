@@ -124,13 +124,13 @@ export const HistoryLookupByLastSchema: z.ZodType<HistoryLookupByLast> = z.stric
   historyDir: z.string().optional(),
   last: z.literal(true).refine((value) => value !== undefined, { message: "Required" }),
   project: z.string().optional(),
-  session: z.string().min(1).optional(),
+  session: z.string().optional(),
 });
 
 export const HistoryLookupBySessionSchema: z.ZodType<HistoryLookupBySession> = z.strictObject({
   allProjects: z.boolean().optional(),
   historyDir: z.string().optional(),
-  last: z.literal(false).optional(),
+  last: z.boolean().optional(),
   project: z.string().optional(),
   session: z
     .string()

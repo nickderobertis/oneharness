@@ -149,73 +149,54 @@ impl JsonSchema for NonEmptyString {
     }
 }
 
-/// Define a type whose only value is one boolean literal.
+/// The literal `true`.
 ///
-/// These are what let each [`HistoryLookup`] variant require the exact `last`
-/// value it means, rather than accepting any `bool` and re-deciding afterwards.
-/// The schema is the inline `const`, so the generated TypeScript is the literal
-/// and the generated Zod is `z.literal(…)`.
-macro_rules! literal_bool {
-    ($name:ident, $value:literal, $doc:expr) => {
-        #[doc = $doc]
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-        pub struct $name;
+/// This is what makes "select the most recent session" a value rather than a
+/// flag to re-read: `last: false` does not select, so it is not a value of this
+/// type and cannot satisfy the variant that requires it. The schema is the
+/// inline `const: true`, so the generated TypeScript is the literal `true` and
+/// the generated Zod is `z.literal(true)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct LiteralTrue;
 
-        impl Serialize for $name {
-            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: Serializer,
-            {
-                serializer.serialize_bool($value)
-            }
-        }
-
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: Deserializer<'de>,
-            {
-                if bool::deserialize(deserializer)? == $value {
-                    Ok(Self)
-                } else {
-                    Err(serde::de::Error::custom(concat!(
-                        "must be `",
-                        stringify!($value),
-                        "`"
-                    )))
-                }
-            }
-        }
-
-        impl JsonSchema for $name {
-            fn inline_schema() -> bool {
-                true
-            }
-
-            fn schema_name() -> Cow<'static, str> {
-                Cow::Borrowed(stringify!($name))
-            }
-
-            fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-                schemars::json_schema!({
-                    "type": "boolean",
-                    "const": $value,
-                })
-            }
-        }
-    };
+impl Serialize for LiteralTrue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_bool(true)
+    }
 }
 
-literal_bool!(
-    LiteralTrue,
-    true,
-    "The literal `true`: an explicit \"select the most recent session\"."
-);
-literal_bool!(
-    LiteralFalse,
-    false,
-    "The literal `false`: an explicit \"do not select the most recent session\"."
-);
+impl<'de> Deserialize<'de> for LiteralTrue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        if bool::deserialize(deserializer)? {
+            Ok(Self)
+        } else {
+            Err(serde::de::Error::custom("must be `true`"))
+        }
+    }
+}
+
+impl JsonSchema for LiteralTrue {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("LiteralTrue")
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({
+            "type": "boolean",
+            "const": true,
+        })
+    }
+}
 
 /// Options accepted by `OneHarness.run()` in the published Node SDK.
 ///
@@ -287,13 +268,20 @@ pub struct RunOptions {
 /// `{"session": ""}`, or `{"last": false}` — matches neither variant and fails
 /// at the boundary, so `history()` never has to re-check for one.
 ///
-/// Variant order is load-bearing, because the variants overlap and an untagged
-/// enum takes the first match. `Last` comes first so that `last: true` keeps the
-/// priority the SDK has always given it: `{"session": "x", "last": true}`
-/// selects the most recent session, not `x`. Dropping `last` to `false` is what
-/// asks for the named session instead, so `{"session": "x", "last": false}`
-/// selects `x` — the same reading as the previous `if (last) … else if (session)`
-/// rule, now stated in the type rather than re-derived after parsing.
+/// The variants overlap on purpose, and the order is load-bearing: an untagged
+/// enum takes the first match, so `Last` coming first is what gives `last: true`
+/// priority over a name. `{"session": "x", "last": true}` satisfies *both*
+/// variants and resolves to `Last`, selecting the most recent session rather
+/// than `x`; `{"session": "x", "last": false}` fails `Last` and resolves to
+/// `Session`. That is exactly the reading of the `if (last) … else if (session)`
+/// rule this replaces, now decided by the union rather than re-derived after
+/// parsing. Zod resolves its generated union in the same order, so the Node SDK
+/// agrees with Rust by construction.
+///
+/// Because `Last` ignores the name it carries, that name is a plain `String`:
+/// `{"session": "", "last": true}` stays valid and still selects the most recent
+/// session, as it always has. Only a name that actually selects has to be
+/// non-empty.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 #[schemars(rename = "HistoryLookup")]
@@ -313,10 +301,12 @@ pub struct HistoryLookupByLast {
     /// accepts no other value.
     pub last: LiteralTrue,
     /// A name may accompany `last: true` — it is what the caller would have
-    /// looked up otherwise — but `last` takes priority, so it does not select.
+    /// looked up otherwise — but `last` takes priority, so it never selects.
+    /// It is therefore unconstrained: an empty name is meaningless here rather
+    /// than invalid, so `{"session": "", "last": true}` stays accepted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "NonEmptyString")]
-    pub session: Option<NonEmptyString>,
+    #[schemars(with = "String")]
+    pub session: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub project: Option<String>,
@@ -333,14 +323,16 @@ pub struct HistoryLookupByLast {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "HistoryLookupBySession")]
 pub struct HistoryLookupBySession {
-    /// The oneharness-derived session name recorded by `run --history`.
+    /// The oneharness-derived session name recorded by `run --history`. This is
+    /// the name that selects, so it must be non-empty.
     pub session: NonEmptyString,
-    /// An explicit "not the most recent session". `last: true` takes priority
-    /// over a name, so it selects [`HistoryLookup::Last`] instead and cannot
-    /// appear here — which is why this is the literal `false`, not a `bool`.
+    /// Whether the most recent session was asked for instead. An ordinary
+    /// `bool`, so a caller holding a `boolean` can pass it straight through.
+    /// `true` here also satisfies [`HistoryLookup::Last`], which the union tries
+    /// first — so a lookup that reaches this variant always meant the name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "LiteralFalse")]
-    pub last: Option<LiteralFalse>,
+    #[schemars(with = "bool")]
+    pub last: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub project: Option<String>,
@@ -431,44 +423,24 @@ mod tests {
     }
 
     #[test]
-    fn each_boolean_literal_accepts_only_its_own_value() {
+    fn literal_true_rejects_false_and_schemas_as_an_inline_const() {
         let error = serde_json::from_value::<LiteralTrue>(serde_json::json!(false))
             .expect_err("false is not `true`");
         assert!(error.to_string().contains("must be `true`"));
-        let error = serde_json::from_value::<LiteralFalse>(serde_json::json!(true))
-            .expect_err("true is not `false`");
-        assert!(error.to_string().contains("must be `false`"));
 
         assert_eq!(
             serde_json::from_value::<LiteralTrue>(serde_json::json!(true)).expect("true is valid"),
             LiteralTrue
         );
         assert_eq!(
-            serde_json::from_value::<LiteralFalse>(serde_json::json!(false))
-                .expect("false is valid"),
-            LiteralFalse
-        );
-        assert_eq!(
             serde_json::to_value(LiteralTrue).expect("serialize"),
             serde_json::json!(true)
         );
-        assert_eq!(
-            serde_json::to_value(LiteralFalse).expect("serialize"),
-            serde_json::json!(false)
-        );
-    }
 
-    #[test]
-    fn each_boolean_literal_schemas_as_an_inline_const() {
         let schema = schemars::schema_for!(LiteralTrue);
         let value = schema.as_value();
         assert_eq!(value["type"], "boolean");
         assert_eq!(value["const"], true);
-
-        let schema = schemars::schema_for!(LiteralFalse);
-        let value = schema.as_value();
-        assert_eq!(value["type"], "boolean");
-        assert_eq!(value["const"], false);
     }
 
     #[test]
@@ -614,7 +586,9 @@ mod tests {
 
     #[test]
     fn history_lookup_gives_last_priority_over_a_name() {
-        // `last: true` wins over a name, so the name rides along unselected.
+        // `{session, last: true}` satisfies both variants. `Last` is declared
+        // first, so it wins and the name rides along unselected — the priority
+        // the SDK has always given `last`.
         assert_eq!(
             serde_json::from_value::<HistoryLookup>(
                 serde_json::json!({ "session": "x", "last": true })
@@ -622,13 +596,14 @@ mod tests {
             .expect("last selects even when a name is present"),
             HistoryLookup::Last(HistoryLookupByLast {
                 last: LiteralTrue,
-                session: Some(non_empty("x")),
+                session: Some("x".to_string()),
                 project: None,
                 all_projects: None,
                 history_dir: None,
             })
         );
-        // Dropping `last` to `false` is what asks for the named session.
+        // Dropping `last` to `false` fails the `Last` variant, so the same
+        // caller asks for the named session instead.
         assert_eq!(
             serde_json::from_value::<HistoryLookup>(
                 serde_json::json!({ "session": "x", "last": false })
@@ -636,7 +611,7 @@ mod tests {
             .expect("an explicit `last: false` selects the name"),
             HistoryLookup::Session(HistoryLookupBySession {
                 session: non_empty("x"),
-                last: Some(LiteralFalse),
+                last: Some(false),
                 project: None,
                 all_projects: None,
                 history_dir: None,
@@ -645,24 +620,21 @@ mod tests {
     }
 
     #[test]
-    fn history_lookup_cannot_represent_a_named_session_that_defers_to_last() {
-        // `last: true` beside a name is the Last variant, so the Session variant
-        // must not be able to hold it — otherwise it would serialize to JSON that
-        // deserializes back as a different variant.
-        let by_session = HistoryLookupBySession {
-            session: non_empty("x"),
-            last: Some(LiteralFalse),
-            project: None,
-            all_projects: None,
-            history_dir: None,
-        };
-        let lookup = HistoryLookup::Session(by_session);
-        let value = serde_json::to_value(&lookup).expect("serialize");
-        assert_eq!(value["last"], false);
+    fn history_lookup_ignores_an_empty_name_that_does_not_select() {
+        // `last: true` selects, so the name beside it is inert — an empty one is
+        // meaningless rather than invalid, and stays accepted.
         assert_eq!(
-            serde_json::from_value::<HistoryLookup>(value).expect("deserialize"),
-            lookup,
-            "every representable lookup round-trips to itself"
+            serde_json::from_value::<HistoryLookup>(
+                serde_json::json!({ "session": "", "last": true })
+            )
+            .expect("an unselected name is unconstrained"),
+            HistoryLookup::Last(HistoryLookupByLast {
+                last: LiteralTrue,
+                session: Some(String::new()),
+                project: None,
+                all_projects: None,
+                history_dir: None,
+            })
         );
     }
 
@@ -710,19 +682,23 @@ mod tests {
         );
 
         // `Last` is first, so a consumer matching the union in order gives
-        // `last: true` the priority it has always had over a name.
+        // `last: true` the priority it has always had over a name. The name it
+        // carries never selects, so it stays unconstrained.
         let by_last = union_variant(document, 0);
         assert_eq!(by_last["additionalProperties"], serde_json::json!(false));
         assert_eq!(by_last["required"], serde_json::json!(["last"]));
         assert_eq!(by_last["properties"]["last"]["const"], true);
-        assert_eq!(by_last["properties"]["session"]["minLength"], 1);
+        assert_eq!(by_last["properties"]["session"]["type"], "string");
+        assert!(by_last["properties"]["session"].get("minLength").is_none());
 
+        // Only the name that selects is constrained, and `last` stays an
+        // ordinary boolean so a caller holding one can pass it through.
         let by_session = union_variant(document, 1);
         assert_eq!(by_session["additionalProperties"], serde_json::json!(false));
         assert_eq!(by_session["required"], serde_json::json!(["session"]));
         assert_eq!(by_session["properties"]["session"]["type"], "string");
         assert_eq!(by_session["properties"]["session"]["minLength"], 1);
-        assert_eq!(by_session["properties"]["last"]["const"], false);
+        assert_eq!(by_session["properties"]["last"]["type"], "boolean");
 
         // Both ways to select carry the same non-selecting fields.
         for variant in [&by_session, &by_last] {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -348,6 +348,33 @@ describe("OneHarness", () => {
 		);
 	});
 
+	test("preserves additive fields returned by a newer real CLI subprocess", async () => {
+		const client = new OneHarness({
+			executable: process.execPath,
+			executableArgs: [invalidCli],
+			env: {
+				ONEHARNESS_NO_CONFIG: "1",
+				SDK_FIXTURE_MODE: "additive",
+				SDK_REAL_CLI: binary,
+			},
+		});
+		const report = (await client.run({
+			prompt: "future CLI",
+			harnesses: ["claude-code"],
+			mode: "bypass",
+			bins: { "claude-code": mock },
+		})) as RunReport & {
+			future_output_field: { preserved: boolean };
+			results: Array<RunResult & { future_result_field: number }>;
+		};
+		expect(report.future_output_field.preserved).toBe(true);
+		expect(report.results[0]?.future_result_field).toBe(7);
+		const listed = (await client.list()) as Array<
+			HarnessInfo & { future_harness_field: number }
+		>;
+		expect(listed[0]?.future_harness_field).toBe(7);
+	});
+
 	test("rejects unusable public options before spawning the CLI", async () => {
 		// This client can never spawn, so an option that reached the CLI would
 		// surface that spawn failure instead. Only a check that runs before the
@@ -498,6 +525,11 @@ describe("OneHarness", () => {
 		expect(records[0]?.prompt).toBe("history sdk");
 		expect(records[0]?.name).toBe("node-session");
 		expect(records[0]?.status).toBe("ok");
+		const historyId = records[0]?.history_id;
+		if (!historyId) throw new Error("history record had no exact id");
+		const exact = await client.history({ session: historyId, historyDir });
+		expect(exact).toHaveLength(1);
+		expect(exact[0]?.history_id).toBe(historyId);
 
 		// Only one session exists, so every way to select reaches the same records
 		// across the real CLI boundary.
@@ -535,22 +567,34 @@ describe("OneHarness", () => {
 		).toBe(true);
 	});
 
-	test("watches history with labels and closes the live subprocess", async () => {
+	test("watches history after a cursor without duplicates and filters labels", async () => {
 		const historyDir = await mkdtemp(
 			resolve(tmpdir(), "oneharness-sdk-watch-"),
 		);
 		const client = sdk();
-		await client.run({
-			prompt: "watch this history",
-			harnesses: ["claude-code"],
-			mode: "bypass",
-			history: true,
-			historyDir,
-			historyLabels: { graph: "release", task: "sdk" },
-			bins: { "claude-code": mock },
-		});
+		const records: HistoryRecord[] = [];
+		for (const [name, prompt, graph] of [
+			["cursor-record", "cursor record", "release"],
+			["filtered-record", "filtered record", "other"],
+			["resumed-record", "resumed record", "release"],
+		] as const) {
+			await client.run({
+				prompt,
+				harnesses: ["claude-code"],
+				mode: "bypass",
+				history: true,
+				historyName: name,
+				historyDir,
+				historyLabels: { graph, task: "sdk" },
+				bins: { "claude-code": mock },
+			});
+			records.push(...(await client.history({ session: name, historyDir })));
+		}
+		const cursor = records[0]?.history_id;
+		if (!cursor) throw new Error("cursor fixture had no history id");
 
 		const watch = client.historyWatch({
+			after: cursor,
 			allProjects: true,
 			historyDir,
 			labels: { graph: "release", task: "sdk" },
@@ -568,15 +612,62 @@ describe("OneHarness", () => {
 			value: {
 				type: "record",
 				record: {
-					prompt: "watch this history",
+					prompt: "resumed record",
 					labels: { graph: "release", task: "sdk" },
 				},
 			},
 		});
+		expect(first.value?.record.history_id).toBe(records[2]?.history_id);
+		expect(first.value?.record.history_id).not.toBe(cursor);
 		expect(HistoryStreamEnvelopeSchema.safeParse(first.value).success).toBe(
 			true,
 		);
 		await watch.return(undefined);
+	});
+
+	test("applies CLI history labels over environment and project labels", async () => {
+		const directory = await mkdtemp(
+			resolve(tmpdir(), "oneharness-sdk-label-precedence-"),
+		);
+		const project = resolve(directory, "project");
+		const userConfig = resolve(directory, "user.toml");
+		await mkdir(project);
+		await writeFile(
+			resolve(project, "oneharness.toml"),
+			'history_labels = { graph = "project", project = "kept" }\n',
+		);
+		await writeFile(userConfig, "");
+		const historyDir = resolve(directory, "history");
+		const client = new OneHarness({
+			executable: binary,
+			env: {
+				ONEHARNESS_CONFIG: userConfig,
+				ONEHARNESS_HISTORY_LABELS: "graph=environment,env=kept",
+				ONEHARNESS_NO_CONFIG: "0",
+			},
+		});
+		await client.run({
+			prompt: "label precedence",
+			cwd: project,
+			harnesses: ["claude-code"],
+			mode: "bypass",
+			history: true,
+			historyName: "label-precedence",
+			historyDir,
+			historyLabels: { graph: "cli", cli: "kept" },
+			bins: { "claude-code": mock },
+		});
+		const records = await client.history({
+			session: "label-precedence",
+			allProjects: true,
+			historyDir,
+		});
+		expect(records[0]?.labels).toEqual({
+			cli: "kept",
+			env: "kept",
+			graph: "cli",
+			project: "kept",
+		});
 	});
 
 	test("gives last priority over a named session across the CLI boundary", async () => {

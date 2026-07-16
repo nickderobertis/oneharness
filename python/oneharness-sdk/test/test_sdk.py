@@ -111,6 +111,11 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         self.assertEqual(records[0]["labels"], {"graph": "release"})
+        exact = await client.history(
+            {"session": records[0]["history_id"], "history_dir": history_dir}
+        )
+        self.assertEqual(len(exact), 1)
+        self.assertEqual(exact[0]["history_id"], records[0]["history_id"])
         sessions = await client.history_list({"history_dir": history_dir, "all_projects": True})
         self.assertEqual(sessions[0]["name"], "python-session")
         project_sessions = await client.history_list(
@@ -184,30 +189,85 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("COMPLETE", log.read_text(encoding="utf-8"))
 
     async def test_history_watch_filters_records_and_closes(self) -> None:
-        """Follow labeled records through the live CLI watch process."""
+        """Resume after one record and filter later records without duplication."""
         history_dir = tempfile.mkdtemp(prefix="oneharness-python-watch-")
         client = self.client()
-        await client.run(
-            {
-                "prompt": "watch from python",
-                "harnesses": ["claude-code"],
-                "mode": "bypass",
-                "history": True,
-                "history_dir": history_dir,
-                "history_labels": {"graph": "release", "task": "python"},
-                "bins": {"claude-code": str(MOCK)},
-            }
-        )
+        records: list[Any] = []
+        for name, prompt, graph in (
+            ("cursor-record", "cursor record", "release"),
+            ("filtered-record", "filtered record", "other"),
+            ("resumed-record", "resumed record", "release"),
+        ):
+            await client.run(
+                {
+                    "prompt": prompt,
+                    "harnesses": ["claude-code"],
+                    "mode": "bypass",
+                    "history": True,
+                    "history_name": name,
+                    "history_dir": history_dir,
+                    "history_labels": {"graph": graph, "task": "python"},
+                    "bins": {"claude-code": str(MOCK)},
+                }
+            )
+            records.extend(await client.history({"session": name, "history_dir": history_dir}))
         watch = client.history_watch(
             {
-                "project": str(ROOT),
+                "after": records[0]["history_id"],
+                "all_projects": True,
                 "history_dir": history_dir,
                 "labels": {"graph": "release", "task": "python"},
             }
         )
         envelope = await watch.__anext__()
-        self.assertEqual(envelope["record"]["prompt"], "watch from python")
+        self.assertEqual(envelope["record"]["prompt"], "resumed record")
+        self.assertEqual(envelope["record"]["history_id"], records[2]["history_id"])
+        self.assertNotEqual(envelope["record"]["history_id"], records[0]["history_id"])
         await cast("Any", watch).aclose()
+
+    async def test_history_label_precedence_crosses_the_cli_boundary(self) -> None:
+        """Apply CLI labels over environment and project configuration."""
+        directory = Path(tempfile.mkdtemp(prefix="oneharness-python-labels-"))
+        project = directory / "project"
+        project.mkdir()
+        (project / "oneharness.toml").write_text(
+            'history_labels = { graph = "project", project = "kept" }\n', encoding="utf-8"
+        )
+        user_config = directory / "user.toml"
+        user_config.write_text("", encoding="utf-8")
+        history_dir = str(directory / "history")
+        client = OneHarness(
+            executable=str(BINARY),
+            env={
+                "ONEHARNESS_CONFIG": str(user_config),
+                "ONEHARNESS_HISTORY_LABELS": "graph=environment,env=kept",
+                "ONEHARNESS_NO_CONFIG": "0",
+            },
+        )
+        await client.run(
+            {
+                "prompt": "label precedence",
+                "cwd": str(project),
+                "harnesses": ["claude-code"],
+                "mode": "bypass",
+                "history": True,
+                "history_name": "label-precedence",
+                "history_dir": history_dir,
+                "history_labels": {"graph": "cli", "cli": "kept"},
+                "bins": {"claude-code": str(MOCK)},
+            }
+        )
+        records = await client.history(
+            {
+                "session": "label-precedence",
+                "all_projects": True,
+                "history_dir": history_dir,
+            }
+        )
+        self.assertEqual(
+            records[0]["labels"],
+            {"cli": "kept", "env": "kept", "graph": "cli", "project": "kept"},
+        )
 
     async def test_missing_history_raises_the_typed_error(self) -> None:
         """Map both bounded lookups and missing watch cursors to one error type."""
@@ -298,6 +358,16 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         )
         listed = await client.list()
         self.assertEqual(listed[0]["future_harness_field"], 7)
+        report = await client.run(
+            {
+                "prompt": "future CLI",
+                "harnesses": ["claude-code"],
+                "mode": "bypass",
+                "bins": {"claude-code": str(MOCK)},
+            }
+        )
+        self.assertEqual(report["future_output_field"], {"preserved": True})
+        self.assertEqual(report["results"][0]["future_result_field"], 7)
 
 
 if __name__ == "__main__":

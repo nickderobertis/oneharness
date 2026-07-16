@@ -24,6 +24,8 @@ def forward_with_additions() -> int:
         value["future_output_field"] = {"preserved": True}
         if value.get("harnesses"):
             value["harnesses"][0]["future_harness_field"] = 7
+        if value.get("results"):
+            value["results"][0]["future_result_field"] = 7
         sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\n")
     return completed.returncode
 

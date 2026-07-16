@@ -244,7 +244,10 @@ function objectExpression(schema, path) {
 				throw new Error(`property ${path}.${name} has no schema`);
 			}
 			let expression = schemaExpression(property, `${path}.properties.${name}`);
-			if (!required.has(name)) expression += ".optional()";
+			if (required.has(name)) {
+				expression +=
+					'.refine((value) => value !== undefined, { message: "Required" })';
+			} else expression += ".optional()";
 			return `${JSON.stringify(name)}: ${expression}`;
 		});
 	const shape = `{${fields.length === 0 ? "" : `\n\t\t${fields.join(",\n\t\t")},\n\t`}}`;

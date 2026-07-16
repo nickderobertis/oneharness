@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -16,12 +17,35 @@ from oneharness_sdk import (
     OneHarness,
     OneHarnessProcessError,
 )
+from oneharness_sdk._client import _validate
 
 ROOT = Path(__file__).resolve().parents[3]
 SUFFIX = ".exe" if os.name == "nt" else ""
 BINARY = ROOT / "target" / "debug" / f"oneharness{SUFFIX}"
 MOCK = ROOT / "target" / "debug" / f"oneharness-mock-harness{SUFFIX}"
 FIXTURE = Path(__file__).with_name("fixture_cli.py")
+CONTRACT_MATRIX = json.loads(
+    (ROOT / "tests" / "fixtures" / "sdk-contract-matrix.json").read_text(encoding="utf-8")
+)
+INPUT_KEYS = json.loads(
+    (
+        ROOT
+        / "python"
+        / "oneharness-sdk"
+        / "src"
+        / "oneharness_sdk"
+        / "_generated"
+        / "input-keys.json"
+    ).read_text(encoding="utf-8")
+)
+
+
+def python_input(root: str, value: Any) -> Any:
+    """Translate the shared camelCase contract fixture to Python public names."""
+    if not isinstance(value, dict):
+        return value
+    inverse = {camel: snake for snake, camel in INPUT_KEYS[root].items()}
+    return {inverse.get(key, key): item for key, item in value.items()}
 
 
 class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
@@ -38,6 +62,19 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             executable_args=(str(FIXTURE),),
             env={"PYTHON_SDK_FIXTURE_MODE": mode},
         )
+
+    def test_generated_validators_match_the_shared_sdk_acceptance_matrix(self) -> None:
+        """Keep Python acceptance identical to the Rust and Node contracts."""
+        self.assertGreater(len(CONTRACT_MATRIX["cases"]), 0)
+        for fixture in CONTRACT_MATRIX["cases"]:
+            root = fixture["root"]
+            value = python_input(root, fixture["value"])
+            with self.subTest(case=fixture["name"]):
+                if fixture["accepted"]:
+                    self.assertEqual(_validate(root, value, "shared SDK fixture"), value)
+                else:
+                    with self.assertRaises(ContractError):
+                        _validate(root, value, "shared SDK fixture")
 
     async def test_run_list_detect_and_history_cross_the_cli_boundary(self) -> None:
         """Cover every bounded method with observable real CLI behavior."""

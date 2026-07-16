@@ -51,6 +51,23 @@ const here = dirname(fileURLToPath(import.meta.url));
 const binary = resolve(here, "../../../target/debug/oneharness");
 const mock = resolve(here, "../../../target/debug/oneharness-mock-harness");
 const invalidCli = resolve(here, "invalid-cli-fixture.mjs");
+const contractMatrix = JSON.parse(
+	await readFile(
+		resolve(here, "../../../tests/fixtures/sdk-contract-matrix.json"),
+		"utf8",
+	),
+) as {
+	cases: Array<{
+		name: string;
+		root:
+			| "run_options"
+			| "history_lookup"
+			| "history_list_options"
+			| "history_watch_options";
+		accepted: boolean;
+		value: unknown;
+	}>;
+};
 // Deliberately absent: a client pointed here can validate but never spawn, so a
 // boundary check that runs before the subprocess is the only way to see the
 // validation error rather than this path's spawn failure.
@@ -109,6 +126,22 @@ function sdk(): OneHarness {
 }
 
 describe("OneHarness", () => {
+	test("generated validators match the shared SDK acceptance matrix", () => {
+		const schemas = {
+			run_options: RunOptionsSchema,
+			history_lookup: HistoryLookupSchema,
+			history_list_options: HistoryListOptionsSchema,
+			history_watch_options: HistoryWatchOptionsSchema,
+		};
+		expect(contractMatrix.cases.length).toBeGreaterThan(0);
+		for (const fixture of contractMatrix.cases) {
+			expect(
+				schemas[fixture.root].safeParse(fixture.value).success,
+				fixture.name,
+			).toBe(fixture.accepted);
+		}
+	});
+
 	test("generated schema inference matches every generated public type", () => {
 		expect(inferredSchemasMatchGeneratedTypes.every(Boolean)).toBe(true);
 		const readonlyOptions = {

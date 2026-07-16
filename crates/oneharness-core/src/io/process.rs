@@ -9,7 +9,7 @@
 
 use std::io::{self, Read};
 use std::process::{Child, ChildStdin, Command, ExitStatus};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use wait_timeout::ChildExt;
@@ -17,6 +17,7 @@ use wait_timeout::ChildExt;
 const TERM_GRACE: Duration = Duration::from_millis(100);
 const PIPE_CLOSE_GRACE: Duration = Duration::from_millis(100);
 const PIPE_DRAIN_GRACE: Duration = Duration::from_millis(250);
+const PIPE_POLL_SLICE: Duration = Duration::from_millis(5);
 
 /// A stdout read observed by a streaming caller.
 pub(crate) enum PipeEvent {
@@ -94,10 +95,9 @@ impl Process {
     }
 
     /// Receive one stdout chunk for incremental parsing while preserving the
-    /// exact bytes for the final capture. stderr is opportunistically drained on
-    /// every poll; its reader thread can therefore never backpressure the child.
+    /// exact bytes for the final capture. A separate stderr reader continuously
+    /// moves its pipe into a channel, so it can never backpressure the child.
     pub(crate) fn recv_stdout_until(&mut self, deadline: Instant) -> PipeEvent {
-        self.stderr.drain_available();
         self.stdout.recv_until(deadline)
     }
 
@@ -132,10 +132,14 @@ impl Process {
     }
 
     fn drain_pipes_until(&mut self, deadline: Instant) {
-        self.stdout.drain_until(deadline);
-        self.stderr.drain_until(deadline);
-        self.stdout.drain_available();
-        self.stderr.drain_available();
+        // Alternate in short slices so a continuously-writing escaped stdout
+        // cannot starve stderr, and make every queued-byte read obey the same
+        // absolute deadline. Reader threads may outlive this bound, but dropping
+        // their receivers makes them exit on their next send.
+        while Instant::now() < deadline && !self.pipes_closed() {
+            self.stdout.drain_one_until(poll_deadline(deadline));
+            self.stderr.drain_one_until(poll_deadline(deadline));
+        }
     }
 
     fn pipes_closed(&self) -> bool {
@@ -214,37 +218,30 @@ impl PipeDrain {
         }
     }
 
-    fn drain_until(&mut self, deadline: Instant) {
-        while !self.closed {
-            let now = Instant::now();
-            if now >= deadline {
-                break;
-            }
-            match self.receiver.recv_timeout(deadline - now) {
-                Ok(PipeMessage::Data(chunk)) => self.bytes.extend_from_slice(&chunk),
-                Ok(PipeMessage::Closed) | Err(RecvTimeoutError::Disconnected) => {
-                    self.closed = true;
-                }
-                Err(RecvTimeoutError::Timeout) => break,
-            }
+    fn drain_one_until(&mut self, deadline: Instant) {
+        if self.closed {
+            return;
         }
-    }
-
-    fn drain_available(&mut self) {
-        while !self.closed {
-            match self.receiver.try_recv() {
-                Ok(PipeMessage::Data(chunk)) => self.bytes.extend_from_slice(&chunk),
-                Ok(PipeMessage::Closed) | Err(TryRecvError::Disconnected) => {
-                    self.closed = true;
-                }
-                Err(TryRecvError::Empty) => break,
+        let now = Instant::now();
+        if now >= deadline {
+            return;
+        }
+        match self.receiver.recv_timeout(deadline - now) {
+            Ok(PipeMessage::Data(chunk)) => self.bytes.extend_from_slice(&chunk),
+            Ok(PipeMessage::Closed) | Err(RecvTimeoutError::Disconnected) => {
+                self.closed = true;
             }
+            Err(RecvTimeoutError::Timeout) => {}
         }
     }
 
     fn take_string(&mut self) -> String {
         String::from_utf8_lossy(&std::mem::take(&mut self.bytes)).into_owned()
     }
+}
+
+fn poll_deadline(deadline: Instant) -> Instant {
+    deadline.min(Instant::now() + PIPE_POLL_SLICE)
 }
 
 #[cfg(unix)]

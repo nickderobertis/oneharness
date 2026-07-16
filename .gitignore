@@ -6,7 +6,12 @@
 # committed; these build artifacts are not.
 /dist
 __pycache__/
+.ruff_cache/
+.coverage
 *.egg-info/
+
+# Version-stamped Python SDK staging and wheel output.
+/python/dist
 
 # npm packaging build outputs (per-platform packages + stamped launcher assembled
 # by scripts/npm-build.mjs). npm/oneharness/ IS committed; these are not.

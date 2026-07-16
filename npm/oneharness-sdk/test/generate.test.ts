@@ -93,6 +93,11 @@ test("generated optional properties remain exact-optional compatible", () => {
 	expect(() =>
 		exactOptionalProperties("type Broken = {\n  value?: {\n"),
 	).toThrow("generated optional property has no terminator");
+	expect(() =>
+		exactOptionalProperties("type Broken = {\n  value?: {\n"),
+	).toThrow(
+		"extend scripts/typescript-generator.mjs for this declaration shape, then rerun just sdk-generate",
+	);
 });
 
 test("TypeScript generation preserves unconstrained JSON values", () => {
@@ -226,6 +231,10 @@ test("Zod generation validates every supported schema boundary", () => {
 	reject(
 		{ type: "string", minItems: 1 },
 		"unsupported JSON Schema keyword boundary.minItems",
+	);
+	reject(
+		{ type: "string", minItems: 1 },
+		"extend scripts/zod-generator.mjs to enforce it, then rerun just sdk-generate",
 	);
 	reject({ $ref: "other.json" }, "unsupported non-local JSON Schema reference");
 	reject(

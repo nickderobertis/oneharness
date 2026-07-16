@@ -89,7 +89,9 @@ function union(expressions) {
 function assertSupported(schema, supported, path) {
 	for (const key of Object.keys(schema)) {
 		if (!METADATA_KEYS.has(key) && !supported.has(key)) {
-			throw new Error(`unsupported JSON Schema keyword ${path}.${key}`);
+			throw new Error(
+				`unsupported JSON Schema keyword ${path}.${key}; update the Rust schema to avoid it or extend scripts/zod-generator.mjs to enforce it, then rerun just sdk-generate`,
+			);
 		}
 	}
 }

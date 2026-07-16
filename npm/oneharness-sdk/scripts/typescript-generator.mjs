@@ -54,7 +54,7 @@ export const exactOptionalProperties = (declarations) => {
 			const candidate = lines[end];
 			if (candidate === undefined) {
 				throw new Error(
-					`generated optional property has no terminator: ${line}`,
+					`generated optional property has no terminator: ${line}; update the Rust schema or extend scripts/typescript-generator.mjs for this declaration shape, then rerun just sdk-generate`,
 				);
 			}
 			const atPropertyIndent =

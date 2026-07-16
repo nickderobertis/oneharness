@@ -234,6 +234,22 @@ if (installedSdk.version === "0.0.0-managed") {
 if (!installedSdk.dependencies?.zod) {
 	throw new Error("packed SDK omitted its Zod runtime dependency");
 }
+if (installedSdk.dependencies?.["oneharness-cli"] !== installedSdk.version) {
+	throw new Error(
+		`packed SDK must require oneharness-cli exactly at ${installedSdk.version}: ${JSON.stringify(installedSdk.dependencies)}`,
+	);
+}
+const installedCli = JSON.parse(
+	readFileSync(
+		resolve(install, "node_modules/oneharness-cli/package.json"),
+		"utf8",
+	),
+);
+if (installedCli.version !== installedSdk.version) {
+	throw new Error(
+		`installed CLI ${installedCli.version} does not match SDK ${installedSdk.version}`,
+	);
+}
 
 writeFileSync(
 	resolve(install, "consume.mjs"),

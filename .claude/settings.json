@@ -5,6 +5,7 @@
       "Bash(just check)",
       "Bash(just gate)",
       "Bash(just sdk-check)",
+      "Bash(just sdk-generate)",
       "Bash(just coverage)",
       "Bash(just test)",
       "Bash(just lint)",

@@ -46,9 +46,9 @@ follow-ups (see "After the main task").
 
 ## Stack and composition
 
-- **Product shape:** CLI plus Rust and Node libraries (`shapes/cli.md`,
+- **Product shape:** CLI plus Rust, Node, and Python libraries (`shapes/cli.md`,
   `shapes/library.md`, `intersections/rust-cli.md`).
-- **Language(s):** Rust and TypeScript; Bash is limited to setup/live e2e.
+- **Language(s):** Rust, TypeScript, and Python; Bash is limited to setup/live e2e.
 - **References composed:** `base.md`, `shapes/cli.md`, `shapes/library.md`,
   `languages/rust.md`, `languages/typescript.md`, `intersections/rust-cli.md`,
   `ci.md`, `llmlint.md`, `releasing.md`, `monorepo.md`.
@@ -77,6 +77,9 @@ Use the `just` recipes; do not hand-roll equivalents.
 - `just smoke` — hermetic end-to-end smoke of the built binary (part of `just
   check` and CI). `just smoke-live` is the opt-in variant that hits installed,
   authenticated harnesses with real model calls — never in the gate or CI.
+- `just sdk-check` / `just python-sdk-check` — generated-contract drift, strict
+  language lint/type/test coverage, and packed-artifact subprocess e2e for the
+  Node and Python SDKs. The Python gate runs on the oldest supported Python 3.9.
 
 ## What this binary is
 
@@ -273,6 +276,17 @@ aren't re-litigated each session:
   `PYPI_PUBLISH` repo variable is `true` and the PyPI project registers this
   repo's `release.yml` as its Trusted Publisher; `verify-pypi` then proves the
   published version is `pip install`-able.
+  The typed Python client is a separate pure-Python **`oneharness-sdk`**
+  distribution (imported as `oneharness_sdk`, Python 3.9+). Its checked-in
+  schemas and types are generated from `sdk_schema::bundle`; runtime inputs are
+  strict while output validation preserves additive fields. `scripts/python-sdk-pack.mjs`
+  stamps both its package version and exact `oneharness-cli==X.Y.Z` dependency
+  from the root `Cargo.toml`, keeping Rust/CLI/Node/Python releases aligned. The
+  release workflow builds wheel + sdist on every release, then publishes through
+  the already-registered PyPI Trusted Publisher in an environment-free,
+  `id-token: write` job only after `oneharness-cli` publishes; no PyPI token is
+  stored. `verify-python-sdk` installs the real release and drives `list()`
+  through the packaged CLI dependency.
 - **npm packages** (*now enabled*, the direct analogue of the PyPI wheels — a
   fifth install path). The npm distribution is **`oneharness-cli`** too (same
   bare-name reasoning), and the command it installs is still `oneharness`.

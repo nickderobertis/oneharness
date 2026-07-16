@@ -30,6 +30,11 @@ name: Release
 #   * publish-pypi       — Trusted Publishing (keyless OIDC) to oneharness-cli,
 #                           dormant until the PYPI_PUBLISH repo variable is set.
 #   * verify-pypi        — prove the just-published version is pip-installable.
+#   * build-python-sdk   — build oneharness-sdk at the Cargo release version,
+#                           with an exact dependency on oneharness-cli.
+#   * publish-python-sdk — Trusted Publishing (keyless OIDC) to the registered
+#                           oneharness-sdk PyPI project after the CLI lands.
+#   * verify-python-sdk  — prove the SDK and its exact CLI are installable.
 #   * build-npm          — wrap the same prebuilt binary in per-platform npm
 #                           packages (@oneharness/cli-<platform>-<arch>) via
 #                           scripts/npm-build.mjs; always runs, same rationale as
@@ -68,6 +73,7 @@ jobs:
         with:
           node-version: "22"
       - uses: oven-sh/setup-bun@v2
+      - uses: astral-sh/setup-uv@v6
       - uses: taiki-e/install-action@v2
         with:
           tool: just,nextest,cargo-llvm-cov,shellcheck
@@ -318,6 +324,102 @@ jobs:
           oneharness --help >/dev/null
           oneharness list >/dev/null
           echo "PyPI install + smoke test passed for oneharness-cli $ver"
+
+  # The pure-Python SDK is generated from Rust-owned contracts and stamped from
+  # Cargo.toml at packaging time. Its wheel and sdist depend on the exact same
+  # oneharness-cli version, so the language client and subprocess protocol cannot
+  # drift independently.
+  build-python-sdk:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: astral-sh/setup-uv@v6
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: just python-sdk-check
+      - name: Build the version-synchronized SDK distributions
+        run: |
+          pkgdir="$(node scripts/python-sdk-pack.mjs)"
+          uv build --out-dir python-sdk-artifact "$pkgdir"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-sdk
+          path: python-sdk-artifact/*
+
+  # The oneharness-sdk Trusted Publisher is already registered without a GitHub
+  # Actions environment. Keep this job environment-free so the OIDC claim
+  # matches; no long-lived PyPI token is stored. Waiting on publish-pypi ensures
+  # the SDK's exact oneharness-cli dependency is available before the SDK lands.
+  publish-python-sdk:
+    needs: [publish-pypi, build-python-sdk]
+    if: ${{ vars.PYPI_PUBLISH == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-sdk
+          path: python-sdk-artifact
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: python-sdk-artifact
+          skip-existing: true
+
+  # Registry propagation is asynchronous. Install the real release from PyPI,
+  # verify both synchronized versions, then exercise the SDK's packaged CLI
+  # dependency through the public subprocess boundary.
+  verify-python-sdk:
+    needs: publish-python-sdk
+    if: ${{ vars.PYPI_PUBLISH == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+      - name: Wait for the SDK version to land on PyPI
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          url="https://pypi.org/pypi/oneharness-sdk/${ver}/json"
+          echo "Waiting for oneharness-sdk $ver on PyPI..."
+          for i in $(seq 1 30); do
+            if curl -fsSL -o /dev/null "$url" 2>/dev/null; then
+              echo "oneharness-sdk $ver is available on PyPI."
+              exit 0
+            fi
+            echo "  attempt $i: not indexed yet; sleeping 10s..."
+            sleep 10
+          done
+          echo "::error::oneharness-sdk $ver did not appear on PyPI within ~5 minutes"
+          exit 1
+      - name: Install the SDK and exercise its exact CLI dependency
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          pip install "oneharness-sdk==${ver}"
+          python - "$ver" <<'PY'
+          import asyncio
+          import sys
+          from importlib.metadata import version
+          from oneharness_sdk import OneHarness, __version__
+
+          expected = sys.argv[1]
+          assert __version__ == expected
+          assert version("oneharness-sdk") == expected
+          assert version("oneharness-cli") == expected
+
+          async def verify():
+              harnesses = await OneHarness().list()
+              assert any(item["id"] == "codex" for item in harnesses)
+
+          asyncio.run(verify())
+          PY
+          echo "PyPI install + packaged-CLI smoke test passed for oneharness-sdk $ver"
 
   # npm packages: scripts/npm-build.mjs wraps the prebuilt binary in a
   # per-platform package (@oneharness/cli-<platform>-<arch>), the direct analogue

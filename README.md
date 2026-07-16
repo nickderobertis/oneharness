@@ -160,6 +160,8 @@ pip install oneharness-cli          # installs the `oneharness` command
 npm install -g oneharness-cli       # also installs the `oneharness` command
 # typed Node API (includes the matching CLI package)
 npm install @oneharness/sdk
+# typed Python API (includes the exact matching CLI package)
+pip install oneharness-sdk
 # or the latest prebuilt release for your platform via the install script
 curl -fsSL https://raw.githubusercontent.com/nickderobertis/oneharness/main/scripts/install.sh | sh
 # or pin a release tag / install directory
@@ -180,23 +182,30 @@ per-platform packages (`npm install -g oneharness-cli`, same distribution name,
 same command), **crates.io** (`cargo install oneharness`), prebuilt checksummed
 binaries on its
 [GitHub Releases](https://github.com/nickderobertis/oneharness/releases) page for
-Linux, macOS, and Windows, and `cargo install --git`. The PyPI and npm packages
+Linux, macOS, and Windows, and `cargo install --git`. The PyPI and npm CLI packages
 both wrap the **prebuilt** binary — no Rust toolchain, no compile — carrying the
 platform-specific binary in a per-platform artifact (a wheel; an
 `@oneharness/cli-<platform>-<arch>` optional dependency) that the package manager
 selects for your OS and CPU. Building from source requires a stable Rust
 toolchain and [`just`](https://github.com/casey/just).
+The same release publishes matching `@oneharness/sdk` and `oneharness-sdk`
+language clients; each pins its packaged CLI dependency to that exact version.
 
-Node applications can use `@oneharness/sdk` for typed `run`, registry
-`list`/`detect`, continuation (`resume` or named `session`), and standardized
-history lookup/listing. Its TypeScript declarations and named Zod runtime schemas
-are generated from the Rust JSON Schema metadata and drift-checked by `just
-check`; output schemas preserve unknown fields for additive forward compatibility,
-while the input schemas `RunOptionsSchema`, `HistoryLookupSchema`, and
-`HistoryListOptionsSchema` reject unknown option names before the SDK reads an
-option. The same Rust bundle now owns the typed `RunStreamEnvelope` and
-`HistoryStreamEnvelope` JSONL contracts used by future streaming clients. See
-[`npm/oneharness-sdk/README.md`](npm/oneharness-sdk/README.md).
+Applications can use `@oneharness/sdk` (Node 20+) or `oneharness-sdk` / the
+`oneharness_sdk` import (Python 3.9+) for the same complete surface: `run`,
+streaming run, registry `list`/`detect`, and history lookup/list/watch. Both
+streaming methods are async iterators; every JSONL envelope is validated before
+it is yielded, and breaking or cancelling an iterator terminates the subprocess.
+Both SDK distributions are stamped from the root Cargo version and depend on the
+exact matching `oneharness-cli` package.
+
+The SDK declarations, input contracts, and runtime validation schemas are
+generated from one Rust JSON Schema bundle and drift-checked by `just check`.
+Outputs preserve unknown fields for additive forward compatibility; inputs are
+strict, so unknown option names and misspellings fail before a subprocess starts.
+Missing history records, sessions, and watch cursors raise a typed
+`HistoryNotFoundError`. See the [Node SDK guide](npm/oneharness-sdk/README.md) and
+[Python SDK guide](python/oneharness-sdk/README.md).
 The install script honors `ONEHARNESS_VERSION`, `ONEHARNESS_INSTALL_DIR`,
 `ONEHARNESS_RELEASE_BASE_URL`/`--base-url`, `ONEHARNESS_CHECKSUM_BASE_URL`, and
 `GITHUB_TOKEN` (for higher GitHub API rate limits when resolving the latest
@@ -820,18 +829,16 @@ usage), Cursor's `stream-json` — and widens as more shapes are sourced; an abs
 signal is the honest answer, not an error. Consumers that need certainty should
 parse `stdout` themselves.
 
-#### Streaming events (SDK direction)
+#### Streaming events
 
 The CLI already emits the normalized events incrementally with `run --stream`,
 using the Rust-owned `RunStreamEnvelope` contract described above. Non-streaming
 runs still return the same events at the end in `RunReport.results[].events`.
 
-The motivating consumer is behavioral skill-testing (`skilltest`): a language
-SDK can build on this contract to **short-circuit the moment it observes bad
-behavior** (a forbidden `rm -rf`, an out-of-scope network call) — killing the run
-instead of paying for a full turn before judging it. The Rust schema/generation
-foundation is present; threading it through language SDK iterators and the
-skilltest plugin is a separate client-layer step.
+The Node and Python SDKs expose this contract as `runStream` / `run_stream` async
+iterators. A behavioral consumer such as `skilltest` can **short-circuit the
+moment it observes bad behavior** (a forbidden `rm -rf`, an out-of-scope network
+call), killing the run instead of paying for a full turn before judging it.
 
 ### Structured output
 

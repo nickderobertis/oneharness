@@ -2,6 +2,10 @@
 
 Async Python access to the `oneharness` engine, generated from and validated against the Rust-owned JSON Schema contracts. The distribution is `oneharness-sdk`, the import is `oneharness_sdk`, and every release depends on the exact same `oneharness-cli` version.
 
+```console
+pip install oneharness-sdk
+```
+
 ```python
 import asyncio
 
@@ -35,4 +39,3 @@ async for envelope in oneharness.history_watch(
 ```
 
 Python input keys are snake case and strict: unknown fields and misspellings fail before the CLI starts. Output dictionaries preserve additive fields from newer compatible CLI versions. `history` and `history_watch` raise `HistoryNotFoundError` when a session, record, or cursor cannot be resolved.
-

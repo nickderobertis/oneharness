@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.23](https://github.com/nickderobertis/oneharness/compare/v0.3.22...v0.3.23) - 2026-07-16
+
+### Fixed
+
+- *(release)* identify crates.io requests ([#1143](https://github.com/nickderobertis/oneharness/pull/1143))
+
 ## [0.3.22](https://github.com/nickderobertis/oneharness/compare/v0.3.21...v0.3.22) - 2026-07-16
 
 ### Added

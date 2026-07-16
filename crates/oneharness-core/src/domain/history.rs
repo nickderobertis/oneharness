@@ -717,6 +717,7 @@ mod tests {
             assert!(parse_label(invalid).is_err(), "{invalid} should fail");
         }
         assert!(parse_label("key=line\nbreak").is_err());
+        assert!(parse_label(&format!("key={}", "x".repeat(LABEL_VALUE_MAX + 1))).is_err());
     }
 
     #[test]
@@ -778,5 +779,21 @@ mod tests {
         let mut malformed = serde_json::to_value(current).unwrap();
         malformed["history_id"] = Value::String("not-a-uuid".to_string());
         assert!(serde_json::from_value::<HistoryRecord>(malformed).is_err());
+
+        let mut unsupported = serde_json::to_value(HistoryRecord::from_result(
+            HistoryId::legacy(b"future"),
+            "session",
+            "name",
+            &HistoryLabels::default(),
+            "/project",
+            "2026-01-01T00:00:00Z".to_string(),
+            PermissionMode::Default,
+            None,
+            "prompt",
+            &result(),
+        ))
+        .unwrap();
+        unsupported["schema_version"] = Value::String("9.9".to_string());
+        assert!(serde_json::from_value::<HistoryRecord>(unsupported).is_err());
     }
 }

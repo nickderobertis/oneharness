@@ -2565,6 +2565,15 @@ fn stream_mode_emits_event_lines_then_a_terminal_report() {
         serde_json::json!({ "type": "future_variant" })
     )
     .is_err());
+    for malformed in [
+        serde_json::json!({}),
+        serde_json::json!({ "type": "event" }),
+        serde_json::json!({ "type": "result" }),
+        serde_json::json!({ "type": "event", "event": {} }),
+        serde_json::json!({ "type": "result", "report": {} }),
+    ] {
+        assert!(serde_json::from_value::<RunStreamEnvelope>(malformed).is_err());
+    }
 }
 
 #[test]
@@ -8109,11 +8118,38 @@ fn history_watch_filters_and_resumes_as_jsonl() {
         .spawn()
         .unwrap();
     let mut line = String::new();
-    std::io::BufReader::new(child.stdout.take().unwrap())
-        .read_line(&mut line)
-        .unwrap();
-    child.kill().unwrap();
-    let _ = child.wait();
+    let mut reader = std::io::BufReader::new(child.stdout.take().unwrap());
+    reader.read_line(&mut line).unwrap();
+    // Close the consumer pipe, then append one more matching record. The watch
+    // process observes it through the index and exits cleanly on broken pipe,
+    // proving the follow path while also letting coverage data flush (killing a
+    // watcher would discard that process's profile).
+    drop(reader);
+    let trigger = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--prompt",
+            "fourth",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-name",
+            "fourth",
+            "--history-label",
+            "graph=release",
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"x"}"#)],
+    );
+    assert!(trigger.status.success());
+    let status = child.wait().unwrap();
+    assert!(status.success(), "watch exit: {status:?}");
+
     let envelope: Value = serde_json::from_str(&line).unwrap();
     let typed: HistoryStreamEnvelope = serde_json::from_str(&line).unwrap();
     assert_eq!(envelope["type"], "record");
@@ -8143,6 +8179,35 @@ fn history_watch_filters_and_resumes_as_jsonl() {
     );
     assert_eq!(missing.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&missing.stderr).contains("was not found"));
+
+    let invalid = run(
+        &[
+            "history",
+            "watch",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--after",
+            "not-a-cursor",
+        ],
+        &[],
+    );
+    assert_eq!(invalid.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("invalid history cursor"));
+
+    let exact_missing = run(
+        &[
+            "history",
+            "show",
+            "00000000-0000-7000-8000-000000000000",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+        ],
+        &[],
+    );
+    assert_eq!(exact_missing.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&exact_missing.stderr).contains("was not found"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

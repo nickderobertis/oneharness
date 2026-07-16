@@ -4,8 +4,9 @@
 //! harness wired in via `--bin`/env overrides), so these are deterministic,
 //! network-free, and run identically on every platform.
 
+use std::io::BufRead;
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
 
@@ -8021,6 +8022,153 @@ fn history_canonicalizes_relative_cwd_for_project_lookup() {
     );
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn history_watch_filters_and_resumes_as_jsonl() {
+    let dir = hist_dir("watch-cli");
+    let ds = dir.display().to_string();
+    let mut ids = Vec::new();
+    for (name, graph) in [
+        ("first", "release"),
+        ("second", "release"),
+        ("third", "other"),
+    ] {
+        let out = run(
+            &[
+                "run",
+                "--harness",
+                "claude-code",
+                "--bin",
+                &bin_override("claude-code"),
+                "--prompt",
+                name,
+                "--history",
+                "--history-dir",
+                &ds,
+                "--history-name",
+                name,
+                "--history-label",
+                &format!("graph={graph}"),
+                "--bypass",
+                "--compact",
+            ],
+            &[("MOCK_STDOUT", r#"{"result":"x"}"#)],
+        );
+        let path = json_stdout(&out)["history_file"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let record: Value = serde_json::from_str(
+            std::fs::read_to_string(path)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        ids.push(record["history_id"].as_str().unwrap().to_string());
+    }
+
+    let mut child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args([
+            "history",
+            "watch",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--after",
+            &ids[0],
+            "--label",
+            "graph=release",
+            "--format",
+            "jsonl",
+        ])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    child.kill().unwrap();
+    let _ = child.wait();
+    let envelope: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(envelope["type"], "record");
+    assert_eq!(envelope["record"]["history_id"], ids[1]);
+    assert_eq!(envelope["record"]["prompt"], "second");
+
+    let missing = run(
+        &[
+            "history",
+            "watch",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--after",
+            "00000000-0000-7000-8000-000000000000",
+        ],
+        &[],
+    );
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("was not found"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn concurrent_processes_append_complete_history_index_lines() {
+    let dir = hist_dir("concurrent-process-index");
+    let ds = dir.display().to_string();
+    let mut children = Vec::new();
+    for index in 0..8 {
+        children.push(
+            Command::new(oneharness_bin())
+                .env("ONEHARNESS_NO_CONFIG", "1")
+                .env("MOCK_STDOUT", r#"{"result":"x"}"#)
+                .args([
+                    "run",
+                    "--harness",
+                    "claude-code",
+                    "--bin",
+                    &bin_override("claude-code"),
+                    "--prompt",
+                    &format!("process-{index}"),
+                    "--history",
+                    "--history-dir",
+                    &ds,
+                    "--history-name",
+                    &format!("process-{index}"),
+                    "--bypass",
+                    "--compact",
+                ])
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+    }
+    for child in children {
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let lines: Vec<Value> = std::fs::read_to_string(dir.join(".index.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 8);
+    let ids: std::collections::BTreeSet<&str> = lines
+        .iter()
+        .map(|line| line["record"]["history_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 8);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

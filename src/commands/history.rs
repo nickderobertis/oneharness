@@ -7,9 +7,10 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::{
     HistoryClearArgs, HistoryCommand, HistoryFormat, HistoryListArgs, HistoryShowArgs,
+    HistoryWatchArgs, HistoryWatchFormat,
 };
 use crate::commands::print_json;
-use oneharness_core::domain::history::{self, HistoryId, HistoryRecord};
+use oneharness_core::domain::history::{self, HistoryId, HistoryRecord, HistoryStreamEnvelope};
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::config as config_io;
 use oneharness_core::io::history as history_io;
@@ -23,8 +24,80 @@ pub fn run(args: &crate::cli::HistoryArgs) -> Result<i32, OneharnessError> {
     match &args.command {
         HistoryCommand::List(a) => list(a),
         HistoryCommand::Show(a) => show(a),
+        HistoryCommand::Watch(a) => watch(a),
         HistoryCommand::Clear(a) => clear(a),
     }
+}
+
+fn watch(args: &HistoryWatchArgs) -> Result<i32, OneharnessError> {
+    use std::time::Duration;
+
+    let dir = resolve_dir(
+        args.history_dir.as_deref(),
+        args.config.as_deref(),
+        args.no_config,
+    )?;
+    let after = args
+        .after
+        .as_deref()
+        .map(str::parse::<HistoryId>)
+        .transpose()
+        .map_err(|_| OneharnessError::HistoryCursorInvalid {
+            value: args.after.clone().unwrap_or_default(),
+        })?;
+    let labels = history::parse_labels(args.label.iter().map(String::as_str))
+        .map_err(OneharnessError::HistoryLabelInvalid)?;
+    let slug = project_slug(args.all_projects, args.project.as_deref());
+    let mut watcher = history_io::HistoryWatcher::open(&dir, after, labels, slug)?;
+
+    match args.format {
+        HistoryWatchFormat::Jsonl => loop {
+            let records = watcher.drain_available();
+            if !write_watch_records(&records)? {
+                return Ok(EXIT_OK);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            for record in watcher.poll()? {
+                if !write_watch_records(&[record])? {
+                    return Ok(EXIT_OK);
+                }
+            }
+        },
+    }
+}
+
+fn write_watch_records(records: &[HistoryRecord]) -> Result<bool, OneharnessError> {
+    use std::io::Write;
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    for record in records {
+        let envelope = HistoryStreamEnvelope::Record {
+            record: record.clone(),
+        };
+        let line = serde_json::to_string(&envelope)?;
+        if let Err(error) = writeln!(out, "{line}") {
+            return if error.kind() == std::io::ErrorKind::BrokenPipe {
+                Ok(false)
+            } else {
+                Err(OneharnessError::HistoryIo {
+                    path: "stdout".to_string(),
+                    source: error,
+                })
+            };
+        }
+    }
+    if let Err(error) = out.flush() {
+        return if error.kind() == std::io::ErrorKind::BrokenPipe {
+            Ok(false)
+        } else {
+            Err(OneharnessError::HistoryIo {
+                path: "stdout".to_string(),
+                source: error,
+            })
+        };
+    }
+    Ok(true)
 }
 
 /// Resolve the effective history directory for a view/manage command: the

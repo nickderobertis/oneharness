@@ -219,6 +219,9 @@ pub enum OneharnessError {
     #[error("invalid history label: {0}")]
     HistoryLabelInvalid(String),
 
+    #[error("invalid history cursor `{value}`: expected a UUID")]
+    HistoryCursorInvalid { value: String },
+
     #[error("failed to write JSON output: {0}")]
     Serialize(#[from] serde_json::Error),
 }

@@ -9,14 +9,17 @@
 //! runs from different projects never interleave. Each line is one
 //! [`crate::domain::history::HistoryRecord`], appended as a harness run finalizes.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::collections::{BTreeSet, VecDeque};
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use fs2::FileExt;
 
 use crate::domain::history::{self, HistoryId, HistoryLabels, HistoryRecord};
 use crate::domain::mode::PermissionMode;
@@ -25,6 +28,8 @@ use crate::errors::OneharnessError;
 
 /// The file extension for every session log (line-delimited JSON).
 const SESSION_EXT: &str = "jsonl";
+const INDEX_FILE: &str = ".index.jsonl";
+const INDEX_LOCK_FILE: &str = ".index.lock";
 
 /// Seconds since the UNIX epoch, UTC. The single clock read the history feature
 /// makes — kept here in the I/O layer so `domain::history` stays pure.
@@ -67,7 +72,9 @@ pub fn resolve_dir(configured: Option<&str>) -> Option<PathBuf> {
 /// A handle to one session's history file, opened once per run and appended to as
 /// each harness result finalizes.
 pub struct HistoryWriter {
+    dir: PathBuf,
     path: PathBuf,
+    relative_path: String,
     session: String,
     name: String,
     labels: HistoryLabels,
@@ -100,8 +107,16 @@ impl HistoryWriter {
         let project_dir = dir.join(&slug);
         fs::create_dir_all(&project_dir)?;
         let path = project_dir.join(format!("{session}.{SESSION_EXT}"));
+        let relative_path = path
+            .strip_prefix(&dir)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        reconcile_index(&dir).map_err(history_error_to_io)?;
         Ok(HistoryWriter {
+            dir,
             path,
+            relative_path,
             session,
             name,
             labels,
@@ -142,7 +157,133 @@ impl HistoryWriter {
             .create(true)
             .append(true)
             .open(&self.path)?;
-        file.write_all(line.as_bytes())
+        file.write_all(line.as_bytes())?;
+        file.flush()?;
+        append_index_entry(
+            &self.dir,
+            &HistoryIndexEntry {
+                session_path: self.relative_path.clone(),
+                record,
+            },
+        )
+    }
+}
+
+/// One append-only index entry. The session JSONL remains authoritative; the
+/// relative path lets reconciliation suppress entries whose session was cleared.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct HistoryIndexEntry {
+    session_path: String,
+    record: HistoryRecord,
+}
+
+struct ReconciledIndex {
+    entries: Vec<HistoryIndexEntry>,
+    active_ids: BTreeSet<HistoryId>,
+    offset: u64,
+}
+
+/// A reconciled, resumable reader over the append-only index. Opening performs
+/// the only full history-tree scan; [`poll`](Self::poll) tails the index file by
+/// byte offset and never scans the tree again.
+pub struct HistoryWatcher {
+    index_path: PathBuf,
+    offset: u64,
+    pending: VecDeque<HistoryRecord>,
+    seen: BTreeSet<HistoryId>,
+    labels: HistoryLabels,
+    project_slug: Option<String>,
+}
+
+impl HistoryWatcher {
+    /// Reconcile the index and prepare to emit records strictly after `after`.
+    /// Without a cursor, every active indexed record is initially pending.
+    pub fn open(
+        dir: &Path,
+        after: Option<HistoryId>,
+        labels: HistoryLabels,
+        project_slug: Option<String>,
+    ) -> Result<Self, OneharnessError> {
+        let reconciled = reconcile_index(dir)?;
+        let start = match after {
+            Some(cursor) => reconciled
+                .entries
+                .iter()
+                .position(|entry| entry.record.history_id == cursor)
+                .map(|index| index + 1)
+                .ok_or_else(|| OneharnessError::HistoryNotFound {
+                    id: cursor.to_string(),
+                })?,
+            None => 0,
+        };
+
+        let mut watcher = Self {
+            index_path: dir.join(INDEX_FILE),
+            offset: reconciled.offset,
+            pending: VecDeque::new(),
+            seen: reconciled
+                .entries
+                .iter()
+                .take(start)
+                .map(|entry| entry.record.history_id)
+                .collect(),
+            labels,
+            project_slug,
+        };
+        for entry in reconciled.entries.into_iter().skip(start) {
+            if reconciled.active_ids.contains(&entry.record.history_id) {
+                watcher.accept(entry);
+            }
+        }
+        Ok(watcher)
+    }
+
+    /// Return all records currently available, preserving append order.
+    pub fn drain_available(&mut self) -> Vec<HistoryRecord> {
+        self.pending.drain(..).collect()
+    }
+
+    /// Read newly appended complete index lines. A concurrent partial write is
+    /// retained at the current offset and retried only after its newline lands.
+    pub fn poll(&mut self) -> Result<Vec<HistoryRecord>, OneharnessError> {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(&self.index_path)
+            .map_err(|source| history_io_error(&self.index_path, source))?;
+        file.seek(SeekFrom::Start(self.offset))
+            .map_err(|source| history_io_error(&self.index_path, source))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|source| history_io_error(&self.index_path, source))?;
+        let Some(last_newline) = bytes.iter().rposition(|byte| *byte == b'\n') else {
+            return Ok(Vec::new());
+        };
+        let complete = &bytes[..=last_newline];
+        self.offset += complete.len() as u64;
+        for line in complete.split(|byte| *byte == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(entry) = serde_json::from_slice::<HistoryIndexEntry>(line) {
+                self.accept(entry);
+            }
+        }
+        Ok(self.drain_available())
+    }
+
+    fn accept(&mut self, entry: HistoryIndexEntry) {
+        let in_project = self.project_slug.as_ref().is_none_or(|slug| {
+            Path::new(&entry.session_path)
+                .components()
+                .next()
+                .is_some_and(|component| component.as_os_str() == slug.as_str())
+        });
+        if self.seen.insert(entry.record.history_id)
+            && in_project
+            && entry.record.labels.matches(&self.labels)
+        {
+            self.pending.push_back(entry.record);
+        }
     }
 }
 
@@ -222,17 +363,190 @@ pub fn read_session(path: &Path) -> Result<Vec<HistoryRecord>, OneharnessError> 
 /// Find exactly one history record by its UUID, across all projects. A missing
 /// id is a typed error so library callers need not parse diagnostics.
 pub fn find_record_by_id(dir: &Path, id: HistoryId) -> Result<HistoryRecord, OneharnessError> {
-    for project_dir in read_subdirs_if_present(dir)? {
-        for path in read_session_files(&project_dir)? {
-            if let Some(record) = read_session(&path)?
-                .into_iter()
-                .find(|record| record.history_id == id)
-            {
-                return Ok(record);
-            }
+    let reconciled = reconcile_index(dir)?;
+    if reconciled.active_ids.contains(&id) {
+        if let Some(entry) = reconciled
+            .entries
+            .into_iter()
+            .find(|entry| entry.record.history_id == id)
+        {
+            return Ok(entry.record);
         }
     }
     Err(OneharnessError::HistoryNotFound { id: id.to_string() })
+}
+
+fn reconcile_index(dir: &Path) -> Result<ReconciledIndex, OneharnessError> {
+    fs::create_dir_all(dir).map_err(|source| history_io_error(dir, source))?;
+    let lock_path = dir.join(INDEX_LOCK_FILE);
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|source| history_io_error(&lock_path, source))?;
+    FileExt::lock_exclusive(&lock).map_err(|source| history_io_error(&lock_path, source))?;
+    let result = reconcile_index_locked(dir);
+    let unlock = FileExt::unlock(&lock).map_err(|source| history_io_error(&lock_path, source));
+    match (result, unlock) {
+        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+        (Ok(index), Ok(())) => Ok(index),
+    }
+}
+
+fn reconcile_index_locked(dir: &Path) -> Result<ReconciledIndex, OneharnessError> {
+    let index_path = dir.join(INDEX_FILE);
+    let mut index = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&index_path)
+        .map_err(|source| history_io_error(&index_path, source))?;
+    recover_partial_tail(&mut index, &index_path)?;
+
+    index
+        .seek(SeekFrom::Start(0))
+        .map_err(|source| history_io_error(&index_path, source))?;
+    let mut bytes = Vec::new();
+    index
+        .read_to_end(&mut bytes)
+        .map_err(|source| history_io_error(&index_path, source))?;
+    let mut entries = parse_index_entries(&bytes);
+    let mut indexed_ids: BTreeSet<HistoryId> = entries
+        .iter()
+        .map(|entry| entry.record.history_id)
+        .collect();
+    let mut active_ids = BTreeSet::new();
+    let mut missing = Vec::new();
+
+    for project_dir in read_subdirs_if_present(dir)? {
+        for path in read_session_files(&project_dir)? {
+            let relative_path = path
+                .strip_prefix(dir)
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            for record in read_session(&path)? {
+                active_ids.insert(record.history_id);
+                if indexed_ids.insert(record.history_id) {
+                    missing.push(HistoryIndexEntry {
+                        session_path: relative_path.clone(),
+                        record,
+                    });
+                }
+            }
+        }
+    }
+
+    index
+        .seek(SeekFrom::End(0))
+        .map_err(|source| history_io_error(&index_path, source))?;
+    for entry in &missing {
+        write_index_line(&mut index, &index_path, entry)?;
+    }
+    index
+        .flush()
+        .map_err(|source| history_io_error(&index_path, source))?;
+    entries.extend(missing);
+    let offset = index
+        .stream_position()
+        .map_err(|source| history_io_error(&index_path, source))?;
+    Ok(ReconciledIndex {
+        entries,
+        active_ids,
+        offset,
+    })
+}
+
+fn append_index_entry(dir: &Path, entry: &HistoryIndexEntry) -> std::io::Result<()> {
+    let lock_path = dir.join(INDEX_LOCK_FILE);
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)?;
+    FileExt::lock_exclusive(&lock)?;
+    let result = (|| {
+        let index_path = dir.join(INDEX_FILE);
+        let mut index = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(index_path)?;
+        recover_partial_tail_io(&mut index)?;
+        index.seek(SeekFrom::Start(0))?;
+        let mut existing = Vec::new();
+        index.read_to_end(&mut existing)?;
+        if parse_index_entries(&existing)
+            .iter()
+            .any(|indexed| indexed.record.history_id == entry.record.history_id)
+        {
+            return Ok(());
+        }
+        index.seek(SeekFrom::End(0))?;
+        let mut line = serde_json::to_vec(entry)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        line.push(b'\n');
+        index.write_all(&line)?;
+        index.flush()
+    })();
+    let unlock = FileExt::unlock(&lock);
+    result.and(unlock)
+}
+
+fn recover_partial_tail(file: &mut File, path: &Path) -> Result<(), OneharnessError> {
+    recover_partial_tail_io(file).map_err(|source| history_io_error(path, source))
+}
+
+fn recover_partial_tail_io(file: &mut File) -> std::io::Result<()> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    if bytes.last().is_some_and(|byte| *byte != b'\n') {
+        let valid_len = bytes
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |index| index + 1);
+        file.set_len(valid_len as u64)?;
+    }
+    Ok(())
+}
+
+fn parse_index_entries(bytes: &[u8]) -> Vec<HistoryIndexEntry> {
+    let mut seen = BTreeSet::new();
+    bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| serde_json::from_slice::<HistoryIndexEntry>(line).ok())
+        .filter(|entry| seen.insert(entry.record.history_id))
+        .collect()
+}
+
+fn write_index_line(
+    index: &mut File,
+    path: &Path,
+    entry: &HistoryIndexEntry,
+) -> Result<(), OneharnessError> {
+    let mut line = serde_json::to_vec(entry).map_err(OneharnessError::Serialize)?;
+    line.push(b'\n');
+    index
+        .write_all(&line)
+        .map_err(|source| history_io_error(path, source))
+}
+
+fn history_io_error(path: &Path, source: std::io::Error) -> OneharnessError {
+    OneharnessError::HistoryIo {
+        path: path.display().to_string(),
+        source,
+    }
+}
+
+fn history_error_to_io(error: OneharnessError) -> std::io::Error {
+    std::io::Error::other(error)
 }
 
 /// Delete every session file under `dir` (optionally restricted to one project
@@ -637,5 +951,137 @@ mod tests {
         assert_eq!(vals.len(), 2);
         assert_eq!(vals[0]["a"], 1);
         assert_eq!(vals[1]["b"], 2);
+    }
+
+    #[test]
+    fn concurrent_index_appends_are_complete_and_unique() {
+        let dir = temp_dir("concurrent-index");
+        let project = temp_dir("concurrent-project");
+        let mut threads = Vec::new();
+        for index in 0..12 {
+            let dir = dir.clone();
+            let project = project.clone();
+            threads.push(std::thread::spawn(move || {
+                let writer = HistoryWriter::open(
+                    &dir,
+                    &project,
+                    &format!("session-{index}"),
+                    HistoryLabels::default(),
+                )
+                .unwrap();
+                writer
+                    .append(
+                        PermissionMode::Default,
+                        None,
+                        &format!("prompt-{index}"),
+                        &result("codex"),
+                    )
+                    .unwrap();
+            }));
+        }
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        let bytes = fs::read(dir.join(INDEX_FILE)).unwrap();
+        assert!(bytes.ends_with(b"\n"));
+        let entries = parse_index_entries(&bytes);
+        assert_eq!(entries.len(), 12);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.record.history_id)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            12
+        );
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn watcher_resumes_after_cursor_without_duplication_and_filters_labels() {
+        let dir = temp_dir("watch-resume");
+        let project = temp_dir("watch-project");
+        let writer = HistoryWriter::open(
+            &dir,
+            &project,
+            "watched",
+            history::parse_labels(["graph=release", "task=test"]).unwrap(),
+        )
+        .unwrap();
+        writer
+            .append(PermissionMode::Default, None, "first", &result("codex"))
+            .unwrap();
+        let first_id = read_session(writer.path()).unwrap()[0].history_id;
+        let mut watcher = HistoryWatcher::open(
+            &dir,
+            Some(first_id),
+            history::parse_labels(["graph=release"]).unwrap(),
+            None,
+        )
+        .unwrap();
+        assert!(watcher.drain_available().is_empty());
+
+        writer
+            .append(PermissionMode::Default, None, "second", &result("codex"))
+            .unwrap();
+        let records = watcher.poll().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].prompt, "second");
+        assert_ne!(records[0].history_id, first_id);
+        assert!(watcher.poll().unwrap().is_empty());
+
+        let mut no_match = HistoryWatcher::open(
+            &dir,
+            None,
+            history::parse_labels(["graph=other"]).unwrap(),
+            None,
+        )
+        .unwrap();
+        assert!(no_match.drain_available().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn reconciliation_recovers_a_partial_final_index_line() {
+        let dir = temp_dir("partial-index");
+        let project = temp_dir("partial-project");
+        let writer =
+            HistoryWriter::open(&dir, &project, "partial", HistoryLabels::default()).unwrap();
+        writer
+            .append(PermissionMode::Default, None, "prompt", &result("codex"))
+            .unwrap();
+        let index_path = dir.join(INDEX_FILE);
+        let len = fs::metadata(&index_path).unwrap().len();
+        OpenOptions::new()
+            .write(true)
+            .open(&index_path)
+            .unwrap()
+            .set_len(len / 2)
+            .unwrap();
+
+        let mut watcher = HistoryWatcher::open(&dir, None, HistoryLabels::default(), None).unwrap();
+        let recovered = watcher.drain_available();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].prompt, "prompt");
+        let repaired = fs::read(&index_path).unwrap();
+        assert!(repaired.ends_with(b"\n"));
+        assert_eq!(parse_index_entries(&repaired).len(), 1);
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn exact_id_lookup_has_a_typed_not_found_error() {
+        let dir = temp_dir("exact-id");
+        let missing = HistoryId::from_uuid(uuid::Uuid::now_v7());
+        let error = find_record_by_id(&dir, missing).unwrap_err();
+        assert!(matches!(
+            error,
+            OneharnessError::HistoryNotFound { id } if id == missing.to_string()
+        ));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

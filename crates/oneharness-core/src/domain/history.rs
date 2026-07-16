@@ -425,6 +425,16 @@ struct HistoryRecordWire {
     failure_kind: Option<FailureKind>,
 }
 
+/// One line emitted by `history watch --format jsonl`. The tagged envelope lets
+/// SDKs distinguish the stream from other NDJSON surfaces while the record's
+/// `history_id` remains the resumable cursor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HistoryStreamEnvelope {
+    /// A newly observed history record.
+    Record { record: HistoryRecord },
+}
+
 /// A filesystem-safe slug for a project directory, so history is partitioned by
 /// project. Every character outside `[A-Za-z0-9._-]` becomes `-`, runs of `-`
 /// collapse, and leading/trailing `-` are trimmed. An empty result falls back to

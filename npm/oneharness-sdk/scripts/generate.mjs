@@ -72,6 +72,13 @@ const options = exactOptionalProperties(
 		bundle.run_options,
 	),
 );
+const historyLookup = exactOptionalProperties(
+	await compile(bundle.history_lookup, "HistoryLookup", {
+		bannerComment: "/* Generated from oneharness-core. Do not edit. */",
+		additionalProperties: true,
+		style: { endOfLine: "lf" },
+	}),
+);
 const historyListOptions = exactOptionalProperties(
 	await compile(bundle.history_list_options, "HistoryListOptions", {
 		bannerComment: "/* Generated from oneharness-core. Do not edit. */",
@@ -136,6 +143,7 @@ const files = {
 	"schemas.json": generatedBytes(JSON.stringify(bundle, null, 2)),
 	"contracts.ts": generatedBytes(run),
 	"options.ts": generatedBytes(options),
+	"history-lookup.ts": generatedBytes(historyLookup),
 	"history-list-options.ts": generatedBytes(historyListOptions),
 	"history.ts": generatedBytes(history),
 	"history-records.ts": generatedBytes(historyRecords),

@@ -6,12 +6,14 @@ import type { DetectInfo } from "./generated/detection.js";
 import type { HistoryRecord } from "./generated/history.js";
 import type { HistorySessionSummary } from "./generated/history-list.js";
 import type { HistoryListOptions } from "./generated/history-list-options.js";
+import type { HistoryLookup } from "./generated/history-lookup.js";
 import type { RunOptions } from "./generated/options.js";
 import type { HarnessInfo } from "./generated/registry.js";
 import {
 	DetectReportSchema,
 	HistoryListOptionsSchema,
 	HistoryListSchema,
+	HistoryLookupSchema,
 	HistoryRecordsSchema,
 	ListReportSchema,
 	RunOptionsSchema,
@@ -38,6 +40,7 @@ export type {
 	HistorySessionSummary,
 } from "./generated/history-list.js";
 export type { HistoryListOptions } from "./generated/history-list-options.js";
+export type { HistoryLookup } from "./generated/history-lookup.js";
 export type { HistoryRecords } from "./generated/history-records.js";
 export type { PermissionMode, RunOptions } from "./generated/options.js";
 export type Detection = DetectInfo;
@@ -48,13 +51,6 @@ export type {
 } from "./generated/registry.js";
 export * from "./generated/zod.js";
 
-export type HistoryLookup = {
-	session?: string;
-	last?: boolean;
-	project?: string;
-	allProjects?: boolean;
-	historyDir?: string;
-};
 export type OneHarnessOptions = {
 	executable?: string;
 	executableArgs?: readonly string[];
@@ -198,13 +194,21 @@ export class OneHarness {
 	}
 
 	async history(lookup: HistoryLookup = {}): Promise<HistoryRecord[]> {
+		const input = parseContract(
+			HistoryLookupSchema,
+			lookup,
+			"invalid oneharness history options",
+		);
 		const args = ["history", "show", "--compact"];
-		if (lookup.last) args.push("--last");
-		else if (lookup.session) args.push(lookup.session);
+		// The structural schema cannot state this: it holds across fields, and the
+		// SDK reads `last` for truthiness before falling back to a non-empty
+		// `session`. See HistoryLookup in oneharness-core.
+		if (input.last) args.push("--last");
+		else if (input.session) args.push(input.session);
 		else throw new TypeError("history requires session or last");
-		if (lookup.project) args.push("--project", lookup.project);
-		if (lookup.allProjects) args.push("--all-projects");
-		if (lookup.historyDir) args.push("--history-dir", lookup.historyDir);
+		if (input.project) args.push("--project", input.project);
+		if (input.allProjects) args.push("--all-projects");
+		if (input.historyDir) args.push("--history-dir", input.historyDir);
 		const value = await invokeWith(this.options, args);
 		return parseContract(
 			HistoryRecordsSchema,

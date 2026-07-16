@@ -2,7 +2,7 @@ use oneharness::commands::{detect::DetectReport, list::ListReport};
 use oneharness_core::domain::{
     history::HistoryRecord,
     report::RunReport,
-    sdk::{schema_for_serialize, HistoryListOptions, RunOptions},
+    sdk::{schema_for_serialize, HistoryListOptions, HistoryLookup, RunOptions},
 };
 use oneharness_core::io::history::SessionSummary;
 use schemars::{schema_for, JsonSchema};
@@ -12,6 +12,7 @@ use serde::Serialize;
 struct SchemaBundle {
     run_report: schemars::Schema,
     run_options: schemars::Schema,
+    history_lookup: schemars::Schema,
     history_list_options: schemars::Schema,
     history_record: schemars::Schema,
     history_records: schemars::Schema,
@@ -24,6 +25,7 @@ fn main() -> Result<(), serde_json::Error> {
     let bundle = SchemaBundle {
         run_report: schema_for_serialize::<RunReport>(),
         run_options: schema_for!(RunOptions),
+        history_lookup: schema_for!(HistoryLookup),
         history_list_options: schema_for!(HistoryListOptions),
         history_record: schema_for_serialize::<HistoryRecord>(),
         history_records: schema_for_serialize::<Vec<HistoryRecord>>(),

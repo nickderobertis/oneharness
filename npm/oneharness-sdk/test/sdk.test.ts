@@ -18,6 +18,8 @@ import {
 	type HistoryListOptions,
 	HistoryListOptionsSchema,
 	HistoryListSchema,
+	type HistoryLookup,
+	HistoryLookupSchema,
 	type HistoryRecord,
 	HistoryRecordSchema,
 	type HistoryRecords,
@@ -57,6 +59,7 @@ type Equal<Left, Right> =
 const inferredSchemasMatchGeneratedTypes: [
 	Equal<z.infer<typeof RunOptionsSchema>, RunOptions>,
 	Equal<z.infer<typeof HistoryListOptionsSchema>, HistoryListOptions>,
+	Equal<z.infer<typeof HistoryLookupSchema>, HistoryLookup>,
 	Equal<z.infer<typeof RunReportSchema>, RunReport>,
 	Equal<z.infer<typeof RunResultSchema>, RunResult>,
 	Equal<z.infer<typeof ActionEventSchema>, ActionEvent>,
@@ -69,6 +72,7 @@ const inferredSchemasMatchGeneratedTypes: [
 	Equal<z.infer<typeof HarnessInfoSchema>, HarnessInfo>,
 	Equal<z.infer<typeof DetectReportSchema>, DetectReport>,
 ] = [
+	true,
 	true,
 	true,
 	true,
@@ -237,11 +241,17 @@ describe("OneHarness", () => {
 				client.historyList(options as HistoryListOptions),
 			).rejects.toThrow("invalid oneharness history list options");
 		};
+		const historyRejects = async (lookup: unknown) => {
+			await expect(client.history(lookup as HistoryLookup)).rejects.toThrow(
+				"invalid oneharness history options",
+			);
+		};
 
 		// Non-object: nothing to read an option off of.
 		for (const nonObject of [null, "run", 42, true, [], () => "run"]) {
 			await runRejects(nonObject);
 			await listRejects(nonObject);
+			await historyRejects(nonObject);
 		}
 
 		// Empty: run needs a prompt, while every history list option is optional.
@@ -251,12 +261,54 @@ describe("OneHarness", () => {
 		// Misspelled: a near-miss key this SDK version cannot forward.
 		await runRejects({ prompt: "typo", harneses: ["codex"] });
 		await listRejects({ allProject: true });
+		await historyRejects({ sesion: "node-session" });
+		await historyRejects({ session: "node-session", lastest: true });
 
 		// Malformed: a known key carrying the wrong type.
 		await runRejects({ prompt: 42 });
 		await runRejects({ prompt: "wrong shape", harnesses: "codex" });
 		await listRejects({ project: 42 });
 		await listRejects({ allProjects: "yes" });
+		await historyRejects({ session: 42 });
+		await historyRejects({ last: "yes" });
+		await historyRejects({ last: true, historyDir: 42 });
+	});
+
+	test("requires a history selector the structural schema cannot demand", async () => {
+		// Same unspawnable client: every rejection below happens before a process.
+		const client = new OneHarness({ executable: unspawnable });
+		const selectorRejects = async (lookup: HistoryLookup | undefined) => {
+			await expect(client.history(lookup)).rejects.toThrow(
+				"history requires session or last",
+			);
+		};
+
+		// Structurally valid, semantically unusable: no field names a session, so
+		// the schema passes and the SDK's own selector rule is what rejects these.
+		for (const selectorless of [
+			{},
+			{ historyDir: "/tmp/oneharness-history" },
+		]) {
+			expect(HistoryLookupSchema.safeParse(selectorless).success).toBe(true);
+			await selectorRejects(selectorless);
+		}
+		await selectorRejects(undefined);
+
+		// Present but not selecting: the SDK reads these for truthiness, so an
+		// empty session and an explicit `last: false` select nothing.
+		await selectorRejects({ session: "" });
+		await selectorRejects({ last: false });
+		await selectorRejects({ session: "", last: false });
+
+		// A valid selector clears both checks, so this client fails on the spawn it
+		// reached rather than on validation — the proof the rejections above are
+		// the boundary talking, not a missing binary.
+		for (const selector of [{ session: "node-session" }, { last: true }]) {
+			expect(HistoryLookupSchema.safeParse(selector).success).toBe(true);
+			await expect(client.history(selector)).rejects.toThrow(
+				"missing-oneharness-fixture",
+			);
+		}
 	});
 
 	test("lists and detects the open harness registry", async () => {
@@ -461,12 +513,6 @@ describe("OneHarness", () => {
 		await expect(
 			new OneHarness({ executable: missing }).list(),
 		).rejects.toThrow("missing-oneharness");
-	});
-
-	test("requires an explicit history selector", async () => {
-		await expect(sdk().history()).rejects.toThrow(
-			"history requires session or last",
-		);
 	});
 
 	test("rejects malformed run, history, list, and detect data from an external CLI", async () => {

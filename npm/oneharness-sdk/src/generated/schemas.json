@@ -817,6 +817,32 @@
       }
     }
   },
+  "history_lookup": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "HistoryLookup",
+    "description": "The session selector accepted by `OneHarness.history()` in the published Node\nSDK.\n\nThis type carries the *structural* contract only. `history()` also enforces a\nsemantic rule this schema deliberately does not express — a lookup must\nselect a session with either `session` or `last`. JSON Schema states that as\n`anyOf` over required-key subschemas, which would accept `{\"last\": false}`\nand reject the equivalent-but-explicit `{\"session\": \"x\", \"last\": false}`\ndifferently than the SDK does: the SDK reads `last` for truthiness and falls\nback to a non-empty `session`. Encoding a rule the SDK does not actually\napply would be worse than not encoding it, so the selector rule stays a\ndocumented check in the SDK, run immediately after this structural\nvalidation and before any field is read.",
+    "type": "object",
+    "properties": {
+      "allProjects": {
+        "type": "boolean"
+      },
+      "historyDir": {
+        "type": "string"
+      },
+      "last": {
+        "description": "Select the most recent session instead of naming one.",
+        "type": "boolean"
+      },
+      "project": {
+        "type": "string"
+      },
+      "session": {
+        "description": "The oneharness-derived session name recorded by `run --history`.",
+        "type": "string"
+      }
+    },
+    "additionalProperties": false
+  },
   "history_list_options": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "HistoryListOptions",

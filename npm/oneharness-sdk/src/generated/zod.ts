@@ -18,6 +18,7 @@ import type { DetectInfo, DetectReport } from "./detection.js";
 import type { HistoryRecord } from "./history.js";
 import type { HistoryList, HistorySessionSummary } from "./history-list.js";
 import type { HistoryListOptions } from "./history-list-options.js";
+import type { HistoryLookup } from "./history-lookup.js";
 import type { HistoryRecords } from "./history-records.js";
 import type { PermissionMode, RunOptions } from "./options.js";
 import type { HarnessInfo, ListReport, ModeInfo } from "./registry.js";
@@ -103,6 +104,14 @@ export const HistoryListOptionsSchema: z.ZodType<HistoryListOptions> = z.strictO
   allProjects: z.boolean().optional(),
   historyDir: z.string().optional(),
   project: z.string().optional(),
+});
+
+export const HistoryLookupSchema: z.ZodType<HistoryLookup> = z.strictObject({
+  allProjects: z.boolean().optional(),
+  historyDir: z.string().optional(),
+  last: z.boolean().optional(),
+  project: z.string().optional(),
+  session: z.string().optional(),
 });
 
 export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.looseObject({

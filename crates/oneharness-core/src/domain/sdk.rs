@@ -129,6 +129,42 @@ pub struct RunOptions {
     pub bins: Option<BTreeMap<String, String>>,
 }
 
+/// The session selector accepted by `OneHarness.history()` in the published Node
+/// SDK.
+///
+/// This type carries the *structural* contract only. `history()` also enforces a
+/// semantic rule this schema deliberately does not express — a lookup must
+/// select a session with either `session` or `last`. JSON Schema states that as
+/// `anyOf` over required-key subschemas, which would accept `{"last": false}`
+/// and reject the equivalent-but-explicit `{"session": "x", "last": false}`
+/// differently than the SDK does: the SDK reads `last` for truthiness and falls
+/// back to a non-empty `session`. Encoding a rule the SDK does not actually
+/// apply would be worse than not encoding it, so the selector rule stays a
+/// documented check in the SDK, run immediately after this structural
+/// validation and before any field is read.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "HistoryLookup")]
+pub struct HistoryLookup {
+    /// The oneharness-derived session name recorded by `run --history`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub session: Option<String>,
+    /// Select the most recent session instead of naming one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub last: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub all_projects: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub history_dir: Option<String>,
+}
+
 /// Options accepted by `OneHarness.historyList()` in the published Node SDK.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -206,6 +242,67 @@ mod tests {
         }))
         .expect_err("misspelled option should fail");
         assert!(error.to_string().contains("unknown field `harneses`"));
+    }
+
+    #[test]
+    fn history_lookup_optional_fields_round_trip_and_are_omitted_when_absent() {
+        let lookup = HistoryLookup {
+            session: Some("node-session".to_string()),
+            last: None,
+            project: None,
+            all_projects: Some(true),
+            history_dir: Some("/tmp/oneharness-history".to_string()),
+        };
+
+        let value = serde_json::to_value(&lookup).expect("serialize history lookup");
+        assert_eq!(value["session"], "node-session");
+        assert_eq!(value["allProjects"], true);
+        assert_eq!(value["historyDir"], "/tmp/oneharness-history");
+        assert!(value.get("last").is_none());
+        assert!(value.get("project").is_none());
+        assert_eq!(
+            serde_json::from_value::<HistoryLookup>(value).expect("deserialize history lookup"),
+            lookup
+        );
+    }
+
+    #[test]
+    fn history_lookup_defaults_to_every_field_absent() {
+        assert_eq!(
+            serde_json::from_value::<HistoryLookup>(serde_json::json!({}))
+                .expect("empty lookup is structurally valid"),
+            HistoryLookup {
+                session: None,
+                last: None,
+                project: None,
+                all_projects: None,
+                history_dir: None,
+            }
+        );
+    }
+
+    #[test]
+    fn history_lookup_rejects_unknown_fields() {
+        let error = serde_json::from_value::<HistoryLookup>(serde_json::json!({
+            "sesion": "node-session"
+        }))
+        .expect_err("misspelled selector should fail");
+        assert!(error.to_string().contains("unknown field `sesion`"));
+    }
+
+    #[test]
+    fn history_lookup_schema_is_structural_and_omits_the_selector_rule() {
+        let schema = schemars::schema_for!(HistoryLookup);
+        let value = schema.as_value();
+        assert_eq!(value["additionalProperties"], serde_json::json!(false));
+        assert_eq!(value["properties"]["session"]["type"], "string");
+        assert_eq!(value["properties"]["last"]["type"], "boolean");
+        // The "session or last" rule is enforced by the SDK, not this schema:
+        // JSON Schema cannot state it the way the SDK applies it. See the type's
+        // docs. Every field stays individually optional here.
+        assert!(value.get("required").is_none());
+        assert!(value.get("anyOf").is_none());
+        assert!(value.get("oneOf").is_none());
     }
 
     #[test]

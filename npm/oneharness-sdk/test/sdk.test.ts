@@ -15,6 +15,8 @@ import {
 	type HarnessInfo,
 	HarnessInfoSchema,
 	type HistoryList,
+	type HistoryListOptions,
+	HistoryListOptionsSchema,
 	HistoryListSchema,
 	type HistoryRecord,
 	HistoryRecordSchema,
@@ -50,6 +52,7 @@ type Equal<Left, Right> =
 
 const inferredSchemasMatchGeneratedTypes: [
 	Equal<z.infer<typeof RunOptionsSchema>, RunOptions>,
+	Equal<z.infer<typeof HistoryListOptionsSchema>, HistoryListOptions>,
 	Equal<z.infer<typeof RunReportSchema>, RunReport>,
 	Equal<z.infer<typeof RunResultSchema>, RunResult>,
 	Equal<z.infer<typeof ActionEventSchema>, ActionEvent>,
@@ -61,7 +64,21 @@ const inferredSchemasMatchGeneratedTypes: [
 	Equal<z.infer<typeof ListReportSchema>, ListReport>,
 	Equal<z.infer<typeof HarnessInfoSchema>, HarnessInfo>,
 	Equal<z.infer<typeof DetectReportSchema>, DetectReport>,
-] = [true, true, true, true, true, true, true, true, true, true, true, true];
+] = [
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+	true,
+];
 
 function sdk(): OneHarness {
 	return new OneHarness({
@@ -199,6 +216,9 @@ describe("OneHarness", () => {
 		await expect(sdk().run(misspelled)).rejects.toThrow(
 			"invalid oneharness run options",
 		);
+		await expect(sdk().run(null as unknown as RunOptions)).rejects.toThrow(
+			"invalid oneharness run options",
+		);
 	});
 
 	test("lists and detects the open harness registry", async () => {
@@ -276,6 +296,13 @@ describe("OneHarness", () => {
 		expect(HistorySessionSummarySchema.safeParse(sessions[0]).success).toBe(
 			true,
 		);
+		expect(
+			HistoryListOptionsSchema.safeParse({ allProjects: true, historyDir })
+				.success,
+		).toBe(true);
+		await expect(
+			client.historyList({ allProject: true } as unknown as HistoryListOptions),
+		).rejects.toThrow("invalid oneharness history list options");
 	});
 
 	test("continues a native session with the new user message", async () => {
@@ -387,7 +414,7 @@ describe("OneHarness", () => {
 
 	test("rejects an empty prompt before spawning", async () => {
 		await expect(new OneHarness().run({ prompt: "" })).rejects.toThrow(
-			"prompt must not be empty",
+			"invalid oneharness run options",
 		);
 	});
 

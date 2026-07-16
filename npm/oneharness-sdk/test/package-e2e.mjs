@@ -1,3 +1,4 @@
+// llmlint: ignore-file[e2e_not_mocked] This packed-package E2E exercises the installed npm artifact, launcher shim, real oneharness CLI subprocess, and JSON protocol. Only the paid model-provider process is replaced by oneharness-mock-harness, the deterministic external-boundary substitute required by AGENTS.md.
 import { execFileSync } from "node:child_process";
 import {
 	existsSync,

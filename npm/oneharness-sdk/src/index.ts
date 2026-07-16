@@ -5,10 +5,12 @@ import type { RunReport } from "./generated/contracts.js";
 import type { DetectInfo } from "./generated/detection.js";
 import type { HistoryRecord } from "./generated/history.js";
 import type { HistorySessionSummary } from "./generated/history-list.js";
+import type { HistoryListOptions } from "./generated/history-list-options.js";
 import type { RunOptions } from "./generated/options.js";
 import type { HarnessInfo } from "./generated/registry.js";
 import {
 	DetectReportSchema,
+	HistoryListOptionsSchema,
 	HistoryListSchema,
 	HistoryRecordsSchema,
 	ListReportSchema,
@@ -35,6 +37,7 @@ export type {
 	HistoryList,
 	HistorySessionSummary,
 } from "./generated/history-list.js";
+export type { HistoryListOptions } from "./generated/history-list-options.js";
 export type { HistoryRecords } from "./generated/history-records.js";
 export type { PermissionMode, RunOptions } from "./generated/options.js";
 export type Detection = DetectInfo;
@@ -48,11 +51,6 @@ export * from "./generated/zod.js";
 export type HistoryLookup = {
 	session?: string;
 	last?: boolean;
-	project?: string;
-	allProjects?: boolean;
-	historyDir?: string;
-};
-export type HistoryListOptions = {
 	project?: string;
 	allProjects?: boolean;
 	historyDir?: string;
@@ -144,7 +142,6 @@ export class OneHarness {
 	constructor(private readonly options: OneHarnessOptions = {}) {}
 
 	async run(options: RunOptions): Promise<RunReport> {
-		if (!options.prompt) throw new TypeError("prompt must not be empty");
 		const input = parseContract(
 			RunOptionsSchema,
 			options,
@@ -219,10 +216,15 @@ export class OneHarness {
 	async historyList(
 		options: HistoryListOptions = {},
 	): Promise<HistorySessionSummary[]> {
+		const input = parseContract(
+			HistoryListOptionsSchema,
+			options,
+			"invalid oneharness history list options",
+		);
 		const args = ["history", "list", "--compact"];
-		if (options.project) args.push("--project", options.project);
-		if (options.allProjects) args.push("--all-projects");
-		if (options.historyDir) args.push("--history-dir", options.historyDir);
+		if (input.project) args.push("--project", input.project);
+		if (input.allProjects) args.push("--all-projects");
+		if (input.historyDir) args.push("--history-dir", input.historyDir);
 		const value = await invokeWith(this.options, args);
 		return parseContract(
 			HistoryListSchema,

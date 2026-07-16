@@ -129,6 +129,22 @@ pub struct RunOptions {
     pub bins: Option<BTreeMap<String, String>>,
 }
 
+/// Options accepted by `OneHarness.historyList()` in the published Node SDK.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "HistoryListOptions")]
+pub struct HistoryListOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub all_projects: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub history_dir: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,5 +206,14 @@ mod tests {
         }))
         .expect_err("misspelled option should fail");
         assert!(error.to_string().contains("unknown field `harneses`"));
+    }
+
+    #[test]
+    fn history_list_options_reject_unknown_fields() {
+        let error = serde_json::from_value::<HistoryListOptions>(serde_json::json!({
+            "allProject": true
+        }))
+        .expect_err("misspelled option should fail");
+        assert!(error.to_string().contains("unknown field `allProject`"));
     }
 }

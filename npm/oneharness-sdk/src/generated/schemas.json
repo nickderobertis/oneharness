@@ -817,6 +817,24 @@
       }
     }
   },
+  "history_list_options": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "HistoryListOptions",
+    "description": "Options accepted by `OneHarness.historyList()` in the published Node SDK.",
+    "type": "object",
+    "properties": {
+      "allProjects": {
+        "type": "boolean"
+      },
+      "historyDir": {
+        "type": "string"
+      },
+      "project": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": false
+  },
   "history_record": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "HistoryRecord",

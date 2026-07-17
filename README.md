@@ -62,10 +62,10 @@ how — or whether — it reaches that harness.
 | id | CLI | default binary | `model` | `system` | `reasoning` | bypass mode requested | synced config file | allow / deny | hooks | output format | `--resume` (continue / fork) |
 |----|-----|----------------|:-------:|----------|-------------|-----------------------|--------------------|:------------:|:-----:|:-------------:|:---------:|
 | `claude-code` | Claude Code | `claude` | ✓ | native flag | `--effort` | `--permission-mode bypassPermissions` | `.claude/settings.json` | ✓ / ✓ | ✓ | ✓ | `--resume` + `--fork-session` |
-| `codex` | OpenAI Codex CLI | `codex` | ✓ | prepended | `model_reasoning_effort` | `--dangerously-bypass-approvals-and-sandbox` | — | — | — | — | `exec resume <id>` (linear) |
+| `codex` | OpenAI Codex CLI | `codex` | ✓ | prepended | `model_reasoning_effort` | `--dangerously-bypass-approvals-and-sandbox` | — | — | — | ✓ | `exec resume <id>` (linear) |
 | `opencode` | OpenCode | `opencode` | ✓ | prepended | config only | `--dangerously-skip-permissions` | `opencode.json` | via `settings` | — | ✓ | `--session` + `--fork` |
 | `goose` | Goose | `goose` | — | native flag | — | (runs unattended) | — | — | — | — | `--resume --name` (linear)¹ |
-| `qwen` | Qwen Code | `qwen` | ✓ | prepended | config only | `--yolo` | `.qwen/settings.json` | ✓ / ✓ (interactive) | — | — | `--resume` (linear) |
+| `qwen` | Qwen Code | `qwen` | ✓ | prepended | config only | `--yolo` | `.qwen/settings.json` | ✓ / ✓ (interactive) | — | ✓ | `--resume` (linear) |
 | `crush` | Crush | `crush` | ✓ | prepended | config only | `run -q` (non-interactive) | `crush.json` | ✓ / ✓ | — | — | `--session` (linear) |
 | `copilot` | GitHub Copilot CLI | `copilot` | ✓ | prepended | `--reasoning-effort` | `--allow-all-tools --allow-all-paths --no-ask-user` | — | — | — | — | `--resume` (linear)¹ |
 | `cursor` | Cursor CLI | `cursor-agent` | ✓ | prepended | `--model 'M-<effort>'` | `--force` (`--trust` under `--no-bypass`) | `.cursor/cli.json` | ✓ / ✓ | — | ✓ | `--resume` (linear) |
@@ -86,7 +86,11 @@ native session id in a small store, so a consumer threads **one name** across
 turns instead of extracting and re-passing the id itself. It is supported exactly
 for the harnesses that expose a session id headlessly — `claude-code`, `opencode`,
 `codex`, `cursor`, `qwen` (`session_capable: true` in `oneharness list`); for the
-rest (which have no id to bind a name to) `--session` is a loud usage error.
+rest (which have no id to bind a name to) `--session` is a loud usage error. A
+named session automatically selects that harness's session-id-bearing output
+format unless you explicitly set `--output-format`/config `output_format`; an
+explicit format remains authoritative only when it can emit the id, otherwise the
+run fails with a usage error before spawning.
 
 - **`model`** — ✓ means the harness takes a model flag. Goose selects its model
   from its own provider config, so `model` is intentionally not mapped for it.
@@ -135,7 +139,9 @@ rest (which have no id to bind a name to) `--session` is a loud usage error.
   `.github/hooks/`, Cursor's `hooks.json`, OpenCode's JS plugins).
 - **output format** — ✓ means the harness takes a format flag the
   `output_format` setting maps onto; a `—` harness emits plain text and the
-  setting only changes how `text` is extracted.
+  setting only changes how `text` is extracted. Codex defaults to its `--json`
+  stream so plain runs capture `thread_id`; Qwen remains text by default and is
+  upgraded to `stream-json` automatically when `--session` needs its id.
 - **`--resume`** — the flag each adapter maps `run --resume <session>` onto
   (every harness supports headless continuation). The cell also shows whether the
   harness can **fork** (`--fork`): Claude Code and OpenCode branch a new session
@@ -340,8 +346,11 @@ Useful `run` flags:
   the default parallel mode; under `--run-mode fallback` it binds to the first
   session-capable harness in the chain. Only for harnesses that expose a session id
   headlessly (`session_capable` in `oneharness list`) — others are a loud usage
-  error. The higher-level counterpart to `--resume`; mutually exclusive with
-  `--resume`/`--fork`/`--all` and with a batch. See
+  error. Without an explicit format, oneharness selects the harness's
+  session-id-bearing format automatically; an explicitly pinned incompatible
+  `--output-format`/config `output_format` is a usage error instead of a silent
+  empty store. The higher-level counterpart to `--resume`; mutually exclusive
+  with `--resume`/`--fork`/`--all` and with a batch. See
   [Session handle](#session-handle).
 - `--session-dir <dir>` — directory the `--session` store lives in (default:
   `<platform state dir>/oneharness/sessions`). Like `--resume`/`--fork`, a
@@ -349,7 +358,8 @@ Useful `run` flags:
   tests and scripts.
 - `--output-format <text|json|stream-json>` — override the format requested from
   each harness (default: per-harness); affects the emitted flag and how `text` is
-  extracted.
+  extracted. With `--session`, the explicit choice must be one of that harness's
+  session-id-bearing formats or the run is rejected before spawning.
 - `--schema <path>` / `--schema-max-retries <n>` — **structured output**:
   constrain each harness's final answer to a JSON Schema, validate it, and
   re-prompt on failure. See [Structured output](#structured-output) below.
@@ -774,8 +784,8 @@ truncated final JSONL record is ignored rather than invalidating earlier ones):
   tool-shaped arguments (so a consumer reads the command string / file path
   without re-parsing), `output` is the observation when exposed, and `index` is
   the position in the run. `events` is `null` (never `[]`) when the harness's
-  output carries no machine-readable trace — a plain-text harness (Codex, Goose,
-  Qwen, Crush, Copilot), or Claude Code's single-document `json` result, which
+  output carries no machine-readable trace — a plain-text harness (Goose, Qwen,
+  Crush, Copilot), or Claude Code's single-document `json` result, which
   omits the intermediate transcript — with `events_source` then also `null`, so a
   consumer tells "harness doesn't expose it" from "no tools were used." Like
   `text`, it is best-effort and never fabricated; consumers needing certainty
@@ -794,7 +804,7 @@ truncated final JSONL record is ignored rather than invalidating earlier ones):
   | `opencode` | `json` (default) | `json:opencode-parts` |
   | `cursor` | `stream-json` (default) | `stream-json:cursor-tool-calls` |
   | `claude-code` | `--events` → `stream-json` (adds the required `--verbose`) | `stream-json:content-blocks` |
-  | `codex` | `--events` → `exec --json` | `json:codex-items` |
+  | `codex` | `exec --json` (default; `--events` needs no upgrade) | `json:codex-items` |
   | `qwen` | `--events` → `--output-format stream-json` | `stream-json:content-blocks` |
   | `goose`, `crush`, `copilot` | no machine-readable transcript headlessly | — (null) |
 
@@ -932,7 +942,13 @@ A named session is **bound to one harness** (reusing the name on another is a lo
 error) and cannot combine with `--resume`/`--fork`/`--all` or a batch, and is
 supported only for harnesses that expose a session id headlessly (`session_capable`
 in `oneharness list`: `claude-code`, `opencode`, `codex`, `cursor`, `qwen`) — for
-the rest, `--session` is a usage error rather than a silent fresh start. In the
+the rest, `--session` is a usage error rather than a silent fresh start. Session
+ids are format-dependent: with no explicit format oneharness selects the
+harness's preferred session-bearing format (notably Qwen `stream-json`; Codex now
+defaults to `--json` for every run). An explicit `--output-format` or config
+`output_format` still wins only when that format can emit the id; pairing
+`--session` with an incompatible format such as `text` is a usage error before
+the harness runs, never a warning after a lost capture. In the
 default **parallel** run mode it is single-harness; under
 [`--run-mode fallback`](#fallback-mode-first-that-runs-wins) it is allowed on a
 multi-harness chain and binds to the **anchor** — the first session-capable harness

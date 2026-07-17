@@ -251,6 +251,13 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // harness in parallel). The resume token is applied ONLY to this harness's
     // argv below, never to a different fallback candidate that happens to win.
     let session_anchor: Option<&'static str> = session_wiring.as_ref().map(|w| w.harness);
+    // An explicitly selected format keeps its authority, but a named session can
+    // use it only when that harness actually emits an id in the format. Refuse a
+    // lossy pin before spawning instead of accepting `--session` and silently
+    // leaving the store empty. With no explicit format, the plan loop below
+    // selects the anchor harness's preferred session-bearing format.
+    let explicit_format = args.output_format.or(cfg.output_format);
+    validate_session_output_format(session_anchor, explicit_format)?;
     // `--stream` emits events incrementally for a *single* harness/prompt; the
     // validate/retry loop and the batch fan-out both need the whole output at
     // once, so they are mutually exclusive. Refused loudly before spawning.
@@ -382,16 +389,17 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         // on an ordinary run the single top-level `prompt` covers them all.
         let result_prompt = batch_run.then(|| unit_prompt.to_string());
         let resolved = detect::resolve(spec, &overrides);
-        // Explicit format (CLI or config) always wins. Otherwise, when the caller
-        // asked for events/streaming, upgrade to the harness's events-capable
-        // format so a tool transcript is actually emitted (e.g. Claude Code's
-        // default `json` → `stream-json`); harnesses whose default already
-        // carries a transcript declare `events_format: None` and stay put.
-        let explicit_format = args.output_format.or(cfg.output_format);
+        // Explicit format (CLI or config) always wins (and was validated above
+        // when a named session is in play). Otherwise events/streaming selects the
+        // harness's transcript-bearing format; absent that, the named-session
+        // anchor selects its id-bearing format. Ordinary runs keep the default.
         let want_events = args.events || args.stream;
         let chosen_format = explicit_format.unwrap_or_else(|| {
             if want_events {
                 spec.events_format.unwrap_or(spec.output_format)
+            } else if session_anchor == Some(spec.id) {
+                spec.session_format()
+                    .expect("setup_session selected only a harness with a session-bearing format")
             } else {
                 spec.output_format
             }
@@ -1092,7 +1100,7 @@ struct SessionWiring {
 fn session_capable_ids() -> String {
     harness::all()
         .iter()
-        .filter(|s| s.session_capable)
+        .filter(|s| s.session_capable())
         .map(|s| s.id)
         .collect::<Vec<_>>()
         .join(", ")
@@ -1142,7 +1150,7 @@ fn setup_session(
         specs
             .iter()
             .copied()
-            .find(|s| s.session_capable)
+            .find(|s| s.session_capable())
             .ok_or_else(|| OneharnessError::SessionUnsupported {
                 id: specs.iter().map(|s| s.id).collect::<Vec<_>>().join(", "),
                 supported: session_capable_ids(),
@@ -1155,7 +1163,7 @@ fn setup_session(
             });
         }
         let spec = specs[0];
-        if !spec.session_capable {
+        if !spec.session_capable() {
             return Err(OneharnessError::SessionUnsupported {
                 id: spec.id.to_string(),
                 supported: session_capable_ids(),
@@ -1183,6 +1191,33 @@ fn setup_session(
         existing,
         plan,
     }))
+}
+
+/// Refuse a caller-pinned output format that cannot carry the named session's
+/// native id. `None` means the normal automatic selection remains in force.
+/// Only the session anchor is checked: in fallback mode the other candidates do
+/// not own this named session and must retain their ordinary format behavior.
+fn validate_session_output_format(
+    session_anchor: Option<&str>,
+    explicit_format: Option<OutputFormat>,
+) -> Result<(), OneharnessError> {
+    let (Some(id), Some(format)) = (session_anchor, explicit_format) else {
+        return Ok(());
+    };
+    let spec = harness::by_id(id).expect("session anchor came from the harness registry");
+    if spec.format_carries_session(format) {
+        return Ok(());
+    }
+    Err(OneharnessError::SessionOutputFormat {
+        id: id.to_string(),
+        format: format.as_str().to_string(),
+        supported: spec
+            .session_formats
+            .iter()
+            .map(|format| format.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+    })
 }
 
 /// Persist the session token this run captured (best-effort) and build the
@@ -2917,7 +2952,7 @@ mod tests {
             output_format: OutputFormat::Text,
             events_format: None,
             supports_resume: false,
-            session_capable: false,
+            session_formats: &[],
             supports_fork: false,
             fork_reuses_cache: false,
             sync: None,

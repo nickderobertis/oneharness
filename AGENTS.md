@@ -513,15 +513,21 @@ shape. When you add one:
   `thread_id`); if it emits none (Goose, Copilot), the continuation handle is
   caller-supplied (a `--name` / minted UUID) and `session_id` stays `null` — never
   fabricate one. Update the `--resume` column in `README.md`. Also declare
-  `session_capable` (implies `supports_resume`): true **iff** the harness emits a
-  session id headlessly (exactly the `extract_session` sources — claude-code,
-  opencode, codex, cursor, qwen), which is what lets the uniform
+  `session_formats` (every non-empty list implies `supports_resume`): the exact
+  output formats that emit the native id, preferred automatic format first; an
+  empty list means incapable. `oneharness list` derives `session_capable` from
+  this list, so capability can never drift from the transport. The non-empty
+  harnesses are exactly the `extract_session` sources — claude-code, opencode,
+  codex, cursor, qwen — which is what lets the uniform
   `run --session <name>` handle map a caller-owned name to the harness's native
   token in the session store (`domain::session` decides create-vs-continue,
   `io::session` persists `<state>/oneharness/sessions/<slug>/<name>.json`; the
   command layer feeds a continue's token through the *existing verified* `--resume`
-  mapping, so `--session` needs **no** new argv arm). When false, `--session` is a
-  loud usage error (no id to bind a name to) — never a silent fresh start. It is
+  mapping, so `--session` needs **no** new argv arm). With no explicit output
+  format the command layer selects the first `session_formats` entry; an explicit
+  CLI/config format still wins only if it appears in the list, otherwise it is a
+  loud usage error before spawning. When the list is empty, `--session` is a loud
+  usage error (no id to bind a name to) — never a silent fresh start. It is
   single-harness, refuses batch/`--resume`/`--fork`/`--all`, and echoes a `session`
   block `{name, phase, token, store_file}` in the report. Update the *Session
   handle* section + `session_capable`/`--session` mentions in `README.md`. Also
@@ -653,8 +659,8 @@ shape. When you add one:
   re-run it when adding a harness. Coverage today
   (all sourced, all e2e drift-alarmed): opencode (`json`, default),
   cursor (`stream-json`, default, its own `type:"tool_call"` shape), claude-code
-  (`--events`→`stream-json`, Anthropic content blocks), codex (`--events`→`exec
-  --json`, `command_execution` items), qwen (`--events`→`stream-json`, content
+  (`--events`→`stream-json`, Anthropic content blocks), codex (`exec --json` by
+  default, `command_execution` items), qwen (`--events`→`stream-json`, content
   blocks). Goose/crush/copilot emit only decorative TUI text headlessly (probe-
   confirmed), so `events` stays `null` — correct, not a gap. Forward `--events`
   (or `--stream`) to `oh_events_assert`/`oh_stream_assert` as a run-arg for a

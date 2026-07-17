@@ -116,7 +116,7 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 install_hint: spec.install_hint,
                 output_format: spec.output_format,
                 supports_resume: spec.supports_resume,
-                session_capable: spec.session_capable,
+                session_capable: spec.session_capable(),
                 supports_fork: spec.supports_fork,
                 fork_reuses_cache: spec.fork_reuses_cache,
                 modes: spec

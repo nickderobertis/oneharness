@@ -50,8 +50,8 @@ fn extract_json(stdout: &str) -> Option<Extracted> {
     // not one document, so the single-parse above fails (or finds no top-level
     // text key). Its visible answer lives in `text` parts; recover it from those.
     extract_opencode_parts(stdout)
-        // Codex `exec --json` emits JSONL whose final answer is an `agent_message`
-        // item (used when `--events` upgrades codex to its JSON event stream).
+        // Codex's default `exec --json` emits JSONL whose final answer is an
+        // `agent_message` item.
         .or_else(|| extract_codex_agent_message(stdout))
         // Qwen `--output-format json` emits one JSON *array* of Anthropic-style
         // messages; the answer is the last assistant message's `text` blocks.

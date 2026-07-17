@@ -32,6 +32,17 @@ pub enum OutputFormat {
     StreamJson,
 }
 
+impl OutputFormat {
+    /// The stable CLI/config/wire token for this format.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Json => "json",
+            Self::StreamJson => "stream-json",
+        }
+    }
+}
+
 /// The outcome of attempting to run one harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import difflib
 import json
 import re
 import subprocess
@@ -178,21 +179,41 @@ def generated_files() -> dict[str, bytes]:
     }
 
 
+def drift(path: Path, expected: bytes) -> str:
+    """Render why one generated file differs, so --check names the exact change."""
+    if not path.exists():
+        return f"{path}: missing"
+    actual = path.read_bytes()
+    try:
+        lines = difflib.unified_diff(
+            actual.decode().splitlines(),
+            expected.decode().splitlines(),
+            fromfile=f"{path} (checked in)",
+            tofile=f"{path} (generated)",
+            lineterm="",
+            n=2,
+        )
+        return "\n".join(lines)
+    except UnicodeDecodeError:  # pragma: no cover - generated assets are text
+        return f"{path}: {len(actual)} bytes on disk, {len(expected)} generated"
+
+
 def main() -> int:
     """Write generated files, or report drift under --check."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
-    stale = False
+    stale: list[str] = []
     for relative, content in generated_files().items():
         path = OUTPUT / relative
         if args.check:
             if not path.exists() or path.read_bytes() != content:
-                stale = True
+                stale.append(drift(path, content))
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
     if stale:
+        print("\n".join(stale))
         print("generated Python SDK contracts are stale; run just python-sdk-generate")
         return 1
     return 0

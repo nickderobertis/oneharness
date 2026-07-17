@@ -10,8 +10,16 @@ repository = "https://github.com/nickderobertis/oneharness"
 [features]
 sdk-schema = []
 
+# Emits the core-only bundle, for a library consumer that wants it without the
+# CLI's roots. Named apart from the binary crate's `generate_sdk_schema` example
+# (which emits this bundle plus `list_report`/`detect_report`, and is the one the
+# SDK generators run): two examples sharing a name across the workspace share one
+# `target/debug/examples/` filename, so cargo silently runs whichever built last
+# and the SDK drift gate compares against the wrong bundle. The file keeps its
+# name so the path stays greppable next to the binary crate's example.
 [[example]]
-name = "generate_sdk_schema"
+name = "generate_core_sdk_schema"
+path = "examples/generate_sdk_schema.rs"
 required-features = ["sdk-schema"]
 
 [dependencies]

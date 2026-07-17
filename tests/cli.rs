@@ -144,6 +144,52 @@ fn bin_override(id: &str) -> String {
     format!("{id}={}", mock_bin().display())
 }
 
+#[cfg(any(unix, windows))]
+fn native_tick_file(label: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "oneharness-{label}-{}-{:?}.ticks",
+        std::process::id(),
+        std::thread::current().id()
+    ))
+}
+
+#[cfg(any(unix, windows))]
+fn assert_native_descendant_stopped(path: &std::path::Path) {
+    let witness_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let witnessed = loop {
+        let length = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+        if length > 0 {
+            break length;
+        }
+        assert!(
+            std::time::Instant::now() < witness_deadline,
+            "native descendant never wrote its durable tick witness"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+
+    // A live fixture ticks at least every 50 ms. Poll for a sustained quiet
+    // interval instead of assuming one fixed sleep is enough on a busy runner.
+    let stop_deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut last_length = witnessed;
+    let mut quiet_since = std::time::Instant::now();
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let length = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+        if length != last_length {
+            last_length = length;
+            quiet_since = std::time::Instant::now();
+        }
+        if quiet_since.elapsed() >= std::time::Duration::from_millis(750) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < stop_deadline,
+            "native descendant kept ticking after process-tree teardown"
+        );
+    }
+}
+
 #[test]
 fn mock_fixture_is_built() {
     assert!(
@@ -3018,6 +3064,157 @@ fn slow_harness_times_out() {
     let result = &value["results"][0];
     assert_eq!(result["status"], "timeout");
     assert!(result["error"].as_str().unwrap().contains("timeout"));
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn timeout_preserves_partial_telemetry_in_report_and_history() {
+    // Reproduce an npm-like launcher plus a long-lived descendant (TERM-ignoring
+    // on Unix, parent-independent on Windows). The descendant emits a real
+    // OpenCode-shaped transcript (including a task_complete record), leaves a
+    // truncated final JSONL record, then keeps both pipes open beyond deadline.
+    let history = hist_dir("timeout-telemetry");
+    let history_arg = history.display().to_string();
+    let ticks = native_tick_file("timeout-cli");
+    let _ = std::fs::remove_file(&ticks);
+    let transcript = concat!(
+        "{\"type\":\"text\",\"sessionID\":\"ses-timeout\",\"part\":",
+        "{\"type\":\"text\",\"text\":\"partial answer\"}}\n",
+        "{\"type\":\"tool_use\",\"sessionID\":\"ses-timeout\",\"part\":",
+        "{\"type\":\"tool\",\"tool\":\"bash\",\"state\":",
+        "{\"input\":{\"command\":\"echo hi\"},\"output\":\"hi\"}}}\n",
+        "{\"type\":\"step_finish\",\"sessionID\":\"ses-timeout\",\"part\":",
+        "{\"cost\":0.01,\"tokens\":{\"input\":12,\"output\":3,",
+        "\"cache\":{\"read\":9,\"write\":4}}}}\n",
+        "{\"type\":\"task_complete\",\"text\":\"emitted before exit\"}\n",
+        "{\"type\":\"incomplete\"",
+    );
+
+    let started = std::time::Instant::now();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "capture timeout evidence",
+            "--timeout",
+            "1",
+            "--bin",
+            &bin_override("opencode"),
+            "--history",
+            "--history-dir",
+            &history_arg,
+            "--compact",
+        ],
+        &[
+            ("MOCK_STDOUT", transcript),
+            ("MOCK_STDERR", "native child stderr\n"),
+            ("MOCK_NATIVE_GRANDCHILD_MS", "5000"),
+            ("MOCK_TICK_FILE", &ticks.display().to_string()),
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(900),
+        "timeout returned before its configured deadline: {:?}",
+        started.elapsed()
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(3),
+        "timeout should return near deadline plus teardown grace, took {:?}",
+        started.elapsed()
+    );
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["status"], "timeout");
+    assert_eq!(result["text"], "partial answer");
+    assert_eq!(result["text_source"], "json:opencode-parts");
+    assert_eq!(result["usage"]["input_tokens"], 12);
+    assert_eq!(result["usage"]["output_tokens"], 3);
+    assert_eq!(result["usage"]["cache_read_tokens"], 9);
+    assert_eq!(result["usage"]["cache_write_tokens"], 4);
+    assert_eq!(result["usage"]["cost_usd"], 0.01);
+    assert_eq!(result["session_id"], "ses-timeout");
+    assert_eq!(result["events_source"], "json:opencode-parts");
+    assert_eq!(result["events"][0]["name"], "bash");
+    assert!(result["stderr"]
+        .as_str()
+        .unwrap()
+        .contains("native child stderr"));
+    assert!(
+        result["stdout"]
+            .as_str()
+            .unwrap()
+            .ends_with("{\"type\":\"incomplete\""),
+        "raw capture retains the truncated tail"
+    );
+
+    // History freezes the same normalized evidence while omitting raw streams.
+    let history_file = value["history_file"].as_str().expect("history file");
+    let history_text = std::fs::read_to_string(history_file).unwrap();
+    let record: Value = serde_json::from_str(history_text.lines().next().unwrap()).unwrap();
+    assert_eq!(record["status"], "timeout");
+    assert_eq!(record["text"], "partial answer");
+    assert_eq!(record["usage"]["input_tokens"], 12);
+    assert_eq!(record["session_id"], "ses-timeout");
+    assert_eq!(record["events"][0]["name"], "bash");
+    assert!(record.get("stdout").is_none());
+
+    // The native-like descendant is gone when oneharness returns; it cannot keep
+    // doing work under PID 1 after the report/history have been emitted.
+    assert_native_descendant_stopped(&ticks);
+
+    let _ = std::fs::remove_file(ticks);
+    let _ = std::fs::remove_dir_all(history);
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_streaming_stop_terminates_native_descendant() {
+    use oneharness_core::domain::report::Status;
+    use oneharness_core::io::runner::{run_job_streaming, Job, StreamStep};
+
+    let ticks = native_tick_file("windows-stream");
+    let _ = std::fs::remove_file(&ticks);
+    let job = Job {
+        argv: vec![mock_bin().display().to_string()],
+        cwd: None,
+        env: vec![
+            ("MOCK_NATIVE_GRANDCHILD_MS".to_string(), "10000".to_string()),
+            ("MOCK_TICK_FILE".to_string(), ticks.display().to_string()),
+            (
+                "MOCK_STDOUT".to_string(),
+                "native stream marker\n".to_string(),
+            ),
+            (
+                "MOCK_STDERR".to_string(),
+                "native stream stderr\n".to_string(),
+            ),
+        ],
+        timeout: std::time::Duration::from_secs(10),
+        stdin: None,
+    };
+
+    let started = std::time::Instant::now();
+    let mut observed = Vec::new();
+    let capture = run_job_streaming(&job, |line| {
+        observed.push(line.to_string());
+        StreamStep::Stop
+    });
+
+    assert_eq!(capture.status, Status::Ok);
+    assert_eq!(observed, ["native stream marker"]);
+    assert!(capture.stdout.contains("native stream marker"));
+    assert!(capture.stderr.contains("native stream stderr"));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(3),
+        "streaming short-circuit teardown took {:?}",
+        started.elapsed()
+    );
+    assert_native_descendant_stopped(&ticks);
+    let _ = std::fs::remove_file(ticks);
 }
 
 #[test]

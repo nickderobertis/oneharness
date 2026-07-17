@@ -51,10 +51,64 @@
 //!                   rest) shows `S E` before any further `S`. Used to pin the
 //!                   batch `speed` vs `min-tokens` wave ordering. Small single-byte
 //!                   lines + O_APPEND keep cross-process writes from interleaving.
+//!   MOCK_NATIVE_GRANDCHILD_MS  Unix/Windows: act like a launcher which starts a
+//!                   long-lived native child. The child emits MOCK_STDOUT /
+//!                   MOCK_STDERR, then ticks for this many milliseconds while
+//!                   inheriting both output pipes; MOCK_TICK_FILE receives one
+//!                   byte per tick when set. The launcher waits for it. On Unix
+//!                   the child ignores TERM; on Windows it is a second copy of
+//!                   this native binary, whose lifetime is independent of its
+//!                   direct parent unless the Job Object contains it. This
+//!                   reproduces the process-tree timeout boundary of npm shims.
 
 use std::io::Write;
 
+#[cfg(windows)]
+fn run_native_descendant() -> ! {
+    let run_for = std::env::var("MOCK_NATIVE_GRANDCHILD_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1);
+    let mut tick_file = std::env::var("MOCK_TICK_FILE").ok().and_then(|path| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .ok()
+    });
+    let mut tick = || {
+        if let Some(file) = tick_file.as_mut() {
+            let _ = file.write_all(b"x");
+            let _ = file.flush();
+        }
+    };
+
+    // Write the durable witness before the first stream line. A streaming
+    // consumer can stop on that line and still prove this descendant existed.
+    tick();
+    if let Ok(text) = std::env::var("MOCK_STDOUT") {
+        let _ = std::io::stdout().write_all(text.as_bytes());
+        let _ = std::io::stdout().flush();
+    }
+    if let Ok(text) = std::env::var("MOCK_STDERR") {
+        let _ = std::io::stderr().write_all(text.as_bytes());
+        let _ = std::io::stderr().flush();
+    }
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(run_for);
+    while std::time::Instant::now() < deadline {
+        tick();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    std::process::exit(0);
+}
+
 fn main() {
+    #[cfg(windows)]
+    if std::env::var_os("ONEHARNESS_MOCK_NATIVE_DESCENDANT").is_some() {
+        run_native_descendant();
+    }
+
     let argv: Vec<String> = std::env::args().skip(1).collect();
 
     if let Ok(path) = std::env::var("MOCK_ARGV_FILE") {
@@ -75,6 +129,50 @@ fn main() {
             }
         }
     };
+
+    #[cfg(unix)]
+    if let Ok(ms) = std::env::var("MOCK_NATIVE_GRANDCHILD_MS") {
+        let count = ms
+            .parse::<u64>()
+            .ok()
+            .map(|value| (value / 50).max(1))
+            .unwrap_or(1);
+        // The shell receives transcript bytes through inherited environment, not
+        // interpolation, so arbitrary JSON remains data. Ignoring TERM forces
+        // oneharness to exercise the group-wide KILL fallback after its grace.
+        let script = r#"
+            trap '' TERM
+            printf '%s' "${MOCK_STDOUT:-}"
+            printf '%s' "${MOCK_STDERR:-}" >&2
+            i=0
+            while [ "$i" -lt "$1" ]; do
+                if [ -n "${MOCK_TICK_FILE:-}" ]; then
+                    printf x >> "$MOCK_TICK_FILE"
+                fi
+                i=$((i + 1))
+                sleep 0.05
+            done
+        "#;
+        let status = std::process::Command::new("sh")
+            .args(["-c", script, "oneharness-native-child", &count.to_string()])
+            .status();
+        std::process::exit(status.ok().and_then(|s| s.code()).unwrap_or(1));
+    }
+
+    #[cfg(windows)]
+    if std::env::var_os("MOCK_NATIVE_GRANDCHILD_MS").is_some() {
+        // Windows does not tie a process's lifetime to its parent. This native
+        // child would therefore survive a direct launcher kill and retain the
+        // inherited stdout/stderr handles; the runner's Job Object must own it.
+        let status = std::env::current_exe()
+            .and_then(|executable| {
+                std::process::Command::new(executable)
+                    .env("ONEHARNESS_MOCK_NATIVE_DESCENDANT", "1")
+                    .status()
+            })
+            .ok();
+        std::process::exit(status.and_then(|value| value.code()).unwrap_or(1));
+    }
 
     if std::env::var_os("MOCK_ECHO_PWD").is_some() {
         let pwd = std::env::var("PWD").unwrap_or_default();

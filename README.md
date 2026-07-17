@@ -348,7 +348,9 @@ Useful `run` flags:
 - `-- <args…>` — extra arguments appended verbatim to each harness command (for
   single-harness runs, since flags differ per harness).
 - `--timeout <secs>` — per-harness timeout (default 120); a hang becomes a
-  `timeout` result, not a stuck process.
+  `timeout` result, not a stuck process. oneharness owns the launcher's whole
+  process tree, terminates descendants too, and bounds final pipe draining, so a
+  native child cannot survive an npm/Node wrapper or hold the report open.
 - `--cwd <dir>` / `--env KEY=VALUE` — run each harness in a directory / with extra
   env (useful for sandboxed e2e).
 - `--max-parallel <n>` — cap concurrency (default: all selected at once).
@@ -706,7 +708,10 @@ The execution envelope — `command`, `exit_code`, `duration_ms`, `status`,
 Alongside it, oneharness lifts a few **best-effort** signals out of each
 harness's bespoke stdout so consumers don't have to parse it per harness. Each is
 `null`/empty when it can't be found, is **never fabricated**, and (where there's
-more than one possible method) records how it was found:
+more than one possible method) records how it was found. This also applies to
+bytes captured before a `timeout`: the result stays `timeout`, while complete
+records can still populate `text`, `usage`, `session_id`, and `events` (a
+truncated final JSONL record is ignored rather than invalidating earlier ones):
 
 - `text` / `text_source` — the final assistant message, normalized to one clean
   string across harnesses (`json:result` for Claude Code's terminal event,
@@ -1175,6 +1180,9 @@ Code under `~/.claude/projects/`, Codex under its sessions dir, …). `run
 normalized record per harness run — the same signals the JSON report carries
 (`harness`, `prompt`, `model`, `status`, `usage`, `session_id`, `events`, `text`),
 and *only* those (no raw stdout/stderr) — streamed to disk as the run finalizes.
+If a run times out after emitting parseable records, their normalized signals are
+preserved here just as they are in the report; the record's status remains
+`timeout`.
 
 It is **off by default** and opt-in three ways, layered like every other setting
 (CLI > env > project file > user file):

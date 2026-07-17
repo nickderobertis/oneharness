@@ -6,7 +6,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.3.25](https://github.com/nickderobertis/oneharness/compare/v0.3.24...v0.3.25) - 2026-07-17
+## [0.4.0](https://github.com/nickderobertis/oneharness/compare/v0.3.24...v0.4.0) - 2026-07-17
 
 ### Added
 

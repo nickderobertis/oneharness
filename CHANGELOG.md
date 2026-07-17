@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/nickderobertis/oneharness/compare/v0.3.24...v0.4.0) - 2026-07-17
+
+### Added
+
+- add resumable labeled history and SDK parity ([#1146](https://github.com/nickderobertis/oneharness/pull/1146))
+
 ## [0.3.24](https://github.com/nickderobertis/oneharness/compare/v0.3.23...v0.3.24) - 2026-07-17
 
 ### Fixed

@@ -172,28 +172,32 @@ python-sdk-generate:
 # Strict Python SDK gate on the oldest supported interpreter, including generated
 # contract drift, branch-aware coverage, and a release-stamped wheel exercised
 # through its installed public import against the real CLI subprocess.
-python-sdk-check: build
+python-sdk-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    if ! command -v uv >/dev/null 2>&1; then
-        echo "uv not installed: https://docs.astral.sh/uv/getting-started/installation/" >&2
+    log=$(mktemp)
+    trap 'rm -f "$log"' EXIT
+    if ! (
+        set -euo pipefail
+        if ! command -v uv >/dev/null 2>&1; then
+            echo "uv not installed: https://docs.astral.sh/uv/getting-started/installation/" >&2
+            exit 1
+        fi
+        cargo build --locked --features {{FEATURES}} --bins
+        run=(uv run --no-project --python 3.9 --with-requirements python/oneharness-sdk/requirements-dev.txt)
+        "${run[@]}" python python/oneharness-sdk/scripts/generate.py --check
+        "${run[@]}" ruff format --check python/oneharness-sdk
+        "${run[@]}" ruff check python/oneharness-sdk
+        "${run[@]}" mypy --config-file python/oneharness-sdk/pyproject.toml python/oneharness-sdk/src python/oneharness-sdk/scripts python/oneharness-sdk/test
+        rm -f target/python-sdk.coverage
+        COVERAGE_FILE=target/python-sdk.coverage PYTHONPATH=python/oneharness-sdk/src "${run[@]}" coverage run --rcfile=python/oneharness-sdk/pyproject.toml -m unittest discover -s python/oneharness-sdk/test -p 'test_*.py'
+        COVERAGE_FILE=target/python-sdk.coverage "${run[@]}" coverage report --rcfile=python/oneharness-sdk/pyproject.toml
+        "${run[@]}" python python/oneharness-sdk/test/package_e2e.py
+    ) >"$log" 2>&1; then
+        cat "$log" >&2
         exit 1
     fi
-    cargo build --features {{FEATURES}} --bin oneharness-mock-harness
-    run=(uv run --no-project --python 3.9 --with-requirements python/oneharness-sdk/requirements-dev.txt)
-    "${run[@]}" python python/oneharness-sdk/scripts/generate.py --check
-    "${run[@]}" ruff format --check python/oneharness-sdk
-    "${run[@]}" ruff check python/oneharness-sdk
-    "${run[@]}" mypy --config-file python/oneharness-sdk/pyproject.toml python/oneharness-sdk/src python/oneharness-sdk/scripts python/oneharness-sdk/test
-    rm -f target/python-sdk.coverage
-    COVERAGE_FILE=target/python-sdk.coverage PYTHONPATH=python/oneharness-sdk/src "${run[@]}" coverage run --rcfile=python/oneharness-sdk/pyproject.toml -m unittest discover -s python/oneharness-sdk/test -p 'test_*.py'
-    coverage_log=$(mktemp)
-    trap 'rm -f "$coverage_log"' EXIT
-    if ! COVERAGE_FILE=target/python-sdk.coverage "${run[@]}" coverage report --rcfile=python/oneharness-sdk/pyproject.toml >"$coverage_log"; then
-        cat "$coverage_log" >&2
-        exit 1
-    fi
-    "${run[@]}" python python/oneharness-sdk/test/package_e2e.py
+    echo "python-sdk-check: ok"
 
 # Verbose, install-free diagnostics (kept out of the gate).
 doctor:

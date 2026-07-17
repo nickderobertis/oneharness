@@ -8410,6 +8410,98 @@ fn history_watch_filters_and_resumes_as_jsonl() {
 }
 
 #[test]
+fn history_watch_scopes_to_explicit_and_current_project() {
+    let dir = hist_dir("watch-project");
+    let ds = dir.display().to_string();
+    let pa = std::env::temp_dir().join(format!("oh-watch-a-{}", std::process::id()));
+    let pb = std::env::temp_dir().join(format!("oh-watch-b-{}", std::process::id()));
+    std::fs::create_dir_all(&pa).unwrap();
+    std::fs::create_dir_all(&pb).unwrap();
+
+    let record = |project: &Path, prompt: &str| {
+        let out = run(
+            &[
+                "run",
+                "--cwd",
+                &project.display().to_string(),
+                "--harness",
+                "claude-code",
+                "--bin",
+                &bin_override("claude-code"),
+                "--prompt",
+                prompt,
+                "--history",
+                "--history-dir",
+                &ds,
+                "--bypass",
+                "--compact",
+            ],
+            &[("MOCK_STDOUT", r#"{"result":"x"}"#)],
+        );
+        assert!(out.status.success(), "{out:?}");
+        let path = json_stdout(&out)["history_file"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let value: Value = serde_json::from_str(
+            std::fs::read_to_string(path)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        value["history_id"].as_str().unwrap().to_string()
+    };
+
+    let cursor = record(&pa, "cursor");
+    let _ = record(&pb, "other-project");
+    let expected = record(&pa, "same-project");
+
+    for explicit_project in [true, false] {
+        let mut command = Command::new(oneharness_bin());
+        command.env("ONEHARNESS_NO_CONFIG", "1").args([
+            "history",
+            "watch",
+            "--history-dir",
+            &ds,
+            "--after",
+            &cursor,
+            "--format",
+            "jsonl",
+        ]);
+        if explicit_project {
+            command.args(["--project", &pa.display().to_string()]);
+        } else {
+            command.current_dir(&pa);
+        }
+        let mut child = command.stdout(Stdio::piped()).spawn().unwrap();
+        let mut line = String::new();
+        let mut reader = std::io::BufReader::new(child.stdout.take().unwrap());
+        reader.read_line(&mut line).unwrap();
+        let envelope: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(envelope["record"]["history_id"], expected);
+        assert_eq!(envelope["record"]["prompt"], "same-project");
+
+        drop(reader);
+        let _ = record(
+            &pa,
+            if explicit_project {
+                "trigger-explicit"
+            } else {
+                "trigger-current"
+            },
+        );
+        let status = child.wait().unwrap();
+        assert!(status.success(), "watch exit: {status:?}");
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&pa);
+    let _ = std::fs::remove_dir_all(&pb);
+}
+
+#[test]
 fn concurrent_processes_append_complete_history_index_lines() {
     let dir = hist_dir("concurrent-process-index");
     let ds = dir.display().to_string();
@@ -8606,7 +8698,10 @@ fn history_list_scopes_by_project() {
         &[],
     ));
     assert_eq!(just_a.as_array().unwrap().len(), 1);
-    assert_eq!(just_a[0]["project"], pa.display().to_string());
+    assert_eq!(
+        just_a[0]["project"],
+        std::fs::canonicalize(&pa).unwrap().display().to_string()
+    );
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&pa);
     let _ = std::fs::remove_dir_all(&pb);

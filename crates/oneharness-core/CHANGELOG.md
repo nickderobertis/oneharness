@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.4.7...oneharness-core-v0.4.8) - 2026-07-17
+
+### Fixed
+
+- capture Codex and Qwen session ids so `--session` resumes the prior conversation instead of silently starting a cold one; Codex now defaults to JSON, session capability is derived from each harness's session-bearing formats, and session requests automatically select a compatible format ([#1150](https://github.com/nickderobertis/oneharness/pull/1150))
+
+### Changed
+
+- migration: Codex and Qwen runs that explicitly combine `--session` with `--output-format text` now fail with a usage error; remove the explicit text format to let oneharness select a session-capable format ([#1150](https://github.com/nickderobertis/oneharness/pull/1150))
+
 ## [0.4.7](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.4.6...oneharness-core-v0.4.7) - 2026-07-17
 
 ### Added

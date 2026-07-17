@@ -1,6 +1,6 @@
 [package]
 name = "oneharness-core"
-version = "0.4.7"
+version = "0.4.8"
 edition = "2021"
 rust-version = "1.86"
 description = "Reusable engine behind the oneharness CLI: harness registry, hook rendering/installation, and harness config sync."

@@ -144,6 +144,52 @@ fn bin_override(id: &str) -> String {
     format!("{id}={}", mock_bin().display())
 }
 
+#[cfg(any(unix, windows))]
+fn native_tick_file(label: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "oneharness-{label}-{}-{:?}.ticks",
+        std::process::id(),
+        std::thread::current().id()
+    ))
+}
+
+#[cfg(any(unix, windows))]
+fn assert_native_descendant_stopped(path: &std::path::Path) {
+    let witness_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let witnessed = loop {
+        let length = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+        if length > 0 {
+            break length;
+        }
+        assert!(
+            std::time::Instant::now() < witness_deadline,
+            "native descendant never wrote its durable tick witness"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+
+    // A live fixture ticks at least every 50 ms. Poll for a sustained quiet
+    // interval instead of assuming one fixed sleep is enough on a busy runner.
+    let stop_deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut last_length = witnessed;
+    let mut quiet_since = std::time::Instant::now();
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let length = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+        if length != last_length {
+            last_length = length;
+            quiet_since = std::time::Instant::now();
+        }
+        if quiet_since.elapsed() >= std::time::Duration::from_millis(750) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < stop_deadline,
+            "native descendant kept ticking after process-tree teardown"
+        );
+    }
+}
+
 #[test]
 fn mock_fixture_is_built() {
     assert!(
@@ -3020,19 +3066,16 @@ fn slow_harness_times_out() {
     assert!(result["error"].as_str().unwrap().contains("timeout"));
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn timeout_preserves_partial_telemetry_in_report_and_history() {
-    // Reproduce an npm-like launcher plus a TERM-ignoring native grandchild. The
-    // grandchild emits a real OpenCode-shaped transcript (including a
-    // task_complete record), leaves a truncated final JSONL record, then keeps
-    // both pipes open well beyond the deadline.
+    // Reproduce an npm-like launcher plus a long-lived descendant (TERM-ignoring
+    // on Unix, parent-independent on Windows). The descendant emits a real
+    // OpenCode-shaped transcript (including a task_complete record), leaves a
+    // truncated final JSONL record, then keeps both pipes open beyond deadline.
     let history = hist_dir("timeout-telemetry");
     let history_arg = history.display().to_string();
-    let ticks = std::env::temp_dir().join(format!(
-        "oneharness-timeout-cli-{}.ticks",
-        std::process::id()
-    ));
+    let ticks = native_tick_file("timeout-cli");
     let _ = std::fs::remove_file(&ticks);
     let transcript = concat!(
         "{\"type\":\"text\",\"sessionID\":\"ses-timeout\",\"part\":",
@@ -3066,12 +3109,18 @@ fn timeout_preserves_partial_telemetry_in_report_and_history() {
         ],
         &[
             ("MOCK_STDOUT", transcript),
+            ("MOCK_STDERR", "native child stderr\n"),
             ("MOCK_NATIVE_GRANDCHILD_MS", "5000"),
             ("MOCK_TICK_FILE", &ticks.display().to_string()),
         ],
     );
 
     assert_eq!(output.status.code(), Some(1));
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(900),
+        "timeout returned before its configured deadline: {:?}",
+        started.elapsed()
+    );
     assert!(
         started.elapsed() < std::time::Duration::from_secs(3),
         "timeout should return near deadline plus teardown grace, took {:?}",
@@ -3090,6 +3139,10 @@ fn timeout_preserves_partial_telemetry_in_report_and_history() {
     assert_eq!(result["session_id"], "ses-timeout");
     assert_eq!(result["events_source"], "json:opencode-parts");
     assert_eq!(result["events"][0]["name"], "bash");
+    assert!(result["stderr"]
+        .as_str()
+        .unwrap()
+        .contains("native child stderr"));
     assert!(
         result["stdout"]
             .as_str()
@@ -3111,13 +3164,57 @@ fn timeout_preserves_partial_telemetry_in_report_and_history() {
 
     // The native-like descendant is gone when oneharness returns; it cannot keep
     // doing work under PID 1 after the report/history have been emitted.
-    let ticks_at_return = std::fs::metadata(&ticks).map(|m| m.len()).unwrap_or(0);
-    std::thread::sleep(std::time::Duration::from_millis(250));
-    let ticks_after = std::fs::metadata(&ticks).map(|m| m.len()).unwrap_or(0);
-    assert_eq!(ticks_at_return, ticks_after);
+    assert_native_descendant_stopped(&ticks);
 
     let _ = std::fs::remove_file(ticks);
     let _ = std::fs::remove_dir_all(history);
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_streaming_stop_terminates_native_descendant() {
+    use oneharness_core::domain::report::Status;
+    use oneharness_core::io::runner::{run_job_streaming, Job, StreamStep};
+
+    let ticks = native_tick_file("windows-stream");
+    let _ = std::fs::remove_file(&ticks);
+    let job = Job {
+        argv: vec![mock_bin().display().to_string()],
+        cwd: None,
+        env: vec![
+            ("MOCK_NATIVE_GRANDCHILD_MS".to_string(), "10000".to_string()),
+            ("MOCK_TICK_FILE".to_string(), ticks.display().to_string()),
+            (
+                "MOCK_STDOUT".to_string(),
+                "native stream marker\n".to_string(),
+            ),
+            (
+                "MOCK_STDERR".to_string(),
+                "native stream stderr\n".to_string(),
+            ),
+        ],
+        timeout: std::time::Duration::from_secs(10),
+        stdin: None,
+    };
+
+    let started = std::time::Instant::now();
+    let mut observed = Vec::new();
+    let capture = run_job_streaming(&job, |line| {
+        observed.push(line.to_string());
+        StreamStep::Stop
+    });
+
+    assert_eq!(capture.status, Status::Ok);
+    assert_eq!(observed, ["native stream marker"]);
+    assert!(capture.stdout.contains("native stream marker"));
+    assert!(capture.stderr.contains("native stream stderr"));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(3),
+        "streaming short-circuit teardown took {:?}",
+        started.elapsed()
+    );
+    assert_native_descendant_stopped(&ticks);
+    let _ = std::fs::remove_file(ticks);
 }
 
 #[test]

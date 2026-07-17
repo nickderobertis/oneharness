@@ -425,9 +425,12 @@ pub struct RunArgs {
     /// first session-capable harness in the priority chain (the one fallback
     /// settles on under stable availability). Only for harnesses that expose a
     /// session id headlessly (see `session_capable` in `oneharness list`); others
-    /// are a loud usage error. The lower-level, per-invocation counterpart to
-    /// --resume — mutually exclusive with --resume/--fork/--all and with a batch
-    /// (multi-prompt) run.
+    /// are a loud usage error. When no output format is pinned, oneharness selects
+    /// that harness's session-id-bearing format automatically; an explicit
+    /// --output-format/config `output_format` that cannot carry the id is a usage
+    /// error rather than a silent no-op. The lower-level, per-invocation
+    /// counterpart to --resume — mutually exclusive with --resume/--fork/--all
+    /// and with a batch (multi-prompt) run.
     #[arg(long, value_name = "NAME", conflicts_with_all = ["resume", "fork", "all"])]
     pub session: Option<String>,
 
@@ -439,16 +442,19 @@ pub struct RunArgs {
 
     /// Override the output format requested from each harness (default: the
     /// per-harness default; see `oneharness list`). Affects both the emitted
-    /// format flag and how `text` is extracted.
+    /// format flag and how `text` is extracted. With --session, the explicit
+    /// format keeps authority only when it can emit that harness's session id;
+    /// an incompatible format is a loud usage error.
     #[arg(long, value_parser = output_format_parser())]
     pub output_format: Option<OutputFormat>,
 
     /// Surface each harness's normalized tool-call `events`. Selects the
     /// harness's events-capable output format when its default carries no tool
     /// transcript (e.g. Claude Code → stream-json), unless --output-format is set
-    /// explicitly. Harnesses whose default already carries a transcript (OpenCode,
-    /// Cursor) report `events` regardless; this flag just makes the upgrade
-    /// explicit and covers the rest.
+    /// explicitly. Harnesses whose default already carries a transcript (Codex,
+    /// OpenCode, Cursor) report `events` regardless; this flag just makes the
+    /// upgrade explicit and covers the rest. With --session, an explicit format
+    /// must also carry the session id.
     #[arg(long)]
     pub events: bool,
 

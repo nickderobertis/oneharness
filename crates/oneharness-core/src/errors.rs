@@ -59,6 +59,13 @@ pub enum OneharnessError {
     #[error("harness `{id}` does not support --session: it exposes no session id headlessly, so a named handle cannot be mapped to it. supported: {supported}")]
     SessionUnsupported { id: String, supported: String },
 
+    #[error("harness `{id}` cannot capture --session under explicitly selected output format `{format}`: its session id is emitted only in {supported}. Remove --output-format/config `output_format` to let oneharness select a session-bearing format")]
+    SessionOutputFormat {
+        id: String,
+        format: String,
+        supported: String,
+    },
+
     #[error("session `{name}` was created on harness `{was}`, so it cannot be continued on `{now}` (a named session is bound to one harness; use a different --session name)")]
     SessionHarnessConflict {
         name: String,

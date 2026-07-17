@@ -204,6 +204,47 @@ fn mock_fixture_is_built() {
 }
 
 #[test]
+fn mock_fixture_only_exposes_session_ids_in_session_bearing_formats() {
+    let invoke = |args: &[&str], stdout: &str| {
+        Command::new(mock_bin())
+            .args(args)
+            .env("MOCK_STDOUT", stdout)
+            .output()
+            .expect("failed to run mock harness")
+    };
+
+    // Real Codex emits `thread.started.thread_id` only under `exec --json`.
+    let codex_text = invoke(&["exec", "hi"], r#"{"thread_id":"th-1","result":"hi"}"#);
+    assert!(codex_text.status.success());
+    assert!(json_stdout(&codex_text).get("thread_id").is_none());
+    let codex_json = invoke(
+        &["exec", "--json", "hi"],
+        r#"{"thread_id":"th-1","result":"hi"}"#,
+    );
+    assert_eq!(json_stdout(&codex_json)["thread_id"], "th-1");
+
+    // Qwen likewise omits `session_id` in text mode and surfaces it in its
+    // machine-readable output modes.
+    let qwen_text = invoke(
+        &["--approval-mode", "default", "-p", "hi"],
+        r#"{"session_id":"q-1","result":"hi"}"#,
+    );
+    assert!(json_stdout(&qwen_text).get("session_id").is_none());
+    let qwen_stream = invoke(
+        &[
+            "--approval-mode",
+            "default",
+            "--output-format",
+            "stream-json",
+            "-p",
+            "hi",
+        ],
+        r#"{"session_id":"q-1","result":"hi"}"#,
+    );
+    assert_eq!(json_stdout(&qwen_stream)["session_id"], "q-1");
+}
+
+#[test]
 fn list_describes_every_harness() {
     let output = run(&["list"], &[]);
     assert!(output.status.success());
@@ -238,7 +279,12 @@ fn print_command_pins_argv_for_every_harness() {
         ),
         (
             "codex",
-            &["exec", "--dangerously-bypass-approvals-and-sandbox", "hi"],
+            &[
+                "exec",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--json",
+                "hi",
+            ],
         ),
         (
             "opencode",
@@ -811,6 +857,46 @@ fn normalizes_usage_and_session_id_from_claude_json() {
 }
 
 #[test]
+fn plain_codex_run_extracts_final_text_from_its_default_json_stream() {
+    // Codex's session-bearing default is `exec --json`; its user-visible answer
+    // remains the final agent_message text, so changing the transport must not
+    // regress the plain `oneharness run` contract.
+    let stdout = concat!(
+        "{\"type\":\"thread.started\",\"thread_id\":\"th-plain\"}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"item-1\",\"type\":\"agent_message\",\"text\":\"same final answer\"}}\n",
+        "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":4,\"output_tokens\":3}}\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["output_format"], "json");
+    assert_eq!(result["text"], "same final answer");
+    assert_eq!(result["text_source"], "json:codex-agent-message");
+    assert!(
+        result["command"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|arg| arg == "--json"),
+        "plain codex must request its JSON stream: {}",
+        result["command"]
+    );
+}
+
+#[test]
 fn usage_fields_are_null_when_harness_reports_none() {
     // A plain result with no usage/session still yields a stable, null-filled shape.
     let output = run(
@@ -1192,6 +1278,40 @@ fn session_on_an_unsupported_harness_is_a_usage_error() {
 }
 
 #[test]
+fn session_rejects_an_explicit_format_that_cannot_emit_an_id() {
+    for id in ["codex", "qwen"] {
+        let store = session_store_dir(&format!("bad-format-{id}"));
+        let output = run(
+            &[
+                "run",
+                "--harness",
+                id,
+                "--session",
+                "chat",
+                "--session-dir",
+                &store.display().to_string(),
+                "--output-format",
+                "text",
+                "--prompt",
+                "hi",
+                "--print-command",
+                "--compact",
+            ],
+            &[],
+        );
+        assert_eq!(output.status.code(), Some(2), "{id}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("--session")
+                && stderr.contains("output format `text`")
+                && stderr.contains("session id"),
+            "{id}: stderr was {stderr}"
+        );
+        let _ = std::fs::remove_dir_all(&store);
+    }
+}
+
+#[test]
 fn session_needs_exactly_one_harness() {
     let store = session_store_dir("multi");
     let output = run(
@@ -1275,6 +1395,80 @@ fn session_bound_to_one_harness_rejects_a_different_one() {
     assert!(
         stderr.contains("bound to one harness") || stderr.contains("created on harness"),
         "stderr: {stderr}"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn qwen_session_without_events_captures_and_resumes() {
+    let store = session_store_dir("qwen-roundtrip");
+    let store_arg = store.display().to_string();
+    let cwd = session_store_dir("qwen-roundtrip-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let argv_file = store.join("argv.txt");
+    let argv_arg = argv_file.display().to_string();
+    let stdout = concat!(
+        "{\"type\":\"system\",\"session_id\":\"q-1\"}\n",
+        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n",
+    );
+    let bin = bin_override("qwen");
+    let args = |prompt: &str| {
+        vec![
+            "run".to_string(),
+            "--harness".to_string(),
+            "qwen".to_string(),
+            "--session".to_string(),
+            "chat".to_string(),
+            "--session-dir".to_string(),
+            store_arg.clone(),
+            "--cwd".to_string(),
+            cwd_arg.clone(),
+            "--prompt".to_string(),
+            prompt.to_string(),
+            "--bin".to_string(),
+            bin.clone(),
+            "--compact".to_string(),
+        ]
+    };
+
+    let first_args = args("first");
+    let first_refs = first_args.iter().map(String::as_str).collect::<Vec<_>>();
+    let first = run(
+        &first_refs,
+        &[("MOCK_STDOUT", stdout), ("MOCK_ARGV_FILE", &argv_arg)],
+    );
+    assert!(first.status.success(), "{first:?}");
+    let first_report = json_stdout(&first);
+    assert_eq!(first_report["session"]["token"], "q-1");
+    assert_eq!(first_report["results"][0]["output_format"], "stream-json");
+    let first_argv = std::fs::read_to_string(&argv_file).unwrap();
+    assert!(
+        first_argv
+            .lines()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .any(|pair| pair == ["--output-format", "stream-json"]),
+        "qwen session create must select stream-json: {first_argv:?}"
+    );
+
+    let second_args = args("second");
+    let second_refs = second_args.iter().map(String::as_str).collect::<Vec<_>>();
+    let second = run(
+        &second_refs,
+        &[("MOCK_STDOUT", stdout), ("MOCK_ARGV_FILE", &argv_arg)],
+    );
+    assert!(second.status.success(), "{second:?}");
+    assert_eq!(json_stdout(&second)["session"]["phase"], "continue");
+    let second_argv = std::fs::read_to_string(&argv_file).unwrap();
+    assert!(
+        second_argv
+            .lines()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .any(|pair| pair == ["--resume", "q-1"]),
+        "qwen session continue must resume q-1: {second_argv:?}"
     );
 
     let _ = std::fs::remove_dir_all(&store);
@@ -10015,7 +10209,10 @@ fn fallback_applies_a_schema_to_the_harness_that_runs() {
             &bin_override("codex"),
             "--compact",
         ],
-        &[("MOCK_STDOUT", r#"{"name":"Ada","age":36}"#)],
+        &[(
+            "MOCK_STDOUT",
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"{\"name\":\"Ada\",\"age\":36}"}}"#,
+        )],
     );
     assert!(output.status.success(), "exit {:?}", output.status.code());
     let v = json_stdout(&output);

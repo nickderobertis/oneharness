@@ -63,6 +63,122 @@
 
 use std::io::Write;
 
+/// Return the value immediately following `flag`, matching the simple
+/// flag/value shapes emitted by every adapter that selects an output format.
+fn arg_value_after<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
+    argv.iter()
+        .position(|arg| arg == flag)
+        .and_then(|index| argv.get(index + 1))
+        .map(String::as_str)
+}
+
+/// Remove top-level session handles from a JSON document or JSONL transcript.
+/// The fake harness is shared by every adapter, so its scripted stdout must not
+/// expose an id in an argv mode where the real harness would omit it.
+fn without_session_fields(stdout: &str, fields: &[&str]) -> String {
+    fn remove(value: &mut serde_json::Value, fields: &[&str]) {
+        match value {
+            serde_json::Value::Object(object) => {
+                for field in fields {
+                    object.remove(*field);
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    remove(value, fields);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(stdout.trim()) {
+        remove(&mut value, fields);
+        return serde_json::to_string(&value).unwrap_or_else(|_| stdout.to_string());
+    }
+
+    stdout
+        .lines()
+        .map(|line| {
+            let Ok(mut value) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+                return line.to_string();
+            };
+            remove(&mut value, fields);
+            serde_json::to_string(&value).unwrap_or_else(|_| line.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Make scripted session output obey the real harness's format contract. In
+/// particular, Codex emits `thread_id` only under `exec --json`, and Qwen emits
+/// `session_id` only in its JSON output modes. The remaining adapters are kept
+/// honest here too so future session tests cannot accidentally prove a text-only
+/// invocation captured an id that the real CLI would never print.
+fn session_faithful_stdout(argv: &[String], stdout: String) -> String {
+    let is_codex = argv.first().is_some_and(|arg| arg == "exec");
+    if is_codex {
+        return if argv.iter().any(|arg| arg == "--json") {
+            without_session_fields(&stdout, &["session_id", "sessionID"])
+        } else {
+            without_session_fields(&stdout, &["session_id", "sessionID", "thread_id"])
+        };
+    }
+
+    let format = arg_value_after(argv, "--output-format");
+    let is_qwen = argv
+        .iter()
+        .any(|arg| arg == "--approval-mode" || arg == "--yolo");
+    if is_qwen {
+        return if matches!(format, Some("json" | "stream-json")) {
+            without_session_fields(&stdout, &["sessionID", "thread_id"])
+        } else {
+            without_session_fields(&stdout, &["session_id", "sessionID", "thread_id"])
+        };
+    }
+
+    let is_claude = argv.iter().any(|arg| arg == "--permission-mode");
+    if is_claude {
+        return if matches!(format, Some("json" | "stream-json")) {
+            without_session_fields(&stdout, &["sessionID", "thread_id"])
+        } else {
+            without_session_fields(&stdout, &["session_id", "sessionID", "thread_id"])
+        };
+    }
+
+    let is_cursor = argv.first().is_some_and(|arg| arg == "-p")
+        && argv.iter().any(|arg| arg == "--force" || arg == "--trust")
+        && argv.iter().any(|arg| arg == "--output-format");
+    if is_cursor {
+        return if format == Some("stream-json") {
+            without_session_fields(&stdout, &["sessionID", "thread_id"])
+        } else {
+            without_session_fields(&stdout, &["session_id", "sessionID", "thread_id"])
+        };
+    }
+
+    let opencode_format = arg_value_after(argv, "--format");
+    let is_opencode = argv.first().is_some_and(|arg| arg == "run") && opencode_format.is_some();
+    if is_opencode {
+        return if opencode_format == Some("json") {
+            without_session_fields(&stdout, &["session_id", "thread_id"])
+        } else {
+            without_session_fields(&stdout, &["session_id", "sessionID", "thread_id"])
+        };
+    }
+
+    let cannot_emit_session = (argv.first().is_some_and(|arg| arg == "run")
+        && argv
+            .iter()
+            .any(|arg| arg == "--with-builtin" || arg == "-q"))
+        || argv.iter().any(|arg| arg == "--no-ask-user");
+    if cannot_emit_session {
+        return without_session_fields(&stdout, &["session_id", "sessionID", "thread_id"]);
+    }
+
+    stdout
+}
+
 #[cfg(windows)]
 fn run_native_descendant() -> ! {
     let run_for = std::env::var("MOCK_NATIVE_GRANDCHILD_MS")
@@ -261,6 +377,7 @@ fn main() {
     let stdout = attempt_stdout
         .or_else(|| std::env::var("MOCK_STDOUT").ok())
         .unwrap_or_else(|| "{\"result\":\"mock ok\"}".to_string());
+    let stdout = session_faithful_stdout(&argv, stdout);
 
     // Incremental streaming mode: with MOCK_STREAM_DELAY_MS set, emit MOCK_STDOUT
     // one line at a time, flushing and sleeping between lines — so a streaming

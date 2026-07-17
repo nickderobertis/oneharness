@@ -72,11 +72,7 @@ pub struct BuildCtx<'a> {
 
 /// The CLI token for a format, as the harnesses spell it.
 fn format_flag(format: OutputFormat) -> &'static str {
-    match format {
-        OutputFormat::Text => "text",
-        OutputFormat::Json => "json",
-        OutputFormat::StreamJson => "stream-json",
-    }
+    format.as_str()
 }
 
 /// The prompt an adapter should send, with the system instructions prepended when
@@ -177,16 +173,16 @@ pub struct HarnessSpec {
     /// starting a fresh session. Kept as data so the capability is introspectable
     /// via `oneharness list`.
     pub supports_resume: bool,
-    /// Whether this harness exposes a native session id headlessly (the
-    /// `extract_session` sources), so oneharness can back a uniform
-    /// `run --session <name>` handle: it maps the caller's stable name to the
-    /// harness's own token in a small store, letting a consumer thread one name
-    /// across turns instead of extracting and re-passing the id. `true` exactly
-    /// for the harnesses [`crate::domain::signals::extract_session`] can read a
-    /// token from (claude-code, opencode, codex, cursor, qwen); `false` for the
-    /// rest, where `--session` is a loud usage error (no id to bind a name to).
-    /// Implies `supports_resume`. Introspectable via `oneharness list`.
-    pub session_capable: bool,
+    /// Output formats in which this harness exposes a native session id
+    /// headlessly (the [`crate::domain::signals::extract_session`] sources).
+    /// The first is the preferred format oneharness selects automatically for
+    /// `run --session <name>` when the caller did not explicitly pin a format;
+    /// an empty slice means `--session` is unsupported. Keeping the capability
+    /// and its transport in one field prevents a harness from claiming session
+    /// support while its selected format cannot actually emit the id. Every
+    /// non-empty entry implies `supports_resume`. Exposed as the boolean
+    /// `session_capable` by `oneharness list`.
+    pub session_formats: &'static [OutputFormat],
     /// Whether this harness can *fork* a session when resuming (`run --resume
     /// <id> --fork`): branch a new session id from the resumed one, leaving the
     /// original untouched so its cached prefix seeds independent follow-ups. Only
@@ -369,6 +365,21 @@ impl HarnessSpec {
     /// per-mode environment.
     pub fn mode(&self, mode: PermissionMode) -> Option<&'static ModeSpec> {
         self.modes.iter().find(|m| m.mode == mode)
+    }
+
+    /// Whether this harness can back the caller-owned `--session` handle.
+    pub fn session_capable(&self) -> bool {
+        !self.session_formats.is_empty()
+    }
+
+    /// The session-id-bearing format selected automatically for `--session`.
+    pub fn session_format(&self) -> Option<OutputFormat> {
+        self.session_formats.first().copied()
+    }
+
+    /// Whether `format` can carry this harness's native session id.
+    pub fn format_carries_session(&self, format: OutputFormat) -> bool {
+        self.session_formats.contains(&format)
     }
 }
 
@@ -607,7 +618,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // Anthropic content-block stream oneharness normalizes into `events`.
         events_format: Some(OutputFormat::StreamJson),
         supports_resume: true,
-        session_capable: true,
+        session_formats: &[OutputFormat::Json, OutputFormat::StreamJson],
         supports_fork: true,
         fork_reuses_cache: true,
         sync: Some(SyncSpec {
@@ -674,13 +685,13 @@ static REGISTRY: &[HarnessSpec] = &[
         display: "OpenAI Codex CLI",
         default_bin: "codex",
         install_hint: "npm install -g @openai/codex",
-        output_format: OutputFormat::Text,
-        // `codex exec --json` emits a JSONL event stream whose `command_execution`
-        // items oneharness normalizes into `events` (the plain default has no
-        // transcript). A non-text format maps to `--json` in `argv_codex`.
-        events_format: Some(OutputFormat::Json),
+        output_format: OutputFormat::Json,
+        // The default `codex exec --json` stream already carries both the
+        // `thread.started.thread_id` session handle and the `command_execution`
+        // transcript, so `--events` needs no format upgrade.
+        events_format: None,
         supports_resume: true,
-        session_capable: true,
+        session_formats: &[OutputFormat::Json, OutputFormat::StreamJson],
         supports_fork: false,
         fork_reuses_cache: false,
         sync: None,
@@ -772,7 +783,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // Default `json` (JSONL) already carries the `tool` parts, so no upgrade.
         events_format: None,
         supports_resume: true,
-        session_capable: true,
+        session_formats: &[OutputFormat::Json],
         supports_fork: true,
         // OpenCode can fork, but its fork re-sends the branched conversation cold
         // (measured: the fan-out reads no cache and re-writes the whole prefix),
@@ -850,7 +861,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // Events pending investigation (see the events matrix).
         events_format: None,
         supports_resume: true,
-        session_capable: false,
+        session_formats: &[],
         supports_fork: false,
         fork_reuses_cache: false,
         sync: None,
@@ -932,7 +943,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // transcript). Mapped to `--output-format stream-json` in `argv_qwen`.
         events_format: Some(OutputFormat::StreamJson),
         supports_resume: true,
-        session_capable: true,
+        session_formats: &[OutputFormat::StreamJson, OutputFormat::Json],
         supports_fork: false,
         fork_reuses_cache: false,
         sync: Some(SyncSpec {
@@ -1013,7 +1024,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // Events pending investigation (see the events matrix).
         events_format: None,
         supports_resume: true,
-        session_capable: false,
+        session_formats: &[],
         supports_fork: false,
         fork_reuses_cache: false,
         sync: Some(SyncSpec {
@@ -1073,7 +1084,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // Events pending investigation (see the events matrix).
         events_format: None,
         supports_resume: true,
-        session_capable: false,
+        session_formats: &[],
         supports_fork: false,
         fork_reuses_cache: false,
         sync: None,
@@ -1143,7 +1154,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // Default `stream-json` already carries the tool transcript, so no upgrade.
         events_format: None,
         supports_resume: true,
-        session_capable: true,
+        session_formats: &[OutputFormat::StreamJson],
         supports_fork: false,
         fork_reuses_cache: false,
         sync: Some(SyncSpec {
@@ -1355,11 +1366,12 @@ fn argv_codex(c: &BuildCtx) -> Vec<String> {
         a.push("--model".into());
         a.push(m.into());
     }
-    // `--events`/`--stream` upgrades codex to its JSON event stream (`--json`),
-    // whose `command_execution` items become normalized `events` and whose
-    // `agent_message` item carries the final text. The default (`Text`) stays
-    // plain. Codex has no `stream-json`; `--json` IS its JSONL stream, so both
-    // non-text formats map to it. Sourced from `codex exec --help`.
+    // Codex's default is its JSON event stream (`--json`): this is what exposes
+    // `thread_id`, while `command_execution` items become normalized `events`
+    // and the final `agent_message` carries `text`. An explicit Text override
+    // stays plain (and is therefore refused with `--session`). Codex has no
+    // distinct `stream-json`; `--json` IS its JSONL stream, so both non-text
+    // formats map to it. Sourced from `codex exec --help`.
     if c.output_format != OutputFormat::Text {
         a.push("--json".into());
     }
@@ -1470,8 +1482,8 @@ fn argv_goose(c: &BuildCtx) -> Vec<String> {
 /// the other modes use `--approval-mode` (only `plan` and `bypass` run cleanly
 /// headless — see the `modes` table — but the flag is mapped for every supported
 /// mode). `--resume <id>` continues a prior session by UUID (linear append; no
-/// headless fork). The id is the `session_id` Qwen reports under
-/// `--output-format json`.
+/// headless fork). The id is the `session_id` Qwen reports under a
+/// machine-readable `--output-format`.
 fn argv_qwen(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into()];
     match c.mode {
@@ -1497,10 +1509,11 @@ fn argv_qwen(c: &BuildCtx) -> Vec<String> {
         a.push("-m".into());
         a.push(m.into());
     }
-    // `--events`/`--stream` upgrades qwen to `--output-format stream-json` (its
-    // NDJSON Anthropic content-block stream), which oneharness normalizes into
-    // `events` and from which it recovers the final text. The default stays plain
-    // text. Sourced from `qwen --help` (`-o, --output-format text|json|stream-json`).
+    // `--events`/`--stream` and a named `--session` upgrade qwen to
+    // `--output-format stream-json` (its NDJSON Anthropic content-block stream),
+    // which exposes the session id, normalizes into `events`, and carries the
+    // final text. An ordinary run stays plain text. Sourced from `qwen --help`
+    // (`-o, --output-format text|json|stream-json`).
     if c.output_format != OutputFormat::Text {
         a.push("--output-format".into());
         a.push(format_flag(c.output_format).into());
@@ -2041,8 +2054,39 @@ mod tests {
     }
 
     #[test]
-    fn codex_argv_uses_exec_and_bypass_flag() {
-        // Codex's default format is Text (no transcript), so no `--json`.
+    fn session_capability_is_defined_by_session_bearing_formats() {
+        for spec in all() {
+            assert_eq!(
+                spec.session_capable(),
+                spec.session_format().is_some(),
+                "{} session capability must have an automatic format",
+                spec.id
+            );
+            if spec.session_capable() {
+                assert!(
+                    spec.supports_resume,
+                    "{} session capability must imply resume support",
+                    spec.id
+                );
+                assert!(
+                    spec.format_carries_session(spec.session_format().unwrap()),
+                    "{} preferred session format must carry its id",
+                    spec.id
+                );
+                let event_format = spec.events_format.unwrap_or(spec.output_format);
+                assert!(
+                    spec.format_carries_session(event_format),
+                    "{} --events format must remain compatible with --session",
+                    spec.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn codex_explicit_text_uses_exec_without_json() {
+        // The adapter still honors an explicit Text override when no named
+        // session needs capturing, so this lower-level argv has no `--json`.
         let spec = by_id("codex").unwrap();
         let argv = (spec.build_argv)(&ctx_fmt(
             "codex",
@@ -2062,16 +2106,17 @@ mod tests {
     }
 
     #[test]
-    fn codex_events_format_adds_json_flag() {
-        // Under `--events`/`--stream` the command layer selects codex's
-        // events_format (Json), which maps to `--json` — its JSONL event stream.
+    fn codex_default_format_adds_json_flag() {
+        // Codex defaults to the session-bearing JSONL stream, so `--events`
+        // needs no separate upgrade and plain runs still carry `--json`.
         let spec = by_id("codex").unwrap();
-        assert_eq!(spec.events_format, Some(OutputFormat::Json));
+        assert_eq!(spec.output_format, OutputFormat::Json);
+        assert_eq!(spec.events_format, None);
         let argv = (spec.build_argv)(&ctx_fmt(
             "codex",
             None,
             PermissionMode::Bypass,
-            OutputFormat::Json,
+            spec.output_format,
         ));
         assert!(argv.iter().any(|t| t == "--json"), "{argv:?}");
     }

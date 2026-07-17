@@ -5,7 +5,7 @@
 //! network-free, and run identically on every platform.
 
 use std::io::BufRead;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use oneharness_core::domain::history::HistoryStreamEnvelope;
@@ -8109,8 +8109,9 @@ fn history_enabled_and_dir_via_environment() {
         .as_str()
         .map(str::to_string);
     let hf = hf.expect("env should enable history");
+    let canonical_dir = std::fs::canonicalize(&dir).expect("history directory should exist");
     assert!(
-        hf.starts_with(&ds),
+        Path::new(&hf).starts_with(&canonical_dir),
         "ONEHARNESS_HISTORY_DIR should place the store: {hf}"
     );
     let _ = std::fs::remove_dir_all(&dir);

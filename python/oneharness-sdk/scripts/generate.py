@@ -156,6 +156,7 @@ def generated_files() -> dict[str, bytes]:
             "generate_sdk_schema",
         ],
         cwd=ROOT,
+        encoding="utf-8",
         text=True,
     )
     bundle = json.loads(output)

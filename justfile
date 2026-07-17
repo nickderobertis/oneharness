@@ -187,7 +187,12 @@ python-sdk-check: build
     "${run[@]}" mypy --config-file python/oneharness-sdk/pyproject.toml python/oneharness-sdk/src python/oneharness-sdk/scripts python/oneharness-sdk/test
     rm -f target/python-sdk.coverage
     COVERAGE_FILE=target/python-sdk.coverage PYTHONPATH=python/oneharness-sdk/src "${run[@]}" coverage run --rcfile=python/oneharness-sdk/pyproject.toml -m unittest discover -s python/oneharness-sdk/test -p 'test_*.py'
-    COVERAGE_FILE=target/python-sdk.coverage "${run[@]}" coverage report --rcfile=python/oneharness-sdk/pyproject.toml
+    coverage_log=$(mktemp)
+    trap 'rm -f "$coverage_log"' EXIT
+    if ! COVERAGE_FILE=target/python-sdk.coverage "${run[@]}" coverage report --rcfile=python/oneharness-sdk/pyproject.toml >"$coverage_log"; then
+        cat "$coverage_log" >&2
+        exit 1
+    fi
     "${run[@]}" python python/oneharness-sdk/test/package_e2e.py
 
 # Verbose, install-free diagnostics (kept out of the gate).

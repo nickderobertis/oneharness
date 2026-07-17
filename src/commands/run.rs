@@ -318,7 +318,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // history problem never takes the results down (see "never panic on a
     // harness's behavior"). The absolute path is echoed in the report as the
     // programmatic handle a consumer reads the session back with.
-    let history_writer = open_history_writer(args, cfg, &project_start, &prompts);
+    let history_writer = open_history_writer(args, cfg, &project_start, &prompts)?;
     let history_file = history_writer.as_ref().map(|w| {
         std::path::absolute(w.path())
             .unwrap_or_else(|_| w.path().to_path_buf())
@@ -1047,8 +1047,8 @@ fn build_report(
     session: Option<SessionReport>,
 ) -> RunReport {
     RunReport {
-        schema_version: SCHEMA_VERSION,
-        oneharness_version: env!("CARGO_PKG_VERSION"),
+        schema_version: SCHEMA_VERSION.to_string(),
+        oneharness_version: env!("CARGO_PKG_VERSION").to_string(),
         // On a batch run the per-result `prompt` is authoritative; the top-level
         // field repeats the first prompt for back-compat (it is always present).
         prompt: prompts[0].clone(),
@@ -1256,9 +1256,15 @@ fn open_history_writer(
     cfg: &oneharness_core::domain::config::FileConfig,
     project_start: &std::path::Path,
     prompts: &[String],
-) -> Option<HistoryWriter> {
+) -> Result<Option<HistoryWriter>, OneharnessError> {
+    let cli_labels = oneharness_core::domain::history::parse_labels(
+        args.history_label.iter().map(String::as_str),
+    )
+    .map_err(OneharnessError::HistoryLabelInvalid)?;
+    let mut labels = cfg.history_labels.clone().unwrap_or_default();
+    labels.extend(&cli_labels);
     if args.print_command {
-        return None;
+        return Ok(None);
     }
     let enabled = if args.history {
         true
@@ -1268,7 +1274,7 @@ fn open_history_writer(
         cfg.history.unwrap_or(false)
     };
     if !enabled {
-        return None;
+        return Ok(None);
     }
     let configured = args
         .history_dir
@@ -1281,22 +1287,22 @@ fn open_history_writer(
              (pass --history-dir, set `history_dir`, or ONEHARNESS_HISTORY_DIR); \
              skipping history for this run"
         );
-        return None;
+        return Ok(None);
     };
     let name = args.history_name.clone().unwrap_or_else(|| {
         oneharness_core::domain::history::session_name(
             prompts.first().map(String::as_str).unwrap_or(""),
         )
     });
-    match HistoryWriter::open(&dir, project_start, &name) {
-        Ok(writer) => Some(writer),
+    match HistoryWriter::open(&dir, project_start, &name, labels) {
+        Ok(writer) => Ok(Some(writer)),
         Err(err) => {
             eprintln!(
                 "oneharness: warning: could not open a history file under `{}`: {err}; \
                  skipping history for this run",
                 dir.display()
             );
-            None
+            Ok(None)
         }
     }
 }
@@ -1337,6 +1343,7 @@ fn stream_one_harness(
     prompt: Option<String>,
     model: Option<String>,
 ) -> RunResult {
+    use oneharness_core::domain::report::RunStreamEnvelope;
     use oneharness_core::io::runner::StreamStep;
     use serde_json::Value;
     use std::io::Write;
@@ -1353,7 +1360,7 @@ fn stream_one_harness(
         next_index += evs.len();
         let mut out = std::io::stdout().lock();
         for ev in &evs {
-            let envelope = serde_json::json!({ "type": "event", "event": ev });
+            let envelope = RunStreamEnvelope::Event { event: ev.clone() };
             // A broken pipe (consumer closed the stream) is the short-circuit
             // signal: stop reading and tear the child down.
             if serde_json::to_string(&envelope)
@@ -1387,8 +1394,11 @@ fn stream_one_harness(
 /// that ignored the incremental events still gets the full report. A broken pipe
 /// (the consumer already short-circuited and left) is not an error.
 fn emit_stream_result(report: &RunReport) -> Result<(), OneharnessError> {
+    use oneharness_core::domain::report::RunStreamEnvelope;
     use std::io::Write;
-    let line = serde_json::to_string(&serde_json::json!({ "type": "result", "report": report }))?;
+    let line = serde_json::to_string(&RunStreamEnvelope::Result {
+        report: report.clone(),
+    })?;
     // A broken pipe (the consumer already short-circuited and left) is expected,
     // not an error; any other write failure on the terminal line is non-fatal.
     let _ = writeln!(std::io::stdout(), "{line}");

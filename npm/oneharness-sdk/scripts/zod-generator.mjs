@@ -20,7 +20,9 @@ const METADATA_KEYS = new Set([
  * @property {JsonSchemaNode[]=} oneOf
  * @property {JsonSchemaNode[]=} anyOf
  * @property {JsonSchemaNode[]=} allOf
+ * @property {JsonSchemaNode=} not
  * @property {Record<string, JsonSchemaNode>=} properties
+ * @property {JsonSchemaNode=} propertyNames
  * @property {string[]=} required
  * @property {JsonSchemaNode | JsonSchemaNode[]=} items
  * @property {boolean | JsonSchemaNode=} additionalProperties
@@ -50,8 +52,23 @@ export const SDK_SCHEMA_ROOTS = Object.freeze([
 		type: "HistoryListOptions",
 		module: "history-list-options",
 	},
+	{
+		key: "history_watch_options",
+		type: "HistoryWatchOptions",
+		module: "history-watch-options",
+	},
 	{ key: "run_report", type: "RunReport", module: "contracts" },
+	{
+		key: "run_stream_envelope",
+		type: "RunStreamEnvelope",
+		module: "run-stream-envelope",
+	},
 	{ key: "history_record", type: "HistoryRecord", module: "history" },
+	{
+		key: "history_stream_envelope",
+		type: "HistoryStreamEnvelope",
+		module: "history-stream-envelope",
+	},
 	{
 		key: "history_records",
 		type: "HistoryRecords",
@@ -171,11 +188,32 @@ function numberExpression(schema, path, integer) {
 	return expression;
 }
 
+/**
+ * Read the single forbidden pattern a string schema's `not` may carry.
+ *
+ * @param {JsonSchemaNode} forbidden
+ * @param {string} path
+ * @returns {string}
+ */
+function forbiddenPattern(forbidden, path) {
+	if (
+		!forbidden ||
+		typeof forbidden !== "object" ||
+		Object.keys(forbidden).length !== 1 ||
+		typeof forbidden.pattern !== "string"
+	) {
+		throw new Error(
+			`unsupported JSON Schema \`not\` at ${path}; only a lone forbidden \`pattern\` is enforced — extend scripts/zod-generator.mjs to enforce this shape, then rerun just sdk-generate`,
+		);
+	}
+	return forbidden.pattern;
+}
+
 /** @param {JsonSchemaObject} schema @param {string} path @returns {string} */
 function stringExpression(schema, path) {
 	assertSupported(
 		schema,
-		new Set(["type", "minLength", "maxLength", "pattern", "format"]),
+		new Set(["type", "minLength", "maxLength", "pattern", "not", "format"]),
 		path,
 	);
 	if (schema.format) {
@@ -185,9 +223,23 @@ function stringExpression(schema, path) {
 	}
 	let expression = "z.string()";
 	if (schema.minLength !== undefined) expression += `.min(${schema.minLength})`;
-	if (schema.maxLength !== undefined) expression += `.max(${schema.maxLength})`;
 	if (schema.pattern !== undefined)
 		expression += `.regex(new RegExp(${JSON.stringify(schema.pattern)}, "u"))`;
+	// JSON Schema measures a string's length in Unicode code points, while Zod's
+	// `.max()` measures JavaScript's UTF-16 code units — so an astral character
+	// would count twice and this validator would reject a value Rust and the
+	// Python SDK both accept. Spread to count code points instead.
+	if (schema.maxLength !== undefined) {
+		expression += `.refine((value) => [...value].length <= ${schema.maxLength}, { message: ${JSON.stringify(
+			`Too long: expected at most ${schema.maxLength} characters`,
+		)} })`;
+	}
+	if (schema.not !== undefined) {
+		const forbidden = forbiddenPattern(schema.not, `${path}.not`);
+		expression += `.refine((value) => !new RegExp(${JSON.stringify(forbidden)}, "u").test(value), { message: ${JSON.stringify(
+			`Invalid string: must not contain ${forbidden}`,
+		)} })`;
+	}
 	return expression;
 }
 
@@ -217,6 +269,7 @@ function objectExpression(schema, path) {
 		new Set([
 			"type",
 			"properties",
+			"propertyNames",
 			"required",
 			"additionalProperties",
 			"minProperties",
@@ -255,10 +308,21 @@ function objectExpression(schema, path) {
 	const shape = `{${fields.length === 0 ? "" : `\n\t\t${fields.join(",\n\t\t")},\n\t`}}`;
 	if (schema.additionalProperties === false) return `z.strictObject(${shape})`;
 	if (schema.additionalProperties && schema.additionalProperties !== true) {
+		const keySchema = schema.propertyNames
+			? schemaExpression(schema.propertyNames, `${path}.propertyNames`)
+			: "z.string()";
 		if (fields.length === 0) {
-			return `z.record(z.string(), ${schemaExpression(schema.additionalProperties, `${path}.additionalProperties`)})`;
+			return `z.record(${keySchema}, ${schemaExpression(schema.additionalProperties, `${path}.additionalProperties`)})`;
+		}
+		if (schema.propertyNames) {
+			throw new Error(
+				`propertyNames with declared properties is unsupported at ${path}`,
+			);
 		}
 		return `z.object(${shape}).catchall(${schemaExpression(schema.additionalProperties, `${path}.additionalProperties`)})`;
+	}
+	if (schema.propertyNames) {
+		throw new Error(`propertyNames requires additionalProperties at ${path}`);
 	}
 	// Rust output structs intentionally omit `additionalProperties: false`.
 	// Preserve future fields instead of Zod's default stripping behavior.
@@ -336,8 +400,19 @@ function schemaExpression(schema, path) {
 				"minProperties",
 				"maxProperties",
 			]),
-			string: new Set(["minLength", "maxLength", "pattern", "format"]),
+			string: new Set(["minLength", "maxLength", "pattern", "not", "format"]),
 		};
+		// Each member keeps only the keywords that constrain its own type, so a
+		// keyword none of these types claims would be filtered away silently
+		// rather than enforced. Reject it here instead.
+		assertSupported(
+			schema,
+			new Set([
+				"type",
+				...schema.type.flatMap((type) => [...(typeKeywords[type] ?? [])]),
+			]),
+			path,
+		);
 		return union(
 			schema.type.map((type) => {
 				const allowed = typeKeywords[type];

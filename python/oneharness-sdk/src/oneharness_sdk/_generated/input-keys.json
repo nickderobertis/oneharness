@@ -1,0 +1,41 @@
+{
+  "history_list_options": {
+    "all_projects": "allProjects",
+    "history_dir": "historyDir",
+    "project": "project"
+  },
+  "history_lookup": {
+    "all_projects": "allProjects",
+    "history_dir": "historyDir",
+    "last": "last",
+    "project": "project",
+    "session": "session"
+  },
+  "history_watch_options": {
+    "after": "after",
+    "all_projects": "allProjects",
+    "history_dir": "historyDir",
+    "labels": "labels",
+    "project": "project"
+  },
+  "run_options": {
+    "bins": "bins",
+    "cwd": "cwd",
+    "env": "env",
+    "events": "events",
+    "fork": "fork",
+    "harnesses": "harnesses",
+    "history": "history",
+    "history_dir": "historyDir",
+    "history_labels": "historyLabels",
+    "history_name": "historyName",
+    "mode": "mode",
+    "models": "models",
+    "prompt": "prompt",
+    "reasoning": "reasoning",
+    "resume": "resume",
+    "session": "session",
+    "system": "system",
+    "timeout_seconds": "timeoutSeconds"
+  }
+}

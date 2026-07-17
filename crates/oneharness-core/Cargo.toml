@@ -10,8 +10,16 @@ repository = "https://github.com/nickderobertis/oneharness"
 [features]
 sdk-schema = []
 
+# Emits the core-only bundle, for a library consumer that wants it without the
+# CLI's roots. Named apart from the binary crate's `generate_sdk_schema` example
+# (which emits this bundle plus `list_report`/`detect_report`, and is the one the
+# SDK generators run): two examples sharing a name across the workspace share one
+# `target/debug/examples/` filename, so cargo silently runs whichever built last
+# and the SDK drift gate compares against the wrong bundle. The file keeps its
+# name so the path stays greppable next to the binary crate's example.
 [[example]]
-name = "generate_sdk_schema"
+name = "generate_core_sdk_schema"
+path = "examples/generate_sdk_schema.rs"
 required-features = ["sdk-schema"]
 
 [dependencies]
@@ -34,6 +42,13 @@ jsonschema = { version = "0.33", default-features = false }
 # hang the responder — and is already in the tree via `jsonschema`, so this adds
 # no new download.
 regex = "1"
+# History records use time-ordered UUIDv7 identifiers for resumable cursors and
+# UUIDv5 identifiers when deterministically migrating legacy v0.1 records.
+uuid = { version = "1", features = ["serde", "v5", "v7"] }
+# The history index is shared by independent oneharness processes. `fs2` keeps
+# the locking primitive portable across Unix and Windows without leaking I/O
+# into the pure domain layer.
+fs2 = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

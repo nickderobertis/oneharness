@@ -9,65 +9,26 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
 
-use schemars::{JsonSchema, Schema, SchemaGenerator};
+use schemars::{generate::SchemaSettings, JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::{Map, Value};
+#[cfg(test)]
+use serde_json::Value;
 use thiserror::Error;
 
+use crate::domain::history::{HistoryId, HistoryLabels};
 use crate::domain::mode::PermissionMode;
 
 /// Generate a schema for a value emitted by oneharness.
 ///
-/// Schemars defaults to treating an [`Option`] field as omissible. oneharness's
-/// output structs serialize every field, so this normalizes every object schema
-/// to require its declared properties while retaining each option's nullable
-/// value schema.
+/// The generator explicitly describes serialization rather than deserialization:
+/// nullable fields that are always emitted remain required, while fields marked
+/// `skip_serializing_if` stay optional. That distinction lets additive empty
+/// fields be omitted without weakening the rest of the output contract.
 pub fn schema_for_serialize<T: ?Sized + JsonSchema>() -> Schema {
-    let mut schema = SchemaGenerator::default().into_root_schema_for::<T>();
-    if let Some(object) = schema.as_object_mut() {
-        require_declared_properties(object);
-    }
-    schema
-}
-
-fn require_declared_properties(object: &mut Map<String, Value>) {
-    if let Some(required) = object
-        .get("properties")
-        .and_then(Value::as_object)
-        .map(|properties| properties.keys().cloned().map(Value::String).collect())
-    {
-        object.insert("required".to_string(), Value::Array(required));
-    }
-
-    for keyword in ["properties", "$defs"] {
-        if let Some(children) = object.get_mut(keyword).and_then(Value::as_object_mut) {
-            for child in children.values_mut() {
-                visit_schema(child);
-            }
-        }
-    }
-    for keyword in ["oneOf", "anyOf", "allOf"] {
-        if let Some(children) = object.get_mut(keyword).and_then(Value::as_array_mut) {
-            for child in children {
-                visit_schema(child);
-            }
-        }
-    }
-    for keyword in ["items", "additionalProperties"] {
-        if let Some(child) = object.get_mut(keyword) {
-            visit_schema(child);
-        }
-    }
-}
-
-fn visit_schema(schema: &mut Value) {
-    if let Some(object) = schema.as_object_mut() {
-        require_declared_properties(object);
-    } else if let Some(items) = schema.as_array_mut() {
-        for item in items {
-            visit_schema(item);
-        }
-    }
+    SchemaSettings::default()
+        .for_serialize()
+        .into_generator()
+        .into_root_schema_for::<T>()
 }
 
 /// The error returned when a value that must carry text is empty.
@@ -252,6 +213,9 @@ pub struct RunOptions {
     #[schemars(with = "String")]
     pub history_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "HistoryLabels")]
+    pub history_labels: Option<HistoryLabels>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "BTreeMap<String, String>")]
     pub env: Option<BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -360,6 +324,32 @@ pub struct HistoryListOptions {
     pub history_dir: Option<String>,
 }
 
+/// Options accepted by the language SDKs' continuous history iterators.
+///
+/// The CLI spells `labels` as repeated `--label key=value` arguments, while an
+/// SDK can expose the validated map directly. Unknown fields remain a boundary
+/// error, as they are for every other SDK input contract.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "HistoryWatchOptions")]
+pub struct HistoryWatchOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "HistoryId")]
+    pub after: Option<HistoryId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "HistoryLabels")]
+    pub labels: Option<HistoryLabels>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub all_projects: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub history_dir: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,6 +441,33 @@ mod tests {
     }
 
     #[test]
+    fn watch_options_validate_cursors_labels_and_unknown_fields() {
+        let parsed = serde_json::from_value::<HistoryWatchOptions>(serde_json::json!({
+            "after": "00000000-0000-7000-8000-000000000000",
+            "labels": { "graph": "release" },
+            "allProjects": true,
+        }))
+        .expect("valid watch options");
+        assert_eq!(
+            parsed
+                .labels
+                .expect("labels")
+                .as_map()
+                .get("graph")
+                .map(String::as_str),
+            Some("release")
+        );
+
+        for invalid in [
+            serde_json::json!({ "after": "not-a-cursor" }),
+            serde_json::json!({ "labels": { "bad key": "release" } }),
+            serde_json::json!({ "unknown": true }),
+        ] {
+            assert!(serde_json::from_value::<HistoryWatchOptions>(invalid).is_err());
+        }
+    }
+
+    #[test]
     fn run_options_schema_requires_a_non_empty_prompt() {
         let schema = schemars::schema_for!(RunOptions);
         let value = schema.as_value();
@@ -477,6 +494,7 @@ mod tests {
             history: None,
             history_name: None,
             history_dir: None,
+            history_labels: None,
             env: None,
             bins: None,
         };

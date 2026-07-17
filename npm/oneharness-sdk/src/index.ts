@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
+import { createInterface } from "node:readline";
 import type { ZodType } from "zod";
 import type { RunReport } from "./generated/contracts.js";
 import type { DetectInfo } from "./generated/detection.js";
@@ -7,17 +8,23 @@ import type { HistoryRecord } from "./generated/history.js";
 import type { HistorySessionSummary } from "./generated/history-list.js";
 import type { HistoryListOptions } from "./generated/history-list-options.js";
 import type { HistoryLookup } from "./generated/history-lookup.js";
+import type { HistoryStreamEnvelope } from "./generated/history-stream-envelope.js";
+import type { HistoryWatchOptions } from "./generated/history-watch-options.js";
 import type { RunOptions } from "./generated/options.js";
 import type { HarnessInfo } from "./generated/registry.js";
+import type { RunStreamEnvelope } from "./generated/run-stream-envelope.js";
 import {
 	DetectReportSchema,
 	HistoryListOptionsSchema,
 	HistoryListSchema,
 	HistoryLookupSchema,
 	HistoryRecordsSchema,
+	HistoryStreamEnvelopeSchema,
+	HistoryWatchOptionsSchema,
 	ListReportSchema,
 	RunOptionsSchema,
 	RunReportSchema,
+	RunStreamEnvelopeSchema,
 } from "./generated/zod.js";
 
 export type {
@@ -46,7 +53,10 @@ export type {
 	HistoryLookupBySession,
 } from "./generated/history-lookup.js";
 export type { HistoryRecords } from "./generated/history-records.js";
+export type { HistoryStreamEnvelope } from "./generated/history-stream-envelope.js";
+export type { HistoryWatchOptions } from "./generated/history-watch-options.js";
 export type { PermissionMode, RunOptions } from "./generated/options.js";
+export type { RunStreamEnvelope } from "./generated/run-stream-envelope.js";
 export type Detection = DetectInfo;
 export type {
 	HarnessInfo,
@@ -60,6 +70,26 @@ export type OneHarnessOptions = {
 	executableArgs?: readonly string[];
 	env?: Readonly<Record<string, string>>;
 };
+
+/** A non-zero exit from the oneharness subprocess. */
+export class OneHarnessProcessError extends Error {
+	constructor(
+		message: string,
+		readonly exitCode: number | null,
+		readonly stderr: string,
+	) {
+		super(message);
+		this.name = "OneHarnessProcessError";
+	}
+}
+
+/** A history lookup or watch cursor that the CLI could not resolve. */
+export class HistoryNotFoundError extends OneHarnessProcessError {
+	constructor(message: string, exitCode: number | null, stderr: string) {
+		super(message, exitCode, stderr);
+		this.name = "HistoryNotFoundError";
+	}
+}
 
 function parseContract<T>(
 	schema: ZodType<T>,
@@ -116,18 +146,101 @@ async function invokeWith(
 		child.on("error", reject);
 		child.on("close", (code) => {
 			if (code !== 0 && !acceptJsonOnNonzero)
-				return reject(new Error(`oneharness exited ${code}: ${stderr.trim()}`));
+				return reject(processError(code, stderr));
 			try {
 				resolve(JSON.parse(stdout));
 			} catch (error) {
-				if (code !== 0)
-					return reject(
-						new Error(`oneharness exited ${code}: ${stderr.trim()}`),
-					);
+				if (code !== 0) return reject(processError(code, stderr));
 				reject(new Error(`oneharness returned invalid JSON: ${String(error)}`));
 			}
 		});
 	});
+}
+
+function processError(
+	code: number | null,
+	stderr: string,
+): OneHarnessProcessError {
+	return new OneHarnessProcessError(
+		`oneharness exited ${code}: ${stderr.trim()}`,
+		code,
+		stderr,
+	);
+}
+
+function historyNotFound(error: unknown): error is OneHarnessProcessError {
+	return (
+		error instanceof OneHarnessProcessError &&
+		(error.exitCode === 1 || error.stderr.includes("was not found"))
+	);
+}
+
+function asHistoryNotFound(
+	error: OneHarnessProcessError,
+): HistoryNotFoundError {
+	return new HistoryNotFoundError(error.message, error.exitCode, error.stderr);
+}
+
+async function* invokeStreamWith<T>(
+	options: OneHarnessOptions,
+	args: readonly string[],
+	schema: ZodType<T>,
+	label: string,
+	cwd?: string,
+	historyStream = false,
+): AsyncGenerator<T> {
+	const bin = executable(options);
+	const child = spawn(bin.command, [...bin.prefix, ...args], {
+		cwd,
+		env: { ...process.env, ...options.env },
+		windowsHide: true,
+	});
+	let stderr = "";
+	let spawnError: Error | undefined;
+	let closed = false;
+	child.stderr
+		.setEncoding("utf8")
+		.on("data", (chunk: string) => (stderr += chunk));
+	const completion = new Promise<number | null>((resolve) => {
+		child.once("error", (error) => {
+			spawnError = error;
+		});
+		child.once("close", (code) => {
+			closed = true;
+			resolve(code);
+		});
+	});
+	const lines = createInterface({
+		input: child.stdout,
+		crlfDelay: Number.POSITIVE_INFINITY,
+	});
+	try {
+		for await (const line of lines) {
+			if (line.trim() === "") continue;
+			let value: unknown;
+			try {
+				value = JSON.parse(line);
+			} catch (error) {
+				throw new Error(`${label}: invalid JSON: ${String(error)}`);
+			}
+			yield parseContract(schema, value, label);
+		}
+		const code = await completion;
+		if (spawnError) throw spawnError;
+		if (code !== 0) {
+			const error = processError(code, stderr);
+			if (historyStream && historyNotFound(error))
+				throw asHistoryNotFound(error);
+			throw error;
+		}
+	} finally {
+		lines.close();
+		child.stdout.destroy();
+		if (!closed) {
+			child.kill();
+			await completion;
+		}
+	}
 }
 
 function pushMany(
@@ -136,6 +249,34 @@ function pushMany(
 	values?: readonly string[],
 ): void {
 	for (const value of values ?? []) args.push(flag, value);
+}
+
+function runArguments(input: RunOptions, stream: boolean): string[] {
+	const args = ["run", "--prompt", input.prompt, "--compact"];
+	pushMany(args, "--harness", input.harnesses);
+	pushMany(args, "--model", input.models);
+	if (input.system !== undefined) args.push("--system", input.system);
+	if (input.reasoning !== undefined) args.push("--reasoning", input.reasoning);
+	if (input.resume !== undefined) args.push("--resume", input.resume);
+	if (input.session !== undefined) args.push("--session", input.session);
+	if (input.fork) args.push("--fork");
+	if (input.mode) args.push("--mode", input.mode);
+	if (input.timeoutSeconds !== undefined)
+		args.push("--timeout", String(input.timeoutSeconds));
+	if (input.events) args.push("--events");
+	if (stream) args.push("--stream");
+	if (input.history) args.push("--history");
+	if (input.historyName !== undefined)
+		args.push("--history-name", input.historyName);
+	if (input.historyDir !== undefined)
+		args.push("--history-dir", input.historyDir);
+	for (const [key, value] of Object.entries(input.historyLabels ?? {}))
+		args.push("--history-label", `${key}=${value}`);
+	for (const [key, value] of Object.entries(input.env ?? {}))
+		args.push("--env", `${key}=${value}`);
+	for (const [key, value] of Object.entries(input.bins ?? {}))
+		args.push("--bin", `${key}=${value}`);
+	return args;
 }
 
 export class OneHarness {
@@ -147,33 +288,27 @@ export class OneHarness {
 			options,
 			"invalid oneharness run options",
 		);
-		const args = ["run", "--prompt", input.prompt, "--compact"];
-		pushMany(args, "--harness", input.harnesses);
-		pushMany(args, "--model", input.models);
-		if (input.system !== undefined) args.push("--system", input.system);
-		if (input.reasoning !== undefined)
-			args.push("--reasoning", input.reasoning);
-		if (input.resume !== undefined) args.push("--resume", input.resume);
-		if (input.session !== undefined) args.push("--session", input.session);
-		if (input.fork) args.push("--fork");
-		if (input.mode) args.push("--mode", input.mode);
-		if (input.timeoutSeconds !== undefined)
-			args.push("--timeout", String(input.timeoutSeconds));
-		if (input.events) args.push("--events");
-		if (input.history) args.push("--history");
-		if (input.historyName !== undefined)
-			args.push("--history-name", input.historyName);
-		if (input.historyDir !== undefined)
-			args.push("--history-dir", input.historyDir);
-		for (const [key, value] of Object.entries(input.env ?? {}))
-			args.push("--env", `${key}=${value}`);
-		for (const [key, value] of Object.entries(input.bins ?? {}))
-			args.push("--bin", `${key}=${value}`);
+		const args = runArguments(input, false);
 		const value = await invokeWith(this.options, args, input.cwd, true);
 		return parseContract(
 			RunReportSchema,
 			value,
 			"invalid oneharness run contract",
+		);
+	}
+
+	runStream(options: RunOptions): AsyncGenerator<RunStreamEnvelope> {
+		const input = parseContract(
+			RunOptionsSchema,
+			options,
+			"invalid oneharness run options",
+		);
+		return invokeStreamWith(
+			this.options,
+			runArguments(input, true),
+			RunStreamEnvelopeSchema,
+			"invalid oneharness run stream contract",
+			input.cwd,
 		);
 	}
 
@@ -215,7 +350,13 @@ export class OneHarness {
 		if (input.project) args.push("--project", input.project);
 		if (input.allProjects) args.push("--all-projects");
 		if (input.historyDir) args.push("--history-dir", input.historyDir);
-		const value = await invokeWith(this.options, args);
+		let value: unknown;
+		try {
+			value = await invokeWith(this.options, args);
+		} catch (error) {
+			if (historyNotFound(error)) throw asHistoryNotFound(error);
+			throw error;
+		}
 		return parseContract(
 			HistoryRecordsSchema,
 			value,
@@ -240,6 +381,31 @@ export class OneHarness {
 			HistoryListSchema,
 			value,
 			"invalid history list contract",
+		);
+	}
+
+	historyWatch(
+		options: HistoryWatchOptions = {},
+	): AsyncGenerator<HistoryStreamEnvelope> {
+		const input = parseContract(
+			HistoryWatchOptionsSchema,
+			options,
+			"invalid oneharness history watch options",
+		);
+		const args = ["history", "watch", "--format", "jsonl"];
+		if (input.after) args.push("--after", input.after);
+		for (const [key, value] of Object.entries(input.labels ?? {}))
+			args.push("--label", `${key}=${value}`);
+		if (input.project) args.push("--project", input.project);
+		if (input.allProjects) args.push("--all-projects");
+		if (input.historyDir) args.push("--history-dir", input.historyDir);
+		return invokeStreamWith(
+			this.options,
+			args,
+			HistoryStreamEnvelopeSchema,
+			"invalid oneharness history watch contract",
+			undefined,
+			true,
 		);
 	}
 }

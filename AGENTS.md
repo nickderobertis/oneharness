@@ -46,9 +46,9 @@ follow-ups (see "After the main task").
 
 ## Stack and composition
 
-- **Product shape:** CLI plus Rust and Node libraries (`shapes/cli.md`,
+- **Product shape:** CLI plus Rust, Node, and Python libraries (`shapes/cli.md`,
   `shapes/library.md`, `intersections/rust-cli.md`).
-- **Language(s):** Rust and TypeScript; Bash is limited to setup/live e2e.
+- **Language(s):** Rust, TypeScript, and Python; Bash is limited to setup/live e2e.
 - **References composed:** `base.md`, `shapes/cli.md`, `shapes/library.md`,
   `languages/rust.md`, `languages/typescript.md`, `intersections/rust-cli.md`,
   `ci.md`, `llmlint.md`, `releasing.md`, `monorepo.md`.
@@ -77,6 +77,9 @@ Use the `just` recipes; do not hand-roll equivalents.
 - `just smoke` — hermetic end-to-end smoke of the built binary (part of `just
   check` and CI). `just smoke-live` is the opt-in variant that hits installed,
   authenticated harnesses with real model calls — never in the gate or CI.
+- `just sdk-check` / `just python-sdk-check` — generated-contract drift, strict
+  language lint/type/test coverage, and packed-artifact subprocess e2e for the
+  Node and Python SDKs. The Python gate runs on the oldest supported Python 3.9.
 
 ## What this binary is
 
@@ -135,10 +138,25 @@ Use the `just` recipes; do not hand-roll equivalents.
   run history — one normalized record per harness run (the report's signals, no
   raw stdout/stderr) — to `<history_dir>/<project-slug>/<session>.jsonl` (one file
   per run; `history_dir` defaults to the platform state dir). It is its own output
-  contract with its own `domain::history::SCHEMA_VERSION` (independent of the
-  report's), so the shape versions on its own cadence. The record shape + slug +
-  name + timestamp formatting are pure (`domain::history`); the clock reads that
-  mint the session id/timestamps and all file writes/reads are I/O
+  v0.2 contract with its own `domain::history::SCHEMA_VERSION` (independent of
+  the report's): each record has a UUIDv7 `history_id` and validated `labels`
+  (`history_labels` / `ONEHARNESS_HISTORY_LABELS` / repeated `--history-label`,
+  merged by key with CLI > env > project > user precedence). v0.1 remains
+  readable with a deterministic UUIDv5 id and empty labels. A validated input the
+  SDKs also validate must be stated so the **Rust runtime check and the hand-written
+  `JsonSchema` accept the same values** — the schema is the SDK validators' only
+  source, so a gap there ships as an SDK that refuses what the CLI takes. Three
+  traps, all live in `domain::history`: bound lengths in **characters** (code
+  points — the only unit `maxLength` expresses; never bytes); spell a character
+  allow-list as a **forbidden unanchored `not` search**, never an anchored
+  `^…$` (Python's `re` `$` also matches before a trailing newline, so `"v\n"`
+  passes the Python SDK); and keep `char::is_control` (Cc = C0 + DEL + **C1**) and
+  its pattern in step. `HistoryId` accepts only canonical hyphenated text with the
+  RFC 4122 variant and a defined version — `Uuid::parse_str` is laxer than the
+  pattern promises. The shared `tests/fixtures/sdk-contract-matrix.json` is where
+  such a rule gets pinned across Rust/Node/Python at once. The record shape +
+  slug + name + timestamp formatting are pure (`domain::history`); the clock
+  reads that mint the session id/timestamps and all file writes/reads are I/O
   (`io::history`). The writer is **best-effort** — a store that can't be opened or
   a record that can't be written warns on stderr and disables history for the run,
   never taking the results down (like the mock restore). The session `name` is
@@ -146,10 +164,14 @@ Use the `just` recipes; do not hand-roll equivalents.
   the harness — headless harnesses expose only an opaque `session_id` (already
   captured per record), never a readable title; don't fabricate one. The report
   echoes the session file as `history_file` (the programmatic handle). The
-  `oneharness history list/show/clear` verb views/manages the store: JSON on
-  stdout by default (the contract), `--format text` for humans; `show` resolves by
-  id OR name; `clear` is a dry run until `--yes`. Adding `history`/`history_dir`
-  extended the config/env/CLI trio (`from_env` gained `ONEHARNESS_HISTORY`/`_DIR`).
+  `oneharness history list/show/watch/clear` verb views/manages the store: JSON on
+  stdout by default (the contract), `--format text` for humans; `show` resolves a
+  record UUID exactly before its back-compatible session id/name lookup; `watch`
+  emits typed JSONL envelopes with label filters and `--after` cursor resume.
+  Its process-locked append-only `.index.jsonl` is reconciled once on startup
+  (including partial-tail recovery), then followed by byte offset without repeated
+  tree scans. `clear` is a dry run until `--yes`. History paths are canonicalized
+  before writing so `cwd=..` remains discoverable.
   `gate <id>` is the odd one out: the runtime pre-tool gate an
   installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It
@@ -274,6 +296,17 @@ aren't re-litigated each session:
   `PYPI_PUBLISH` repo variable is `true` and the PyPI project registers this
   repo's `release.yml` as its Trusted Publisher; `verify-pypi` then proves the
   published version is `pip install`-able.
+  The typed Python client is a separate pure-Python **`oneharness-sdk`**
+  distribution (imported as `oneharness_sdk`, Python 3.9+). Its checked-in
+  schemas and types are generated from `sdk_schema::bundle`; runtime inputs are
+  strict while output validation preserves additive fields. `scripts/python-sdk-pack.mjs`
+  stamps both its package version and exact `oneharness-cli==X.Y.Z` dependency
+  from the root `Cargo.toml`, keeping Rust/CLI/Node/Python releases aligned. The
+  release workflow builds wheel + sdist on every release, then publishes through
+  the already-registered PyPI Trusted Publisher in an environment-free,
+  `id-token: write` job only after `oneharness-cli` publishes; no PyPI token is
+  stored. `verify-python-sdk` installs the real release and drives `list()`
+  through the packaged CLI dependency.
 - **npm packages** (*now enabled*, the direct analogue of the PyPI wheels — a
   fifth install path). The npm distribution is **`oneharness-cli`** too (same
   bare-name reasoning), and the command it installs is still `oneharness`.
@@ -628,7 +661,10 @@ shape. When you add one:
   harness whose transcript needs the upgraded format. Streaming
   (`run --stream`, `io::runner::run_job_streaming` + `events::events_from_value`)
   emits events incrementally so a consumer can short-circuit on bad behavior;
-  `oh_stream_assert` is its live proof. See the README *events* matrix.
+  its lines are the typed Rust `RunStreamEnvelope` contract and
+  `oh_stream_assert` is its live proof. `sdk_schema::bundle` is the single Rust
+  generation source for that envelope, `HistoryStreamEnvelope`, and the shared
+  SDK contracts. See the README *events* matrix.
 
 ## Scripts and output are context
 

@@ -234,10 +234,26 @@ if (installedSdk.version === "0.0.0-managed") {
 if (!installedSdk.dependencies?.zod) {
 	throw new Error("packed SDK omitted its Zod runtime dependency");
 }
+if (installedSdk.dependencies?.["oneharness-cli"] !== installedSdk.version) {
+	throw new Error(
+		`packed SDK must require oneharness-cli exactly at ${installedSdk.version}: ${JSON.stringify(installedSdk.dependencies)}`,
+	);
+}
+const installedCli = JSON.parse(
+	readFileSync(
+		resolve(install, "node_modules/oneharness-cli/package.json"),
+		"utf8",
+	),
+);
+if (installedCli.version !== installedSdk.version) {
+	throw new Error(
+		`installed CLI ${installedCli.version} does not match SDK ${installedSdk.version}`,
+	);
+}
 
 writeFileSync(
 	resolve(install, "consume.mjs"),
-	`import { HistoryListSchema, HistoryRecordSchema, OneHarness, RunOptionsSchema, RunReportSchema } from "@oneharness/sdk";
+	`import { HistoryListSchema, HistoryRecordSchema, OneHarness, RunOptionsSchema, RunReportSchema, RunStreamEnvelopeSchema } from "@oneharness/sdk";
 const mockProvider = process.env.ONEHARNESS_TEST_MOCK;
 const historyDir = process.env.ONEHARNESS_TEST_HISTORY;
 if (!mockProvider || !historyDir) throw new Error("package e2e fixture environment is incomplete");
@@ -250,6 +266,11 @@ const records = await sdk.history({ session: "installed-session", historyDir });
 HistoryRecordSchema.parse(records[0]);
 const sessions = await sdk.historyList({ historyDir, allProjects: true });
 HistoryListSchema.parse(sessions);
+const streamed = [];
+for await (const envelope of sdk.runStream({ prompt: "installed stream", harnesses: ["opencode"], mode: "bypass", env: { MOCK_STDOUT: '{"type":"text","part":{"type":"text","text":"installed stream works"}}' }, bins: { opencode: mockProvider } })) {
+  streamed.push(RunStreamEnvelopeSchema.parse(envelope));
+}
+if (streamed.at(-1)?.type !== "result") throw new Error(JSON.stringify(streamed));
 if (RunOptionsSchema.safeParse({ prompt: "typo", harneses: ["codex"] }).success) throw new Error("RunOptionsSchema accepted an unknown option");
 `,
 );

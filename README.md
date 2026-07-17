@@ -160,6 +160,8 @@ pip install oneharness-cli          # installs the `oneharness` command
 npm install -g oneharness-cli       # also installs the `oneharness` command
 # typed Node API (includes the matching CLI package)
 npm install @oneharness/sdk
+# typed Python API (includes the exact matching CLI package)
+pip install oneharness-sdk
 # or the latest prebuilt release for your platform via the install script
 curl -fsSL https://raw.githubusercontent.com/nickderobertis/oneharness/main/scripts/install.sh | sh
 # or pin a release tag / install directory
@@ -180,21 +182,30 @@ per-platform packages (`npm install -g oneharness-cli`, same distribution name,
 same command), **crates.io** (`cargo install oneharness`), prebuilt checksummed
 binaries on its
 [GitHub Releases](https://github.com/nickderobertis/oneharness/releases) page for
-Linux, macOS, and Windows, and `cargo install --git`. The PyPI and npm packages
+Linux, macOS, and Windows, and `cargo install --git`. The PyPI and npm CLI packages
 both wrap the **prebuilt** binary — no Rust toolchain, no compile — carrying the
 platform-specific binary in a per-platform artifact (a wheel; an
 `@oneharness/cli-<platform>-<arch>` optional dependency) that the package manager
 selects for your OS and CPU. Building from source requires a stable Rust
 toolchain and [`just`](https://github.com/casey/just).
+The same release publishes matching `@oneharness/sdk` and `oneharness-sdk`
+language clients; each pins its packaged CLI dependency to that exact version.
 
-Node applications can use `@oneharness/sdk` for typed `run`, registry
-`list`/`detect`, continuation (`resume` or named `session`), and standardized
-history lookup/listing. Its TypeScript declarations and named Zod runtime schemas
-are generated from the Rust JSON Schema metadata and drift-checked by `just
-check`; output schemas preserve unknown fields for additive forward compatibility,
-while the input schemas `RunOptionsSchema` and `HistoryListOptionsSchema` reject
-unknown option names before the SDK reads an option. See
-[`npm/oneharness-sdk/README.md`](npm/oneharness-sdk/README.md).
+Applications can use `@oneharness/sdk` (Node 20+) or `oneharness-sdk` / the
+`oneharness_sdk` import (Python 3.9+) for the same complete surface: `run`,
+streaming run, registry `list`/`detect`, and history lookup/list/watch. Both
+streaming methods are async iterators; every JSONL envelope is validated before
+it is yielded, and breaking or cancelling an iterator terminates the subprocess.
+Both SDK distributions are stamped from the root Cargo version and depend on the
+exact matching `oneharness-cli` package.
+
+The SDK declarations, input contracts, and runtime validation schemas are
+generated from one Rust JSON Schema bundle and drift-checked by `just check`.
+Outputs preserve unknown fields for additive forward compatibility; inputs are
+strict, so unknown option names and misspellings fail before a subprocess starts.
+Missing history records, sessions, and watch cursors raise a typed
+`HistoryNotFoundError`. See the [Node SDK guide](npm/oneharness-sdk/README.md) and
+[Python SDK guide](python/oneharness-sdk/README.md).
 The install script honors `ONEHARNESS_VERSION`, `ONEHARNESS_INSTALL_DIR`,
 `ONEHARNESS_RELEASE_BASE_URL`/`--base-url`, `ONEHARNESS_CHECKSUM_BASE_URL`, and
 `GITHUB_TOKEN` (for higher GitHub API rate limits when resolving the latest
@@ -823,24 +834,16 @@ usage), Cursor's `stream-json` — and widens as more shapes are sourced; an abs
 signal is the honest answer, not an error. Consumers that need certainty should
 parse `stdout` themselves.
 
-#### Streaming events (direction)
+#### Streaming events
 
-Today `events` is delivered **at the end**, in the final report — oneharness
-spawns each harness, waits for it to exit, then normalizes the whole transcript
-at once. The `events` shape above is deliberately the same one a **streaming**
-mode will emit incrementally: the extractor is line-oriented and pure, so the
-same normalized `{ kind, name, input, output, index }` events can be surfaced as
-soon as each is observed rather than only after the run completes.
+The CLI already emits the normalized events incrementally with `run --stream`,
+using the Rust-owned `RunStreamEnvelope` contract described above. Non-streaming
+runs still return the same events at the end in `RunReport.results[].events`.
 
-The motivating consumer is behavioral skill-testing (`skilltest`): with a live
-event stream, a language test can **short-circuit the moment it observes bad
-behavior** (a forbidden `rm -rf`, an out-of-scope network call) — killing the run
-instead of paying for a full turn before judging it. Realizing that end to end is
-a staged effort beyond this field: a streaming `run` path in the runner
-(incremental read + early-terminate on the consumer's signal, single-harness and
-non-batch), then threading the stream through the language **SDKs** and the
-skilltest **plugin**. This section is the anchor for that work; the normalized
-event shape is the stable contract it will build on.
+The Node and Python SDKs expose this contract as `runStream` / `run_stream` async
+iterators. A behavioral consumer such as `skilltest` can **short-circuit the
+moment it observes bad behavior** (a forbidden `rm -rf`, an out-of-scope network
+call), killing the run instead of paying for a full turn before judging it.
 
 ### Structured output
 
@@ -1200,6 +1203,26 @@ history_dir = "~/logs/oneharness"   # optional; default below
 ONEHARNESS_HISTORY=1 ONEHARNESS_HISTORY_DIR=/data/oh oneharness run …  # env
 ```
 
+Records can carry validated task-graph labels. Labels merge by key with the same
+precedence (CLI > environment > project file > user file), so a nearer layer can
+replace one key without discarding the others:
+
+```toml
+history_labels = { graph = "release", owner = "platform" }
+```
+
+```bash
+ONEHARNESS_HISTORY_LABELS='graph=release,owner=ci' oneharness run … \
+  --history-label owner=agent --history-label task=verify
+```
+
+Keys are 1–64 ASCII letters/digits/`.`/`_`/`-` and must start alphanumeric;
+values are non-empty, at most 256 characters (Unicode code points, so a
+multibyte value is bounded by what you can read, not by its encoded size), and
+contain no control characters — every character Unicode calls `Cc`, which is C0,
+DEL, and C1. The CLI and the language SDKs enforce this one contract identically.
+Malformed config, environment, and CLI values are rejected before a run starts.
+
 `--no-history` (or `history = false` in a nearer layer) turns it back off. Nothing
 is written under `--print-command` (nothing runs).
 
@@ -1208,7 +1231,18 @@ is written under `--print-command` (nothing runs).
 directory. `history_dir` defaults to `<platform state dir>/oneharness/history`
 (`$XDG_STATE_HOME` or `~/.local/state` on Linux, `~/.local/state` on macOS,
 `%LOCALAPPDATA%` on Windows); set it with `--history-dir`, `history_dir`, or
-`ONEHARNESS_HISTORY_DIR`.
+`ONEHARNESS_HISTORY_DIR`. Relative project/cwd paths are canonicalized before
+the record and slug are written, so later `list`/`show` lookups resolve the same
+project even when the original run used `..`.
+
+Each v0.2 record has a time-ordered UUIDv7 `history_id`, which is both an exact
+lookup key and a watch cursor; empty `labels` are omitted. Readers continue to
+accept v0.1 records, assigning deterministic UUIDv5 IDs and empty labels so the
+same legacy line always migrates to the same identity. A `history_id` is
+canonical hyphenated UUID text (`8-4-4-4-12` hex, either case) carrying the
+RFC 4122 variant and a defined version; the unhyphenated, braced, and
+`urn:uuid:` spellings are not the contract and are refused, as they are by the
+SDKs' schema.
 
 **Session name.** Each session has a human-meaningful `name` shown next to its
 `id`. Harnesses don't expose a readable title headlessly (only an opaque
@@ -1222,12 +1256,21 @@ by default (the programmatic contract), `--format text` for a human view:
 
 ```bash
 oneharness history list [--project <dir> | --all-projects]   # sessions, newest first
-oneharness history show <id-or-name> [--last] [--all]        # a session's records
+oneharness history show <session-id-or-name> [--last] [--all] # a session's records
+oneharness history show <history-id>                          # one exact record
+oneharness history watch [--label key=value] [--after <history-id>] --format jsonl
 oneharness history clear [--all-projects] [--yes]            # dry-run unless --yes
 ```
 
 `show` resolves its argument against a session **id or name** (name is
-non-unique — the newest match wins, or `--all` shows every match). `clear` reports
+non-unique — the newest match wins, or `--all` shows every match); a UUID
+`history_id` instead performs an exact record lookup across projects. `watch`
+first emits matching records after its optional cursor, then follows the locked,
+append-only `.index.jsonl` without rescanning the history tree. Reconciliation
+on startup adds missing session records, ignores removed sessions, and truncates
+a partial final index line left by an interrupted writer. Reusing the last
+emitted `history_id` with `--after` resumes without duplication; repeated
+`--label` filters are ANDed. `clear` reports
 what it *would* remove and deletes nothing until `--yes`, so it is safe to run
 non-interactively first.
 

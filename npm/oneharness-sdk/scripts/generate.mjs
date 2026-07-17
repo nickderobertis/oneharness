@@ -62,6 +62,17 @@ const run = exactOptionalProperties(
 		style: { endOfLine: "lf" },
 	}),
 );
+const runStreamEnvelope = exactOptionalProperties(
+	await compile(
+		typescriptSchema(bundle.run_stream_envelope),
+		"RunStreamEnvelope",
+		{
+			bannerComment: "/* Generated from oneharness-core. Do not edit. */",
+			additionalProperties: true,
+			style: { endOfLine: "lf" },
+		},
+	),
+);
 const options = exactOptionalProperties(
 	readonlyArrayProperties(
 		await compile(bundle.run_options, "RunOptions", {
@@ -86,12 +97,30 @@ const historyListOptions = exactOptionalProperties(
 		style: { endOfLine: "lf" },
 	}),
 );
+const historyWatchOptions = exactOptionalProperties(
+	await compile(bundle.history_watch_options, "HistoryWatchOptions", {
+		bannerComment: "/* Generated from oneharness-core. Do not edit. */",
+		additionalProperties: true,
+		style: { endOfLine: "lf" },
+	}),
+);
 const history = exactOptionalProperties(
 	await compile(typescriptSchema(bundle.history_record), "HistoryRecord", {
 		bannerComment: "/* Generated from oneharness-core. Do not edit. */",
 		additionalProperties: true,
 		style: { endOfLine: "lf" },
 	}),
+);
+const historyStreamEnvelope = exactOptionalProperties(
+	await compile(
+		typescriptSchema(bundle.history_stream_envelope),
+		"HistoryStreamEnvelope",
+		{
+			bannerComment: "/* Generated from oneharness-core. Do not edit. */",
+			additionalProperties: true,
+			style: { endOfLine: "lf" },
+		},
+	),
 );
 const historyRecords = exactOptionalProperties(
 	await compile(
@@ -142,10 +171,13 @@ const zod = await format(
 const files = {
 	"schemas.json": generatedBytes(JSON.stringify(bundle, null, 2)),
 	"contracts.ts": generatedBytes(run),
+	"run-stream-envelope.ts": generatedBytes(runStreamEnvelope),
 	"options.ts": generatedBytes(options),
 	"history-lookup.ts": generatedBytes(historyLookup),
 	"history-list-options.ts": generatedBytes(historyListOptions),
+	"history-watch-options.ts": generatedBytes(historyWatchOptions),
 	"history.ts": generatedBytes(history),
+	"history-stream-envelope.ts": generatedBytes(historyStreamEnvelope),
 	"history-records.ts": generatedBytes(historyRecords),
 	"history-list.ts": generatedBytes(historyList),
 	"registry.ts": generatedBytes(registry),

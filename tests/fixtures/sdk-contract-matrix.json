@@ -1,0 +1,242 @@
+{
+  "cases": [
+    {
+      "name": "run minimum",
+      "root": "run_options",
+      "accepted": true,
+      "value": { "prompt": "ship the change" }
+    },
+    {
+      "name": "run all resumable history options",
+      "root": "run_options",
+      "accepted": true,
+      "value": {
+        "prompt": "continue the task",
+        "harnesses": ["claude-code"],
+        "models": ["provider/model"],
+        "system": "stay concise",
+        "reasoning": "high",
+        "resume": "native-session",
+        "session": "uniform-session",
+        "fork": true,
+        "mode": "bypass",
+        "cwd": ".",
+        "timeoutSeconds": 0,
+        "events": true,
+        "history": true,
+        "historyName": "release-check",
+        "historyDir": ".history",
+        "historyLabels": { "graph": "release", "task.id": "42" },
+        "env": { "EXAMPLE": "value" },
+        "bins": { "claude-code": "/bin/claude" }
+      }
+    },
+    {
+      "name": "run empty prompt",
+      "root": "run_options",
+      "accepted": false,
+      "value": { "prompt": "" }
+    },
+    {
+      "name": "run unknown option",
+      "root": "run_options",
+      "accepted": false,
+      "value": { "prompt": "typo", "harneses": ["codex"] }
+    },
+    {
+      "name": "run malformed harness collection",
+      "root": "run_options",
+      "accepted": false,
+      "value": { "prompt": "wrong type", "harnesses": "codex" }
+    },
+    {
+      "name": "run invalid history label",
+      "root": "run_options",
+      "accepted": false,
+      "value": { "prompt": "bad label", "historyLabels": { "bad/key": "value" } }
+    },
+    {
+      "name": "run label value with a C1 control character",
+      "root": "run_options",
+      "accepted": false,
+      "value": { "prompt": "c1 control", "historyLabels": { "graph": "releaserollback" } }
+    },
+    {
+      "name": "run label value with a trailing newline",
+      "root": "run_options",
+      "accepted": false,
+      "value": { "prompt": "trailing newline", "historyLabels": { "graph": "release\n" } }
+    },
+    {
+      "name": "run multibyte label value within the character limit",
+      "root": "run_options",
+      "accepted": true,
+      "value": {
+        "prompt": "multibyte label",
+        "historyLabels": {
+          "graph": "🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀"
+        }
+      }
+    },
+    {
+      "name": "run label value beyond the character limit",
+      "root": "run_options",
+      "accepted": false,
+      "value": {
+        "prompt": "overlong label",
+        "historyLabels": {
+          "graph": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      }
+    },
+    {
+      "name": "history lookup by session",
+      "root": "history_lookup",
+      "accepted": true,
+      "value": { "session": "release-check", "last": false, "historyDir": ".history" }
+    },
+    {
+      "name": "history lookup by last with overlapping session",
+      "root": "history_lookup",
+      "accepted": true,
+      "value": { "session": "ignored", "last": true, "allProjects": true }
+    },
+    {
+      "name": "history lookup missing selector",
+      "root": "history_lookup",
+      "accepted": false,
+      "value": { "historyDir": ".history" }
+    },
+    {
+      "name": "history lookup empty selected session",
+      "root": "history_lookup",
+      "accepted": false,
+      "value": { "session": "", "last": false }
+    },
+    {
+      "name": "history lookup false last without session",
+      "root": "history_lookup",
+      "accepted": false,
+      "value": { "last": false }
+    },
+    {
+      "name": "history lookup unknown option",
+      "root": "history_lookup",
+      "accepted": false,
+      "value": { "session": "release-check", "allProject": true }
+    },
+    {
+      "name": "history list defaults",
+      "root": "history_list_options",
+      "accepted": true,
+      "value": {}
+    },
+    {
+      "name": "history list project scope",
+      "root": "history_list_options",
+      "accepted": true,
+      "value": { "project": ".", "allProjects": false, "historyDir": ".history" }
+    },
+    {
+      "name": "history list unknown option",
+      "root": "history_list_options",
+      "accepted": false,
+      "value": { "allProject": true }
+    },
+    {
+      "name": "history list malformed scope",
+      "root": "history_list_options",
+      "accepted": false,
+      "value": { "allProjects": "yes" }
+    },
+    {
+      "name": "history watch defaults",
+      "root": "history_watch_options",
+      "accepted": true,
+      "value": {}
+    },
+    {
+      "name": "history watch cursor and labels",
+      "root": "history_watch_options",
+      "accepted": true,
+      "value": {
+        "after": "00000000-0000-7000-8000-000000000000",
+        "labels": { "graph": "release", "task_id": "42" },
+        "allProjects": true,
+        "historyDir": ".history"
+      }
+    },
+    {
+      "name": "history watch malformed cursor",
+      "root": "history_watch_options",
+      "accepted": false,
+      "value": { "after": "not-a-cursor" }
+    },
+    {
+      "name": "history watch cursor in canonical upper case",
+      "root": "history_watch_options",
+      "accepted": true,
+      "value": { "after": "01931B0F-4A3C-7CDE-BF12-3456789ABCDE" }
+    },
+    {
+      "name": "history watch cursor as a UUIDv5 legacy id",
+      "root": "history_watch_options",
+      "accepted": true,
+      "value": { "after": "01931b0f-4a3c-5cde-bf12-3456789abcde" }
+    },
+    {
+      "name": "history watch cursor without hyphens",
+      "root": "history_watch_options",
+      "accepted": false,
+      "value": { "after": "01931b0f4a3c7cdebf123456789abcde" }
+    },
+    {
+      "name": "history watch cursor in braced form",
+      "root": "history_watch_options",
+      "accepted": false,
+      "value": { "after": "{01931b0f-4a3c-7cde-bf12-3456789abcde}" }
+    },
+    {
+      "name": "history watch cursor in urn form",
+      "root": "history_watch_options",
+      "accepted": false,
+      "value": { "after": "urn:uuid:01931b0f-4a3c-7cde-bf12-3456789abcde" }
+    },
+    {
+      "name": "history watch cursor with a trailing newline",
+      "root": "history_watch_options",
+      "accepted": false,
+      "value": { "after": "01931b0f-4a3c-7cde-bf12-3456789abcde\n" }
+    },
+    {
+      "name": "history watch cursor with a non-RFC-4122 variant",
+      "root": "history_watch_options",
+      "accepted": false,
+      "value": { "after": "01931b0f-4a3c-7cde-0f12-3456789abcde" }
+    },
+    {
+      "name": "history watch cursor with an undefined version",
+      "root": "history_watch_options",
+      "accepted": false,
+      "value": { "after": "01931b0f-4a3c-0cde-bf12-3456789abcde" }
+    },
+    {
+      "name": "history watch cursor as the nil uuid",
+      "root": "history_watch_options",
+      "accepted": false,
+      "value": { "after": "00000000-0000-0000-0000-000000000000" }
+    },
+    {
+      "name": "history watch invalid label",
+      "root": "history_watch_options",
+      "accepted": false,
+      "value": { "labels": { "graph": "" } }
+    },
+    {
+      "name": "history watch unknown option",
+      "root": "history_watch_options",
+      "accepted": false,
+      "value": { "allProject": true }
+    }
+  ]
+}

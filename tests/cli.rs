@@ -4,9 +4,12 @@
 //! harness wired in via `--bin`/env overrides), so these are deterministic,
 //! network-free, and run identically on every platform.
 
-use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::io::BufRead;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
 
+use oneharness_core::domain::history::HistoryStreamEnvelope;
+use oneharness_core::domain::report::RunStreamEnvelope;
 use serde_json::Value;
 
 const ALL_IDS: &[&str] = &[
@@ -70,6 +73,7 @@ const ENV_OVERRIDE_VARS: &[&str] = &[
     "ONEHARNESS_REQUIRE_AVAILABLE",
     "ONEHARNESS_HISTORY",
     "ONEHARNESS_HISTORY_DIR",
+    "ONEHARNESS_HISTORY_LABELS",
 ];
 
 /// Run with config loading enabled but still hermetic: the user-level config is
@@ -2573,6 +2577,11 @@ fn stream_mode_emits_event_lines_then_a_terminal_report() {
         .filter(|l| !l.trim().is_empty())
         .map(|l| serde_json::from_str(l).expect("each stream line is JSON"))
         .collect();
+    let typed: Vec<RunStreamEnvelope> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("each stream line matches the Rust contract"))
+        .collect();
     // Two event lines, then one result line.
     assert_eq!(lines.len(), 3, "lines: {text}");
     assert_eq!(lines[0]["type"], "event");
@@ -2589,6 +2598,28 @@ fn stream_mode_emits_event_lines_then_a_terminal_report() {
     assert_eq!(result["events_source"], "json:opencode-parts");
     assert_eq!(result["events"].as_array().unwrap().len(), 2);
     assert_eq!(result["text"], "working");
+    assert!(matches!(typed[0], RunStreamEnvelope::Event { .. }));
+    assert!(matches!(typed[1], RunStreamEnvelope::Event { .. }));
+    assert!(matches!(typed[2], RunStreamEnvelope::Result { .. }));
+
+    // Stream envelopes are producer output: new additive fields from a newer
+    // oneharness remain readable by this Rust contract.
+    let mut future = lines[2].clone();
+    future["future_output_field"] = Value::Bool(true);
+    assert!(serde_json::from_value::<RunStreamEnvelope>(future).is_ok());
+    assert!(serde_json::from_value::<RunStreamEnvelope>(
+        serde_json::json!({ "type": "future_variant" })
+    )
+    .is_err());
+    for malformed in [
+        serde_json::json!({}),
+        serde_json::json!({ "type": "event" }),
+        serde_json::json!({ "type": "result" }),
+        serde_json::json!({ "type": "event", "event": {} }),
+        serde_json::json!({ "type": "result", "report": {} }),
+    ] {
+        assert!(serde_json::from_value::<RunStreamEnvelope>(malformed).is_err());
+    }
 }
 
 #[test]
@@ -8078,10 +8109,450 @@ fn history_enabled_and_dir_via_environment() {
         .as_str()
         .map(str::to_string);
     let hf = hf.expect("env should enable history");
+    let canonical_dir = std::fs::canonicalize(&dir).expect("history directory should exist");
     assert!(
-        hf.starts_with(&ds),
+        Path::new(&hf).starts_with(&canonical_dir),
         "ONEHARNESS_HISTORY_DIR should place the store: {hf}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn history_labels_layer_cli_over_environment_over_config_and_validate() {
+    let dir = hist_dir("labels");
+    let ds = dir.display().to_string();
+    let fixture = ConfigFixture::new(
+        "history-labels",
+        "history_labels = { graph = \"project\", project = \"kept\" }",
+        "history_labels = { graph = \"user\", user = \"kept\" }",
+    );
+    let out = run_with_config(
+        &[
+            "run",
+            "--cwd",
+            &fixture.cwd(),
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--prompt",
+            "labeled run",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-label",
+            "graph=cli",
+            "--history-label",
+            "cli=kept",
+            "--bypass",
+            "--compact",
+        ],
+        &[
+            ("MOCK_STDOUT", r#"{"result":"x"}"#),
+            ("ONEHARNESS_HISTORY_LABELS", "graph=environment,env=kept"),
+        ],
+        &fixture.user_config(),
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let path = json_stdout(&out)["history_file"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let record: Value = serde_json::from_str(
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["schema_version"], "0.2");
+    assert_eq!(record["labels"]["graph"], "cli");
+    for key in ["user", "project", "env", "cli"] {
+        assert_eq!(record["labels"][key], "kept", "label {key}");
+    }
+
+    let invalid = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "invalid",
+            "--history-label",
+            "bad/key=value",
+        ],
+        &[],
+    );
+    assert_eq!(invalid.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("invalid history label"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn history_canonicalizes_relative_cwd_for_project_lookup() {
+    let dir = hist_dir("canonical-cwd");
+    let ds = dir.display().to_string();
+    let root = hist_dir("canonical-project");
+    let project = root.join("project");
+    let child = project.join("child");
+    std::fs::create_dir_all(&child).unwrap();
+    let relative = child.join("..");
+    let out = run(
+        &[
+            "run",
+            "--cwd",
+            &relative.display().to_string(),
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--prompt",
+            "canonical",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"x"}"#)],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let listed = json_stdout(&run(
+        &[
+            "history",
+            "list",
+            "--project",
+            &project.display().to_string(),
+            "--history-dir",
+            &ds,
+            "--compact",
+        ],
+        &[],
+    ));
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(
+        listed[0]["project"],
+        std::fs::canonicalize(&project)
+            .unwrap()
+            .display()
+            .to_string()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn history_watch_filters_and_resumes_as_jsonl() {
+    let dir = hist_dir("watch-cli");
+    let ds = dir.display().to_string();
+    let mut ids = Vec::new();
+    for (name, graph) in [
+        ("first", "release"),
+        ("second", "release"),
+        ("third", "other"),
+    ] {
+        let out = run(
+            &[
+                "run",
+                "--harness",
+                "claude-code",
+                "--bin",
+                &bin_override("claude-code"),
+                "--prompt",
+                name,
+                "--history",
+                "--history-dir",
+                &ds,
+                "--history-name",
+                name,
+                "--history-label",
+                &format!("graph={graph}"),
+                "--bypass",
+                "--compact",
+            ],
+            &[("MOCK_STDOUT", r#"{"result":"x"}"#)],
+        );
+        let path = json_stdout(&out)["history_file"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let record: Value = serde_json::from_str(
+            std::fs::read_to_string(path)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        ids.push(record["history_id"].as_str().unwrap().to_string());
+    }
+
+    let mut child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args([
+            "history",
+            "watch",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--after",
+            &ids[0],
+            "--label",
+            "graph=release",
+            "--format",
+            "jsonl",
+        ])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    let mut reader = std::io::BufReader::new(child.stdout.take().unwrap());
+    reader.read_line(&mut line).unwrap();
+    // Close the consumer pipe, then append one more matching record. The watch
+    // process observes it through the index and exits cleanly on broken pipe,
+    // proving the follow path while also letting coverage data flush (killing a
+    // watcher would discard that process's profile).
+    drop(reader);
+    let trigger = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--prompt",
+            "fourth",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-name",
+            "fourth",
+            "--history-label",
+            "graph=release",
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"x"}"#)],
+    );
+    assert!(trigger.status.success());
+    let status = child.wait().unwrap();
+    assert!(status.success(), "watch exit: {status:?}");
+
+    let envelope: Value = serde_json::from_str(&line).unwrap();
+    let typed: HistoryStreamEnvelope = serde_json::from_str(&line).unwrap();
+    assert_eq!(envelope["type"], "record");
+    assert_eq!(envelope["record"]["history_id"], ids[1]);
+    assert_eq!(envelope["record"]["prompt"], "second");
+    match typed {
+        HistoryStreamEnvelope::Record { record } => {
+            assert_eq!(record.history_id.to_string(), ids[1]);
+            assert_eq!(record.prompt, "second");
+        }
+    }
+    let mut future = envelope;
+    future["future_output_field"] = Value::Bool(true);
+    assert!(serde_json::from_value::<HistoryStreamEnvelope>(future).is_ok());
+
+    let missing = run(
+        &[
+            "history",
+            "watch",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--after",
+            "00000000-0000-7000-8000-000000000000",
+        ],
+        &[],
+    );
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("was not found"));
+
+    let invalid = run(
+        &[
+            "history",
+            "watch",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--after",
+            "not-a-cursor",
+        ],
+        &[],
+    );
+    assert_eq!(invalid.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("invalid history cursor"));
+
+    let exact_missing = run(
+        &[
+            "history",
+            "show",
+            "00000000-0000-7000-8000-000000000000",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+        ],
+        &[],
+    );
+    assert_eq!(exact_missing.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&exact_missing.stderr).contains("was not found"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn history_watch_scopes_to_explicit_and_current_project() {
+    let dir = hist_dir("watch-project");
+    let ds = dir.display().to_string();
+    let pa = std::env::temp_dir().join(format!("oh-watch-a-{}", std::process::id()));
+    let pb = std::env::temp_dir().join(format!("oh-watch-b-{}", std::process::id()));
+    std::fs::create_dir_all(&pa).unwrap();
+    std::fs::create_dir_all(&pb).unwrap();
+
+    let record = |project: &Path, prompt: &str| {
+        let out = run(
+            &[
+                "run",
+                "--cwd",
+                &project.display().to_string(),
+                "--harness",
+                "claude-code",
+                "--bin",
+                &bin_override("claude-code"),
+                "--prompt",
+                prompt,
+                "--history",
+                "--history-dir",
+                &ds,
+                "--bypass",
+                "--compact",
+            ],
+            &[("MOCK_STDOUT", r#"{"result":"x"}"#)],
+        );
+        assert!(out.status.success(), "{out:?}");
+        let path = json_stdout(&out)["history_file"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let value: Value = serde_json::from_str(
+            std::fs::read_to_string(path)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        value["history_id"].as_str().unwrap().to_string()
+    };
+
+    let cursor = record(&pa, "cursor");
+    let _ = record(&pb, "other-project");
+    let expected = record(&pa, "same-project");
+
+    for explicit_project in [true, false] {
+        let mut command = Command::new(oneharness_bin());
+        command.env("ONEHARNESS_NO_CONFIG", "1").args([
+            "history",
+            "watch",
+            "--history-dir",
+            &ds,
+            "--after",
+            &cursor,
+            "--format",
+            "jsonl",
+        ]);
+        if explicit_project {
+            command.args(["--project", &pa.display().to_string()]);
+        } else {
+            command.current_dir(&pa);
+        }
+        let mut child = command.stdout(Stdio::piped()).spawn().unwrap();
+        let mut line = String::new();
+        let mut reader = std::io::BufReader::new(child.stdout.take().unwrap());
+        reader.read_line(&mut line).unwrap();
+        let envelope: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(envelope["record"]["history_id"], expected);
+        assert_eq!(envelope["record"]["prompt"], "same-project");
+
+        drop(reader);
+        let _ = record(
+            &pa,
+            if explicit_project {
+                "trigger-explicit"
+            } else {
+                "trigger-current"
+            },
+        );
+        let status = child.wait().unwrap();
+        assert!(status.success(), "watch exit: {status:?}");
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&pa);
+    let _ = std::fs::remove_dir_all(&pb);
+}
+
+#[test]
+fn concurrent_processes_append_complete_history_index_lines() {
+    let dir = hist_dir("concurrent-process-index");
+    let ds = dir.display().to_string();
+    let mut children = Vec::new();
+    for index in 0..8 {
+        children.push(
+            Command::new(oneharness_bin())
+                .env("ONEHARNESS_NO_CONFIG", "1")
+                .env("MOCK_STDOUT", r#"{"result":"x"}"#)
+                .args([
+                    "run",
+                    "--harness",
+                    "claude-code",
+                    "--bin",
+                    &bin_override("claude-code"),
+                    "--prompt",
+                    &format!("process-{index}"),
+                    "--history",
+                    "--history-dir",
+                    &ds,
+                    "--history-name",
+                    &format!("process-{index}"),
+                    "--bypass",
+                    "--compact",
+                ])
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+    }
+    for child in children {
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let lines: Vec<Value> = std::fs::read_to_string(dir.join(".index.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 8);
+    let ids: std::collections::BTreeSet<&str> = lines
+        .iter()
+        .map(|line| line["record"]["history_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 8);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -8148,6 +8619,22 @@ fn history_records_a_failed_run_and_shows_by_id() {
         &[],
     ));
     assert_eq!(show[0]["status"], "nonzero");
+    // A record's UUID is a second, exact lookup surface and returns only that
+    // record rather than resolving the containing session.
+    let history_id = rec["history_id"].as_str().unwrap();
+    let exact = json_stdout(&run(
+        &[
+            "history",
+            "show",
+            history_id,
+            "--history-dir",
+            &ds,
+            "--compact",
+        ],
+        &[],
+    ));
+    assert_eq!(exact.as_array().unwrap().len(), 1);
+    assert_eq!(exact[0]["history_id"], history_id);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -8211,7 +8698,10 @@ fn history_list_scopes_by_project() {
         &[],
     ));
     assert_eq!(just_a.as_array().unwrap().len(), 1);
-    assert_eq!(just_a[0]["project"], pa.display().to_string());
+    assert_eq!(
+        just_a[0]["project"],
+        std::fs::canonicalize(&pa).unwrap().display().to_string()
+    );
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&pa);
     let _ = std::fs::remove_dir_all(&pb);

@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::fallback::RunMode;
 use crate::domain::harness;
+use crate::domain::history::{self, HistoryLabels};
 use crate::domain::hooks::HookSpec;
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::OutputFormat;
@@ -96,6 +97,9 @@ pub struct FileConfig {
     /// Directory the history is written to and read from (like `--history-dir`).
     /// Defaults to `<platform state dir>/oneharness/history` when unset.
     pub history_dir: Option<String>,
+    /// Labels attached to every history record from a run. Layers merge by key;
+    /// higher-precedence values replace only the same key.
+    pub history_labels: Option<HistoryLabels>,
     /// Tool/permission rules the harness may use without prompting, in each
     /// harness's native rule syntax. Delivered by `oneharness sync`, which
     /// merges them into the harness's own project config file (Claude Code's
@@ -332,6 +336,9 @@ pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Option<FileConfi
         require_available: env_bool(&read, "ONEHARNESS_REQUIRE_AVAILABLE")?,
         history: env_bool(&read, "ONEHARNESS_HISTORY")?,
         history_dir: read("ONEHARNESS_HISTORY_DIR"),
+        history_labels: read("ONEHARNESS_HISTORY_LABELS")
+            .map(|value| history::parse_labels(value.split(',').map(str::trim)))
+            .transpose()?,
         ..FileConfig::default()
     };
 
@@ -440,6 +447,17 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
     let mut env = base.env;
     env.extend(over.env);
 
+    let history_labels = match (base.history_labels.clone(), over.history_labels.clone()) {
+        (None, None) => None,
+        (base, higher) => {
+            let mut labels = base.unwrap_or_default();
+            if let Some(higher) = higher {
+                labels.extend(&higher);
+            }
+            Some(labels)
+        }
+    };
+
     let mut harness = base.harness;
     for (id, o) in over.harness {
         let entry = harness.entry(id).or_default();
@@ -477,6 +495,7 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
         require_available: over.require_available.or(base.require_available),
         history: over.history.or(base.history),
         history_dir: over.history_dir.or(base.history_dir),
+        history_labels,
         allowed_tools: over.allowed_tools.or(base.allowed_tools),
         denied_tools: over.denied_tools.or(base.denied_tools),
         hooks: over.hooks.or(base.hooks),
@@ -659,6 +678,8 @@ pub struct ConfigReport {
     pub require_available: Field<bool>,
     pub history: Field<bool>,
     pub history_dir: Field<String>,
+    /// Per-key provenance for history labels.
+    pub history_labels: BTreeMap<String, Field<String>>,
     pub allowed_tools: Field<Vec<String>>,
     pub denied_tools: Field<Vec<String>>,
     pub hooks: Field<Vec<HookEntry>>,
@@ -738,6 +759,19 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         }
     }
 
+    let mut history_labels: BTreeMap<String, Field<String>> = BTreeMap::new();
+    for (path, config) in layers {
+        for (key, value) in config.history_labels.iter().flat_map(HistoryLabels::as_map) {
+            history_labels.insert(
+                key.clone(),
+                Field {
+                    value: Some(value.clone()),
+                    source: Some(path.clone()),
+                },
+            );
+        }
+    }
+
     let mut harness: BTreeMap<String, HarnessReport> = BTreeMap::new();
     let ids: std::collections::BTreeSet<&String> =
         layers.iter().flat_map(|(_, c)| c.harness.keys()).collect();
@@ -796,6 +830,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         require_available: pick(layers, |c| c.require_available).or_default(false),
         history: pick(layers, |c| c.history).or_default(false),
         history_dir: pick(layers, |c| c.history_dir.clone()),
+        history_labels,
         allowed_tools: pick(layers, |c| c.allowed_tools.clone()),
         denied_tools: pick(layers, |c| c.denied_tools.clone()),
         hooks: pick(layers, |c| c.hooks.clone()),
@@ -1266,6 +1301,7 @@ mod tests {
             ("ONEHARNESS_REQUIRE_AVAILABLE", "1"),
             ("ONEHARNESS_HISTORY", "true"),
             ("ONEHARNESS_HISTORY_DIR", "/var/hist"),
+            ("ONEHARNESS_HISTORY_LABELS", "graph=release,task=test"),
         ]))
         .unwrap()
         .unwrap();
@@ -1285,6 +1321,13 @@ mod tests {
         assert_eq!(c.require_available, Some(true));
         assert_eq!(c.history, Some(true));
         assert_eq!(c.history_dir.as_deref(), Some("/var/hist"));
+        assert_eq!(
+            c.history_labels.unwrap().as_map(),
+            &BTreeMap::from([
+                ("graph".to_string(), "release".to_string()),
+                ("task".to_string(), "test".to_string()),
+            ])
+        );
     }
 
     #[test]
@@ -1368,6 +1411,47 @@ mod tests {
         let report = explain(&[]);
         assert_eq!(report.history, Field::default_value(false));
         assert_eq!(report.history_dir, Field::unset());
+    }
+
+    #[test]
+    fn history_labels_merge_by_key_and_validate_every_boundary() {
+        let merged = merge(
+            parsed("history_labels = { graph = \"release\", owner = \"config\" }"),
+            parsed("history_labels = { owner = \"environment\", task = \"test\" }"),
+        );
+        assert_eq!(
+            merged.history_labels.unwrap().as_map(),
+            &BTreeMap::from([
+                ("graph".to_string(), "release".to_string()),
+                ("owner".to_string(), "environment".to_string()),
+                ("task".to_string(), "test".to_string()),
+            ])
+        );
+
+        let report = explain(&layers(
+            "history_labels = { graph = \"release\", owner = \"user\" }",
+            "history_labels = { owner = \"project\" }",
+        ));
+        assert_eq!(
+            report.history_labels["graph"].value.as_deref(),
+            Some("release")
+        );
+        assert_eq!(
+            report.history_labels["graph"].source.as_deref(),
+            Some("/user.toml")
+        );
+        assert_eq!(
+            report.history_labels["owner"].value.as_deref(),
+            Some("project")
+        );
+        assert_eq!(
+            report.history_labels["owner"].source.as_deref(),
+            Some("/project.toml")
+        );
+
+        assert!(parse("history_labels = { \"bad/key\" = \"value\" }").is_err());
+        assert!(from_env(env_get(&[("ONEHARNESS_HISTORY_LABELS", "missing")])).is_err());
+        assert!(from_env(env_get(&[("ONEHARNESS_HISTORY_LABELS", "key=")])).is_err());
     }
 
     #[test]

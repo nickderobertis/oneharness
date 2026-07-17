@@ -4,7 +4,7 @@
 //! are added, never repurposed or removed, without bumping the version.
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::domain::batch::BatchStrategy;
@@ -33,7 +33,7 @@ pub enum OutputFormat {
 }
 
 /// The outcome of attempting to run one harness.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Status {
     /// Spawned and exited 0.
@@ -64,7 +64,7 @@ pub struct Capture {
 }
 
 /// One harness's entry in the report.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RunResult {
     /// Canonical harness id (e.g. `claude-code`).
     pub harness: String,
@@ -157,10 +157,10 @@ pub struct RunResult {
 }
 
 /// The top-level `run` report written to stdout.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RunReport {
-    pub schema_version: &'static str,
-    pub oneharness_version: &'static str,
+    pub schema_version: String,
+    pub oneharness_version: String,
     /// The prompt sent. On an ordinary run this is *the* prompt every result
     /// shares; on a **batch** run (see `batch`) it repeats the first prompt for
     /// back-compat, and each result's own `prompt` field is authoritative.
@@ -232,7 +232,7 @@ pub struct RunReport {
 
 /// The uniform session handle for a run (`--session`). Present on
 /// [`RunReport::session`] only when `--session <name>` was requested.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionReport {
     /// The caller's stable handle (`--session <name>`, sanitized for the store).
     pub name: String,
@@ -253,7 +253,7 @@ pub struct SessionReport {
 /// runs). Present on [`RunReport::fallback`] only in that mode. The per-harness
 /// detail lives in `results`; this block summarizes the outcome so a consumer
 /// need not re-derive it from statuses.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FallbackReport {
     /// The harness that actually ran the task (the run stopped there), or `null`
     /// when no candidate could run at all — every one was a startup failure.
@@ -266,7 +266,7 @@ pub struct FallbackReport {
 }
 
 /// One candidate a fallback run fell through, with the reason it could not run.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FallThrough {
     /// Canonical harness id.
     pub harness: String,
@@ -277,7 +277,7 @@ pub struct FallThrough {
 
 /// Metadata for a same-prefix batch run (one harness, N prompts sharing a
 /// cacheable prefix). Present on [`RunReport::batch`] only in that mode.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct BatchReport {
     /// How the prompts were scheduled across the parallel runner.
     pub strategy: BatchStrategy,
@@ -290,4 +290,55 @@ pub struct BatchReport {
     /// the fan-out results' `command` carries the resume/fork flags and their
     /// `usage.cache_read_tokens` reflect the reused prefix.
     pub forked: bool,
+}
+
+/// One line of `oneharness run --stream` output.
+///
+/// Event lines carry normalized actions as they arrive. Exactly one terminal
+/// result line carries the complete report unless the consumer closes the
+/// stream early. This is an output contract, so deserialization deliberately
+/// tolerates additive fields from newer producers.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RunStreamEnvelope {
+    /// A normalized action observed while the harness is still running.
+    Event { event: ActionEvent },
+    /// The complete report that terminates a normally consumed stream.
+    Result { report: RunReport },
+}
+
+impl<'de> Deserialize<'de> for RunStreamEnvelope {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // Serde's internally-tagged-enum buffer does not support u128, while a
+        // RunReport legitimately carries millisecond durations as u128. Decode
+        // the small JSON envelope first so the nested report is deserialized by
+        // serde_json's number-aware value deserializer instead.
+        let value = Value::deserialize(deserializer)?;
+        let kind = value.get("type").and_then(Value::as_str).ok_or_else(|| {
+            serde::de::Error::custom("run stream envelope is missing string field `type`")
+        })?;
+        match kind {
+            "event" => serde_json::from_value(
+                value
+                    .get("event")
+                    .cloned()
+                    .ok_or_else(|| serde::de::Error::custom("event envelope is missing `event`"))?,
+            )
+            .map(|event| Self::Event { event })
+            .map_err(serde::de::Error::custom),
+            "result" => {
+                serde_json::from_value(value.get("report").cloned().ok_or_else(|| {
+                    serde::de::Error::custom("result envelope is missing `report`")
+                })?)
+                .map(|report| Self::Result { report })
+                .map_err(serde::de::Error::custom)
+            }
+            other => Err(serde::de::Error::custom(format!(
+                "unknown run stream envelope type `{other}`"
+            ))),
+        }
+    }
 }

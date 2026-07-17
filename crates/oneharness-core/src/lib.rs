@@ -18,3 +18,5 @@
 pub mod domain;
 pub mod errors;
 pub mod io;
+#[cfg(feature = "sdk-schema")]
+pub mod sdk_schema;

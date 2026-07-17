@@ -57,6 +57,11 @@ require_line .github/workflows/release.yml 'types: [published]' "start distribut
 require_line .github/workflows/release.yml 'run: just check' "run the complete repository gate before publishing"
 require_line .github/workflows/release.yml 'run: scripts/publish-crates.sh' "use the validated crates.io publisher"
 require_line .github/workflows/release.yml 'run: just sdk-check' "use the Node SDK command surface"
+require_line .github/workflows/release.yml 'run: just python-sdk-check' "use the Python SDK command surface"
+require_line .github/workflows/release.yml 'needs: [publish-pypi, build-python-sdk]' "publish the Python SDK only after its exact CLI dependency"
+require_line .github/workflows/release.yml 'name: python-sdk' "retain the Python SDK release artifact"
+require_line .github/workflows/release.yml 'packages-dir: python-sdk-artifact' "publish the Python SDK through PyPI Trusted Publishing"
+require_line .github/workflows/ci.yml 'uses: astral-sh/setup-uv@v6' "install the Python SDK toolchain"
 # This is a literal shell expression in YAML.
 # shellcheck disable=SC2016
 require_line .github/workflows/release.yml 'if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then' "validate release-event tags before using them in paths"

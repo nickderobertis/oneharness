@@ -20,8 +20,11 @@ import type { HistoryList, HistorySessionSummary } from "./history-list.js";
 import type { HistoryListOptions } from "./history-list-options.js";
 import type { HistoryLookup, HistoryLookupByLast, HistoryLookupBySession } from "./history-lookup.js";
 import type { HistoryRecords } from "./history-records.js";
-import type { PermissionMode, RunOptions } from "./options.js";
+import type { HistoryStreamEnvelope } from "./history-stream-envelope.js";
+import type { HistoryWatchOptions } from "./history-watch-options.js";
+import type { HistoryLabels, PermissionMode, RunOptions } from "./options.js";
 import type { HarnessInfo, ListReport, ModeInfo } from "./registry.js";
+import type { RunStreamEnvelope } from "./run-stream-envelope.js";
 
 export type BatchStrategy = BatchReport["strategy"];
 export type ModeHeadless = ModeInfo["headless"];
@@ -106,6 +109,23 @@ export const HarnessInfoSchema: z.ZodType<HarnessInfo> = z.looseObject({
   sync_file: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
 });
 
+export const HistoryLabelsSchema: z.ZodType<HistoryLabels> = z.record(
+  z
+    .string()
+    .regex(new RegExp("^[A-Za-z0-9]", "u"))
+    .refine((value) => [...value].length <= 64, { message: "Too long: expected at most 64 characters" })
+    .refine((value) => !new RegExp("[^A-Za-z0-9._-]", "u").test(value), {
+      message: "Invalid string: must not contain [^A-Za-z0-9._-]",
+    }),
+  z
+    .string()
+    .min(1)
+    .refine((value) => [...value].length <= 256, { message: "Too long: expected at most 256 characters" })
+    .refine((value) => !new RegExp("[\\u0000-\\u001f\\u007f-\\u009f]", "u").test(value), {
+      message: "Invalid string: must not contain [\\u0000-\\u001f\\u007f-\\u009f]",
+    }),
+);
+
 export const HistoryListSchema: z.ZodType<HistoryList> = z.array(z.lazy(() => HistorySessionSummarySchema));
 
 export const HistoryListOptionsSchema: z.ZodType<HistoryListOptions> = z.strictObject({
@@ -148,6 +168,15 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.looseObject({
     .union([z.lazy(() => FailureKindSchema), z.null()])
     .refine((value) => value !== undefined, { message: "Required" }),
   harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  history_id: z
+    .string()
+    .min(36)
+    .regex(
+      new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+    )
+    .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
+    .refine((value) => value !== undefined, { message: "Required" }),
+  labels: z.lazy(() => HistoryLabelsSchema).optional(),
   model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   name: z.string().refine((value) => value !== undefined, { message: "Required" }),
   permission_mode: z.lazy(() => PermissionModeSchema).refine((value) => value !== undefined, { message: "Required" }),
@@ -168,6 +197,7 @@ export const HistoryRecordsSchema: z.ZodType<HistoryRecords> = z.array(z.lazy(()
 export const HistorySessionSummarySchema: z.ZodType<HistorySessionSummary> = z.looseObject({
   harnesses: z.array(z.string()).refine((value) => value !== undefined, { message: "Required" }),
   id: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  labels: z.lazy(() => HistoryLabelsSchema).optional(),
   name: z.string().refine((value) => value !== undefined, { message: "Required" }),
   path: z.string().refine((value) => value !== undefined, { message: "Required" }),
   project: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -176,6 +206,26 @@ export const HistorySessionSummarySchema: z.ZodType<HistorySessionSummary> = z.l
     .gte(0)
     .refine((value) => value !== undefined, { message: "Required" }),
   started: z.string().refine((value) => value !== undefined, { message: "Required" }),
+});
+
+export const HistoryStreamEnvelopeSchema: z.ZodType<HistoryStreamEnvelope> = z.looseObject({
+  record: z.lazy(() => HistoryRecordSchema).refine((value) => value !== undefined, { message: "Required" }),
+  type: z.literal("record").refine((value) => value !== undefined, { message: "Required" }),
+});
+
+export const HistoryWatchOptionsSchema: z.ZodType<HistoryWatchOptions> = z.strictObject({
+  after: z
+    .string()
+    .min(36)
+    .regex(
+      new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+    )
+    .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
+    .optional(),
+  allProjects: z.boolean().optional(),
+  historyDir: z.string().optional(),
+  labels: z.lazy(() => HistoryLabelsSchema).optional(),
+  project: z.string().optional(),
 });
 
 export const ListReportSchema: z.ZodType<ListReport> = z.looseObject({
@@ -214,6 +264,7 @@ export const RunOptionsSchema: z.ZodType<RunOptions> = z.strictObject({
   harnesses: z.array(z.string()).optional(),
   history: z.boolean().optional(),
   historyDir: z.string().optional(),
+  historyLabels: z.lazy(() => HistoryLabelsSchema).optional(),
   historyName: z.string().optional(),
   mode: z.lazy(() => PermissionModeSchema).optional(),
   models: z.array(z.string()).optional(),
@@ -291,6 +342,17 @@ export const RunResultSchema: z.ZodType<RunResult> = z.looseObject({
   usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
   usage_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
 });
+
+export const RunStreamEnvelopeSchema: z.ZodType<RunStreamEnvelope> = z.union([
+  z.looseObject({
+    event: z.lazy(() => ActionEventSchema).refine((value) => value !== undefined, { message: "Required" }),
+    type: z.literal("event").refine((value) => value !== undefined, { message: "Required" }),
+  }),
+  z.looseObject({
+    report: z.lazy(() => RunReportSchema).refine((value) => value !== undefined, { message: "Required" }),
+    type: z.literal("result").refine((value) => value !== undefined, { message: "Required" }),
+  }),
+]);
 
 export const SessionPhaseSchema: z.ZodType<SessionPhase> = z.union([z.literal("create"), z.literal("continue")]);
 

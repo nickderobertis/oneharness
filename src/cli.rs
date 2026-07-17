@@ -54,6 +54,17 @@ pub enum HistoryFormat {
     Text,
 }
 
+/// The continuous history stream's wire format. Kept separate from list/show so
+/// those bounded commands cannot accidentally accept an unbounded format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryWatchFormat {
+    Jsonl,
+}
+
+fn history_watch_format_parser() -> impl TypedValueParser<Value = HistoryWatchFormat> {
+    PossibleValuesParser::new(["jsonl"]).map(|_| HistoryWatchFormat::Jsonl)
+}
+
 /// Parse `--format` into [`HistoryFormat`], keeping the possible-value list in
 /// the binary (json is the default, applied on the field).
 fn history_format_parser() -> impl TypedValueParser<Value = HistoryFormat> {
@@ -154,9 +165,54 @@ pub enum HistoryCommand {
     /// Print the normalized records of one session, resolved by id or name (name
     /// is non-unique — the newest match wins unless --all is given).
     Show(HistoryShowArgs),
+    /// Follow normalized history records continuously. Existing records are
+    /// emitted first (or only records after --after), then new records as they
+    /// are indexed. Output is one tagged JSON envelope per line.
+    Watch(HistoryWatchArgs),
     /// Delete recorded sessions. Reports what it WOULD remove and removes nothing
     /// unless --yes is given (so it is safe to run non-interactively first).
     Clear(HistoryClearArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct HistoryWatchArgs {
+    /// Resume strictly after this history record UUID, without duplicating it.
+    #[arg(long, value_name = "CURSOR")]
+    pub after: Option<String>,
+
+    /// Emit only records carrying this exact KEY=VALUE label (repeatable; all
+    /// filters must match).
+    #[arg(long = "label", value_name = "KEY=VALUE")]
+    pub label: Vec<String>,
+
+    /// Follow records for this project; defaults to the current directory.
+    #[arg(long, value_name = "DIR")]
+    pub project: Option<PathBuf>,
+
+    /// Follow records across every project.
+    #[arg(long, conflicts_with = "project")]
+    pub all_projects: bool,
+
+    /// History directory to follow (default: config `history_dir`,
+    /// ONEHARNESS_HISTORY_DIR, else the platform state dir).
+    #[arg(long, value_name = "DIR")]
+    pub history_dir: Option<PathBuf>,
+
+    /// Streaming output format. `jsonl` is currently the only format.
+    #[arg(
+        long,
+        value_parser = history_watch_format_parser(),
+        default_value = "jsonl"
+    )]
+    pub format: HistoryWatchFormat,
+
+    /// Load configuration from this file only (skip user/project discovery).
+    #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
+    pub config: Option<PathBuf>,
+
+    /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
+    #[arg(long)]
+    pub no_config: bool,
 }
 
 #[derive(Args, Debug)]
@@ -555,6 +611,12 @@ pub struct RunArgs {
     /// first prompt.
     #[arg(long, value_name = "NAME")]
     pub history_name: Option<String>,
+
+    /// Attach a validated KEY=VALUE label to every history record (repeatable).
+    /// Labels from the CLI override the same keys from
+    /// ONEHARNESS_HISTORY_LABELS and config `history_labels`.
+    #[arg(long = "history-label", value_name = "KEY=VALUE")]
+    pub history_label: Vec<String>,
 
     /// Emit compact single-line JSON instead of pretty-printed.
     #[arg(long)]

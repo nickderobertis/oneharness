@@ -110,8 +110,20 @@ export const HarnessInfoSchema: z.ZodType<HarnessInfo> = z.looseObject({
 });
 
 export const HistoryLabelsSchema: z.ZodType<HistoryLabels> = z.record(
-  z.string().regex(new RegExp("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", "u")),
-  z.string().min(1).max(256).regex(new RegExp("^[^\\u0000-\\u001f\\u007f]*$", "u")),
+  z
+    .string()
+    .regex(new RegExp("^[A-Za-z0-9]", "u"))
+    .refine((value) => [...value].length <= 64, { message: "Too long: expected at most 64 characters" })
+    .refine((value) => !new RegExp("[^A-Za-z0-9._-]", "u").test(value), {
+      message: "Invalid string: must not contain [^A-Za-z0-9._-]",
+    }),
+  z
+    .string()
+    .min(1)
+    .refine((value) => [...value].length <= 256, { message: "Too long: expected at most 256 characters" })
+    .refine((value) => !new RegExp("[\\u0000-\\u001f\\u007f-\\u009f]", "u").test(value), {
+      message: "Invalid string: must not contain [\\u0000-\\u001f\\u007f-\\u009f]",
+    }),
 );
 
 export const HistoryListSchema: z.ZodType<HistoryList> = z.array(z.lazy(() => HistorySessionSummarySchema));
@@ -158,7 +170,11 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.looseObject({
   harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
   history_id: z
     .string()
-    .regex(new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"))
+    .min(36)
+    .regex(
+      new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+    )
+    .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
     .refine((value) => value !== undefined, { message: "Required" }),
   labels: z.lazy(() => HistoryLabelsSchema).optional(),
   model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
@@ -200,7 +216,11 @@ export const HistoryStreamEnvelopeSchema: z.ZodType<HistoryStreamEnvelope> = z.l
 export const HistoryWatchOptionsSchema: z.ZodType<HistoryWatchOptions> = z.strictObject({
   after: z
     .string()
-    .regex(new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"))
+    .min(36)
+    .regex(
+      new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+    )
+    .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
     .optional(),
   allProjects: z.boolean().optional(),
   historyDir: z.string().optional(),

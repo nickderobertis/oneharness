@@ -20,6 +20,7 @@ const METADATA_KEYS = new Set([
  * @property {JsonSchemaNode[]=} oneOf
  * @property {JsonSchemaNode[]=} anyOf
  * @property {JsonSchemaNode[]=} allOf
+ * @property {JsonSchemaNode=} not
  * @property {Record<string, JsonSchemaNode>=} properties
  * @property {JsonSchemaNode=} propertyNames
  * @property {string[]=} required
@@ -187,11 +188,32 @@ function numberExpression(schema, path, integer) {
 	return expression;
 }
 
+/**
+ * Read the single forbidden pattern a string schema's `not` may carry.
+ *
+ * @param {JsonSchemaNode} forbidden
+ * @param {string} path
+ * @returns {string}
+ */
+function forbiddenPattern(forbidden, path) {
+	if (
+		!forbidden ||
+		typeof forbidden !== "object" ||
+		Object.keys(forbidden).length !== 1 ||
+		typeof forbidden.pattern !== "string"
+	) {
+		throw new Error(
+			`unsupported JSON Schema \`not\` at ${path}; only a lone forbidden \`pattern\` is enforced — extend scripts/zod-generator.mjs to enforce this shape, then rerun just sdk-generate`,
+		);
+	}
+	return forbidden.pattern;
+}
+
 /** @param {JsonSchemaObject} schema @param {string} path @returns {string} */
 function stringExpression(schema, path) {
 	assertSupported(
 		schema,
-		new Set(["type", "minLength", "maxLength", "pattern", "format"]),
+		new Set(["type", "minLength", "maxLength", "pattern", "not", "format"]),
 		path,
 	);
 	if (schema.format) {
@@ -201,9 +223,23 @@ function stringExpression(schema, path) {
 	}
 	let expression = "z.string()";
 	if (schema.minLength !== undefined) expression += `.min(${schema.minLength})`;
-	if (schema.maxLength !== undefined) expression += `.max(${schema.maxLength})`;
 	if (schema.pattern !== undefined)
 		expression += `.regex(new RegExp(${JSON.stringify(schema.pattern)}, "u"))`;
+	// JSON Schema measures a string's length in Unicode code points, while Zod's
+	// `.max()` measures JavaScript's UTF-16 code units — so an astral character
+	// would count twice and this validator would reject a value Rust and the
+	// Python SDK both accept. Spread to count code points instead.
+	if (schema.maxLength !== undefined) {
+		expression += `.refine((value) => [...value].length <= ${schema.maxLength}, { message: ${JSON.stringify(
+			`Too long: expected at most ${schema.maxLength} characters`,
+		)} })`;
+	}
+	if (schema.not !== undefined) {
+		const forbidden = forbiddenPattern(schema.not, `${path}.not`);
+		expression += `.refine((value) => !new RegExp(${JSON.stringify(forbidden)}, "u").test(value), { message: ${JSON.stringify(
+			`Invalid string: must not contain ${forbidden}`,
+		)} })`;
+	}
 	return expression;
 }
 
@@ -364,8 +400,19 @@ function schemaExpression(schema, path) {
 				"minProperties",
 				"maxProperties",
 			]),
-			string: new Set(["minLength", "maxLength", "pattern", "format"]),
+			string: new Set(["minLength", "maxLength", "pattern", "not", "format"]),
 		};
+		// Each member keeps only the keywords that constrain its own type, so a
+		// keyword none of these types claims would be filtered away silently
+		// rather than enforced. Reject it here instead.
+		assertSupported(
+			schema,
+			new Set([
+				"type",
+				...schema.type.flatMap((type) => [...(typeKeywords[type] ?? [])]),
+			]),
+			path,
+		);
 		return union(
 			schema.type.map((type) => {
 				const allowed = typeKeywords[type];

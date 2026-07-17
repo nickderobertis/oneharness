@@ -60,11 +60,17 @@
         "additionalProperties": {
           "maxLength": 256,
           "minLength": 1,
-          "pattern": "^[^\\u0000-\\u001f\\u007f]*$",
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+          },
           "type": "string"
         },
         "propertyNames": {
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "maxLength": 64,
+          "not": {
+            "pattern": "[^A-Za-z0-9._-]"
+          },
+          "pattern": "^[A-Za-z0-9]",
           "type": "string"
         },
         "type": "object"
@@ -296,11 +302,17 @@
         "additionalProperties": {
           "maxLength": 256,
           "minLength": 1,
-          "pattern": "^[^\\u0000-\\u001f\\u007f]*$",
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+          },
           "type": "string"
         },
         "propertyNames": {
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "maxLength": 64,
+          "not": {
+            "pattern": "[^A-Za-z0-9._-]"
+          },
+          "pattern": "^[A-Za-z0-9]",
           "type": "string"
         },
         "type": "object"
@@ -478,7 +490,9 @@
       },
       "history_id": {
         "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
-        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+        "maxLength": 36,
+        "minLength": 36,
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
         "type": "string"
       },
       "labels": {
@@ -648,11 +662,17 @@
         "additionalProperties": {
           "maxLength": 256,
           "minLength": 1,
-          "pattern": "^[^\\u0000-\\u001f\\u007f]*$",
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+          },
           "type": "string"
         },
         "propertyNames": {
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "maxLength": 64,
+          "not": {
+            "pattern": "[^A-Za-z0-9._-]"
+          },
+          "pattern": "^[A-Za-z0-9]",
           "type": "string"
         },
         "type": "object"
@@ -702,7 +722,9 @@
           },
           "history_id": {
             "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
-            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "maxLength": 36,
+            "minLength": 36,
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
             "type": "string"
           },
           "labels": {
@@ -1006,11 +1028,17 @@
         "additionalProperties": {
           "maxLength": 256,
           "minLength": 1,
-          "pattern": "^[^\\u0000-\\u001f\\u007f]*$",
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+          },
           "type": "string"
         },
         "propertyNames": {
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "maxLength": 64,
+          "not": {
+            "pattern": "[^A-Za-z0-9._-]"
+          },
+          "pattern": "^[A-Za-z0-9]",
           "type": "string"
         },
         "type": "object"
@@ -1060,7 +1088,9 @@
           },
           "history_id": {
             "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
-            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "maxLength": 36,
+            "minLength": 36,
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
             "type": "string"
           },
           "labels": {
@@ -1310,11 +1340,17 @@
         "additionalProperties": {
           "maxLength": 256,
           "minLength": 1,
-          "pattern": "^[^\\u0000-\\u001f\\u007f]*$",
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+          },
           "type": "string"
         },
         "propertyNames": {
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "maxLength": 64,
+          "not": {
+            "pattern": "[^A-Za-z0-9._-]"
+          },
+          "pattern": "^[A-Za-z0-9]",
           "type": "string"
         },
         "type": "object"
@@ -1325,7 +1361,9 @@
     "description": "Options accepted by the language SDKs' continuous history iterators.\n\nThe CLI spells `labels` as repeated `--label key=value` arguments, while an\nSDK can expose the validated map directly. Unknown fields remain a boundary\nerror, as they are for every other SDK input contract.",
     "properties": {
       "after": {
-        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+        "maxLength": 36,
+        "minLength": 36,
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
         "type": "string"
       },
       "all_projects": {
@@ -1576,11 +1614,17 @@
         "additionalProperties": {
           "maxLength": 256,
           "minLength": 1,
-          "pattern": "^[^\\u0000-\\u001f\\u007f]*$",
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+          },
           "type": "string"
         },
         "propertyNames": {
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "maxLength": 64,
+          "not": {
+            "pattern": "[^A-Za-z0-9._-]"
+          },
+          "pattern": "^[A-Za-z0-9]",
           "type": "string"
         },
         "type": "object"

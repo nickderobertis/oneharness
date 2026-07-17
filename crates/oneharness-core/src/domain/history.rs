@@ -19,7 +19,8 @@ use std::str::FromStr;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use uuid::Uuid;
+use thiserror::Error;
+use uuid::{Uuid, Variant};
 
 use crate::domain::events::ActionEvent;
 use crate::domain::mode::PermissionMode;
@@ -34,15 +35,50 @@ pub const SCHEMA_VERSION: &str = "0.2";
 /// The legacy record contract accepted by the migration reader.
 pub const LEGACY_SCHEMA_VERSION: &str = "0.1";
 
+/// Label lengths are bounded in *characters* — Unicode code points. That is the
+/// unit JSON Schema's `maxLength` measures in, and therefore the one unit both
+/// the runtime checks below and every generated SDK validator can agree on; a
+/// byte bound is not expressible in the schema the SDKs are generated from.
 const LABEL_KEY_MAX: usize = 64;
 const LABEL_VALUE_MAX: usize = 256;
+
+/// Canonical hyphenated UUID text is always exactly this many characters. The
+/// bound is load-bearing, not decoration: a regex `$` also matches *before* a
+/// trailing newline in some engines the SDKs validate with (Python's `re`, which
+/// drives the generated Python schemas), so pinning the length is what keeps
+/// `"<uuid>\n"` from slipping past [`UUID_PATTERN`] there but not here.
+const UUID_LEN: usize = 36;
+/// Canonical hyphenated UUID text carrying the RFC 4122 variant (`[89abAB]`) and
+/// a defined version (`[1-8]`) — exactly what [`HistoryId::from_str`] accepts.
 const UUID_PATTERN: &str =
-    "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$";
-const LABEL_KEY_PATTERN: &str = "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$";
+    "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$";
+/// A label key begins with a letter or digit...
+const LABEL_KEY_START_PATTERN: &str = "^[A-Za-z0-9]";
+/// ...and carries nothing outside the permitted set. Stated as a *forbidden*
+/// unanchored search rather than an anchored allow-list so the schema needs no
+/// `$`, whose meaning differs across the regex engines the SDKs validate with
+/// (see [`UUID_LEN`]).
+const LABEL_KEY_FORBIDDEN_PATTERN: &str = "[^A-Za-z0-9._-]";
+/// Every character Rust classifies as control (Unicode `Cc`): C0, DEL, *and* the
+/// C1 block. Kept exactly in step with [`char::is_control`], which is what the
+/// runtime checks, and forbidden by search for the same reason as
+/// [`LABEL_KEY_FORBIDDEN_PATTERN`].
+const LABEL_VALUE_FORBIDDEN_PATTERN: &str = "[\\u0000-\\u001f\\u007f-\\u009f]";
+
+/// The error returned when text is not a canonical [`HistoryId`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error(
+    "must be a canonical hyphenated UUID with a version between 1 and 8 and the RFC 4122 variant"
+)]
+pub struct HistoryIdError;
 
 /// A validated history-record identifier. New records are minted as UUIDv7 in
 /// the I/O layer; legacy records are assigned deterministic UUIDv5 values while
 /// being read, so the same v0.1 line always receives the same stable id.
+///
+/// Parsed text must be the canonical hyphenated spelling carrying the RFC 4122
+/// variant and a defined version — both of which every minted id (v5 and v7)
+/// satisfies, and both of which [`UUID_PATTERN`] promises consumers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
 pub struct HistoryId(Uuid);
@@ -75,10 +111,24 @@ impl fmt::Display for HistoryId {
 }
 
 impl FromStr for HistoryId {
-    type Err = uuid::Error;
+    type Err = HistoryIdError;
 
+    /// Accept exactly what [`UUID_PATTERN`] promises. `Uuid::parse_str` is laxer
+    /// on both counts: it also takes the simple, braced, and URN spellings, and
+    /// it reads any variant or version bits — including the nil UUID. Comparing
+    /// against the parsed value's own canonical rendering is what rejects the
+    /// alternate spellings while still accepting upper-case hex.
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Uuid::parse_str(value).map(Self)
+        let uuid = Uuid::parse_str(value).map_err(|_| HistoryIdError)?;
+        if uuid.hyphenated().to_string() != value.to_ascii_lowercase() {
+            return Err(HistoryIdError);
+        }
+        if !matches!(uuid.get_variant(), Variant::RFC4122)
+            || !(1..=8).contains(&uuid.get_version_num())
+        {
+            return Err(HistoryIdError);
+        }
+        Ok(Self(uuid))
     }
 }
 
@@ -105,6 +155,8 @@ impl JsonSchema for HistoryId {
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
         schemars::json_schema!({
             "type": "string",
+            "minLength": UUID_LEN,
+            "maxLength": UUID_LEN,
             "pattern": UUID_PATTERN,
         })
     }
@@ -112,7 +164,8 @@ impl JsonSchema for HistoryId {
 
 /// A validated, deterministically ordered label set attached to every record in
 /// one history session. Keys are portable identifier-like strings; values are
-/// non-empty, bounded strings without control characters.
+/// non-empty strings without control characters, bounded in characters (see
+/// [`LABEL_VALUE_MAX`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct HistoryLabels(BTreeMap<String, String>);
@@ -173,13 +226,15 @@ impl JsonSchema for HistoryLabels {
             "type": "object",
             "propertyNames": {
                 "type": "string",
-                "pattern": LABEL_KEY_PATTERN,
+                "maxLength": LABEL_KEY_MAX,
+                "pattern": LABEL_KEY_START_PATTERN,
+                "not": { "pattern": LABEL_KEY_FORBIDDEN_PATTERN },
             },
             "additionalProperties": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": LABEL_VALUE_MAX,
-                "pattern": "^[^\\u0000-\\u001f\\u007f]*$",
+                "not": { "pattern": LABEL_VALUE_FORBIDDEN_PATTERN },
             },
         })
     }
@@ -211,7 +266,7 @@ pub fn parse_labels<'a>(
 
 fn validate_label(key: &str, value: &str) -> Result<(), String> {
     let valid_key = !key.is_empty()
-        && key.len() <= LABEL_KEY_MAX
+        && key.chars().count() <= LABEL_KEY_MAX
         && key.chars().enumerate().all(|(index, c)| {
             c.is_ascii_alphanumeric() || (index > 0 && matches!(c, '.' | '_' | '-'))
         });
@@ -225,9 +280,9 @@ fn validate_label(key: &str, value: &str) -> Result<(), String> {
             "invalid history label `{key}`: value must not be empty"
         ));
     }
-    if value.len() > LABEL_VALUE_MAX {
+    if value.chars().count() > LABEL_VALUE_MAX {
         return Err(format!(
-            "invalid history label `{key}`: value exceeds {LABEL_VALUE_MAX} bytes"
+            "invalid history label `{key}`: value exceeds {LABEL_VALUE_MAX} characters"
         ));
     }
     if value.chars().any(char::is_control) {
@@ -718,6 +773,114 @@ mod tests {
         }
         assert!(parse_label("key=line\nbreak").is_err());
         assert!(parse_label(&format!("key={}", "x".repeat(LABEL_VALUE_MAX + 1))).is_err());
+    }
+
+    #[test]
+    fn label_lengths_are_bounded_in_characters_not_bytes() {
+        // The bound is stated in characters because that is the unit the JSON
+        // Schema the SDKs are generated from can express. An astral character is
+        // four UTF-8 bytes, so a byte bound would reject this at a quarter of the
+        // documented limit.
+        let astral = "🚀".repeat(LABEL_VALUE_MAX);
+        assert_eq!(astral.len(), LABEL_VALUE_MAX * 4);
+        assert!(parse_label(&format!("key={astral}")).is_ok());
+
+        let over = "🚀".repeat(LABEL_VALUE_MAX + 1);
+        let error = parse_label(&format!("key={over}")).expect_err("one character too many");
+        assert!(error.contains("exceeds 256 characters"), "{error}");
+
+        assert!(parse_label(&format!("{}=value", "k".repeat(LABEL_KEY_MAX))).is_ok());
+        assert!(parse_label(&format!("{}=value", "k".repeat(LABEL_KEY_MAX + 1))).is_err());
+    }
+
+    #[test]
+    fn label_values_reject_every_character_rust_calls_control() {
+        // Including the C1 block, which the schema's allow-list once let through
+        // while this runtime check rejected it.
+        for control in ['\u{0}', '\u{1f}', '\u{7f}', '\u{80}', '\u{85}', '\u{9f}'] {
+            assert!(control.is_control(), "{control:?} must be a control char");
+            assert!(
+                parse_label(&format!("key=a{control}b")).is_err(),
+                "{control:?} must be rejected"
+            );
+        }
+        // A lone trailing newline is the spelling a `$`-anchored schema pattern
+        // would miss under a regex engine whose `$` also matches before one.
+        assert!(parse_label("key=value\n").is_err());
+        // Neighbours of the control ranges stay valid.
+        assert!(parse_label("key=caf\u{e9} \u{7e}\u{a0}").is_ok());
+    }
+
+    #[test]
+    fn history_id_accepts_only_canonical_hyphenated_text() {
+        let canonical = "01931b0f-4a3c-7cde-bf12-3456789abcde";
+        assert_eq!(
+            canonical.parse::<HistoryId>().unwrap().to_string(),
+            canonical
+        );
+        // Upper-case hex names the same id; every other spelling `Uuid::parse_str`
+        // would take is not the canonical text the schema promises.
+        assert_eq!(
+            canonical
+                .to_ascii_uppercase()
+                .parse::<HistoryId>()
+                .unwrap()
+                .to_string(),
+            canonical
+        );
+        for rejected in [
+            "01931b0f4a3c7cdebf123456789abcde",       // simple, unhyphenated
+            "{01931b0f-4a3c-7cde-bf12-3456789abcde}", // braced
+            "urn:uuid:01931b0f-4a3c-7cde-bf12-3456789abcde", // URN
+            "01931b0f-4a3c-7cde-bf12-3456789abcde\n", // trailing newline
+            "01931b0f-4a3c-7cde-0f12-3456789abcde",   // NCS variant
+            "01931b0f-4a3c-7cde-cf12-3456789abcde",   // Microsoft variant
+            "01931b0f-4a3c-0cde-bf12-3456789abcde",   // undefined version
+            "01931b0f-4a3c-9cde-bf12-3456789abcde",   // undefined version
+            "00000000-0000-0000-0000-000000000000",   // nil
+            "not-a-uuid",
+        ] {
+            assert!(
+                rejected.parse::<HistoryId>().is_err(),
+                "{rejected} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn schemas_state_exactly_what_the_runtime_enforces() {
+        // These are hand-written, so nothing but a test keeps them in step with
+        // `validate_label` and `HistoryId::from_str` above. Every SDK's validator
+        // is generated from them.
+        let labels = schemars::schema_for!(HistoryLabels);
+        let labels = labels.as_value();
+        let value = &labels["additionalProperties"];
+        assert_eq!(value["minLength"], 1);
+        assert_eq!(value["maxLength"], LABEL_VALUE_MAX);
+        assert_eq!(value["not"]["pattern"], LABEL_VALUE_FORBIDDEN_PATTERN);
+        // An anchored allow-list would let a trailing newline through a regex
+        // engine whose `$` matches before one, so there must be no `pattern`.
+        assert!(value.get("pattern").is_none(), "{value}");
+
+        let key = &labels["propertyNames"];
+        assert_eq!(key["maxLength"], LABEL_KEY_MAX);
+        assert_eq!(key["pattern"], LABEL_KEY_START_PATTERN);
+        assert_eq!(key["not"]["pattern"], LABEL_KEY_FORBIDDEN_PATTERN);
+
+        let id = schemars::schema_for!(HistoryId);
+        let id = id.as_value();
+        assert_eq!(id["pattern"], UUID_PATTERN);
+        assert_eq!(id["minLength"], UUID_LEN);
+        assert_eq!(id["maxLength"], UUID_LEN);
+    }
+
+    #[test]
+    fn minted_history_ids_round_trip_through_the_public_contract() {
+        // A migrated legacy record is the one id minted in this pure layer, so the
+        // text it renders must be text the same contract accepts back.
+        let id = HistoryId::legacy(b"stable-key");
+        assert_eq!(id.as_uuid().get_version_num(), 5);
+        assert_eq!(id.to_string().parse::<HistoryId>().unwrap(), id);
     }
 
     #[test]

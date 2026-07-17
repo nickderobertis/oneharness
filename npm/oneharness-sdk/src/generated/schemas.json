@@ -1530,11 +1530,17 @@
           "type": "string",
           "maxLength": 256,
           "minLength": 1,
-          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+          }
         },
         "propertyNames": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+          "maxLength": 64,
+          "not": {
+            "pattern": "[^A-Za-z0-9._-]"
+          },
+          "pattern": "^[A-Za-z0-9]"
         }
       },
       "PermissionMode": {
@@ -1673,7 +1679,9 @@
     "properties": {
       "after": {
         "type": "string",
-        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        "maxLength": 36,
+        "minLength": 36,
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
       },
       "allProjects": {
         "type": "boolean"
@@ -1696,11 +1704,17 @@
           "type": "string",
           "maxLength": 256,
           "minLength": 1,
-          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+          }
         },
         "propertyNames": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+          "maxLength": 64,
+          "not": {
+            "pattern": "[^A-Za-z0-9._-]"
+          },
+          "pattern": "^[A-Za-z0-9]"
         }
       }
     }
@@ -1754,7 +1768,9 @@
       "history_id": {
         "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
         "type": "string",
-        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        "maxLength": 36,
+        "minLength": 36,
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
       },
       "labels": {
         "description": "Caller-supplied metadata used to select related task-graph records.\nOmitted on the wire when empty for additive compatibility.",
@@ -1921,11 +1937,17 @@
           "type": "string",
           "maxLength": 256,
           "minLength": 1,
-          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+          }
         },
         "propertyNames": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+          "maxLength": 64,
+          "not": {
+            "pattern": "[^A-Za-z0-9._-]"
+          },
+          "pattern": "^[A-Za-z0-9]"
         }
       },
       "PermissionMode": {
@@ -2157,11 +2179,17 @@
           "type": "string",
           "maxLength": 256,
           "minLength": 1,
-          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+          }
         },
         "propertyNames": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+          "maxLength": 64,
+          "not": {
+            "pattern": "[^A-Za-z0-9._-]"
+          },
+          "pattern": "^[A-Za-z0-9]"
         }
       },
       "HistoryRecord": {
@@ -2211,7 +2239,9 @@
           "history_id": {
             "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
             "type": "string",
-            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            "maxLength": 36,
+            "minLength": 36,
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
           },
           "labels": {
             "description": "Caller-supplied metadata used to select related task-graph records.\nOmitted on the wire when empty for additive compatibility.",
@@ -2515,11 +2545,17 @@
           "type": "string",
           "maxLength": 256,
           "minLength": 1,
-          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+          }
         },
         "propertyNames": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+          "maxLength": 64,
+          "not": {
+            "pattern": "[^A-Za-z0-9._-]"
+          },
+          "pattern": "^[A-Za-z0-9]"
         }
       },
       "HistoryRecord": {
@@ -2569,7 +2605,9 @@
           "history_id": {
             "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
             "type": "string",
-            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            "maxLength": 36,
+            "minLength": 36,
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
           },
           "labels": {
             "description": "Caller-supplied metadata used to select related task-graph records.\nOmitted on the wire when empty for additive compatibility.",
@@ -2803,11 +2841,17 @@
           "type": "string",
           "maxLength": 256,
           "minLength": 1,
-          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+          }
         },
         "propertyNames": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+          "maxLength": 64,
+          "not": {
+            "pattern": "[^A-Za-z0-9._-]"
+          },
+          "pattern": "^[A-Za-z0-9]"
         }
       },
       "HistorySessionSummary": {

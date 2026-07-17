@@ -56,6 +56,40 @@
       "value": { "prompt": "bad label", "historyLabels": { "bad/key": "value" } }
     },
     {
+      "name": "run label value with a C1 control character",
+      "root": "run_options",
+      "accepted": false,
+      "value": { "prompt": "c1 control", "historyLabels": { "graph": "releaserollback" } }
+    },
+    {
+      "name": "run label value with a trailing newline",
+      "root": "run_options",
+      "accepted": false,
+      "value": { "prompt": "trailing newline", "historyLabels": { "graph": "release\n" } }
+    },
+    {
+      "name": "run multibyte label value within the character limit",
+      "root": "run_options",
+      "accepted": true,
+      "value": {
+        "prompt": "multibyte label",
+        "historyLabels": {
+          "graph": "🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀"
+        }
+      }
+    },
+    {
+      "name": "run label value beyond the character limit",
+      "root": "run_options",
+      "accepted": false,
+      "value": {
+        "prompt": "overlong label",
+        "historyLabels": {
+          "graph": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      }
+    },
+    {
       "name": "history lookup by session",
       "root": "history_lookup",
       "accepted": true,
@@ -137,6 +171,60 @@
       "root": "history_watch_options",
       "accepted": false,
       "value": { "after": "not-a-cursor" }
+    },
+    {
+      "name": "history watch cursor in canonical upper case",
+      "root": "history_watch_options",
+      "accepted": true,
+      "value": { "after": "01931B0F-4A3C-7CDE-BF12-3456789ABCDE" }
+    },
+    {
+      "name": "history watch cursor as a UUIDv5 legacy id",
+      "root": "history_watch_options",
+      "accepted": true,
+      "value": { "after": "01931b0f-4a3c-5cde-bf12-3456789abcde" }
+    },
+    {
+      "name": "history watch cursor without hyphens",
+      "root": "history_watch_options",
+      "accepted": false,
+      "value": { "after": "01931b0f4a3c7cdebf123456789abcde" }
+    },
+    {
+      "name": "history watch cursor in braced form",
+      "root": "history_watch_options",
+      "accepted": false,
+      "value": { "after": "{01931b0f-4a3c-7cde-bf12-3456789abcde}" }
+    },
+    {
+      "name": "history watch cursor in urn form",
+      "root": "history_watch_options",
+      "accepted": false,
+      "value": { "after": "urn:uuid:01931b0f-4a3c-7cde-bf12-3456789abcde" }
+    },
+    {
+      "name": "history watch cursor with a trailing newline",
+      "root": "history_watch_options",
+      "accepted": false,
+      "value": { "after": "01931b0f-4a3c-7cde-bf12-3456789abcde\n" }
+    },
+    {
+      "name": "history watch cursor with a non-RFC-4122 variant",
+      "root": "history_watch_options",
+      "accepted": false,
+      "value": { "after": "01931b0f-4a3c-7cde-0f12-3456789abcde" }
+    },
+    {
+      "name": "history watch cursor with an undefined version",
+      "root": "history_watch_options",
+      "accepted": false,
+      "value": { "after": "01931b0f-4a3c-0cde-bf12-3456789abcde" }
+    },
+    {
+      "name": "history watch cursor as the nil uuid",
+      "root": "history_watch_options",
+      "accepted": false,
+      "value": { "after": "00000000-0000-0000-0000-000000000000" }
     },
     {
       "name": "history watch invalid label",

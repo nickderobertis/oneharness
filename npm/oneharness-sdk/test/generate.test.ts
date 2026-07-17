@@ -247,6 +247,35 @@ test("Zod generation validates every supported schema boundary", () => {
 		{ type: "string", minItems: 1 },
 		"extend scripts/zod-generator.mjs to enforce it, then rerun just sdk-generate",
 	);
+	// A string's length is measured in code points, not the UTF-16 code units
+	// Zod's `.max()` counts, so the bound is generated as a spread instead.
+	expect(render({ type: "string", minLength: 1, maxLength: 4 })).toContain(
+		"z.string().min(1).refine((value) => [...value].length <= 4",
+	);
+	expect(
+		render({ type: "string", not: { pattern: "[\\u0000-\\u001f]" } }),
+	).toContain(
+		'.refine((value) => !new RegExp("[\\\\u0000-\\\\u001f]", "u").test(value)',
+	);
+	for (const unsupported of [
+		{ pattern: "a", minLength: 1 },
+		{ minLength: 1 },
+		true,
+	]) {
+		reject(
+			{ type: "string", not: unsupported },
+			"unsupported JSON Schema `not` at boundary.not",
+		);
+	}
+	// A keyword no member of a nullable union claims would otherwise be filtered
+	// away silently rather than enforced.
+	reject(
+		{ type: ["string", "null"], minItems: 1 },
+		"unsupported JSON Schema keyword boundary.minItems",
+	);
+	expect(render({ type: ["string", "null"], not: { pattern: "x" } })).toContain(
+		".test(value)",
+	);
 	reject({ $ref: "other.json" }, "unsupported non-local JSON Schema reference");
 	reject(
 		{ $ref: "#/$defs/not/a/name" },

@@ -829,6 +829,16 @@ mod tests {
         assert_eq!(records[0].labels.as_map().get("graph").unwrap(), "deploy");
         assert_eq!(records[1].harness, "codex");
         assert_eq!(records[0].history_id.as_uuid().get_version_num(), 7);
+        // A minted id must be text the public cursor contract accepts back, or
+        // `history watch --after` could not resume from the record it just wrote.
+        assert_eq!(
+            records[0]
+                .history_id
+                .to_string()
+                .parse::<HistoryId>()
+                .unwrap(),
+            records[0].history_id
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

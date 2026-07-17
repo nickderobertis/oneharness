@@ -10,9 +10,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use wait_timeout::ChildExt;
-
 use crate::domain::report::{Capture, Status};
+use crate::io::process::{Finish, PipeEvent, Process};
 
 /// A fully-specified subprocess to run.
 #[derive(Clone)]
@@ -213,8 +212,8 @@ fn stdin_stdio(job: &Job) -> (Stdio, Option<String>) {
 /// (drop closes the pipe, signalling EOF). Off-thread so a child that fills its
 /// stdout mid-write can never deadlock the parent. A write failure (the child
 /// exited early / closed stdin) is ignored — its exit/output is the real signal.
-fn feed_stdin(child: &mut std::process::Child, bytes: String) {
-    if let Some(mut stdin) = child.stdin.take() {
+fn feed_stdin(process: &mut Process, bytes: String) {
+    if let Some(mut stdin) = process.take_stdin() {
         std::thread::spawn(move || {
             let _ = std::io::Write::write_all(&mut stdin, bytes.as_bytes());
             // Dropping `stdin` here closes the pipe → EOF for the child.
@@ -254,8 +253,8 @@ pub fn run_job(job: &Job) -> Capture {
         command.env(key, value);
     }
 
-    let mut child = match command.spawn() {
-        Ok(child) => child,
+    let mut process = match Process::spawn(command) {
+        Ok(process) => process,
         Err(err) => {
             return Capture {
                 status: Status::SpawnError,
@@ -273,16 +272,11 @@ pub fn run_job(job: &Job) -> Capture {
 
     // Feed the prompt to stdin (off-thread) when the job delivers it that way.
     if let Some(bytes) = stdin_bytes {
-        feed_stdin(&mut child, bytes);
+        feed_stdin(&mut process, bytes);
     }
 
-    // Drain both pipes on their own threads so wait never blocks on a full buffer.
-    let mut out = child.stdout.take().expect("piped stdout");
-    let mut err = child.stderr.take().expect("piped stderr");
-    let out_reader = std::thread::spawn(move || read_all(&mut out));
-    let err_reader = std::thread::spawn(move || read_all(&mut err));
-
-    let (status, exit_code, timed_out) = match child.wait_timeout(job.timeout) {
+    let deadline = start + job.timeout;
+    let (status, exit_code, timed_out, finish) = match process.wait_until(deadline) {
         Ok(Some(exit)) => {
             let code = exit.code();
             let status = if code == Some(0) {
@@ -290,22 +284,13 @@ pub fn run_job(job: &Job) -> Capture {
             } else {
                 Status::Nonzero
             };
-            (status, code, false)
+            (status, code, false, Finish::Exited)
         }
-        Ok(None) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            (Status::Timeout, None, true)
-        }
-        Err(_) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            (Status::SpawnError, None, false)
-        }
+        Ok(None) => (Status::Timeout, None, true, Finish::Terminate),
+        Err(_) => (Status::SpawnError, None, false, Finish::Terminate),
     };
 
-    let stdout = out_reader.join().unwrap_or_default();
-    let stderr = err_reader.join().unwrap_or_default();
+    let finished = process.finish(finish);
     let duration_ms = Some(start.elapsed().as_millis());
 
     let error = if timed_out {
@@ -324,16 +309,10 @@ pub fn run_job(job: &Job) -> Capture {
         status,
         exit_code,
         duration_ms,
-        stdout,
-        stderr,
+        stdout: finished.stdout,
+        stderr: finished.stderr,
         error,
     }
-}
-
-fn read_all<R: std::io::Read>(reader: &mut R) -> String {
-    let mut buf = Vec::new();
-    let _ = std::io::Read::read_to_end(reader, &mut buf);
-    String::from_utf8_lossy(&buf).into_owned()
 }
 
 /// What a streaming line callback asks the run to do next.
@@ -363,9 +342,6 @@ pub fn run_job_streaming<F>(job: &Job, mut on_line: F) -> Capture
 where
     F: FnMut(&str) -> StreamStep,
 {
-    use std::io::BufRead;
-    use std::sync::mpsc;
-
     let start = Instant::now();
     let (program, args) = spawn_target(&job.argv);
     let (stdin_cfg, stdin_bytes) = stdin_stdio(job);
@@ -390,8 +366,8 @@ where
         command.env(key, value);
     }
 
-    let mut child = match command.spawn() {
-        Ok(child) => child,
+    let mut process = match Process::spawn(command) {
+        Ok(process) => process,
         Err(err) => {
             return Capture {
                 status: Status::SpawnError,
@@ -408,94 +384,51 @@ where
     };
 
     if let Some(bytes) = stdin_bytes {
-        feed_stdin(&mut child, bytes);
+        feed_stdin(&mut process, bytes);
     }
-
-    let out = child.stdout.take().expect("piped stdout");
-    let mut err = child.stderr.take().expect("piped stderr");
-    let err_reader = std::thread::spawn(move || read_all(&mut err));
-
-    // A reader thread turns blocking line reads into channel messages, so the
-    // main loop can honor the wall-clock timeout (recv_timeout) between lines
-    // without non-blocking I/O. Each message is one line *with* its terminator
-    // preserved, so the accumulated stdout is byte-faithful to the batch path.
-    let (tx, rx) = mpsc::channel::<String>();
-    let out_reader = std::thread::spawn(move || {
-        let mut reader = std::io::BufReader::new(out);
-        loop {
-            let mut line = String::new();
-            match reader.read_line(&mut line) {
-                Ok(0) => break, // EOF
-                Ok(_) => {
-                    if tx.send(line).is_err() {
-                        break; // main loop gone
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
 
     let deadline = start + job.timeout;
-    let mut stdout = String::new();
-    let mut stopped = false;
-    let mut timed_out = false;
-    loop {
-        let now = Instant::now();
-        if now >= deadline {
-            timed_out = true;
-            break;
-        }
-        match rx.recv_timeout(deadline - now) {
-            Ok(line) => {
-                stdout.push_str(&line);
-                // Feed the callback the line without its trailing newline(s).
-                if on_line(line.trim_end_matches(['\n', '\r'])) == StreamStep::Stop {
-                    stopped = true;
-                    break;
+    let mut pending = Vec::new();
+    let end = loop {
+        match process.recv_stdout_until(deadline) {
+            PipeEvent::Data(chunk) => {
+                pending.extend_from_slice(&chunk);
+                if deliver_complete_lines(&mut pending, &mut on_line) == StreamStep::Stop {
+                    break StreamEnd::Stopped;
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                timed_out = true;
-                break;
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break, // EOF
-        }
-    }
-
-    let (status, exit_code) = if stopped || timed_out {
-        let _ = child.kill();
-        let _ = child.wait();
-        if timed_out {
-            (Status::Timeout, None)
-        } else {
-            // Consumer-driven stop: not a harness failure. Report Ok so the
-            // (best-effort) final envelope isn't misread as an error; the
-            // consumer already has what it needed.
-            (Status::Ok, None)
-        }
-    } else {
-        match child.wait() {
-            Ok(exit) => {
-                let code = exit.code();
-                let status = if code == Some(0) {
-                    Status::Ok
-                } else {
-                    Status::Nonzero
+            PipeEvent::Closed => {
+                if deliver_final_line(&mut pending, &mut on_line) == StreamStep::Stop {
+                    break StreamEnd::Stopped;
+                }
+                break match process.wait_until(deadline) {
+                    Ok(Some(exit)) => StreamEnd::Exited(exit),
+                    Ok(None) => StreamEnd::TimedOut,
+                    Err(_) => StreamEnd::WaitFailed,
                 };
-                (status, code)
             }
-            Err(_) => (Status::SpawnError, None),
+            PipeEvent::Deadline => break StreamEnd::TimedOut,
         }
     };
 
-    // Drain any remaining buffered lines the reader already had, so the final
-    // envelope's stdout is complete even if we broke out on stop/timeout.
-    let _ = out_reader.join();
-    while let Ok(line) = rx.try_recv() {
-        stdout.push_str(&line);
-    }
-    let stderr = err_reader.join().unwrap_or_default();
+    let (status, exit_code, finish) = match end {
+        StreamEnd::Exited(exit) => {
+            let code = exit.code();
+            let status = if code == Some(0) {
+                Status::Ok
+            } else {
+                Status::Nonzero
+            };
+            (status, code, Finish::Exited)
+        }
+        // Consumer-driven stop is not a harness failure. The consumer already
+        // received what it needed, so the best-effort envelope remains Ok.
+        StreamEnd::Stopped => (Status::Ok, None, Finish::Terminate),
+        StreamEnd::TimedOut => (Status::Timeout, None, Finish::Terminate),
+        StreamEnd::WaitFailed => (Status::SpawnError, None, Finish::Terminate),
+    };
+    let timed_out = matches!(end, StreamEnd::TimedOut);
+    let finished = process.finish(finish);
 
     let error = if timed_out {
         Some(format!(
@@ -511,10 +444,49 @@ where
         status,
         exit_code,
         duration_ms: Some(start.elapsed().as_millis()),
-        stdout,
-        stderr,
+        stdout: finished.stdout,
+        stderr: finished.stderr,
         error,
     }
+}
+
+#[derive(Clone, Copy)]
+enum StreamEnd {
+    Exited(std::process::ExitStatus),
+    Stopped,
+    TimedOut,
+    WaitFailed,
+}
+
+/// Deliver every newline-terminated line currently buffered, retaining an
+/// incomplete tail for the next pipe chunk. Splitting happens on bytes so a
+/// multi-byte UTF-8 character divided across OS reads is decoded only when its
+/// whole line is present.
+fn deliver_complete_lines<F>(pending: &mut Vec<u8>, on_line: &mut F) -> StreamStep
+where
+    F: FnMut(&str) -> StreamStep,
+{
+    while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
+        let line: Vec<u8> = pending.drain(..=newline).collect();
+        let line = String::from_utf8_lossy(&line);
+        if on_line(line.trim_end_matches(['\n', '\r'])) == StreamStep::Stop {
+            return StreamStep::Stop;
+        }
+    }
+    StreamStep::Continue
+}
+
+fn deliver_final_line<F>(pending: &mut Vec<u8>, on_line: &mut F) -> StreamStep
+where
+    F: FnMut(&str) -> StreamStep,
+{
+    if pending.is_empty() {
+        return StreamStep::Continue;
+    }
+    let line = String::from_utf8_lossy(pending);
+    let step = on_line(line.trim_end_matches(['\n', '\r']));
+    pending.clear();
+    step
 }
 
 #[cfg(test)]
@@ -666,6 +638,97 @@ mod tests {
         });
         assert_eq!(count, 1, "should stop after the first line");
         assert_eq!(cap.status, Status::Ok);
+    }
+
+    #[cfg(unix)]
+    fn descendant_job(timeout: Duration, tick_file: &std::path::Path) -> Job {
+        // The wrapper and its child both ignore TERM. The child inherits stdout
+        // and writes a side-channel tick for five seconds, reproducing an npm
+        // launcher whose native grandchild survives a direct-child kill and
+        // keeps the parent's pipe reader blocked.
+        let script = r#"
+            trap '' TERM
+            sh -c '
+                trap "" TERM
+                i=0
+                while [ "$i" -lt 100 ]; do
+                    printf x >> "$TICK_FILE"
+                    printf "native tick %s\n" "$i"
+                    i=$((i + 1))
+                    sleep 0.05
+                done
+            ' &
+            printf 'launcher ready\n'
+            wait
+        "#;
+        Job {
+            argv: vec!["sh".to_string(), "-c".to_string(), script.to_string()],
+            cwd: None,
+            env: vec![("TICK_FILE".to_string(), tick_file.display().to_string())],
+            timeout,
+            stdin: None,
+        }
+    }
+
+    #[cfg(unix)]
+    fn unique_tick_file(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "oneharness-{label}-{}-{:?}.ticks",
+            std::process::id(),
+            std::thread::current().id()
+        ))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timeout_terminates_descendants_and_bounds_pipe_drain() {
+        let ticks = unique_tick_file("timeout-tree");
+        let _ = std::fs::remove_file(&ticks);
+        let started = Instant::now();
+        let cap = run_job(&descendant_job(Duration::from_millis(200), &ticks));
+
+        assert_eq!(cap.status, Status::Timeout);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "timeout teardown took {:?}",
+            started.elapsed()
+        );
+        assert!(cap.stdout.contains("launcher ready"), "{}", cap.stdout);
+
+        let after_return = std::fs::metadata(&ticks).map(|m| m.len()).unwrap_or(0);
+        std::thread::sleep(Duration::from_millis(250));
+        let after_grace = std::fs::metadata(&ticks).map(|m| m.len()).unwrap_or(0);
+        assert_eq!(
+            after_return, after_grace,
+            "a descendant kept ticking after process-tree teardown"
+        );
+        let _ = std::fs::remove_file(ticks);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn streaming_stop_terminates_descendants_and_returns_promptly() {
+        let ticks = unique_tick_file("stream-tree");
+        let _ = std::fs::remove_file(&ticks);
+        let started = Instant::now();
+        let mut lines = 0;
+        let cap = run_job_streaming(&descendant_job(Duration::from_secs(10), &ticks), |_| {
+            lines += 1;
+            StreamStep::Stop
+        });
+
+        assert_eq!(lines, 1);
+        assert_eq!(cap.status, Status::Ok);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "stream teardown took {:?}",
+            started.elapsed()
+        );
+        let after_return = std::fs::metadata(&ticks).map(|m| m.len()).unwrap_or(0);
+        std::thread::sleep(Duration::from_millis(250));
+        let after_grace = std::fs::metadata(&ticks).map(|m| m.len()).unwrap_or(0);
+        assert_eq!(after_return, after_grace);
+        let _ = std::fs::remove_file(ticks);
     }
 
     #[test]

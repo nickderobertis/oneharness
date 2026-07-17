@@ -87,7 +87,15 @@ Use the `just` recipes; do not hand-roll equivalents.
   canonical id, a default binary name, an install hint, an output format, and two
   pure functions — build the argv, and best-effort extract the final text.
 - `run` spawns the selected harnesses **in parallel**, each as a subprocess with
-  a timeout, and emits one JSON report. A **same-prefix batch** is the dual shape:
+  a timeout, and emits one JSON report. `io::process` owns each launcher's whole
+  tree (Unix process group; Windows kill-on-close Job Object assigned while the
+  child is suspended), applies a brief TERM→KILL grace on Unix, reaps, and bounds
+  pipe drain; both buffered and streaming runner paths must go through it so an
+  npm wrapper's native child cannot survive or hold inherited pipes open. Timeout
+  status is authoritative, but `commands::run::executed_result` still normalizes
+  any complete captured records into text/usage/session/events (skipping a
+  truncated JSONL tail), which history then preserves. A **same-prefix batch** is
+  the dual shape:
   pass more than one prompt (`--prompt`/`--prompt-file` are repeatable, each one
   whole prompt) and `run` fans **one** harness over the N prompts instead —
   single-harness by nature (a provider cache prefix is per harness/model/tools),
@@ -391,7 +399,9 @@ aren't re-litigated each session:
   exit code, stdout, stderr, duration, status) is guaranteed and identical across
   harnesses. The normalized `text` field is a convenience whose method is recorded
   in `text_source`; it is `null` when extraction is not possible. Never fabricate
-  it — consumers needing certainty parse `stdout`.
+  it — consumers needing certainty parse `stdout`. A timeout does not discard
+  output already captured: normalize complete records best-effort while keeping
+  status `timeout`; ignore a truncated final JSONL record.
 - **Never panic on a harness's behavior.** A missing binary is `skipped`, a
   non-zero exit is `nonzero`, a hang is `timeout` — all are data in the report,
   not a crash. Only true usage/config errors abort with a non-zero process exit.

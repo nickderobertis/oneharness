@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.6](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.4.5...oneharness-core-v0.4.6) - 2026-07-17
+
+### Fixed
+
+- terminate timed-out process trees and preserve telemetry ([#1147](https://github.com/nickderobertis/oneharness/pull/1147))
+
 ## [0.4.5](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.4.4...oneharness-core-v0.4.5) - 2026-07-16
 
 ### Added

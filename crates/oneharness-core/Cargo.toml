@@ -1,6 +1,6 @@
 [package]
 name = "oneharness-core"
-version = "0.4.5"
+version = "0.4.6"
 edition = "2021"
 rust-version = "1.86"
 description = "Reusable engine behind the oneharness CLI: harness registry, hook rendering/installation, and harness config sync."
@@ -49,3 +49,15 @@ uuid = { version = "1", features = ["serde", "v5", "v7"] }
 # the locking primitive portable across Unix and Windows without leaking I/O
 # into the pure domain layer.
 fs2 = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }

@@ -1854,12 +1854,17 @@ fn executed_result(
     prompt: Option<String>,
     model: Option<String>,
 ) -> RunResult {
-    // Best-effort signals are extracted only from a run that actually produced
-    // output (ok or non-zero), never fabricated for a timeout/spawn failure.
-    let extracted = match capture.status {
-        Status::Ok | Status::Nonzero => normalize::extract(&capture.stdout, output_format),
-        _ => None,
-    };
+    // A timeout does not invalidate bytes already captured from the process.
+    // Normalize them best-effort exactly like an exited run. SpawnError retains
+    // its existing null-signal semantics because a failed wait cannot establish
+    // that its captured output is complete or trustworthy.
+    let normalize_capture = matches!(
+        capture.status,
+        Status::Ok | Status::Nonzero | Status::Timeout
+    );
+    let extracted = normalize_capture
+        .then(|| normalize::extract(&capture.stdout, output_format))
+        .flatten();
     let (text, text_source) = match &extracted {
         Some(e) => (Some(e.text.clone()), Some(e.source.clone())),
         None => (None, None),
@@ -1887,22 +1892,19 @@ fn executed_result(
         Some(_) => (None, None, Some(attempts), None),
         None => (None, None, None, None),
     };
-    let usage_reading = match capture.status {
-        Status::Ok | Status::Nonzero => signals::extract_usage(&capture.stdout),
-        _ => None,
-    };
+    let usage_reading = normalize_capture
+        .then(|| signals::extract_usage(&capture.stdout))
+        .flatten();
     let (usage, usage_source) = match usage_reading {
         Some(r) => (r.usage, Some(r.source)),
         None => (Usage::default(), None),
     };
-    let session_id = match capture.status {
-        Status::Ok | Status::Nonzero => signals::extract_session(&capture.stdout),
-        _ => None,
-    };
-    let events_reading = match capture.status {
-        Status::Ok | Status::Nonzero => events::extract_events(&capture.stdout, output_format),
-        _ => None,
-    };
+    let session_id = normalize_capture
+        .then(|| signals::extract_session(&capture.stdout))
+        .flatten();
+    let events_reading = normalize_capture
+        .then(|| events::extract_events(&capture.stdout, output_format))
+        .flatten();
     let (events, events_source) = match events_reading {
         Some(r) => (Some(r.events), Some(r.source)),
         None => (None, None),
@@ -2719,6 +2721,76 @@ mod tests {
         assert_eq!(r.failure_kind, Some(signals::FailureKind::ToolDeferred));
         assert_eq!(r.failure_kind_source.as_deref(), Some("stdout"));
         assert!(r.error.as_deref().unwrap().contains("`Read`"));
+    }
+
+    #[test]
+    fn executed_result_normalizes_a_partial_timeout_transcript() {
+        // A timeout is still a timeout, but every complete JSONL record captured
+        // before the deadline remains usable. The truncated tail is ignored by
+        // each best-effort extractor rather than invalidating earlier evidence.
+        let transcript = concat!(
+            "{\"type\":\"text\",\"sessionID\":\"ses-timeout\",\"part\":",
+            "{\"type\":\"text\",\"text\":\"partial answer\"}}\n",
+            "{\"type\":\"tool_use\",\"sessionID\":\"ses-timeout\",\"part\":",
+            "{\"type\":\"tool\",\"tool\":\"bash\",\"state\":",
+            "{\"input\":{\"command\":\"echo hi\"},\"output\":\"hi\"}}}\n",
+            "{\"type\":\"step_finish\",\"sessionID\":\"ses-timeout\",\"part\":",
+            "{\"cost\":0.01,\"tokens\":{\"input\":12,\"output\":3,",
+            "\"cache\":{\"read\":9,\"write\":4}}}}\n",
+            "{\"type\":\"task_complete\",\"text\":\"emitted before exit\"}\n",
+            "{\"type\":\"incomplete\"",
+        );
+        let cap = capture(Status::Timeout, transcript);
+        let r = executed_result(
+            harness::by_id("opencode").unwrap(),
+            "opencode".into(),
+            vec!["opencode".into()],
+            OutputFormat::Json,
+            &cap,
+            None,
+            1,
+            None,
+            None,
+        );
+
+        assert_eq!(r.status, Status::Timeout);
+        assert_eq!(r.text.as_deref(), Some("partial answer"));
+        assert_eq!(r.text_source.as_deref(), Some("json:opencode-parts"));
+        assert_eq!(r.usage.input_tokens, Some(12));
+        assert_eq!(r.usage.output_tokens, Some(3));
+        assert_eq!(r.usage.cache_read_tokens, Some(9));
+        assert_eq!(r.usage.cache_write_tokens, Some(4));
+        assert_eq!(r.usage.cost_usd, Some(0.01));
+        assert_eq!(r.session_id.as_deref(), Some("ses-timeout"));
+        let events = r.events.expect("the complete tool event survives");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].name.as_deref(), Some("bash"));
+    }
+
+    #[test]
+    fn executed_spawn_error_keeps_null_signals_even_with_output() {
+        let transcript = concat!(
+            "{\"type\":\"text\",\"sessionID\":\"ses-untrusted\",\"part\":",
+            "{\"type\":\"text\",\"text\":\"untrusted answer\"}}\n",
+            "{\"type\":\"step_finish\",\"sessionID\":\"ses-untrusted\",\"part\":",
+            "{\"cost\":0.01,\"tokens\":{\"input\":12,\"output\":3}}}\n",
+        );
+        let cap = capture(Status::SpawnError, transcript);
+        let r = executed_result(
+            harness::by_id("opencode").unwrap(),
+            "opencode".into(),
+            vec!["opencode".into()],
+            OutputFormat::Json,
+            &cap,
+            None,
+            1,
+            None,
+            None,
+        );
+        assert!(r.text.is_none());
+        assert_eq!(r.usage, Usage::default());
+        assert!(r.session_id.is_none());
+        assert!(r.events.is_none());
     }
 
     #[test]

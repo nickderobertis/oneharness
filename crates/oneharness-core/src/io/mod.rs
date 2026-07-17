@@ -6,6 +6,7 @@ pub mod config;
 pub mod detect;
 pub mod history;
 pub mod hooks;
+mod process;
 pub mod runner;
 pub mod session;
 pub mod sync;

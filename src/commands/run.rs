@@ -1844,13 +1844,13 @@ fn executed_result(
     prompt: Option<String>,
     model: Option<String>,
 ) -> RunResult {
-    // Any bytes actually captured from a started process remain trustworthy even
-    // when the process misses its deadline (or waiting later fails). Normalize
-    // them best-effort exactly like an exited run; empty/unparseable output still
-    // yields None, so a SpawnError with no output keeps its existing null signals.
+    // A timeout does not invalidate bytes already captured from the process.
+    // Normalize them best-effort exactly like an exited run. SpawnError retains
+    // its existing null-signal semantics because a failed wait cannot establish
+    // that its captured output is complete or trustworthy.
     let normalize_capture = matches!(
         capture.status,
-        Status::Ok | Status::Nonzero | Status::Timeout | Status::SpawnError
+        Status::Ok | Status::Nonzero | Status::Timeout
     );
     let extracted = normalize_capture
         .then(|| normalize::extract(&capture.stdout, output_format))
@@ -2758,8 +2758,14 @@ mod tests {
     }
 
     #[test]
-    fn executed_spawn_error_without_output_keeps_null_signals() {
-        let cap = capture(Status::SpawnError, "");
+    fn executed_spawn_error_keeps_null_signals_even_with_output() {
+        let transcript = concat!(
+            "{\"type\":\"text\",\"sessionID\":\"ses-untrusted\",\"part\":",
+            "{\"type\":\"text\",\"text\":\"untrusted answer\"}}\n",
+            "{\"type\":\"step_finish\",\"sessionID\":\"ses-untrusted\",\"part\":",
+            "{\"cost\":0.01,\"tokens\":{\"input\":12,\"output\":3}}}\n",
+        );
+        let cap = capture(Status::SpawnError, transcript);
         let r = executed_result(
             harness::by_id("opencode").unwrap(),
             "opencode".into(),

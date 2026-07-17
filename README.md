@@ -1209,7 +1209,10 @@ ONEHARNESS_HISTORY_LABELS='graph=release,owner=ci' oneharness run … \
 ```
 
 Keys are 1–64 ASCII letters/digits/`.`/`_`/`-` and must start alphanumeric;
-values are non-empty, at most 256 bytes, and contain no control characters.
+values are non-empty, at most 256 characters (Unicode code points, so a
+multibyte value is bounded by what you can read, not by its encoded size), and
+contain no control characters — every character Unicode calls `Cc`, which is C0,
+DEL, and C1. The CLI and the language SDKs enforce this one contract identically.
 Malformed config, environment, and CLI values are rejected before a run starts.
 
 `--no-history` (or `history = false` in a nearer layer) turns it back off. Nothing
@@ -1227,7 +1230,11 @@ project even when the original run used `..`.
 Each v0.2 record has a time-ordered UUIDv7 `history_id`, which is both an exact
 lookup key and a watch cursor; empty `labels` are omitted. Readers continue to
 accept v0.1 records, assigning deterministic UUIDv5 IDs and empty labels so the
-same legacy line always migrates to the same identity.
+same legacy line always migrates to the same identity. A `history_id` is
+canonical hyphenated UUID text (`8-4-4-4-12` hex, either case) carrying the
+RFC 4122 variant and a defined version; the unhyphenated, braced, and
+`urn:uuid:` spellings are not the contract and are refused, as they are by the
+SDKs' schema.
 
 **Session name.** Each session has a human-meaningful `name` shown next to its
 `id`. Harnesses don't expose a readable title headlessly (only an opaque

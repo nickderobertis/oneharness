@@ -134,7 +134,19 @@ Use the `just` recipes; do not hand-roll equivalents.
   the report's): each record has a UUIDv7 `history_id` and validated `labels`
   (`history_labels` / `ONEHARNESS_HISTORY_LABELS` / repeated `--history-label`,
   merged by key with CLI > env > project > user precedence). v0.1 remains
-  readable with a deterministic UUIDv5 id and empty labels. The record shape +
+  readable with a deterministic UUIDv5 id and empty labels. A validated input the
+  SDKs also validate must be stated so the **Rust runtime check and the hand-written
+  `JsonSchema` accept the same values** — the schema is the SDK validators' only
+  source, so a gap there ships as an SDK that refuses what the CLI takes. Three
+  traps, all live in `domain::history`: bound lengths in **characters** (code
+  points — the only unit `maxLength` expresses; never bytes); spell a character
+  allow-list as a **forbidden unanchored `not` search**, never an anchored
+  `^…$` (Python's `re` `$` also matches before a trailing newline, so `"v\n"`
+  passes the Python SDK); and keep `char::is_control` (Cc = C0 + DEL + **C1**) and
+  its pattern in step. `HistoryId` accepts only canonical hyphenated text with the
+  RFC 4122 variant and a defined version — `Uuid::parse_str` is laxer than the
+  pattern promises. The shared `tests/fixtures/sdk-contract-matrix.json` is where
+  such a rule gets pinned across Rust/Node/Python at once. The record shape +
   slug + name + timestamp formatting are pure (`domain::history`); the clock
   reads that mint the session id/timestamps and all file writes/reads are I/O
   (`io::history`). The writer is **best-effort** — a store that can't be opened or

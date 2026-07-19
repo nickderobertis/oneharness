@@ -259,7 +259,7 @@ const historyDir = process.env.ONEHARNESS_TEST_HISTORY;
 if (!mockProvider || !historyDir) throw new Error("package e2e fixture environment is incomplete");
 const sdk = new OneHarness({ env: { ONEHARNESS_NO_CONFIG: "1" } });
 // This bin override replaces the paid provider only; the SDK resolves its installed oneharness-cli dependency itself.
-const report = await sdk.run({ prompt: "installed package", harnesses: ["claude-code"], mode: "bypass", history: true, historyName: "installed-session", historyDir, env: { MOCK_STDOUT: '{"type":"system","subtype":"init"}\\n{"type":"result","result":"installed sdk works"}\\n' }, bins: { "claude-code": mockProvider } });
+const report = await sdk.run({ prompt: "installed package", harnesses: ["codex"], mode: "bypass", history: true, historyName: "installed-session", historyDir, env: { MOCK_STDOUT: '{"type":"turn.started"}\\n{"type":"item.completed","item":{"id":"m1","type":"agent_message","text":"installed sdk works"}}\\n{"type":"turn.completed"}\\n' }, bins: { codex: mockProvider } });
 if (report.results[0]?.text !== "installed sdk works") throw new Error(JSON.stringify(report));
 RunReportSchema.parse(report);
 const records = await sdk.history({ session: "installed-session", historyDir });

@@ -396,7 +396,6 @@ pub struct TimingReading {
 /// no provider request boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TelemetryTrace {
-    AnthropicStream,
     CodexJson,
     OpenCodeJson,
 }
@@ -424,6 +423,8 @@ pub fn apply_observed_timing(
     let mut request_start = None;
     let mut first_token = None;
     let mut model_start = None;
+    let mut last_model_byte = None;
+    let mut saw_model_boundary = false;
     let mut model_intervals = Vec::new();
     for (value, offset, utc) in &lines {
         if is_provider_start(value, trace) {
@@ -432,18 +433,23 @@ pub fn apply_observed_timing(
         }
         if is_model_token(value) {
             first_token.get_or_insert(*offset);
+            last_model_byte = Some(*offset);
+            saw_model_boundary = true;
         }
         if is_tool_start(value) {
             if let Some(start) = model_start.take() {
                 model_intervals.push((start, *offset));
             }
+            last_model_byte = None;
+            saw_model_boundary = true;
         }
         if is_tool_finish(value) && request_start.is_some() {
             model_start = Some(*offset);
+            last_model_byte = None;
         }
         if is_provider_finish(value, trace) {
-            if let Some(start) = model_start.take() {
-                model_intervals.push((start, *offset));
+            if let (Some(start), Some(finish)) = (model_start.take(), last_model_byte.take()) {
+                model_intervals.push((start, finish.max(start)));
             }
         }
         observe_boundaries(value, *offset, utc, &mut boundaries);
@@ -511,6 +517,7 @@ pub fn apply_observed_timing(
                 .iter()
                 .any(|(value, _, _)| is_provider_finish(value, trace))
                 || !matches!(run_status, Status::Ok | Status::Nonzero))
+            && saw_model_boundary
             && events
                 .iter()
                 .filter(|event| event.kind == "tool_call")
@@ -710,20 +717,46 @@ fn boundary<'a>(boundaries: &'a mut Vec<Boundary>, id: &str) -> &'a mut Boundary
 }
 
 fn is_model_token(value: &Value) -> bool {
-    value.get("type").and_then(Value::as_str) == Some("assistant")
+    let assistant_content = value
+        .get("type")
+        .and_then(Value::as_str)
+        .filter(|kind| *kind == "assistant")
+        .and_then(|_| {
+            value
+                .pointer("/message/content")
+                .or_else(|| value.get("content"))
+        })
+        .and_then(Value::as_array)
+        .is_some_and(|blocks| {
+            blocks.iter().any(|block| {
+                matches!(
+                    block.get("type").and_then(Value::as_str),
+                    Some("text" | "reasoning" | "thinking")
+                ) && block
+                    .get("text")
+                    .or_else(|| block.get("thinking"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| !text.is_empty())
+            })
+        });
+    assistant_content
         || value
             .pointer("/part/type")
             .and_then(Value::as_str)
             .is_some_and(|kind| matches!(kind, "text" | "reasoning"))
+            && value
+                .pointer("/part/text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.is_empty())
         || value.pointer("/item/type").and_then(Value::as_str) == Some("agent_message")
+            && value
+                .pointer("/item/text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.is_empty())
 }
 
 fn is_provider_start(value: &Value, trace: TelemetryTrace) -> bool {
     match trace {
-        TelemetryTrace::AnthropicStream => {
-            value.get("type").and_then(Value::as_str) == Some("system")
-                && value.get("subtype").and_then(Value::as_str) == Some("init")
-        }
         TelemetryTrace::CodexJson => {
             value.get("type").and_then(Value::as_str) == Some("turn.started")
         }
@@ -736,9 +769,6 @@ fn is_provider_start(value: &Value, trace: TelemetryTrace) -> bool {
 
 fn is_provider_finish(value: &Value, trace: TelemetryTrace) -> bool {
     match trace {
-        TelemetryTrace::AnthropicStream => {
-            value.get("type").and_then(Value::as_str) == Some("result")
-        }
         TelemetryTrace::CodexJson => {
             value.get("type").and_then(Value::as_str) == Some("turn.completed")
         }
@@ -763,6 +793,9 @@ fn is_tool_start(value: &Value) -> bool {
                     .iter()
                     .any(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
             })
+        || value.pointer("/part/type").and_then(Value::as_str) == Some("tool")
+            && value.pointer("/part/state/time/start").is_some()
+            && value.pointer("/part/state/time/end").is_none()
 }
 
 fn is_tool_finish(value: &Value) -> bool {
@@ -779,6 +812,8 @@ fn is_tool_finish(value: &Value) -> bool {
                     .iter()
                     .any(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
             })
+        || value.pointer("/part/type").and_then(Value::as_str) == Some("tool")
+            && value.pointer("/part/state/time/end").is_some()
 }
 
 #[cfg(test)]
@@ -1037,5 +1072,31 @@ mod tests {
             extract_events(cb, OutputFormat::Text).unwrap().source,
             "text:content-blocks"
         );
+    }
+
+    #[test]
+    fn anthropic_tool_use_is_not_a_first_content_token() {
+        // Captured Claude/Qwen/Cursor stream-json content blocks use the same
+        // assistant envelope. A tool-only message is model activity, but the
+        // telemetry contract's TTFT boundary is the first non-empty user-visible
+        // text/reasoning block.
+        assert!(!is_model_token(&json!({
+            "type": "assistant",
+            "message": {"content": [{
+                "type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {}
+            }]}
+        })));
+        assert!(!is_model_token(&json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": ""}]}
+        })));
+        assert!(is_model_token(&json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "thinking", "thinking": "inspect"}]}
+        })));
+        assert!(is_model_token(&json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "done"}]}
+        })));
     }
 }

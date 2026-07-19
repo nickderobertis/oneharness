@@ -628,10 +628,9 @@ static REGISTRY: &[HarnessSpec] = &[
         // The default `json` result carries no transcript; `stream-json` emits the
         // Anthropic content-block stream oneharness normalizes into `events`.
         events_format: Some(OutputFormat::StreamJson),
-        telemetry: Some(TelemetrySpec {
-            format: OutputFormat::StreamJson,
-            trace: TelemetryTrace::AnthropicStream,
-        }),
+        // Claude stream-json exposes harness init and terminal aggregation, but
+        // no provider-request start; neither is a valid model-latency boundary.
+        telemetry: None,
         supports_resume: true,
         session_formats: &[OutputFormat::Json, OutputFormat::StreamJson],
         supports_fork: true,
@@ -966,10 +965,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // stream oneharness normalizes into `events` (its default text has no
         // transcript). Mapped to `--output-format stream-json` in `argv_qwen`.
         events_format: Some(OutputFormat::StreamJson),
-        telemetry: Some(TelemetrySpec {
-            format: OutputFormat::StreamJson,
-            trace: TelemetryTrace::AnthropicStream,
-        }),
+        telemetry: None,
         supports_resume: true,
         session_formats: &[OutputFormat::StreamJson, OutputFormat::Json],
         supports_fork: false,
@@ -1183,10 +1179,7 @@ static REGISTRY: &[HarnessSpec] = &[
         output_format: OutputFormat::StreamJson,
         // Default `stream-json` already carries the tool transcript, so no upgrade.
         events_format: None,
-        telemetry: Some(TelemetrySpec {
-            format: OutputFormat::StreamJson,
-            trace: TelemetryTrace::AnthropicStream,
-        }),
+        telemetry: None,
         supports_resume: true,
         session_formats: &[OutputFormat::StreamJson],
         supports_fork: false,
@@ -2193,14 +2186,10 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             supported.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-            ["claude-code", "codex", "opencode", "qwen", "cursor"]
+            ["codex", "opencode"]
         );
         for (id, telemetry) in supported {
             match id {
-                "claude-code" | "qwen" | "cursor" => {
-                    assert_eq!(telemetry.format, OutputFormat::StreamJson);
-                    assert_eq!(telemetry.trace, TelemetryTrace::AnthropicStream);
-                }
                 "codex" => {
                     assert_eq!(telemetry.format, OutputFormat::Json);
                     assert_eq!(telemetry.trace, TelemetryTrace::CodexJson);

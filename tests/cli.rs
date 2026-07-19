@@ -1861,7 +1861,7 @@ fn session_composes_with_history() {
         &[
             "run",
             "--harness",
-            "claude-code",
+            "codex",
             "--session",
             "s",
             "--session-dir",
@@ -1874,12 +1874,12 @@ fn session_composes_with_history() {
             "--prompt",
             "hi",
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("codex"),
             "--compact",
         ],
         &[(
             "MOCK_STDOUT",
-            "{\"type\":\"system\",\"subtype\":\"init\"}\n{\"type\":\"result\",\"result\":\"hi\",\"session_id\":\"sess-1\"}\n",
+            "{\"type\":\"thread.started\",\"thread_id\":\"sess-1\"}\n{\"type\":\"turn.started\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"hi\"}}\n{\"type\":\"turn.completed\"}\n",
         )],
     );
     assert!(output.status.success(), "{output:?}");
@@ -7773,9 +7773,17 @@ fn hist_dir(tag: &str) -> PathBuf {
 }
 
 const HISTORY_CLAUDE_TRACE: &str = concat!(
-    "{\"type\":\"system\",\"subtype\":\"init\"}\n",
-    "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}}\n",
-    "{\"type\":\"result\",\"result\":\"x\"}\n",
+    "{\"type\":\"turn.started\"}\n",
+    "{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"x\"}}\n",
+    "{\"type\":\"turn.completed\"}\n",
+);
+const HISTORY_BOTH_TRACES: &str = concat!(
+    "{\"type\":\"turn.started\"}\n",
+    "{\"type\":\"step_start\",\"part\":{\"type\":\"step-start\"}}\n",
+    "{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"x\"}}\n",
+    "{\"type\":\"text\",\"part\":{\"type\":\"text\",\"text\":\"x\"}}\n",
+    "{\"type\":\"turn.completed\"}\n",
+    "{\"type\":\"step_finish\",\"part\":{\"type\":\"step-finish\"}}\n",
 );
 
 #[test]
@@ -7788,11 +7796,11 @@ fn history_records_a_run_and_reports_the_file() {
         &[
             "run",
             "--harness",
-            "claude-code",
+            "codex",
             "--prompt",
             "Fix the login bug",
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("codex"),
             "--history",
             "--history-dir",
             &ds,
@@ -7802,7 +7810,7 @@ fn history_records_a_run_and_reports_the_file() {
         &[
             (
                 "MOCK_STDOUT",
-                "{\"type\":\"system\",\"subtype\":\"init\"}\n{\"type\":\"result\",\"result\":\"done\",\"session_id\":\"s1\"}\n",
+                "{\"type\":\"turn.started\"}\n{\"type\":\"thread.started\",\"thread_id\":\"s1\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"done\"}}\n{\"type\":\"turn.completed\"}\n",
             ),
             ("MOCK_ARGV_FILE", &argv),
         ],
@@ -7815,7 +7823,7 @@ fn history_records_a_run_and_reports_the_file() {
     // The file holds one normalized record with the prompt-derived name.
     let text = std::fs::read_to_string(hf).unwrap();
     let rec: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
-    assert_eq!(rec["harness"], "claude-code");
+    assert_eq!(rec["harness"], "codex");
     assert_eq!(rec["name"], "fix-the-login-bug");
     assert_eq!(rec["status"], "ok");
     assert_eq!(rec["session_id"], "s1");
@@ -7824,7 +7832,7 @@ fn history_records_a_run_and_reports_the_file() {
         std::fs::read_to_string(&argv_file)
             .unwrap()
             .lines()
-            .any(|arg| arg == "stream-json"),
+            .any(|arg| arg == "--json"),
         "history must request telemetry without --events"
     );
     // Normalized only — no raw stdout/stderr leaks into history.
@@ -7846,11 +7854,11 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
             &[
                 "run",
                 "--harness",
-                "claude-code",
+                "codex",
                 "--prompt",
                 "invalid trace",
                 "--bin",
-                &bin_override("claude-code"),
+                &bin_override("codex"),
                 "--history",
                 "--history-dir",
                 &ds,
@@ -7894,14 +7902,42 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
     assert!(
         String::from_utf8_lossy(&unsupported.stderr).contains("no provider/tool boundary trace")
     );
+
+    // Real Anthropic-style CLI envelopes expose init, assistant content/tool
+    // blocks, and terminal result aggregation, but no provider-request start.
+    let anthropic = concat!(
+        "{\"type\":\"system\",\"subtype\":\"init\"}\n",
+        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Bash\",\"input\":{}}]}}\n",
+        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n",
+        "{\"type\":\"result\",\"result\":\"done\"}\n",
+    );
+    for id in ["claude-code", "qwen", "cursor"] {
+        let dir = hist_dir(id);
+        let output = run(
+            &[
+                "run",
+                "--harness",
+                id,
+                "--prompt",
+                "unmeasured",
+                "--bin",
+                &bin_override(id),
+                "--history",
+                "--history-dir",
+                &dir.display().to_string(),
+                "--compact",
+            ],
+            &[("MOCK_STDOUT", anthropic), ("MOCK_STREAM_DELAY_MS", "60")],
+        );
+        assert_eq!(output.status.code(), Some(2), "{id}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("no provider/tool boundary trace"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 #[test]
 fn history_accepts_each_advertised_provider_trace_shape() {
     let cases = [
-        ("claude-code", "{\"type\":\"system\",\"subtype\":\"init\"}\n{\"type\":\"result\",\"result\":\"done\"}\n"),
-        ("qwen", "{\"type\":\"system\",\"subtype\":\"init\"}\n{\"type\":\"result\",\"result\":\"done\",\"usage\":{\"input_tokens\":7,\"output_tokens\":2,\"cache_read_input_tokens\":3}}\n"),
-        ("cursor", "{\"type\":\"system\",\"subtype\":\"init\"}\n{\"type\":\"result\",\"result\":\"done\"}\n"),
         ("codex", "{\"type\":\"turn.started\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"done\"}}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":7,\"output_tokens\":2}}\n"),
         ("opencode", "{\"type\":\"step_start\",\"part\":{\"type\":\"step-start\"}}\n{\"type\":\"text\",\"part\":{\"type\":\"text\",\"text\":\"done\"}}\n{\"type\":\"step_finish\",\"part\":{\"type\":\"step-finish\",\"tokens\":{\"input\":7,\"output\":2,\"cache\":{\"read\":3}}}}\n"),
     ];
@@ -7933,7 +7969,7 @@ fn history_accepts_each_advertised_provider_trace_shape() {
         let text = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
         let record: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
         assert_eq!(record["schema_version"], "0.3", "{id}");
-        if matches!(id, "qwen" | "codex" | "opencode") {
+        if matches!(id, "codex" | "opencode") {
             assert_eq!(record["usage"]["input_tokens"], 7, "{id}");
             assert_eq!(record["usage"]["output_tokens"], 2, "{id}");
         }
@@ -7948,11 +7984,11 @@ fn history_preserves_format_contracts_and_composes_with_resume() {
         &[
             "run",
             "--harness",
-            "claude-code",
+            "codex",
             "--prompt",
             "text",
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("codex"),
             "--history",
             "--history-dir",
             &explicit_dir.display().to_string(),
@@ -7963,9 +7999,8 @@ fn history_preserves_format_contracts_and_composes_with_resume() {
         &[("MOCK_STDOUT", "plain text")],
     );
     assert_eq!(explicit.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&explicit.stderr).contains(
-        "needs output format `stream-json` for history telemetry, but `text` was selected"
-    ));
+    assert!(String::from_utf8_lossy(&explicit.stderr)
+        .contains("needs output format `json` for history telemetry, but `text` was selected"));
 
     let schema = temp_file("history-native-schema", PERSON_SCHEMA);
     let native_dir = hist_dir("native-schema");
@@ -7991,20 +8026,20 @@ fn history_preserves_format_contracts_and_composes_with_resume() {
         )],
     );
     assert_eq!(native.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&native.stderr).contains("incompatible native schema"));
+    assert!(String::from_utf8_lossy(&native.stderr).contains("no provider/tool boundary trace"));
 
     let resume_dir = hist_dir("resume-trace");
     let resumed = run(
         &[
             "run",
             "--harness",
-            "claude-code",
+            "codex",
             "--prompt",
             "continue",
             "--resume",
             "sess-1",
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("codex"),
             "--history",
             "--history-dir",
             &resume_dir.display().to_string(),
@@ -8037,29 +8072,26 @@ fn history_excludes_harness_startup_from_provider_model_time() {
     let ds = dir.display().to_string();
     let stdout = concat!(
         "{\"type\":\"system\",\"subtype\":\"init\"}\n",
-        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n",
-        "{\"type\":\"result\",\"result\":\"done\"}\n",
+        "{\"type\":\"turn.started\"}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"done\"}}\n",
+        "{\"type\":\"turn.completed\"}\n",
     );
     let output = run(
         &[
             "run",
             "--harness",
-            "claude-code",
+            "codex",
             "--prompt",
             "measure overhead",
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("codex"),
             "--history",
             "--history-dir",
             &ds,
             "--bypass",
             "--compact",
         ],
-        &[
-            ("MOCK_STDOUT", stdout),
-            ("MOCK_SLEEP_MS", "150"),
-            ("MOCK_STREAM_DELAY_MS", "25"),
-        ],
+        &[("MOCK_STDOUT", stdout), ("MOCK_STREAM_DELAY_MS", "60")],
     );
     assert!(output.status.success());
     let report = json_stdout(&output);
@@ -8067,9 +8099,9 @@ fn history_excludes_harness_startup_from_provider_model_time() {
     let record: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
     let duration = record["duration_ms"].as_u64().unwrap();
     let model = record["model_ms"].as_u64().unwrap();
-    assert!(duration >= 150, "{duration}");
+    assert!(duration >= 180, "{duration}");
     assert!(
-        model < 100,
+        model < duration.saturating_sub(100),
         "startup leaked into model time: {model}/{duration}"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -8080,23 +8112,23 @@ fn history_measures_overlapping_tool_intervals_from_provider_events() {
     let dir = hist_dir("timed-tools");
     let ds = dir.display().to_string();
     let stdout = concat!(
-        "{\"type\":\"system\",\"subtype\":\"init\"}\n",
-        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"starting\"}]}}\n",
-        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"call-a\",\"name\":\"Bash\",\"input\":{}}]}}\n",
-        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"call-b\",\"name\":\"Read\",\"input\":{}}]}}\n",
-        "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call-a\",\"content\":\"ok\"}]}}\n",
-        "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call-b\",\"content\":\"ok\"}]}}\n",
-        "{\"type\":\"result\",\"result\":\"done\",\"usage\":{\"input_tokens\":100,\"output_tokens\":20}}\n",
+        "{\"type\":\"turn.started\"}\n",
+        "{\"type\":\"item.started\",\"item\":{\"id\":\"call-a\",\"type\":\"command_execution\"}}\n",
+        "{\"type\":\"item.started\",\"item\":{\"id\":\"call-b\",\"type\":\"command_execution\"}}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"call-a\",\"type\":\"command_execution\",\"command\":\"a\",\"aggregated_output\":\"ok\",\"exit_code\":0}}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"call-b\",\"type\":\"command_execution\",\"command\":\"b\",\"aggregated_output\":\"ok\",\"exit_code\":0}}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"done\"}}\n",
+        "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":100,\"output_tokens\":20}}\n",
     );
     let output = run(
         &[
             "run",
             "--harness",
-            "claude-code",
+            "codex",
             "--prompt",
             "measure",
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("codex"),
             "--events",
             "--history",
             "--history-dir",
@@ -8116,6 +8148,8 @@ fn history_measures_overlapping_tool_intervals_from_provider_events() {
     let record: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
     assert_eq!(record["schema_version"], "0.3");
     assert!(record["time_to_first_token_ms"].as_u64().is_some());
+    assert!(record["time_to_first_token_ms"].as_u64().unwrap() >= 150);
+    assert!(record["model_ms"].as_u64().unwrap() < 150);
     let calls = record["events"]
         .as_array()
         .unwrap()
@@ -8147,19 +8181,19 @@ fn history_preserves_an_unfinished_tool_interval_without_fabricating_an_end() {
     let dir = hist_dir("interrupted-tool");
     let ds = dir.display().to_string();
     let stdout = concat!(
-        "{\"type\":\"system\",\"subtype\":\"init\"}\n",
-        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"call-open\",\"name\":\"Bash\",\"input\":{}}]}}\n",
-        "{\"type\":\"result\",\"result\":\"stopped\"}\n",
+        "{\"type\":\"step_start\",\"part\":{\"type\":\"step-start\"}}\n",
+        "{\"type\":\"tool_use\",\"part\":{\"id\":\"call-open\",\"type\":\"tool\",\"tool\":\"bash\",\"state\":{\"status\":\"running\",\"input\":{},\"time\":{\"start\":1773878400000}}}}\n",
+        "{\"type\":\"step_finish\",\"part\":{\"type\":\"step-finish\"}}\n",
     );
     let output = run(
         &[
             "run",
             "--harness",
-            "claude-code",
+            "opencode",
             "--prompt",
             "interrupt",
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("opencode"),
             "--events",
             "--history",
             "--history-dir",
@@ -8196,11 +8230,11 @@ fn history_is_off_by_default_no_history_and_print_command() {
         &[
             "run",
             "--harness",
-            "claude-code",
+            "codex",
             "--prompt",
             "hi",
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("codex"),
             "--history-dir",
             &ds,
             "--bypass",
@@ -8216,11 +8250,11 @@ fn history_is_off_by_default_no_history_and_print_command() {
         &[
             "run",
             "--harness",
-            "claude-code",
+            "codex",
             "--prompt",
             "hi",
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("codex"),
             "--no-history",
             "--history-dir",
             &ds,
@@ -8236,11 +8270,11 @@ fn history_is_off_by_default_no_history_and_print_command() {
         &[
             "run",
             "--harness",
-            "claude-code",
+            "codex",
             "--prompt",
             "hi",
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("codex"),
             "--history",
             "--history-dir",
             &ds,
@@ -8261,11 +8295,11 @@ fn history_name_overrides_the_prompt_derived_default() {
         &[
             "run",
             "--harness",
-            "claude-code",
+            "codex",
             "--prompt",
             "whatever",
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("codex"),
             "--history",
             "--history-dir",
             &ds,
@@ -8294,11 +8328,11 @@ fn history_list_show_and_clear_round_trip() {
         &[
             "run",
             "--harness",
-            "claude-code",
+            "codex",
             "--prompt",
             "whatever",
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("codex"),
             "--history",
             "--history-dir",
             &ds,
@@ -8325,7 +8359,7 @@ fn history_list_show_and_clear_round_trip() {
     ));
     assert_eq!(list.as_array().unwrap().len(), 1);
     assert_eq!(list[0]["name"], "my-session");
-    assert_eq!(list[0]["harnesses"][0], "claude-code");
+    assert_eq!(list[0]["harnesses"][0], "codex");
 
     // list --format text is human-readable.
     let text = run(
@@ -8356,7 +8390,7 @@ fn history_list_show_and_clear_round_trip() {
         ],
         &[],
     ));
-    assert_eq!(show[0]["harness"], "claude-code");
+    assert_eq!(show[0]["harness"], "codex");
 
     // show --last picks the newest session without naming it; --all is accepted
     // and returns every match (one here). --format text renders records.
@@ -8387,7 +8421,7 @@ fn history_list_show_and_clear_round_trip() {
         ],
         &[],
     );
-    assert!(String::from_utf8_lossy(&last_text.stdout).contains("[claude-code]"));
+    assert!(String::from_utf8_lossy(&last_text.stdout).contains("[codex]"));
 
     // clear without --yes is a dry run (nothing removed).
     let dry = json_stdout(&run(
@@ -8489,11 +8523,11 @@ fn history_enabled_via_config_records_the_run() {
             "--cwd",
             &fixture.cwd(),
             "--harness",
-            "claude-code",
+            "codex",
             "--prompt",
             "hi",
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("codex"),
             "--bypass",
             "--compact",
         ],
@@ -8515,11 +8549,11 @@ fn history_enabled_via_config_records_the_run() {
             "--cwd",
             &fixture.cwd(),
             "--harness",
-            "claude-code",
+            "codex",
             "--prompt",
             "hi",
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("codex"),
             "--no-history",
             "--bypass",
             "--compact",
@@ -8552,11 +8586,11 @@ fn history_records_every_harness_in_one_session() {
         &[
             "run",
             "--harness",
-            "claude-code,codex",
-            "--bin",
-            &bin_override("claude-code"),
+            "codex,opencode",
             "--bin",
             &bin_override("codex"),
+            "--bin",
+            &bin_override("opencode"),
             "--prompt",
             "multi",
             "--history",
@@ -8565,7 +8599,7 @@ fn history_records_every_harness_in_one_session() {
             "--bypass",
             "--compact",
         ],
-        &[("MOCK_STDOUT", "{\"type\":\"system\",\"subtype\":\"init\"}\n{\"type\":\"turn.started\"}\n{\"type\":\"result\",\"result\":\"x\"}\n{\"type\":\"turn.completed\"}\n")],
+        &[("MOCK_STDOUT", HISTORY_BOTH_TRACES)],
     );
     let hf = json_stdout(&out)["history_file"]
         .as_str()
@@ -8583,7 +8617,7 @@ fn history_records_every_harness_in_one_session() {
         .collect();
     assert_eq!(
         harnesses,
-        ["claude-code", "codex"],
+        ["codex", "opencode"],
         "one record per harness, in one file"
     );
     // The store sees a single session carrying both records.
@@ -8602,7 +8636,7 @@ fn history_records_every_harness_in_one_session() {
     assert_eq!(list[0]["record_count"], 2);
     assert_eq!(
         list[0]["harnesses"],
-        serde_json::json!(["claude-code", "codex"])
+        serde_json::json!(["codex", "opencode"])
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -8615,9 +8649,9 @@ fn history_batch_records_one_record_per_prompt() {
         &[
             "run",
             "--harness",
-            "claude-code",
+            "codex",
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("codex"),
             "--prompt",
             "first prompt",
             "--prompt",
@@ -8662,9 +8696,9 @@ fn history_records_a_streamed_run() {
         &[
             "run",
             "--harness",
-            "claude-code",
+            "codex",
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("codex"),
             "--prompt",
             "stream test",
             "--stream",
@@ -8689,7 +8723,7 @@ fn history_records_a_streamed_run() {
     ));
     assert_eq!(list.as_array().unwrap().len(), 1);
     assert_eq!(list[0]["record_count"], 1);
-    assert_eq!(list[0]["harnesses"][0], "claude-code");
+    assert_eq!(list[0]["harnesses"][0], "codex");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -8706,9 +8740,9 @@ fn history_enabled_and_dir_via_environment() {
             "--cwd",
             &fixture.cwd(),
             "--harness",
-            "claude-code",
+            "codex",
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("codex"),
             "--prompt",
             "env test",
             "--bypass",
@@ -8748,9 +8782,9 @@ fn history_labels_layer_cli_over_environment_over_config_and_validate() {
             "--cwd",
             &fixture.cwd(),
             "--harness",
-            "claude-code",
+            "codex",
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("codex"),
             "--prompt",
             "labeled run",
             "--history",
@@ -8799,7 +8833,7 @@ fn history_labels_layer_cli_over_environment_over_config_and_validate() {
         &[
             "run",
             "--harness",
-            "claude-code",
+            "codex",
             "--prompt",
             "invalid",
             "--history-label",
@@ -8827,9 +8861,9 @@ fn history_canonicalizes_relative_cwd_for_project_lookup() {
             "--cwd",
             &relative.display().to_string(),
             "--harness",
-            "claude-code",
+            "codex",
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("codex"),
             "--prompt",
             "canonical",
             "--history",
@@ -8884,9 +8918,9 @@ fn history_watch_filters_and_resumes_as_jsonl() {
             &[
                 "run",
                 "--harness",
-                "claude-code",
+                "codex",
                 "--bin",
-                &bin_override("claude-code"),
+                &bin_override("codex"),
                 "--prompt",
                 name,
                 "--history",
@@ -8946,9 +8980,9 @@ fn history_watch_filters_and_resumes_as_jsonl() {
         &[
             "run",
             "--harness",
-            "claude-code",
+            "codex",
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("codex"),
             "--prompt",
             "fourth",
             "--history",
@@ -9044,9 +9078,9 @@ fn history_watch_scopes_to_explicit_and_current_project() {
                 "--cwd",
                 &project.display().to_string(),
                 "--harness",
-                "claude-code",
+                "codex",
                 "--bin",
-                &bin_override("claude-code"),
+                &bin_override("codex"),
                 "--prompt",
                 prompt,
                 "--history",
@@ -9133,9 +9167,9 @@ fn concurrent_processes_append_complete_history_index_lines() {
                 .args([
                     "run",
                     "--harness",
-                    "claude-code",
+                    "codex",
                     "--bin",
-                    &bin_override("claude-code"),
+                    &bin_override("codex"),
                     "--prompt",
                     &format!("process-{index}"),
                     "--history",
@@ -9184,9 +9218,9 @@ fn history_records_a_failed_run_and_shows_by_id() {
         &[
             "run",
             "--harness",
-            "claude-code",
+            "codex",
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("codex"),
             "--prompt",
             "boom",
             "--history",
@@ -9272,9 +9306,9 @@ fn history_list_scopes_by_project() {
                 "--cwd",
                 &p.display().to_string(),
                 "--harness",
-                "claude-code",
+                "codex",
                 "--bin",
-                &bin_override("claude-code"),
+                &bin_override("codex"),
                 "--prompt",
                 "x",
                 "--history",
@@ -9686,7 +9720,12 @@ fn multiple_models_execute_each_pair_in_parallel() {
         ],
         &[],
     );
-    assert!(output.status.success(), "exit {:?}", output.status.code());
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
     let v = json_stdout(&output);
     assert!(v["fallback"].is_null());
     assert!(v["batch"].is_null());
@@ -10051,7 +10090,7 @@ fn multiple_models_history_records_each_pair_model() {
         &[
             "run",
             "--harness",
-            "claude-code",
+            "codex",
             "--prompt",
             "hi",
             "--model",
@@ -10064,12 +10103,17 @@ fn multiple_models_history_records_each_pair_model() {
             "--cwd",
             &cwd.display().to_string(),
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("codex"),
             "--compact",
         ],
         &[("MOCK_STDOUT", HISTORY_CLAUDE_TRACE)],
     );
-    assert!(output.status.success(), "exit {:?}", output.status.code());
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
     let v = json_stdout(&output);
     let hist_file = v["history_file"].as_str().expect("history recorded");
     let text = std::fs::read_to_string(hist_file).unwrap();

@@ -73,9 +73,9 @@ const contractMatrix = JSON.parse(
 // validation error rather than this path's spawn failure.
 const unspawnable = resolve(here, "missing-oneharness-fixture");
 const historyTrace = [
-	'{"type":"system","subtype":"init"}',
-	'{"type":"assistant","message":{"content":[{"type":"text","text":"history"}]}}',
-	'{"type":"result","result":"history"}',
+	'{"type":"turn.started"}',
+	'{"type":"item.completed","item":{"id":"m1","type":"agent_message","text":"history"}}',
+	'{"type":"turn.completed"}',
 ].join("\n");
 
 type Equal<Left, Right> =
@@ -516,13 +516,13 @@ describe("OneHarness", () => {
 		const client = sdk();
 		await client.run({
 			prompt: "history sdk",
-			harnesses: ["claude-code"],
+			harnesses: ["codex"],
 			mode: "bypass",
 			history: true,
 			historyName: "node-session",
 			historyDir,
 			env: { MOCK_STDOUT: historyTrace },
-			bins: { "claude-code": mock },
+			bins: { codex: mock },
 		});
 		const records = await client.history({
 			session: "node-session",
@@ -622,14 +622,14 @@ describe("OneHarness", () => {
 		] as const) {
 			await client.run({
 				prompt,
-				harnesses: ["claude-code"],
+				harnesses: ["codex"],
 				mode: "bypass",
 				history: true,
 				historyName: name,
 				historyDir,
 				historyLabels: { graph, task: "sdk" },
 				env: { MOCK_STDOUT: historyTrace },
-				bins: { "claude-code": mock },
+				bins: { codex: mock },
 			});
 			records.push(...(await client.history({ session: name, historyDir })));
 		}
@@ -692,14 +692,14 @@ describe("OneHarness", () => {
 		await client.run({
 			prompt: "label precedence",
 			cwd: project,
-			harnesses: ["claude-code"],
+			harnesses: ["codex"],
 			mode: "bypass",
 			history: true,
 			historyName: "label-precedence",
 			historyDir,
 			historyLabels: { graph: "cli", cli: "kept" },
 			env: { MOCK_STDOUT: historyTrace },
-			bins: { "claude-code": mock },
+			bins: { codex: mock },
 		});
 		const records = await client.history({
 			session: "label-precedence",
@@ -719,13 +719,13 @@ describe("OneHarness", () => {
 		const client = sdk();
 		const older = await client.run({
 			prompt: "the older session",
-			harnesses: ["claude-code"],
+			harnesses: ["codex"],
 			mode: "bypass",
 			history: true,
 			historyName: "older-session",
 			historyDir,
 			env: { MOCK_STDOUT: historyTrace },
-			bins: { "claude-code": mock },
+			bins: { codex: mock },
 		});
 
 		// A session's start time is its first record's timestamp, at whole-second

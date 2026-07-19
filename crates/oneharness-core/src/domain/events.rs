@@ -43,7 +43,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::domain::report::OutputFormat;
+use crate::domain::report::{OutputFormat, OutputObservation, Status};
 
 /// One normalized action a harness took, harness-agnostic so a single consumer
 /// assertion works across harnesses. Every field is always serialized (null when
@@ -104,6 +104,7 @@ struct PartialEvent {
     name: Option<String>,
     input: Option<Value>,
     output: Option<String>,
+    tool_call_id: Option<String>,
 }
 
 impl PartialEvent {
@@ -114,7 +115,7 @@ impl PartialEvent {
             input: self.input,
             output: self.output,
             index,
-            tool_call_id: None,
+            tool_call_id: self.tool_call_id,
             started_at: None,
             finished_at: None,
             duration_ms: None,
@@ -205,6 +206,11 @@ fn opencode_tool_event(value: &Value) -> Option<PartialEvent> {
             .and_then(|s| s.get("output"))
             .and_then(Value::as_str)
             .map(str::to_string),
+        tool_call_id: part
+            .get("callID")
+            .or_else(|| part.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
     })
 }
 
@@ -232,12 +238,17 @@ fn content_block_events(value: &Value) -> Vec<PartialEvent> {
                 name: obj.get("name").and_then(Value::as_str).map(str::to_string),
                 input: obj.get("input").cloned(),
                 output: None,
+                tool_call_id: obj.get("id").and_then(Value::as_str).map(str::to_string),
             }),
             Some("tool_result") => out.push(PartialEvent {
                 kind: "tool_result",
                 name: None,
                 input: None,
                 output: tool_result_text(obj.get("content")),
+                tool_call_id: obj
+                    .get("tool_use_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
             }),
             _ => {}
         }
@@ -283,6 +294,11 @@ fn cursor_tool_call(value: &Value) -> Option<PartialEvent> {
             .and_then(|s| s.get("stdout"))
             .and_then(Value::as_str)
             .map(str::to_string),
+        tool_call_id: obj
+            .get("call_id")
+            .or_else(|| tool_call.get("toolCallId"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
     })
 }
 
@@ -312,6 +328,7 @@ fn codex_command_item(value: &Value) -> Option<PartialEvent> {
             .get("aggregated_output")
             .and_then(Value::as_str)
             .map(str::to_string),
+        tool_call_id: item.get("id").and_then(Value::as_str).map(str::to_string),
     })
 }
 
@@ -361,6 +378,272 @@ fn json_candidates(stdout: &str) -> Vec<Value> {
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
         .collect()
+}
+
+/// Timing derived from provider events as they crossed the stdout pipe. The
+/// monotonic offsets are runner observations; UTC strings are labels captured
+/// from the same boundaries. Unknown boundaries remain absent.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TimingReading {
+    pub model_ms: Option<u128>,
+    pub tool_ms: Option<u128>,
+    pub time_to_first_token_ms: Option<u128>,
+}
+
+#[derive(Debug, Clone)]
+struct Boundary {
+    id: String,
+    start: Option<(u128, String)>,
+    finish: Option<(u128, String)>,
+    status: Option<ToolCallStatus>,
+}
+
+/// Enrich normalized calls using paired provider identities and the runner's
+/// actual output observations. Returns measured model/tool totals; overlapping
+/// tool intervals are merged before summing.
+pub fn apply_observed_timing(
+    events: &mut [ActionEvent],
+    observations: &[OutputObservation],
+    run_status: Status,
+    duration_ms: Option<u128>,
+) -> TimingReading {
+    let lines = observed_json_lines(observations);
+    let mut boundaries: Vec<Boundary> = Vec::new();
+    let mut first_token = None;
+    for (value, offset, utc) in &lines {
+        first_token = first_token.or_else(|| is_model_token(value).then_some(*offset));
+        observe_boundaries(value, *offset, utc, &mut boundaries);
+    }
+    for event in events.iter_mut().filter(|event| event.kind == "tool_call") {
+        let Some(id) = event.tool_call_id.as_deref() else {
+            continue;
+        };
+        let Some(boundary) = boundaries.iter().find(|boundary| boundary.id == id) else {
+            continue;
+        };
+        event.started_at = boundary.start.as_ref().map(|(_, utc)| utc.clone());
+        event.finished_at = boundary.finish.as_ref().map(|(_, utc)| utc.clone());
+        event.duration_ms = boundary
+            .start
+            .as_ref()
+            .zip(boundary.finish.as_ref())
+            .map(|((start, _), (finish, _))| finish.saturating_sub(*start));
+        event.status = boundary.status.or_else(|| {
+            boundary.start.as_ref().map(|_| {
+                if run_status == Status::Timeout {
+                    ToolCallStatus::Timeout
+                } else {
+                    ToolCallStatus::Interrupted
+                }
+            })
+        });
+    }
+    let mut intervals = boundaries
+        .iter()
+        .filter_map(|boundary| {
+            let start = boundary.start.as_ref()?.0;
+            let finish = boundary
+                .finish
+                .as_ref()
+                .map(|finish| finish.0)
+                .or(duration_ms)?;
+            Some((start, finish.max(start)))
+        })
+        .collect::<Vec<_>>();
+    intervals.sort_unstable();
+    let mut union = 0;
+    let mut current: Option<(u128, u128)> = None;
+    for (start, finish) in intervals {
+        current = match current {
+            Some((left, right)) if start <= right => Some((left, right.max(finish))),
+            Some((left, right)) => {
+                union += right.saturating_sub(left);
+                Some((start, finish))
+            }
+            None => Some((start, finish)),
+        };
+    }
+    if let Some((left, right)) = current {
+        union += right.saturating_sub(left);
+    }
+    let provider_end = lines.last().map(|(_, offset, _)| *offset);
+    TimingReading {
+        model_ms: provider_end.map(|end| end.saturating_sub(union.min(end))),
+        tool_ms: provider_end.map(|_| union),
+        time_to_first_token_ms: first_token,
+    }
+}
+
+fn observed_json_lines(observations: &[OutputObservation]) -> Vec<(Value, u128, String)> {
+    let mut pending = Vec::new();
+    let mut out = Vec::new();
+    for observation in observations {
+        pending.extend_from_slice(&observation.bytes);
+        while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = pending.drain(..=newline).collect();
+            if let Ok(value) = serde_json::from_slice::<Value>(&line) {
+                out.push((
+                    value,
+                    observation.offset_ms,
+                    observation.observed_at.clone(),
+                ));
+            }
+        }
+    }
+    if !pending.is_empty() {
+        if let (Some(last), Ok(value)) = (
+            observations.last(),
+            serde_json::from_slice::<Value>(&pending),
+        ) {
+            out.push((value, last.offset_ms, last.observed_at.clone()));
+        }
+    }
+    out
+}
+
+fn observe_boundaries(value: &Value, offset: u128, utc: &str, out: &mut Vec<Boundary>) {
+    if let Some(item) = value.get("item").and_then(Value::as_object) {
+        if item.get("type").and_then(Value::as_str) == Some("command_execution") {
+            let Some(id) = item.get("id").and_then(Value::as_str) else {
+                return;
+            };
+            let boundary = boundary(out, id);
+            match value.get("type").and_then(Value::as_str) {
+                Some("item.started") => boundary.start = Some((offset, utc.to_string())),
+                Some("item.completed") => {
+                    boundary.finish = Some((offset, utc.to_string()));
+                    boundary.status = Some(
+                        if item.get("exit_code").and_then(Value::as_i64) == Some(0) {
+                            ToolCallStatus::Completed
+                        } else {
+                            ToolCallStatus::Failed
+                        },
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    if value.get("type").and_then(Value::as_str) == Some("tool_call") {
+        if let Some(id) = value
+            .get("call_id")
+            .or_else(|| value.pointer("/tool_call/toolCallId"))
+            .and_then(Value::as_str)
+        {
+            let boundary = boundary(out, id);
+            match value.get("subtype").and_then(Value::as_str) {
+                Some("started") => boundary.start = Some((offset, utc.to_string())),
+                Some("completed") => {
+                    boundary.finish = Some((offset, utc.to_string()));
+                    boundary.status = Some(if value.pointer("/tool_call/error").is_some() {
+                        ToolCallStatus::Failed
+                    } else {
+                        ToolCallStatus::Completed
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+    let blocks = value
+        .pointer("/message/content")
+        .or_else(|| value.get("content"));
+    if let Some(blocks) = blocks.and_then(Value::as_array) {
+        for block_value in blocks {
+            let Some(block) = block_value.as_object() else {
+                continue;
+            };
+            match block.get("type").and_then(Value::as_str) {
+                Some("tool_use") => {
+                    if let Some(id) = block.get("id").and_then(Value::as_str) {
+                        boundary(out, id).start = Some((offset, utc.to_string()));
+                    }
+                }
+                Some("tool_result") => {
+                    if let Some(id) = block.get("tool_use_id").and_then(Value::as_str) {
+                        let boundary = boundary(out, id);
+                        boundary.finish = Some((offset, utc.to_string()));
+                        boundary.status = Some(
+                            if block.get("is_error").and_then(Value::as_bool) == Some(true) {
+                                ToolCallStatus::Failed
+                            } else {
+                                ToolCallStatus::Completed
+                            },
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Some(part) = value.get("part").and_then(Value::as_object) {
+        if part.get("type").and_then(Value::as_str) == Some("tool") {
+            if let Some(id) = part
+                .get("callID")
+                .or_else(|| part.get("id"))
+                .and_then(Value::as_str)
+            {
+                let state = part.get("state").and_then(Value::as_object);
+                let boundary = boundary(out, id);
+                let start_epoch = state
+                    .and_then(|state| state.get("time"))
+                    .and_then(|time| time.get("start"))
+                    .and_then(Value::as_u64)
+                    .map(u128::from);
+                let end_epoch = state
+                    .and_then(|state| state.get("time"))
+                    .and_then(|time| time.get("end"))
+                    .and_then(Value::as_u64)
+                    .map(u128::from);
+                if let Some(start_epoch) = start_epoch {
+                    let start_offset = end_epoch
+                        .map(|end| offset.saturating_sub(end.saturating_sub(start_epoch)))
+                        .unwrap_or(offset);
+                    boundary.start = Some((
+                        start_offset,
+                        crate::domain::history::format_rfc3339_millis(start_epoch),
+                    ));
+                }
+                if let Some(end_epoch) = end_epoch {
+                    boundary.finish = Some((
+                        offset,
+                        crate::domain::history::format_rfc3339_millis(end_epoch),
+                    ));
+                    boundary.status = Some(
+                        match state
+                            .and_then(|state| state.get("status"))
+                            .and_then(Value::as_str)
+                        {
+                            Some("error" | "failed") => ToolCallStatus::Failed,
+                            _ => ToolCallStatus::Completed,
+                        },
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn boundary<'a>(boundaries: &'a mut Vec<Boundary>, id: &str) -> &'a mut Boundary {
+    if let Some(index) = boundaries.iter().position(|boundary| boundary.id == id) {
+        return &mut boundaries[index];
+    }
+    boundaries.push(Boundary {
+        id: id.to_string(),
+        start: None,
+        finish: None,
+        status: None,
+    });
+    boundaries.last_mut().expect("just pushed")
+}
+
+fn is_model_token(value: &Value) -> bool {
+    value.get("type").and_then(Value::as_str) == Some("assistant")
+        || value
+            .pointer("/part/type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| matches!(kind, "text" | "reasoning"))
+        || value.pointer("/item/type").and_then(Value::as_str) == Some("agent_message")
 }
 
 #[cfg(test)]

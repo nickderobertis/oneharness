@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::domain::report::{Capture, Status};
+use crate::domain::report::{Capture, OutputObservation, Status};
 use crate::io::process::{Finish, PipeEvent, Process};
 
 /// A fully-specified subprocess to run.
@@ -224,6 +224,8 @@ fn feed_stdin(process: &mut Process, bytes: String) {
 /// Run a single job, returning its raw capture. Never panics on harness behavior.
 pub fn run_job(job: &Job) -> Capture {
     let start = Instant::now();
+    let start_epoch_ms = epoch_millis();
+    let started_at = crate::domain::history::format_rfc3339_millis(start_epoch_ms);
     let (program, args) = spawn_target(&job.argv);
     let (stdin_cfg, stdin_bytes) = stdin_stdio(job);
     let mut command = Command::new(program);
@@ -266,6 +268,9 @@ pub fn run_job(job: &Job) -> Capture {
                     "failed to spawn `{}`: {err}. Suggestion: check the binary exists and is executable (try `oneharness detect`)",
                     job.argv[0]
                 )),
+                started_at,
+                finished_at: Some(utc_now()),
+                stdout_observations: Vec::new(),
             };
         }
     };
@@ -305,6 +310,7 @@ pub fn run_job(job: &Job) -> Capture {
         None
     };
 
+    let observations = observations_since(start, start_epoch_ms, finished.stdout_observations);
     Capture {
         status,
         exit_code,
@@ -312,6 +318,9 @@ pub fn run_job(job: &Job) -> Capture {
         stdout: finished.stdout,
         stderr: finished.stderr,
         error,
+        started_at,
+        finished_at: Some(utc_now()),
+        stdout_observations: observations,
     }
 }
 
@@ -343,6 +352,8 @@ where
     F: FnMut(&str) -> StreamStep,
 {
     let start = Instant::now();
+    let start_epoch_ms = epoch_millis();
+    let started_at = crate::domain::history::format_rfc3339_millis(start_epoch_ms);
     let (program, args) = spawn_target(&job.argv);
     let (stdin_cfg, stdin_bytes) = stdin_stdio(job);
     let mut command = Command::new(program);
@@ -379,6 +390,9 @@ where
                     "failed to spawn `{}`: {err}. Suggestion: check the binary exists and is executable (try `oneharness detect`)",
                     job.argv[0]
                 )),
+                started_at,
+                finished_at: Some(utc_now()),
+                stdout_observations: Vec::new(),
             };
         }
     };
@@ -440,6 +454,7 @@ where
         None
     };
 
+    let observations = observations_since(start, start_epoch_ms, finished.stdout_observations);
     Capture {
         status,
         exit_code,
@@ -447,7 +462,38 @@ where
         stdout: finished.stdout,
         stderr: finished.stderr,
         error,
+        started_at,
+        finished_at: Some(utc_now()),
+        stdout_observations: observations,
     }
+}
+
+fn utc_now() -> String {
+    crate::domain::history::format_rfc3339_millis(epoch_millis())
+}
+
+fn epoch_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn observations_since(
+    start: Instant,
+    start_epoch_ms: u128,
+    observations: Vec<(Instant, Vec<u8>)>,
+) -> Vec<OutputObservation> {
+    observations
+        .into_iter()
+        .map(|(observed_at, bytes)| OutputObservation {
+            offset_ms: observed_at.saturating_duration_since(start).as_millis(),
+            observed_at: crate::domain::history::format_rfc3339_millis(
+                start_epoch_ms + observed_at.saturating_duration_since(start).as_millis(),
+            ),
+            bytes,
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy)]

@@ -30,6 +30,7 @@ pub(crate) enum PipeEvent {
 pub(crate) struct Finished {
     pub stdout: String,
     pub stderr: String,
+    pub stdout_observations: Vec<(Instant, Vec<u8>)>,
 }
 
 /// Why the runner is finishing a process.
@@ -122,6 +123,7 @@ impl Process {
         Finished {
             stdout: self.stdout.take_string(),
             stderr: self.stderr.take_string(),
+            stdout_observations: self.stdout.take_observations(),
         }
     }
 
@@ -157,13 +159,14 @@ impl Drop for Process {
 }
 
 enum PipeMessage {
-    Data(Vec<u8>),
+    Data(Instant, Vec<u8>),
     Closed,
 }
 
 struct PipeDrain {
     receiver: Receiver<PipeMessage>,
     bytes: Vec<u8>,
+    observations: Vec<(Instant, Vec<u8>)>,
     closed: bool,
 }
 
@@ -180,7 +183,7 @@ impl PipeDrain {
                     Ok(0) | Err(_) => break,
                     Ok(count) => {
                         if sender
-                            .send(PipeMessage::Data(chunk[..count].to_vec()))
+                            .send(PipeMessage::Data(Instant::now(), chunk[..count].to_vec()))
                             .is_err()
                         {
                             return;
@@ -193,6 +196,7 @@ impl PipeDrain {
         Self {
             receiver,
             bytes: Vec::new(),
+            observations: Vec::new(),
             closed: false,
         }
     }
@@ -206,8 +210,9 @@ impl PipeDrain {
             return PipeEvent::Deadline;
         }
         match self.receiver.recv_timeout(deadline - now) {
-            Ok(PipeMessage::Data(chunk)) => {
+            Ok(PipeMessage::Data(observed_at, chunk)) => {
                 self.bytes.extend_from_slice(&chunk);
+                self.observations.push((observed_at, chunk.clone()));
                 PipeEvent::Data(chunk)
             }
             Ok(PipeMessage::Closed) | Err(RecvTimeoutError::Disconnected) => {
@@ -227,7 +232,10 @@ impl PipeDrain {
             return;
         }
         match self.receiver.recv_timeout(deadline - now) {
-            Ok(PipeMessage::Data(chunk)) => self.bytes.extend_from_slice(&chunk),
+            Ok(PipeMessage::Data(observed_at, chunk)) => {
+                self.bytes.extend_from_slice(&chunk);
+                self.observations.push((observed_at, chunk));
+            }
             Ok(PipeMessage::Closed) | Err(RecvTimeoutError::Disconnected) => {
                 self.closed = true;
             }
@@ -237,6 +245,10 @@ impl PipeDrain {
 
     fn take_string(&mut self) -> String {
         String::from_utf8_lossy(&std::mem::take(&mut self.bytes)).into_owned()
+    }
+
+    fn take_observations(&mut self) -> Vec<(Instant, Vec<u8>)> {
+        std::mem::take(&mut self.observations)
     }
 }
 

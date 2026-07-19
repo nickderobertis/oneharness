@@ -2506,6 +2506,50 @@ fn normalizes_usage_and_session_from_opencode_stream_json() {
 }
 
 #[test]
+fn codex_usage_and_known_model_cost_flow_into_history_while_unknown_cost_is_omitted() {
+    let stdout = concat!(
+        "{\"type\":\"thread.started\",\"thread_id\":\"th-usage\"}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"msg-1\",\"type\":\"agent_message\",\"text\":\"done\"}}\n",
+        "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1000,\"cached_input_tokens\":400,\"output_tokens\":100}}\n",
+    );
+    for (model, expect_cost) in [("gpt-5-codex", true), ("private-alias", false)] {
+        let dir = hist_dir(model);
+        let ds = dir.display().to_string();
+        let output = run(
+            &[
+                "run",
+                "--harness",
+                "codex",
+                "--prompt",
+                "usage",
+                "--model",
+                model,
+                "--bin",
+                &bin_override("codex"),
+                "--history",
+                "--history-dir",
+                &ds,
+                "--bypass",
+                "--compact",
+            ],
+            &[("MOCK_STDOUT", stdout), ("MOCK_STREAM_DELAY_MS", "20")],
+        );
+        assert!(output.status.success());
+        let report = json_stdout(&output);
+        let result = &report["results"][0];
+        assert_eq!(result["usage"]["input_tokens"], 1000);
+        assert_eq!(result["usage"]["cache_read_tokens"], 400);
+        assert_eq!(result["usage"]["output_tokens"], 100);
+        assert_eq!(result["usage"]["cost_usd"].is_number(), expect_cost);
+        let history = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
+        let record: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
+        assert_eq!(record["schema_version"], "0.3");
+        assert_eq!(record["usage"]["cost_usd"].is_number(), expect_cost);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
 fn extracts_opencode_text_from_real_jsonl_transcript() {
     // OpenCode requests `--format json` but emits line-delimited events, not one
     // document — so naive single-document parsing left `text` null and consumers
@@ -7766,6 +7810,116 @@ fn history_records_a_run_and_reports_the_file() {
 }
 
 #[test]
+fn history_measures_overlapping_tool_intervals_from_provider_events() {
+    let dir = hist_dir("timed-tools");
+    let ds = dir.display().to_string();
+    let stdout = concat!(
+        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"starting\"}]}}\n",
+        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"call-a\",\"name\":\"Bash\",\"input\":{}}]}}\n",
+        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"call-b\",\"name\":\"Read\",\"input\":{}}]}}\n",
+        "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call-a\",\"content\":\"ok\"}]}}\n",
+        "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call-b\",\"content\":\"ok\"}]}}\n",
+        "{\"type\":\"result\",\"result\":\"done\",\"usage\":{\"input_tokens\":100,\"output_tokens\":20}}\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "measure",
+            "--bin",
+            &bin_override("claude-code"),
+            "--events",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout), ("MOCK_STREAM_DELAY_MS", "40")],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    let history = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
+    let record: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
+    assert_eq!(record["schema_version"], "0.3");
+    assert!(record["time_to_first_token_ms"].as_u64().is_some());
+    let calls = record["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["kind"] == "tool_call")
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0]["tool_call_id"], "call-a");
+    assert_eq!(calls[1]["tool_call_id"], "call-b");
+    assert_eq!(calls[0]["status"], "completed");
+    let individual = calls
+        .iter()
+        .map(|event| event["duration_ms"].as_u64().unwrap())
+        .sum::<u64>();
+    let union = record["tool_ms"].as_u64().unwrap();
+    assert!(
+        union < individual,
+        "overlap must not be double-counted: {union} vs {individual}"
+    );
+    assert!(
+        record["model_ms"].as_u64().unwrap() + union <= record["duration_ms"].as_u64().unwrap()
+    );
+    assert_ne!(calls[0]["started_at"], calls[1]["started_at"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn history_preserves_an_unfinished_tool_interval_without_fabricating_an_end() {
+    let dir = hist_dir("interrupted-tool");
+    let ds = dir.display().to_string();
+    let stdout = concat!(
+        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"call-open\",\"name\":\"Bash\",\"input\":{}}]}}\n",
+        "{\"type\":\"result\",\"result\":\"stopped\"}\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "interrupt",
+            "--bin",
+            &bin_override("claude-code"),
+            "--events",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout), ("MOCK_STREAM_DELAY_MS", "30")],
+    );
+    assert!(output.status.success());
+    let report = json_stdout(&output);
+    let history = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
+    let record: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
+    assert_eq!(record["schema_version"], "0.3");
+    let call = record["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["kind"] == "tool_call")
+        .unwrap();
+    assert_eq!(call["tool_call_id"], "call-open");
+    assert_eq!(call["status"], "interrupted");
+    assert!(call["finished_at"].is_null());
+    assert!(call["duration_ms"].is_null());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn history_is_off_by_default_no_history_and_print_command() {
     let dir = hist_dir("off");
     let ds = dir.display().to_string();
@@ -8364,15 +8518,10 @@ fn history_labels_layer_cli_over_environment_over_config_and_validate() {
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(record["schema_version"], "0.3");
-    assert!(record["started_at"].is_string());
-    assert!(record["finished_at"].is_string());
-    assert!(record["model_ms"].is_number());
-    assert!(record["tool_ms"].is_number());
-    assert!(
-        record["model_ms"].as_u64().unwrap() + record["tool_ms"].as_u64().unwrap()
-            <= record["duration_ms"].as_u64().unwrap()
-    );
+    // Claude's compact terminal JSON has no complete provider/tool trace, so it
+    // stays v0.2 rather than receiving invented v0.3 timing.
+    assert_eq!(record["schema_version"], "0.2");
+    assert!(record.get("started_at").is_none());
     assert_eq!(record["labels"]["graph"], "cli");
     for key in ["user", "project", "env", "cli"] {
         assert_eq!(record["labels"][key], "kept", "label {key}");

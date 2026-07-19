@@ -333,10 +333,13 @@ pub struct HistoryRecord {
     /// split is conservative when a transcript has tool calls but lacks native
     /// boundaries: the observed invocation interval is attributed to the union
     /// of those calls, never double-counted.
-    pub started_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
     pub finished_at: Option<String>,
-    pub model_ms: u128,
-    pub tool_ms: u128,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_ms: Option<u128>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_to_first_token_ms: Option<u128>,
     /// Best-effort final assistant text; `null` when extraction was impossible.
@@ -374,27 +377,9 @@ impl HistoryRecord {
         run_prompt: &str,
         r: &RunResult,
     ) -> Self {
-        let mut history_events = r.events.clone();
-        let has_tools = history_events
-            .as_ref()
-            .is_some_and(|events| events.iter().any(|event| event.kind == "tool_call"));
-        let elapsed = r.duration_ms.unwrap_or(0);
-        if let Some(events) = &mut history_events {
-            for event in events.iter_mut().filter(|event| event.kind == "tool_call") {
-                event.tool_call_id = Some(format!("tool-{}", event.index));
-                event.started_at = Some(timestamp.clone());
-                event.finished_at = (r.status != Status::Timeout).then(|| timestamp.clone());
-                event.duration_ms = (r.status != Status::Timeout).then_some(elapsed);
-                event.status = Some(match r.status {
-                    Status::Ok => ToolCallStatus::Completed,
-                    Status::Nonzero => ToolCallStatus::Failed,
-                    Status::Timeout => ToolCallStatus::Timeout,
-                    _ => ToolCallStatus::Interrupted,
-                });
-            }
-        }
-        HistoryRecord {
-            schema_version: SCHEMA_VERSION.to_string(),
+        let telemetry = r.telemetry.as_ref();
+        let mut record = HistoryRecord {
+            schema_version: PREVIOUS_SCHEMA_VERSION.to_string(),
             history_id,
             session: session.to_string(),
             name: name.to_string(),
@@ -408,19 +393,66 @@ impl HistoryRecord {
             status: r.status,
             exit_code: r.exit_code,
             duration_ms: r.duration_ms,
-            started_at: timestamp.clone(),
-            finished_at: matches!(r.status, Status::Ok | Status::Nonzero)
-                .then(|| timestamp.clone()),
-            model_ms: if has_tools { 0 } else { elapsed },
-            tool_ms: if has_tools { elapsed } else { 0 },
-            time_to_first_token_ms: None,
+            started_at: telemetry.map(|telemetry| telemetry.started_at.clone()),
+            finished_at: telemetry.and_then(|telemetry| telemetry.finished_at.clone()),
+            model_ms: telemetry.and_then(|telemetry| telemetry.model_ms),
+            tool_ms: telemetry.and_then(|telemetry| telemetry.tool_ms),
+            time_to_first_token_ms: telemetry
+                .and_then(|telemetry| telemetry.time_to_first_token_ms),
             text: r.text.clone(),
             text_source: r.text_source.clone(),
             usage: r.usage.clone(),
             session_id: r.session_id.clone(),
-            events: history_events,
+            events: r.events.clone(),
             failure_kind: r.failure_kind,
+        };
+        if record.valid_v03() {
+            record.schema_version = SCHEMA_VERSION.to_string();
+        } else {
+            record.started_at = None;
+            record.finished_at = None;
+            record.model_ms = None;
+            record.tool_ms = None;
+            record.time_to_first_token_ms = None;
         }
+        record
+    }
+
+    fn valid_v03(&self) -> bool {
+        let Some(duration) = self.duration_ms else {
+            return false;
+        };
+        let (Some(started), Some(model), Some(tool)) =
+            (&self.started_at, self.model_ms, self.tool_ms)
+        else {
+            return false;
+        };
+        if started.is_empty() || model.saturating_add(tool) > duration {
+            return false;
+        }
+        if matches!(self.status, Status::Ok | Status::Nonzero) && self.finished_at.is_none() {
+            return false;
+        }
+        self.events.as_ref().is_none_or(|events| {
+            events
+                .iter()
+                .filter(|event| event.kind == "tool_call")
+                .all(|event| {
+                    let base = event
+                        .tool_call_id
+                        .as_deref()
+                        .is_some_and(|id| !id.is_empty())
+                        && event.started_at.is_some()
+                        && event.status.is_some();
+                    base && match event.status {
+                        Some(ToolCallStatus::Completed | ToolCallStatus::Failed) => {
+                            event.finished_at.is_some() && event.duration_ms.is_some()
+                        }
+                        Some(ToolCallStatus::Timeout | ToolCallStatus::Interrupted) => true,
+                        None => false,
+                    }
+                })
+        })
     }
 
     /// Deserialize a current or legacy record. `legacy_identity` should name the
@@ -452,8 +484,8 @@ impl HistoryRecord {
                 )))
             }
         };
-        Ok(Self {
-            schema_version: SCHEMA_VERSION.to_string(),
+        let record = Self {
+            schema_version: wire.schema_version.clone(),
             history_id,
             session: wire.session,
             name: wire.name,
@@ -471,10 +503,10 @@ impl HistoryRecord {
             status: wire.status,
             exit_code: wire.exit_code,
             duration_ms: wire.duration_ms,
-            started_at: wire.started_at.unwrap_or_else(|| wire.timestamp.clone()),
+            started_at: wire.started_at,
             finished_at: wire.finished_at,
-            model_ms: wire.model_ms.unwrap_or(0),
-            tool_ms: wire.tool_ms.unwrap_or(0),
+            model_ms: wire.model_ms,
+            tool_ms: wire.tool_ms,
             time_to_first_token_ms: wire.time_to_first_token_ms,
             text: wire.text,
             text_source: wire.text_source,
@@ -482,7 +514,14 @@ impl HistoryRecord {
             session_id: wire.session_id,
             events: wire.events,
             failure_kind: wire.failure_kind,
-        })
+        };
+        if record.schema_version == SCHEMA_VERSION && !record.valid_v03() {
+            return Err(serde_json::Error::io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "history schema v0.3 record is missing or has invalid telemetry",
+            )));
+        }
+        Ok(record)
     }
 }
 
@@ -655,6 +694,15 @@ pub fn format_rfc3339(secs: i64) -> String {
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
 }
 
+/// Format a UNIX millisecond instant as RFC3339 UTC while retaining the
+/// precision needed to distinguish short model/tool intervals.
+pub fn format_rfc3339_millis(millis: u128) -> String {
+    let secs = (millis / 1_000).min(i64::MAX as u128) as i64;
+    let fraction = millis % 1_000;
+    let base = format_rfc3339(secs);
+    format!("{}.{fraction:03}Z", base.trim_end_matches('Z'))
+}
+
 /// Format a UNIX timestamp (seconds, UTC) as `YYYYMMDDThhmmssZ` — colon-free so
 /// it is safe in a filename on every platform (Windows forbids `:`). Used to make
 /// the session id sortable by start time.
@@ -744,6 +792,13 @@ mod tests {
             model: None,
             exit_code: Some(0),
             duration_ms: Some(42),
+            telemetry: Some(crate::domain::report::ExecutionTelemetry {
+                started_at: "2026-07-07T13:14:14.958Z".to_string(),
+                finished_at: Some("2026-07-07T13:14:15.000Z".to_string()),
+                model_ms: Some(42),
+                tool_ms: Some(0),
+                time_to_first_token_ms: Some(10),
+            }),
             command: vec!["claude".to_string()],
             output_format: OutputFormat::Json,
             text: Some("hello".to_string()),
@@ -962,7 +1017,7 @@ mod tests {
             HistoryRecord::from_value_with_legacy_identity(legacy, Some("project/session.jsonl:1"))
                 .unwrap();
         assert_eq!(first.history_id, second.history_id);
-        assert_eq!(first.schema_version, SCHEMA_VERSION);
+        assert_eq!(first.schema_version, LEGACY_SCHEMA_VERSION);
         assert!(first.labels.is_empty());
     }
 
@@ -986,6 +1041,17 @@ mod tests {
             serde_json::from_value::<HistoryRecord>(value).unwrap(),
             current
         );
+
+        let mut invalid_v03 = serde_json::to_value(&current).unwrap();
+        invalid_v03.as_object_mut().unwrap().remove("model_ms");
+        assert!(serde_json::from_value::<HistoryRecord>(invalid_v03).is_err());
+
+        let mut previous = serde_json::to_value(&current).unwrap();
+        previous["schema_version"] = Value::String(PREVIOUS_SCHEMA_VERSION.to_string());
+        for field in ["started_at", "finished_at", "model_ms", "tool_ms"] {
+            previous.as_object_mut().unwrap().remove(field);
+        }
+        assert!(serde_json::from_value::<HistoryRecord>(previous).is_ok());
 
         let mut missing = serde_json::to_value(&current).unwrap();
         missing.as_object_mut().unwrap().remove("history_id");

@@ -738,6 +738,7 @@ mod tests {
             model: None,
             exit_code: Some(0),
             duration_ms: Some(10),
+            telemetry: None,
             command: vec!["bin".to_string()],
             output_format: OutputFormat::Json,
             text: Some("hi".to_string()),

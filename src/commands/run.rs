@@ -1815,6 +1815,7 @@ fn planned_result(
         model,
         exit_code: None,
         duration_ms: None,
+        telemetry: None,
         command,
         output_format,
         text: None,
@@ -1853,6 +1854,7 @@ fn skipped_result(
         model,
         exit_code: None,
         duration_ms: None,
+        telemetry: None,
         command,
         output_format,
         text: None,
@@ -1930,20 +1932,48 @@ fn executed_result(
     let usage_reading = normalize_capture
         .then(|| signals::extract_usage(&capture.stdout))
         .flatten();
-    let (usage, usage_source) = match usage_reading {
+    let (mut usage, usage_source) = match usage_reading {
         Some(r) => (r.usage, Some(r.source)),
         None => (Usage::default(), None),
     };
+    signals::apply_model_price(&mut usage, model.as_deref());
     let session_id = normalize_capture
         .then(|| signals::extract_session(&capture.stdout))
         .flatten();
     let events_reading = normalize_capture
         .then(|| events::extract_events(&capture.stdout, output_format))
         .flatten();
-    let (events, events_source) = match events_reading {
+    let (mut normalized_events, events_source) = match events_reading {
         Some(r) => (Some(r.events), Some(r.source)),
         None => (None, None),
     };
+    let timing = normalized_events.as_mut().map(|normalized_events| {
+        events::apply_observed_timing(
+            normalized_events,
+            &capture.stdout_observations,
+            capture.status,
+            capture.duration_ms,
+        )
+    });
+    let trace_is_complete = spec.events_format.unwrap_or(spec.output_format) == output_format;
+    let telemetry = Some(oneharness_core::domain::report::ExecutionTelemetry {
+        started_at: capture.started_at.clone(),
+        finished_at: capture.finished_at.clone(),
+        model_ms: timing
+            .as_ref()
+            .and_then(|timing| timing.model_ms)
+            .or_else(|| {
+                capture
+                    .stdout_observations
+                    .last()
+                    .map(|observation| observation.offset_ms)
+            }),
+        tool_ms: timing
+            .as_ref()
+            .and_then(|timing| timing.tool_ms)
+            .or_else(|| trace_is_complete.then_some(0)),
+        time_to_first_token_ms: timing.and_then(|timing| timing.time_to_first_token_ms),
+    });
     // A deferred-tool dead-end: the harness completed cleanly (exit 0) but only
     // *deferred* a builtin tool call instead of running it (Claude Code bridge
     // deployments — issue #1114). It exits 0, so it is not caught by the non-zero
@@ -1984,6 +2014,7 @@ fn executed_result(
         model,
         exit_code: capture.exit_code,
         duration_ms: capture.duration_ms,
+        telemetry,
         command,
         output_format,
         text,
@@ -1991,7 +2022,7 @@ fn executed_result(
         usage,
         usage_source,
         session_id,
-        events,
+        events: normalized_events,
         events_source,
         structured,
         schema_valid,
@@ -2550,6 +2581,7 @@ mod tests {
             model: None,
             exit_code: None,
             duration_ms: None,
+            telemetry: None,
             command: vec![],
             output_format: OutputFormat::Text,
             text: None,
@@ -2597,6 +2629,9 @@ mod tests {
             stdout: stdout.into(),
             stderr: String::new(),
             error: None,
+            started_at: "2026-01-01T00:00:00.000Z".to_string(),
+            finished_at: Some("2026-01-01T00:00:00.001Z".to_string()),
+            stdout_observations: Vec::new(),
         }
     }
 

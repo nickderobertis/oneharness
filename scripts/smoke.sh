@@ -282,7 +282,8 @@ rm -rf "$schema_dir"
 #    shipped binary's history write + view path end to end, hermetically.
 hist_dir="$(mktemp -d)/hist"
 LAST_CMD="ONEHARNESS_BIN_CLAUDE_CODE=$mock $oh run --harness claude-code --prompt <prompt> --history --history-dir $hist_dir --bypass --compact"
-out="$(ONEHARNESS_BIN_CLAUDE_CODE="$mock" MOCK_STDOUT='{"result":"hi"}' \
+out="$(ONEHARNESS_BIN_CLAUDE_CODE="$mock" MOCK_STDOUT='{"type":"system","subtype":"init"}
+{"type":"result","result":"hi"}' \
   "$oh" run --harness claude-code --prompt "$PROMPT" --history --history-dir "$hist_dir" --bypass --compact)" \
   || fail "history run exited non-zero" "$LAST_CMD" "$out" "the --history write path is broken"
 assert_contains "$out" '"history_file":' "history_file was not reported"

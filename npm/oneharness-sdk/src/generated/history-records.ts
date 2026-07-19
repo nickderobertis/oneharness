@@ -106,7 +106,7 @@ export type HistoryRecord =
        * unclassified.
        */
       failure_kind: FailureKind | null;
-      finished_at?: string | null | undefined;
+      finished_at: string | null;
       /**
        * Canonical harness id (e.g. `claude-code`).
        */

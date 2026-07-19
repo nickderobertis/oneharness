@@ -228,7 +228,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.union([
     failure_kind: z
       .union([z.lazy(() => FailureKindSchema), z.null()])
       .refine((value) => value !== undefined, { message: "Required" }),
-    finished_at: z.union([z.string(), z.null()]).optional(),
+    finished_at: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
     harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
     history_id: z
       .string()

@@ -72,6 +72,11 @@ const contractMatrix = JSON.parse(
 // boundary check that runs before the subprocess is the only way to see the
 // validation error rather than this path's spawn failure.
 const unspawnable = resolve(here, "missing-oneharness-fixture");
+const historyTrace = [
+	'{"type":"system","subtype":"init"}',
+	'{"type":"assistant","message":{"content":[{"type":"text","text":"history"}]}}',
+	'{"type":"result","result":"history"}',
+].join("\n");
 
 type Equal<Left, Right> =
 	(<Value>() => Value extends Left ? 1 : 2) extends <
@@ -516,6 +521,7 @@ describe("OneHarness", () => {
 			history: true,
 			historyName: "node-session",
 			historyDir,
+			env: { MOCK_STDOUT: historyTrace },
 			bins: { "claude-code": mock },
 		});
 		const records = await client.history({
@@ -622,6 +628,7 @@ describe("OneHarness", () => {
 				historyName: name,
 				historyDir,
 				historyLabels: { graph, task: "sdk" },
+				env: { MOCK_STDOUT: historyTrace },
 				bins: { "claude-code": mock },
 			});
 			records.push(...(await client.history({ session: name, historyDir })));
@@ -691,6 +698,7 @@ describe("OneHarness", () => {
 			historyName: "label-precedence",
 			historyDir,
 			historyLabels: { graph: "cli", cli: "kept" },
+			env: { MOCK_STDOUT: historyTrace },
 			bins: { "claude-code": mock },
 		});
 		const records = await client.history({
@@ -716,6 +724,7 @@ describe("OneHarness", () => {
 			history: true,
 			historyName: "older-session",
 			historyDir,
+			env: { MOCK_STDOUT: historyTrace },
 			bins: { "claude-code": mock },
 		});
 

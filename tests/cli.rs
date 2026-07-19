@@ -8177,6 +8177,135 @@ fn history_measures_overlapping_tool_intervals_from_provider_events() {
 }
 
 #[test]
+fn history_uses_codex_reasoning_for_first_and_last_model_boundaries() {
+    let dir = hist_dir("codex-reasoning");
+    let stdout = concat!(
+        "{\"type\":\"turn.started\"}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"r1\",\"type\":\"reasoning\",\"text\":\"Inspecting the request\"}}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"done\"}}\n",
+        "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":4}}\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "reason first",
+            "--bin",
+            &bin_override("codex"),
+            "--history",
+            "--history-dir",
+            &dir.display().to_string(),
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout), ("MOCK_STREAM_DELAY_MS", "50")],
+    );
+    assert!(output.status.success());
+    let report = json_stdout(&output);
+    let history = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
+    let record: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
+    let ttft = record["time_to_first_token_ms"].as_u64().unwrap();
+    let model = record["model_ms"].as_u64().unwrap();
+    assert!((35..100).contains(&ttft), "reasoning TTFT: {ttft}");
+    assert!(
+        (80..150).contains(&model),
+        "reasoning through answer: {model}"
+    );
+    assert!(model < record["duration_ms"].as_u64().unwrap());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn history_normalizes_codex_mcp_failure_and_interruption() {
+    let failed_dir = hist_dir("codex-mcp-failed");
+    let failed_trace = concat!(
+        "{\"type\":\"turn.started\"}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"r1\",\"type\":\"reasoning\",\"text\":\"Calling MCP\"}}\n",
+        "{\"type\":\"item.started\",\"item\":{\"id\":\"mcp-1\",\"type\":\"mcp_tool_call\",\"server\":\"minimal\",\"tool\":\"count\",\"arguments\":{\"n\":2},\"status\":\"in_progress\"}}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"mcp-1\",\"type\":\"mcp_tool_call\",\"server\":\"minimal\",\"tool\":\"count\",\"arguments\":{\"n\":2},\"result\":null,\"error\":{\"message\":\"server failed\"},\"status\":\"failed\"}}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"could not count\"}}\n",
+        "{\"type\":\"turn.completed\"}\n",
+    );
+    let failed = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "mcp",
+            "--bin",
+            &bin_override("codex"),
+            "--history",
+            "--history-dir",
+            &failed_dir.display().to_string(),
+            "--bypass",
+            "--compact",
+        ],
+        &[
+            ("MOCK_STDOUT", failed_trace),
+            ("MOCK_STREAM_DELAY_MS", "30"),
+        ],
+    );
+    assert!(failed.status.success());
+    let report = json_stdout(&failed);
+    let history = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
+    let record: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
+    let calls = record["events"].as_array().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["name"], "count");
+    assert_eq!(calls[0]["tool_call_id"], "mcp-1");
+    assert_eq!(calls[0]["status"], "failed");
+    assert!(calls[0]["duration_ms"].as_u64().unwrap() > 0);
+
+    let interrupted_dir = hist_dir("codex-mcp-interrupted");
+    let interrupted_trace = concat!(
+        "{\"type\":\"turn.started\"}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"r1\",\"type\":\"reasoning\",\"text\":\"Calling MCP\"}}\n",
+        "{\"type\":\"item.started\",\"item\":{\"id\":\"mcp-open\",\"type\":\"mcp_tool_call\",\"server\":\"minimal\",\"tool\":\"wait\",\"arguments\":{},\"status\":\"in_progress\"}}\n",
+        "{\"type\":\"progress\"}\n",
+        "{\"type\":\"progress\"}\n",
+        "{\"type\":\"progress\"}\n",
+    );
+    let interrupted = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "interrupt",
+            "--bin",
+            &bin_override("codex"),
+            "--history",
+            "--history-dir",
+            &interrupted_dir.display().to_string(),
+            "--timeout",
+            "1",
+            "--bypass",
+            "--compact",
+        ],
+        &[
+            ("MOCK_STDOUT", interrupted_trace),
+            ("MOCK_STREAM_DELAY_MS", "300"),
+        ],
+    );
+    assert_eq!(interrupted.status.code(), Some(1));
+    let report = json_stdout(&interrupted);
+    let history = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
+    let record: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
+    assert_eq!(record["status"], "timeout");
+    assert!(record["time_to_first_token_ms"].as_u64().unwrap() >= 200);
+    let call = &record["events"][0];
+    assert_eq!(call["tool_call_id"], "mcp-open");
+    assert_eq!(call["status"], "timeout");
+    assert!(call["finished_at"].is_null());
+    assert!(call["duration_ms"].is_null());
+    let _ = std::fs::remove_dir_all(failed_dir);
+    let _ = std::fs::remove_dir_all(interrupted_dir);
+}
+
+#[test]
 fn history_preserves_an_unfinished_tool_interval_without_fabricating_an_end() {
     let dir = hist_dir("interrupted-tool");
     let ds = dir.display().to_string();
@@ -8219,6 +8348,48 @@ fn history_preserves_an_unfinished_tool_interval_without_fabricating_an_end() {
     assert!(call["finished_at"].is_null());
     assert!(call["duration_ms"].is_null());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn history_collapses_opencode_running_and_completed_call_updates() {
+    let dir = hist_dir("opencode-tool-updates");
+    // Captured OpenCode JSONL shape: one part/call identity is repeated as its
+    // state advances from running to completed.
+    let stdout = concat!(
+        "{\"type\":\"step_start\",\"part\":{\"type\":\"step-start\"}}\n",
+        "{\"type\":\"tool_use\",\"part\":{\"id\":\"part-1\",\"callID\":\"call-1\",\"type\":\"tool\",\"tool\":\"bash\",\"state\":{\"status\":\"running\",\"input\":{\"command\":\"pwd\"},\"time\":{\"start\":1773878400000}}}}\n",
+        "{\"type\":\"tool_use\",\"part\":{\"id\":\"part-1\",\"callID\":\"call-1\",\"type\":\"tool\",\"tool\":\"bash\",\"state\":{\"status\":\"completed\",\"input\":{\"command\":\"pwd\"},\"output\":\"/repo\\n\",\"time\":{\"start\":1773878400000,\"end\":1773878400040}}}}\n",
+        "{\"type\":\"text\",\"part\":{\"type\":\"text\",\"text\":\"done\"}}\n",
+        "{\"type\":\"step_finish\",\"part\":{\"type\":\"step-finish\"}}\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "run pwd",
+            "--bin",
+            &bin_override("opencode"),
+            "--history",
+            "--history-dir",
+            &dir.display().to_string(),
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout), ("MOCK_STREAM_DELAY_MS", "30")],
+    );
+    assert!(output.status.success());
+    let report = json_stdout(&output);
+    let history = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
+    let record: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
+    let calls = record["events"].as_array().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["tool_call_id"], "call-1");
+    assert_eq!(calls[0]["status"], "completed");
+    assert_eq!(calls[0]["output"], "/repo\n");
+    assert!(calls[0]["duration_ms"].as_u64().unwrap() > 0);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

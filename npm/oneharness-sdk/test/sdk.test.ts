@@ -542,6 +542,42 @@ describe("OneHarness", () => {
 		}
 		expect(HistoryRecordsSchema.safeParse(records).success).toBe(true);
 		expect(HistoryRecordSchema.safeParse(records[0]).success).toBe(true);
+		const baseTool = {
+			kind: "tool_call",
+			name: "shell",
+			input: {},
+			output: "ok",
+			index: 0,
+			tool_call_id: "call-1",
+			started_at: "2026-07-19T00:00:00Z",
+			finished_at: "2026-07-19T00:00:00Z",
+			duration_ms: 1,
+		};
+		for (const status of ["completed", "failed", "timeout", "interrupted"]) {
+			expect(
+				HistoryRecordSchema.safeParse({
+					...records[0],
+					events: [{ ...baseTool, status }],
+				}).success,
+				status,
+			).toBe(true);
+		}
+		expect(
+			HistoryRecordSchema.safeParse({
+				...records[0],
+				events: [
+					{
+						...baseTool,
+						kind: "tool_result",
+						status: null,
+						tool_call_id: null,
+						started_at: null,
+						finished_at: null,
+						duration_ms: null,
+					},
+				],
+			}).success,
+		).toBe(true);
 		expect(
 			HistoryStreamEnvelopeSchema.parse({
 				type: "record",

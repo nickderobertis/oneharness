@@ -86,6 +86,39 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                         required.push(serde_json::Value::String(field.to_string()));
                     }
                 }
+                let event_base = current["properties"]["events"]["items"].clone();
+                let terminal_event = |status: &str, ended: bool| {
+                    let mut properties = serde_json::json!({
+                        "kind": {"const": "tool_call", "type": "string"},
+                        "tool_call_id": {"type": "string", "minLength": 1},
+                        "started_at": {"type": "string"},
+                        "status": {"const": status, "type": "string"}
+                    });
+                    if ended {
+                        properties["finished_at"] = serde_json::json!({"type": "string"});
+                        properties["duration_ms"] =
+                            serde_json::json!({"type": "integer", "minimum": 0});
+                    }
+                    serde_json::json!({
+                        "allOf": [event_base.clone(), {
+                            "type": "object",
+                            "properties": properties,
+                            "required": ["kind", "tool_call_id", "started_at", "status"]
+                        }]
+                    })
+                };
+                current["properties"]["events"]["items"] = serde_json::json!({
+                    "oneOf": [
+                        terminal_event("completed", true),
+                        terminal_event("failed", true),
+                        terminal_event("timeout", false),
+                        terminal_event("interrupted", false),
+                        {"allOf": [event_base, {
+                            "type": "object",
+                            "properties": {"kind": {"const": "tool_result", "type": "string"}}
+                        }]}
+                    ]
+                });
                 let mut legacy = base;
                 legacy["properties"]["schema_version"] =
                     serde_json::json!({"enum": ["0.1", "0.2"], "type": "string"});
@@ -125,5 +158,49 @@ fn add_v03_condition(value: &mut serde_json::Value) {
             object.values_mut().for_each(add_v03_condition);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn current_record(event: serde_json::Value) -> serde_json::Value {
+        json!({
+            "schema_version": "0.3",
+            "history_id": "0198f0d0-7b31-7000-8000-000000000001",
+            "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+            "timestamp": "2026-07-19T00:00:00Z", "harness": "codex", "model": null,
+            "prompt": "test", "permission_mode": "default", "status": "ok", "exit_code": 0,
+            "duration_ms": 10, "started_at": "2026-07-19T00:00:00Z",
+            "finished_at": "2026-07-19T00:00:00Z", "model_ms": 4, "tool_ms": 3,
+            "time_to_first_token_ms": null, "text": "done", "text_source": "json",
+            "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null,
+                      "cache_write_tokens": null, "cost_usd": null},
+            "session_id": null, "events": [event], "failure_kind": null
+        })
+    }
+
+    #[test]
+    fn current_schema_rejects_incomplete_and_unfinished_terminal_tool_calls() {
+        let schema = serde_json::to_value(bundle().history_record).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let base = json!({
+            "kind": "tool_call", "name": "shell", "input": {}, "output": "ok", "index": 0,
+            "tool_call_id": "call-1", "started_at": "2026-07-19T00:00:00Z",
+            "finished_at": "2026-07-19T00:00:00Z", "duration_ms": 3, "status": "completed"
+        });
+        assert!(validator.is_valid(&current_record(base.clone())));
+        for field in ["tool_call_id", "started_at", "status"] {
+            let mut invalid = base.clone();
+            invalid[field] = serde_json::Value::Null;
+            assert!(!validator.is_valid(&current_record(invalid)), "{field}");
+        }
+        for field in ["finished_at", "duration_ms"] {
+            let mut invalid = base.clone();
+            invalid[field] = serde_json::Value::Null;
+            assert!(!validator.is_valid(&current_record(invalid)), "{field}");
+        }
     }
 }

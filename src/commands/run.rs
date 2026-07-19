@@ -393,17 +393,22 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         // when a named session is in play). Otherwise events/streaming selects the
         // harness's transcript-bearing format; absent that, the named-session
         // anchor selects its id-bearing format. Ordinary runs keep the default.
-        let want_events = args.events || args.stream;
-        let chosen_format = explicit_format.unwrap_or_else(|| {
-            if want_events {
-                spec.events_format.unwrap_or(spec.output_format)
-            } else if session_anchor == Some(spec.id) {
-                spec.session_format()
-                    .expect("setup_session selected only a harness with a session-bearing format")
-            } else {
-                spec.output_format
-            }
-        });
+        let want_events = args.events || args.stream || history_writer.is_some();
+        let chosen_format = if history_writer.is_some() {
+            spec.events_format.unwrap_or(spec.output_format)
+        } else {
+            explicit_format.unwrap_or_else(|| {
+                if want_events {
+                    spec.events_format.unwrap_or(spec.output_format)
+                } else if session_anchor == Some(spec.id) {
+                    spec.session_format().expect(
+                        "setup_session selected only a harness with a session-bearing format",
+                    )
+                } else {
+                    spec.output_format
+                }
+            })
+        };
         // A native-schema harness must receive its schema as JSON; force the
         // format so the conforming value lands where we read it (Claude Code's
         // `structured_output`, which needs `--output-format json`).
@@ -1936,7 +1941,7 @@ fn executed_result(
         Some(r) => (r.usage, Some(r.source)),
         None => (Usage::default(), None),
     };
-    signals::apply_model_price(&mut usage, model.as_deref());
+    signals::apply_model_price(&mut usage, spec.id, model.as_deref());
     let session_id = normalize_capture
         .then(|| signals::extract_session(&capture.stdout))
         .flatten();
@@ -1962,12 +1967,10 @@ fn executed_result(
         model_ms: timing
             .as_ref()
             .and_then(|timing| timing.model_ms)
-            .or_else(|| {
-                capture
-                    .stdout_observations
-                    .last()
-                    .map(|observation| observation.offset_ms)
-            }),
+            // With no observable provider-activity boundary, the trace adds no
+            // measured model interval. Leave the wall time as overhead instead
+            // of relabeling CLI startup/authentication as model latency.
+            .or_else(|| trace_is_complete.then_some(0)),
         tool_ms: timing
             .as_ref()
             .and_then(|timing| timing.tool_ms)

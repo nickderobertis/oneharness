@@ -12,7 +12,46 @@ export type HistoryRecord =
        * Best-effort normalized tool-call events; `null` when the harness exposes
        * no machine-readable trace.
        */
-      events: ActionEvent[] | null;
+      events:
+        | (
+            | (ActionEvent & {
+                duration_ms?: number | undefined;
+                finished_at?: string | undefined;
+                kind: "tool_call";
+                started_at: string;
+                status: "completed";
+                tool_call_id: string;
+                [k: string]: unknown;
+              })
+            | (ActionEvent & {
+                duration_ms?: number | undefined;
+                finished_at?: string | undefined;
+                kind: "tool_call";
+                started_at: string;
+                status: "failed";
+                tool_call_id: string;
+                [k: string]: unknown;
+              })
+            | (ActionEvent & {
+                kind: "tool_call";
+                started_at: string;
+                status: "timeout";
+                tool_call_id: string;
+                [k: string]: unknown;
+              })
+            | (ActionEvent & {
+                kind: "tool_call";
+                started_at: string;
+                status: "interrupted";
+                tool_call_id: string;
+                [k: string]: unknown;
+              })
+            | (ActionEvent & {
+                kind?: "tool_result" | undefined;
+                [k: string]: unknown;
+              })
+          )[]
+        | null;
       exit_code: number | null;
       /**
        * Best-effort classified failure reason (see [`FailureKind`]); `null` when
@@ -106,7 +145,7 @@ export type HistoryRecord =
        * unclassified.
        */
       failure_kind: FailureKind | null;
-      finished_at: string | null;
+      finished_at?: string | null | undefined;
       /**
        * Canonical harness id (e.g. `claude-code`).
        */

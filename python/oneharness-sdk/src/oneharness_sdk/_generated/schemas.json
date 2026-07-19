@@ -515,7 +515,170 @@
           "events": {
             "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
             "items": {
-              "$ref": "#/$defs/ActionEvent"
+              "oneOf": [
+                {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/ActionEvent"
+                    },
+                    {
+                      "properties": {
+                        "duration_ms": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "finished_at": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "tool_call",
+                          "type": "string"
+                        },
+                        "started_at": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "const": "completed",
+                          "type": "string"
+                        },
+                        "tool_call_id": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "tool_call_id",
+                        "started_at",
+                        "status"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/ActionEvent"
+                    },
+                    {
+                      "properties": {
+                        "duration_ms": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "finished_at": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "tool_call",
+                          "type": "string"
+                        },
+                        "started_at": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "const": "failed",
+                          "type": "string"
+                        },
+                        "tool_call_id": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "tool_call_id",
+                        "started_at",
+                        "status"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/ActionEvent"
+                    },
+                    {
+                      "properties": {
+                        "kind": {
+                          "const": "tool_call",
+                          "type": "string"
+                        },
+                        "started_at": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "const": "timeout",
+                          "type": "string"
+                        },
+                        "tool_call_id": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "tool_call_id",
+                        "started_at",
+                        "status"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/ActionEvent"
+                    },
+                    {
+                      "properties": {
+                        "kind": {
+                          "const": "tool_call",
+                          "type": "string"
+                        },
+                        "started_at": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "const": "interrupted",
+                          "type": "string"
+                        },
+                        "tool_call_id": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "tool_call_id",
+                        "started_at",
+                        "status"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/ActionEvent"
+                    },
+                    {
+                      "properties": {
+                        "kind": {
+                          "const": "tool_result",
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              ]
             },
             "type": [
               "array",
@@ -1046,7 +1209,170 @@
               "events": {
                 "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
                 "items": {
-                  "$ref": "#/$defs/ActionEvent"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "properties": {
+                            "duration_ms": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "finished_at": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "const": "tool_call",
+                              "type": "string"
+                            },
+                            "started_at": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "const": "completed",
+                              "type": "string"
+                            },
+                            "tool_call_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "tool_call_id",
+                            "started_at",
+                            "status"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "properties": {
+                            "duration_ms": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "finished_at": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "const": "tool_call",
+                              "type": "string"
+                            },
+                            "started_at": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "const": "failed",
+                              "type": "string"
+                            },
+                            "tool_call_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "tool_call_id",
+                            "started_at",
+                            "status"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "tool_call",
+                              "type": "string"
+                            },
+                            "started_at": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "const": "timeout",
+                              "type": "string"
+                            },
+                            "tool_call_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "tool_call_id",
+                            "started_at",
+                            "status"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "tool_call",
+                              "type": "string"
+                            },
+                            "started_at": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "const": "interrupted",
+                              "type": "string"
+                            },
+                            "tool_call_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "tool_call_id",
+                            "started_at",
+                            "status"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "tool_result",
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        }
+                      ]
+                    }
+                  ]
                 },
                 "type": [
                   "array",
@@ -1720,7 +2046,170 @@
               "events": {
                 "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
                 "items": {
-                  "$ref": "#/$defs/ActionEvent"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "properties": {
+                            "duration_ms": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "finished_at": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "const": "tool_call",
+                              "type": "string"
+                            },
+                            "started_at": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "const": "completed",
+                              "type": "string"
+                            },
+                            "tool_call_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "tool_call_id",
+                            "started_at",
+                            "status"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "properties": {
+                            "duration_ms": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "finished_at": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "const": "tool_call",
+                              "type": "string"
+                            },
+                            "started_at": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "const": "failed",
+                              "type": "string"
+                            },
+                            "tool_call_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "tool_call_id",
+                            "started_at",
+                            "status"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "tool_call",
+                              "type": "string"
+                            },
+                            "started_at": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "const": "timeout",
+                              "type": "string"
+                            },
+                            "tool_call_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "tool_call_id",
+                            "started_at",
+                            "status"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "tool_call",
+                              "type": "string"
+                            },
+                            "started_at": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "const": "interrupted",
+                              "type": "string"
+                            },
+                            "tool_call_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "tool_call_id",
+                            "started_at",
+                            "status"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "tool_result",
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        }
+                      ]
+                    }
+                  ]
                 },
                 "type": [
                   "array",

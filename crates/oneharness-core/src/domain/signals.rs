@@ -171,14 +171,20 @@ fn single_object_usage(value: &Value) -> Option<UsageReading> {
 /// alias stays unpriced rather than being guessed.
 pub const MODEL_PRICE_TABLE_VERSION: &str = "openai-2026-07-19";
 
-pub fn apply_model_price(usage: &mut Usage, model: Option<&str>) {
+pub fn apply_model_price(usage: &mut Usage, harness: &str, model: Option<&str>) {
     if usage.cost_usd.is_some() {
+        return;
+    }
+    // Harness identity is the provider boundary available in the normalized
+    // result. Never apply an OpenAI table to another provider's coincidentally
+    // identical model alias.
+    if harness != "codex" {
         return;
     }
     let Some(model) = model else { return };
     let (input_rate, cached_rate, output_rate) = match model {
-        "gpt-5" | "gpt-5-codex" | "gpt-5.1" => (1.25, 0.125, 10.0),
-        "gpt-5.5" | "gpt-5.6" | "gpt-5.6-sol" => (5.0, 0.5, 30.0),
+        // OpenAI API pricing snapshot named by MODEL_PRICE_TABLE_VERSION.
+        "gpt-5-codex" => (1.25, 0.125, 10.0),
         _ => return,
     };
     let (Some(input), Some(output)) = (usage.input_tokens, usage.output_tokens) else {
@@ -450,14 +456,31 @@ mod tests {
     fn codex_turn_usage_and_versioned_price_are_populated_without_guessing_unknown_models() {
         let raw = r#"{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":100}}"#;
         let mut known = extract_usage(raw).unwrap().usage;
-        apply_model_price(&mut known, Some("gpt-5-codex"));
+        apply_model_price(&mut known, "codex", Some("gpt-5-codex"));
         assert_eq!(known.input_tokens, Some(1000));
         assert_eq!(known.cache_read_tokens, Some(400));
         assert!((known.cost_usd.unwrap() - 0.0018).abs() < 1e-12);
 
         let mut unknown = extract_usage(raw).unwrap().usage;
-        apply_model_price(&mut unknown, Some("provider-alias"));
+        apply_model_price(&mut unknown, "codex", Some("provider-alias"));
         assert_eq!(unknown.cost_usd, None);
+
+        let mut other_provider = extract_usage(raw).unwrap().usage;
+        apply_model_price(&mut other_provider, "claude-code", Some("gpt-5-codex"));
+        assert_eq!(other_provider.cost_usd, None);
+
+        let mut native = extract_usage(raw).unwrap().usage;
+        native.cost_usd = Some(0.42);
+        apply_model_price(&mut native, "codex", Some("gpt-5-codex"));
+        assert_eq!(native.cost_usd, Some(0.42));
+    }
+
+    #[test]
+    fn malformed_usage_values_are_unknown_not_zero() {
+        let got = extract_usage(
+            r#"{"type":"turn.completed","usage":{"input_tokens":-1,"output_tokens":"4","cached_input_tokens":null}}"#,
+        );
+        assert!(got.is_none());
     }
 
     #[test]

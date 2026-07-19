@@ -409,9 +409,31 @@ pub fn apply_observed_timing(
 ) -> TimingReading {
     let lines = observed_json_lines(observations);
     let mut boundaries: Vec<Boundary> = Vec::new();
+    let mut request_start = None;
     let mut first_token = None;
+    let mut model_start = None;
+    let mut model_intervals = Vec::new();
     for (value, offset, utc) in &lines {
-        first_token = first_token.or_else(|| is_model_token(value).then_some(*offset));
+        if is_provider_start(value) {
+            request_start.get_or_insert(*offset);
+            model_start.get_or_insert(*offset);
+        }
+        if is_model_token(value) {
+            first_token.get_or_insert(*offset);
+        }
+        if is_tool_start(value) {
+            if let Some(start) = model_start.take() {
+                model_intervals.push((start, *offset));
+            }
+        }
+        if is_tool_finish(value) && request_start.is_some() {
+            model_start = Some(*offset);
+        }
+        if is_provider_finish(value) {
+            if let Some(start) = model_start.take() {
+                model_intervals.push((start, *offset));
+            }
+        }
         observe_boundaries(value, *offset, utc, &mut boundaries);
     }
     for event in events.iter_mut().filter(|event| event.kind == "tool_call") {
@@ -466,12 +488,33 @@ pub fn apply_observed_timing(
     if let Some((left, right)) = current {
         union += right.saturating_sub(left);
     }
-    let provider_end = lines.last().map(|(_, offset, _)| *offset);
     TimingReading {
-        model_ms: provider_end.map(|end| end.saturating_sub(union.min(end))),
-        tool_ms: provider_end.map(|_| union),
-        time_to_first_token_ms: first_token,
+        model_ms: request_start.map(|_| interval_union(&mut model_intervals)),
+        tool_ms: request_start.map(|_| union),
+        time_to_first_token_ms: request_start
+            .zip(first_token)
+            .map(|(start, token)| token.saturating_sub(start)),
     }
+}
+
+fn interval_union(intervals: &mut [(u128, u128)]) -> u128 {
+    intervals.sort_unstable();
+    let mut total = 0;
+    let mut current: Option<(u128, u128)> = None;
+    for &(start, finish) in intervals.iter() {
+        current = match current {
+            Some((left, right)) if start <= right => Some((left, right.max(finish))),
+            Some((left, right)) => {
+                total += right.saturating_sub(left);
+                Some((start, finish))
+            }
+            None => Some((start, finish)),
+        };
+    }
+    if let Some((left, right)) = current {
+        total += right.saturating_sub(left);
+    }
+    total
 }
 
 fn observed_json_lines(observations: &[OutputObservation]) -> Vec<(Value, u128, String)> {
@@ -644,6 +687,52 @@ fn is_model_token(value: &Value) -> bool {
             .and_then(Value::as_str)
             .is_some_and(|kind| matches!(kind, "text" | "reasoning"))
         || value.pointer("/item/type").and_then(Value::as_str) == Some("agent_message")
+}
+
+fn is_provider_start(value: &Value) -> bool {
+    matches!(
+        value.get("type").and_then(Value::as_str),
+        Some("turn.started" | "system" | "step_start")
+    ) || value.pointer("/part/type").and_then(Value::as_str) == Some("step-start")
+}
+
+fn is_provider_finish(value: &Value) -> bool {
+    matches!(
+        value.get("type").and_then(Value::as_str),
+        Some("turn.completed" | "result" | "step_finish")
+    ) || value.pointer("/part/type").and_then(Value::as_str) == Some("step-finish")
+}
+
+fn is_tool_start(value: &Value) -> bool {
+    value.get("type").and_then(Value::as_str) == Some("tool_call")
+        && value.get("subtype").and_then(Value::as_str) == Some("started")
+        || value.get("type").and_then(Value::as_str) == Some("item.started")
+            && value.pointer("/item/type").and_then(Value::as_str) == Some("command_execution")
+        || value
+            .pointer("/message/content")
+            .or_else(|| value.get("content"))
+            .and_then(Value::as_array)
+            .is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .any(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+            })
+}
+
+fn is_tool_finish(value: &Value) -> bool {
+    value.get("type").and_then(Value::as_str) == Some("tool_call")
+        && value.get("subtype").and_then(Value::as_str) == Some("completed")
+        || value.get("type").and_then(Value::as_str) == Some("item.completed")
+            && value.pointer("/item/type").and_then(Value::as_str) == Some("command_execution")
+        || value
+            .pointer("/message/content")
+            .or_else(|| value.get("content"))
+            .and_then(Value::as_array)
+            .is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .any(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
+            })
 }
 
 #[cfg(test)]

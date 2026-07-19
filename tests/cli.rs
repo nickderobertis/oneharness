@@ -2508,6 +2508,7 @@ fn normalizes_usage_and_session_from_opencode_stream_json() {
 #[test]
 fn codex_usage_and_known_model_cost_flow_into_history_while_unknown_cost_is_omitted() {
     let stdout = concat!(
+        "{\"type\":\"turn.started\"}\n",
         "{\"type\":\"thread.started\",\"thread_id\":\"th-usage\"}\n",
         "{\"type\":\"item.completed\",\"item\":{\"id\":\"msg-1\",\"type\":\"agent_message\",\"text\":\"done\"}}\n",
         "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1000,\"cached_input_tokens\":400,\"output_tokens\":100}}\n",
@@ -3347,11 +3348,12 @@ fn timeout_preserves_partial_telemetry_in_report_and_history() {
     let ticks = native_tick_file("timeout-cli");
     let _ = std::fs::remove_file(&ticks);
     let transcript = concat!(
+        "{\"type\":\"step_start\",\"sessionID\":\"ses-timeout\",\"part\":{\"type\":\"step-start\"}}\n",
         "{\"type\":\"text\",\"sessionID\":\"ses-timeout\",\"part\":",
         "{\"type\":\"text\",\"text\":\"partial answer\"}}\n",
         "{\"type\":\"tool_use\",\"sessionID\":\"ses-timeout\",\"part\":",
-        "{\"type\":\"tool\",\"tool\":\"bash\",\"state\":",
-        "{\"input\":{\"command\":\"echo hi\"},\"output\":\"hi\"}}}\n",
+        "{\"id\":\"call-timeout\",\"type\":\"tool\",\"tool\":\"bash\",\"state\":",
+        "{\"input\":{\"command\":\"echo hi\"},\"output\":\"hi\",\"time\":{\"start\":1773878400000}}}}\n",
         "{\"type\":\"step_finish\",\"sessionID\":\"ses-timeout\",\"part\":",
         "{\"cost\":0.01,\"tokens\":{\"input\":12,\"output\":3,",
         "\"cache\":{\"read\":9,\"write\":4}}}}\n",
@@ -7774,6 +7776,8 @@ fn hist_dir(tag: &str) -> PathBuf {
 fn history_records_a_run_and_reports_the_file() {
     let dir = hist_dir("record");
     let ds = dir.display().to_string();
+    let argv_file = dir.with_extension("argv");
+    let argv = argv_file.display().to_string();
     let output = run(
         &[
             "run",
@@ -7789,7 +7793,10 @@ fn history_records_a_run_and_reports_the_file() {
             "--bypass",
             "--compact",
         ],
-        &[("MOCK_STDOUT", r#"{"result":"done","session_id":"s1"}"#)],
+        &[
+            ("MOCK_STDOUT", r#"{"result":"done","session_id":"s1"}"#),
+            ("MOCK_ARGV_FILE", &argv),
+        ],
     );
     assert!(output.status.success());
     let value = json_stdout(&output);
@@ -7804,8 +7811,60 @@ fn history_records_a_run_and_reports_the_file() {
     assert_eq!(rec["status"], "ok");
     assert_eq!(rec["session_id"], "s1");
     assert_eq!(rec["permission_mode"], "bypass");
+    assert!(
+        std::fs::read_to_string(&argv_file)
+            .unwrap()
+            .lines()
+            .any(|arg| arg == "stream-json"),
+        "history must request telemetry without --events"
+    );
     // Normalized only — no raw stdout/stderr leaks into history.
     assert!(rec.get("stdout").is_none());
+    let _ = std::fs::remove_file(argv_file);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn history_excludes_harness_startup_from_provider_model_time() {
+    let dir = hist_dir("provider-overhead");
+    let ds = dir.display().to_string();
+    let stdout = concat!(
+        "{\"type\":\"system\",\"subtype\":\"init\"}\n",
+        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n",
+        "{\"type\":\"result\",\"result\":\"done\"}\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "measure overhead",
+            "--bin",
+            &bin_override("claude-code"),
+            "--history",
+            "--history-dir",
+            &ds,
+            "--bypass",
+            "--compact",
+        ],
+        &[
+            ("MOCK_STDOUT", stdout),
+            ("MOCK_SLEEP_MS", "150"),
+            ("MOCK_STREAM_DELAY_MS", "25"),
+        ],
+    );
+    assert!(output.status.success());
+    let report = json_stdout(&output);
+    let history = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
+    let record: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
+    let duration = record["duration_ms"].as_u64().unwrap();
+    let model = record["model_ms"].as_u64().unwrap();
+    assert!(duration >= 150, "{duration}");
+    assert!(
+        model < 100,
+        "startup leaked into model time: {model}/{duration}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -7814,6 +7873,7 @@ fn history_measures_overlapping_tool_intervals_from_provider_events() {
     let dir = hist_dir("timed-tools");
     let ds = dir.display().to_string();
     let stdout = concat!(
+        "{\"type\":\"system\",\"subtype\":\"init\"}\n",
         "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"starting\"}]}}\n",
         "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"call-a\",\"name\":\"Bash\",\"input\":{}}]}}\n",
         "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"call-b\",\"name\":\"Read\",\"input\":{}}]}}\n",
@@ -7880,6 +7940,7 @@ fn history_preserves_an_unfinished_tool_interval_without_fabricating_an_end() {
     let dir = hist_dir("interrupted-tool");
     let ds = dir.display().to_string();
     let stdout = concat!(
+        "{\"type\":\"system\",\"subtype\":\"init\"}\n",
         "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"call-open\",\"name\":\"Bash\",\"input\":{}}]}}\n",
         "{\"type\":\"result\",\"result\":\"stopped\"}\n",
     );
@@ -8518,10 +8579,10 @@ fn history_labels_layer_cli_over_environment_over_config_and_validate() {
             .unwrap(),
     )
     .unwrap();
-    // Claude's compact terminal JSON has no complete provider/tool trace, so it
-    // stays v0.2 rather than receiving invented v0.3 timing.
-    assert_eq!(record["schema_version"], "0.2");
-    assert!(record.get("started_at").is_none());
+    // History requests the telemetry trace even though the user selected compact
+    // report output, so ordinary new writes always use the current contract.
+    assert_eq!(record["schema_version"], "0.3");
+    assert!(record["started_at"].is_string());
     assert_eq!(record["labels"]["graph"], "cli");
     for key in ["user", "project", "env", "cli"] {
         assert_eq!(record["labels"][key], "kept", "label {key}");

@@ -394,10 +394,20 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         // harness's transcript-bearing format; absent that, the named-session
         // anchor selects its id-bearing format. Ordinary runs keep the default.
         let want_events = args.events || args.stream || history_writer.is_some();
-        let chosen_format = if history_writer.is_some() {
-            spec.events_format.unwrap_or(spec.output_format)
+        let telemetry_spec = if history_writer.is_some() {
+            Some(
+                spec.telemetry
+                    .ok_or_else(|| OneharnessError::HistoryTelemetryUnsupported {
+                        id: spec.id.to_string(),
+                    })?,
+            )
         } else {
-            explicit_format.unwrap_or_else(|| {
+            None
+        };
+        let chosen_format = explicit_format.unwrap_or_else(|| {
+            if let Some(telemetry) = telemetry_spec {
+                telemetry.format
+            } else {
                 if want_events {
                     spec.events_format.unwrap_or(spec.output_format)
                 } else if session_anchor == Some(spec.id) {
@@ -407,8 +417,8 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 } else {
                     spec.output_format
                 }
-            })
-        };
+            }
+        });
         // A native-schema harness must receive its schema as JSON; force the
         // format so the conforming value lands where we read it (Claude Code's
         // `structured_output`, which needs `--output-format json`).
@@ -418,6 +428,15 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         } else {
             chosen_format
         };
+        if let Some(telemetry) = telemetry_spec {
+            if output_format != telemetry.format {
+                return Err(OneharnessError::HistoryTelemetryFormat {
+                    id: spec.id.to_string(),
+                    required: telemetry.format.as_str().to_string(),
+                    selected: output_format.as_str().to_string(),
+                });
+            }
+        }
         // Reasoning / thinking effort is delivered in the harness's native shape,
         // resolved per harness so effort can sit next to each harness's own model
         // (CLI `--reasoning` beats config). Append-style deliveries (Claude's
@@ -1952,30 +1971,28 @@ fn executed_result(
         Some(r) => (Some(r.events), Some(r.source)),
         None => (None, None),
     };
-    let timing = normalized_events.as_mut().map(|normalized_events| {
-        events::apply_observed_timing(
-            normalized_events,
-            &capture.stdout_observations,
-            capture.status,
-            capture.duration_ms,
-        )
-    });
-    let trace_is_complete = spec.events_format.unwrap_or(spec.output_format) == output_format;
-    let telemetry = Some(oneharness_core::domain::report::ExecutionTelemetry {
-        started_at: capture.started_at.clone(),
-        finished_at: capture.finished_at.clone(),
-        model_ms: timing
-            .as_ref()
-            .and_then(|timing| timing.model_ms)
-            // With no observable provider-activity boundary, the trace adds no
-            // measured model interval. Leave the wall time as overhead instead
-            // of relabeling CLI startup/authentication as model latency.
-            .or_else(|| trace_is_complete.then_some(0)),
-        tool_ms: timing
-            .as_ref()
-            .and_then(|timing| timing.tool_ms)
-            .or_else(|| trace_is_complete.then_some(0)),
-        time_to_first_token_ms: timing.and_then(|timing| timing.time_to_first_token_ms),
+    let timing = spec
+        .telemetry
+        .filter(|telemetry| telemetry.format == output_format)
+        .map(|telemetry| {
+            let mut no_events = Vec::new();
+            let timed_events = normalized_events.as_mut().unwrap_or(&mut no_events);
+            events::apply_observed_timing(
+                timed_events,
+                &capture.stdout_observations,
+                capture.status,
+                capture.duration_ms,
+                telemetry.trace,
+            )
+        });
+    let telemetry = timing.filter(|timing| timing.trace_complete).map(|timing| {
+        oneharness_core::domain::report::ExecutionTelemetry {
+            started_at: capture.started_at.clone(),
+            finished_at: capture.finished_at.clone(),
+            model_ms: timing.model_ms,
+            tool_ms: timing.tool_ms,
+            time_to_first_token_ms: timing.time_to_first_token_ms,
+        }
     });
     // A deferred-tool dead-end: the harness completed cleanly (exit 0) but only
     // *deferred* a builtin tool call instead of running it (Claude Code bridge
@@ -2989,6 +3006,7 @@ mod tests {
             install_hint: "",
             output_format: OutputFormat::Text,
             events_format: None,
+            telemetry: None,
             supports_resume: false,
             session_formats: &[],
             supports_fork: false,

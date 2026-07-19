@@ -388,6 +388,17 @@ pub struct TimingReading {
     pub model_ms: Option<u128>,
     pub tool_ms: Option<u128>,
     pub time_to_first_token_ms: Option<u128>,
+    pub trace_complete: bool,
+}
+
+/// Provider trace grammar advertised by a harness adapter. A format alone is
+/// insufficient: several CLIs use `json` for a compact terminal object that has
+/// no provider request boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TelemetryTrace {
+    AnthropicStream,
+    CodexJson,
+    OpenCodeJson,
 }
 
 #[derive(Debug, Clone)]
@@ -406,6 +417,7 @@ pub fn apply_observed_timing(
     observations: &[OutputObservation],
     run_status: Status,
     duration_ms: Option<u128>,
+    trace: TelemetryTrace,
 ) -> TimingReading {
     let lines = observed_json_lines(observations);
     let mut boundaries: Vec<Boundary> = Vec::new();
@@ -414,7 +426,7 @@ pub fn apply_observed_timing(
     let mut model_start = None;
     let mut model_intervals = Vec::new();
     for (value, offset, utc) in &lines {
-        if is_provider_start(value) {
+        if is_provider_start(value, trace) {
             request_start.get_or_insert(*offset);
             model_start.get_or_insert(*offset);
         }
@@ -429,7 +441,7 @@ pub fn apply_observed_timing(
         if is_tool_finish(value) && request_start.is_some() {
             model_start = Some(*offset);
         }
-        if is_provider_finish(value) {
+        if is_provider_finish(value, trace) {
             if let Some(start) = model_start.take() {
                 model_intervals.push((start, *offset));
             }
@@ -494,6 +506,23 @@ pub fn apply_observed_timing(
         time_to_first_token_ms: request_start
             .zip(first_token)
             .map(|(start, token)| token.saturating_sub(start)),
+        trace_complete: request_start.is_some()
+            && (lines
+                .iter()
+                .any(|(value, _, _)| is_provider_finish(value, trace))
+                || !matches!(run_status, Status::Ok | Status::Nonzero))
+            && events
+                .iter()
+                .filter(|event| event.kind == "tool_call")
+                .all(|event| {
+                    event.tool_call_id.is_some()
+                        && event.started_at.is_some()
+                        && event.status.is_some()
+                        && (!matches!(
+                            event.status,
+                            Some(ToolCallStatus::Completed | ToolCallStatus::Failed)
+                        ) || (event.finished_at.is_some() && event.duration_ms.is_some()))
+                }),
     }
 }
 
@@ -689,18 +718,35 @@ fn is_model_token(value: &Value) -> bool {
         || value.pointer("/item/type").and_then(Value::as_str) == Some("agent_message")
 }
 
-fn is_provider_start(value: &Value) -> bool {
-    matches!(
-        value.get("type").and_then(Value::as_str),
-        Some("turn.started" | "system" | "step_start")
-    ) || value.pointer("/part/type").and_then(Value::as_str) == Some("step-start")
+fn is_provider_start(value: &Value, trace: TelemetryTrace) -> bool {
+    match trace {
+        TelemetryTrace::AnthropicStream => {
+            value.get("type").and_then(Value::as_str) == Some("system")
+                && value.get("subtype").and_then(Value::as_str) == Some("init")
+        }
+        TelemetryTrace::CodexJson => {
+            value.get("type").and_then(Value::as_str) == Some("turn.started")
+        }
+        TelemetryTrace::OpenCodeJson => {
+            value.get("type").and_then(Value::as_str) == Some("step_start")
+                || value.pointer("/part/type").and_then(Value::as_str) == Some("step-start")
+        }
+    }
 }
 
-fn is_provider_finish(value: &Value) -> bool {
-    matches!(
-        value.get("type").and_then(Value::as_str),
-        Some("turn.completed" | "result" | "step_finish")
-    ) || value.pointer("/part/type").and_then(Value::as_str) == Some("step-finish")
+fn is_provider_finish(value: &Value, trace: TelemetryTrace) -> bool {
+    match trace {
+        TelemetryTrace::AnthropicStream => {
+            value.get("type").and_then(Value::as_str) == Some("result")
+        }
+        TelemetryTrace::CodexJson => {
+            value.get("type").and_then(Value::as_str) == Some("turn.completed")
+        }
+        TelemetryTrace::OpenCodeJson => {
+            value.get("type").and_then(Value::as_str) == Some("step_finish")
+                || value.pointer("/part/type").and_then(Value::as_str) == Some("step-finish")
+        }
+    }
 }
 
 fn is_tool_start(value: &Value) -> bool {

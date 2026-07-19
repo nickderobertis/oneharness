@@ -407,16 +407,13 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         let chosen_format = explicit_format.unwrap_or_else(|| {
             if let Some(telemetry) = telemetry_spec {
                 telemetry.format
+            } else if want_events {
+                spec.events_format.unwrap_or(spec.output_format)
+            } else if session_anchor == Some(spec.id) {
+                spec.session_format()
+                    .expect("setup_session selected only a harness with a session-bearing format")
             } else {
-                if want_events {
-                    spec.events_format.unwrap_or(spec.output_format)
-                } else if session_anchor == Some(spec.id) {
-                    spec.session_format().expect(
-                        "setup_session selected only a harness with a session-bearing format",
-                    )
-                } else {
-                    spec.output_format
-                }
+                spec.output_format
             }
         });
         // A native-schema harness must receive its schema as JSON; force the

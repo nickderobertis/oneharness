@@ -89,6 +89,20 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                 let mut legacy = base;
                 legacy["properties"]["schema_version"] =
                     serde_json::json!({"enum": ["0.1", "0.2"], "type": "string"});
+                if let Some(required) = legacy["required"].as_array_mut() {
+                    required.retain(|value| {
+                        !value.as_str().is_some_and(|field| {
+                            matches!(
+                                field,
+                                "started_at"
+                                    | "finished_at"
+                                    | "model_ms"
+                                    | "tool_ms"
+                                    | "time_to_first_token_ms"
+                            )
+                        })
+                    });
+                }
                 legacy["properties"]["events"] = serde_json::json!({
                     "type": ["array", "null"],
                     "items": {

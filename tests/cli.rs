@@ -8306,6 +8306,91 @@ fn history_normalizes_codex_mcp_failure_and_interruption() {
 }
 
 #[test]
+fn history_validates_codex_terminal_tool_states_without_guessing() {
+    for (tag, terminal_fields, expected) in [
+        ("cancelled", r#""status":"cancelled""#, "interrupted"),
+        (
+            "error-no-status",
+            r#""error":{"message":"provider error"}"#,
+            "failed",
+        ),
+        ("timeout", r#""status":"timed_out""#, "timeout"),
+    ] {
+        let dir = hist_dir(tag);
+        let trace = format!(
+            concat!(
+                "{{\"type\":\"turn.started\"}}\n",
+                "{{\"type\":\"item.completed\",\"item\":{{\"id\":\"r1\",\"type\":\"reasoning\",\"text\":\"Calling tool\"}}}}\n",
+                "{{\"type\":\"item.started\",\"item\":{{\"id\":\"mcp-state\",\"type\":\"mcp_tool_call\",\"server\":\"minimal\",\"tool\":\"state\",\"arguments\":{{}},\"status\":\"in_progress\"}}}}\n",
+                "{{\"type\":\"item.completed\",\"item\":{{\"id\":\"mcp-state\",\"type\":\"mcp_tool_call\",\"server\":\"minimal\",\"tool\":\"state\",\"arguments\":{{}},{}}}}}\n",
+                "{{\"type\":\"item.completed\",\"item\":{{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"done\"}}}}\n",
+                "{{\"type\":\"turn.completed\"}}\n",
+            ),
+            terminal_fields,
+        );
+        let output = run(
+            &[
+                "run",
+                "--harness",
+                "codex",
+                "--prompt",
+                tag,
+                "--bin",
+                &bin_override("codex"),
+                "--history",
+                "--history-dir",
+                &dir.display().to_string(),
+                "--bypass",
+                "--compact",
+            ],
+            &[("MOCK_STDOUT", &trace), ("MOCK_STREAM_DELAY_MS", "20")],
+        );
+        assert!(output.status.success(), "{tag}");
+        let report = json_stdout(&output);
+        let history = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
+        let record: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
+        assert_eq!(record["events"][0]["status"], expected, "{tag}");
+        assert!(record["events"][0]["duration_ms"].as_u64().unwrap() > 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    for (tag, tool_records) in [
+        (
+            "unknown-status",
+            concat!(
+                "{\"type\":\"item.started\",\"item\":{\"id\":\"mcp-unknown\",\"type\":\"mcp_tool_call\",\"server\":\"minimal\",\"tool\":\"state\",\"arguments\":{},\"status\":\"in_progress\"}}\n",
+                "{\"type\":\"item.completed\",\"item\":{\"id\":\"mcp-unknown\",\"type\":\"mcp_tool_call\",\"server\":\"minimal\",\"tool\":\"state\",\"arguments\":{},\"status\":\"mystery\"}}\n",
+            ),
+        ),
+        (
+            "completion-only-file-change",
+            "{\"type\":\"item.completed\",\"item\":{\"id\":\"patch-1\",\"type\":\"file_change\",\"changes\":[{\"path\":\"src/lib.rs\",\"kind\":\"update\"}],\"status\":\"completed\"}}\n",
+        ),
+    ] {
+        let dir = hist_dir(tag);
+        let trace = format!(
+            "{{\"type\":\"turn.started\"}}\n{{\"type\":\"item.completed\",\"item\":{{\"id\":\"r1\",\"type\":\"reasoning\",\"text\":\"working\"}}}}\n{tool_records}{{\"type\":\"item.completed\",\"item\":{{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"done\"}}}}\n{{\"type\":\"turn.completed\"}}\n"
+        );
+        let output = run(
+            &[
+                "run", "--harness", "codex", "--prompt", tag, "--bin", &bin_override("codex"),
+                "--history", "--history-dir", &dir.display().to_string(), "--bypass", "--compact",
+            ],
+            &[("MOCK_STDOUT", &trace), ("MOCK_STREAM_DELAY_MS", "20")],
+        );
+        assert!(output.status.success(), "{tag}");
+        let report = json_stdout(&output);
+        assert!(!Path::new(report["history_file"].as_str().unwrap()).exists(), "{tag}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("lacks complete v0.3 telemetry"),
+            "{tag}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[test]
 fn history_preserves_an_unfinished_tool_interval_without_fabricating_an_end() {
     let dir = hist_dir("interrupted-tool");
     let ds = dir.display().to_string();

@@ -495,8 +495,11 @@ pub fn apply_observed_timing(
     let mut model_start = None;
     let mut last_model_byte = None;
     let mut saw_model_boundary = false;
+    let mut saw_unmeasurable_tool = false;
     let mut model_intervals = Vec::new();
     for (value, offset, utc) in &lines {
+        saw_unmeasurable_tool |= trace == TelemetryTrace::CodexJson
+            && value.pointer("/item/type").and_then(Value::as_str) == Some("file_change");
         if is_provider_start(value, trace) {
             request_start.get_or_insert(*offset);
             model_start.get_or_insert(*offset);
@@ -544,7 +547,7 @@ pub fn apply_observed_timing(
             .zip(boundary.finish.as_ref())
             .map(|((start, _), (finish, _))| finish.saturating_sub(*start));
         event.status = boundary.status.or_else(|| {
-            boundary.start.as_ref().map(|_| {
+            (boundary.start.is_some() && boundary.finish.is_none()).then(|| {
                 if run_status == Status::Timeout {
                     ToolCallStatus::Timeout
                 } else {
@@ -593,6 +596,7 @@ pub fn apply_observed_timing(
                 .any(|(value, _, _)| is_provider_finish(value, trace))
                 || !matches!(run_status, Status::Ok | Status::Nonzero))
             && saw_model_boundary
+            && !saw_unmeasurable_tool
             && events
                 .iter()
                 .filter(|event| event.kind == "tool_call")
@@ -670,7 +674,7 @@ fn observe_boundaries(value: &Value, offset: u128, utc: &str, out: &mut Vec<Boun
                 Some("item.started") => boundary.start = Some((offset, utc.to_string())),
                 Some("item.completed") => {
                     boundary.finish = Some((offset, utc.to_string()));
-                    boundary.status = Some(codex_tool_status(item));
+                    boundary.status = codex_tool_status(item);
                 }
                 _ => {}
             }
@@ -789,19 +793,33 @@ fn boundary<'a>(boundaries: &'a mut Vec<Boundary>, id: &str) -> &'a mut Boundary
     boundaries.last_mut().expect("just pushed")
 }
 
-fn codex_tool_status(item: &serde_json::Map<String, Value>) -> ToolCallStatus {
-    match item.get("status").and_then(Value::as_str) {
-        Some("failed" | "declined" | "cancelled") => ToolCallStatus::Failed,
-        Some("completed") => ToolCallStatus::Completed,
-        _ if item.get("type").and_then(Value::as_str) == Some("command_execution") => {
-            if item.get("exit_code").and_then(Value::as_i64) == Some(0) {
-                ToolCallStatus::Completed
-            } else {
-                ToolCallStatus::Failed
-            }
-        }
-        _ => ToolCallStatus::Completed,
+fn codex_tool_status(item: &serde_json::Map<String, Value>) -> Option<ToolCallStatus> {
+    let status = item.get("status").and_then(Value::as_str);
+    if matches!(
+        status,
+        Some("cancelled" | "canceled" | "interrupted" | "aborted")
+    ) {
+        return Some(ToolCallStatus::Interrupted);
     }
+    if matches!(status, Some("timeout" | "timed_out")) {
+        return Some(ToolCallStatus::Timeout);
+    }
+    if item.get("error").is_some_and(|error| !error.is_null())
+        || matches!(status, Some("failed" | "error" | "declined"))
+    {
+        return Some(ToolCallStatus::Failed);
+    }
+    if matches!(status, Some("completed" | "success" | "succeeded")) {
+        return Some(ToolCallStatus::Completed);
+    }
+    if item.get("type").and_then(Value::as_str) == Some("command_execution") {
+        return match item.get("exit_code").and_then(Value::as_i64) {
+            Some(0) => Some(ToolCallStatus::Completed),
+            Some(_) => Some(ToolCallStatus::Failed),
+            None => None,
+        };
+    }
+    None
 }
 
 fn is_model_token(value: &Value) -> bool {

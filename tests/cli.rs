@@ -8364,7 +8364,15 @@ fn history_labels_layer_cli_over_environment_over_config_and_validate() {
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(record["schema_version"], "0.2");
+    assert_eq!(record["schema_version"], "0.3");
+    assert!(record["started_at"].is_string());
+    assert!(record["finished_at"].is_string());
+    assert!(record["model_ms"].is_number());
+    assert!(record["tool_ms"].is_number());
+    assert!(
+        record["model_ms"].as_u64().unwrap() + record["tool_ms"].as_u64().unwrap()
+            <= record["duration_ms"].as_u64().unwrap()
+    );
     assert_eq!(record["labels"]["graph"], "cli");
     for key in ["user", "project", "env", "cli"] {
         assert_eq!(record["labels"][key], "kept", "label {key}");

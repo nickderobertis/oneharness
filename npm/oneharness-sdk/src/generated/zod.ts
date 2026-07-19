@@ -12,6 +12,7 @@ import type {
   RunResult,
   SessionReport,
   Status,
+  ToolCallStatus,
   Usage,
 } from "./contracts.js";
 import type { DetectInfo, DetectReport } from "./detection.js";
@@ -31,6 +32,8 @@ export type ModeHeadless = ModeInfo["headless"];
 export type SessionPhase = SessionReport["phase"];
 
 export const ActionEventSchema: z.ZodType<ActionEvent> = z.looseObject({
+  duration_ms: z.union([z.int().gte(0), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+  finished_at: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   index: z
     .int()
     .gte(0)
@@ -39,6 +42,11 @@ export const ActionEventSchema: z.ZodType<ActionEvent> = z.looseObject({
   kind: z.string().refine((value) => value !== undefined, { message: "Required" }),
   name: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   output: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+  started_at: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+  status: z
+    .union([z.lazy(() => ToolCallStatusSchema), z.null()])
+    .refine((value) => value !== undefined, { message: "Required" }),
+  tool_call_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
 });
 
 export const BatchReportSchema: z.ZodType<BatchReport> = z.looseObject({
@@ -167,6 +175,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.looseObject({
   failure_kind: z
     .union([z.lazy(() => FailureKindSchema), z.null()])
     .refine((value) => value !== undefined, { message: "Required" }),
+  finished_at: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
   history_id: z
     .string()
@@ -178,6 +187,10 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.looseObject({
     .refine((value) => value !== undefined, { message: "Required" }),
   labels: z.lazy(() => HistoryLabelsSchema).optional(),
   model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+  model_ms: z
+    .int()
+    .gte(0)
+    .refine((value) => value !== undefined, { message: "Required" }),
   name: z.string().refine((value) => value !== undefined, { message: "Required" }),
   permission_mode: z.lazy(() => PermissionModeSchema).refine((value) => value !== undefined, { message: "Required" }),
   project: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -185,10 +198,16 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.looseObject({
   schema_version: z.string().refine((value) => value !== undefined, { message: "Required" }),
   session: z.string().refine((value) => value !== undefined, { message: "Required" }),
   session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+  started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
   status: z.lazy(() => StatusSchema).refine((value) => value !== undefined, { message: "Required" }),
   text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+  time_to_first_token_ms: z.union([z.int().gte(0), z.null()]).optional(),
   timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  tool_ms: z
+    .int()
+    .gte(0)
+    .refine((value) => value !== undefined, { message: "Required" }),
   usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
 });
 
@@ -370,6 +389,13 @@ export const StatusSchema: z.ZodType<Status> = z.union([
   z.literal("spawn-error"),
   z.literal("skipped"),
   z.literal("planned"),
+]);
+
+export const ToolCallStatusSchema: z.ZodType<ToolCallStatus> = z.union([
+  z.literal("completed"),
+  z.literal("failed"),
+  z.literal("timeout"),
+  z.literal("interrupted"),
 ]);
 
 export const UsageSchema: z.ZodType<Usage> = z.looseObject({

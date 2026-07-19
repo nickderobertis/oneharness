@@ -22,7 +22,7 @@ use serde_json::Value;
 use thiserror::Error;
 use uuid::{Uuid, Variant};
 
-use crate::domain::events::ActionEvent;
+use crate::domain::events::{ActionEvent, ToolCallStatus};
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::{RunResult, Status};
 use crate::domain::signals::{FailureKind, Usage};
@@ -30,10 +30,11 @@ use crate::domain::signals::{FailureKind, Usage};
 /// Bumped when the history record shape changes in a way a consumer must notice.
 /// Independent of [`crate::domain::report::SCHEMA_VERSION`] — the history file and
 /// the run report are separate contracts and version on their own cadence.
-pub const SCHEMA_VERSION: &str = "0.2";
+pub const SCHEMA_VERSION: &str = "0.3";
 
 /// The legacy record contract accepted by the migration reader.
 pub const LEGACY_SCHEMA_VERSION: &str = "0.1";
+const PREVIOUS_SCHEMA_VERSION: &str = "0.2";
 
 /// Label lengths are bounded in *characters* — Unicode code points. That is the
 /// unit JSON Schema's `maxLength` measures in, and therefore the one unit both
@@ -328,6 +329,16 @@ pub struct HistoryRecord {
     pub status: Status,
     pub exit_code: Option<i32>,
     pub duration_ms: Option<u128>,
+    /// UTC invocation bounds and monotonic time attribution. The provider/tool
+    /// split is conservative when a transcript has tool calls but lacks native
+    /// boundaries: the observed invocation interval is attributed to the union
+    /// of those calls, never double-counted.
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub model_ms: u128,
+    pub tool_ms: u128,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_to_first_token_ms: Option<u128>,
     /// Best-effort final assistant text; `null` when extraction was impossible.
     pub text: Option<String>,
     /// How `text` was extracted; `null` when absent.
@@ -363,6 +374,25 @@ impl HistoryRecord {
         run_prompt: &str,
         r: &RunResult,
     ) -> Self {
+        let mut history_events = r.events.clone();
+        let has_tools = history_events
+            .as_ref()
+            .is_some_and(|events| events.iter().any(|event| event.kind == "tool_call"));
+        let elapsed = r.duration_ms.unwrap_or(0);
+        if let Some(events) = &mut history_events {
+            for event in events.iter_mut().filter(|event| event.kind == "tool_call") {
+                event.tool_call_id = Some(format!("tool-{}", event.index));
+                event.started_at = Some(timestamp.clone());
+                event.finished_at = (r.status != Status::Timeout).then(|| timestamp.clone());
+                event.duration_ms = (r.status != Status::Timeout).then_some(elapsed);
+                event.status = Some(match r.status {
+                    Status::Ok => ToolCallStatus::Completed,
+                    Status::Nonzero => ToolCallStatus::Failed,
+                    Status::Timeout => ToolCallStatus::Timeout,
+                    _ => ToolCallStatus::Interrupted,
+                });
+            }
+        }
         HistoryRecord {
             schema_version: SCHEMA_VERSION.to_string(),
             history_id,
@@ -370,7 +400,7 @@ impl HistoryRecord {
             name: name.to_string(),
             labels: labels.clone(),
             project: project.to_string(),
-            timestamp,
+            timestamp: timestamp.clone(),
             harness: r.harness.clone(),
             model: model.map(str::to_string),
             prompt: r.prompt.clone().unwrap_or_else(|| run_prompt.to_string()),
@@ -378,11 +408,17 @@ impl HistoryRecord {
             status: r.status,
             exit_code: r.exit_code,
             duration_ms: r.duration_ms,
+            started_at: timestamp.clone(),
+            finished_at: matches!(r.status, Status::Ok | Status::Nonzero)
+                .then(|| timestamp.clone()),
+            model_ms: if has_tools { 0 } else { elapsed },
+            tool_ms: if has_tools { elapsed } else { 0 },
+            time_to_first_token_ms: None,
             text: r.text.clone(),
             text_source: r.text_source.clone(),
             usage: r.usage.clone(),
             session_id: r.session_id.clone(),
-            events: r.events.clone(),
+            events: history_events,
             failure_kind: r.failure_kind,
         }
     }
@@ -397,10 +433,10 @@ impl HistoryRecord {
         let fallback = serde_json::to_vec(&value)?;
         let wire: HistoryRecordWire = serde_json::from_value(value)?;
         let history_id = match wire.schema_version.as_str() {
-            SCHEMA_VERSION => wire.history_id.ok_or_else(|| {
+            SCHEMA_VERSION | PREVIOUS_SCHEMA_VERSION => wire.history_id.ok_or_else(|| {
                 serde_json::Error::io(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    "history schema v0.2 record is missing `history_id`",
+                    "history record is missing `history_id`",
                 ))
             })?,
             LEGACY_SCHEMA_VERSION => {
@@ -427,7 +463,7 @@ impl HistoryRecord {
                 wire.labels
             },
             project: wire.project,
-            timestamp: wire.timestamp,
+            timestamp: wire.timestamp.clone(),
             harness: wire.harness,
             model: wire.model,
             prompt: wire.prompt,
@@ -435,6 +471,11 @@ impl HistoryRecord {
             status: wire.status,
             exit_code: wire.exit_code,
             duration_ms: wire.duration_ms,
+            started_at: wire.started_at.unwrap_or_else(|| wire.timestamp.clone()),
+            finished_at: wire.finished_at,
+            model_ms: wire.model_ms.unwrap_or(0),
+            tool_ms: wire.tool_ms.unwrap_or(0),
+            time_to_first_token_ms: wire.time_to_first_token_ms,
             text: wire.text,
             text_source: wire.text_source,
             usage: wire.usage,
@@ -472,6 +513,16 @@ struct HistoryRecordWire {
     status: Status,
     exit_code: Option<i32>,
     duration_ms: Option<u128>,
+    #[serde(default)]
+    started_at: Option<String>,
+    #[serde(default)]
+    finished_at: Option<String>,
+    #[serde(default)]
+    model_ms: Option<u128>,
+    #[serde(default)]
+    tool_ms: Option<u128>,
+    #[serde(default)]
+    time_to_first_token_ms: Option<u128>,
     text: Option<String>,
     text_source: Option<String>,
     usage: Usage,

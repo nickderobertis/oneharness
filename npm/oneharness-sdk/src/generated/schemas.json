@@ -157,6 +157,21 @@
         "description": "One normalized action a harness took, harness-agnostic so a single consumer\nassertion works across harnesses. Every field is always serialized (null when\nabsent) so the shape is stable, mirroring the `usage` contract.",
         "type": "object",
         "properties": {
+          "duration_ms": {
+            "description": "Monotonic elapsed tool time. `None` means no terminal boundary was seen.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint128",
+            "minimum": 0
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "index": {
             "description": "Position of this event within the run, so \"≤ N tool calls\" and \"did X\nbefore Y\" are expressible from a stable ordering (also array order).",
             "type": "integer",
@@ -183,6 +198,31 @@
               "string",
               "null"
             ]
+          },
+          "started_at": {
+            "description": "UTC interval bounds for tool execution, populated on history records.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "Terminal tool state, populated on history tool-call events.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ToolCallStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tool_call_id": {
+            "description": "Stable call identity within the session. Present on tool calls and their\nmatching results when the provider exposes an identity; history fills a\ndeterministic run-local identity for providers that do not.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -190,7 +230,12 @@
           "name",
           "input",
           "output",
-          "index"
+          "index",
+          "tool_call_id",
+          "started_at",
+          "finished_at",
+          "duration_ms",
+          "status"
         ]
       },
       "BatchReport": {
@@ -642,6 +687,15 @@
           }
         ]
       },
+      "ToolCallStatus": {
+        "type": "string",
+        "enum": [
+          "completed",
+          "failed",
+          "timeout",
+          "interrupted"
+        ]
+      },
       "Usage": {
         "description": "Normalized token/cost accounting. Every field is best-effort and independently\nnullable: a harness may report tokens but not dollar cost (cost is commonly\nabsent on subscription auth), or report nothing at all (plain-text harnesses).",
         "type": "object",
@@ -746,6 +800,21 @@
         "description": "One normalized action a harness took, harness-agnostic so a single consumer\nassertion works across harnesses. Every field is always serialized (null when\nabsent) so the shape is stable, mirroring the `usage` contract.",
         "type": "object",
         "properties": {
+          "duration_ms": {
+            "description": "Monotonic elapsed tool time. `None` means no terminal boundary was seen.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint128",
+            "minimum": 0
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "index": {
             "description": "Position of this event within the run, so \"≤ N tool calls\" and \"did X\nbefore Y\" are expressible from a stable ordering (also array order).",
             "type": "integer",
@@ -772,6 +841,31 @@
               "string",
               "null"
             ]
+          },
+          "started_at": {
+            "description": "UTC interval bounds for tool execution, populated on history records.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "Terminal tool state, populated on history tool-call events.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ToolCallStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tool_call_id": {
+            "description": "Stable call identity within the session. Present on tool calls and their\nmatching results when the provider exposes an identity; history fills a\ndeterministic run-local identity for providers that do not.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -779,7 +873,12 @@
           "name",
           "input",
           "output",
-          "index"
+          "index",
+          "tool_call_id",
+          "started_at",
+          "finished_at",
+          "duration_ms",
+          "status"
         ]
       },
       "BatchReport": {
@@ -1383,6 +1482,15 @@
           }
         ]
       },
+      "ToolCallStatus": {
+        "type": "string",
+        "enum": [
+          "completed",
+          "failed",
+          "timeout",
+          "interrupted"
+        ]
+      },
       "Usage": {
         "description": "Normalized token/cost accounting. Every field is best-effort and independently\nnullable: a harness may report tokens but not dollar cost (cost is commonly\nabsent on subscription auth), or report nothing at all (plain-text harnesses).",
         "type": "object",
@@ -1761,6 +1869,12 @@
           }
         ]
       },
+      "finished_at": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "harness": {
         "description": "Canonical harness id (e.g. `claude-code`).",
         "type": "string"
@@ -1782,6 +1896,11 @@
           "string",
           "null"
         ]
+      },
+      "model_ms": {
+        "type": "integer",
+        "format": "uint128",
+        "minimum": 0
       },
       "name": {
         "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
@@ -1813,6 +1932,10 @@
           "null"
         ]
       },
+      "started_at": {
+        "description": "UTC invocation bounds and monotonic time attribution. The provider/tool\nsplit is conservative when a transcript has tool calls but lacks native\nboundaries: the observed invocation interval is attributed to the union\nof those calls, never double-counted.",
+        "type": "string"
+      },
       "status": {
         "$ref": "#/$defs/Status"
       },
@@ -1830,9 +1953,22 @@
           "null"
         ]
       },
+      "time_to_first_token_ms": {
+        "type": [
+          "integer",
+          "null"
+        ],
+        "format": "uint128",
+        "minimum": 0
+      },
       "timestamp": {
         "description": "RFC3339 UTC instant the record was written (append time).",
         "type": "string"
+      },
+      "tool_ms": {
+        "type": "integer",
+        "format": "uint128",
+        "minimum": 0
       },
       "usage": {
         "description": "Best-effort token/cost accounting (every field `null` when unreported).",
@@ -1853,6 +1989,10 @@
       "status",
       "exit_code",
       "duration_ms",
+      "started_at",
+      "finished_at",
+      "model_ms",
+      "tool_ms",
       "text",
       "text_source",
       "usage",
@@ -1865,6 +2005,21 @@
         "description": "One normalized action a harness took, harness-agnostic so a single consumer\nassertion works across harnesses. Every field is always serialized (null when\nabsent) so the shape is stable, mirroring the `usage` contract.",
         "type": "object",
         "properties": {
+          "duration_ms": {
+            "description": "Monotonic elapsed tool time. `None` means no terminal boundary was seen.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint128",
+            "minimum": 0
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "index": {
             "description": "Position of this event within the run, so \"≤ N tool calls\" and \"did X\nbefore Y\" are expressible from a stable ordering (also array order).",
             "type": "integer",
@@ -1891,6 +2046,31 @@
               "string",
               "null"
             ]
+          },
+          "started_at": {
+            "description": "UTC interval bounds for tool execution, populated on history records.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "Terminal tool state, populated on history tool-call events.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ToolCallStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tool_call_id": {
+            "description": "Stable call identity within the session. Present on tool calls and their\nmatching results when the provider exposes an identity; history fills a\ndeterministic run-local identity for providers that do not.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -1898,7 +2078,12 @@
           "name",
           "input",
           "output",
-          "index"
+          "index",
+          "tool_call_id",
+          "started_at",
+          "finished_at",
+          "duration_ms",
+          "status"
         ]
       },
       "FailureKind": {
@@ -2018,6 +2203,15 @@
             "type": "string",
             "const": "planned"
           }
+        ]
+      },
+      "ToolCallStatus": {
+        "type": "string",
+        "enum": [
+          "completed",
+          "failed",
+          "timeout",
+          "interrupted"
         ]
       },
       "Usage": {
@@ -2107,6 +2301,21 @@
         "description": "One normalized action a harness took, harness-agnostic so a single consumer\nassertion works across harnesses. Every field is always serialized (null when\nabsent) so the shape is stable, mirroring the `usage` contract.",
         "type": "object",
         "properties": {
+          "duration_ms": {
+            "description": "Monotonic elapsed tool time. `None` means no terminal boundary was seen.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint128",
+            "minimum": 0
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "index": {
             "description": "Position of this event within the run, so \"≤ N tool calls\" and \"did X\nbefore Y\" are expressible from a stable ordering (also array order).",
             "type": "integer",
@@ -2133,6 +2342,31 @@
               "string",
               "null"
             ]
+          },
+          "started_at": {
+            "description": "UTC interval bounds for tool execution, populated on history records.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "Terminal tool state, populated on history tool-call events.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ToolCallStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tool_call_id": {
+            "description": "Stable call identity within the session. Present on tool calls and their\nmatching results when the provider exposes an identity; history fills a\ndeterministic run-local identity for providers that do not.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -2140,7 +2374,12 @@
           "name",
           "input",
           "output",
-          "index"
+          "index",
+          "tool_call_id",
+          "started_at",
+          "finished_at",
+          "duration_ms",
+          "status"
         ]
       },
       "FailureKind": {
@@ -2232,6 +2471,12 @@
               }
             ]
           },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "harness": {
             "description": "Canonical harness id (e.g. `claude-code`).",
             "type": "string"
@@ -2253,6 +2498,11 @@
               "string",
               "null"
             ]
+          },
+          "model_ms": {
+            "type": "integer",
+            "format": "uint128",
+            "minimum": 0
           },
           "name": {
             "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
@@ -2284,6 +2534,10 @@
               "null"
             ]
           },
+          "started_at": {
+            "description": "UTC invocation bounds and monotonic time attribution. The provider/tool\nsplit is conservative when a transcript has tool calls but lacks native\nboundaries: the observed invocation interval is attributed to the union\nof those calls, never double-counted.",
+            "type": "string"
+          },
           "status": {
             "$ref": "#/$defs/Status"
           },
@@ -2301,9 +2555,22 @@
               "null"
             ]
           },
+          "time_to_first_token_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint128",
+            "minimum": 0
+          },
           "timestamp": {
             "description": "RFC3339 UTC instant the record was written (append time).",
             "type": "string"
+          },
+          "tool_ms": {
+            "type": "integer",
+            "format": "uint128",
+            "minimum": 0
           },
           "usage": {
             "description": "Best-effort token/cost accounting (every field `null` when unreported).",
@@ -2324,6 +2591,10 @@
           "status",
           "exit_code",
           "duration_ms",
+          "started_at",
+          "finished_at",
+          "model_ms",
+          "tool_ms",
           "text",
           "text_source",
           "usage",
@@ -2400,6 +2671,15 @@
             "type": "string",
             "const": "planned"
           }
+        ]
+      },
+      "ToolCallStatus": {
+        "type": "string",
+        "enum": [
+          "completed",
+          "failed",
+          "timeout",
+          "interrupted"
         ]
       },
       "Usage": {
@@ -2473,6 +2753,21 @@
         "description": "One normalized action a harness took, harness-agnostic so a single consumer\nassertion works across harnesses. Every field is always serialized (null when\nabsent) so the shape is stable, mirroring the `usage` contract.",
         "type": "object",
         "properties": {
+          "duration_ms": {
+            "description": "Monotonic elapsed tool time. `None` means no terminal boundary was seen.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint128",
+            "minimum": 0
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "index": {
             "description": "Position of this event within the run, so \"≤ N tool calls\" and \"did X\nbefore Y\" are expressible from a stable ordering (also array order).",
             "type": "integer",
@@ -2499,6 +2794,31 @@
               "string",
               "null"
             ]
+          },
+          "started_at": {
+            "description": "UTC interval bounds for tool execution, populated on history records.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "Terminal tool state, populated on history tool-call events.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ToolCallStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tool_call_id": {
+            "description": "Stable call identity within the session. Present on tool calls and their\nmatching results when the provider exposes an identity; history fills a\ndeterministic run-local identity for providers that do not.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -2506,7 +2826,12 @@
           "name",
           "input",
           "output",
-          "index"
+          "index",
+          "tool_call_id",
+          "started_at",
+          "finished_at",
+          "duration_ms",
+          "status"
         ]
       },
       "FailureKind": {
@@ -2598,6 +2923,12 @@
               }
             ]
           },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "harness": {
             "description": "Canonical harness id (e.g. `claude-code`).",
             "type": "string"
@@ -2619,6 +2950,11 @@
               "string",
               "null"
             ]
+          },
+          "model_ms": {
+            "type": "integer",
+            "format": "uint128",
+            "minimum": 0
           },
           "name": {
             "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
@@ -2650,6 +2986,10 @@
               "null"
             ]
           },
+          "started_at": {
+            "description": "UTC invocation bounds and monotonic time attribution. The provider/tool\nsplit is conservative when a transcript has tool calls but lacks native\nboundaries: the observed invocation interval is attributed to the union\nof those calls, never double-counted.",
+            "type": "string"
+          },
           "status": {
             "$ref": "#/$defs/Status"
           },
@@ -2667,9 +3007,22 @@
               "null"
             ]
           },
+          "time_to_first_token_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint128",
+            "minimum": 0
+          },
           "timestamp": {
             "description": "RFC3339 UTC instant the record was written (append time).",
             "type": "string"
+          },
+          "tool_ms": {
+            "type": "integer",
+            "format": "uint128",
+            "minimum": 0
           },
           "usage": {
             "description": "Best-effort token/cost accounting (every field `null` when unreported).",
@@ -2690,6 +3043,10 @@
           "status",
           "exit_code",
           "duration_ms",
+          "started_at",
+          "finished_at",
+          "model_ms",
+          "tool_ms",
           "text",
           "text_source",
           "usage",
@@ -2766,6 +3123,15 @@
             "type": "string",
             "const": "planned"
           }
+        ]
+      },
+      "ToolCallStatus": {
+        "type": "string",
+        "enum": [
+          "completed",
+          "failed",
+          "timeout",
+          "interrupted"
         ]
       },
       "Usage": {

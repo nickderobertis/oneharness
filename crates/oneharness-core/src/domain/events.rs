@@ -66,6 +66,26 @@ pub struct ActionEvent {
     /// Position of this event within the run, so "≤ N tool calls" and "did X
     /// before Y" are expressible from a stable ordering (also array order).
     pub index: usize,
+    /// Stable call identity within the session. Present on tool calls and their
+    /// matching results when the provider exposes an identity; history fills a
+    /// deterministic run-local identity for providers that do not.
+    pub tool_call_id: Option<String>,
+    /// UTC interval bounds for tool execution, populated on history records.
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    /// Monotonic elapsed tool time. `None` means no terminal boundary was seen.
+    pub duration_ms: Option<u128>,
+    /// Terminal tool state, populated on history tool-call events.
+    pub status: Option<ToolCallStatus>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCallStatus {
+    Completed,
+    Failed,
+    Timeout,
+    Interrupted,
 }
 
 /// A recovered event list plus the method that produced it (e.g.
@@ -94,6 +114,11 @@ impl PartialEvent {
             input: self.input,
             output: self.output,
             index,
+            tool_call_id: None,
+            started_at: None,
+            finished_at: None,
+            duration_ms: None,
+            status: None,
         }
     }
 }

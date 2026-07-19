@@ -1,5 +1,6 @@
 /* Generated from oneharness-core. Do not edit. */
 
+export type ToolCallStatus = "completed" | "failed" | "timeout" | "interrupted";
 /**
  * The normalized, closed set of failure reasons oneharness can classify from a
  * harness's output. It is the single source for the `failure_kind` contract
@@ -35,6 +36,7 @@ export interface HistoryRecord {
    * unclassified.
    */
   failure_kind: FailureKind | null;
+  finished_at: string | null;
   /**
    * Canonical harness id (e.g. `claude-code`).
    */
@@ -49,6 +51,7 @@ export interface HistoryRecord {
    * The effective top-level model for the run, if any.
    */
   model: string | null;
+  model_ms: number;
   /**
    * The human-meaningful session name (see [`session_name`]); repeated on
    * every record so a reader can resolve a session by name from any line.
@@ -77,6 +80,13 @@ export interface HistoryRecord {
    * The harness's own continuation id, when it exposed one; `null` otherwise.
    */
   session_id: string | null;
+  /**
+   * UTC invocation bounds and monotonic time attribution. The provider/tool
+   * split is conservative when a transcript has tool calls but lacks native
+   * boundaries: the observed invocation interval is attributed to the union
+   * of those calls, never double-counted.
+   */
+  started_at: string;
   status: Status;
   /**
    * Best-effort final assistant text; `null` when extraction was impossible.
@@ -86,10 +96,12 @@ export interface HistoryRecord {
    * How `text` was extracted; `null` when absent.
    */
   text_source: string | null;
+  time_to_first_token_ms?: number | null | undefined;
   /**
    * RFC3339 UTC instant the record was written (append time).
    */
   timestamp: string;
+  tool_ms: number;
   usage: Usage;
   [k: string]: unknown;
 }
@@ -99,6 +111,11 @@ export interface HistoryRecord {
  * absent) so the shape is stable, mirroring the `usage` contract.
  */
 export interface ActionEvent {
+  /**
+   * Monotonic elapsed tool time. `None` means no terminal boundary was seen.
+   */
+  duration_ms: number | null;
+  finished_at: string | null;
   /**
    * Position of this event within the run, so "≤ N tool calls" and "did X
    * before Y" are expressible from a stable ordering (also array order).
@@ -125,6 +142,20 @@ export interface ActionEvent {
    * The result/observation text, when the trace exposes it; `null` otherwise.
    */
   output: string | null;
+  /**
+   * UTC interval bounds for tool execution, populated on history records.
+   */
+  started_at: string | null;
+  /**
+   * Terminal tool state, populated on history tool-call events.
+   */
+  status: ToolCallStatus | null;
+  /**
+   * Stable call identity within the session. Present on tool calls and their
+   * matching results when the provider exposes an identity; history fills a
+   * deterministic run-local identity for providers that do not.
+   */
+  tool_call_id: string | null;
   [k: string]: unknown;
 }
 /**

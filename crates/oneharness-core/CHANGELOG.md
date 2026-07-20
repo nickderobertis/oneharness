@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.11](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.4.10...oneharness-core-v0.4.11) - 2026-07-20
+
+### Fixed
+
+- *(sdk)* accept unavailable history timing ([#1164](https://github.com/nickderobertis/oneharness/pull/1164))
+
 ## [0.4.10](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.4.9...oneharness-core-v0.4.10) - 2026-07-20
 
 ### Fixed

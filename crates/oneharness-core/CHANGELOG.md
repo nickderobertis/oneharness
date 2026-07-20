@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.9](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.4.8...oneharness-core-v0.4.9) - 2026-07-20
+
+### Fixed
+
+- *(history)* harden macOS timing test; add e2e; rename fixture ([#1157](https://github.com/nickderobertis/oneharness/pull/1157))
+
 ## [0.4.8](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.4.7...oneharness-core-v0.4.8) - 2026-07-17
 
 ### Fixed

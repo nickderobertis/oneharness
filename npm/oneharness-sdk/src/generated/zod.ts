@@ -292,15 +292,21 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.union([
     events: z
       .union([
         z.array(
-          z.intersection(
-            z.lazy(() => ActionEventSchema),
-            z.looseObject({
-              duration_ms: z.null().refine((value) => value !== undefined, { message: "Required" }),
-              finished_at: z.null().refine((value) => value !== undefined, { message: "Required" }),
-              started_at: z.null().refine((value) => value !== undefined, { message: "Required" }),
-              status: z.null().refine((value) => value !== undefined, { message: "Required" }),
-            }),
-          ),
+          z.looseObject({
+            duration_ms: z.null().optional(),
+            finished_at: z.null().optional(),
+            index: z
+              .int()
+              .gte(0)
+              .refine((value) => value !== undefined, { message: "Required" }),
+            input: z.unknown().refine((value) => value !== undefined, { message: "Required" }),
+            kind: z.string().refine((value) => value !== undefined, { message: "Required" }),
+            name: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+            output: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+            started_at: z.null().optional(),
+            status: z.null().optional(),
+            tool_call_id: z.union([z.string(), z.null()]).optional(),
+          }),
         ),
         z.null(),
       ])

@@ -574,6 +574,21 @@ describe("OneHarness", () => {
 						input: {},
 						output: null,
 						index: 0,
+						tool_call_id: "unmeasured-call",
+					},
+				],
+			}).success,
+		).toBe(true);
+		expect(
+			HistoryRecordSchema.safeParse({
+				...unmeasured,
+				events: [
+					{
+						kind: "tool_call",
+						name: "shell",
+						input: {},
+						output: null,
+						index: 0,
 						tool_call_id: "partial-call",
 						started_at: "2026-07-19T00:00:00Z",
 						finished_at: null,

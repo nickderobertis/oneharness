@@ -128,13 +128,19 @@ export type HistoryRecord =
        * no machine-readable trace.
        */
       events:
-        | (ActionEvent & {
-            duration_ms: null;
-            finished_at: null;
-            started_at: null;
-            status: null;
+        | {
+            duration_ms?: null | undefined;
+            finished_at?: null | undefined;
+            index: number;
+            input: unknown;
+            kind: string;
+            name: string | null;
+            output: string | null;
+            started_at?: null | undefined;
+            status?: null | undefined;
+            tool_call_id?: string | null | undefined;
             [k: string]: unknown;
-          })[]
+          }[]
         | null;
       exit_code: number | null;
       /**

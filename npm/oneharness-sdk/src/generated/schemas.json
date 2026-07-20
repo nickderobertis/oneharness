@@ -2183,33 +2183,53 @@
               "null"
             ],
             "items": {
-              "allOf": [
-                {
-                  "$ref": "#/$defs/ActionEvent"
+              "type": "object",
+              "properties": {
+                "duration_ms": {
+                  "type": "null"
                 },
-                {
-                  "type": "object",
-                  "properties": {
-                    "duration_ms": {
-                      "type": "null"
-                    },
-                    "finished_at": {
-                      "type": "null"
-                    },
-                    "started_at": {
-                      "type": "null"
-                    },
-                    "status": {
-                      "type": "null"
-                    }
-                  },
-                  "required": [
-                    "started_at",
-                    "finished_at",
-                    "duration_ms",
-                    "status"
+                "finished_at": {
+                  "type": "null"
+                },
+                "index": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "input": true,
+                "kind": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "output": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "started_at": {
+                  "type": "null"
+                },
+                "status": {
+                  "type": "null"
+                },
+                "tool_call_id": {
+                  "type": [
+                    "string",
+                    "null"
                   ]
                 }
+              },
+              "required": [
+                "kind",
+                "name",
+                "input",
+                "output",
+                "index"
               ]
             }
           },
@@ -3334,33 +3354,53 @@
                   "null"
                 ],
                 "items": {
-                  "allOf": [
-                    {
-                      "$ref": "#/$defs/ActionEvent"
+                  "type": "object",
+                  "properties": {
+                    "duration_ms": {
+                      "type": "null"
                     },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "duration_ms": {
-                          "type": "null"
-                        },
-                        "finished_at": {
-                          "type": "null"
-                        },
-                        "started_at": {
-                          "type": "null"
-                        },
-                        "status": {
-                          "type": "null"
-                        }
-                      },
-                      "required": [
-                        "started_at",
-                        "finished_at",
-                        "duration_ms",
-                        "status"
+                    "finished_at": {
+                      "type": "null"
+                    },
+                    "index": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "input": true,
+                    "kind": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "output": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "started_at": {
+                      "type": "null"
+                    },
+                    "status": {
+                      "type": "null"
+                    },
+                    "tool_call_id": {
+                      "type": [
+                        "string",
+                        "null"
                       ]
                     }
+                  },
+                  "required": [
+                    "kind",
+                    "name",
+                    "input",
+                    "output",
+                    "index"
                   ]
                 }
               },
@@ -4335,33 +4375,53 @@
                   "null"
                 ],
                 "items": {
-                  "allOf": [
-                    {
-                      "$ref": "#/$defs/ActionEvent"
+                  "type": "object",
+                  "properties": {
+                    "duration_ms": {
+                      "type": "null"
                     },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "duration_ms": {
-                          "type": "null"
-                        },
-                        "finished_at": {
-                          "type": "null"
-                        },
-                        "started_at": {
-                          "type": "null"
-                        },
-                        "status": {
-                          "type": "null"
-                        }
-                      },
-                      "required": [
-                        "started_at",
-                        "finished_at",
-                        "duration_ms",
-                        "status"
+                    "finished_at": {
+                      "type": "null"
+                    },
+                    "index": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "input": true,
+                    "kind": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "output": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "started_at": {
+                      "type": "null"
+                    },
+                    "status": {
+                      "type": "null"
+                    },
+                    "tool_call_id": {
+                      "type": [
+                        "string",
+                        "null"
                       ]
                     }
+                  },
+                  "required": [
+                    "kind",
+                    "name",
+                    "input",
+                    "output",
+                    "index"
                   ]
                 }
               },

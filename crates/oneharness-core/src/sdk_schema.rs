@@ -158,18 +158,21 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                 ] {
                     unavailable["properties"][field] = serde_json::Value::Bool(false);
                 }
-                let unavailable_event = unavailable["properties"]["events"]["items"].clone();
                 unavailable["properties"]["events"]["items"] = serde_json::json!({
-                    "allOf": [unavailable_event, {
-                        "type": "object",
-                        "properties": {
-                            "started_at": {"type": "null"},
-                            "finished_at": {"type": "null"},
-                            "duration_ms": {"type": "null"},
-                            "status": {"type": "null"}
-                        },
-                        "required": ["started_at", "finished_at", "duration_ms", "status"]
-                    }]
+                    "type": "object",
+                    "properties": {
+                        "kind": {"type": "string"},
+                        "name": {"type": ["string", "null"]},
+                        "input": true,
+                        "output": {"type": ["string", "null"]},
+                        "index": {"type": "integer", "minimum": 0},
+                        "tool_call_id": {"type": ["string", "null"]},
+                        "started_at": {"type": "null"},
+                        "finished_at": {"type": "null"},
+                        "duration_ms": {"type": "null"},
+                        "status": {"type": "null"}
+                    },
+                    "required": ["kind", "name", "input", "output", "index"]
                 });
                 let mut legacy = base;
                 legacy["properties"]["schema_version"] =
@@ -300,6 +303,15 @@ mod tests {
             unavailable.as_object_mut().unwrap().remove(field);
         }
         assert!(validator.is_valid(&unavailable));
+
+        let mut omitted_event_timing = unavailable.clone();
+        for field in ["started_at", "finished_at", "duration_ms", "status"] {
+            omitted_event_timing["events"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+        }
+        assert!(validator.is_valid(&omitted_event_timing));
 
         unavailable["model_ms"] = json!(1);
         assert!(!validator.is_valid(&unavailable));

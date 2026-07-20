@@ -130,6 +130,23 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(project_sessions[0]["name"], "python-session")
 
+        await client.run(
+            {
+                "prompt": "python history without timing",
+                "harnesses": ["claude-code"],
+                "history": True,
+                "history_name": "python-session-unmeasured",
+                "history_dir": history_dir,
+                "env": {"MOCK_STDOUT": '{"type":"result","result":"done"}'},
+                "bins": {"claude-code": str(MOCK)},
+            }
+        )
+        unmeasured = await client.history(
+            {"session": "python-session-unmeasured", "history_dir": history_dir}
+        )
+        self.assertEqual(unmeasured[0]["schema_version"], "0.3")
+        self.assertNotIn("model_ms", unmeasured[0])
+
         resumed = await client.run(
             {
                 "prompt": "fork from python",

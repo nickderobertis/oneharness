@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Run the complete local gate before publishing. Activated by `just bootstrap`.
+set -euo pipefail
+
+remote=${1:-origin}
+echo "pre-push: running complete gate against $remote..." >&2
+just gate "$remote" "${ONEHARNESS_COMPARISON_BASE:-}"

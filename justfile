@@ -25,6 +25,8 @@ bootstrap:
     rustup component add rustfmt clippy llvm-tools-preview
     cargo fetch --locked
     bun install --cwd npm/oneharness-sdk --frozen-lockfile
+    ./scripts/setup-llmlint.sh
+    git config core.hooksPath .githooks
 
 # Full quality gate: format check, lint (Rust + shell), tests *with enforced
 # coverage*, build, artifact smoke. Fails on any issue. `coverage` re-runs the
@@ -33,10 +35,10 @@ bootstrap:
 check: fmt-check lint lint-sh lint-workflows sdk-check python-sdk-check test coverage build smoke
     @echo "check: ok"
 
-# Complete pre-push gate: the deterministic product gate, dependency audit, and
-# deterministic llmlint config/ignore validation.
-gate: check deps-check
-    @just lint-llm-validate
+# Complete pre-push gate: deterministic product/dependency checks, followed by
+# llmlint validation and its changed-file LLM judge when local credentials exist.
+gate remote="origin" base="": check deps-check
+    @comparison=$(scripts/comparison-base.sh "{{remote}}" "{{base}}"); just lint-llm-local "$comparison"
 
 # Verify formatting without modifying files.
 fmt-check:
@@ -69,6 +71,7 @@ lint-workflows:
     @bash scripts/check-workflows-e2e.sh >/dev/null
     @bash scripts/check-publish-crates.sh >/dev/null
     @bash scripts/check-publish-npm.sh >/dev/null
+    @bash scripts/check-local-gate.sh >/dev/null
     @echo 'lint-workflows: ok'
 
 # Run the test suite across the workspace (core unit tests + binary unit and
@@ -295,3 +298,8 @@ lint-llm-validate *args:
 # llmlint scoped to changed files since the merge-base with main.
 lint-llm-diff base="origin/main" *args:
     PATH="$HOME/.local/bin:$PATH"; export PATH; if ! command -v llmlint >/dev/null 2>&1; then echo "llmlint not installed: run 'just setup-llmlint'" >&2; exit 1; fi; llmlint --diff --diff-base "{{base}}" {{args}}
+
+# Local complete-gate tier. Validation is model-free; the judge authenticates
+# and runs only when its committed primary harness and API key are available.
+lint-llm-local base:
+    scripts/local-llmlint-gate.sh "{{base}}"

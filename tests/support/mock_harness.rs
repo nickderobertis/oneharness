@@ -388,7 +388,11 @@ fn main() {
         assert!(chunk_bytes > 0, "MOCK_STREAM_CHUNK_BYTES must be positive");
         let delay = std::env::var("MOCK_STREAM_DELAY_MS")
             .ok()
-            .and_then(|value| value.parse::<u64>().ok())
+            .map(|value| {
+                value
+                    .parse::<u64>()
+                    .expect("MOCK_STREAM_DELAY_MS must be an unsigned integer")
+            })
             .unwrap_or(0);
         let mut out = std::io::stdout();
         for (index, chunk) in stdout.as_bytes().chunks(chunk_bytes).enumerate() {

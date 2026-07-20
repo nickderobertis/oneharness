@@ -105,11 +105,22 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                         properties["duration_ms"] =
                             serde_json::json!({"type": "integer", "minimum": 0});
                     }
+                    let mut required =
+                        serde_json::json!(["kind", "tool_call_id", "started_at", "status"]);
+                    if ended {
+                        required
+                            .as_array_mut()
+                            .expect("required fields are an array")
+                            .extend([
+                                serde_json::Value::String("finished_at".to_string()),
+                                serde_json::Value::String("duration_ms".to_string()),
+                            ]);
+                    }
                     serde_json::json!({
                         "allOf": [event_base.clone(), {
                             "type": "object",
                             "properties": properties,
-                            "required": ["kind", "tool_call_id", "started_at", "status"]
+                            "required": required
                         }]
                     })
                 };
@@ -207,6 +218,9 @@ mod tests {
             let mut invalid = base.clone();
             invalid[field] = serde_json::Value::Null;
             assert!(!validator.is_valid(&current_record(invalid)), "{field}");
+            let mut omitted = base.clone();
+            omitted.as_object_mut().unwrap().remove(field);
+            assert!(!validator.is_valid(&current_record(omitted)), "{field}");
         }
     }
 

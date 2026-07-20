@@ -15,8 +15,8 @@ export type HistoryRecord =
       events:
         | (
             | (ActionEvent & {
-                duration_ms?: number | undefined;
-                finished_at?: string | undefined;
+                duration_ms: number;
+                finished_at: string;
                 kind: "tool_call";
                 started_at: string;
                 status: "completed";
@@ -24,8 +24,8 @@ export type HistoryRecord =
                 [k: string]: unknown;
               })
             | (ActionEvent & {
-                duration_ms?: number | undefined;
-                finished_at?: string | undefined;
+                duration_ms: number;
+                finished_at: string;
                 kind: "tool_call";
                 started_at: string;
                 status: "failed";

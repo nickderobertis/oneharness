@@ -546,7 +546,9 @@
                         "kind",
                         "tool_call_id",
                         "started_at",
-                        "status"
+                        "status",
+                        "finished_at",
+                        "duration_ms"
                       ],
                       "type": "object"
                     }
@@ -586,7 +588,9 @@
                         "kind",
                         "tool_call_id",
                         "started_at",
-                        "status"
+                        "status",
+                        "finished_at",
+                        "duration_ms"
                       ],
                       "type": "object"
                     }
@@ -1225,7 +1229,9 @@
                             "kind",
                             "tool_call_id",
                             "started_at",
-                            "status"
+                            "status",
+                            "finished_at",
+                            "duration_ms"
                           ],
                           "type": "object"
                         }
@@ -1265,7 +1271,9 @@
                             "kind",
                             "tool_call_id",
                             "started_at",
-                            "status"
+                            "status",
+                            "finished_at",
+                            "duration_ms"
                           ],
                           "type": "object"
                         }
@@ -2047,7 +2055,9 @@
                             "kind",
                             "tool_call_id",
                             "started_at",
-                            "status"
+                            "status",
+                            "finished_at",
+                            "duration_ms"
                           ],
                           "type": "object"
                         }
@@ -2087,7 +2097,9 @@
                             "kind",
                             "tool_call_id",
                             "started_at",
-                            "status"
+                            "status",
+                            "finished_at",
+                            "duration_ms"
                           ],
                           "type": "object"
                         }

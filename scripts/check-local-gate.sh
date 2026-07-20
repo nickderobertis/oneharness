@@ -40,4 +40,12 @@ git -C "$tmp/repo" push -qu origin main
 git -C "$tmp/repo" remote set-head origin main
 [[ $(cd "$tmp/repo" && "$root/scripts/comparison-base.sh" origin) == origin/main ]]
 
-grep -Fq 'just gate' "$root/.githooks/pre-push"
+cat > "$tmp/bin/just" <<'STUB'
+#!/usr/bin/env bash
+[[ -z ${GIT_DIR:-} ]]
+printf 'just %s\n' "$*" >> "$CALL_LOG"
+STUB
+chmod +x "$tmp/bin/just"
+CALL_LOG="$log" PATH="$tmp/bin:$PATH" GIT_DIR=.git \
+  ONEHARNESS_COMPARISON_BASE=main "$root/.githooks/pre-push" upstream
+grep -Fxq 'just gate upstream main' "$log"

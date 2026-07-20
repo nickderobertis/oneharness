@@ -7992,6 +7992,7 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    let unsupported_dir = hist_dir("plain");
     let unsupported = run(
         &[
             "run",
@@ -8003,15 +8004,36 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
             &bin_override("goose"),
             "--history",
             "--history-dir",
-            &hist_dir("plain").display().to_string(),
+            &unsupported_dir.display().to_string(),
             "--compact",
         ],
         &[("MOCK_STDOUT", "plain text")],
     );
-    assert_eq!(unsupported.status.code(), Some(2));
-    assert!(
-        String::from_utf8_lossy(&unsupported.stderr).contains("no provider/tool boundary trace")
-    );
+    assert!(unsupported.status.success());
+    let report = json_stdout(&unsupported);
+    assert_eq!(report["results"][0]["status"], "ok");
+    let record: Value = serde_json::from_str(
+        std::fs::read_to_string(report["history_file"].as_str().unwrap())
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["schema_version"], "0.3");
+    for field in [
+        "started_at",
+        "model_ms",
+        "tool_ms",
+        "time_to_first_token_ms",
+    ] {
+        assert!(
+            record.get(field).is_none(),
+            "{field} must not be fabricated"
+        );
+    }
+    assert!(record["finished_at"].is_null());
+    let _ = std::fs::remove_dir_all(&unsupported_dir);
 
     // Real Anthropic-style CLI envelopes expose init, assistant content/tool
     // blocks, and terminal result aggregation, but no provider-request start.
@@ -8039,8 +8061,25 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
             ],
             &[("MOCK_STDOUT", anthropic), ("MOCK_STREAM_DELAY_MS", "60")],
         );
-        assert_eq!(output.status.code(), Some(2), "{id}");
-        assert!(String::from_utf8_lossy(&output.stderr).contains("no provider/tool boundary trace"));
+        assert!(
+            output.status.success(),
+            "{id}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report = json_stdout(&output);
+        assert_eq!(report["results"][0]["status"], "ok", "{id}");
+        let text = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
+        let record: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        assert_eq!(record["schema_version"], "0.3", "{id}");
+        assert!(record.get("model_ms").is_none(), "{id}");
+        assert!(record.get("tool_ms").is_none(), "{id}");
+        assert!(record.get("time_to_first_token_ms").is_none(), "{id}");
+        if let Some(events) = record["events"].as_array() {
+            for event in events.iter().filter(|event| event["kind"] == "tool_call") {
+                assert!(event["started_at"].is_null(), "{id}");
+                assert!(event["duration_ms"].is_null(), "{id}");
+            }
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 }
@@ -8135,8 +8174,7 @@ fn history_preserves_format_contracts_and_composes_with_resume() {
             r#"{"structured_output":{"name":"Ada","age":36}}"#,
         )],
     );
-    assert_eq!(native.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&native.stderr).contains("no provider/tool boundary trace"));
+    assert!(native.status.success());
 
     let resume_dir = hist_dir("resume-trace");
     let resumed = run(

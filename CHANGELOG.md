@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/nickderobertis/oneharness/compare/v0.4.2...v0.4.3) - 2026-07-20
+
+### Fixed
+
+- degrade unsupported history telemetry gracefully ([#1161](https://github.com/nickderobertis/oneharness/pull/1161))
+
 ## [0.4.2](https://github.com/nickderobertis/oneharness/compare/v0.4.1...v0.4.2) - 2026-07-20
 
 ### Documentation

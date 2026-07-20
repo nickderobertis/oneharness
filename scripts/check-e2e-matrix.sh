@@ -70,7 +70,7 @@ scripts/e2e-${id}.sh
 		in_pr && /^  [^ ]/ { exit }
 	' "$f")"
 	if [ "$actual" != "$expected" ]; then
-		fail "$f pull_request paths differ from the authoritative list (expected: $(printf '%s' "$expected" | tr '\n' ','); got: $(printf '%s' "$actual" | tr '\n' ','))"
+		fail "$f pull_request paths differ from the authoritative list; update its paths block to match scripts/check-e2e-matrix.sh (expected: $(printf '%s' "$expected" | tr '\n' ','); got: $(printf '%s' "$actual" | tr '\n' ','))"
 	fi
 }
 

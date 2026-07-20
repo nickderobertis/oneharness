@@ -505,12 +505,8 @@
       {
         "properties": {
           "duration_ms": {
-            "format": "uint128",
             "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": "integer"
           },
           "events": {
             "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
@@ -732,12 +728,8 @@
             ]
           },
           "model_ms": {
-            "format": "uint128",
             "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": "integer"
           },
           "name": {
             "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
@@ -771,11 +763,8 @@
             ]
           },
           "started_at": {
-            "description": "UTC invocation bounds and monotonic time attribution. The provider/tool\nsplit is conservative when a transcript has tool calls but lacks native\nboundaries: the observed invocation interval is attributed to the union\nof those calls, never double-counted.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "minLength": 1,
+            "type": "string"
           },
           "status": {
             "$ref": "#/$defs/Status"
@@ -807,12 +796,8 @@
             "type": "string"
           },
           "tool_ms": {
-            "format": "uint128",
             "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": "integer"
           },
           "usage": {
             "$ref": "#/$defs/Usage",
@@ -1199,12 +1184,8 @@
           {
             "properties": {
               "duration_ms": {
-                "format": "uint128",
                 "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
+                "type": "integer"
               },
               "events": {
                 "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
@@ -1426,12 +1407,8 @@
                 ]
               },
               "model_ms": {
-                "format": "uint128",
                 "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
+                "type": "integer"
               },
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
@@ -1465,11 +1442,8 @@
                 ]
               },
               "started_at": {
-                "description": "UTC invocation bounds and monotonic time attribution. The provider/tool\nsplit is conservative when a transcript has tool calls but lacks native\nboundaries: the observed invocation interval is attributed to the union\nof those calls, never double-counted.",
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "minLength": 1,
+                "type": "string"
               },
               "status": {
                 "$ref": "#/$defs/Status"
@@ -1501,12 +1475,8 @@
                 "type": "string"
               },
               "tool_ms": {
-                "format": "uint128",
                 "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
+                "type": "integer"
               },
               "usage": {
                 "$ref": "#/$defs/Usage",
@@ -2036,12 +2006,8 @@
           {
             "properties": {
               "duration_ms": {
-                "format": "uint128",
                 "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
+                "type": "integer"
               },
               "events": {
                 "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
@@ -2263,12 +2229,8 @@
                 ]
               },
               "model_ms": {
-                "format": "uint128",
                 "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
+                "type": "integer"
               },
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
@@ -2302,11 +2264,8 @@
                 ]
               },
               "started_at": {
-                "description": "UTC invocation bounds and monotonic time attribution. The provider/tool\nsplit is conservative when a transcript has tool calls but lacks native\nboundaries: the observed invocation interval is attributed to the union\nof those calls, never double-counted.",
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "minLength": 1,
+                "type": "string"
               },
               "status": {
                 "$ref": "#/$defs/Status"
@@ -2338,12 +2297,8 @@
                 "type": "string"
               },
               "tool_ms": {
-                "format": "uint128",
                 "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
+                "type": "integer"
               },
               "usage": {
                 "$ref": "#/$defs/Usage",

@@ -86,6 +86,12 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                         required.push(serde_json::Value::String(field.to_string()));
                     }
                 }
+                current["properties"]["started_at"] =
+                    serde_json::json!({"type": "string", "minLength": 1});
+                for field in ["duration_ms", "model_ms", "tool_ms"] {
+                    current["properties"][field] =
+                        serde_json::json!({"type": "integer", "minimum": 0});
+                }
                 let event_base = current["properties"]["events"]["items"].clone();
                 let terminal_event = |status: &str, ended: bool| {
                     let mut properties = serde_json::json!({
@@ -201,6 +207,24 @@ mod tests {
             let mut invalid = base.clone();
             invalid[field] = serde_json::Value::Null;
             assert!(!validator.is_valid(&current_record(invalid)), "{field}");
+        }
+    }
+
+    #[test]
+    fn current_schema_rejects_null_required_timing_fields() {
+        let schema = serde_json::to_value(bundle().history_record).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let event = json!({
+            "kind": "tool_result", "name": null, "input": null, "output": "ok", "index": 0,
+            "tool_call_id": null, "started_at": null, "finished_at": null,
+            "duration_ms": null, "status": null
+        });
+        let valid = current_record(event);
+        assert!(validator.is_valid(&valid));
+        for field in ["started_at", "duration_ms", "model_ms", "tool_ms"] {
+            let mut invalid = valid.clone();
+            invalid[field] = serde_json::Value::Null;
+            assert!(!validator.is_valid(&invalid), "{field}");
         }
     }
 }

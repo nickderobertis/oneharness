@@ -17,7 +17,7 @@ export type HistoryStreamEnvelope = {
  */
 export type HistoryRecord =
   | {
-      duration_ms: number | null;
+      duration_ms: number;
       /**
        * Best-effort normalized tool-call events; `null` when the harness exposes
        * no machine-readable trace.
@@ -83,7 +83,7 @@ export type HistoryRecord =
        * The effective top-level model for the run, if any.
        */
       model: string | null;
-      model_ms: number | null;
+      model_ms: number;
       /**
        * The human-meaningful session name (see [`session_name`]); repeated on
        * every record so a reader can resolve a session by name from any line.
@@ -112,13 +112,7 @@ export type HistoryRecord =
        * The harness's own continuation id, when it exposed one; `null` otherwise.
        */
       session_id: string | null;
-      /**
-       * UTC invocation bounds and monotonic time attribution. The provider/tool
-       * split is conservative when a transcript has tool calls but lacks native
-       * boundaries: the observed invocation interval is attributed to the union
-       * of those calls, never double-counted.
-       */
-      started_at: string | null;
+      started_at: string;
       status: Status;
       /**
        * Best-effort final assistant text; `null` when extraction was impossible.
@@ -133,7 +127,7 @@ export type HistoryRecord =
        * RFC3339 UTC instant the record was written (append time).
        */
       timestamp: string;
-      tool_ms: number | null;
+      tool_ms: number;
       usage: Usage;
       [k: string]: unknown;
     }

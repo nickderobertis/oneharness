@@ -136,6 +136,28 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                         }]}
                     ]
                 });
+                let mut unavailable = base.clone();
+                unavailable["properties"]["schema_version"] =
+                    serde_json::json!({"const": "0.3", "type": "string"});
+                unavailable["properties"]["finished_at"] = serde_json::json!({"type": "null"});
+                if let Some(required) = unavailable["required"].as_array_mut() {
+                    required.retain(|value| {
+                        !value.as_str().is_some_and(|field| {
+                            matches!(
+                                field,
+                                "started_at" | "model_ms" | "tool_ms" | "time_to_first_token_ms"
+                            )
+                        })
+                    });
+                }
+                for field in [
+                    "started_at",
+                    "model_ms",
+                    "tool_ms",
+                    "time_to_first_token_ms",
+                ] {
+                    unavailable["properties"][field] = serde_json::Value::Bool(false);
+                }
                 let mut legacy = base;
                 legacy["properties"]["schema_version"] =
                     serde_json::json!({"enum": ["0.1", "0.2"], "type": "string"});
@@ -169,7 +191,10 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                 });
                 object.clear();
                 object.extend(metadata);
-                object.insert("oneOf".to_string(), serde_json::json!([current, legacy]));
+                object.insert(
+                    "oneOf".to_string(),
+                    serde_json::json!([current, unavailable, legacy]),
+                );
                 return;
             }
             object.values_mut().for_each(add_v03_condition);
@@ -240,5 +265,30 @@ mod tests {
             invalid[field] = serde_json::Value::Null;
             assert!(!validator.is_valid(&invalid), "{field}");
         }
+    }
+
+    #[test]
+    fn current_schema_accepts_unavailable_timing_but_rejects_partial_timing() {
+        let schema = serde_json::to_value(bundle().history_record).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let event = json!({
+            "kind": "tool_result", "name": null, "input": null, "output": "ok", "index": 0,
+            "tool_call_id": null, "started_at": null, "finished_at": null,
+            "duration_ms": null, "status": null
+        });
+        let mut unavailable = current_record(event);
+        unavailable["finished_at"] = serde_json::Value::Null;
+        for field in [
+            "started_at",
+            "model_ms",
+            "tool_ms",
+            "time_to_first_token_ms",
+        ] {
+            unavailable.as_object_mut().unwrap().remove(field);
+        }
+        assert!(validator.is_valid(&unavailable));
+
+        unavailable["model_ms"] = json!(1);
+        assert!(!validator.is_valid(&unavailable));
     }
 }

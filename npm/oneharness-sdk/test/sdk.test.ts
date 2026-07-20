@@ -548,6 +548,22 @@ describe("OneHarness", () => {
 		}
 		expect(HistoryRecordsSchema.safeParse(records).success).toBe(true);
 		expect(HistoryRecordSchema.safeParse(records[0]).success).toBe(true);
+		await client.run({
+			prompt: "history without timing",
+			harnesses: ["claude-code"],
+			history: true,
+			historyName: "node-session-unmeasured",
+			historyDir,
+			env: { MOCK_STDOUT: '{"type":"result","result":"done"}' },
+			bins: { "claude-code": mock },
+		});
+		const [unmeasured] = await client.history({
+			session: "node-session-unmeasured",
+			historyDir,
+		});
+		expect(unmeasured?.schema_version).toBe("0.3");
+		expect(unmeasured).not.toHaveProperty("model_ms");
+		expect(HistoryRecordSchema.safeParse(unmeasured).success).toBe(true);
 		const baseTool = {
 			kind: "tool_call",
 			name: "shell",

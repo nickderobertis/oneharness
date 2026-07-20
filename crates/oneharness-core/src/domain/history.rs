@@ -22,7 +22,7 @@ use serde_json::Value;
 use thiserror::Error;
 use uuid::{Uuid, Variant};
 
-use crate::domain::events::ActionEvent;
+use crate::domain::events::{ActionEvent, ToolCallStatus};
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::{RunResult, Status};
 use crate::domain::signals::{FailureKind, Usage};
@@ -30,10 +30,11 @@ use crate::domain::signals::{FailureKind, Usage};
 /// Bumped when the history record shape changes in a way a consumer must notice.
 /// Independent of [`crate::domain::report::SCHEMA_VERSION`] — the history file and
 /// the run report are separate contracts and version on their own cadence.
-pub const SCHEMA_VERSION: &str = "0.2";
+pub const SCHEMA_VERSION: &str = "0.3";
 
 /// The legacy record contract accepted by the migration reader.
 pub const LEGACY_SCHEMA_VERSION: &str = "0.1";
+const PREVIOUS_SCHEMA_VERSION: &str = "0.2";
 
 /// Label lengths are bounded in *characters* — Unicode code points. That is the
 /// unit JSON Schema's `maxLength` measures in, and therefore the one unit both
@@ -328,6 +329,19 @@ pub struct HistoryRecord {
     pub status: Status,
     pub exit_code: Option<i32>,
     pub duration_ms: Option<u128>,
+    /// UTC invocation bounds and monotonic time attribution. The provider/tool
+    /// split is conservative when a transcript has tool calls but lacks native
+    /// boundaries: the observed invocation interval is attributed to the union
+    /// of those calls, never double-counted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_to_first_token_ms: Option<u128>,
     /// Best-effort final assistant text; `null` when extraction was impossible.
     pub text: Option<String>,
     /// How `text` was extracted; `null` when absent.
@@ -363,14 +377,15 @@ impl HistoryRecord {
         run_prompt: &str,
         r: &RunResult,
     ) -> Self {
-        HistoryRecord {
-            schema_version: SCHEMA_VERSION.to_string(),
+        let telemetry = r.telemetry.as_ref();
+        let mut record = HistoryRecord {
+            schema_version: PREVIOUS_SCHEMA_VERSION.to_string(),
             history_id,
             session: session.to_string(),
             name: name.to_string(),
             labels: labels.clone(),
             project: project.to_string(),
-            timestamp,
+            timestamp: timestamp.clone(),
             harness: r.harness.clone(),
             model: model.map(str::to_string),
             prompt: r.prompt.clone().unwrap_or_else(|| run_prompt.to_string()),
@@ -378,13 +393,66 @@ impl HistoryRecord {
             status: r.status,
             exit_code: r.exit_code,
             duration_ms: r.duration_ms,
+            started_at: telemetry.map(|telemetry| telemetry.started_at.clone()),
+            finished_at: telemetry.and_then(|telemetry| telemetry.finished_at.clone()),
+            model_ms: telemetry.and_then(|telemetry| telemetry.model_ms),
+            tool_ms: telemetry.and_then(|telemetry| telemetry.tool_ms),
+            time_to_first_token_ms: telemetry
+                .and_then(|telemetry| telemetry.time_to_first_token_ms),
             text: r.text.clone(),
             text_source: r.text_source.clone(),
             usage: r.usage.clone(),
             session_id: r.session_id.clone(),
             events: r.events.clone(),
             failure_kind: r.failure_kind,
+        };
+        if record.valid_v03() {
+            record.schema_version = SCHEMA_VERSION.to_string();
+        } else {
+            record.started_at = None;
+            record.finished_at = None;
+            record.model_ms = None;
+            record.tool_ms = None;
+            record.time_to_first_token_ms = None;
         }
+        record
+    }
+
+    fn valid_v03(&self) -> bool {
+        let Some(duration) = self.duration_ms else {
+            return false;
+        };
+        let (Some(started), Some(model), Some(tool)) =
+            (&self.started_at, self.model_ms, self.tool_ms)
+        else {
+            return false;
+        };
+        if started.is_empty() || model.saturating_add(tool) > duration {
+            return false;
+        }
+        if matches!(self.status, Status::Ok | Status::Nonzero) && self.finished_at.is_none() {
+            return false;
+        }
+        self.events.as_ref().is_none_or(|events| {
+            events
+                .iter()
+                .filter(|event| event.kind == "tool_call")
+                .all(|event| {
+                    let base = event
+                        .tool_call_id
+                        .as_deref()
+                        .is_some_and(|id| !id.is_empty())
+                        && event.started_at.is_some()
+                        && event.status.is_some();
+                    base && match event.status {
+                        Some(ToolCallStatus::Completed | ToolCallStatus::Failed) => {
+                            event.finished_at.is_some() && event.duration_ms.is_some()
+                        }
+                        Some(ToolCallStatus::Timeout | ToolCallStatus::Interrupted) => true,
+                        None => false,
+                    }
+                })
+        })
     }
 
     /// Deserialize a current or legacy record. `legacy_identity` should name the
@@ -397,10 +465,10 @@ impl HistoryRecord {
         let fallback = serde_json::to_vec(&value)?;
         let wire: HistoryRecordWire = serde_json::from_value(value)?;
         let history_id = match wire.schema_version.as_str() {
-            SCHEMA_VERSION => wire.history_id.ok_or_else(|| {
+            SCHEMA_VERSION | PREVIOUS_SCHEMA_VERSION => wire.history_id.ok_or_else(|| {
                 serde_json::Error::io(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    "history schema v0.2 record is missing `history_id`",
+                    "history record is missing `history_id`",
                 ))
             })?,
             LEGACY_SCHEMA_VERSION => {
@@ -416,8 +484,8 @@ impl HistoryRecord {
                 )))
             }
         };
-        Ok(Self {
-            schema_version: SCHEMA_VERSION.to_string(),
+        let record = Self {
+            schema_version: wire.schema_version.clone(),
             history_id,
             session: wire.session,
             name: wire.name,
@@ -427,7 +495,7 @@ impl HistoryRecord {
                 wire.labels
             },
             project: wire.project,
-            timestamp: wire.timestamp,
+            timestamp: wire.timestamp.clone(),
             harness: wire.harness,
             model: wire.model,
             prompt: wire.prompt,
@@ -435,13 +503,25 @@ impl HistoryRecord {
             status: wire.status,
             exit_code: wire.exit_code,
             duration_ms: wire.duration_ms,
+            started_at: wire.started_at,
+            finished_at: wire.finished_at,
+            model_ms: wire.model_ms,
+            tool_ms: wire.tool_ms,
+            time_to_first_token_ms: wire.time_to_first_token_ms,
             text: wire.text,
             text_source: wire.text_source,
             usage: wire.usage,
             session_id: wire.session_id,
             events: wire.events,
             failure_kind: wire.failure_kind,
-        })
+        };
+        if record.schema_version == SCHEMA_VERSION && !record.valid_v03() {
+            return Err(serde_json::Error::io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "history schema v0.3 record is missing or has invalid telemetry",
+            )));
+        }
+        Ok(record)
     }
 }
 
@@ -472,6 +552,16 @@ struct HistoryRecordWire {
     status: Status,
     exit_code: Option<i32>,
     duration_ms: Option<u128>,
+    #[serde(default)]
+    started_at: Option<String>,
+    #[serde(default)]
+    finished_at: Option<String>,
+    #[serde(default)]
+    model_ms: Option<u128>,
+    #[serde(default)]
+    tool_ms: Option<u128>,
+    #[serde(default)]
+    time_to_first_token_ms: Option<u128>,
     text: Option<String>,
     text_source: Option<String>,
     usage: Usage,
@@ -604,6 +694,15 @@ pub fn format_rfc3339(secs: i64) -> String {
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
 }
 
+/// Format a UNIX millisecond instant as RFC3339 UTC while retaining the
+/// precision needed to distinguish short model/tool intervals.
+pub fn format_rfc3339_millis(millis: u128) -> String {
+    let secs = (millis / 1_000).min(i64::MAX as u128) as i64;
+    let fraction = millis % 1_000;
+    let base = format_rfc3339(secs);
+    format!("{}.{fraction:03}Z", base.trim_end_matches('Z'))
+}
+
 /// Format a UNIX timestamp (seconds, UTC) as `YYYYMMDDThhmmssZ` — colon-free so
 /// it is safe in a filename on every platform (Windows forbids `:`). Used to make
 /// the session id sortable by start time.
@@ -693,6 +792,13 @@ mod tests {
             model: None,
             exit_code: Some(0),
             duration_ms: Some(42),
+            telemetry: Some(crate::domain::report::ExecutionTelemetry {
+                started_at: "2026-07-07T13:14:14.958Z".to_string(),
+                finished_at: Some("2026-07-07T13:14:15.000Z".to_string()),
+                model_ms: Some(42),
+                tool_ms: Some(0),
+                time_to_first_token_ms: Some(10),
+            }),
             command: vec!["claude".to_string()],
             output_format: OutputFormat::Json,
             text: Some("hello".to_string()),
@@ -911,7 +1017,7 @@ mod tests {
             HistoryRecord::from_value_with_legacy_identity(legacy, Some("project/session.jsonl:1"))
                 .unwrap();
         assert_eq!(first.history_id, second.history_id);
-        assert_eq!(first.schema_version, SCHEMA_VERSION);
+        assert_eq!(first.schema_version, LEGACY_SCHEMA_VERSION);
         assert!(first.labels.is_empty());
     }
 
@@ -935,6 +1041,17 @@ mod tests {
             serde_json::from_value::<HistoryRecord>(value).unwrap(),
             current
         );
+
+        let mut invalid_v03 = serde_json::to_value(&current).unwrap();
+        invalid_v03.as_object_mut().unwrap().remove("model_ms");
+        assert!(serde_json::from_value::<HistoryRecord>(invalid_v03).is_err());
+
+        let mut previous = serde_json::to_value(&current).unwrap();
+        previous["schema_version"] = Value::String(PREVIOUS_SCHEMA_VERSION.to_string());
+        for field in ["started_at", "finished_at", "model_ms", "tool_ms"] {
+            previous.as_object_mut().unwrap().remove(field);
+        }
+        assert!(serde_json::from_value::<HistoryRecord>(previous).is_ok());
 
         let mut missing = serde_json::to_value(&current).unwrap();
         missing.as_object_mut().unwrap().remove("history_id");

@@ -28,9 +28,8 @@
 //!   events whose `tool_call` object nests a `<name>ToolCall` payload (e.g.
 //!   `shellToolCall`) with `args` and, once complete, `result.success`. The tool
 //!   name is the payload key minus its `ToolCall` suffix.
-//! - **Codex** (`exec --json`): flat `item.completed` events with
-//!   `item.type == "command_execution"` (the shell), the run `command` as input
-//!   and `aggregated_output` as output.
+//! - **Codex** (`exec --json`): flat `item.started` / `item.completed` lifecycle
+//!   events for command, MCP, collaboration, and web-search tool items.
 //!
 //! Goose, Crush, and Copilot expose no machine-readable transcript headlessly
 //! (decorative TUI text, or no JSON output mode at all — confirmed by the probe),
@@ -43,7 +42,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::domain::report::OutputFormat;
+use crate::domain::report::{OutputFormat, OutputObservation, Status};
 
 /// One normalized action a harness took, harness-agnostic so a single consumer
 /// assertion works across harnesses. Every field is always serialized (null when
@@ -66,6 +65,26 @@ pub struct ActionEvent {
     /// Position of this event within the run, so "≤ N tool calls" and "did X
     /// before Y" are expressible from a stable ordering (also array order).
     pub index: usize,
+    /// Stable call identity within the session. Present on tool calls and their
+    /// matching results when the provider exposes an identity; history fills a
+    /// deterministic run-local identity for providers that do not.
+    pub tool_call_id: Option<String>,
+    /// UTC interval bounds for tool execution, populated on history records.
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    /// Monotonic elapsed tool time. `None` means no terminal boundary was seen.
+    pub duration_ms: Option<u128>,
+    /// Terminal tool state, populated on history tool-call events.
+    pub status: Option<ToolCallStatus>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCallStatus {
+    Completed,
+    Failed,
+    Timeout,
+    Interrupted,
 }
 
 /// A recovered event list plus the method that produced it (e.g.
@@ -84,6 +103,7 @@ struct PartialEvent {
     name: Option<String>,
     input: Option<Value>,
     output: Option<String>,
+    tool_call_id: Option<String>,
 }
 
 impl PartialEvent {
@@ -94,6 +114,11 @@ impl PartialEvent {
             input: self.input,
             output: self.output,
             index,
+            tool_call_id: self.tool_call_id,
+            started_at: None,
+            finished_at: None,
+            duration_ms: None,
+            status: None,
         }
     }
 }
@@ -110,7 +135,13 @@ pub fn extract_events(stdout: &str, fmt: OutputFormat) -> Option<EventsReading> 
     for value in json_candidates(stdout) {
         if let Some((label, mut partials)) = recognize(&value) {
             recognizer.get_or_insert(label);
-            events.append(&mut partials);
+            if label == "opencode-parts" || label == "codex-items" {
+                for partial in partials {
+                    merge_tool_update(&mut events, partial);
+                }
+            } else {
+                events.append(&mut partials);
+            }
         }
     }
     let recognizer = recognizer?;
@@ -152,8 +183,8 @@ fn recognize(value: &Value) -> Option<(&'static str, Vec<PartialEvent>)> {
     if let Some(pe) = cursor_tool_call(value) {
         return Some(("cursor-tool-calls", vec![pe]));
     }
-    // Codex `item.completed` `command_execution` (shell), result folded in.
-    if let Some(pe) = codex_command_item(value) {
+    // Codex executable item lifecycle; repeated updates collapse by item id.
+    if let Some(pe) = codex_tool_item(value) {
         return Some(("codex-items", vec![pe]));
     }
     // Anthropic content blocks (Claude Code / Qwen): tool_use + tool_result.
@@ -162,6 +193,21 @@ fn recognize(value: &Value) -> Option<(&'static str, Vec<PartialEvent>)> {
         return Some(("content-blocks", blocks));
     }
     None
+}
+
+fn merge_tool_update(events: &mut Vec<PartialEvent>, update: PartialEvent) {
+    let existing = update.tool_call_id.as_deref().and_then(|id| {
+        events
+            .iter_mut()
+            .find(|event| event.kind == "tool_call" && event.tool_call_id.as_deref() == Some(id))
+    });
+    if let Some(existing) = existing {
+        existing.name = update.name.or_else(|| existing.name.take());
+        existing.input = update.input.or_else(|| existing.input.take());
+        existing.output = update.output.or_else(|| existing.output.take());
+    } else {
+        events.push(update);
+    }
 }
 
 /// One OpenCode `tool` part → a single `tool_call` event carrying its input and
@@ -178,6 +224,11 @@ fn opencode_tool_event(value: &Value) -> Option<PartialEvent> {
         input: state.and_then(|s| s.get("input").cloned()),
         output: state
             .and_then(|s| s.get("output"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        tool_call_id: part
+            .get("callID")
+            .or_else(|| part.get("id"))
             .and_then(Value::as_str)
             .map(str::to_string),
     })
@@ -207,12 +258,17 @@ fn content_block_events(value: &Value) -> Vec<PartialEvent> {
                 name: obj.get("name").and_then(Value::as_str).map(str::to_string),
                 input: obj.get("input").cloned(),
                 output: None,
+                tool_call_id: obj.get("id").and_then(Value::as_str).map(str::to_string),
             }),
             Some("tool_result") => out.push(PartialEvent {
                 kind: "tool_result",
                 name: None,
                 input: None,
                 output: tool_result_text(obj.get("content")),
+                tool_call_id: obj
+                    .get("tool_use_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
             }),
             _ => {}
         }
@@ -258,36 +314,92 @@ fn cursor_tool_call(value: &Value) -> Option<PartialEvent> {
             .and_then(|s| s.get("stdout"))
             .and_then(Value::as_str)
             .map(str::to_string),
-    })
-}
-
-/// Codex's `exec --json` tool event: a flat `{"type":"item.completed",
-/// "item":{"type":"command_execution", ...}}`. Codex has no generic tool-name
-/// field — the tool identity *is* the item type — so the normalized `name` is
-/// `command_execution` (the shell), the `input` is the run command, and the
-/// `output` is the aggregated output. Emitted only on `item.completed` (the
-/// paired `item.started` has no output and would double-count); other item types
-/// (`agent_message`, …) are not tool calls. Sourced from a real codex transcript.
-fn codex_command_item(value: &Value) -> Option<PartialEvent> {
-    let obj = value.as_object()?;
-    if obj.get("type").and_then(Value::as_str) != Some("item.completed") {
-        return None;
-    }
-    let item = obj.get("item").and_then(Value::as_object)?;
-    if item.get("type").and_then(Value::as_str) != Some("command_execution") {
-        return None;
-    }
-    Some(PartialEvent {
-        kind: "tool_call",
-        name: Some("command_execution".to_string()),
-        input: item
-            .get("command")
-            .map(|c| serde_json::json!({ "command": c.clone() })),
-        output: item
-            .get("aggregated_output")
+        tool_call_id: obj
+            .get("call_id")
+            .or_else(|| tool_call.get("toolCallId"))
             .and_then(Value::as_str)
             .map(str::to_string),
     })
+}
+
+/// Codex `exec --json` executable items. Started, updated, and completed records
+/// share `item.id`; [`extract_events`] folds them into one normalized call. The
+/// allow-list follows Codex's typed exec interface and deliberately excludes
+/// completion-only `file_change` items because they expose no execution start.
+fn codex_tool_item(value: &Value) -> Option<PartialEvent> {
+    let obj = value.as_object()?;
+    if !matches!(
+        obj.get("type").and_then(Value::as_str),
+        Some("item.started" | "item.updated" | "item.completed")
+    ) {
+        return None;
+    }
+    let item = obj.get("item").and_then(Value::as_object)?;
+    let item_type = item.get("type").and_then(Value::as_str)?;
+    if !is_codex_tool_type(item_type) {
+        return None;
+    }
+    let (name, input, output) = match item_type {
+        "command_execution" => (
+            "command_execution".to_string(),
+            item.get("command")
+                .map(|command| serde_json::json!({ "command": command.clone() })),
+            item.get("aggregated_output")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        ),
+        "mcp_tool_call" => (
+            item.get("tool")
+                .and_then(Value::as_str)
+                .unwrap_or("mcp_tool_call")
+                .to_string(),
+            item.get("arguments").cloned(),
+            item.get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| item.get("result").map(Value::to_string)),
+        ),
+        "collab_tool_call" => (
+            item.get("tool")
+                .and_then(Value::as_str)
+                .unwrap_or("collab_tool_call")
+                .to_string(),
+            Some(Value::Object(
+                item.iter()
+                    .filter(|(key, _)| {
+                        matches!(
+                            key.as_str(),
+                            "prompt" | "receiver_thread_ids" | "sender_thread_id"
+                        )
+                    })
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            )),
+            None,
+        ),
+        "web_search" => (
+            "web_search".to_string(),
+            item.get("query")
+                .map(|query| serde_json::json!({ "query": query.clone() })),
+            None,
+        ),
+        _ => return None,
+    };
+    Some(PartialEvent {
+        kind: "tool_call",
+        name: Some(name),
+        input,
+        output,
+        tool_call_id: item.get("id").and_then(Value::as_str).map(str::to_string),
+    })
+}
+
+fn is_codex_tool_type(item_type: &str) -> bool {
+    matches!(
+        item_type,
+        "command_execution" | "mcp_tool_call" | "collab_tool_call" | "web_search"
+    )
 }
 
 /// Normalize a `tool_result` block's `content` (a bare string, or an array of
@@ -338,6 +450,489 @@ fn json_candidates(stdout: &str) -> Vec<Value> {
         .collect()
 }
 
+/// Timing derived from provider events as they crossed the stdout pipe. The
+/// monotonic offsets are runner observations; UTC strings are labels captured
+/// from the same boundaries. Unknown boundaries remain absent.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TimingReading {
+    pub model_ms: Option<u128>,
+    pub tool_ms: Option<u128>,
+    pub time_to_first_token_ms: Option<u128>,
+    pub trace_complete: bool,
+}
+
+/// Provider trace grammar advertised by a harness adapter. A format alone is
+/// insufficient: several CLIs use `json` for a compact terminal object that has
+/// no provider request boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TelemetryTrace {
+    CodexJson,
+    OpenCodeJson,
+}
+
+#[derive(Debug, Clone)]
+struct Boundary {
+    id: String,
+    start: Option<(u128, String)>,
+    finish: Option<(u128, String)>,
+    status: Option<ToolCallStatus>,
+}
+
+/// Enrich normalized calls using paired provider identities and the runner's
+/// actual output observations. Returns measured model/tool totals; overlapping
+/// tool intervals are merged before summing.
+pub fn apply_observed_timing(
+    events: &mut [ActionEvent],
+    observations: &[OutputObservation],
+    run_status: Status,
+    duration_ms: Option<u128>,
+    trace: TelemetryTrace,
+) -> TimingReading {
+    let lines = observed_json_lines(observations);
+    let mut boundaries: Vec<Boundary> = Vec::new();
+    let mut request_start = None;
+    let mut first_token = None;
+    let mut model_start = None;
+    let mut last_model_byte = None;
+    let mut saw_model_boundary = false;
+    let mut saw_unmeasurable_tool = false;
+    let mut model_intervals = Vec::new();
+    for (value, offset, utc) in &lines {
+        saw_unmeasurable_tool |= trace == TelemetryTrace::CodexJson
+            && value.pointer("/item/type").and_then(Value::as_str) == Some("file_change");
+        if is_provider_start(value, trace) {
+            request_start.get_or_insert(*offset);
+            model_start.get_or_insert(*offset);
+        }
+        if is_model_token(value) {
+            first_token.get_or_insert(*offset);
+            last_model_byte = Some(*offset);
+            saw_model_boundary = true;
+        }
+        if is_tool_start(value) {
+            if let Some(start) = model_start.take() {
+                model_intervals.push((start, *offset));
+            }
+            last_model_byte = None;
+            saw_model_boundary = true;
+        }
+        if is_tool_finish(value) && request_start.is_some() {
+            model_start = Some(*offset);
+            last_model_byte = None;
+        }
+        if is_provider_finish(value, trace) {
+            if let (Some(start), Some(finish)) = (model_start.take(), last_model_byte.take()) {
+                model_intervals.push((start, finish.max(start)));
+            }
+        }
+        observe_boundaries(value, *offset, utc, &mut boundaries);
+    }
+    if !matches!(run_status, Status::Ok | Status::Nonzero) {
+        if let (Some(start), Some(finish)) = (model_start.take(), last_model_byte.take()) {
+            model_intervals.push((start, finish.max(start)));
+        }
+    }
+    for event in events.iter_mut().filter(|event| event.kind == "tool_call") {
+        let Some(id) = event.tool_call_id.as_deref() else {
+            continue;
+        };
+        let Some(boundary) = boundaries.iter().find(|boundary| boundary.id == id) else {
+            continue;
+        };
+        event.started_at = boundary.start.as_ref().map(|(_, utc)| utc.clone());
+        event.finished_at = boundary.finish.as_ref().map(|(_, utc)| utc.clone());
+        event.duration_ms = boundary
+            .start
+            .as_ref()
+            .zip(boundary.finish.as_ref())
+            .map(|((start, _), (finish, _))| finish.saturating_sub(*start));
+        event.status = boundary.status.or_else(|| {
+            (boundary.start.is_some() && boundary.finish.is_none()).then(|| {
+                if run_status == Status::Timeout {
+                    ToolCallStatus::Timeout
+                } else {
+                    ToolCallStatus::Interrupted
+                }
+            })
+        });
+    }
+    let mut intervals = boundaries
+        .iter()
+        .filter_map(|boundary| {
+            let start = boundary.start.as_ref()?.0;
+            let finish = boundary
+                .finish
+                .as_ref()
+                .map(|finish| finish.0)
+                .or(duration_ms)?;
+            Some((start, finish.max(start)))
+        })
+        .collect::<Vec<_>>();
+    intervals.sort_unstable();
+    let mut union = 0;
+    let mut current: Option<(u128, u128)> = None;
+    for (start, finish) in intervals {
+        current = match current {
+            Some((left, right)) if start <= right => Some((left, right.max(finish))),
+            Some((left, right)) => {
+                union += right.saturating_sub(left);
+                Some((start, finish))
+            }
+            None => Some((start, finish)),
+        };
+    }
+    if let Some((left, right)) = current {
+        union += right.saturating_sub(left);
+    }
+    TimingReading {
+        model_ms: request_start.map(|_| interval_union(&mut model_intervals)),
+        tool_ms: request_start.map(|_| union),
+        time_to_first_token_ms: request_start
+            .zip(first_token)
+            .map(|(start, token)| token.saturating_sub(start)),
+        trace_complete: request_start.is_some()
+            && (lines
+                .iter()
+                .any(|(value, _, _)| is_provider_finish(value, trace))
+                || !matches!(run_status, Status::Ok | Status::Nonzero))
+            && saw_model_boundary
+            && !saw_unmeasurable_tool
+            && events
+                .iter()
+                .filter(|event| event.kind == "tool_call")
+                .all(|event| {
+                    event.tool_call_id.is_some()
+                        && event.started_at.is_some()
+                        && event.status.is_some()
+                        && (!matches!(
+                            event.status,
+                            Some(ToolCallStatus::Completed | ToolCallStatus::Failed)
+                        ) || (event.finished_at.is_some() && event.duration_ms.is_some()))
+                }),
+    }
+}
+
+fn interval_union(intervals: &mut [(u128, u128)]) -> u128 {
+    intervals.sort_unstable();
+    let mut total = 0;
+    let mut current: Option<(u128, u128)> = None;
+    for &(start, finish) in intervals.iter() {
+        current = match current {
+            Some((left, right)) if start <= right => Some((left, right.max(finish))),
+            Some((left, right)) => {
+                total += right.saturating_sub(left);
+                Some((start, finish))
+            }
+            None => Some((start, finish)),
+        };
+    }
+    if let Some((left, right)) = current {
+        total += right.saturating_sub(left);
+    }
+    total
+}
+
+fn observed_json_lines(observations: &[OutputObservation]) -> Vec<(Value, u128, String)> {
+    let mut pending = Vec::new();
+    let mut out = Vec::new();
+    for observation in observations {
+        pending.extend_from_slice(&observation.bytes);
+        while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = pending.drain(..=newline).collect();
+            if let Ok(value) = serde_json::from_slice::<Value>(&line) {
+                out.push((
+                    value,
+                    observation.offset_ms,
+                    observation.observed_at.clone(),
+                ));
+            }
+        }
+    }
+    if !pending.is_empty() {
+        if let (Some(last), Ok(value)) = (
+            observations.last(),
+            serde_json::from_slice::<Value>(&pending),
+        ) {
+            out.push((value, last.offset_ms, last.observed_at.clone()));
+        }
+    }
+    out
+}
+
+fn observe_boundaries(value: &Value, offset: u128, utc: &str, out: &mut Vec<Boundary>) {
+    if let Some(item) = value.get("item").and_then(Value::as_object) {
+        if item
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(is_codex_tool_type)
+        {
+            let Some(id) = item.get("id").and_then(Value::as_str) else {
+                return;
+            };
+            let boundary = boundary(out, id);
+            match value.get("type").and_then(Value::as_str) {
+                Some("item.started") => boundary.start = Some((offset, utc.to_string())),
+                Some("item.completed") => {
+                    boundary.finish = Some((offset, utc.to_string()));
+                    boundary.status = codex_tool_status(item);
+                }
+                _ => {}
+            }
+        }
+    }
+    if value.get("type").and_then(Value::as_str) == Some("tool_call") {
+        if let Some(id) = value
+            .get("call_id")
+            .or_else(|| value.pointer("/tool_call/toolCallId"))
+            .and_then(Value::as_str)
+        {
+            let boundary = boundary(out, id);
+            match value.get("subtype").and_then(Value::as_str) {
+                Some("started") => boundary.start = Some((offset, utc.to_string())),
+                Some("completed") => {
+                    boundary.finish = Some((offset, utc.to_string()));
+                    boundary.status = Some(if value.pointer("/tool_call/error").is_some() {
+                        ToolCallStatus::Failed
+                    } else {
+                        ToolCallStatus::Completed
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+    let blocks = value
+        .pointer("/message/content")
+        .or_else(|| value.get("content"));
+    if let Some(blocks) = blocks.and_then(Value::as_array) {
+        for block_value in blocks {
+            let Some(block) = block_value.as_object() else {
+                continue;
+            };
+            match block.get("type").and_then(Value::as_str) {
+                Some("tool_use") => {
+                    if let Some(id) = block.get("id").and_then(Value::as_str) {
+                        boundary(out, id).start = Some((offset, utc.to_string()));
+                    }
+                }
+                Some("tool_result") => {
+                    if let Some(id) = block.get("tool_use_id").and_then(Value::as_str) {
+                        let boundary = boundary(out, id);
+                        boundary.finish = Some((offset, utc.to_string()));
+                        boundary.status = Some(
+                            if block.get("is_error").and_then(Value::as_bool) == Some(true) {
+                                ToolCallStatus::Failed
+                            } else {
+                                ToolCallStatus::Completed
+                            },
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Some(part) = value.get("part").and_then(Value::as_object) {
+        if part.get("type").and_then(Value::as_str) == Some("tool") {
+            if let Some(id) = part
+                .get("callID")
+                .or_else(|| part.get("id"))
+                .and_then(Value::as_str)
+            {
+                let state = part.get("state").and_then(Value::as_object);
+                let boundary = boundary(out, id);
+                let start_epoch = state
+                    .and_then(|state| state.get("time"))
+                    .and_then(|time| time.get("start"))
+                    .and_then(Value::as_u64)
+                    .map(u128::from);
+                let end_epoch = state
+                    .and_then(|state| state.get("time"))
+                    .and_then(|time| time.get("end"))
+                    .and_then(Value::as_u64)
+                    .map(u128::from);
+                if let Some(start_epoch) = start_epoch {
+                    let start_offset = end_epoch
+                        .map(|end| offset.saturating_sub(end.saturating_sub(start_epoch)))
+                        .unwrap_or(offset);
+                    boundary.start = Some((
+                        start_offset,
+                        crate::domain::history::format_rfc3339_millis(start_epoch),
+                    ));
+                }
+                if let Some(end_epoch) = end_epoch {
+                    boundary.finish = Some((
+                        offset,
+                        crate::domain::history::format_rfc3339_millis(end_epoch),
+                    ));
+                    boundary.status = Some(
+                        match state
+                            .and_then(|state| state.get("status"))
+                            .and_then(Value::as_str)
+                        {
+                            Some("error" | "failed") => ToolCallStatus::Failed,
+                            _ => ToolCallStatus::Completed,
+                        },
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn boundary<'a>(boundaries: &'a mut Vec<Boundary>, id: &str) -> &'a mut Boundary {
+    if let Some(index) = boundaries.iter().position(|boundary| boundary.id == id) {
+        return &mut boundaries[index];
+    }
+    boundaries.push(Boundary {
+        id: id.to_string(),
+        start: None,
+        finish: None,
+        status: None,
+    });
+    boundaries.last_mut().expect("just pushed")
+}
+
+fn codex_tool_status(item: &serde_json::Map<String, Value>) -> Option<ToolCallStatus> {
+    let status = item.get("status").and_then(Value::as_str);
+    if matches!(
+        status,
+        Some("cancelled" | "canceled" | "interrupted" | "aborted")
+    ) {
+        return Some(ToolCallStatus::Interrupted);
+    }
+    if matches!(status, Some("timeout" | "timed_out")) {
+        return Some(ToolCallStatus::Timeout);
+    }
+    if item.get("error").is_some_and(|error| !error.is_null())
+        || matches!(status, Some("failed" | "error" | "declined"))
+    {
+        return Some(ToolCallStatus::Failed);
+    }
+    if matches!(status, Some("completed" | "success" | "succeeded")) {
+        return Some(ToolCallStatus::Completed);
+    }
+    if item.get("type").and_then(Value::as_str) == Some("command_execution") {
+        return match item.get("exit_code").and_then(Value::as_i64) {
+            Some(0) => Some(ToolCallStatus::Completed),
+            Some(_) => Some(ToolCallStatus::Failed),
+            None => None,
+        };
+    }
+    None
+}
+
+fn is_model_token(value: &Value) -> bool {
+    let assistant_content = value
+        .get("type")
+        .and_then(Value::as_str)
+        .filter(|kind| *kind == "assistant")
+        .and_then(|_| {
+            value
+                .pointer("/message/content")
+                .or_else(|| value.get("content"))
+        })
+        .and_then(Value::as_array)
+        .is_some_and(|blocks| {
+            blocks.iter().any(|block| {
+                matches!(
+                    block.get("type").and_then(Value::as_str),
+                    Some("text" | "reasoning" | "thinking")
+                ) && block
+                    .get("text")
+                    .or_else(|| block.get("thinking"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| !text.is_empty())
+            })
+        });
+    assistant_content
+        || value
+            .pointer("/part/type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| matches!(kind, "text" | "reasoning"))
+            && value
+                .pointer("/part/text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.is_empty())
+        || value.pointer("/item/type").and_then(Value::as_str) == Some("agent_message")
+            && value
+                .pointer("/item/text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.is_empty())
+        || value.pointer("/item/type").and_then(Value::as_str) == Some("reasoning")
+            && value
+                .pointer("/item/text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.is_empty())
+}
+
+fn is_provider_start(value: &Value, trace: TelemetryTrace) -> bool {
+    match trace {
+        TelemetryTrace::CodexJson => {
+            value.get("type").and_then(Value::as_str) == Some("turn.started")
+        }
+        TelemetryTrace::OpenCodeJson => {
+            value.get("type").and_then(Value::as_str) == Some("step_start")
+                || value.pointer("/part/type").and_then(Value::as_str) == Some("step-start")
+        }
+    }
+}
+
+fn is_provider_finish(value: &Value, trace: TelemetryTrace) -> bool {
+    match trace {
+        TelemetryTrace::CodexJson => {
+            value.get("type").and_then(Value::as_str) == Some("turn.completed")
+        }
+        TelemetryTrace::OpenCodeJson => {
+            value.get("type").and_then(Value::as_str) == Some("step_finish")
+                || value.pointer("/part/type").and_then(Value::as_str) == Some("step-finish")
+        }
+    }
+}
+
+fn is_tool_start(value: &Value) -> bool {
+    value.get("type").and_then(Value::as_str) == Some("tool_call")
+        && value.get("subtype").and_then(Value::as_str) == Some("started")
+        || value.get("type").and_then(Value::as_str) == Some("item.started")
+            && value
+                .pointer("/item/type")
+                .and_then(Value::as_str)
+                .is_some_and(is_codex_tool_type)
+        || value
+            .pointer("/message/content")
+            .or_else(|| value.get("content"))
+            .and_then(Value::as_array)
+            .is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .any(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+            })
+        || value.pointer("/part/type").and_then(Value::as_str) == Some("tool")
+            && value.pointer("/part/state/time/start").is_some()
+            && value.pointer("/part/state/time/end").is_none()
+}
+
+fn is_tool_finish(value: &Value) -> bool {
+    value.get("type").and_then(Value::as_str) == Some("tool_call")
+        && value.get("subtype").and_then(Value::as_str) == Some("completed")
+        || value.get("type").and_then(Value::as_str) == Some("item.completed")
+            && value
+                .pointer("/item/type")
+                .and_then(Value::as_str)
+                .is_some_and(is_codex_tool_type)
+        || value
+            .pointer("/message/content")
+            .or_else(|| value.get("content"))
+            .and_then(Value::as_array)
+            .is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .any(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
+            })
+        || value.pointer("/part/type").and_then(Value::as_str) == Some("tool")
+            && value.pointer("/part/state/time/end").is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,6 +978,23 @@ mod tests {
         assert_eq!(got.events[1].name.as_deref(), Some("bash"));
         assert_eq!(got.events[1].index, 1);
         assert_eq!(got.events[1].output.as_deref(), Some("a.rs"));
+    }
+
+    #[test]
+    fn opencode_running_and_completed_updates_collapse_by_call_id() {
+        // Captured `opencode run --format json` behavior: the same callID is
+        // emitted first with a running state and later as completed.
+        let raw = concat!(
+            r#"{"type":"tool_use","part":{"id":"part_1","callID":"call_1","type":"tool","tool":"bash","state":{"status":"running","input":{"command":"pwd"},"time":{"start":1773878400000}}}}"#,
+            "\n",
+            r#"{"type":"tool_use","part":{"id":"part_1","callID":"call_1","type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"pwd"},"output":"/repo\n","time":{"start":1773878400000,"end":1773878400100}}}}"#,
+            "\n",
+        );
+        let got = extract_events(raw, OutputFormat::Json).unwrap();
+        assert_eq!(got.events.len(), 1);
+        assert_eq!(got.events[0].tool_call_id.as_deref(), Some("call_1"));
+        assert_eq!(got.events[0].input, Some(json!({"command": "pwd"})));
+        assert_eq!(got.events[0].output.as_deref(), Some("/repo\n"));
     }
 
     #[test]
@@ -481,6 +1093,27 @@ mod tests {
             Some(json!({"command": "/bin/bash -lc 'echo hi'"}))
         );
         assert_eq!(got.events[0].output.as_deref(), Some("hi\n"));
+    }
+
+    #[test]
+    fn codex_mcp_item_updates_collapse_and_preserve_failure() {
+        // `codex exec --json`'s official exec item shape uses the same id for
+        // the started and completed MCP lifecycle records.
+        let raw = concat!(
+            r#"{"type":"item.started","item":{"id":"item_mcp","type":"mcp_tool_call","server":"minimal","tool":"count","arguments":{"n":2},"status":"in_progress"}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"id":"item_mcp","type":"mcp_tool_call","server":"minimal","tool":"count","arguments":{"n":2},"result":null,"error":{"message":"user cancelled MCP tool call"},"status":"failed"}}"#,
+            "\n",
+        );
+        let got = extract_events(raw, OutputFormat::Json).unwrap();
+        assert_eq!(got.events.len(), 1);
+        assert_eq!(got.events[0].tool_call_id.as_deref(), Some("item_mcp"));
+        assert_eq!(got.events[0].name.as_deref(), Some("count"));
+        assert_eq!(got.events[0].input, Some(json!({"n": 2})));
+        assert_eq!(
+            got.events[0].output.as_deref(),
+            Some("user cancelled MCP tool call")
+        );
     }
 
     #[test]
@@ -594,5 +1227,31 @@ mod tests {
             extract_events(cb, OutputFormat::Text).unwrap().source,
             "text:content-blocks"
         );
+    }
+
+    #[test]
+    fn anthropic_tool_use_is_not_a_first_content_token() {
+        // Captured Claude/Qwen/Cursor stream-json content blocks use the same
+        // assistant envelope. A tool-only message is model activity, but the
+        // telemetry contract's TTFT boundary is the first non-empty user-visible
+        // text/reasoning block.
+        assert!(!is_model_token(&json!({
+            "type": "assistant",
+            "message": {"content": [{
+                "type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {}
+            }]}
+        })));
+        assert!(!is_model_token(&json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": ""}]}
+        })));
+        assert!(is_model_token(&json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "thinking", "thinking": "inspect"}]}
+        })));
+        assert!(is_model_token(&json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "done"}]}
+        })));
     }
 }

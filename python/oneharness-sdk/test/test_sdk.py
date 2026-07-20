@@ -23,6 +23,13 @@ ROOT = Path(__file__).resolve().parents[3]
 SUFFIX = ".exe" if os.name == "nt" else ""
 BINARY = ROOT / "target" / "debug" / f"oneharness{SUFFIX}"
 MOCK = ROOT / "target" / "debug" / f"oneharness-mock-harness{SUFFIX}"
+HISTORY_TRACE = "\n".join(
+    (
+        '{"type":"turn.started"}',
+        '{"type":"item.completed","item":{"id":"m1","type":"agent_message","text":"hello from python"}}',
+        '{"type":"turn.completed"}',
+    )
+)
 FIXTURE = Path(__file__).with_name("fixture_cli.py")
 CONTRACT_MATRIX = json.loads(
     (ROOT / "tests" / "fixtures" / "sdk-contract-matrix.json").read_text(encoding="utf-8")
@@ -83,7 +90,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         report = await client.run(
             {
                 "prompt": "python sdk boundary",
-                "harnesses": ["claude-code"],
+                "harnesses": ["codex"],
                 "mode": "bypass",
                 "history": True,
                 "history_name": "python-session",
@@ -91,8 +98,8 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
                 "history_labels": {"graph": "release"},
                 "events": True,
                 "timeout_seconds": 30,
-                "env": {"MOCK_STDOUT": '{"result":"hello from python"}'},
-                "bins": {"claude-code": str(MOCK)},
+                "env": {"MOCK_STDOUT": HISTORY_TRACE},
+                "bins": {"codex": str(MOCK)},
             }
         )
         self.assertEqual(report["results"][0]["text"], "hello from python")
@@ -201,13 +208,14 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             await client.run(
                 {
                     "prompt": prompt,
-                    "harnesses": ["claude-code"],
+                    "harnesses": ["codex"],
                     "mode": "bypass",
                     "history": True,
                     "history_name": name,
                     "history_dir": history_dir,
                     "history_labels": {"graph": graph, "task": "python"},
-                    "bins": {"claude-code": str(MOCK)},
+                    "env": {"MOCK_STDOUT": HISTORY_TRACE},
+                    "bins": {"codex": str(MOCK)},
                 }
             )
             records.extend(await client.history({"session": name, "history_dir": history_dir}))
@@ -248,13 +256,14 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             {
                 "prompt": "label precedence",
                 "cwd": str(project),
-                "harnesses": ["claude-code"],
+                "harnesses": ["codex"],
                 "mode": "bypass",
                 "history": True,
                 "history_name": "label-precedence",
                 "history_dir": history_dir,
                 "history_labels": {"graph": "cli", "cli": "kept"},
-                "bins": {"claude-code": str(MOCK)},
+                "env": {"MOCK_STDOUT": HISTORY_TRACE},
+                "bins": {"codex": str(MOCK)},
             }
         )
         records = await client.history(

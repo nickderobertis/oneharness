@@ -72,6 +72,11 @@ const contractMatrix = JSON.parse(
 // boundary check that runs before the subprocess is the only way to see the
 // validation error rather than this path's spawn failure.
 const unspawnable = resolve(here, "missing-oneharness-fixture");
+const historyTrace = [
+	'{"type":"turn.started"}',
+	'{"type":"item.completed","item":{"id":"m1","type":"agent_message","text":"history"}}',
+	'{"type":"turn.completed"}',
+].join("\n");
 
 type Equal<Left, Right> =
 	(<Value>() => Value extends Left ? 1 : 2) extends <
@@ -511,12 +516,13 @@ describe("OneHarness", () => {
 		const client = sdk();
 		await client.run({
 			prompt: "history sdk",
-			harnesses: ["claude-code"],
+			harnesses: ["codex"],
 			mode: "bypass",
 			history: true,
 			historyName: "node-session",
 			historyDir,
-			bins: { "claude-code": mock },
+			env: { MOCK_STDOUT: historyTrace },
+			bins: { codex: mock },
 		});
 		const records = await client.history({
 			session: "node-session",
@@ -542,6 +548,42 @@ describe("OneHarness", () => {
 		}
 		expect(HistoryRecordsSchema.safeParse(records).success).toBe(true);
 		expect(HistoryRecordSchema.safeParse(records[0]).success).toBe(true);
+		const baseTool = {
+			kind: "tool_call",
+			name: "shell",
+			input: {},
+			output: "ok",
+			index: 0,
+			tool_call_id: "call-1",
+			started_at: "2026-07-19T00:00:00Z",
+			finished_at: "2026-07-19T00:00:00Z",
+			duration_ms: 1,
+		};
+		for (const status of ["completed", "failed", "timeout", "interrupted"]) {
+			expect(
+				HistoryRecordSchema.safeParse({
+					...records[0],
+					events: [{ ...baseTool, status }],
+				}).success,
+				status,
+			).toBe(true);
+		}
+		expect(
+			HistoryRecordSchema.safeParse({
+				...records[0],
+				events: [
+					{
+						...baseTool,
+						kind: "tool_result",
+						status: null,
+						tool_call_id: null,
+						started_at: null,
+						finished_at: null,
+						duration_ms: null,
+					},
+				],
+			}).success,
+		).toBe(true);
 		expect(
 			HistoryStreamEnvelopeSchema.parse({
 				type: "record",
@@ -580,13 +622,14 @@ describe("OneHarness", () => {
 		] as const) {
 			await client.run({
 				prompt,
-				harnesses: ["claude-code"],
+				harnesses: ["codex"],
 				mode: "bypass",
 				history: true,
 				historyName: name,
 				historyDir,
 				historyLabels: { graph, task: "sdk" },
-				bins: { "claude-code": mock },
+				env: { MOCK_STDOUT: historyTrace },
+				bins: { codex: mock },
 			});
 			records.push(...(await client.history({ session: name, historyDir })));
 		}
@@ -649,13 +692,14 @@ describe("OneHarness", () => {
 		await client.run({
 			prompt: "label precedence",
 			cwd: project,
-			harnesses: ["claude-code"],
+			harnesses: ["codex"],
 			mode: "bypass",
 			history: true,
 			historyName: "label-precedence",
 			historyDir,
 			historyLabels: { graph: "cli", cli: "kept" },
-			bins: { "claude-code": mock },
+			env: { MOCK_STDOUT: historyTrace },
+			bins: { codex: mock },
 		});
 		const records = await client.history({
 			session: "label-precedence",
@@ -675,12 +719,13 @@ describe("OneHarness", () => {
 		const client = sdk();
 		const older = await client.run({
 			prompt: "the older session",
-			harnesses: ["claude-code"],
+			harnesses: ["codex"],
 			mode: "bypass",
 			history: true,
 			historyName: "older-session",
 			historyDir,
-			bins: { "claude-code": mock },
+			env: { MOCK_STDOUT: historyTrace },
+			bins: { codex: mock },
 		});
 
 		// A session's start time is its first record's timestamp, at whole-second

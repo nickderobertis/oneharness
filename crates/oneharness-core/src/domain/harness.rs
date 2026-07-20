@@ -8,6 +8,7 @@
 //! to drive each real CLI headlessly (deny prompts, pick the model, request a
 //! parseable format). Source new flags from a working driver, not by guessing.
 
+use crate::domain::events::TelemetryTrace;
 use crate::domain::gate::DenyShape;
 use crate::domain::hooks::HookShape;
 use crate::domain::mock::{MockDelivery, RewriteShape};
@@ -168,6 +169,10 @@ pub struct HarnessSpec {
     /// transcript). Sourced from each CLI's real output, never guessed; text/usage
     /// extraction must still work under the upgraded format (verified live).
     pub events_format: Option<OutputFormat>,
+    /// Machine-readable format and grammar that exposes real provider request
+    /// and tool interval boundaries. `None` is an explicit unsupported
+    /// capability, not an alias for the default output format.
+    pub telemetry: Option<TelemetrySpec>,
     /// Whether this harness can continue a prior session (`run --resume`). When
     /// false, the command layer rejects `--resume` for it rather than silently
     /// starting a fresh session. Kept as data so the capability is introspectable
@@ -302,6 +307,12 @@ pub struct HarnessSpec {
     pub reasoning: Option<ReasoningDelivery>,
     /// Builds the full argv (argv[0] is the binary). Pure.
     pub build_argv: fn(&BuildCtx) -> Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TelemetrySpec {
+    pub format: OutputFormat,
+    pub trace: TelemetryTrace,
 }
 
 /// How a harness takes a reasoning/effort string on the argv. Rendered by the
@@ -617,6 +628,9 @@ static REGISTRY: &[HarnessSpec] = &[
         // The default `json` result carries no transcript; `stream-json` emits the
         // Anthropic content-block stream oneharness normalizes into `events`.
         events_format: Some(OutputFormat::StreamJson),
+        // Claude stream-json exposes harness init and terminal aggregation, but
+        // no provider-request start; neither is a valid model-latency boundary.
+        telemetry: None,
         supports_resume: true,
         session_formats: &[OutputFormat::Json, OutputFormat::StreamJson],
         supports_fork: true,
@@ -690,6 +704,10 @@ static REGISTRY: &[HarnessSpec] = &[
         // `thread.started.thread_id` session handle and the `command_execution`
         // transcript, so `--events` needs no format upgrade.
         events_format: None,
+        telemetry: Some(TelemetrySpec {
+            format: OutputFormat::Json,
+            trace: TelemetryTrace::CodexJson,
+        }),
         supports_resume: true,
         session_formats: &[OutputFormat::Json, OutputFormat::StreamJson],
         supports_fork: false,
@@ -782,6 +800,10 @@ static REGISTRY: &[HarnessSpec] = &[
         output_format: OutputFormat::Json,
         // Default `json` (JSONL) already carries the `tool` parts, so no upgrade.
         events_format: None,
+        telemetry: Some(TelemetrySpec {
+            format: OutputFormat::Json,
+            trace: TelemetryTrace::OpenCodeJson,
+        }),
         supports_resume: true,
         session_formats: &[OutputFormat::Json],
         supports_fork: true,
@@ -860,6 +882,7 @@ static REGISTRY: &[HarnessSpec] = &[
         output_format: OutputFormat::Text,
         // Events pending investigation (see the events matrix).
         events_format: None,
+        telemetry: None,
         supports_resume: true,
         session_formats: &[],
         supports_fork: false,
@@ -942,6 +965,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // stream oneharness normalizes into `events` (its default text has no
         // transcript). Mapped to `--output-format stream-json` in `argv_qwen`.
         events_format: Some(OutputFormat::StreamJson),
+        telemetry: None,
         supports_resume: true,
         session_formats: &[OutputFormat::StreamJson, OutputFormat::Json],
         supports_fork: false,
@@ -1023,6 +1047,7 @@ static REGISTRY: &[HarnessSpec] = &[
         output_format: OutputFormat::Text,
         // Events pending investigation (see the events matrix).
         events_format: None,
+        telemetry: None,
         supports_resume: true,
         session_formats: &[],
         supports_fork: false,
@@ -1083,6 +1108,7 @@ static REGISTRY: &[HarnessSpec] = &[
         output_format: OutputFormat::Text,
         // Events pending investigation (see the events matrix).
         events_format: None,
+        telemetry: None,
         supports_resume: true,
         session_formats: &[],
         supports_fork: false,
@@ -1153,6 +1179,7 @@ static REGISTRY: &[HarnessSpec] = &[
         output_format: OutputFormat::StreamJson,
         // Default `stream-json` already carries the tool transcript, so no upgrade.
         events_format: None,
+        telemetry: None,
         supports_resume: true,
         session_formats: &[OutputFormat::StreamJson],
         supports_fork: false,
@@ -2149,6 +2176,31 @@ mod tests {
             !text.iter().any(|t| t == "--output-format"),
             "default text must not add a format flag: {text:?}"
         );
+    }
+
+    #[test]
+    fn telemetry_capabilities_name_only_verified_boundary_traces() {
+        let supported = all()
+            .iter()
+            .filter_map(|spec| spec.telemetry.map(|telemetry| (spec.id, telemetry)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            supported.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            ["codex", "opencode"]
+        );
+        for (id, telemetry) in supported {
+            match id {
+                "codex" => {
+                    assert_eq!(telemetry.format, OutputFormat::Json);
+                    assert_eq!(telemetry.trace, TelemetryTrace::CodexJson);
+                }
+                "opencode" => {
+                    assert_eq!(telemetry.format, OutputFormat::Json);
+                    assert_eq!(telemetry.trace, TelemetryTrace::OpenCodeJson);
+                }
+                _ => unreachable!(),
+            }
+        }
     }
 
     #[test]

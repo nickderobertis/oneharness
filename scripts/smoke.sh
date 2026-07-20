@@ -281,15 +281,17 @@ rm -rf "$schema_dir"
 #    session file, and the `history` verb lists it back as JSON. Proves the
 #    shipped binary's history write + view path end to end, hermetically.
 hist_dir="$(mktemp -d)/hist"
-LAST_CMD="ONEHARNESS_BIN_CLAUDE_CODE=$mock $oh run --harness claude-code --prompt <prompt> --history --history-dir $hist_dir --bypass --compact"
-out="$(ONEHARNESS_BIN_CLAUDE_CODE="$mock" MOCK_STDOUT='{"result":"hi"}' \
-  "$oh" run --harness claude-code --prompt "$PROMPT" --history --history-dir "$hist_dir" --bypass --compact)" \
+LAST_CMD="ONEHARNESS_BIN_CODEX=$mock $oh run --harness codex --prompt <prompt> --history --history-dir $hist_dir --bypass --compact"
+out="$(ONEHARNESS_BIN_CODEX="$mock" MOCK_STDOUT='{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"m1","type":"agent_message","text":"hi"}}
+{"type":"turn.completed"}' \
+  "$oh" run --harness codex --prompt "$PROMPT" --history --history-dir "$hist_dir" --bypass --compact)" \
   || fail "history run exited non-zero" "$LAST_CMD" "$out" "the --history write path is broken"
 assert_contains "$out" '"history_file":' "history_file was not reported"
 LAST_CMD="$oh history list --all-projects --history-dir $hist_dir --compact"
 out="$("$oh" history list --all-projects --history-dir "$hist_dir" --compact)" \
   || fail "history list exited non-zero" "$LAST_CMD" "$out"
-assert_contains "$out" '"harnesses":["claude-code"]' "history list did not surface the recorded session"
+assert_contains "$out" '"harnesses":["codex"]' "history list did not surface the recorded session"
 rm -rf "$hist_dir"
 
 # 7. `init` — scaffold a starter oneharness.toml, prove it parses via `config`,

@@ -1,5 +1,6 @@
 /* Generated from oneharness-core. Do not edit. */
 
+export type ToolCallStatus = "completed" | "failed" | "timeout" | "interrupted";
 /**
  * The normalized, closed set of failure reasons oneharness can classify from a
  * harness's output. It is the single source for the `failure_kind` contract
@@ -336,6 +337,11 @@ export interface RunResult {
  */
 export interface ActionEvent {
   /**
+   * Monotonic elapsed tool time. `None` means no terminal boundary was seen.
+   */
+  duration_ms: number | null;
+  finished_at: string | null;
+  /**
    * Position of this event within the run, so "≤ N tool calls" and "did X
    * before Y" are expressible from a stable ordering (also array order).
    */
@@ -361,6 +367,20 @@ export interface ActionEvent {
    * The result/observation text, when the trace exposes it; `null` otherwise.
    */
   output: string | null;
+  /**
+   * UTC interval bounds for tool execution, populated on history records.
+   */
+  started_at: string | null;
+  /**
+   * Terminal tool state, populated on history tool-call events.
+   */
+  status: ToolCallStatus | null;
+  /**
+   * Stable call identity within the session. Present on tool calls and their
+   * matching results when the provider exposes an identity; history fills a
+   * deterministic run-local identity for providers that do not.
+   */
+  tool_call_id: string | null;
   [k: string]: unknown;
 }
 /**

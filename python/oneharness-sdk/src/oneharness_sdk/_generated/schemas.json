@@ -848,7 +848,34 @@
           "events": {
             "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
             "items": {
-              "$ref": "#/$defs/ActionEvent"
+              "allOf": [
+                {
+                  "$ref": "#/$defs/ActionEvent"
+                },
+                {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "null"
+                    },
+                    "finished_at": {
+                      "type": "null"
+                    },
+                    "started_at": {
+                      "type": "null"
+                    },
+                    "status": {
+                      "type": "null"
+                    }
+                  },
+                  "required": [
+                    "started_at",
+                    "finished_at",
+                    "duration_ms",
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              ]
             },
             "type": [
               "array",
@@ -1679,7 +1706,34 @@
               "events": {
                 "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
                 "items": {
-                  "$ref": "#/$defs/ActionEvent"
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/ActionEvent"
+                    },
+                    {
+                      "properties": {
+                        "duration_ms": {
+                          "type": "null"
+                        },
+                        "finished_at": {
+                          "type": "null"
+                        },
+                        "started_at": {
+                          "type": "null"
+                        },
+                        "status": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "started_at",
+                        "finished_at",
+                        "duration_ms",
+                        "status"
+                      ],
+                      "type": "object"
+                    }
+                  ]
                 },
                 "type": [
                   "array",
@@ -2653,7 +2707,34 @@
               "events": {
                 "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
                 "items": {
-                  "$ref": "#/$defs/ActionEvent"
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/ActionEvent"
+                    },
+                    {
+                      "properties": {
+                        "duration_ms": {
+                          "type": "null"
+                        },
+                        "finished_at": {
+                          "type": "null"
+                        },
+                        "started_at": {
+                          "type": "null"
+                        },
+                        "status": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "started_at",
+                        "finished_at",
+                        "duration_ms",
+                        "status"
+                      ],
+                      "type": "object"
+                    }
+                  ]
                 },
                 "type": [
                   "array",

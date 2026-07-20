@@ -127,7 +127,15 @@ export type HistoryRecord =
        * Best-effort normalized tool-call events; `null` when the harness exposes
        * no machine-readable trace.
        */
-      events: ActionEvent[] | null;
+      events:
+        | (ActionEvent & {
+            duration_ms: null;
+            finished_at: null;
+            started_at: null;
+            status: null;
+            [k: string]: unknown;
+          })[]
+        | null;
       exit_code: number | null;
       /**
        * Best-effort classified failure reason (see [`FailureKind`]); `null` when

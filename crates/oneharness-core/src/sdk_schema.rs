@@ -158,6 +158,19 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                 ] {
                     unavailable["properties"][field] = serde_json::Value::Bool(false);
                 }
+                let unavailable_event = unavailable["properties"]["events"]["items"].clone();
+                unavailable["properties"]["events"]["items"] = serde_json::json!({
+                    "allOf": [unavailable_event, {
+                        "type": "object",
+                        "properties": {
+                            "started_at": {"type": "null"},
+                            "finished_at": {"type": "null"},
+                            "duration_ms": {"type": "null"},
+                            "status": {"type": "null"}
+                        },
+                        "required": ["started_at", "finished_at", "duration_ms", "status"]
+                    }]
+                });
                 let mut legacy = base;
                 legacy["properties"]["schema_version"] =
                     serde_json::json!({"enum": ["0.1", "0.2"], "type": "string"});
@@ -289,6 +302,10 @@ mod tests {
         assert!(validator.is_valid(&unavailable));
 
         unavailable["model_ms"] = json!(1);
+        assert!(!validator.is_valid(&unavailable));
+
+        unavailable.as_object_mut().unwrap().remove("model_ms");
+        unavailable["events"][0]["started_at"] = json!("2026-07-19T00:00:00Z");
         assert!(!validator.is_valid(&unavailable));
     }
 }

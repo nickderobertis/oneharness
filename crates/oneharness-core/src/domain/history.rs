@@ -431,7 +431,16 @@ impl HistoryRecord {
         // Absence is the honest v0.3 representation; partial telemetry remains
         // invalid so a trace-capable harness cannot silently write corrupt data.
         let timing = match self.timing_state() {
-            Ok(HistoryTiming::Unavailable) => return true,
+            Ok(HistoryTiming::Unavailable) => {
+                return self.events.as_ref().is_none_or(|events| {
+                    events.iter().all(|event| {
+                        event.started_at.is_none()
+                            && event.finished_at.is_none()
+                            && event.duration_ms.is_none()
+                            && event.status.is_none()
+                    })
+                });
+            }
             Ok(HistoryTiming::Measured {
                 started_at,
                 finished_at,
@@ -1107,6 +1116,23 @@ mod tests {
             unavailable_v03.as_object_mut().unwrap().remove(field);
         }
         assert!(serde_json::from_value::<HistoryRecord>(unavailable_v03).is_ok());
+
+        let mut invalid_unavailable = serde_json::to_value(&current).unwrap();
+        for field in [
+            "started_at",
+            "model_ms",
+            "tool_ms",
+            "time_to_first_token_ms",
+        ] {
+            invalid_unavailable.as_object_mut().unwrap().remove(field);
+        }
+        invalid_unavailable["finished_at"] = Value::Null;
+        invalid_unavailable["events"] = serde_json::json!([{
+            "kind": "tool_call", "name": "shell", "input": {}, "output": null, "index": 0,
+            "tool_call_id": "call-1", "started_at": "2026-01-01T00:00:00Z",
+            "finished_at": null, "duration_ms": null, "status": null
+        }]);
+        assert!(serde_json::from_value::<HistoryRecord>(invalid_unavailable).is_err());
 
         let mut previous = serde_json::to_value(&current).unwrap();
         previous["schema_version"] = Value::String(PREVIOUS_SCHEMA_VERSION.to_string());

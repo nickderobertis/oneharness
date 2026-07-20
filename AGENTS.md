@@ -62,7 +62,8 @@ follow-ups (see "After the main task").
 
 Use the `just` recipes; do not hand-roll equivalents.
 
-- `just bootstrap` — set up from a clean clone (toolchain components + fetch).
+- `just bootstrap` — set up from a clean clone (toolchain, llmlint, dependencies,
+  and the committed pre-push hook).
 - `just check` — full gate: format check, clippy (`-D warnings`), tests, line
   coverage (hard-gated at 95%), build, smoke. Must pass before any commit or PR.
 - `just gate` — pre-push superset: `check`, dependency/license audit, llmlint

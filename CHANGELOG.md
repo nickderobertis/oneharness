@@ -6,6 +6,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/nickderobertis/oneharness/compare/v0.4.1...v0.4.2) - 2026-07-20
+
+### Documentation
+
+- add oneharness banner to README ([#1154](https://github.com/nickderobertis/oneharness/pull/1154))
+
+### Fixed
+
+- *(history)* harden macOS timing test; add e2e; rename fixture ([#1157](https://github.com/nickderobertis/oneharness/pull/1157))
+
 ## [0.4.1](https://github.com/nickderobertis/oneharness/compare/v0.4.0...v0.4.1) - 2026-07-17
 
 ### Fixed

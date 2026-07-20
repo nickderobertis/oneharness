@@ -12,6 +12,16 @@ name: E2E (Goose)
 
 on:
   pull_request:
+    paths:
+      - "src/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "scripts/e2e-lib.sh"
+      - "scripts/install-e2e.sh"
+      - "scripts/e2e-goose.sh"
+      - ".github/workflows/e2e-goose.yml"
   workflow_dispatch:
     inputs:
       os:

@@ -846,6 +846,154 @@
             ]
           },
           "events": {
+            "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
+            "items": {
+              "$ref": "#/$defs/ActionEvent"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "exit_code": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "failure_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FailureKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Best-effort classified failure reason (see [`FailureKind`]); `null` when\nunclassified."
+          },
+          "finished_at": {
+            "type": "null"
+          },
+          "harness": {
+            "description": "Canonical harness id (e.g. `claude-code`).",
+            "type": "string"
+          },
+          "history_id": {
+            "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
+            "maxLength": 36,
+            "minLength": 36,
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "type": "string"
+          },
+          "labels": {
+            "$ref": "#/$defs/HistoryLabels",
+            "description": "Caller-supplied metadata used to select related task-graph records.\nOmitted on the wire when empty for additive compatibility."
+          },
+          "model": {
+            "description": "The effective top-level model for the run, if any.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model_ms": false,
+          "name": {
+            "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
+            "type": "string"
+          },
+          "permission_mode": {
+            "$ref": "#/$defs/PermissionMode",
+            "description": "The normalized approval mode requested for the run."
+          },
+          "project": {
+            "description": "The project directory the run operated in (the real path, not the\non-disk slug), so the list view can show where a session ran.",
+            "type": "string"
+          },
+          "prompt": {
+            "description": "The prompt this harness run received (its own, on a batch run; else the\nrun's single prompt).",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "0.3",
+            "type": "string"
+          },
+          "session": {
+            "description": "The oneharness session id this run belongs to (the history file's stem).",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "The harness's own continuation id, when it exposed one; `null` otherwise.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": false,
+          "status": {
+            "$ref": "#/$defs/Status"
+          },
+          "text": {
+            "description": "Best-effort final assistant text; `null` when extraction was impossible.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text_source": {
+            "description": "How `text` was extracted; `null` when absent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "time_to_first_token_ms": false,
+          "timestamp": {
+            "description": "RFC3339 UTC instant the record was written (append time).",
+            "type": "string"
+          },
+          "tool_ms": false,
+          "usage": {
+            "$ref": "#/$defs/Usage",
+            "description": "Best-effort token/cost accounting (every field `null` when unreported)."
+          }
+        },
+        "required": [
+          "schema_version",
+          "history_id",
+          "session",
+          "name",
+          "project",
+          "timestamp",
+          "harness",
+          "model",
+          "prompt",
+          "permission_mode",
+          "status",
+          "exit_code",
+          "duration_ms",
+          "finished_at",
+          "text",
+          "text_source",
+          "usage",
+          "session_id",
+          "events",
+          "failure_kind"
+        ],
+        "type": "object"
+      },
+      {
+        "properties": {
+          "duration_ms": {
+            "format": "uint128",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "events": {
             "items": {
               "properties": {
                 "index": {
@@ -1515,6 +1663,154 @@
               "started_at",
               "model_ms",
               "tool_ms"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "duration_ms": {
+                "format": "uint128",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "events": {
+                "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
+                "items": {
+                  "$ref": "#/$defs/ActionEvent"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "failure_kind": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FailureKind"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Best-effort classified failure reason (see [`FailureKind`]); `null` when\nunclassified."
+              },
+              "finished_at": {
+                "type": "null"
+              },
+              "harness": {
+                "description": "Canonical harness id (e.g. `claude-code`).",
+                "type": "string"
+              },
+              "history_id": {
+                "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
+                "maxLength": 36,
+                "minLength": 36,
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+                "type": "string"
+              },
+              "labels": {
+                "$ref": "#/$defs/HistoryLabels",
+                "description": "Caller-supplied metadata used to select related task-graph records.\nOmitted on the wire when empty for additive compatibility."
+              },
+              "model": {
+                "description": "The effective top-level model for the run, if any.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model_ms": false,
+              "name": {
+                "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
+                "type": "string"
+              },
+              "permission_mode": {
+                "$ref": "#/$defs/PermissionMode",
+                "description": "The normalized approval mode requested for the run."
+              },
+              "project": {
+                "description": "The project directory the run operated in (the real path, not the\non-disk slug), so the list view can show where a session ran.",
+                "type": "string"
+              },
+              "prompt": {
+                "description": "The prompt this harness run received (its own, on a batch run; else the\nrun's single prompt).",
+                "type": "string"
+              },
+              "schema_version": {
+                "const": "0.3",
+                "type": "string"
+              },
+              "session": {
+                "description": "The oneharness session id this run belongs to (the history file's stem).",
+                "type": "string"
+              },
+              "session_id": {
+                "description": "The harness's own continuation id, when it exposed one; `null` otherwise.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "started_at": false,
+              "status": {
+                "$ref": "#/$defs/Status"
+              },
+              "text": {
+                "description": "Best-effort final assistant text; `null` when extraction was impossible.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "text_source": {
+                "description": "How `text` was extracted; `null` when absent.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "time_to_first_token_ms": false,
+              "timestamp": {
+                "description": "RFC3339 UTC instant the record was written (append time).",
+                "type": "string"
+              },
+              "tool_ms": false,
+              "usage": {
+                "$ref": "#/$defs/Usage",
+                "description": "Best-effort token/cost accounting (every field `null` when unreported)."
+              }
+            },
+            "required": [
+              "schema_version",
+              "history_id",
+              "session",
+              "name",
+              "project",
+              "timestamp",
+              "harness",
+              "model",
+              "prompt",
+              "permission_mode",
+              "status",
+              "exit_code",
+              "duration_ms",
+              "finished_at",
+              "text",
+              "text_source",
+              "usage",
+              "session_id",
+              "events",
+              "failure_kind"
             ],
             "type": "object"
           },
@@ -2341,6 +2637,154 @@
               "started_at",
               "model_ms",
               "tool_ms"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "duration_ms": {
+                "format": "uint128",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "events": {
+                "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
+                "items": {
+                  "$ref": "#/$defs/ActionEvent"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "failure_kind": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FailureKind"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Best-effort classified failure reason (see [`FailureKind`]); `null` when\nunclassified."
+              },
+              "finished_at": {
+                "type": "null"
+              },
+              "harness": {
+                "description": "Canonical harness id (e.g. `claude-code`).",
+                "type": "string"
+              },
+              "history_id": {
+                "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
+                "maxLength": 36,
+                "minLength": 36,
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+                "type": "string"
+              },
+              "labels": {
+                "$ref": "#/$defs/HistoryLabels",
+                "description": "Caller-supplied metadata used to select related task-graph records.\nOmitted on the wire when empty for additive compatibility."
+              },
+              "model": {
+                "description": "The effective top-level model for the run, if any.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model_ms": false,
+              "name": {
+                "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
+                "type": "string"
+              },
+              "permission_mode": {
+                "$ref": "#/$defs/PermissionMode",
+                "description": "The normalized approval mode requested for the run."
+              },
+              "project": {
+                "description": "The project directory the run operated in (the real path, not the\non-disk slug), so the list view can show where a session ran.",
+                "type": "string"
+              },
+              "prompt": {
+                "description": "The prompt this harness run received (its own, on a batch run; else the\nrun's single prompt).",
+                "type": "string"
+              },
+              "schema_version": {
+                "const": "0.3",
+                "type": "string"
+              },
+              "session": {
+                "description": "The oneharness session id this run belongs to (the history file's stem).",
+                "type": "string"
+              },
+              "session_id": {
+                "description": "The harness's own continuation id, when it exposed one; `null` otherwise.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "started_at": false,
+              "status": {
+                "$ref": "#/$defs/Status"
+              },
+              "text": {
+                "description": "Best-effort final assistant text; `null` when extraction was impossible.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "text_source": {
+                "description": "How `text` was extracted; `null` when absent.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "time_to_first_token_ms": false,
+              "timestamp": {
+                "description": "RFC3339 UTC instant the record was written (append time).",
+                "type": "string"
+              },
+              "tool_ms": false,
+              "usage": {
+                "$ref": "#/$defs/Usage",
+                "description": "Best-effort token/cost accounting (every field `null` when unreported)."
+              }
+            },
+            "required": [
+              "schema_version",
+              "history_id",
+              "session",
+              "name",
+              "project",
+              "timestamp",
+              "harness",
+              "model",
+              "prompt",
+              "permission_mode",
+              "status",
+              "exit_code",
+              "duration_ms",
+              "finished_at",
+              "text",
+              "text_source",
+              "usage",
+              "session_id",
+              "events",
+              "failure_kind"
             ],
             "type": "object"
           },

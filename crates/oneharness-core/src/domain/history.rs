@@ -406,12 +406,15 @@ impl HistoryRecord {
             events: r.events.clone(),
             failure_kind: r.failure_kind,
         };
-        let timing_unavailable = record.timing_absent()
+        let timing_unavailable = matches!(record.timing_state(), Ok(HistoryTiming::Unavailable))
             && crate::domain::harness::all()
                 .iter()
                 .find(|spec| spec.id == record.harness)
                 .is_some_and(|spec| spec.telemetry.is_none());
-        if record.valid_v03() && (!record.timing_absent() || timing_unavailable) {
+        if record.valid_v03()
+            && (!matches!(record.timing_state(), Ok(HistoryTiming::Unavailable))
+                || timing_unavailable)
+        {
             record.schema_version = SCHEMA_VERSION.to_string();
         } else {
             record.started_at = None;
@@ -427,21 +430,23 @@ impl HistoryRecord {
         // A harness without a provider/tool boundary trace cannot derive timing.
         // Absence is the honest v0.3 representation; partial telemetry remains
         // invalid so a trace-capable harness cannot silently write corrupt data.
-        if self.timing_absent() {
-            return true;
-        }
+        let timing = match self.timing_state() {
+            Ok(HistoryTiming::Unavailable) => return true,
+            Ok(HistoryTiming::Measured {
+                started_at,
+                finished_at,
+                model_ms,
+                tool_ms,
+            }) => (started_at, finished_at, model_ms, tool_ms),
+            Err(()) => return false,
+        };
         let Some(duration) = self.duration_ms else {
             return false;
         };
-        let (Some(started), Some(model), Some(tool)) =
-            (&self.started_at, self.model_ms, self.tool_ms)
-        else {
-            return false;
-        };
-        if started.is_empty() || model.saturating_add(tool) > duration {
+        if timing.0.is_empty() || timing.2.saturating_add(timing.3) > duration {
             return false;
         }
-        if matches!(self.status, Status::Ok | Status::Nonzero) && self.finished_at.is_none() {
+        if matches!(self.status, Status::Ok | Status::Nonzero) && timing.1.is_none() {
             return false;
         }
         self.events.as_ref().is_none_or(|events| {
@@ -466,12 +471,25 @@ impl HistoryRecord {
         })
     }
 
-    fn timing_absent(&self) -> bool {
-        self.started_at.is_none()
-            && self.finished_at.is_none()
-            && self.model_ms.is_none()
-            && self.tool_ms.is_none()
-            && self.time_to_first_token_ms.is_none()
+    fn timing_state(&self) -> Result<HistoryTiming<'_>, ()> {
+        match (
+            self.started_at.as_deref(),
+            self.finished_at.as_deref(),
+            self.model_ms,
+            self.tool_ms,
+            self.time_to_first_token_ms,
+        ) {
+            (None, None, None, None, None) => Ok(HistoryTiming::Unavailable),
+            (Some(started_at), finished_at, Some(model_ms), Some(tool_ms), _) => {
+                Ok(HistoryTiming::Measured {
+                    started_at,
+                    finished_at,
+                    model_ms,
+                    tool_ms,
+                })
+            }
+            _ => Err(()),
+        }
     }
 
     /// Deserialize a current or legacy record. `legacy_identity` should name the
@@ -542,6 +560,19 @@ impl HistoryRecord {
         }
         Ok(record)
     }
+}
+
+/// Validated availability states for v0.3 timing telemetry. Keeping the
+/// cross-field wire representation behind this conversion prevents producers
+/// and readers from treating a partial set of optional fields as meaningful.
+enum HistoryTiming<'a> {
+    Unavailable,
+    Measured {
+        started_at: &'a str,
+        finished_at: Option<&'a str>,
+        model_ms: u128,
+        tool_ms: u128,
+    },
 }
 
 impl<'de> Deserialize<'de> for HistoryRecord {

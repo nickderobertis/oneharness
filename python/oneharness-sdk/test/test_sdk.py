@@ -146,6 +146,24 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(unmeasured[0]["schema_version"], "0.3")
         self.assertNotIn("model_ms", unmeasured[0])
+        unmeasured_event = json.loads(json.dumps(unmeasured[0]))
+        unmeasured_event["events"] = [
+            {
+                "kind": "tool_call",
+                "name": "shell",
+                "input": {},
+                "output": None,
+                "index": 0,
+                "tool_call_id": "unmeasured-call",
+            }
+        ]
+        self.assertEqual(
+            _validate("history_record", unmeasured_event, "history record"),
+            unmeasured_event,
+        )
+        unmeasured_event["events"][0]["started_at"] = "2026-07-19T00:00:00Z"
+        with self.assertRaises(ContractError):
+            _validate("history_record", unmeasured_event, "history record")
 
         resumed = await client.run(
             {

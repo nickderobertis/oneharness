@@ -509,7 +509,7 @@ describe("OneHarness", () => {
 			),
 		);
 		expect(DetectReportSchema.safeParse(rawDetect).success).toBe(true);
-	});
+	}, 30_000);
 
 	test("looks up standardized history created across the CLI boundary", async () => {
 		const historyDir = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-"));

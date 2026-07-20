@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Run the complete local gate before publishing. Activated by `just bootstrap`.
+set -euo pipefail
+
+remote=${1:-origin}
+
+# Do not leak Git's hook-local environment into the gate's nested-repository
+# behavioral tests. Commands rediscover this checkout from the hook's cwd.
+while IFS= read -r name; do
+  [[ -z $name ]] || unset "$name"
+done < <(git rev-parse --local-env-vars)
+
+echo "pre-push: running complete gate against $remote..." >&2
+just gate "$remote" "${ONEHARNESS_COMPARISON_BASE:-}"

@@ -395,7 +395,10 @@ test("generator check reports a missing generated contract as stale", () => {
 	} finally {
 		rmSync(checkout, { recursive: true, force: true });
 	}
-}, 15_000);
+	// The copied checkout has a different source path, so Cargo must rebuild the
+	// workspace crates even though it shares the root target directory. Keep this
+	// as a real generator invocation and allow for a cold compile on busy CI hosts.
+}, 120_000);
 
 test("SDK packing reports a missing Cargo version without a stack trace", () => {
 	const checkout = mkdtempSync(resolve(tmpdir(), "oneharness-sdk-pack-"));

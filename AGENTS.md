@@ -62,11 +62,12 @@ follow-ups (see "After the main task").
 
 Use the `just` recipes; do not hand-roll equivalents.
 
-- `just bootstrap` — set up from a clean clone (toolchain components + fetch).
+- `just bootstrap` — set up from a clean clone (toolchain, llmlint, dependencies,
+  and the committed pre-push hook).
 - `just check` — full gate: format check, clippy (`-D warnings`), tests, line
   coverage (hard-gated at 95%), build, smoke. Must pass before any commit or PR.
-- `just gate` — pre-push superset: `check`, dependency/license audit, and the
-  deterministic llmlint config/ignore validation.
+- `just gate` — pre-push superset: `check`, dependency/license audit, llmlint
+  validation, and its merge-base diff judge (skipped locally without Codex/key).
 - `just test` / `just lint` / `just format` — individual gate steps.
 - `just coverage` — run the workspace suite under `cargo llvm-cov` and fail below
   95% line coverage (the `COVERAGE_MIN` gate, also part of `just check` and CI).

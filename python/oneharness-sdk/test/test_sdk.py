@@ -130,6 +130,41 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(project_sessions[0]["name"], "python-session")
 
+        await client.run(
+            {
+                "prompt": "python history without timing",
+                "harnesses": ["claude-code"],
+                "history": True,
+                "history_name": "python-session-unmeasured",
+                "history_dir": history_dir,
+                "env": {"MOCK_STDOUT": '{"type":"result","result":"done"}'},
+                "bins": {"claude-code": str(MOCK)},
+            }
+        )
+        unmeasured = await client.history(
+            {"session": "python-session-unmeasured", "history_dir": history_dir}
+        )
+        self.assertEqual(unmeasured[0]["schema_version"], "0.3")
+        self.assertNotIn("model_ms", unmeasured[0])
+        unmeasured_event = json.loads(json.dumps(unmeasured[0]))
+        unmeasured_event["events"] = [
+            {
+                "kind": "tool_call",
+                "name": "shell",
+                "input": {},
+                "output": None,
+                "index": 0,
+                "tool_call_id": "unmeasured-call",
+            }
+        ]
+        self.assertEqual(
+            _validate("history_record", unmeasured_event, "history record"),
+            unmeasured_event,
+        )
+        unmeasured_event["events"][0]["started_at"] = "2026-07-19T00:00:00Z"
+        with self.assertRaises(ContractError):
+            _validate("history_record", unmeasured_event, "history record")
+
         resumed = await client.run(
             {
                 "prompt": "fork from python",

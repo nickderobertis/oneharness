@@ -123,6 +123,96 @@ export type HistoryRecord =
     }
   | {
       duration_ms: number | null;
+      /**
+       * Best-effort normalized tool-call events; `null` when the harness exposes
+       * no machine-readable trace.
+       */
+      events:
+        | {
+            duration_ms?: null | undefined;
+            finished_at?: null | undefined;
+            index: number;
+            input: unknown;
+            kind: string;
+            name: string | null;
+            output: string | null;
+            started_at?: null | undefined;
+            status?: null | undefined;
+            tool_call_id?: string | null | undefined;
+            [k: string]: unknown;
+          }[]
+        | null;
+      exit_code: number | null;
+      /**
+       * Best-effort classified failure reason (see [`FailureKind`]); `null` when
+       * unclassified.
+       */
+      failure_kind: FailureKind | null;
+      finished_at: null;
+      /**
+       * Canonical harness id (e.g. `claude-code`).
+       */
+      harness: string;
+      /**
+       * Globally unique, time-ordered record id. This is also the cursor accepted
+       * by `history watch --after` and the exact id accepted by history lookup.
+       */
+      history_id: string;
+      labels?: HistoryLabels1 | undefined;
+      /**
+       * The effective top-level model for the run, if any.
+       */
+      model: string | null;
+      model_ms?: never | undefined;
+      /**
+       * The human-meaningful session name (see [`session_name`]); repeated on
+       * every record so a reader can resolve a session by name from any line.
+       */
+      name: string;
+      /**
+       * The normalized approval mode requested for the run.
+       */
+      permission_mode: "read-only" | "plan" | "default" | "edit" | "auto" | "bypass";
+      /**
+       * The project directory the run operated in (the real path, not the
+       * on-disk slug), so the list view can show where a session ran.
+       */
+      project: string;
+      /**
+       * The prompt this harness run received (its own, on a batch run; else the
+       * run's single prompt).
+       */
+      prompt: string;
+      schema_version: "0.3";
+      /**
+       * The oneharness session id this run belongs to (the history file's stem).
+       */
+      session: string;
+      /**
+       * The harness's own continuation id, when it exposed one; `null` otherwise.
+       */
+      session_id: string | null;
+      started_at?: never | undefined;
+      status: Status;
+      /**
+       * Best-effort final assistant text; `null` when extraction was impossible.
+       */
+      text: string | null;
+      /**
+       * How `text` was extracted; `null` when absent.
+       */
+      text_source: string | null;
+      time_to_first_token_ms?: never | undefined;
+      /**
+       * RFC3339 UTC instant the record was written (append time).
+       */
+      timestamp: string;
+      tool_ms?: never | undefined;
+      usage: Usage1;
+      [k: string]: unknown;
+    }
+  | {
+      duration_ms: number | null;
       events:
         | {
             index: number;
@@ -149,7 +239,7 @@ export type HistoryRecord =
        * by `history watch --after` and the exact id accepted by history lookup.
        */
       history_id: string;
-      labels?: HistoryLabels1 | undefined;
+      labels?: HistoryLabels2 | undefined;
       /**
        * The effective top-level model for the run, if any.
        */
@@ -205,7 +295,7 @@ export type HistoryRecord =
        */
       timestamp: string;
       tool_ms?: number | null | undefined;
-      usage: Usage1;
+      usage: Usage2;
       [k: string]: unknown;
     };
 export type ToolCallStatus = "completed" | "failed" | "timeout" | "interrupted";
@@ -327,6 +417,43 @@ export interface HistoryLabels1 {
  * Best-effort token/cost accounting (every field `null` when unreported).
  */
 export interface Usage1 {
+  /**
+   * Prompt tokens served from the provider's prompt cache (a cheap read of a
+   * previously-written prefix), when the harness reports them. `None` when the
+   * harness does not surface cache counts — never `0` as a guess.
+   */
+  cache_read_tokens: number | null;
+  /**
+   * Prompt tokens written to the provider's prompt cache (a.k.a. cache
+   * creation), when the harness reports them. `None` when not surfaced.
+   */
+  cache_write_tokens: number | null;
+  /**
+   * Total cost in USD, when the harness reports it (often absent on
+   * subscription auth, where there is no per-call dollar figure).
+   */
+  cost_usd: number | null;
+  /**
+   * Prompt/input tokens billed, when the harness reports them.
+   */
+  input_tokens: number | null;
+  /**
+   * Completion/output tokens billed, when the harness reports them.
+   */
+  output_tokens: number | null;
+  [k: string]: unknown;
+}
+/**
+ * Caller-supplied metadata used to select related task-graph records.
+ * Omitted on the wire when empty for additive compatibility.
+ */
+export interface HistoryLabels2 {
+  [k: string]: string;
+}
+/**
+ * Best-effort token/cost accounting (every field `null` when unreported).
+ */
+export interface Usage2 {
   /**
    * Prompt tokens served from the provider's prompt cache (a cheap read of a
    * previously-written prefix), when the harness reports them. `None` when the

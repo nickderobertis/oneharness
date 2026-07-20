@@ -548,6 +548,56 @@ describe("OneHarness", () => {
 		}
 		expect(HistoryRecordsSchema.safeParse(records).success).toBe(true);
 		expect(HistoryRecordSchema.safeParse(records[0]).success).toBe(true);
+		await client.run({
+			prompt: "history without timing",
+			harnesses: ["claude-code"],
+			history: true,
+			historyName: "node-session-unmeasured",
+			historyDir,
+			env: { MOCK_STDOUT: '{"type":"result","result":"done"}' },
+			bins: { "claude-code": mock },
+		});
+		const [unmeasured] = await client.history({
+			session: "node-session-unmeasured",
+			historyDir,
+		});
+		expect(unmeasured?.schema_version).toBe("0.3");
+		expect(unmeasured).not.toHaveProperty("model_ms");
+		expect(HistoryRecordSchema.safeParse(unmeasured).success).toBe(true);
+		expect(
+			HistoryRecordSchema.safeParse({
+				...unmeasured,
+				events: [
+					{
+						kind: "tool_call",
+						name: "shell",
+						input: {},
+						output: null,
+						index: 0,
+						tool_call_id: "unmeasured-call",
+					},
+				],
+			}).success,
+		).toBe(true);
+		expect(
+			HistoryRecordSchema.safeParse({
+				...unmeasured,
+				events: [
+					{
+						kind: "tool_call",
+						name: "shell",
+						input: {},
+						output: null,
+						index: 0,
+						tool_call_id: "partial-call",
+						started_at: "2026-07-19T00:00:00Z",
+						finished_at: null,
+						duration_ms: null,
+						status: null,
+					},
+				],
+			}).success,
+		).toBe(false);
 		const baseTool = {
 			kind: "tool_call",
 			name: "shell",
@@ -598,7 +648,7 @@ describe("OneHarness", () => {
 			historyDir,
 			allProjects: true,
 		});
-		expect(sessions[0]?.name).toBe("node-session");
+		expect(sessions.map(({ name }) => name)).toContain("node-session");
 		expect(HistoryListSchema.safeParse(sessions).success).toBe(true);
 		expect(HistorySessionSummarySchema.safeParse(sessions[0]).success).toBe(
 			true,

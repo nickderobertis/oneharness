@@ -2,7 +2,15 @@
 # Run the local llmlint tier, gracefully skipping unavailable model infrastructure.
 set -euo pipefail
 
-base=${1:?usage: local-llmlint-gate.sh <remote/base>}
+if [[ $# -ne 1 || -z $1 ]]; then
+  echo "usage: local-llmlint-gate.sh <remote/base>" >&2
+  exit 2
+fi
+base=$1
+if [[ $base != */* ]] || ! git check-ref-format --allow-onelevel "refs/remotes/$base" >/dev/null 2>&1; then
+  echo "local-llmlint-gate: '$base' is not a valid remote/base ref" >&2
+  exit 2
+fi
 export PATH="$HOME/.local/bin:$PATH"
 
 if ! command -v llmlint >/dev/null 2>&1; then

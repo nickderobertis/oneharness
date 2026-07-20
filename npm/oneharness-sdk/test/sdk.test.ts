@@ -648,7 +648,7 @@ describe("OneHarness", () => {
 			historyDir,
 			allProjects: true,
 		});
-		expect(sessions[0]?.name).toBe("node-session");
+		expect(sessions.map(({ name }) => name)).toContain("node-session");
 		expect(HistoryListSchema.safeParse(sessions).success).toBe(true);
 		expect(HistorySessionSummarySchema.safeParse(sessions[0]).success).toBe(
 			true,

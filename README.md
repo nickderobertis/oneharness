@@ -1,3 +1,5 @@
+![oneharness](docs/assets/oneharness-banner.png)
+
 # oneharness
 
 One CLI across many agentic coding harnesses. `oneharness` drives **Claude Code,

@@ -564,6 +564,25 @@ describe("OneHarness", () => {
 		expect(unmeasured?.schema_version).toBe("0.3");
 		expect(unmeasured).not.toHaveProperty("model_ms");
 		expect(HistoryRecordSchema.safeParse(unmeasured).success).toBe(true);
+		expect(
+			HistoryRecordSchema.safeParse({
+				...unmeasured,
+				events: [
+					{
+						kind: "tool_call",
+						name: "shell",
+						input: {},
+						output: null,
+						index: 0,
+						tool_call_id: "partial-call",
+						started_at: "2026-07-19T00:00:00Z",
+						finished_at: null,
+						duration_ms: null,
+						status: null,
+					},
+				],
+			}).success,
+		).toBe(false);
 		const baseTool = {
 			kind: "tool_call",
 			name: "shell",

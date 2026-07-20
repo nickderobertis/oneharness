@@ -394,16 +394,10 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         // harness's transcript-bearing format; absent that, the named-session
         // anchor selects its id-bearing format. Ordinary runs keep the default.
         let want_events = args.events || args.stream || history_writer.is_some();
-        let telemetry_spec = if history_writer.is_some() {
-            Some(
-                spec.telemetry
-                    .ok_or_else(|| OneharnessError::HistoryTelemetryUnsupported {
-                        id: spec.id.to_string(),
-                    })?,
-            )
-        } else {
-            None
-        };
+        // Timing is a best-effort normalized signal, like usage. Harnesses that
+        // expose a provider/tool boundary trace select its required format;
+        // others still write history with the timing fields absent.
+        let telemetry_spec = history_writer.is_some().then_some(spec.telemetry).flatten();
         let chosen_format = explicit_format.unwrap_or_else(|| {
             if let Some(telemetry) = telemetry_spec {
                 telemetry.format

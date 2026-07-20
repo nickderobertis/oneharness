@@ -406,7 +406,12 @@ impl HistoryRecord {
             events: r.events.clone(),
             failure_kind: r.failure_kind,
         };
-        if record.valid_v03() {
+        let timing_unavailable = record.timing_absent()
+            && crate::domain::harness::all()
+                .iter()
+                .find(|spec| spec.id == record.harness)
+                .is_some_and(|spec| spec.telemetry.is_none());
+        if record.valid_v03() && (!record.timing_absent() || timing_unavailable) {
             record.schema_version = SCHEMA_VERSION.to_string();
         } else {
             record.started_at = None;
@@ -419,6 +424,12 @@ impl HistoryRecord {
     }
 
     fn valid_v03(&self) -> bool {
+        // A harness without a provider/tool boundary trace cannot derive timing.
+        // Absence is the honest v0.3 representation; partial telemetry remains
+        // invalid so a trace-capable harness cannot silently write corrupt data.
+        if self.timing_absent() {
+            return true;
+        }
         let Some(duration) = self.duration_ms else {
             return false;
         };
@@ -453,6 +464,14 @@ impl HistoryRecord {
                     }
                 })
         })
+    }
+
+    fn timing_absent(&self) -> bool {
+        self.started_at.is_none()
+            && self.finished_at.is_none()
+            && self.model_ms.is_none()
+            && self.tool_ms.is_none()
+            && self.time_to_first_token_ms.is_none()
     }
 
     /// Deserialize a current or legacy record. `legacy_identity` should name the
@@ -1045,6 +1064,18 @@ mod tests {
         let mut invalid_v03 = serde_json::to_value(&current).unwrap();
         invalid_v03.as_object_mut().unwrap().remove("model_ms");
         assert!(serde_json::from_value::<HistoryRecord>(invalid_v03).is_err());
+
+        let mut unavailable_v03 = serde_json::to_value(&current).unwrap();
+        for field in [
+            "started_at",
+            "finished_at",
+            "model_ms",
+            "tool_ms",
+            "time_to_first_token_ms",
+        ] {
+            unavailable_v03.as_object_mut().unwrap().remove(field);
+        }
+        assert!(serde_json::from_value::<HistoryRecord>(unavailable_v03).is_ok());
 
         let mut previous = serde_json::to_value(&current).unwrap();
         previous["schema_version"] = Value::String(PREVIOUS_SCHEMA_VERSION.to_string());

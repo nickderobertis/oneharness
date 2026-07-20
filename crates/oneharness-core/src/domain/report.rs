@@ -72,6 +72,30 @@ pub struct Capture {
     pub stdout: String,
     pub stderr: String,
     pub error: Option<String>,
+    /// UTC invocation boundaries observed by the runner (never synthesized by
+    /// history serialization).
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    /// Complete stdout chunks paired with their monotonic offset from start.
+    pub stdout_observations: Vec<OutputObservation>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OutputObservation {
+    pub offset_ms: u128,
+    pub observed_at: String,
+    pub bytes: Vec<u8>,
+}
+
+/// Measured execution telemetry carried internally from the runner/parser to
+/// the history writer. It is deliberately not part of the run-report contract.
+#[derive(Debug, Clone, Default)]
+pub struct ExecutionTelemetry {
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub model_ms: Option<u128>,
+    pub tool_ms: Option<u128>,
+    pub time_to_first_token_ms: Option<u128>,
 }
 
 /// One harness's entry in the report.
@@ -99,6 +123,9 @@ pub struct RunResult {
     pub exit_code: Option<i32>,
     /// Wall-clock duration of the run; `null` when not executed.
     pub duration_ms: Option<u128>,
+    #[serde(skip, default)]
+    #[schemars(skip)]
+    pub telemetry: Option<ExecutionTelemetry>,
     /// The exact argv oneharness built (argv[0] is the binary).
     pub command: Vec<String>,
     pub output_format: OutputFormat,

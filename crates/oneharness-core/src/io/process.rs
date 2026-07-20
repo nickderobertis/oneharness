@@ -30,6 +30,7 @@ pub(crate) enum PipeEvent {
 pub(crate) struct Finished {
     pub stdout: String,
     pub stderr: String,
+    pub stdout_observations: Vec<(Instant, Vec<u8>)>,
 }
 
 /// Why the runner is finishing a process.
@@ -122,6 +123,7 @@ impl Process {
         Finished {
             stdout: self.stdout.take_string(),
             stderr: self.stderr.take_string(),
+            stdout_observations: self.stdout.take_observations(),
         }
     }
 
@@ -157,13 +159,14 @@ impl Drop for Process {
 }
 
 enum PipeMessage {
-    Data(Vec<u8>),
+    Data(Instant, Vec<u8>),
     Closed,
 }
 
 struct PipeDrain {
     receiver: Receiver<PipeMessage>,
     bytes: Vec<u8>,
+    observations: Vec<(Instant, Vec<u8>)>,
     closed: bool,
 }
 
@@ -175,24 +178,37 @@ impl PipeDrain {
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
             let mut chunk = [0u8; 8192];
+            let mut pending = Vec::new();
             loop {
                 match reader.read(&mut chunk) {
                     Ok(0) | Err(_) => break,
                     Ok(count) => {
-                        if sender
-                            .send(PipeMessage::Data(chunk[..count].to_vec()))
-                            .is_err()
-                        {
-                            return;
+                        pending.extend_from_slice(&chunk[..count]);
+                        while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
+                            let record: Vec<u8> = pending.drain(..=newline).collect();
+                            if sender
+                                .send(PipeMessage::Data(Instant::now(), record))
+                                .is_err()
+                            {
+                                return;
+                            }
                         }
                     }
                 }
+            }
+            if !pending.is_empty()
+                && sender
+                    .send(PipeMessage::Data(Instant::now(), pending))
+                    .is_err()
+            {
+                return;
             }
             let _ = sender.send(PipeMessage::Closed);
         });
         Self {
             receiver,
             bytes: Vec::new(),
+            observations: Vec::new(),
             closed: false,
         }
     }
@@ -206,8 +222,9 @@ impl PipeDrain {
             return PipeEvent::Deadline;
         }
         match self.receiver.recv_timeout(deadline - now) {
-            Ok(PipeMessage::Data(chunk)) => {
+            Ok(PipeMessage::Data(observed_at, chunk)) => {
                 self.bytes.extend_from_slice(&chunk);
+                self.observations.push((observed_at, chunk.clone()));
                 PipeEvent::Data(chunk)
             }
             Ok(PipeMessage::Closed) | Err(RecvTimeoutError::Disconnected) => {
@@ -227,7 +244,10 @@ impl PipeDrain {
             return;
         }
         match self.receiver.recv_timeout(deadline - now) {
-            Ok(PipeMessage::Data(chunk)) => self.bytes.extend_from_slice(&chunk),
+            Ok(PipeMessage::Data(observed_at, chunk)) => {
+                self.bytes.extend_from_slice(&chunk);
+                self.observations.push((observed_at, chunk));
+            }
             Ok(PipeMessage::Closed) | Err(RecvTimeoutError::Disconnected) => {
                 self.closed = true;
             }
@@ -238,10 +258,31 @@ impl PipeDrain {
     fn take_string(&mut self) -> String {
         String::from_utf8_lossy(&std::mem::take(&mut self.bytes)).into_owned()
     }
+
+    fn take_observations(&mut self) -> Vec<(Instant, Vec<u8>)> {
+        std::mem::take(&mut self.observations)
+    }
 }
 
 fn poll_deadline(deadline: Instant) -> Instant {
     deadline.min(Instant::now() + PIPE_POLL_SLICE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn coalesced_pipe_read_is_observed_as_complete_records() {
+        let mut drain = PipeDrain::spawn(Cursor::new(b"one\ntwo\nthree\n".to_vec()));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !matches!(drain.recv_until(deadline), PipeEvent::Closed) {}
+        let observations = drain.take_observations();
+        assert_eq!(observations.len(), 3);
+        assert_eq!(observations[0].1, b"one\n");
+        assert_eq!(observations[2].1, b"three\n");
+    }
 }
 
 #[cfg(unix)]

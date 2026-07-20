@@ -36,6 +36,10 @@
 //!                   append `COMPLETE\n` to MOCK_LOG_FILE; on a failed write
 //!                   (reader gone / killed mid-stream) exit WITHOUT it, so a test
 //!                   can prove an early teardown by the sentinel's absence.
+//!   MOCK_STREAM_CHUNK_BYTES  if set, emit MOCK_STDOUT in fixed-size byte chunks,
+//!                   flushing each chunk and pausing by MOCK_STREAM_DELAY_MS
+//!                   between chunks. This models providers that split one JSONL
+//!                   record across multiple pipe reads.
 //!   MOCK_FAIL_IF_MODEL  if set to a model name, fail (exit 1) with a
 //!                   `model not found` stderr when the received argv carries
 //!                   `--model <that name>`; otherwise run normally. Lets a test
@@ -378,6 +382,30 @@ fn main() {
         .or_else(|| std::env::var("MOCK_STDOUT").ok())
         .unwrap_or_else(|| "{\"result\":\"mock ok\"}".to_string());
     let stdout = session_faithful_stdout(&argv, stdout);
+
+    if let Ok(chunk_bytes) = std::env::var("MOCK_STREAM_CHUNK_BYTES") {
+        let chunk_bytes = chunk_bytes.parse::<usize>().unwrap_or(0);
+        assert!(chunk_bytes > 0, "MOCK_STREAM_CHUNK_BYTES must be positive");
+        let delay = std::env::var("MOCK_STREAM_DELAY_MS")
+            .ok()
+            .map(|value| {
+                value
+                    .parse::<u64>()
+                    .expect("MOCK_STREAM_DELAY_MS must be an unsigned integer")
+            })
+            .unwrap_or(0);
+        let mut out = std::io::stdout();
+        for (index, chunk) in stdout.as_bytes().chunks(chunk_bytes).enumerate() {
+            if index > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+            }
+            if out.write_all(chunk).is_err() || out.flush().is_err() {
+                std::process::exit(0);
+            }
+        }
+        log_line("COMPLETE\n");
+        std::process::exit(0);
+    }
 
     // Incremental streaming mode: with MOCK_STREAM_DELAY_MS set, emit MOCK_STDOUT
     // one line at a time, flushing and sleeping between lines — so a streaming

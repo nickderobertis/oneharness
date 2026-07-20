@@ -393,9 +393,21 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         // when a named session is in play). Otherwise events/streaming selects the
         // harness's transcript-bearing format; absent that, the named-session
         // anchor selects its id-bearing format. Ordinary runs keep the default.
-        let want_events = args.events || args.stream;
+        let want_events = args.events || args.stream || history_writer.is_some();
+        let telemetry_spec = if history_writer.is_some() {
+            Some(
+                spec.telemetry
+                    .ok_or_else(|| OneharnessError::HistoryTelemetryUnsupported {
+                        id: spec.id.to_string(),
+                    })?,
+            )
+        } else {
+            None
+        };
         let chosen_format = explicit_format.unwrap_or_else(|| {
-            if want_events {
+            if let Some(telemetry) = telemetry_spec {
+                telemetry.format
+            } else if want_events {
                 spec.events_format.unwrap_or(spec.output_format)
             } else if session_anchor == Some(spec.id) {
                 spec.session_format()
@@ -413,6 +425,15 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         } else {
             chosen_format
         };
+        if let Some(telemetry) = telemetry_spec {
+            if output_format != telemetry.format {
+                return Err(OneharnessError::HistoryTelemetryFormat {
+                    id: spec.id.to_string(),
+                    required: telemetry.format.as_str().to_string(),
+                    selected: output_format.as_str().to_string(),
+                });
+            }
+        }
         // Reasoning / thinking effort is delivered in the harness's native shape,
         // resolved per harness so effort can sit next to each harness's own model
         // (CLI `--reasoning` beats config). Append-style deliveries (Claude's
@@ -1815,6 +1836,7 @@ fn planned_result(
         model,
         exit_code: None,
         duration_ms: None,
+        telemetry: None,
         command,
         output_format,
         text: None,
@@ -1853,6 +1875,7 @@ fn skipped_result(
         model,
         exit_code: None,
         duration_ms: None,
+        telemetry: None,
         command,
         output_format,
         text: None,
@@ -1930,20 +1953,44 @@ fn executed_result(
     let usage_reading = normalize_capture
         .then(|| signals::extract_usage(&capture.stdout))
         .flatten();
-    let (usage, usage_source) = match usage_reading {
+    let (mut usage, usage_source) = match usage_reading {
         Some(r) => (r.usage, Some(r.source)),
         None => (Usage::default(), None),
     };
+    signals::apply_model_price(&mut usage, spec.id, model.as_deref());
     let session_id = normalize_capture
         .then(|| signals::extract_session(&capture.stdout))
         .flatten();
     let events_reading = normalize_capture
         .then(|| events::extract_events(&capture.stdout, output_format))
         .flatten();
-    let (events, events_source) = match events_reading {
+    let (mut normalized_events, events_source) = match events_reading {
         Some(r) => (Some(r.events), Some(r.source)),
         None => (None, None),
     };
+    let timing = spec
+        .telemetry
+        .filter(|telemetry| telemetry.format == output_format)
+        .map(|telemetry| {
+            let mut no_events = Vec::new();
+            let timed_events = normalized_events.as_mut().unwrap_or(&mut no_events);
+            events::apply_observed_timing(
+                timed_events,
+                &capture.stdout_observations,
+                capture.status,
+                capture.duration_ms,
+                telemetry.trace,
+            )
+        });
+    let telemetry = timing.filter(|timing| timing.trace_complete).map(|timing| {
+        oneharness_core::domain::report::ExecutionTelemetry {
+            started_at: capture.started_at.clone(),
+            finished_at: capture.finished_at.clone(),
+            model_ms: timing.model_ms,
+            tool_ms: timing.tool_ms,
+            time_to_first_token_ms: timing.time_to_first_token_ms,
+        }
+    });
     // A deferred-tool dead-end: the harness completed cleanly (exit 0) but only
     // *deferred* a builtin tool call instead of running it (Claude Code bridge
     // deployments — issue #1114). It exits 0, so it is not caught by the non-zero
@@ -1984,6 +2031,7 @@ fn executed_result(
         model,
         exit_code: capture.exit_code,
         duration_ms: capture.duration_ms,
+        telemetry,
         command,
         output_format,
         text,
@@ -1991,7 +2039,7 @@ fn executed_result(
         usage,
         usage_source,
         session_id,
-        events,
+        events: normalized_events,
         events_source,
         structured,
         schema_valid,
@@ -2550,6 +2598,7 @@ mod tests {
             model: None,
             exit_code: None,
             duration_ms: None,
+            telemetry: None,
             command: vec![],
             output_format: OutputFormat::Text,
             text: None,
@@ -2597,6 +2646,9 @@ mod tests {
             stdout: stdout.into(),
             stderr: String::new(),
             error: None,
+            started_at: "2026-01-01T00:00:00.000Z".to_string(),
+            finished_at: Some("2026-01-01T00:00:00.001Z".to_string()),
+            stdout_observations: Vec::new(),
         }
     }
 
@@ -2951,6 +3003,7 @@ mod tests {
             install_hint: "",
             output_format: OutputFormat::Text,
             events_format: None,
+            telemetry: None,
             supports_resume: false,
             session_formats: &[],
             supports_fork: false,

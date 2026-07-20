@@ -220,6 +220,16 @@ pub enum OneharnessError {
     #[error("no history directory: pass --history-dir, set `history_dir` in config, or ONEHARNESS_HISTORY_DIR (a default under the platform state dir could not be resolved)")]
     HistoryNoDir,
 
+    #[error("harness `{id}` cannot write v0.3 history telemetry: it exposes no provider/tool boundary trace")]
+    HistoryTelemetryUnsupported { id: String },
+
+    #[error("harness `{id}` needs output format `{required}` for history telemetry, but `{selected}` was selected; remove the explicit format or incompatible native schema")]
+    HistoryTelemetryFormat {
+        id: String,
+        required: String,
+        selected: String,
+    },
+
     #[error("history record `{id}` was not found")]
     HistoryNotFound { id: String },
 

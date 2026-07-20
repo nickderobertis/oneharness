@@ -150,6 +150,12 @@ impl HistoryWriter {
             run_prompt,
             result,
         );
+        if record.schema_version != history::SCHEMA_VERSION {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "new history record lacks complete v0.3 telemetry",
+            ));
+        }
         let mut line = serde_json::to_string(&record)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         line.push('\n');
@@ -714,7 +720,7 @@ fn parse_records(path: &Path, text: &str) -> Vec<HistoryRecord> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::report::{OutputFormat, Status};
+    use crate::domain::report::{ExecutionTelemetry, OutputFormat, Status};
     use crate::domain::signals::Usage;
 
     fn temp_dir(tag: &str) -> PathBuf {
@@ -738,6 +744,13 @@ mod tests {
             model: None,
             exit_code: Some(0),
             duration_ms: Some(10),
+            telemetry: Some(ExecutionTelemetry {
+                started_at: "2026-07-19T00:00:00Z".to_string(),
+                finished_at: Some("2026-07-19T00:00:00Z".to_string()),
+                model_ms: Some(7),
+                tool_ms: Some(0),
+                time_to_first_token_ms: None,
+            }),
             command: vec!["bin".to_string()],
             output_format: OutputFormat::Json,
             text: Some("hi".to_string()),

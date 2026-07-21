@@ -250,6 +250,15 @@ describe("OneHarness", () => {
 		).toBe(true);
 	});
 
+	test("runMock uses the responder shipped in the main CLI", async () => {
+		const report = await sdk().runMock(
+			"claude-code",
+			{ prompt: "deterministic", mode: "bypass" },
+			{ stdout: '{"result":"node mock"}', exitCode: 0, latencyMs: 1 },
+		);
+		expect(report.results[0]?.text).toBe("node mock");
+	});
+
 	test("streams every validated envelope across the real CLI boundary", async () => {
 		const envelopes: RunStreamEnvelope[] = [];
 		for await (const envelope of sdk().runStream({

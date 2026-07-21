@@ -71,6 +71,14 @@ export type OneHarnessOptions = {
 	env?: Readonly<Record<string, string>>;
 };
 
+/** Script for the shipped deterministic provider substitute. */
+export type MockHarnessScript = {
+	stdout?: string;
+	stderr?: string;
+	exitCode?: number;
+	latencyMs?: number;
+};
+
 /** A non-zero exit from the oneharness subprocess. */
 export class OneHarnessProcessError extends Error {
 	constructor(
@@ -289,6 +297,33 @@ export class OneHarness {
 			"invalid oneharness run options",
 		);
 		const args = runArguments(input, false);
+		const value = await invokeWith(this.options, args, input.cwd, true);
+		return parseContract(
+			RunReportSchema,
+			value,
+			"invalid oneharness run contract",
+		);
+	}
+
+	async runMock(
+		harness: string,
+		options: RunOptions,
+		script: MockHarnessScript = {},
+	): Promise<RunReport> {
+		if (harness.length === 0) throw new Error("mock harness must not be empty");
+		const input = parseContract(
+			RunOptionsSchema,
+			options,
+			"invalid oneharness run options",
+		);
+		const env: Record<string, string> = { ...(input.env ?? {}) };
+		if (script.stdout !== undefined) env.MOCK_STDOUT = script.stdout;
+		if (script.stderr !== undefined) env.MOCK_STDERR = script.stderr;
+		if (script.exitCode !== undefined) env.MOCK_EXIT = String(script.exitCode);
+		if (script.latencyMs !== undefined)
+			env.MOCK_SLEEP_MS = String(script.latencyMs);
+		const args = runArguments({ ...input, harnesses: [harness], env }, false);
+		args.push("--mock-harness", harness);
 		const value = await invokeWith(this.options, args, input.cwd, true);
 		return parseContract(
 			RunReportSchema,

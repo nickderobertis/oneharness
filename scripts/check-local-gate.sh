@@ -135,7 +135,7 @@ STUB
   chmod +x "$bootstrap_bin/$tool"
 done
 ln -s "$(command -v just)" "$bootstrap_bin/just"
-CALL_LOG="$log" PATH="$bootstrap_bin:/usr/bin:/bin" HOME="$tmp/home" \
+CALL_LOG="$log" PATH="$bootstrap_bin:$PATH" HOME="$tmp/home" \
   just --justfile "$bootstrap_repo/justfile" --working-directory "$bootstrap_repo" bootstrap >/dev/null
 assert_file_contains 'uv tool install --upgrade llmlint-cli>=0.3.17' "$log" \
   "bootstrap did not run the llmlint installer"

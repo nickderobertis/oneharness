@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.6](https://github.com/nickderobertis/oneharness/compare/v0.4.5...v0.4.6) - 2026-07-21
+
+### Added
+
+- ship deterministic mock harness for CLI + all SDKs ([#1171](https://github.com/nickderobertis/oneharness/pull/1171))
+
 ## [0.4.5](https://github.com/nickderobertis/oneharness/compare/v0.4.4...v0.4.5) - 2026-07-21
 
 ### Fixed

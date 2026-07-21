@@ -4,6 +4,7 @@ set -euo pipefail
 
 base=${1:?usage: local-llmlint-gate.sh <remote/base>}
 root=$(cd "$(dirname "$0")/.." && pwd)
+source "$root/scripts/local-llmlint-gate-lib.sh"
 export PATH="$HOME/.local/bin:$PATH"
 
 git rev-parse --verify --quiet "$base^{commit}" >/dev/null || {
@@ -11,20 +12,7 @@ git rev-parse --verify --quiet "$base^{commit}" >/dev/null || {
   exit 2
 }
 
-primary_harness=$(awk '
-  /^[[:space:]]*harnesses[[:space:]]*=/ {
-    value = $0
-    sub(/^[^=]*=[[:space:]]*\[/, "", value)
-    if (match(value, /"[^"]+"/)) {
-      print substr(value, RSTART + 1, RLENGTH - 2)
-      exit
-    }
-  }
-' "$root/oneharness.toml")
-if [[ ! $primary_harness =~ ^[[:alnum:]][[:alnum:]_.-]*$ ]]; then
-  echo "llmlint: oneharness.toml must declare a valid first harness in 'harnesses'" >&2
-  exit 2
-fi
+primary_harness=$(llmlint_primary_harness "$root/oneharness.toml")
 
 if ! command -v llmlint >/dev/null 2>&1; then
   echo "llmlint: skipped locally (llmlint unavailable; run 'just setup-llmlint')" >&2

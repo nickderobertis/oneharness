@@ -3,11 +3,12 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
+source "$root/scripts/local-llmlint-gate-lib.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin"
 log="$tmp/calls"
-primary_harness=$(awk -F '"' '/^[[:space:]]*harnesses[[:space:]]*=/ { print $2; exit }' "$root/oneharness.toml")
+primary_harness=$(llmlint_primary_harness "$root/oneharness.toml")
 
 assert_file_contains() {
   local expected=$1 file=$2 description=$3
@@ -37,6 +38,47 @@ read -r key
 printf '%s %s\n' "$(basename "$0")" "$*" >> "$CALL_LOG"
 STUB
 chmod +x "$tmp/bin/llmlint" "$tmp/bin/$primary_harness"
+
+if "$root/scripts/local-llmlint-gate.sh" invalid-comparison-ref 2>"$tmp/invalid-ref"; then
+  echo "check-local-gate: invalid comparison ref unexpectedly succeeded" >&2
+  exit 1
+else
+  status=$?
+fi
+[[ $status -eq 2 ]] || {
+  echo "check-local-gate: invalid comparison ref exited $status, expected 2" >&2
+  exit 1
+}
+assert_file_contains \
+  "llmlint: 'invalid-comparison-ref' is not an existing commit; fetch it or pass a valid comparison ref" \
+  "$tmp/invalid-ref" "missing invalid comparison ref diagnostic"
+
+fixture_root="$tmp/local-gate-fixture"
+mkdir -p "$fixture_root/scripts"
+cp "$root/scripts/local-llmlint-gate.sh" "$root/scripts/local-llmlint-gate-lib.sh" \
+  "$fixture_root/scripts/"
+printf 'harnesses = ["../invalid"]\n' > "$fixture_root/oneharness.toml"
+if "$fixture_root/scripts/local-llmlint-gate.sh" origin/main 2>"$tmp/invalid-harness"; then
+  echo "check-local-gate: invalid primary harness unexpectedly succeeded" >&2
+  exit 1
+else
+  status=$?
+fi
+[[ $status -eq 2 ]] || {
+  echo "check-local-gate: invalid primary harness exited $status, expected 2" >&2
+  exit 1
+}
+assert_file_contains \
+  "llmlint: oneharness.toml must declare a valid first harness in 'harnesses'" \
+  "$tmp/invalid-harness" "missing invalid primary harness diagnostic"
+
+printf 'harnesses = ["fixture-harness"]\n' > "$fixture_root/oneharness.toml"
+CALL_LOG="$log" PATH="$tmp/bin:$PATH" HOME="$tmp/home" OPENAI_API_KEY=test-key \
+  "$fixture_root/scripts/local-llmlint-gate.sh" origin/main 2>"$tmp/unavailable-harness"
+assert_file_contains \
+  "llmlint: judge skipped locally (committed primary harness 'fixture-harness' unavailable)" \
+  "$tmp/unavailable-harness" "missing unavailable primary harness diagnostic"
+: > "$log"
 
 CALL_LOG="$log" PATH="$tmp/bin:$PATH" HOME="$tmp/home" \
   "$root/scripts/local-llmlint-gate.sh" origin/main 2>"$tmp/skip"

@@ -58,7 +58,7 @@ mkdir -p "$fixture_root/scripts"
 cp "$root/scripts/local-llmlint-gate.sh" "$root/scripts/local-llmlint-gate-lib.sh" \
   "$fixture_root/scripts/"
 printf 'harnesses = ["../invalid"]\n' > "$fixture_root/oneharness.toml"
-if "$fixture_root/scripts/local-llmlint-gate.sh" origin/main 2>"$tmp/invalid-harness"; then
+if "$fixture_root/scripts/local-llmlint-gate.sh" HEAD 2>"$tmp/invalid-harness"; then
   echo "check-local-gate: invalid primary harness unexpectedly succeeded" >&2
   exit 1
 else
@@ -74,23 +74,23 @@ assert_file_contains \
 
 printf 'harnesses = ["fixture-harness"]\n' > "$fixture_root/oneharness.toml"
 CALL_LOG="$log" PATH="$tmp/bin:$PATH" HOME="$tmp/home" OPENAI_API_KEY=test-key \
-  "$fixture_root/scripts/local-llmlint-gate.sh" origin/main 2>"$tmp/unavailable-harness"
+  "$fixture_root/scripts/local-llmlint-gate.sh" HEAD 2>"$tmp/unavailable-harness"
 assert_file_contains \
   "llmlint: judge skipped locally (committed primary harness 'fixture-harness' unavailable)" \
   "$tmp/unavailable-harness" "missing unavailable primary harness diagnostic"
 : > "$log"
 
 CALL_LOG="$log" PATH="$tmp/bin:$PATH" HOME="$tmp/home" \
-  "$root/scripts/local-llmlint-gate.sh" origin/main 2>"$tmp/skip"
+  "$root/scripts/local-llmlint-gate.sh" HEAD 2>"$tmp/skip"
 assert_file_contains 'llmlint: judge skipped locally (OPENAI_API_KEY unavailable)' "$tmp/skip" \
   "missing no-key skip diagnostic"
 assert_line_count 1 "$log" "no-key path should only validate"
 
 CALL_LOG="$log" PATH="$tmp/bin:$PATH" HOME="$tmp/home" OPENAI_API_KEY=test-key \
-  "$root/scripts/local-llmlint-gate.sh" origin/main
+  "$root/scripts/local-llmlint-gate.sh" HEAD
 assert_file_contains "$primary_harness login --with-api-key" "$log" \
   "primary harness login was not invoked"
-assert_file_contains 'llmlint --diff --diff-base origin/main' "$log" \
+assert_file_contains 'llmlint --diff --diff-base HEAD' "$log" \
   "llmlint judge was not invoked with the comparison ref"
 
 git init -q --bare "$tmp/remote.git"

@@ -1423,6 +1423,10 @@ makes real model calls, skips any harness that isn't installed, and is
 intentionally never part of the gate or CI. See `AGENTS.md` and
 `tests/AGENTS.md`.
 
+Released CLI and SDK consumers can use that same deterministic provider seam;
+see [Testing patterns](docs/testing-patterns.md) for the stable `MOCK_*`
+contract and CLI, Python, and Node examples.
+
 ## Live end-to-end testing
 
 `just smoke-live` is the quick "does any installed harness work" check. The

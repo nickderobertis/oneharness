@@ -11,7 +11,7 @@ const checked: RunReport = RunReportSchema.parse(report);
 console.log(checked.results[0]?.text, checked.results[0]?.usage.input_tokens);
 ```
 
-The complete client surface is `run`, `runStream`, `list`, `detect`, `history`, `historyList`, and `historyWatch`. Both streaming methods return async iterators:
+The complete client surface includes `run`, `runMock`, `runStream`, `list`, `detect`, `history`, `historyList`, and `historyWatch`. `runMock` uses the deterministic responder shipped in the CLI; see [Testing patterns](../../docs/testing-patterns.md). Both streaming methods return async iterators:
 
 ```ts
 for await (const envelope of oneharness.runStream({

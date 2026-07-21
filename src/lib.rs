@@ -7,6 +7,8 @@
 
 pub mod cli;
 pub mod commands;
+#[path = "../tests/support/mock_harness.rs"]
+pub mod mock_harness;
 
 pub use cli::{Cli, Command};
 pub use oneharness_core::errors::OneharnessError;
@@ -26,6 +28,7 @@ pub fn dispatch(cli: Cli) -> i32 {
         Command::Init(args) => commands::init::run(&args),
         Command::Gate(args) => commands::gate::run(&args),
         Command::Mock(args) => commands::mock::run(&args),
+        Command::MockHarness => mock_harness::run(),
         Command::History(args) => commands::history::run(&args),
     };
     match result {

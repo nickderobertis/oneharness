@@ -14,6 +14,12 @@ pub enum OneharnessError {
     #[error("unknown harness id `{id}`. valid ids: {valid}")]
     UnknownHarness { id: String, valid: String },
 
+    #[error("--mock-harness `{id}` must name a selected harness")]
+    MockHarnessNotSelected { id: String },
+
+    #[error("could not locate the running oneharness executable for --mock-harness: {0}")]
+    MockHarnessExecutable(std::io::Error),
+
     #[error("no prompt provided: pass --prompt <text> or --prompt-file <path>")]
     NoPrompt,
 

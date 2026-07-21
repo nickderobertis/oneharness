@@ -23,7 +23,7 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-The complete client surface is `run`, `run_stream`, `list`, `detect`, `history`, `history_list`, and `history_watch`. `run_stream` and `history_watch` are async iterators. Every envelope is validated before it is yielded; closing or cancelling an iterator terminates its subprocess.
+The complete client surface includes `run`, `run_mock`, `run_stream`, `list`, `detect`, `history`, `history_list`, and `history_watch`. `run_mock` uses the deterministic responder shipped in the CLI; see [Testing patterns](../../docs/testing-patterns.md). `run_stream` and `history_watch` are async iterators. Every envelope is validated before it is yielded; closing or cancelling an iterator terminates its subprocess.
 
 ```python
 async for envelope in oneharness.run_stream(

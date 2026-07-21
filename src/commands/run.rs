@@ -289,13 +289,27 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         .iter()
         .filter_map(|(id, h)| h.bin.clone().map(|bin| (id.clone(), bin)))
         .collect();
-    let overrides = BinOverrides::parse(&args.bin)?.with_config_bins(config_bins);
+    for id in &args.mock_harness {
+        if !specs.iter().any(|spec| spec.id == id) {
+            return Err(OneharnessError::MockHarnessNotSelected { id: id.clone() });
+        }
+    }
+    let mut bin_args = args.bin.clone();
+    let current_exe = std::env::current_exe().map_err(OneharnessError::MockHarnessExecutable)?;
+    for id in &args.mock_harness {
+        bin_args.push(format!("{id}={}", current_exe.display()));
+    }
+    let overrides = BinOverrides::parse(&bin_args)?.with_config_bins(config_bins);
     // One-shot mock/spy wiring (`--mock-rules` / `--spy-file`): validate the
     // ruleset and every selected harness's capability loudly, then deliver the
     // hook ephemerally — on the argv where the harness supports it, else via a
     // snapshotted project-scope install restored after the run.
     let mock_wiring = setup_mock(args, &specs, &project_start, &overrides)?;
-    let cli_env = parse_env(&args.env)?;
+    let mut env_args = args.env.clone();
+    if !args.mock_harness.is_empty() {
+        env_args.push("ONEHARNESS_INTERNAL_MOCK_HARNESS=1".to_string());
+    }
+    let cli_env = parse_env(&env_args)?;
     // The effective top-level model for the report/history: the first fan-out
     // model when a list was given, else the single configured/CLI model. Each
     // result's own `model` (set per unit below) is authoritative on a fan-out.

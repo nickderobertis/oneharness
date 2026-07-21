@@ -22,7 +22,7 @@ path = "src/main.rs"
 # cross-platform. Gated behind a feature so it never ships in `cargo install`.
 [[bin]]
 name = "oneharness-mock-harness"
-path = "tests/support/mock_harness.rs"
+path = "tests/support/mock_harness_main.rs"
 required-features = ["mock-harness"]
 
 [[example]]

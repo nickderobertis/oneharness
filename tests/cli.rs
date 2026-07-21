@@ -3401,6 +3401,34 @@ fn executes_mock_and_extracts_json_result() {
 }
 
 #[test]
+fn shipped_mock_harness_runs_without_fixture_binary() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--mock-harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--compact",
+        ],
+        &[
+            ("MOCK_STDOUT", r#"{"result":"shipped responder"}"#),
+            ("MOCK_EXIT", "0"),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result = &json_stdout(&output)["results"][0];
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["text"], "shipped responder");
+}
+
+#[test]
 fn nonzero_exit_is_reported_and_fails_the_run() {
     let output = run(
         &[

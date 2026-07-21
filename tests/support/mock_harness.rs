@@ -1,7 +1,9 @@
+//! The deterministic harness responder shared by the shipped CLI and test fixture.
+//!
 //! A fake harness binary the e2e tests drive via a `--bin` override, so the
 //! spawn / capture / parallel / parse path is exercised hermetically and
-//! cross-platform — no real CLI, no network. Built only behind the
-//! `mock-harness` feature, so it never ships in `cargo install`.
+//! cross-platform — no real CLI, no network. The responder ships as
+//! `oneharness mock-harness`; the separate fixture binary remains feature-gated.
 //!
 //! Behavior is scripted entirely through environment variables:
 //!   MOCK_STDOUT     bytes written to stdout (default: a JSON `result` doc)
@@ -223,7 +225,7 @@ fn run_native_descendant() -> ! {
     std::process::exit(0);
 }
 
-fn main() {
+pub fn run() -> ! {
     #[cfg(windows)]
     if std::env::var_os("ONEHARNESS_MOCK_NATIVE_DESCENDANT").is_some() {
         run_native_descendant();

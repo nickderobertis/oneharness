@@ -145,6 +145,9 @@ pub enum Command {
     /// error), while a bad ruleset or an action the harness cannot express is
     /// a loud usage error up front.
     Mock(MockArgs),
+    /// Act as a deterministic fake provider process, scripted by MOCK_* env
+    /// variables. Usually selected through `run --mock-harness <ID>`.
+    MockHarness,
     /// View and manage the standardized run history recorded by `run --history`.
     /// The `list`/`show` views print JSON to stdout by default (the programmatic
     /// contract); pass `--format text` for a human-readable view.
@@ -337,6 +340,11 @@ pub struct RunArgs {
     /// Harness id(s) to run (repeatable, comma-separated). See `oneharness list`.
     #[arg(long, value_delimiter = ',', value_name = "ID")]
     pub harness: Vec<String>,
+
+    /// Replace this selected harness's provider process with oneharness's
+    /// deterministic MOCK_*-scripted responder (repeatable).
+    #[arg(long, value_name = "ID")]
+    pub mock_harness: Vec<String>,
 
     /// Harness id(s) to exclude when using --all (repeatable, comma-separated).
     #[arg(long, value_delimiter = ',', value_name = "ID")]

@@ -10,7 +10,7 @@ import shutil
 from collections.abc import AsyncIterator, Mapping, Sequence
 from functools import cache
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, Optional, TypedDict, cast
 
 from jsonschema import Draft202012Validator
 from jsonschema.protocols import Validator
@@ -36,6 +36,15 @@ _INPUT_ROOTS = {
     "history_watch_options",
     "run_options",
 }
+
+
+class MockHarnessScript(TypedDict, total=False):
+    """Script for the shipped deterministic provider substitute."""
+
+    stdout: str
+    stderr: str
+    exit_code: int
+    latency_ms: int
 
 
 def _load_json(name: str) -> dict[str, Any]:
@@ -227,6 +236,37 @@ class OneHarness:
         parsed = _input("run_options", options, "invalid oneharness run options")
         value = await self._invoke(
             _run_arguments(parsed, stream=False),
+            cwd=cast("Optional[str]", parsed.get("cwd")),
+            accept_json_on_nonzero=True,
+        )
+        return cast("RunReport", _validate("run_report", value, "invalid oneharness run contract"))
+
+    async def run_mock(
+        self,
+        harness: str,
+        options: RunOptions,
+        script: Optional[MockHarnessScript] = None,
+    ) -> RunReport:
+        """Run against oneharness's deterministic, no-model harness responder."""
+        parsed = _input("run_options", options, "invalid oneharness run options")
+        if not harness:
+            raise ContractError("invalid mock harness: harness must not be empty")
+        scripted = dict(script or {})
+        env = dict(cast("Mapping[str, str]", parsed.get("env", {})))
+        mappings = {
+            "stdout": "MOCK_STDOUT",
+            "stderr": "MOCK_STDERR",
+            "exit_code": "MOCK_EXIT",
+            "latency_ms": "MOCK_SLEEP_MS",
+        }
+        for key, variable in mappings.items():
+            if key in scripted:
+                env[variable] = str(scripted[key])
+        parsed = {**parsed, "harnesses": [harness], "env": env}
+        args = _run_arguments(parsed, stream=False)
+        args.extend(("--mock-harness", harness))
+        value = await self._invoke(
+            args,
             cwd=cast("Optional[str]", parsed.get("cwd")),
             accept_json_on_nonzero=True,
         )

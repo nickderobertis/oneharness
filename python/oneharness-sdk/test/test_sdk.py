@@ -62,6 +62,14 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         """Return a hermetic client for the real development binary."""
         return OneHarness(executable=str(BINARY), env={"ONEHARNESS_NO_CONFIG": "1"})
 
+    async def test_run_mock_uses_shipped_responder(self) -> None:
+        report = await self.client().run_mock(
+            "claude-code",
+            {"prompt": "deterministic", "mode": "bypass"},
+            {"stdout": '{"result":"python mock"}', "exit_code": 0, "latency_ms": 1},
+        )
+        self.assertEqual(report["results"][0]["text"], "python mock")
+
     def fixture(self, mode: str) -> OneHarness:
         """Return an external fixture process for malformed-contract tests."""
         return OneHarness(

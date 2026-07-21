@@ -1,6 +1,6 @@
 """Async Python SDK for the oneharness CLI."""
 
-from ._client import OneHarness
+from ._client import MockHarnessScript, OneHarness
 from ._errors import ContractError, HistoryNotFoundError, OneHarnessProcessError
 from ._generated_types import (
     Detection,
@@ -27,6 +27,7 @@ __all__ = [
     "HistoryStreamEnvelope",
     "HistoryWatchOptions",
     "OneHarness",
+    "MockHarnessScript",
     "OneHarnessProcessError",
     "RunOptions",
     "RunReport",

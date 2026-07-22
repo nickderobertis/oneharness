@@ -86,6 +86,7 @@ impl<'de> Deserialize<'de> for HistoryLine {
 /// One normalized action observed during a run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct HistoryEventLine {
+    // llmlint: ignore[invalid_states_unrepresentable] Schema versions are strings throughout the report, session, and history contracts, and history migration must inspect several legacy string versions; `valid()` is the intentional wire-boundary check, so a bespoke current-version type would conflict with that established representation.
     pub schema_version: String,
     pub run_id: HistoryId,
     pub harness: String,
@@ -101,6 +102,7 @@ impl HistoryEventLine {
 /// The terminal summary for one harness run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct HistoryRunRecord {
+    // llmlint: ignore[invalid_states_unrepresentable] Keep the established string version representation used by every serialized contract and required by legacy history migration; deserialization validates it before exposing a current record.
     pub schema_version: String,
     pub history_id: HistoryId,
     pub session: String,

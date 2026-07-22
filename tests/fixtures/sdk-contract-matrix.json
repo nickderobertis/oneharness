@@ -56,6 +56,38 @@
       }
     },
     {
+      "name": "history line accepts serialized spawn-error status",
+      "root": "history_line",
+      "accepted": true,
+      "value": {
+        "type": "run", "schema_version": "1.0", "history_id": "0198f0d0-7b31-7000-8000-000000000001",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-07-19T00:00:01Z", "harness": "codex", "model": null, "prompt": "test",
+        "permission_mode": "default", "status": "spawn-error", "exit_code": null, "duration_ms": 0,
+        "started_at": "2026-07-19T00:00:00Z", "finished_at": null,
+        "model_ms": 0, "tool_ms": 0, "time_to_first_token_ms": null,
+        "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "failure_kind": null
+      }
+    },
+    {
+      "name": "history line rejects non-serialized spawn_error status",
+      "root": "history_line",
+      "accepted": false,
+      "value": {
+        "type": "run", "schema_version": "1.0", "history_id": "0198f0d0-7b31-7000-8000-000000000001",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-07-19T00:00:01Z", "harness": "codex", "model": null, "prompt": "test",
+        "permission_mode": "default", "status": "spawn_error", "exit_code": null, "duration_ms": 0,
+        "started_at": "2026-07-19T00:00:00Z", "finished_at": null,
+        "model_ms": 0, "tool_ms": 0, "time_to_first_token_ms": null,
+        "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "failure_kind": null
+      }
+    },
+    {
       "name": "history line rejects old embedded events record",
       "root": "history_line",
       "accepted": false,

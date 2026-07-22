@@ -30,11 +30,149 @@ use crate::domain::signals::{FailureKind, Usage};
 /// Bumped when the history record shape changes in a way a consumer must notice.
 /// Independent of [`crate::domain::report::SCHEMA_VERSION`] — the history file and
 /// the run report are separate contracts and version on their own cadence.
-pub const SCHEMA_VERSION: &str = "0.3";
+pub const SCHEMA_VERSION: &str = "1.0";
 
 /// The legacy record contract accepted by the migration reader.
 pub const LEGACY_SCHEMA_VERSION: &str = "0.1";
 const PREVIOUS_SCHEMA_VERSION: &str = "0.2";
+pub(crate) const LEGACY_RECORD_SCHEMA_VERSION: &str = "0.3";
+
+/// One event-sourced history JSONL line.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HistoryLine {
+    Event(HistoryEventLine),
+    Run(HistoryRunRecord),
+}
+
+impl<'de> Deserialize<'de> for HistoryLine {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let mut value = Value::deserialize(deserializer)?;
+        let line_type = value
+            .as_object_mut()
+            .and_then(|object| object.remove("type"))
+            .and_then(|value| value.as_str().map(str::to_owned));
+        match line_type.as_deref() {
+            Some("event") => {
+                let event = serde_json::from_value::<HistoryEventLine>(value)
+                    .map_err(serde::de::Error::custom)?;
+                if event.valid() {
+                    Ok(Self::Event(event))
+                } else {
+                    Err(serde::de::Error::custom(
+                        "invalid history schema v1.0 event line",
+                    ))
+                }
+            }
+            Some("run") => {
+                let run = serde_json::from_value::<HistoryRunRecord>(value)
+                    .map_err(serde::de::Error::custom)?;
+                if run.valid() {
+                    Ok(Self::Run(run))
+                } else {
+                    Err(serde::de::Error::custom(
+                        "invalid history schema v1.0 run line",
+                    ))
+                }
+            }
+            _ => Err(serde::de::Error::custom("invalid history schema v1.0 line")),
+        }
+    }
+}
+
+/// One normalized action observed during a run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct HistoryEventLine {
+    pub schema_version: String,
+    pub run_id: HistoryId,
+    pub harness: String,
+    pub event: ActionEvent,
+}
+
+impl HistoryEventLine {
+    fn valid(&self) -> bool {
+        if self.schema_version != SCHEMA_VERSION || self.event.kind != "tool_call" {
+            return self.schema_version == SCHEMA_VERSION;
+        }
+        let event = &self.event;
+        let base = event
+            .tool_call_id
+            .as_deref()
+            .is_some_and(|id| !id.is_empty())
+            && event.started_at.is_some()
+            && event.status.is_some();
+        base && match event.status {
+            Some(ToolCallStatus::Completed | ToolCallStatus::Failed) => {
+                event.finished_at.is_some() && event.duration_ms.is_some()
+            }
+            Some(ToolCallStatus::Timeout | ToolCallStatus::Interrupted) => true,
+            None => false,
+        }
+    }
+}
+
+/// The terminal summary for one harness run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct HistoryRunRecord {
+    pub schema_version: String,
+    pub history_id: HistoryId,
+    pub session: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "HistoryLabels::is_empty")]
+    pub labels: HistoryLabels,
+    pub project: String,
+    pub timestamp: String,
+    pub harness: String,
+    pub model: Option<String>,
+    pub prompt: String,
+    pub permission_mode: PermissionMode,
+    pub status: Status,
+    pub exit_code: Option<i32>,
+    pub duration_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_to_first_token_ms: Option<u128>,
+    pub text: Option<String>,
+    pub text_source: Option<String>,
+    pub usage: Usage,
+    pub session_id: Option<String>,
+    pub failure_kind: Option<FailureKind>,
+}
+
+impl HistoryRunRecord {
+    fn valid(&self) -> bool {
+        if self.schema_version != SCHEMA_VERSION {
+            return false;
+        }
+        match (
+            self.started_at.as_deref(),
+            self.finished_at.as_deref(),
+            self.model_ms,
+            self.tool_ms,
+            self.time_to_first_token_ms,
+        ) {
+            (None, None, None, None, None) => true,
+            (Some(started_at), finished_at, Some(model_ms), Some(tool_ms), _) => {
+                !started_at.is_empty()
+                    && self
+                        .duration_ms
+                        .is_some_and(|duration| model_ms.saturating_add(tool_ms) <= duration)
+                    && (!matches!(self.status, Status::Ok | Status::Nonzero)
+                        || finished_at.is_some())
+            }
+            _ => false,
+        }
+    }
+}
 
 /// Label lengths are bounded in *characters* — Unicode code points. That is the
 /// unit JSON Schema's `maxLength` measures in, and therefore the one unit both
@@ -415,7 +553,7 @@ impl HistoryRecord {
             && (!matches!(record.timing_state(), Ok(HistoryTiming::Unavailable))
                 || timing_unavailable)
         {
-            record.schema_version = SCHEMA_VERSION.to_string();
+            record.schema_version = LEGACY_RECORD_SCHEMA_VERSION.to_string();
         } else {
             record.started_at = None;
             record.finished_at = None;
@@ -511,12 +649,14 @@ impl HistoryRecord {
         let fallback = serde_json::to_vec(&value)?;
         let wire: HistoryRecordWire = serde_json::from_value(value)?;
         let history_id = match wire.schema_version.as_str() {
-            SCHEMA_VERSION | PREVIOUS_SCHEMA_VERSION => wire.history_id.ok_or_else(|| {
-                serde_json::Error::io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "history record is missing `history_id`",
-                ))
-            })?,
+            LEGACY_RECORD_SCHEMA_VERSION | PREVIOUS_SCHEMA_VERSION => {
+                wire.history_id.ok_or_else(|| {
+                    serde_json::Error::io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "history record is missing `history_id`",
+                    ))
+                })?
+            }
             LEGACY_SCHEMA_VERSION => {
                 let stable = legacy_identity
                     .map(str::as_bytes)
@@ -561,7 +701,7 @@ impl HistoryRecord {
             events: wire.events,
             failure_kind: wire.failure_kind,
         };
-        if record.schema_version == SCHEMA_VERSION && !record.valid_v03() {
+        if record.schema_version == LEGACY_RECORD_SCHEMA_VERSION && !record.valid_v03() {
             return Err(serde_json::Error::io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "history schema v0.3 record is missing or has invalid telemetry",
@@ -894,7 +1034,7 @@ mod tests {
             "fix the bug",
             &r,
         );
-        assert_eq!(rec.schema_version, SCHEMA_VERSION);
+        assert_eq!(rec.schema_version, LEGACY_RECORD_SCHEMA_VERSION);
         assert_eq!(rec.session, "fix-bug-20260707T131415Z-9");
         assert_eq!(rec.name, "fix-bug");
         assert_eq!(rec.labels.as_map().get("graph").unwrap(), "deploy");

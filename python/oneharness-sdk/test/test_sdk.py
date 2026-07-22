@@ -51,7 +51,7 @@ def python_input(root: str, value: Any) -> Any:
     """Translate the shared camelCase contract fixture to Python public names."""
     if not isinstance(value, dict):
         return value
-    inverse = {camel: snake for snake, camel in INPUT_KEYS[root].items()}
+    inverse = {camel: snake for snake, camel in INPUT_KEYS.get(root, {}).items()}
     return {inverse.get(key, key): item for key, item in value.items()}
 
 

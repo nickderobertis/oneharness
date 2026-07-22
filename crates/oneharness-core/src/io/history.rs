@@ -150,7 +150,7 @@ impl HistoryWriter {
             run_prompt,
             result,
         );
-        if record.schema_version != history::SCHEMA_VERSION {
+        if record.schema_version != history::LEGACY_RECORD_SCHEMA_VERSION {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "new history record lacks complete v0.3 telemetry",

@@ -1,6 +1,67 @@
 {
   "cases": [
     {
+      "name": "history line valid event",
+      "root": "history_line",
+      "accepted": true,
+      "value": {
+        "type": "event", "schema_version": "1.0",
+        "run_id": "0198f0d0-7b31-7000-8000-000000000001", "harness": "codex",
+        "event": {"kind": "tool_call", "name": "shell", "input": {}, "output": "ok", "index": 0,
+          "tool_call_id": "call-1", "started_at": "2026-07-19T00:00:00Z",
+          "finished_at": "2026-07-19T00:00:01Z", "duration_ms": 1000, "status": "completed"}
+      }
+    },
+    {
+      "name": "history line valid run",
+      "root": "history_line",
+      "accepted": true,
+      "value": {
+        "type": "run", "schema_version": "1.0", "history_id": "0198f0d0-7b31-7000-8000-000000000001",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-07-19T00:00:01Z", "harness": "codex", "model": null, "prompt": "test",
+        "permission_mode": "default", "status": "ok", "exit_code": 0, "duration_ms": 1000,
+        "started_at": "2026-07-19T00:00:00Z", "finished_at": "2026-07-19T00:00:01Z",
+        "model_ms": 500, "tool_ms": 400, "time_to_first_token_ms": 100,
+        "text": "done", "text_source": "json",
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "failure_kind": null
+      }
+    },
+    {
+      "name": "history line tool call missing identity and status",
+      "root": "history_line",
+      "accepted": false,
+      "value": {
+        "type": "event", "schema_version": "1.0",
+        "run_id": "0198f0d0-7b31-7000-8000-000000000001", "harness": "codex",
+        "event": {"kind": "tool_call", "name": "shell", "input": {}, "output": null, "index": 0,
+          "tool_call_id": null, "started_at": "2026-07-19T00:00:00Z", "finished_at": null,
+          "duration_ms": null, "status": null}
+      }
+    },
+    {
+      "name": "history line rejects old embedded events record",
+      "root": "history_line",
+      "accepted": false,
+      "value": {
+        "type": "run", "schema_version": "0.3", "history_id": "0198f0d0-7b31-7000-8000-000000000001",
+        "session": "session", "name": "name", "project": "/tmp/project", "timestamp": "2026-07-19T00:00:01Z",
+        "harness": "codex", "model": null, "prompt": "test", "permission_mode": "default", "status": "ok",
+        "exit_code": 0, "duration_ms": 1, "finished_at": null, "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "events": [], "failure_kind": null
+      }
+    },
+    {
+      "name": "history line missing discriminator",
+      "root": "history_line",
+      "accepted": false,
+      "value": {"schema_version": "1.0", "run_id": "0198f0d0-7b31-7000-8000-000000000001", "harness": "codex",
+        "event": {"kind": "tool_result", "name": null, "input": null, "output": "ok", "index": 1,
+          "tool_call_id": "call-1", "started_at": null, "finished_at": null, "duration_ms": null, "status": null}}
+    },
+    {
       "name": "run minimum",
       "root": "run_options",
       "accepted": true,

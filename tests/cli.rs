@@ -9386,7 +9386,8 @@ fn interrupted_stream_preserves_events_without_a_closing_run() {
         .find(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
         .expect("history session file")
         .path();
-    let persisted: Vec<HistoryLine> = std::fs::read_to_string(session)
+    let session_id = session.file_stem().unwrap().to_string_lossy().to_string();
+    let persisted: Vec<HistoryLine> = std::fs::read_to_string(&session)
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
@@ -9395,6 +9396,28 @@ fn interrupted_stream_preserves_events_without_a_closing_run() {
     assert!(persisted
         .iter()
         .all(|line| matches!(line, HistoryLine::Event(_))));
+
+    let shown = run(
+        &[
+            "history",
+            "show",
+            &session_id,
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--compact",
+        ],
+        &[],
+    );
+    let displayed = json_stdout(&shown);
+    let displayed = displayed.as_array().unwrap();
+    assert_eq!(displayed.len(), 1);
+    assert_eq!(displayed[0]["type"], "incomplete");
+    assert_eq!(displayed[0]["harness"], "codex");
+    assert_eq!(
+        displayed[0]["events"].as_array().unwrap().len(),
+        persisted.len()
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -9429,6 +9452,23 @@ fn history_watch_event_mode_observes_event_before_stream_finishes() {
         &[("MOCK_STDOUT", &trace)],
     );
     assert!(seeded.status.success());
+    let listed = json_stdout(&run(
+        &[
+            "history",
+            "list",
+            "--project",
+            &project,
+            "--history-dir",
+            &ds,
+            "--compact",
+        ],
+        &[],
+    ));
+    let seeded_path = listed[0]["path"].as_str().unwrap().to_string();
+    let after = first_history_run(Path::new(&seeded_path))["history_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let mut watcher = Command::new(oneharness_bin())
         .env("ONEHARNESS_NO_CONFIG", "1")
         .args([
@@ -9437,6 +9477,8 @@ fn history_watch_event_mode_observes_event_before_stream_finishes() {
             "--project",
             &project,
             "--events",
+            "--after",
+            &after,
             "--history-dir",
             &ds,
             "--format",
@@ -9447,17 +9489,6 @@ fn history_watch_event_mode_observes_event_before_stream_finishes() {
         .spawn()
         .expect("spawn event history watcher");
     let mut reader = BufReader::new(watcher.stdout.take().unwrap());
-    let mut initial = String::new();
-    loop {
-        initial.clear();
-        reader.read_line(&mut initial).expect("read seeded history");
-        if matches!(
-            serde_json::from_str::<HistoryStreamEnvelope>(&initial).unwrap(),
-            HistoryStreamEnvelope::Record { .. }
-        ) {
-            break;
-        }
-    }
     let mut run_child = Command::new(oneharness_bin())
         .env("ONEHARNESS_NO_CONFIG", "1")
         .env("MOCK_STDOUT", trace)

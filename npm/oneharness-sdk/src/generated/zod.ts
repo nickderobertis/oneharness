@@ -256,7 +256,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
         .min(1)
         .refine((value) => value !== undefined, { message: "Required" }),
       status: z
-        .union([z.literal("timeout"), z.literal("spawn_error"), z.literal("skipped"), z.literal("planned")])
+        .union([z.literal("timeout"), z.literal("spawn-error"), z.literal("skipped"), z.literal("planned")])
         .refine((value) => value !== undefined, { message: "Required" }),
       text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
       text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
@@ -596,10 +596,6 @@ export const HistoryStreamEnvelopeSchema: z.ZodType<HistoryStreamEnvelope> = z.u
   z.looseObject({
     record: z.lazy(() => HistoryRecordSchema).refine((value) => value !== undefined, { message: "Required" }),
     type: z.literal("record").refine((value) => value !== undefined, { message: "Required" }),
-  }),
-  z.looseObject({
-    line: z.lazy(() => HistoryEventLineSchema).refine((value) => value !== undefined, { message: "Required" }),
-    type: z.literal("event").refine((value) => value !== undefined, { message: "Required" }),
   }),
   z.looseObject({
     line: z.lazy(() => HistoryEventLineSchema).refine((value) => value !== undefined, { message: "Required" }),

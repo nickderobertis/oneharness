@@ -5,11 +5,17 @@
  * SDKs distinguish the stream from other NDJSON surfaces while the record's
  * `history_id` remains the resumable cursor.
  */
-export type HistoryStreamEnvelope = {
-  record: HistoryRecord;
-  type: "record";
-  [k: string]: unknown;
-};
+export type HistoryStreamEnvelope =
+  | {
+      record: HistoryRecord;
+      type: "record";
+      [k: string]: unknown;
+    }
+  | {
+      line: HistoryEventLine;
+      type: "event";
+      [k: string]: unknown;
+    };
 /**
  * One harness run, normalized and frozen for the history log. Serialized as one
  * JSONL line per harness run, appended as the run finalizes. Carries only the
@@ -487,5 +493,15 @@ export interface Usage2 {
    * Completion/output tokens billed, when the harness reports them.
    */
   output_tokens: number | null;
+  [k: string]: unknown;
+}
+/**
+ * One normalized action observed during a run.
+ */
+export interface HistoryEventLine {
+  event: ActionEvent;
+  harness: string;
+  run_id: string;
+  schema_version: string;
   [k: string]: unknown;
 }

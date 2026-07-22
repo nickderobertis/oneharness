@@ -10,6 +10,7 @@
 export interface HistoryWatchOptions {
   after?: string | undefined;
   allProjects?: boolean | undefined;
+  events?: boolean | undefined;
   historyDir?: string | undefined;
   labels?: HistoryLabels | undefined;
   project?: string | undefined;

@@ -43,6 +43,7 @@ class HistoryListOptions(_HistoryListOptionsOptional):
 class _HistoryWatchOptionsOptional(TypedDict, total=False):
     after: str
     all_projects: bool
+    events: bool
     history_dir: str
     labels: dict[str, str]
     project: str

@@ -42,6 +42,8 @@
 //!                   flushing each chunk and pausing by MOCK_STREAM_DELAY_MS
 //!                   between chunks. This models providers that split one JSONL
 //!                   record across multiple pipe reads.
+//!   MOCK_PRESERVE_STDOUT  if `1`, bypass session-field normalization so a test
+//!                   can preserve provider whitespace and framing exactly.
 //!   MOCK_FAIL_IF_MODEL  if set to a model name, fail (exit 1) with a
 //!                   `model not found` stderr when the received argv carries
 //!                   `--model <that name>`; otherwise run normally. Lets a test
@@ -383,7 +385,11 @@ pub fn run() -> ! {
     let stdout = attempt_stdout
         .or_else(|| std::env::var("MOCK_STDOUT").ok())
         .unwrap_or_else(|| "{\"result\":\"mock ok\"}".to_string());
-    let stdout = session_faithful_stdout(&argv, stdout);
+    let stdout = if std::env::var("MOCK_PRESERVE_STDOUT").as_deref() == Ok("1") {
+        stdout
+    } else {
+        session_faithful_stdout(&argv, stdout)
+    };
 
     if let Ok(chunk_bytes) = std::env::var("MOCK_STREAM_CHUNK_BYTES") {
         let chunk_bytes = chunk_bytes.parse::<usize>().unwrap_or(0);

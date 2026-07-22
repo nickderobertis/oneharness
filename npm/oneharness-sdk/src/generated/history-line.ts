@@ -5,43 +5,7 @@
  */
 export type HistoryLine =
   | {
-      event:
-        | (ActionEvent & {
-            duration_ms: number;
-            finished_at: string;
-            kind: "tool_call";
-            started_at: string;
-            status: "completed";
-            tool_call_id: string;
-            [k: string]: unknown;
-          })
-        | (ActionEvent & {
-            duration_ms: number;
-            finished_at: string;
-            kind: "tool_call";
-            started_at: string;
-            status: "failed";
-            tool_call_id: string;
-            [k: string]: unknown;
-          })
-        | (ActionEvent & {
-            kind: "tool_call";
-            started_at: string;
-            status: "timeout";
-            tool_call_id: string;
-            [k: string]: unknown;
-          })
-        | (ActionEvent & {
-            kind: "tool_call";
-            started_at: string;
-            status: "interrupted";
-            tool_call_id: string;
-            [k: string]: unknown;
-          })
-        | (ActionEvent & {
-            kind?: string | undefined;
-            [k: string]: unknown;
-          });
+      event: ActionEvent;
       harness: string;
       run_id: string;
       schema_version: "1.0";

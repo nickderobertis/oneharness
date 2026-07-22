@@ -364,6 +364,8 @@ class OneHarness:
             args.append("--all-projects")
         if parsed.get("historyDir"):
             args.extend(("--history-dir", cast("str", parsed["historyDir"])))
+        if parsed.get("events"):
+            args.append("--events")
         return self._stream(
             args,
             "history_stream_envelope",

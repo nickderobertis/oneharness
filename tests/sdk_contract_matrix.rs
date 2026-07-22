@@ -1,4 +1,4 @@
-use oneharness_core::domain::history::HistoryLine;
+use oneharness_core::domain::history::{HistoryLine, HistoryStreamEnvelope};
 use oneharness_core::domain::sdk::{
     HistoryListOptions, HistoryLookup, HistoryWatchOptions, RunOptions,
 };
@@ -29,6 +29,9 @@ fn accepts(case: &Case) -> bool {
             serde_json::from_value::<HistoryWatchOptions>(case.value.clone()).is_ok()
         }
         "history_line" => serde_json::from_value::<HistoryLine>(case.value.clone()).is_ok(),
+        "history_stream_envelope" => {
+            serde_json::from_str::<HistoryStreamEnvelope>(&case.value.to_string()).is_ok()
+        }
         root => panic!("unknown SDK fixture root {root}"),
     }
 }

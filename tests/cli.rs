@@ -2680,16 +2680,18 @@ fn codex_collaboration_and_web_search_events_flow_through_stream_and_history() {
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(raw_lines.len(), 3);
-    assert_eq!(raw_lines[0]["type"], "event");
-    assert_eq!(raw_lines[0]["event"]["index"], 0);
-    assert_eq!(raw_lines[1]["type"], "event");
-    assert_eq!(raw_lines[1]["event"]["index"], 1);
-    assert_eq!(raw_lines[2]["type"], "run");
-    assert!(raw_lines[2].get("events").is_none());
+    assert_eq!(raw_lines.len(), 5);
+    for (index, line) in raw_lines.iter().take(4).enumerate() {
+        assert_eq!(line["type"], "event");
+        assert_eq!(line["event"]["index"], index);
+    }
+    assert_eq!(raw_lines[4]["type"], "run");
+    assert!(raw_lines[4].get("events").is_none());
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
     assert_eq!(record["events"][0]["name"], "spawn_agent");
-    assert_eq!(record["events"][1]["name"], "web_search");
+    assert_eq!(record["events"][1]["name"], "spawn_agent");
+    assert_eq!(record["events"][2]["name"], "web_search");
+    assert_eq!(record["events"][3]["name"], "web_search");
     assert_eq!(record["usage"]["input_tokens"], 8);
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -9272,6 +9274,261 @@ fn history_records_a_streamed_run() {
 }
 
 #[test]
+fn streamed_history_falls_back_to_events_only_extractable_at_completion() {
+    let dir = hist_dir("stream-completion-events");
+    let ds = dir.display().to_string();
+    let stdout = r#"{
+  "type": "assistant",
+  "message": {
+    "content": [
+      {
+        "type": "tool_use",
+        "id": "call-1",
+        "name": "Bash",
+        "input": {"command": "echo complete"}
+      }
+    ]
+  }
+}"#;
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--prompt",
+            "completion-only event",
+            "--stream",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--bypass",
+        ],
+        &[("MOCK_STDOUT", stdout), ("MOCK_PRESERVE_STDOUT", "1")],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelopes: Vec<Value> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(envelopes.iter().all(|line| line["type"] != "event"));
+    let history_file = envelopes.last().unwrap()["report"]["history_file"]
+        .as_str()
+        .unwrap();
+    let lines: Vec<HistoryLine> = std::fs::read_to_string(history_file)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2);
+    assert!(matches!(lines[0], HistoryLine::Event(_)));
+    assert!(matches!(lines[1], HistoryLine::Run(_)));
+    let record = first_history_run(Path::new(history_file));
+    assert_eq!(record["events"][0]["name"], "Bash");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn interrupted_stream_preserves_events_without_a_closing_run() {
+    use std::io::BufReader;
+
+    let dir = hist_dir("interrupted-stream");
+    let ds = dir.display().to_string();
+    let lines: Vec<String> = (0..5)
+        .map(|i| format!(r#"{{"type":"item.started","item":{{"id":"call-{i}","type":"command_execution","command":"step {i}","status":"in_progress"}}}}"#))
+        .collect();
+    let mut child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_STDOUT", lines.join("\n"))
+        .env("MOCK_STREAM_DELAY_MS", "300")
+        .args([
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "interrupt me",
+            "--bin",
+            &bin_override("codex"),
+            "--stream",
+            "--history",
+            "--history-dir",
+            &ds,
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn streaming history run");
+    let mut first = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut first)
+        .expect("read first streamed event");
+    assert_eq!(
+        serde_json::from_str::<Value>(&first).unwrap()["type"],
+        "event"
+    );
+    child.kill().expect("interrupt oneharness");
+    child.wait().expect("reap interrupted oneharness");
+
+    let project_dir = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .find(|entry| entry.path().is_dir())
+        .expect("history project directory")
+        .path();
+    let session = std::fs::read_dir(project_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .find(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
+        .expect("history session file")
+        .path();
+    let persisted: Vec<HistoryLine> = std::fs::read_to_string(session)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(!persisted.is_empty());
+    assert!(persisted
+        .iter()
+        .all(|line| matches!(line, HistoryLine::Event(_))));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn history_watch_event_mode_observes_event_before_stream_finishes() {
+    use std::io::BufReader;
+
+    let dir = hist_dir("watch-live-events");
+    let ds = dir.display().to_string();
+    let project = std::env::current_dir().unwrap().display().to_string();
+    let trace = [
+        r#"{"type":"turn.started"}"#,
+        r#"{"type":"item.started","item":{"id":"call-1","type":"command_execution","command":"first","status":"in_progress"}}"#,
+        r#"{"type":"item.completed","item":{"id":"call-1","type":"command_execution","command":"first","aggregated_output":"ok","exit_code":0,"status":"completed"}}"#,
+        r#"{"type":"turn.completed"}"#,
+    ]
+    .join("\n");
+    let seeded = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "seed watch",
+            "--bin",
+            &bin_override("codex"),
+            "--stream",
+            "--history",
+            "--history-dir",
+            &ds,
+        ],
+        &[("MOCK_STDOUT", &trace)],
+    );
+    assert!(seeded.status.success());
+    let mut watcher = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args([
+            "history",
+            "watch",
+            "--project",
+            &project,
+            "--events",
+            "--history-dir",
+            &ds,
+            "--format",
+            "jsonl",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn event history watcher");
+    let mut reader = BufReader::new(watcher.stdout.take().unwrap());
+    let mut initial = String::new();
+    loop {
+        initial.clear();
+        reader.read_line(&mut initial).expect("read seeded history");
+        if matches!(
+            serde_json::from_str::<HistoryStreamEnvelope>(&initial).unwrap(),
+            HistoryStreamEnvelope::Record { .. }
+        ) {
+            break;
+        }
+    }
+    let mut run_child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_STDOUT", trace)
+        .env("MOCK_STREAM_DELAY_MS", "600")
+        .args([
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "watch live",
+            "--bin",
+            &bin_override("codex"),
+            "--stream",
+            "--history",
+            "--history-dir",
+            &ds,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn watched streaming run");
+
+    let mut event_line = String::new();
+    reader
+        .read_line(&mut event_line)
+        .expect("read live history event");
+    let event: HistoryStreamEnvelope = serde_json::from_str(&event_line).unwrap();
+    assert!(matches!(event, HistoryStreamEnvelope::Event { .. }));
+    assert!(
+        run_child.try_wait().unwrap().is_none(),
+        "event must arrive before run completion"
+    );
+    assert!(run_child.wait().unwrap().success());
+
+    let mut closing_line = String::new();
+    loop {
+        closing_line.clear();
+        reader
+            .read_line(&mut closing_line)
+            .expect("read closing history record");
+        if matches!(
+            serde_json::from_str::<HistoryStreamEnvelope>(&closing_line).unwrap(),
+            HistoryStreamEnvelope::Record { .. }
+        ) {
+            break;
+        }
+    }
+    drop(reader);
+    let trigger = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--bin",
+            &bin_override("codex"),
+            "--prompt",
+            "close watcher",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)],
+    );
+    assert!(trigger.status.success());
+    assert!(watcher.wait().unwrap().success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn history_enabled_and_dir_via_environment() {
     // ONEHARNESS_HISTORY / ONEHARNESS_HISTORY_DIR enable + place the store end to
     // end (config loading on, so the env layer applies).
@@ -9541,6 +9798,7 @@ fn history_watch_filters_and_resumes_as_jsonl() {
             assert_eq!(record.history_id.to_string(), ids[1]);
             assert_eq!(record.prompt, "second");
         }
+        HistoryStreamEnvelope::Event { .. } => panic!("record-only watch emitted an event"),
     }
     let mut future = envelope;
     future["future_output_field"] = Value::Bool(true);

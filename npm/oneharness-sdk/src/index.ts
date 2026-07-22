@@ -435,6 +435,7 @@ export class OneHarness {
 		if (input.project) args.push("--project", input.project);
 		if (input.allProjects) args.push("--all-projects");
 		if (input.historyDir) args.push("--history-dir", input.historyDir);
+		if (input.events) args.push("--events");
 		return invokeStreamWith(
 			this.options,
 			args,

@@ -66,7 +66,8 @@ const contractMatrix = JSON.parse(
 			| "history_lookup"
 			| "history_list_options"
 			| "history_watch_options"
-			| "history_line";
+			| "history_line"
+			| "history_stream_envelope";
 		accepted: boolean;
 		value: unknown;
 	}>;
@@ -143,6 +144,7 @@ describe("OneHarness", () => {
 			history_list_options: HistoryListOptionsSchema,
 			history_watch_options: HistoryWatchOptionsSchema,
 			history_line: HistoryLineSchema,
+			history_stream_envelope: HistoryStreamEnvelopeSchema,
 		};
 		expect(contractMatrix.cases.length).toBeGreaterThan(0);
 		for (const fixture of contractMatrix.cases) {

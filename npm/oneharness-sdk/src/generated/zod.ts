@@ -22,7 +22,7 @@ import type { HistoryList, HistorySessionSummary } from "./history-list.js";
 import type { HistoryListOptions } from "./history-list-options.js";
 import type { HistoryLookup, HistoryLookupByLast, HistoryLookupBySession } from "./history-lookup.js";
 import type { HistoryRecords } from "./history-records.js";
-import type { HistoryStreamEnvelope } from "./history-stream-envelope.js";
+import type { HistoryEventLine, HistoryStreamEnvelope } from "./history-stream-envelope.js";
 import type { HistoryWatchOptions } from "./history-watch-options.js";
 import type { HistoryLabels, PermissionMode, RunOptions } from "./options.js";
 import type { HarnessInfo, ListReport, ModeInfo } from "./registry.js";
@@ -118,6 +118,20 @@ export const HarnessInfoSchema: z.ZodType<HarnessInfo> = z.looseObject({
   sync_file: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
 });
 
+export const HistoryEventLineSchema: z.ZodType<HistoryEventLine> = z.looseObject({
+  event: z.lazy(() => ActionEventSchema).refine((value) => value !== undefined, { message: "Required" }),
+  harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  run_id: z
+    .string()
+    .min(36)
+    .regex(
+      new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+    )
+    .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
+    .refine((value) => value !== undefined, { message: "Required" }),
+  schema_version: z.string().refine((value) => value !== undefined, { message: "Required" }),
+});
+
 export const HistoryLabelsSchema: z.ZodType<HistoryLabels> = z.record(
   z
     .string()
@@ -137,79 +151,7 @@ export const HistoryLabelsSchema: z.ZodType<HistoryLabels> = z.record(
 
 export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
   z.looseObject({
-    event: z
-      .union([
-        z.intersection(
-          z.lazy(() => ActionEventSchema),
-          z.looseObject({
-            duration_ms: z
-              .int()
-              .gte(0)
-              .refine((value) => value !== undefined, { message: "Required" }),
-            finished_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-            kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
-            started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-            status: z.literal("completed").refine((value) => value !== undefined, { message: "Required" }),
-            tool_call_id: z
-              .string()
-              .min(1)
-              .refine((value) => value !== undefined, { message: "Required" }),
-          }),
-        ),
-        z.intersection(
-          z.lazy(() => ActionEventSchema),
-          z.looseObject({
-            duration_ms: z
-              .int()
-              .gte(0)
-              .refine((value) => value !== undefined, { message: "Required" }),
-            finished_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-            kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
-            started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-            status: z.literal("failed").refine((value) => value !== undefined, { message: "Required" }),
-            tool_call_id: z
-              .string()
-              .min(1)
-              .refine((value) => value !== undefined, { message: "Required" }),
-          }),
-        ),
-        z.intersection(
-          z.lazy(() => ActionEventSchema),
-          z.looseObject({
-            kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
-            started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-            status: z.literal("timeout").refine((value) => value !== undefined, { message: "Required" }),
-            tool_call_id: z
-              .string()
-              .min(1)
-              .refine((value) => value !== undefined, { message: "Required" }),
-          }),
-        ),
-        z.intersection(
-          z.lazy(() => ActionEventSchema),
-          z.looseObject({
-            kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
-            started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-            status: z.literal("interrupted").refine((value) => value !== undefined, { message: "Required" }),
-            tool_call_id: z
-              .string()
-              .min(1)
-              .refine((value) => value !== undefined, { message: "Required" }),
-          }),
-        ),
-        z.intersection(
-          z.lazy(() => ActionEventSchema),
-          z.looseObject({
-            kind: z
-              .string()
-              .refine((value) => !new RegExp("^tool_call$", "u").test(value), {
-                message: "Invalid string: must not contain ^tool_call$",
-              })
-              .optional(),
-          }),
-        ),
-      ])
-      .refine((value) => value !== undefined, { message: "Required" }),
+    event: z.lazy(() => ActionEventSchema).refine((value) => value !== undefined, { message: "Required" }),
     harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
     run_id: z
       .string()
@@ -650,10 +592,20 @@ export const HistorySessionSummarySchema: z.ZodType<HistorySessionSummary> = z.l
   started: z.string().refine((value) => value !== undefined, { message: "Required" }),
 });
 
-export const HistoryStreamEnvelopeSchema: z.ZodType<HistoryStreamEnvelope> = z.looseObject({
-  record: z.lazy(() => HistoryRecordSchema).refine((value) => value !== undefined, { message: "Required" }),
-  type: z.literal("record").refine((value) => value !== undefined, { message: "Required" }),
-});
+export const HistoryStreamEnvelopeSchema: z.ZodType<HistoryStreamEnvelope> = z.union([
+  z.looseObject({
+    record: z.lazy(() => HistoryRecordSchema).refine((value) => value !== undefined, { message: "Required" }),
+    type: z.literal("record").refine((value) => value !== undefined, { message: "Required" }),
+  }),
+  z.looseObject({
+    line: z.lazy(() => HistoryEventLineSchema).refine((value) => value !== undefined, { message: "Required" }),
+    type: z.literal("event").refine((value) => value !== undefined, { message: "Required" }),
+  }),
+  z.looseObject({
+    line: z.lazy(() => HistoryEventLineSchema).refine((value) => value !== undefined, { message: "Required" }),
+    type: z.literal("event").refine((value) => value !== undefined, { message: "Required" }),
+  }),
+]);
 
 export const HistoryWatchOptionsSchema: z.ZodType<HistoryWatchOptions> = z.strictObject({
   after: z
@@ -665,6 +617,7 @@ export const HistoryWatchOptionsSchema: z.ZodType<HistoryWatchOptions> = z.stric
     .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
     .optional(),
   allProjects: z.boolean().optional(),
+  events: z.boolean().optional(),
   historyDir: z.string().optional(),
   labels: z.lazy(() => HistoryLabelsSchema).optional(),
   project: z.string().optional(),

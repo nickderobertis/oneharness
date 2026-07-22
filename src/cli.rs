@@ -202,6 +202,10 @@ pub struct HistoryMigrateArgs {
 
 #[derive(Args, Debug)]
 pub struct HistoryWatchArgs {
+    /// Stream action event lines as they arrive, in addition to closing records.
+    #[arg(long)]
+    pub events: bool,
+
     /// Resume strictly after this history record UUID, without duplicating it.
     #[arg(long, value_name = "CURSOR")]
     pub after: Option<String>,

@@ -1794,6 +1794,9 @@
       "allProjects": {
         "type": "boolean"
       },
+      "events": {
+        "type": "boolean"
+      },
       "historyDir": {
         "type": "string"
       },
@@ -1839,176 +1842,7 @@
             "type": "object",
             "properties": {
               "event": {
-                "oneOf": [
-                  {
-                    "allOf": [
-                      {
-                        "$ref": "#/$defs/ActionEvent"
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "duration_ms": {
-                            "type": "integer",
-                            "minimum": 0
-                          },
-                          "finished_at": {
-                            "type": "string"
-                          },
-                          "kind": {
-                            "type": "string",
-                            "const": "tool_call"
-                          },
-                          "started_at": {
-                            "type": "string"
-                          },
-                          "status": {
-                            "type": "string",
-                            "const": "completed"
-                          },
-                          "tool_call_id": {
-                            "type": "string",
-                            "minLength": 1
-                          }
-                        },
-                        "required": [
-                          "kind",
-                          "tool_call_id",
-                          "started_at",
-                          "status",
-                          "finished_at",
-                          "duration_ms"
-                        ]
-                      }
-                    ]
-                  },
-                  {
-                    "allOf": [
-                      {
-                        "$ref": "#/$defs/ActionEvent"
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "duration_ms": {
-                            "type": "integer",
-                            "minimum": 0
-                          },
-                          "finished_at": {
-                            "type": "string"
-                          },
-                          "kind": {
-                            "type": "string",
-                            "const": "tool_call"
-                          },
-                          "started_at": {
-                            "type": "string"
-                          },
-                          "status": {
-                            "type": "string",
-                            "const": "failed"
-                          },
-                          "tool_call_id": {
-                            "type": "string",
-                            "minLength": 1
-                          }
-                        },
-                        "required": [
-                          "kind",
-                          "tool_call_id",
-                          "started_at",
-                          "status",
-                          "finished_at",
-                          "duration_ms"
-                        ]
-                      }
-                    ]
-                  },
-                  {
-                    "allOf": [
-                      {
-                        "$ref": "#/$defs/ActionEvent"
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "kind": {
-                            "type": "string",
-                            "const": "tool_call"
-                          },
-                          "started_at": {
-                            "type": "string"
-                          },
-                          "status": {
-                            "type": "string",
-                            "const": "timeout"
-                          },
-                          "tool_call_id": {
-                            "type": "string",
-                            "minLength": 1
-                          }
-                        },
-                        "required": [
-                          "kind",
-                          "tool_call_id",
-                          "started_at",
-                          "status"
-                        ]
-                      }
-                    ]
-                  },
-                  {
-                    "allOf": [
-                      {
-                        "$ref": "#/$defs/ActionEvent"
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "kind": {
-                            "type": "string",
-                            "const": "tool_call"
-                          },
-                          "started_at": {
-                            "type": "string"
-                          },
-                          "status": {
-                            "type": "string",
-                            "const": "interrupted"
-                          },
-                          "tool_call_id": {
-                            "type": "string",
-                            "minLength": 1
-                          }
-                        },
-                        "required": [
-                          "kind",
-                          "tool_call_id",
-                          "started_at",
-                          "status"
-                        ]
-                      }
-                    ]
-                  },
-                  {
-                    "allOf": [
-                      {
-                        "$ref": "#/$defs/ActionEvent"
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "kind": {
-                            "type": "string",
-                            "not": {
-                              "pattern": "^tool_call$"
-                            }
-                          }
-                        }
-                      }
-                    ]
-                  }
-                ]
+                "$ref": "#/$defs/ActionEvent"
               },
               "harness": {
                 "type": "string"
@@ -3795,6 +3629,40 @@
           "type",
           "record"
         ]
+      },
+      {
+        "description": "A normalized action event observed before its run closes.",
+        "type": "object",
+        "properties": {
+          "line": {
+            "$ref": "#/$defs/HistoryEventLine"
+          },
+          "type": {
+            "type": "string",
+            "const": "event"
+          }
+        },
+        "required": [
+          "type",
+          "line"
+        ]
+      },
+      {
+        "description": "A normalized action event observed before its run closes.",
+        "type": "object",
+        "properties": {
+          "line": {
+            "$ref": "#/$defs/HistoryEventLine"
+          },
+          "type": {
+            "type": "string",
+            "const": "event"
+          }
+        },
+        "required": [
+          "type",
+          "line"
+        ]
       }
     ],
     "$defs": {
@@ -3911,6 +3779,33 @@
             "type": "string",
             "const": "tool_deferred"
           }
+        ]
+      },
+      "HistoryEventLine": {
+        "description": "One normalized action observed during a run.",
+        "type": "object",
+        "properties": {
+          "event": {
+            "$ref": "#/$defs/ActionEvent"
+          },
+          "harness": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 36,
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          },
+          "schema_version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "run_id",
+          "harness",
+          "event"
         ]
       },
       "HistoryLabels": {

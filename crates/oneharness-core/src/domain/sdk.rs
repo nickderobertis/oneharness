@@ -348,6 +348,9 @@ pub struct HistoryWatchOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub history_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub events: Option<bool>,
 }
 
 #[cfg(test)]
@@ -451,12 +454,21 @@ mod tests {
         assert_eq!(
             parsed
                 .labels
+                .as_ref()
                 .expect("labels")
                 .as_map()
                 .get("graph")
                 .map(String::as_str),
             Some("release")
         );
+        assert!(serde_json::to_value(&parsed)
+            .unwrap()
+            .get("events")
+            .is_none());
+        let event_mode =
+            serde_json::from_value::<HistoryWatchOptions>(serde_json::json!({ "events": true }))
+                .expect("event watch mode is opt-in");
+        assert_eq!(event_mode.events, Some(true));
 
         for invalid in [
             serde_json::json!({ "after": "not-a-cursor" }),

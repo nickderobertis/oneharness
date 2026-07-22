@@ -7,7 +7,7 @@
 use schemars::{schema_for, Schema};
 use serde::Serialize;
 
-use crate::domain::history::{HistoryRecord, HistoryStreamEnvelope};
+use crate::domain::history::{HistoryLine, HistoryRecord, HistoryStreamEnvelope};
 use crate::domain::report::{RunReport, RunStreamEnvelope};
 use crate::domain::sdk::{
     schema_for_serialize, HistoryListOptions, HistoryLookup, HistoryWatchOptions, RunOptions,
@@ -23,6 +23,7 @@ pub struct SdkSchemaBundle {
     pub history_lookup: Schema,
     pub history_list_options: Schema,
     pub history_watch_options: Schema,
+    pub history_line: Schema,
     pub history_record: Schema,
     pub history_stream_envelope: Schema,
     pub history_records: Schema,
@@ -38,10 +39,177 @@ pub fn bundle() -> SdkSchemaBundle {
         history_lookup: schema_for!(HistoryLookup),
         history_list_options: schema_for!(HistoryListOptions),
         history_watch_options: schema_for!(HistoryWatchOptions),
+        history_line: history_line_schema(schema_for_serialize::<HistoryLine>()),
         history_record: history_schema(schema_for_serialize::<HistoryRecord>()),
         history_stream_envelope: history_schema(schema_for_serialize::<HistoryStreamEnvelope>()),
         history_records: history_schema(schema_for_serialize::<Vec<HistoryRecord>>()),
         history_list: schema_for_serialize::<Vec<SessionSummary>>(),
+    }
+}
+
+fn history_line_schema(schema: Schema) -> Schema {
+    let mut value = serde_json::to_value(schema).expect("Schema serializes");
+    let definitions = value["$defs"].clone();
+    if let Some(variants) = value
+        .get_mut("oneOf")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for variant in variants.iter_mut() {
+            let Some(reference) = variant.get("$ref").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let name = reference
+                .rsplit('/')
+                .next()
+                .expect("schema reference has a name");
+            let mut expanded = definitions[name].clone();
+            let discriminator = variant["properties"].clone();
+            expanded["properties"]
+                .as_object_mut()
+                .expect("object properties")
+                .extend(
+                    discriminator
+                        .as_object()
+                        .expect("discriminator properties")
+                        .clone(),
+                );
+            expanded["required"]
+                .as_array_mut()
+                .expect("required array")
+                .extend(
+                    variant["required"]
+                        .as_array()
+                        .expect("required array")
+                        .clone(),
+                );
+            *variant = expanded;
+        }
+    }
+    value["$defs"]
+        .as_object_mut()
+        .expect("schema definitions")
+        .remove("HistoryEventLine");
+    value["$defs"]
+        .as_object_mut()
+        .expect("schema definitions")
+        .remove("HistoryRunRecord");
+    add_history_line_conditions(&mut value);
+    if let Some(variants) = value
+        .get_mut("oneOf")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for variant in variants {
+            *variant = serde_json::json!({"allOf": [variant.clone()]});
+        }
+    }
+    Schema::try_from(value).expect("conditional history line schema remains an object")
+}
+
+fn add_history_line_conditions(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(values) => values.iter_mut().for_each(add_history_line_conditions),
+        serde_json::Value::Object(object) => {
+            let Some(properties) = object
+                .get("properties")
+                .and_then(serde_json::Value::as_object)
+            else {
+                object.values_mut().for_each(add_history_line_conditions);
+                return;
+            };
+            if properties.contains_key("run_id") && properties.contains_key("event") {
+                object["properties"]["schema_version"] =
+                    serde_json::json!({"const": "1.0", "type": "string"});
+                let event_base = object["properties"]["event"].clone();
+                let tool_call = |status: &str, ended: bool| {
+                    let mut properties = serde_json::json!({
+                        "kind": {"const": "tool_call", "type": "string"},
+                        "tool_call_id": {"type": "string", "minLength": 1},
+                        "started_at": {"type": "string"},
+                        "status": {"const": status, "type": "string"}
+                    });
+                    let mut required =
+                        serde_json::json!(["kind", "tool_call_id", "started_at", "status"]);
+                    if ended {
+                        properties["finished_at"] = serde_json::json!({"type": "string"});
+                        properties["duration_ms"] =
+                            serde_json::json!({"type": "integer", "minimum": 0});
+                        required.as_array_mut().expect("array").extend([
+                            serde_json::Value::String("finished_at".to_string()),
+                            serde_json::Value::String("duration_ms".to_string()),
+                        ]);
+                    }
+                    serde_json::json!({"allOf": [event_base.clone(), {
+                        "type": "object", "properties": properties, "required": required
+                    }]})
+                };
+                object["properties"]["event"] = serde_json::json!({"oneOf": [
+                    tool_call("completed", true), tool_call("failed", true),
+                    tool_call("timeout", false), tool_call("interrupted", false),
+                    {"allOf": [event_base, {"type": "object", "properties": {
+                        "kind": {"not": {"pattern": "^tool_call$"}, "type": "string"}
+                    }}]}
+                ]});
+                return;
+            }
+            if properties.contains_key("history_id")
+                && properties.contains_key("schema_version")
+                && properties.contains_key("harness")
+                && !properties.contains_key("events")
+            {
+                let base = serde_json::Value::Object(object.clone());
+                let mut measured = base.clone();
+                measured["properties"]["schema_version"] =
+                    serde_json::json!({"const": "1.0", "type": "string"});
+                for field in ["started_at", "duration_ms", "model_ms", "tool_ms"] {
+                    let required = measured["required"].as_array_mut().expect("required array");
+                    if !required.iter().any(|value| value.as_str() == Some(field)) {
+                        required.push(serde_json::Value::String(field.to_string()));
+                    }
+                }
+                measured["properties"]["started_at"] =
+                    serde_json::json!({"type": "string", "minLength": 1});
+                for field in ["duration_ms", "model_ms", "tool_ms"] {
+                    measured["properties"][field] =
+                        serde_json::json!({"type": "integer", "minimum": 0});
+                }
+                let mut terminal = measured.clone();
+                terminal["properties"]["status"] =
+                    serde_json::json!({"enum": ["ok", "nonzero"], "type": "string"});
+                terminal["properties"]["finished_at"] = serde_json::json!({"type": "string"});
+                measured["properties"]["status"] = serde_json::json!({
+                    "enum": ["timeout", "spawn_error", "skipped", "planned"],
+                    "type": "string"
+                });
+                let mut unavailable = base;
+                unavailable["properties"]["schema_version"] =
+                    serde_json::json!({"const": "1.0", "type": "string"});
+                unavailable["properties"]["finished_at"] = serde_json::json!({"type": "null"});
+                for field in [
+                    "started_at",
+                    "model_ms",
+                    "tool_ms",
+                    "time_to_first_token_ms",
+                ] {
+                    unavailable["properties"][field] = serde_json::Value::Bool(false);
+                    unavailable["required"]
+                        .as_array_mut()
+                        .expect("required array")
+                        .retain(|value| value.as_str() != Some(field));
+                }
+                object.clear();
+                object.insert(
+                    "oneOf".to_string(),
+                    serde_json::json!([
+                        {"allOf": [terminal]},
+                        {"allOf": [measured]},
+                        {"allOf": [unavailable]}
+                    ]),
+                );
+                return;
+            }
+            object.values_mut().for_each(add_history_line_conditions);
+        }
+        _ => {}
     }
 }
 
@@ -71,7 +239,7 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                 let base = serde_json::Value::Object(object.clone());
                 let mut current = base.clone();
                 current["properties"]["schema_version"] =
-                    serde_json::json!({"const": "0.3", "type": "string"});
+                    serde_json::json!({"const": "1.0", "type": "string"});
                 let required = current["required"]
                     .as_array_mut()
                     .expect("history required array");
@@ -138,7 +306,7 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                 });
                 let mut unavailable = base.clone();
                 unavailable["properties"]["schema_version"] =
-                    serde_json::json!({"const": "0.3", "type": "string"});
+                    serde_json::json!({"const": "1.0", "type": "string"});
                 unavailable["properties"]["finished_at"] = serde_json::json!({"type": "null"});
                 if let Some(required) = unavailable["required"].as_array_mut() {
                     required.retain(|value| {
@@ -226,7 +394,7 @@ mod tests {
 
     fn current_record(event: serde_json::Value) -> serde_json::Value {
         json!({
-            "schema_version": "0.3",
+            "schema_version": "1.0",
             "history_id": "0198f0d0-7b31-7000-8000-000000000001",
             "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
             "timestamp": "2026-07-19T00:00:00Z", "harness": "codex", "model": null,

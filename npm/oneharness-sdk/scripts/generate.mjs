@@ -111,6 +111,13 @@ const history = exactOptionalProperties(
 		style: { endOfLine: "lf" },
 	}),
 );
+const historyLine = exactOptionalProperties(
+	await compile(typescriptSchema(bundle.history_line), "HistoryLine", {
+		bannerComment: "/* Generated from oneharness-core. Do not edit. */",
+		additionalProperties: true,
+		style: { endOfLine: "lf" },
+	}),
+);
 const historyStreamEnvelope = exactOptionalProperties(
 	await compile(
 		typescriptSchema(bundle.history_stream_envelope),
@@ -177,6 +184,7 @@ const files = {
 	"history-list-options.ts": generatedBytes(historyListOptions),
 	"history-watch-options.ts": generatedBytes(historyWatchOptions),
 	"history.ts": generatedBytes(history),
+	"history-line.ts": generatedBytes(historyLine),
 	"history-stream-envelope.ts": generatedBytes(historyStreamEnvelope),
 	"history-records.ts": generatedBytes(historyRecords),
 	"history-list.ts": generatedBytes(historyList),

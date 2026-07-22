@@ -14,6 +14,8 @@ import {
 	FallbackReportSchema,
 	type HarnessInfo,
 	HarnessInfoSchema,
+	type HistoryLine,
+	HistoryLineSchema,
 	type HistoryList,
 	type HistoryListOptions,
 	HistoryListOptionsSchema,
@@ -63,7 +65,8 @@ const contractMatrix = JSON.parse(
 			| "run_options"
 			| "history_lookup"
 			| "history_list_options"
-			| "history_watch_options";
+			| "history_watch_options"
+			| "history_line";
 		accepted: boolean;
 		value: unknown;
 	}>;
@@ -88,6 +91,7 @@ type Equal<Left, Right> =
 const inferredSchemasMatchGeneratedTypes: [
 	Equal<z.infer<typeof RunOptionsSchema>, RunOptions>,
 	Equal<z.infer<typeof HistoryListOptionsSchema>, HistoryListOptions>,
+	Equal<z.infer<typeof HistoryLineSchema>, HistoryLine>,
 	Equal<z.infer<typeof HistoryLookupSchema>, HistoryLookup>,
 	Equal<z.infer<typeof HistoryWatchOptionsSchema>, HistoryWatchOptions>,
 	Equal<z.infer<typeof RunReportSchema>, RunReport>,
@@ -121,6 +125,7 @@ const inferredSchemasMatchGeneratedTypes: [
 	true,
 	true,
 	true,
+	true,
 ];
 
 function sdk(): OneHarness {
@@ -137,6 +142,7 @@ describe("OneHarness", () => {
 			history_lookup: HistoryLookupSchema,
 			history_list_options: HistoryListOptionsSchema,
 			history_watch_options: HistoryWatchOptionsSchema,
+			history_line: HistoryLineSchema,
 		};
 		expect(contractMatrix.cases.length).toBeGreaterThan(0);
 		for (const fixture of contractMatrix.cases) {
@@ -570,7 +576,7 @@ describe("OneHarness", () => {
 			session: "node-session-unmeasured",
 			historyDir,
 		});
-		expect(unmeasured?.schema_version).toBe("0.3");
+		expect(unmeasured?.schema_version).toBe("1.0");
 		expect(unmeasured).not.toHaveProperty("model_ms");
 		expect(HistoryRecordSchema.safeParse(unmeasured).success).toBe(true);
 		expect(

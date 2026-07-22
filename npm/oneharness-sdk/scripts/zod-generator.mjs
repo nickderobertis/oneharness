@@ -64,6 +64,7 @@ export const SDK_SCHEMA_ROOTS = Object.freeze([
 		module: "run-stream-envelope",
 	},
 	{ key: "history_record", type: "HistoryRecord", module: "history" },
+	{ key: "history_line", type: "HistoryLine", module: "history-line" },
 	{
 		key: "history_stream_envelope",
 		type: "HistoryStreamEnvelope",

@@ -42,6 +42,7 @@ export type {
 } from "./generated/contracts.js";
 export type { DetectInfo, DetectReport } from "./generated/detection.js";
 export type { HistoryRecord } from "./generated/history.js";
+export type { HistoryLine } from "./generated/history-line.js";
 export type {
 	HistoryList,
 	HistorySessionSummary,

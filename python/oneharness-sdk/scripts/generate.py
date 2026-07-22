@@ -133,6 +133,7 @@ def types_module(bundle: dict[str, Any]) -> str:
         "RunReport = dict[str, Any]",
         "RunStreamEnvelope = dict[str, Any]",
         "HistoryRecord = dict[str, Any]",
+        "HistoryLine = dict[str, Any]",
         "HistoryStreamEnvelope = dict[str, Any]",
         "HarnessInfo = dict[str, Any]",
         "Detection = dict[str, Any]",

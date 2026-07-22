@@ -51,7 +51,7 @@ def python_input(root: str, value: Any) -> Any:
     """Translate the shared camelCase contract fixture to Python public names."""
     if not isinstance(value, dict):
         return value
-    inverse = {camel: snake for snake, camel in INPUT_KEYS[root].items()}
+    inverse = {camel: snake for snake, camel in INPUT_KEYS.get(root, {}).items()}
     return {inverse.get(key, key): item for key, item in value.items()}
 
 
@@ -152,7 +152,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         unmeasured = await client.history(
             {"session": "python-session-unmeasured", "history_dir": history_dir}
         )
-        self.assertEqual(unmeasured[0]["schema_version"], "0.3")
+        self.assertEqual(unmeasured[0]["schema_version"], "1.0")
         self.assertNotIn("model_ms", unmeasured[0])
         unmeasured_event = json.loads(json.dumps(unmeasured[0]))
         unmeasured_event["events"] = [

@@ -93,7 +93,7 @@ export type HistoryRecord =
        * run's single prompt).
        */
       prompt: string;
-      schema_version: "0.3";
+      schema_version: "1.0";
       /**
        * The oneharness session id this run belongs to (the history file's stem).
        */
@@ -183,7 +183,7 @@ export type HistoryRecord =
        * run's single prompt).
        */
       prompt: string;
-      schema_version: "0.3";
+      schema_version: "1.0";
       /**
        * The oneharness session id this run belongs to (the history file's stem).
        */

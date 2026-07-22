@@ -175,6 +175,29 @@ pub enum HistoryCommand {
     /// Delete recorded sessions. Reports what it WOULD remove and removes nothing
     /// unless --yes is given (so it is safe to run non-interactively first).
     Clear(HistoryClearArgs),
+    /// Rewrite legacy 0.1/0.2/0.3 whole-record stores into the event-sourced
+    /// 1.0 line format and rebuild the history index.
+    Migrate(HistoryMigrateArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct HistoryMigrateArgs {
+    /// History directory to migrate (default: config `history_dir`,
+    /// ONEHARNESS_HISTORY_DIR, else the platform state dir).
+    #[arg(long, value_name = "DIR")]
+    pub history_dir: Option<PathBuf>,
+
+    /// Load configuration from this file only (skip user/project discovery).
+    #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
+    pub config: Option<PathBuf>,
+
+    /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
+    #[arg(long)]
+    pub no_config: bool,
+
+    /// Emit compact single-line JSON instead of pretty-printed.
+    #[arg(long)]
+    pub compact: bool,
 }
 
 #[derive(Args, Debug)]

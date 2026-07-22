@@ -1827,6 +1827,938 @@
       }
     }
   },
+  "history_line": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "HistoryLine",
+    "description": "One event-sourced history JSONL line.",
+    "oneOf": [
+      {
+        "allOf": [
+          {
+            "description": "One normalized action observed during a run.",
+            "type": "object",
+            "properties": {
+              "event": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/$defs/ActionEvent"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "duration_ms": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "finished_at": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "const": "tool_call"
+                          },
+                          "started_at": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "const": "completed"
+                          },
+                          "tool_call_id": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "tool_call_id",
+                          "started_at",
+                          "status",
+                          "finished_at",
+                          "duration_ms"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/$defs/ActionEvent"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "duration_ms": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "finished_at": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "const": "tool_call"
+                          },
+                          "started_at": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "const": "failed"
+                          },
+                          "tool_call_id": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "tool_call_id",
+                          "started_at",
+                          "status",
+                          "finished_at",
+                          "duration_ms"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/$defs/ActionEvent"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "tool_call"
+                          },
+                          "started_at": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "const": "timeout"
+                          },
+                          "tool_call_id": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "tool_call_id",
+                          "started_at",
+                          "status"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/$defs/ActionEvent"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "tool_call"
+                          },
+                          "started_at": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "const": "interrupted"
+                          },
+                          "tool_call_id": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "tool_call_id",
+                          "started_at",
+                          "status"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/$defs/ActionEvent"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "not": {
+                              "pattern": "^tool_call$"
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "harness": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string",
+                "maxLength": 36,
+                "minLength": 36,
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+              },
+              "schema_version": {
+                "type": "string",
+                "const": "1.0"
+              },
+              "type": {
+                "type": "string",
+                "const": "event"
+              }
+            },
+            "required": [
+              "schema_version",
+              "run_id",
+              "harness",
+              "event",
+              "type"
+            ]
+          }
+        ]
+      },
+      {
+        "allOf": [
+          {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "description": "The terminal summary for one harness run.",
+                    "type": "object",
+                    "properties": {
+                      "duration_ms": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "exit_code": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "format": "int32"
+                      },
+                      "failure_kind": {
+                        "anyOf": [
+                          {
+                            "$ref": "#/$defs/FailureKind"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "finished_at": {
+                        "type": "string"
+                      },
+                      "harness": {
+                        "type": "string"
+                      },
+                      "history_id": {
+                        "type": "string",
+                        "maxLength": 36,
+                        "minLength": 36,
+                        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                      },
+                      "labels": {
+                        "$ref": "#/$defs/HistoryLabels"
+                      },
+                      "model": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "model_ms": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "permission_mode": {
+                        "$ref": "#/$defs/PermissionMode"
+                      },
+                      "project": {
+                        "type": "string"
+                      },
+                      "prompt": {
+                        "type": "string"
+                      },
+                      "schema_version": {
+                        "type": "string",
+                        "const": "1.0"
+                      },
+                      "session": {
+                        "type": "string"
+                      },
+                      "session_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "started_at": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "ok",
+                          "nonzero"
+                        ]
+                      },
+                      "text": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "text_source": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "time_to_first_token_ms": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "format": "uint128",
+                        "minimum": 0
+                      },
+                      "timestamp": {
+                        "type": "string"
+                      },
+                      "tool_ms": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "type": {
+                        "type": "string",
+                        "const": "run"
+                      },
+                      "usage": {
+                        "$ref": "#/$defs/Usage"
+                      }
+                    },
+                    "required": [
+                      "schema_version",
+                      "history_id",
+                      "session",
+                      "name",
+                      "project",
+                      "timestamp",
+                      "harness",
+                      "model",
+                      "prompt",
+                      "permission_mode",
+                      "status",
+                      "exit_code",
+                      "duration_ms",
+                      "finished_at",
+                      "text",
+                      "text_source",
+                      "usage",
+                      "session_id",
+                      "failure_kind",
+                      "type",
+                      "started_at",
+                      "model_ms",
+                      "tool_ms"
+                    ]
+                  }
+                ]
+              },
+              {
+                "allOf": [
+                  {
+                    "description": "The terminal summary for one harness run.",
+                    "type": "object",
+                    "properties": {
+                      "duration_ms": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "exit_code": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "format": "int32"
+                      },
+                      "failure_kind": {
+                        "anyOf": [
+                          {
+                            "$ref": "#/$defs/FailureKind"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "finished_at": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "harness": {
+                        "type": "string"
+                      },
+                      "history_id": {
+                        "type": "string",
+                        "maxLength": 36,
+                        "minLength": 36,
+                        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                      },
+                      "labels": {
+                        "$ref": "#/$defs/HistoryLabels"
+                      },
+                      "model": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "model_ms": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "permission_mode": {
+                        "$ref": "#/$defs/PermissionMode"
+                      },
+                      "project": {
+                        "type": "string"
+                      },
+                      "prompt": {
+                        "type": "string"
+                      },
+                      "schema_version": {
+                        "type": "string",
+                        "const": "1.0"
+                      },
+                      "session": {
+                        "type": "string"
+                      },
+                      "session_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "started_at": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "timeout",
+                          "spawn_error",
+                          "skipped",
+                          "planned"
+                        ]
+                      },
+                      "text": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "text_source": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "time_to_first_token_ms": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "format": "uint128",
+                        "minimum": 0
+                      },
+                      "timestamp": {
+                        "type": "string"
+                      },
+                      "tool_ms": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "type": {
+                        "type": "string",
+                        "const": "run"
+                      },
+                      "usage": {
+                        "$ref": "#/$defs/Usage"
+                      }
+                    },
+                    "required": [
+                      "schema_version",
+                      "history_id",
+                      "session",
+                      "name",
+                      "project",
+                      "timestamp",
+                      "harness",
+                      "model",
+                      "prompt",
+                      "permission_mode",
+                      "status",
+                      "exit_code",
+                      "duration_ms",
+                      "finished_at",
+                      "text",
+                      "text_source",
+                      "usage",
+                      "session_id",
+                      "failure_kind",
+                      "type",
+                      "started_at",
+                      "model_ms",
+                      "tool_ms"
+                    ]
+                  }
+                ]
+              },
+              {
+                "allOf": [
+                  {
+                    "description": "The terminal summary for one harness run.",
+                    "type": "object",
+                    "properties": {
+                      "duration_ms": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "format": "uint128",
+                        "minimum": 0
+                      },
+                      "exit_code": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "format": "int32"
+                      },
+                      "failure_kind": {
+                        "anyOf": [
+                          {
+                            "$ref": "#/$defs/FailureKind"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "finished_at": {
+                        "type": "null"
+                      },
+                      "harness": {
+                        "type": "string"
+                      },
+                      "history_id": {
+                        "type": "string",
+                        "maxLength": 36,
+                        "minLength": 36,
+                        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                      },
+                      "labels": {
+                        "$ref": "#/$defs/HistoryLabels"
+                      },
+                      "model": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "model_ms": false,
+                      "name": {
+                        "type": "string"
+                      },
+                      "permission_mode": {
+                        "$ref": "#/$defs/PermissionMode"
+                      },
+                      "project": {
+                        "type": "string"
+                      },
+                      "prompt": {
+                        "type": "string"
+                      },
+                      "schema_version": {
+                        "type": "string",
+                        "const": "1.0"
+                      },
+                      "session": {
+                        "type": "string"
+                      },
+                      "session_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "started_at": false,
+                      "status": {
+                        "$ref": "#/$defs/Status"
+                      },
+                      "text": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "text_source": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "time_to_first_token_ms": false,
+                      "timestamp": {
+                        "type": "string"
+                      },
+                      "tool_ms": false,
+                      "type": {
+                        "type": "string",
+                        "const": "run"
+                      },
+                      "usage": {
+                        "$ref": "#/$defs/Usage"
+                      }
+                    },
+                    "required": [
+                      "schema_version",
+                      "history_id",
+                      "session",
+                      "name",
+                      "project",
+                      "timestamp",
+                      "harness",
+                      "model",
+                      "prompt",
+                      "permission_mode",
+                      "status",
+                      "exit_code",
+                      "duration_ms",
+                      "finished_at",
+                      "text",
+                      "text_source",
+                      "usage",
+                      "session_id",
+                      "failure_kind",
+                      "type"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "$defs": {
+      "ActionEvent": {
+        "description": "One normalized action a harness took, harness-agnostic so a single consumer\nassertion works across harnesses. Every field is always serialized (null when\nabsent) so the shape is stable, mirroring the `usage` contract.",
+        "type": "object",
+        "properties": {
+          "duration_ms": {
+            "description": "Monotonic elapsed tool time. `None` means no terminal boundary was seen.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint128",
+            "minimum": 0
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "index": {
+            "description": "Position of this event within the run, so \"≤ N tool calls\" and \"did X\nbefore Y\" are expressible from a stable ordering (also array order).",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "input": {
+            "description": "Structured, tool-shaped arguments (the command string, the file path),\nso a consumer asserts on specific args without re-parsing; `null` when the\nevent carries none (e.g. a `tool_result`)."
+          },
+          "kind": {
+            "description": "The kind of event: `tool_call` (the model invoked a tool) or\n`tool_result` (the observation returned to the model). Left open for\nfuture kinds rather than an enum, so a new shape never breaks the field.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Normalized tool name where knowable (e.g. `bash`, `Edit`); `null` for a\n`tool_result`, or when the harness did not name the tool.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "output": {
+            "description": "The result/observation text, when the trace exposes it; `null` otherwise.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": {
+            "description": "UTC interval bounds for tool execution, populated on history records.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "Terminal tool state, populated on history tool-call events.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ToolCallStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tool_call_id": {
+            "description": "Stable call identity within the session. Present on tool calls and their\nmatching results when the provider exposes an identity; history fills a\ndeterministic run-local identity for providers that do not.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "name",
+          "input",
+          "output",
+          "index",
+          "tool_call_id",
+          "started_at",
+          "finished_at",
+          "duration_ms",
+          "status"
+        ]
+      },
+      "FailureKind": {
+        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `tool_deferred`), so the\nwire shape is unchanged — modeling it as an enum keeps a misspelled or\ninvalid kind unrepresentable and gives every producer/consumer (classifier,\n`is_failure`, the fallback fall-through rule, the report, history) one\ndefinition to share instead of scattered string literals.",
+        "oneOf": [
+          {
+            "description": "Authentication / authorization rejected the request (401/403, missing or\ninvalid credentials).",
+            "type": "string",
+            "const": "auth"
+          },
+          {
+            "description": "Rate limited (429, too many requests) — a transient condition of an\notherwise working, authenticated harness.",
+            "type": "string",
+            "const": "rate_limit"
+          },
+          {
+            "description": "The requested model was not found / is invalid — a configuration mistake.",
+            "type": "string",
+            "const": "model_not_found"
+          },
+          {
+            "description": "Out of quota / credits, or a billing problem — a provisioning failure.",
+            "type": "string",
+            "const": "quota"
+          },
+          {
+            "description": "The harness deferred a builtin tool call instead of executing it, so a\nclean-exit run did no useful work (Claude Code bridge deployments; issue\n#1114). The only kind that can appear on a `status: ok` run.",
+            "type": "string",
+            "const": "tool_deferred"
+          }
+        ]
+      },
+      "HistoryLabels": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1,
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+          }
+        },
+        "propertyNames": {
+          "type": "string",
+          "maxLength": 64,
+          "not": {
+            "pattern": "[^A-Za-z0-9._-]"
+          },
+          "pattern": "^[A-Za-z0-9]"
+        }
+      },
+      "PermissionMode": {
+        "description": "The unified approval mode, from least to most autonomy. A harness may not\nsupport every value (see [`crate::domain::harness::HarnessSpec::mode`]); the\ncommand layer refuses an unsupported one before spawning, never silently\ndowngrading it.",
+        "oneOf": [
+          {
+            "description": "No mutations — the agent may read but not edit files or run commands —\n*without* the plan workflow: it just does whatever read-only work the task\nallows. Mapped to each harness's strongest per-run no-mutation enforcement\n(Codex's read-only sandbox, Claude's deny rules, Copilot's `--deny-tool`,\nCursor's `ask` mode). The enforced counterpart to [`Self::Plan`].",
+            "type": "string",
+            "const": "read-only"
+          },
+          {
+            "description": "Read and propose only — like [`Self::ReadOnly`], but additionally engages\nthe harness's *plan* workflow: research the task and write a plan rather\nthan act. Supported only where a native plan mode exists (Claude/Qwen/\nCursor/Copilot, OpenCode's `plan` agent); harnesses with no plan workflow\n(Codex, Goose, Crush) reject it — use [`Self::ReadOnly`] for those.",
+            "type": "string",
+            "const": "plan"
+          },
+          {
+            "description": "The harness's normal ask flow, mapped to its cleanest *non-interactive*\nvariant so a headless run never blocks waiting for input (Claude's\n`dontAsk` deny-and-continue, Goose's fail-closed `approve`, Copilot's\nauto-deny). Where no such variant exists the harness's [`ModeHeadless`]\nis [`ModeHeadless::Hangs`].",
+            "type": "string",
+            "const": "default"
+          },
+          {
+            "description": "Auto-approve file edits, still gate shell/commands. (Claude's\n`acceptEdits`, Qwen's `auto-edit`.)",
+            "type": "string",
+            "const": "edit"
+          },
+          {
+            "description": "Auto-approve operations the harness deems safe (a classifier), gate the\nrisky ones. (Claude's `auto`, Qwen's `auto`, Goose's `smart_approve`.)",
+            "type": "string",
+            "const": "auto"
+          },
+          {
+            "description": "Approve everything — no prompts, no gating. The headless default, because\nan unattended agent otherwise hangs on the first approval. Every harness\nsupports it. (Claude's `bypassPermissions`, Codex's\n`--dangerously-bypass-approvals-and-sandbox`, Qwen/Crush `--yolo`, …)",
+            "type": "string",
+            "const": "bypass"
+          }
+        ]
+      },
+      "Status": {
+        "description": "The outcome of attempting to run one harness.",
+        "oneOf": [
+          {
+            "description": "Spawned and exited 0.",
+            "type": "string",
+            "const": "ok"
+          },
+          {
+            "description": "Spawned and exited non-zero.",
+            "type": "string",
+            "const": "nonzero"
+          },
+          {
+            "description": "Killed after exceeding the per-harness timeout.",
+            "type": "string",
+            "const": "timeout"
+          },
+          {
+            "description": "The binary was resolved but could not be executed.",
+            "type": "string",
+            "const": "spawn-error"
+          },
+          {
+            "description": "The binary was not found, so the harness was not run.",
+            "type": "string",
+            "const": "skipped"
+          },
+          {
+            "description": "`--print-command`: the command was built but not executed.",
+            "type": "string",
+            "const": "planned"
+          }
+        ]
+      },
+      "ToolCallStatus": {
+        "type": "string",
+        "enum": [
+          "completed",
+          "failed",
+          "timeout",
+          "interrupted"
+        ]
+      },
+      "Usage": {
+        "description": "Normalized token/cost accounting. Every field is best-effort and independently\nnullable: a harness may report tokens but not dollar cost (cost is commonly\nabsent on subscription auth), or report nothing at all (plain-text harnesses).",
+        "type": "object",
+        "properties": {
+          "cache_read_tokens": {
+            "description": "Prompt tokens served from the provider's prompt cache (a cheap read of a\npreviously-written prefix), when the harness reports them. `None` when the\nharness does not surface cache counts — never `0` as a guess.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "cache_write_tokens": {
+            "description": "Prompt tokens written to the provider's prompt cache (a.k.a. cache\ncreation), when the harness reports them. `None` when not surfaced.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "cost_usd": {
+            "description": "Total cost in USD, when the harness reports it (often absent on\nsubscription auth, where there is no per-call dollar figure).",
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "input_tokens": {
+            "description": "Prompt/input tokens billed, when the harness reports them.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "output_tokens": {
+            "description": "Completion/output tokens billed, when the harness reports them.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "input_tokens",
+          "output_tokens",
+          "cache_read_tokens",
+          "cache_write_tokens",
+          "cost_usd"
+        ]
+      }
+    }
+  },
   "history_record": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "HistoryRecord",
@@ -2084,7 +3016,7 @@
           },
           "schema_version": {
             "type": "string",
-            "const": "0.3"
+            "const": "1.0"
           },
           "session": {
             "description": "The oneharness session id this run belongs to (the history file's stem).",
@@ -2295,7 +3227,7 @@
           },
           "schema_version": {
             "type": "string",
-            "const": "0.3"
+            "const": "1.0"
           },
           "session": {
             "description": "The oneharness session id this run belongs to (the history file's stem).",
@@ -3255,7 +4187,7 @@
               },
               "schema_version": {
                 "type": "string",
-                "const": "0.3"
+                "const": "1.0"
               },
               "session": {
                 "description": "The oneharness session id this run belongs to (the history file's stem).",
@@ -3466,7 +4398,7 @@
               },
               "schema_version": {
                 "type": "string",
-                "const": "0.3"
+                "const": "1.0"
               },
               "session": {
                 "description": "The oneharness session id this run belongs to (the history file's stem).",
@@ -4276,7 +5208,7 @@
               },
               "schema_version": {
                 "type": "string",
-                "const": "0.3"
+                "const": "1.0"
               },
               "session": {
                 "description": "The oneharness session id this run belongs to (the history file's stem).",
@@ -4487,7 +5419,7 @@
               },
               "schema_version": {
                 "type": "string",
-                "const": "0.3"
+                "const": "1.0"
               },
               "session": {
                 "description": "The oneharness session id this run belongs to (the history file's stem).",

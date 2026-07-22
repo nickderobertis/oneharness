@@ -34,8 +34,6 @@ pub const SCHEMA_VERSION: &str = "1.0";
 
 /// The legacy record contract accepted by the migration reader.
 pub const LEGACY_SCHEMA_VERSION: &str = "0.1";
-const PREVIOUS_SCHEMA_VERSION: &str = "0.2";
-pub(crate) const LEGACY_RECORD_SCHEMA_VERSION: &str = "0.3";
 
 /// One event-sourced history JSONL line.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
@@ -93,7 +91,7 @@ pub struct HistoryEventLine {
 }
 
 impl HistoryEventLine {
-    fn valid(&self) -> bool {
+    pub(crate) fn valid(&self) -> bool {
         if self.schema_version != SCHEMA_VERSION || self.event.kind != "tool_call" {
             return self.schema_version == SCHEMA_VERSION;
         }
@@ -149,7 +147,7 @@ pub struct HistoryRunRecord {
 }
 
 impl HistoryRunRecord {
-    fn valid(&self) -> bool {
+    pub(crate) fn valid(&self) -> bool {
         if self.schema_version != SCHEMA_VERSION {
             return false;
         }
@@ -170,6 +168,67 @@ impl HistoryRunRecord {
                         || finished_at.is_some())
             }
             _ => false,
+        }
+    }
+
+    /// Split the terminal portion from the familiar materialized record.
+    pub fn from_record(record: &HistoryRecord) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION.to_string(),
+            history_id: record.history_id,
+            session: record.session.clone(),
+            name: record.name.clone(),
+            labels: record.labels.clone(),
+            project: record.project.clone(),
+            timestamp: record.timestamp.clone(),
+            harness: record.harness.clone(),
+            model: record.model.clone(),
+            prompt: record.prompt.clone(),
+            permission_mode: record.permission_mode,
+            status: record.status,
+            exit_code: record.exit_code,
+            duration_ms: record.duration_ms,
+            started_at: record.started_at.clone(),
+            finished_at: record.finished_at.clone(),
+            model_ms: record.model_ms,
+            tool_ms: record.tool_ms,
+            time_to_first_token_ms: record.time_to_first_token_ms,
+            text: record.text.clone(),
+            text_source: record.text_source.clone(),
+            usage: record.usage.clone(),
+            session_id: record.session_id.clone(),
+            failure_kind: record.failure_kind,
+        }
+    }
+
+    /// Rebuild the stable per-run presentation object from event-sourced lines.
+    pub fn materialize(self, events: Vec<ActionEvent>) -> HistoryRecord {
+        HistoryRecord {
+            schema_version: SCHEMA_VERSION.to_string(),
+            history_id: self.history_id,
+            session: self.session,
+            name: self.name,
+            labels: self.labels,
+            project: self.project,
+            timestamp: self.timestamp,
+            harness: self.harness,
+            model: self.model,
+            prompt: self.prompt,
+            permission_mode: self.permission_mode,
+            status: self.status,
+            exit_code: self.exit_code,
+            duration_ms: self.duration_ms,
+            started_at: self.started_at,
+            finished_at: self.finished_at,
+            model_ms: self.model_ms,
+            tool_ms: self.tool_ms,
+            time_to_first_token_ms: self.time_to_first_token_ms,
+            text: self.text,
+            text_source: self.text_source,
+            usage: self.usage,
+            session_id: self.session_id,
+            events: (!events.is_empty()).then_some(events),
+            failure_kind: self.failure_kind,
         }
     }
 }
@@ -516,8 +575,8 @@ impl HistoryRecord {
         r: &RunResult,
     ) -> Self {
         let telemetry = r.telemetry.as_ref();
-        let mut record = HistoryRecord {
-            schema_version: PREVIOUS_SCHEMA_VERSION.to_string(),
+        HistoryRecord {
+            schema_version: SCHEMA_VERSION.to_string(),
             history_id,
             session: session.to_string(),
             name: name.to_string(),
@@ -543,30 +602,23 @@ impl HistoryRecord {
             session_id: r.session_id.clone(),
             events: r.events.clone(),
             failure_kind: r.failure_kind,
-        };
-        let timing_unavailable = matches!(record.timing_state(), Ok(HistoryTiming::Unavailable))
+        }
+    }
+
+    pub(crate) fn complete(&self) -> bool {
+        let timing_unavailable = matches!(self.timing_state(), Ok(HistoryTiming::Unavailable))
             && crate::domain::harness::all()
                 .iter()
-                .find(|spec| spec.id == record.harness)
+                .find(|spec| spec.id == self.harness)
                 .is_some_and(|spec| spec.telemetry.is_none());
-        if record.valid_v03()
-            && (!matches!(record.timing_state(), Ok(HistoryTiming::Unavailable))
+        self.valid_v03()
+            && (!matches!(self.timing_state(), Ok(HistoryTiming::Unavailable))
                 || timing_unavailable)
-        {
-            record.schema_version = LEGACY_RECORD_SCHEMA_VERSION.to_string();
-        } else {
-            record.started_at = None;
-            record.finished_at = None;
-            record.model_ms = None;
-            record.tool_ms = None;
-            record.time_to_first_token_ms = None;
-        }
-        record
     }
 
     fn valid_v03(&self) -> bool {
         // A harness without a provider/tool boundary trace cannot derive timing.
-        // Absence is the honest v0.3 representation; partial telemetry remains
+        // Absence is the honest v1.0 representation; partial telemetry remains
         // invalid so a trace-capable harness cannot silently write corrupt data.
         let timing = match self.timing_state() {
             Ok(HistoryTiming::Unavailable) => {
@@ -639,47 +691,30 @@ impl HistoryRecord {
         }
     }
 
-    /// Deserialize a current or legacy record. `legacy_identity` should name the
-    /// source line (for example `<relative-path>:<line>`); when supplied it makes
-    /// otherwise-identical v0.1 lines distinct while remaining deterministic.
-    pub fn from_value_with_legacy_identity(
-        value: Value,
-        legacy_identity: Option<&str>,
-    ) -> Result<Self, serde_json::Error> {
-        let fallback = serde_json::to_vec(&value)?;
+    /// Deserialize the materialized view of a current event-sourced run.
+    pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
         let wire: HistoryRecordWire = serde_json::from_value(value)?;
-        let history_id = match wire.schema_version.as_str() {
-            LEGACY_RECORD_SCHEMA_VERSION | PREVIOUS_SCHEMA_VERSION => {
-                wire.history_id.ok_or_else(|| {
-                    serde_json::Error::io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "history record is missing `history_id`",
-                    ))
-                })?
-            }
-            LEGACY_SCHEMA_VERSION => {
-                let stable = legacy_identity
-                    .map(str::as_bytes)
-                    .unwrap_or(fallback.as_slice());
-                HistoryId::legacy(stable)
-            }
-            version => {
-                return Err(serde_json::Error::io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("unsupported history schema version `{version}`"),
-                )))
-            }
-        };
+        if wire.schema_version != SCHEMA_VERSION {
+            return Err(serde_json::Error::io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "unsupported history schema version `{}`",
+                    wire.schema_version
+                ),
+            )));
+        }
+        let history_id = wire.history_id.ok_or_else(|| {
+            serde_json::Error::io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "history record is missing `history_id`",
+            ))
+        })?;
         let record = Self {
             schema_version: wire.schema_version.clone(),
             history_id,
             session: wire.session,
             name: wire.name,
-            labels: if wire.schema_version == LEGACY_SCHEMA_VERSION {
-                HistoryLabels::default()
-            } else {
-                wire.labels
-            },
+            labels: wire.labels,
             project: wire.project,
             timestamp: wire.timestamp.clone(),
             harness: wire.harness,
@@ -701,17 +736,17 @@ impl HistoryRecord {
             events: wire.events,
             failure_kind: wire.failure_kind,
         };
-        if record.schema_version == LEGACY_RECORD_SCHEMA_VERSION && !record.valid_v03() {
+        if !record.complete() {
             return Err(serde_json::Error::io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "history schema v0.3 record is missing or has invalid telemetry",
+                "history schema v1.0 record has incomplete telemetry",
             )));
         }
         Ok(record)
     }
 }
 
-/// Validated availability states for v0.3 timing telemetry. Keeping the
+/// Validated availability states for v1.0 timing telemetry. Keeping the
 /// cross-field wire representation behind this conversion prevents producers
 /// and readers from treating a partial set of optional fields as meaningful.
 enum HistoryTiming<'a> {
@@ -730,7 +765,7 @@ impl<'de> Deserialize<'de> for HistoryRecord {
         D: Deserializer<'de>,
     {
         let value = Value::deserialize(deserializer)?;
-        Self::from_value_with_legacy_identity(value, None).map_err(serde::de::Error::custom)
+        Self::from_value(value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -1034,7 +1069,7 @@ mod tests {
             "fix the bug",
             &r,
         );
-        assert_eq!(rec.schema_version, LEGACY_RECORD_SCHEMA_VERSION);
+        assert_eq!(rec.schema_version, SCHEMA_VERSION);
         assert_eq!(rec.session, "fix-bug-20260707T131415Z-9");
         assert_eq!(rec.name, "fix-bug");
         assert_eq!(rec.labels.as_map().get("graph").unwrap(), "deploy");
@@ -1189,38 +1224,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_record_migration_is_stable_and_empty_labeled() {
-        let current = HistoryRecord::from_result(
-            HistoryId::legacy(b"discarded"),
-            "legacy-session",
-            "legacy",
-            &HistoryLabels::default(),
-            "/project",
-            "2026-01-01T00:00:00Z".to_string(),
-            PermissionMode::Default,
-            None,
-            "prompt",
-            &result(),
-        );
-        let mut legacy = serde_json::to_value(current).unwrap();
-        legacy["schema_version"] = Value::String(LEGACY_SCHEMA_VERSION.to_string());
-        legacy.as_object_mut().unwrap().remove("history_id");
-        legacy["future_output_field"] = serde_json::json!(true);
-
-        let first = HistoryRecord::from_value_with_legacy_identity(
-            legacy.clone(),
-            Some("project/session.jsonl:1"),
-        )
-        .unwrap();
-        let second =
-            HistoryRecord::from_value_with_legacy_identity(legacy, Some("project/session.jsonl:1"))
-                .unwrap();
-        assert_eq!(first.history_id, second.history_id);
-        assert_eq!(first.schema_version, LEGACY_SCHEMA_VERSION);
-        assert!(first.labels.is_empty());
-    }
-
-    #[test]
     fn current_record_requires_a_valid_id_but_tolerates_additive_fields() {
         let current = HistoryRecord::from_result(
             HistoryId::legacy(b"current"),
@@ -1275,11 +1278,11 @@ mod tests {
         assert!(serde_json::from_value::<HistoryRecord>(invalid_unavailable).is_err());
 
         let mut previous = serde_json::to_value(&current).unwrap();
-        previous["schema_version"] = Value::String(PREVIOUS_SCHEMA_VERSION.to_string());
+        previous["schema_version"] = Value::String("0.2".to_string());
         for field in ["started_at", "finished_at", "model_ms", "tool_ms"] {
             previous.as_object_mut().unwrap().remove(field);
         }
-        assert!(serde_json::from_value::<HistoryRecord>(previous).is_ok());
+        assert!(serde_json::from_value::<HistoryRecord>(previous).is_err());
 
         let mut missing = serde_json::to_value(&current).unwrap();
         missing.as_object_mut().unwrap().remove("history_id");

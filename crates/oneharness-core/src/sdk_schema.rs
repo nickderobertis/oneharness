@@ -239,7 +239,7 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                 let base = serde_json::Value::Object(object.clone());
                 let mut current = base.clone();
                 current["properties"]["schema_version"] =
-                    serde_json::json!({"const": "0.3", "type": "string"});
+                    serde_json::json!({"const": "1.0", "type": "string"});
                 let required = current["required"]
                     .as_array_mut()
                     .expect("history required array");
@@ -306,7 +306,7 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                 });
                 let mut unavailable = base.clone();
                 unavailable["properties"]["schema_version"] =
-                    serde_json::json!({"const": "0.3", "type": "string"});
+                    serde_json::json!({"const": "1.0", "type": "string"});
                 unavailable["properties"]["finished_at"] = serde_json::json!({"type": "null"});
                 if let Some(required) = unavailable["required"].as_array_mut() {
                     required.retain(|value| {
@@ -394,7 +394,7 @@ mod tests {
 
     fn current_record(event: serde_json::Value) -> serde_json::Value {
         json!({
-            "schema_version": "0.3",
+            "schema_version": "1.0",
             "history_id": "0198f0d0-7b31-7000-8000-000000000001",
             "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
             "timestamp": "2026-07-19T00:00:00Z", "harness": "codex", "model": null,

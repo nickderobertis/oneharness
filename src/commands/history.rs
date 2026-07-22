@@ -193,6 +193,16 @@ fn show(args: &HistoryShowArgs) -> Result<i32, OneharnessError> {
         }
     };
 
+    if chosen.is_empty() && !args.last {
+        let needle = args.session.as_deref().unwrap_or_default();
+        if let Some(path) = history_io::find_session_path(&dir, slug.as_deref(), needle)? {
+            return render_record_values(
+                args.format,
+                args.compact,
+                &history_io::read_session_display(&path)?,
+            );
+        }
+    }
     if chosen.is_empty() {
         let scope = if args.last { "any" } else { "matching" };
         eprintln!(
@@ -205,9 +215,9 @@ fn show(args: &HistoryShowArgs) -> Result<i32, OneharnessError> {
     // Read the chosen sessions' records (newest first, already ordered).
     let mut records = Vec::new();
     for s in &chosen {
-        records.extend(history_io::read_session(Path::new(&s.path))?);
+        records.extend(history_io::read_session_display(Path::new(&s.path))?);
     }
-    render_records(args.format, args.compact, &records)
+    render_record_values(args.format, args.compact, &records)
 }
 
 fn render_records(
@@ -224,6 +234,18 @@ fn render_records(
                 .collect::<Result<Vec<_>, _>>()?;
             print!("{}", render_show_text(&values));
         }
+    }
+    Ok(EXIT_OK)
+}
+
+fn render_record_values(
+    format: HistoryFormat,
+    compact: bool,
+    records: &[serde_json::Value],
+) -> Result<i32, OneharnessError> {
+    match format {
+        HistoryFormat::Json => print_json(&records, compact)?,
+        HistoryFormat::Text => print!("{}", render_show_text(records)),
     }
     Ok(EXIT_OK)
 }

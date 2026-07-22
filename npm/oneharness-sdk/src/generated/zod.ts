@@ -503,7 +503,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.union([
     permission_mode: z.lazy(() => PermissionModeSchema).refine((value) => value !== undefined, { message: "Required" }),
     project: z.string().refine((value) => value !== undefined, { message: "Required" }),
     prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
-    schema_version: z.literal("0.3").refine((value) => value !== undefined, { message: "Required" }),
+    schema_version: z.literal("1.0").refine((value) => value !== undefined, { message: "Required" }),
     session: z.string().refine((value) => value !== undefined, { message: "Required" }),
     session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
     started_at: z
@@ -566,7 +566,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.union([
     permission_mode: z.lazy(() => PermissionModeSchema).refine((value) => value !== undefined, { message: "Required" }),
     project: z.string().refine((value) => value !== undefined, { message: "Required" }),
     prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
-    schema_version: z.literal("0.3").refine((value) => value !== undefined, { message: "Required" }),
+    schema_version: z.literal("1.0").refine((value) => value !== undefined, { message: "Required" }),
     session: z.string().refine((value) => value !== undefined, { message: "Required" }),
     session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
     started_at: z.never().optional(),

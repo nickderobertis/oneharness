@@ -2542,9 +2542,8 @@ fn codex_usage_and_known_model_cost_flow_into_history_while_unknown_cost_is_omit
         assert_eq!(result["usage"]["cache_read_tokens"], 400);
         assert_eq!(result["usage"]["output_tokens"], 100);
         assert_eq!(result["usage"]["cost_usd"].is_number(), expect_cost);
-        let history = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
-        let record: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
-        assert_eq!(record["schema_version"], "0.3");
+        let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
+        assert_eq!(record["schema_version"], "1.0");
         assert_eq!(record["usage"]["cost_usd"].is_number(), expect_cost);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2676,8 +2675,19 @@ fn codex_collaboration_and_web_search_events_flow_through_stream_and_history() {
     assert_eq!(streamed[3]["name"], "web_search");
 
     let report = &envelopes.last().unwrap()["report"];
-    let history = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
-    let record: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
+    let raw_lines = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
+    let raw_lines = raw_lines
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(raw_lines.len(), 3);
+    assert_eq!(raw_lines[0]["type"], "event");
+    assert_eq!(raw_lines[0]["event"]["index"], 0);
+    assert_eq!(raw_lines[1]["type"], "event");
+    assert_eq!(raw_lines[1]["event"]["index"], 1);
+    assert_eq!(raw_lines[2]["type"], "run");
+    assert!(raw_lines[2].get("events").is_none());
+    let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
     assert_eq!(record["events"][0]["name"], "spawn_agent");
     assert_eq!(record["events"][1]["name"], "web_search");
     assert_eq!(record["usage"]["input_tokens"], 8);
@@ -3562,8 +3572,7 @@ fn timeout_preserves_partial_telemetry_in_report_and_history() {
 
     // History freezes the same normalized evidence while omitting raw streams.
     let history_file = value["history_file"].as_str().expect("history file");
-    let history_text = std::fs::read_to_string(history_file).unwrap();
-    let record: Value = serde_json::from_str(history_text.lines().next().unwrap()).unwrap();
+    let record = first_history_run(Path::new(history_file));
     assert_eq!(record["status"], "timeout");
     assert_eq!(record["text"], "partial answer");
     assert_eq!(record["usage"]["input_tokens"], 12);
@@ -7910,6 +7919,18 @@ fn hist_dir(tag: &str) -> PathBuf {
     dir
 }
 
+fn materialized_history(path: &Path) -> Vec<Value> {
+    oneharness_core::io::history::read_session(path)
+        .unwrap()
+        .into_iter()
+        .map(|record| serde_json::to_value(record).unwrap())
+        .collect()
+}
+
+fn first_history_run(path: &Path) -> Value {
+    materialized_history(path).into_iter().next().unwrap()
+}
+
 const HISTORY_CODEX_TELEMETRY: &str = concat!(
     "{\"type\":\"turn.started\"}\n",
     "{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"x\"}}\n",
@@ -7959,8 +7980,7 @@ fn history_records_a_run_and_reports_the_file() {
     let hf = value["history_file"].as_str().expect("history_file set");
     assert!(hf.ends_with(".jsonl"), "{hf}");
     // The file holds one normalized record with the prompt-derived name.
-    let text = std::fs::read_to_string(hf).unwrap();
-    let rec: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    let rec = first_history_run(Path::new(hf));
     assert_eq!(rec["harness"], "codex");
     assert_eq!(rec["name"], "fix-the-login-bug");
     assert_eq!(rec["status"], "ok");
@@ -8010,10 +8030,10 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
         let path = Path::new(report["history_file"].as_str().unwrap());
         assert!(
             !path.exists(),
-            "{name} must not write a legacy or fabricated v0.3 record"
+            "{name} must not write an invalid or fabricated v1.0 run"
         );
         assert!(
-            String::from_utf8_lossy(&output.stderr).contains("lacks complete v0.3 telemetry"),
+            String::from_utf8_lossy(&output.stderr).contains("lacks complete v1.0 telemetry"),
             "{name}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
@@ -8040,15 +8060,8 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
     assert!(unsupported.status.success());
     let report = json_stdout(&unsupported);
     assert_eq!(report["results"][0]["status"], "ok");
-    let record: Value = serde_json::from_str(
-        std::fs::read_to_string(report["history_file"].as_str().unwrap())
-            .unwrap()
-            .lines()
-            .next()
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(record["schema_version"], "0.3");
+    let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
+    assert_eq!(record["schema_version"], "1.0");
     for field in [
         "started_at",
         "model_ms",
@@ -8096,9 +8109,8 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
         );
         let report = json_stdout(&output);
         assert_eq!(report["results"][0]["status"], "ok", "{id}");
-        let text = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
-        let record: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
-        assert_eq!(record["schema_version"], "0.3", "{id}");
+        let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
+        assert_eq!(record["schema_version"], "1.0", "{id}");
         assert!(record.get("model_ms").is_none(), "{id}");
         assert!(record.get("tool_ms").is_none(), "{id}");
         assert!(record.get("time_to_first_token_ms").is_none(), "{id}");
@@ -8143,9 +8155,8 @@ fn history_accepts_each_advertised_provider_trace_shape() {
             String::from_utf8_lossy(&output.stderr)
         );
         let report = json_stdout(&output);
-        let text = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
-        let record: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
-        assert_eq!(record["schema_version"], "0.3", "{id}");
+        let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
+        assert_eq!(record["schema_version"], "1.0", "{id}");
         if matches!(id, "codex" | "opencode") {
             assert_eq!(record["usage"]["input_tokens"], 7, "{id}");
             assert_eq!(record["usage"]["output_tokens"], 2, "{id}");
@@ -8230,11 +8241,8 @@ fn history_preserves_format_contracts_and_composes_with_resume() {
     );
     let report = json_stdout(&resumed);
     assert_eq!(report["results"][0]["text"], "x");
-    let record = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(record.lines().next().unwrap()).unwrap()["schema_version"],
-        "0.3"
-    );
+    let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
+    assert_eq!(record["schema_version"], "1.0");
 
     let _ = std::fs::remove_file(schema);
     let _ = std::fs::remove_dir_all(explicit_dir);
@@ -8271,8 +8279,7 @@ fn history_excludes_harness_startup_from_provider_model_time() {
     );
     assert!(output.status.success());
     let report = json_stdout(&output);
-    let history = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
-    let record: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
+    let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
     let duration = record["duration_ms"].as_u64().unwrap();
     let model = record["model_ms"].as_u64().unwrap();
     assert!(
@@ -8319,9 +8326,8 @@ fn history_measures_overlapping_tool_intervals_from_provider_events() {
         String::from_utf8_lossy(&output.stderr)
     );
     let report = json_stdout(&output);
-    let history = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
-    let record: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
-    assert_eq!(record["schema_version"], "0.3");
+    let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
+    assert_eq!(record["schema_version"], "1.0");
     assert!(record["time_to_first_token_ms"].as_u64().is_some());
     assert!(record["time_to_first_token_ms"].as_u64().unwrap() > 0);
     let calls = record["events"]
@@ -8378,8 +8384,7 @@ fn history_uses_codex_reasoning_for_first_and_last_model_boundaries() {
     );
     assert!(output.status.success());
     let report = json_stdout(&output);
-    let history = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
-    let record: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
+    let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
     let ttft = record["time_to_first_token_ms"].as_u64().unwrap();
     let model = record["model_ms"].as_u64().unwrap();
     assert!(ttft > 0, "reasoning TTFT: {ttft}");
@@ -8421,8 +8426,7 @@ fn history_normalizes_codex_mcp_failure_and_interruption() {
     );
     assert!(failed.status.success());
     let report = json_stdout(&failed);
-    let history = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
-    let record: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
+    let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
     let calls = record["events"].as_array().unwrap();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["name"], "count");
@@ -8463,8 +8467,7 @@ fn history_normalizes_codex_mcp_failure_and_interruption() {
     );
     assert_eq!(interrupted.status.code(), Some(1));
     let report = json_stdout(&interrupted);
-    let history = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
-    let record: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
+    let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
     assert_eq!(record["status"], "timeout");
     assert!(record["time_to_first_token_ms"].as_u64().unwrap() >= 200);
     let call = &record["events"][0];
@@ -8518,8 +8521,7 @@ fn history_validates_codex_terminal_tool_states_without_guessing() {
         );
         assert!(output.status.success(), "{tag}");
         let report = json_stdout(&output);
-        let history = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
-        let record: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
+        let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
         assert_eq!(record["events"][0]["status"], expected, "{tag}");
         assert!(record["events"][0]["duration_ms"].as_u64().unwrap() > 0);
         let _ = std::fs::remove_dir_all(dir);
@@ -8553,7 +8555,7 @@ fn history_validates_codex_terminal_tool_states_without_guessing() {
         let report = json_stdout(&output);
         assert!(!Path::new(report["history_file"].as_str().unwrap()).exists(), "{tag}");
         assert!(
-            String::from_utf8_lossy(&output.stderr).contains("lacks complete v0.3 telemetry"),
+            String::from_utf8_lossy(&output.stderr).contains("lacks complete v1.0 telemetry"),
             "{tag}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
@@ -8590,9 +8592,8 @@ fn history_preserves_an_unfinished_tool_interval_without_fabricating_an_end() {
     );
     assert!(output.status.success());
     let report = json_stdout(&output);
-    let history = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
-    let record: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
-    assert_eq!(record["schema_version"], "0.3");
+    let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
+    assert_eq!(record["schema_version"], "1.0");
     let call = record["events"]
         .as_array()
         .unwrap()
@@ -8637,8 +8638,7 @@ fn history_collapses_opencode_running_and_completed_call_updates() {
     );
     assert!(output.status.success());
     let report = json_stdout(&output);
-    let history = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
-    let record: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
+    let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
     let calls = record["events"].as_array().unwrap();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["tool_call_id"], "call-1");
@@ -8740,8 +8740,7 @@ fn history_name_overrides_the_prompt_derived_default() {
     let hf = v["history_file"].as_str().unwrap();
     // The label is slugified into the session id / filename.
     assert!(hf.contains("my-release-v2-"), "{hf}");
-    let rec: Value =
-        serde_json::from_str(std::fs::read_to_string(hf).unwrap().lines().next().unwrap()).unwrap();
+    let rec = first_history_run(Path::new(hf));
     assert_eq!(rec["name"], "my-release-v2");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -8927,6 +8926,39 @@ fn history_list_show_and_clear_round_trip() {
     );
     assert_eq!(missing.status.code(), Some(1));
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn history_readers_skip_unmigrated_files_with_a_migration_notice() {
+    let dir = hist_dir("legacy-notice");
+    let project = dir.join("legacy-project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("old-session.jsonl"),
+        "{\"schema_version\":\"0.3\",\"name\":\"old\"}\n",
+    )
+    .unwrap();
+
+    let output = run(
+        &[
+            "history",
+            "list",
+            "--all-projects",
+            "--history-dir",
+            &dir.display().to_string(),
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
+    assert!(json_stdout(&output).as_array().unwrap().is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("skipped unmigrated history lines"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("oneharness history migrate"), "{stderr}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -9239,17 +9271,10 @@ fn history_labels_layer_cli_over_environment_over_config_and_validate() {
         .as_str()
         .unwrap()
         .to_string();
-    let record: Value = serde_json::from_str(
-        std::fs::read_to_string(path)
-            .unwrap()
-            .lines()
-            .next()
-            .unwrap(),
-    )
-    .unwrap();
+    let record = first_history_run(Path::new(&path));
     // History requests the telemetry trace even though the user selected compact
     // report output, so ordinary new writes always use the current contract.
-    assert_eq!(record["schema_version"], "0.3");
+    assert_eq!(record["schema_version"], "1.0");
     assert!(record["started_at"].is_string());
     assert_eq!(record["labels"]["graph"], "cli");
     for key in ["user", "project", "env", "cli"] {
@@ -9366,14 +9391,7 @@ fn history_watch_filters_and_resumes_as_jsonl() {
             .as_str()
             .unwrap()
             .to_string();
-        let record: Value = serde_json::from_str(
-            std::fs::read_to_string(path)
-                .unwrap()
-                .lines()
-                .next()
-                .unwrap(),
-        )
-        .unwrap();
+        let record = first_history_run(Path::new(&path));
         ids.push(record["history_id"].as_str().unwrap().to_string());
     }
 

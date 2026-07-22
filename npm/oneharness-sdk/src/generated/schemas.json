@@ -3016,7 +3016,7 @@
           },
           "schema_version": {
             "type": "string",
-            "const": "0.3"
+            "const": "1.0"
           },
           "session": {
             "description": "The oneharness session id this run belongs to (the history file's stem).",
@@ -3227,7 +3227,7 @@
           },
           "schema_version": {
             "type": "string",
-            "const": "0.3"
+            "const": "1.0"
           },
           "session": {
             "description": "The oneharness session id this run belongs to (the history file's stem).",
@@ -4187,7 +4187,7 @@
               },
               "schema_version": {
                 "type": "string",
-                "const": "0.3"
+                "const": "1.0"
               },
               "session": {
                 "description": "The oneharness session id this run belongs to (the history file's stem).",
@@ -4398,7 +4398,7 @@
               },
               "schema_version": {
                 "type": "string",
-                "const": "0.3"
+                "const": "1.0"
               },
               "session": {
                 "description": "The oneharness session id this run belongs to (the history file's stem).",
@@ -5208,7 +5208,7 @@
               },
               "schema_version": {
                 "type": "string",
-                "const": "0.3"
+                "const": "1.0"
               },
               "session": {
                 "description": "The oneharness session id this run belongs to (the history file's stem).",
@@ -5419,7 +5419,7 @@
               },
               "schema_version": {
                 "type": "string",
-                "const": "0.3"
+                "const": "1.0"
               },
               "session": {
                 "description": "The oneharness session id this run belongs to (the history file's stem).",

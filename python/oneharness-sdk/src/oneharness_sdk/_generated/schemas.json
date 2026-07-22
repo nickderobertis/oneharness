@@ -1684,7 +1684,7 @@
             "type": "string"
           },
           "schema_version": {
-            "const": "0.3",
+            "const": "1.0",
             "type": "string"
           },
           "session": {
@@ -1895,7 +1895,7 @@
             "type": "string"
           },
           "schema_version": {
-            "const": "0.3",
+            "const": "1.0",
             "type": "string"
           },
           "session": {
@@ -2562,7 +2562,7 @@
                 "type": "string"
               },
               "schema_version": {
-                "const": "0.3",
+                "const": "1.0",
                 "type": "string"
               },
               "session": {
@@ -2773,7 +2773,7 @@
                 "type": "string"
               },
               "schema_version": {
-                "const": "0.3",
+                "const": "1.0",
                 "type": "string"
               },
               "session": {
@@ -3583,7 +3583,7 @@
                 "type": "string"
               },
               "schema_version": {
-                "const": "0.3",
+                "const": "1.0",
                 "type": "string"
               },
               "session": {
@@ -3794,7 +3794,7 @@
                 "type": "string"
               },
               "schema_version": {
-                "const": "0.3",
+                "const": "1.0",
                 "type": "string"
               },
               "session": {

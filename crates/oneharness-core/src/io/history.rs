@@ -9,7 +9,7 @@
 //! runs from different projects never interleave. Each line is one
 //! [`crate::domain::history::HistoryRecord`], appended as a harness run finalizes.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -21,7 +21,9 @@ use serde_json::Value;
 
 use fs2::FileExt;
 
-use crate::domain::history::{self, HistoryId, HistoryLabels, HistoryRecord};
+use crate::domain::history::{
+    self, HistoryEventLine, HistoryId, HistoryLabels, HistoryLine, HistoryRecord, HistoryRunRecord,
+};
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::RunResult;
 use crate::errors::OneharnessError;
@@ -129,8 +131,8 @@ impl HistoryWriter {
         &self.path
     }
 
-    /// Append one harness result as a normalized JSONL record, stamped with the
-    /// current instant. Creates the file on first write.
+    /// Append one harness result as ordered event lines followed by its terminal
+    /// run line, stamped with the current instant. Creates the file on first write.
     pub fn append(
         &self,
         mode: PermissionMode,
@@ -150,29 +152,47 @@ impl HistoryWriter {
             run_prompt,
             result,
         );
-        if record.schema_version != history::LEGACY_RECORD_SCHEMA_VERSION {
+        let run = HistoryRunRecord::from_record(&record);
+        if !record.complete() || !run.valid() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "new history record lacks complete v0.3 telemetry",
+                "new history run lacks complete v1.0 telemetry",
             ));
         }
-        let mut line = serde_json::to_string(&record)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        line.push('\n');
+        let mut lines = result.events.clone().unwrap_or_default();
+        lines.sort_by_key(|event| event.index);
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)?;
-        file.write_all(line.as_bytes())?;
-        file.flush()?;
+        for event in lines {
+            write_session_line(
+                &mut file,
+                &HistoryLine::Event(HistoryEventLine {
+                    schema_version: history::SCHEMA_VERSION.to_string(),
+                    run_id: run.history_id,
+                    harness: run.harness.clone(),
+                    event,
+                }),
+            )?;
+        }
+        write_session_line(&mut file, &HistoryLine::Run(run))?;
         append_index_entry(
             &self.dir,
             &HistoryIndexEntry {
                 session_path: self.relative_path.clone(),
-                record,
+                record: HistoryRunRecord::from_record(&record),
             },
         )
     }
+}
+
+fn write_session_line(file: &mut File, line: &HistoryLine) -> std::io::Result<()> {
+    let mut bytes = serde_json::to_vec(line)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    bytes.push(b'\n');
+    file.write_all(&bytes)?;
+    file.flush()
 }
 
 /// One append-only index entry. The session JSONL remains authoritative; the
@@ -180,7 +200,7 @@ impl HistoryWriter {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct HistoryIndexEntry {
     session_path: String,
-    record: HistoryRecord,
+    record: HistoryRunRecord,
 }
 
 struct ReconciledIndex {
@@ -288,7 +308,7 @@ impl HistoryWatcher {
             && in_project
             && entry.record.labels.matches(&self.labels)
         {
-            self.pending.push_back(entry.record);
+            self.pending.push_back(entry.record.materialize(Vec::new()));
         }
     }
 }
@@ -338,7 +358,10 @@ pub fn list_sessions(
             continue;
         }
         for path in read_session_files(&pdir)? {
-            sessions.push(summarize(&path)?);
+            let summary = summarize(&path)?;
+            if summary.record_count > 0 {
+                sessions.push(summary);
+            }
         }
     }
     // Newest first. RFC3339 sorts lexically as chronologically; a session with no
@@ -356,14 +379,78 @@ pub fn match_sessions<'a>(sessions: &'a [SessionSummary], needle: &str) -> Vec<&
         .collect()
 }
 
-/// Read a session file into typed current records. Legacy v0.1 lines are
-/// migrated deterministically; malformed or partial lines are skipped.
+/// Read a session file and materialize each completed run with its ordered events.
+/// Malformed, partial, and legacy lines are skipped.
 pub fn read_session(path: &Path) -> Result<Vec<HistoryRecord>, OneharnessError> {
     let text = fs::read_to_string(path).map_err(|source| OneharnessError::HistoryIo {
         path: path.display().to_string(),
         source,
     })?;
     Ok(parse_records(path, &text))
+}
+
+/// Read the display view, including event-only runs whose terminal line has not
+/// landed. Completed entries retain the established materialized record shape.
+pub fn read_session_display(path: &Path) -> Result<Vec<Value>, OneharnessError> {
+    let text = fs::read_to_string(path).map_err(|source| OneharnessError::HistoryIo {
+        path: path.display().to_string(),
+        source,
+    })?;
+    let mut dangling: BTreeMap<HistoryId, (String, Vec<_>)> = BTreeMap::new();
+    let mut values = Vec::new();
+    for line in parse_lines(path, &text) {
+        match line {
+            HistoryLine::Event(line) => {
+                dangling
+                    .entry(line.run_id)
+                    .or_insert_with(|| (line.harness, Vec::new()))
+                    .1
+                    .push(line.event);
+            }
+            HistoryLine::Run(run) => {
+                let events = dangling
+                    .remove(&run.history_id)
+                    .map(|(_, events)| events)
+                    .unwrap_or_default();
+                values.push(serde_json::to_value(run.materialize(events))?);
+            }
+        }
+    }
+    for (run_id, (harness, mut events)) in dangling {
+        events.sort_by_key(|event| event.index);
+        values.push(serde_json::json!({
+            "type": "incomplete",
+            "run_id": run_id,
+            "harness": harness,
+            "events": events,
+        }));
+    }
+    Ok(values)
+}
+
+/// Resolve an event-only session by its file id without making it visible to
+/// `history list` before a closing run line exists.
+pub fn find_session_path(
+    dir: &Path,
+    project_slug: Option<&str>,
+    id: &str,
+) -> Result<Option<PathBuf>, OneharnessError> {
+    let project_dirs = match project_slug {
+        Some(slug) => vec![dir.join(slug)],
+        None => read_subdirs_if_present(dir)?,
+    };
+    for project_dir in project_dirs {
+        if !project_dir.is_dir() {
+            continue;
+        }
+        if let Some(path) = read_session_files(&project_dir)?
+            .into_iter()
+            .find(|path| path.file_stem().and_then(|stem| stem.to_str()) == Some(id))
+        {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
 }
 
 /// Find exactly one history record by its UUID, across all projects. A missing
@@ -376,7 +463,13 @@ pub fn find_record_by_id(dir: &Path, id: HistoryId) -> Result<HistoryRecord, One
             .into_iter()
             .find(|entry| entry.record.history_id == id)
         {
-            return Ok(entry.record);
+            let path = dir.join(&entry.session_path);
+            if let Some(record) = read_session(&path)?
+                .into_iter()
+                .find(|record| record.history_id == id)
+            {
+                return Ok(record);
+            }
         }
     }
     Err(OneharnessError::HistoryNotFound { id: id.to_string() })
@@ -434,7 +527,7 @@ fn reconcile_index_locked(dir: &Path) -> Result<ReconciledIndex, OneharnessError
                 .unwrap_or(&path)
                 .display()
                 .to_string();
-            for record in read_session(&path)? {
+            for record in read_run_lines(&path)? {
                 active_ids.insert(record.history_id);
                 if indexed_ids.insert(record.history_id) {
                     missing.push(HistoryIndexEntry {
@@ -650,29 +743,27 @@ fn summarize(path: &Path) -> Result<SessionSummary, OneharnessError> {
         .and_then(|s| s.to_str())
         .unwrap_or_default()
         .to_string();
-    let records = read_values(path)?;
+    let records = read_run_lines(path)?;
 
     let field = |key: &str| -> Option<String> {
-        records
-            .first()
-            .and_then(|r| r.get(key))
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
+        records.first().map(|record| match key {
+            "name" => record.name.clone(),
+            "project" => record.project.clone(),
+            "timestamp" => record.timestamp.clone(),
+            _ => String::new(),
+        })
     };
     let mut harnesses: Vec<String> = Vec::new();
     for r in &records {
-        if let Some(h) = r.get("harness").and_then(|v| v.as_str()) {
-            if !harnesses.iter().any(|x| x == h) {
-                harnesses.push(h.to_string());
-            }
+        if !harnesses.iter().any(|x| x == &r.harness) {
+            harnesses.push(r.harness.clone());
         }
     }
     Ok(SessionSummary {
         name: field("name").unwrap_or_else(|| id.clone()),
         labels: records
             .first()
-            .and_then(|record| record.get("labels").cloned())
-            .and_then(|labels| serde_json::from_value(labels).ok())
+            .map(|record| record.labels.clone())
             .unwrap_or_default(),
         project: field("project").unwrap_or(slug),
         started: field("timestamp").unwrap_or_default(),
@@ -683,15 +774,22 @@ fn summarize(path: &Path) -> Result<SessionSummary, OneharnessError> {
     })
 }
 
-fn read_values(path: &Path) -> Result<Vec<Value>, OneharnessError> {
+fn read_run_lines(path: &Path) -> Result<Vec<HistoryRunRecord>, OneharnessError> {
     let text = fs::read_to_string(path).map_err(|source| OneharnessError::HistoryIo {
         path: path.display().to_string(),
         source,
     })?;
-    Ok(parse_values(&text))
+    Ok(parse_lines(path, &text)
+        .into_iter()
+        .filter_map(|line| match line {
+            HistoryLine::Run(run) => Some(run),
+            HistoryLine::Event(_) => None,
+        })
+        .collect())
 }
 
 /// Parse a JSONL blob into values, skipping malformed or partial lines.
+#[cfg(test)]
 fn parse_values(text: &str) -> Vec<Value> {
     text.lines()
         .filter(|l| !l.trim().is_empty())
@@ -700,21 +798,46 @@ fn parse_values(text: &str) -> Vec<Value> {
 }
 
 fn parse_records(path: &Path, text: &str) -> Vec<HistoryRecord> {
-    text.lines()
-        .enumerate()
-        .filter(|(_, line)| !line.trim().is_empty())
-        .filter_map(|(index, line)| {
-            let value = serde_json::from_str(line).ok()?;
-            let identity = format!(
-                "{}:{}",
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or_default(),
-                index + 1
-            );
-            HistoryRecord::from_value_with_legacy_identity(value, Some(&identity)).ok()
+    let mut events: BTreeMap<HistoryId, Vec<_>> = BTreeMap::new();
+    let mut records = Vec::new();
+    for line in parse_lines(path, text) {
+        match line {
+            HistoryLine::Event(line) => events.entry(line.run_id).or_default().push(line.event),
+            HistoryLine::Run(run) => {
+                let mut run_events = events.remove(&run.history_id).unwrap_or_default();
+                run_events.sort_by_key(|event| event.index);
+                records.push(run.materialize(run_events));
+            }
+        }
+    }
+    records
+}
+
+fn parse_lines(path: &Path, text: &str) -> Vec<HistoryLine> {
+    let mut legacy = false;
+    let lines = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| {
+            let value: Value = serde_json::from_str(line).ok()?;
+            let line_type = value.get("type").and_then(Value::as_str);
+            let version = value.get("schema_version").and_then(Value::as_str);
+            if line_type.is_none()
+                || version.is_some_and(|version| version < history::SCHEMA_VERSION)
+            {
+                legacy = true;
+                return None;
+            }
+            serde_json::from_value(value).ok()
         })
-        .collect()
+        .collect();
+    if legacy {
+        eprintln!(
+            "oneharness: warning: skipped unmigrated history lines in `{}`; run `oneharness history migrate`",
+            path.display()
+        );
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -816,13 +939,21 @@ mod tests {
             history::parse_labels(["graph=deploy"]).unwrap(),
         )
         .unwrap();
-        w.append(
-            PermissionMode::Bypass,
-            Some("sonnet"),
-            "do it",
-            &result("claude-code"),
-        )
-        .unwrap();
+        let mut first = result("claude-code");
+        first.events = Some(vec![crate::domain::events::ActionEvent {
+            kind: "message".to_string(),
+            name: None,
+            input: None,
+            output: Some("observed".to_string()),
+            index: 0,
+            tool_call_id: None,
+            started_at: None,
+            finished_at: None,
+            duration_ms: None,
+            status: None,
+        }]);
+        w.append(PermissionMode::Bypass, Some("sonnet"), "do it", &first)
+            .unwrap();
         w.append(
             PermissionMode::Bypass,
             Some("sonnet"),
@@ -840,6 +971,10 @@ mod tests {
         );
         assert_eq!(records[0].model.as_deref(), Some("sonnet"));
         assert_eq!(records[0].labels.as_map().get("graph").unwrap(), "deploy");
+        assert_eq!(
+            records[0].events.as_ref().unwrap()[0].output.as_deref(),
+            Some("observed")
+        );
         assert_eq!(records[1].harness, "codex");
         assert_eq!(records[0].history_id.as_uuid().get_version_num(), 7);
         // A minted id must be text the public cursor contract accepts back, or
@@ -852,24 +987,51 @@ mod tests {
                 .unwrap(),
             records[0].history_id
         );
+        let lines = parse_lines(w.path(), &fs::read_to_string(w.path()).unwrap());
+        assert!(matches!(lines[0], HistoryLine::Event(_)));
+        assert!(matches!(lines[1], HistoryLine::Run(_)));
+        assert!(matches!(lines[2], HistoryLine::Run(_)));
+        let index = fs::read(dir.join(INDEX_FILE)).unwrap();
+        assert_eq!(parse_index_entries(&index).len(), 2);
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn list_sessions_summarizes_and_orders_newest_first() {
         let dir = temp_dir("list");
-        // Two projects, hand-written so we control timestamps/order.
         fs::create_dir_all(dir.join("proj-a")).unwrap();
         fs::create_dir_all(dir.join("proj-b")).unwrap();
+        let line = |name: &str, project: &str, timestamp: &str, harness: &str| {
+            let record = HistoryRecord::from_result(
+                HistoryId::from_uuid(uuid::Uuid::now_v7()),
+                name,
+                name,
+                &HistoryLabels::default(),
+                project,
+                timestamp.to_string(),
+                PermissionMode::Default,
+                None,
+                "prompt",
+                &result(harness),
+            );
+            format!(
+                "{}\n",
+                serde_json::to_string(&HistoryLine::Run(HistoryRunRecord::from_record(&record)))
+                    .unwrap()
+            )
+        };
         fs::write(
             dir.join("proj-a").join("old-20240101T000000Z-1.jsonl"),
-            "{\"name\":\"old\",\"project\":\"/proj/a\",\"timestamp\":\"2024-01-01T00:00:00Z\",\"harness\":\"codex\"}\n",
+            line("old", "/proj/a", "2024-01-01T00:00:00Z", "codex"),
         )
         .unwrap();
         fs::write(
             dir.join("proj-b").join("new-20260101T000000Z-2.jsonl"),
-            "{\"name\":\"new\",\"project\":\"/proj/b\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"harness\":\"claude-code\"}\n\
-             {\"name\":\"new\",\"project\":\"/proj/b\",\"timestamp\":\"2026-01-01T00:00:01Z\",\"harness\":\"codex\"}\n",
+            format!(
+                "{}{}",
+                line("new", "/proj/b", "2026-01-01T00:00:00Z", "claude-code"),
+                line("new", "/proj/b", "2026-01-01T00:00:01Z", "codex")
+            ),
         )
         .unwrap();
         let all = list_sessions(&dir, None).unwrap();
@@ -887,21 +1049,64 @@ mod tests {
     }
 
     #[test]
-    fn summarize_falls_back_on_an_empty_session_file() {
-        // A session file with no readable records (e.g. an interrupted first
-        // write) still summarizes: name/project fall back to the stem/slug and
-        // the count is zero, rather than erroring.
+    fn list_ignores_an_empty_session_file() {
         let dir = temp_dir("emptyfile");
         fs::create_dir_all(dir.join("some-proj")).unwrap();
         fs::write(dir.join("some-proj").join("stub-1.jsonl"), "\n").unwrap();
         let sessions = list_sessions(&dir, None).unwrap();
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].id, "stub-1");
-        assert_eq!(sessions[0].name, "stub-1");
-        assert_eq!(sessions[0].project, "some-proj");
-        assert_eq!(sessions[0].started, "");
-        assert_eq!(sessions[0].record_count, 0);
-        assert!(sessions[0].harnesses.is_empty());
+        assert!(sessions.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dangling_events_are_displayed_as_incomplete_but_not_listed() {
+        let dir = temp_dir("dangling");
+        let project_dir = dir.join("project");
+        fs::create_dir_all(&project_dir).unwrap();
+        let path = project_dir.join("interrupted.jsonl");
+        let run_id = HistoryId::from_uuid(uuid::Uuid::now_v7());
+        let line = HistoryLine::Event(HistoryEventLine {
+            schema_version: history::SCHEMA_VERSION.to_string(),
+            run_id,
+            harness: "codex".to_string(),
+            event: crate::domain::events::ActionEvent {
+                kind: "message".to_string(),
+                name: None,
+                input: None,
+                output: Some("partial".to_string()),
+                index: 0,
+                tool_call_id: None,
+                started_at: None,
+                finished_at: None,
+                duration_ms: None,
+                status: None,
+            },
+        });
+        fs::write(
+            &path,
+            format!("{}\n", serde_json::to_string(&line).unwrap()),
+        )
+        .unwrap();
+
+        assert!(list_sessions(&dir, None).unwrap().is_empty());
+        let displayed = read_session_display(&path).unwrap();
+        assert_eq!(displayed[0]["type"], "incomplete");
+        assert_eq!(displayed[0]["run_id"], run_id.to_string());
+        assert_eq!(displayed[0]["events"][0]["output"], "partial");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_lines_are_skipped_without_panicking() {
+        let dir = temp_dir("legacy");
+        let path = dir.join("legacy.jsonl");
+        fs::write(
+            &path,
+            "{\"schema_version\":\"0.3\",\"history_id\":\"0198f0d0-7b31-7000-8000-000000000001\"}\n",
+        )
+        .unwrap();
+        assert!(read_session(&path).unwrap().is_empty());
+        assert!(read_session_display(&path).unwrap().is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 

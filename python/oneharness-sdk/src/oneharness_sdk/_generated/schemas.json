@@ -608,7 +608,7 @@
                       "status": {
                         "enum": [
                           "timeout",
-                          "spawn_error",
+                          "spawn-error",
                           "skipped",
                           "planned"
                         ],
@@ -4083,23 +4083,6 @@
         "required": [
           "type",
           "record"
-        ],
-        "type": "object"
-      },
-      {
-        "description": "A normalized action event observed before its run closes.",
-        "properties": {
-          "line": {
-            "$ref": "#/$defs/HistoryEventLine"
-          },
-          "type": {
-            "const": "event",
-            "type": "string"
-          }
-        },
-        "required": [
-          "type",
-          "line"
         ],
         "type": "object"
       },

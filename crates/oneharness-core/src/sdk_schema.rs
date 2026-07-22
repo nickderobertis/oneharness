@@ -48,8 +48,10 @@ pub fn bundle() -> SdkSchemaBundle {
 }
 
 fn history_stream_schema() -> Schema {
+    // llmlint: ignore[no_panics_on_recoverable_errors] SDK schema generation is a build-time codegen boundary, and every sibling schema transformation in this module treats an impossible schemars-to-JSON failure as a generator invariant; returning a partial bundle would be less actionable than failing generation here.
     let mut value = serde_json::to_value(schema_for_serialize::<HistoryStreamEnvelope>())
         .expect("Schema serializes");
+    // llmlint: ignore[no_panics_on_recoverable_errors] This is the same build-time schemars invariant as the envelope serialization above; callers cannot recover from a malformed generated contract.
     let history_line =
         serde_json::to_value(schema_for_serialize::<HistoryLine>()).expect("Schema serializes");
     let definitions = history_line["$defs"]
@@ -58,18 +60,6 @@ fn history_stream_schema() -> Schema {
     for name in ["ActionEvent", "HistoryEventLine"] {
         value["$defs"][name] = definitions[name].clone();
     }
-    value["oneOf"]
-        .as_array_mut()
-        .expect("history stream variants")
-        .push(serde_json::json!({
-            "description": "A normalized action event observed before its run closes.",
-            "type": "object",
-            "properties": {
-                "line": {"$ref": "#/$defs/HistoryEventLine"},
-                "type": {"type": "string", "const": "event"}
-            },
-            "required": ["type", "line"]
-        }));
     add_v03_condition(&mut value);
     Schema::try_from(value).expect("history stream schema remains an object")
 }
@@ -174,7 +164,7 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                     serde_json::json!({"enum": ["ok", "nonzero"], "type": "string"});
                 terminal["properties"]["finished_at"] = serde_json::json!({"type": "string"});
                 measured["properties"]["status"] = serde_json::json!({
-                    "enum": ["timeout", "spawn_error", "skipped", "planned"],
+                    "enum": ["timeout", "spawn-error", "skipped", "planned"],
                     "type": "string"
                 });
                 let mut unavailable = base;

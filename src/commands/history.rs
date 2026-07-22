@@ -6,8 +6,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::cli::{
-    HistoryClearArgs, HistoryCommand, HistoryFormat, HistoryListArgs, HistoryShowArgs,
-    HistoryWatchArgs, HistoryWatchFormat,
+    HistoryClearArgs, HistoryCommand, HistoryFormat, HistoryListArgs, HistoryMigrateArgs,
+    HistoryShowArgs, HistoryWatchArgs, HistoryWatchFormat,
 };
 use crate::commands::print_json;
 use oneharness_core::domain::history::{self, HistoryId, HistoryRecord, HistoryStreamEnvelope};
@@ -26,7 +26,23 @@ pub fn run(args: &crate::cli::HistoryArgs) -> Result<i32, OneharnessError> {
         HistoryCommand::Show(a) => show(a),
         HistoryCommand::Watch(a) => watch(a),
         HistoryCommand::Clear(a) => clear(a),
+        HistoryCommand::Migrate(a) => migrate(a),
     }
+}
+
+fn migrate(args: &HistoryMigrateArgs) -> Result<i32, OneharnessError> {
+    let dir = resolve_dir(
+        args.history_dir.as_deref(),
+        args.config.as_deref(),
+        args.no_config,
+    )?;
+    let files = history_io::migrate(&dir)?;
+    let report = serde_json::json!({
+        "files": files,
+        "files_processed": files.len(),
+    });
+    print_json(&report, args.compact)?;
+    Ok(EXIT_OK)
 }
 
 fn watch(args: &HistoryWatchArgs) -> Result<i32, OneharnessError> {

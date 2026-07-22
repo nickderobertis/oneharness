@@ -8,7 +8,7 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-use oneharness_core::domain::history::HistoryStreamEnvelope;
+use oneharness_core::domain::history::{HistoryLine, HistoryStreamEnvelope};
 use oneharness_core::domain::report::RunStreamEnvelope;
 use serde_json::Value;
 
@@ -8959,6 +8959,91 @@ fn history_readers_skip_unmigrated_files_with_a_migration_notice() {
         "{stderr}"
     );
     assert!(stderr.contains("oneharness history migrate"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn history_migrate_converts_every_legacy_store_and_is_idempotent() {
+    let dir = hist_dir("migrate");
+    let project = dir.join("legacy-project");
+    std::fs::create_dir_all(&project).unwrap();
+    for version in ["01", "02", "03"] {
+        std::fs::copy(
+            format!("tests/fixtures/history-v{version}.jsonl"),
+            project.join(format!("legacy-{version}.jsonl")),
+        )
+        .unwrap();
+    }
+    // A stale index must be replaced, not merely appended to.
+    std::fs::write(dir.join(".index.jsonl"), "not-json\n").unwrap();
+    let ds = dir.display().to_string();
+
+    let output = run(
+        &["history", "migrate", "--history-dir", &ds, "--compact"],
+        &[],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    assert_eq!(report["files_processed"], 3);
+    for file in report["files"].as_array().unwrap() {
+        assert_eq!(file["records_migrated"], 1);
+        assert_eq!(file["skipped"], 0);
+        assert_eq!(file["already_current"], 0);
+    }
+
+    for version in ["01", "02", "03"] {
+        let text =
+            std::fs::read_to_string(project.join(format!("legacy-{version}.jsonl"))).unwrap();
+        let lines: Vec<HistoryLine> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2);
+        assert!(matches!(lines[0], HistoryLine::Event(_)));
+        assert!(matches!(lines[1], HistoryLine::Run(_)));
+    }
+    let index_lines = std::fs::read_to_string(dir.join(".index.jsonl")).unwrap();
+    assert_eq!(index_lines.lines().count(), 3);
+    assert!(!index_lines.contains("not-json"));
+
+    let listed = json_stdout(&run(
+        &[
+            "history",
+            "list",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--compact",
+        ],
+        &[],
+    ));
+    assert_eq!(listed.as_array().unwrap().len(), 3);
+    let shown = json_stdout(&run(
+        &[
+            "history",
+            "show",
+            "legacy-03",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--compact",
+        ],
+        &[],
+    ));
+    assert_eq!(shown[0]["events"][0]["input"]["command"], "echo 0.3");
+
+    let rerun = json_stdout(&run(
+        &["history", "migrate", "--history-dir", &ds, "--compact"],
+        &[],
+    ));
+    for file in rerun["files"].as_array().unwrap() {
+        assert_eq!(file["records_migrated"], 0);
+        assert_eq!(file["already_current"], 2);
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

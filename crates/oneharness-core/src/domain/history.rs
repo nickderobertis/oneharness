@@ -34,6 +34,8 @@ pub const SCHEMA_VERSION: &str = "1.0";
 
 /// The legacy record contract accepted by the migration reader.
 pub const LEGACY_SCHEMA_VERSION: &str = "0.1";
+const PREVIOUS_SCHEMA_VERSION: &str = "0.2";
+const LEGACY_RECORD_SCHEMA_VERSION: &str = "0.3";
 
 /// One event-sourced history JSONL line.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
@@ -556,6 +558,38 @@ pub struct HistoryRecord {
 }
 
 impl HistoryRecord {
+    /// Decode a whole-record history line written before the v1.0 event-sourced
+    /// contract. The stable source identity gives v0.1 records (which predate
+    /// `history_id`) a repeatable UUID, making migration retries idempotent.
+    pub fn from_legacy_value(
+        value: Value,
+        stable_identity: &str,
+    ) -> Result<Self, serde_json::Error> {
+        let wire: HistoryRecordWire = serde_json::from_value(value)?;
+        let history_id = match wire.schema_version.as_str() {
+            PREVIOUS_SCHEMA_VERSION | LEGACY_RECORD_SCHEMA_VERSION => wire
+                .history_id
+                .ok_or_else(|| invalid_history("legacy history record is missing `history_id`"))?,
+            LEGACY_SCHEMA_VERSION => HistoryId::legacy(stable_identity.as_bytes()),
+            version => {
+                return Err(invalid_history(&format!(
+                    "unsupported legacy history schema version `{version}`"
+                )))
+            }
+        };
+        let version = wire.schema_version.clone();
+        let mut record = Self::from_wire(wire, history_id, SCHEMA_VERSION.to_string());
+        if version == LEGACY_SCHEMA_VERSION {
+            record.labels = HistoryLabels::default();
+        }
+        if version == LEGACY_RECORD_SCHEMA_VERSION && !record.complete() {
+            return Err(invalid_history(
+                "history schema v0.3 record has incomplete telemetry",
+            ));
+        }
+        Ok(record)
+    }
+
     /// Freeze one [`RunResult`] into a history record. `session`/`name` identify
     /// the oneharness session; `timestamp` is the caller-supplied append instant
     /// (an I/O read, kept out of this pure function); `model` is the run's
@@ -709,8 +743,18 @@ impl HistoryRecord {
                 "history record is missing `history_id`",
             ))
         })?;
-        let record = Self {
-            schema_version: wire.schema_version.clone(),
+        let record = Self::from_wire(wire, history_id, SCHEMA_VERSION.to_string());
+        if !record.complete() {
+            return Err(invalid_history(
+                "history schema v1.0 record has incomplete telemetry",
+            ));
+        }
+        Ok(record)
+    }
+
+    fn from_wire(wire: HistoryRecordWire, history_id: HistoryId, schema_version: String) -> Self {
+        Self {
+            schema_version,
             history_id,
             session: wire.session,
             name: wire.name,
@@ -733,17 +777,22 @@ impl HistoryRecord {
             text_source: wire.text_source,
             usage: wire.usage,
             session_id: wire.session_id,
-            events: wire.events,
+            events: wire.events.map(|events| {
+                events
+                    .into_iter()
+                    .map(LegacyActionEvent::into_current)
+                    .collect()
+            }),
             failure_kind: wire.failure_kind,
-        };
-        if !record.complete() {
-            return Err(serde_json::Error::io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "history schema v1.0 record has incomplete telemetry",
-            )));
         }
-        Ok(record)
     }
+}
+
+fn invalid_history(message: &str) -> serde_json::Error {
+    serde_json::Error::io(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        message,
+    ))
 }
 
 /// Validated availability states for v1.0 timing telemetry. Keeping the
@@ -800,8 +849,46 @@ struct HistoryRecordWire {
     text_source: Option<String>,
     usage: Usage,
     session_id: Option<String>,
-    events: Option<Vec<ActionEvent>>,
+    events: Option<Vec<LegacyActionEvent>>,
     failure_kind: Option<FailureKind>,
+}
+
+/// Superset reader for action events across the legacy contracts. Versions 0.1
+/// and 0.2 ended at `index`; 0.3 added the remaining lifecycle fields.
+#[derive(Deserialize)]
+struct LegacyActionEvent {
+    kind: String,
+    name: Option<String>,
+    input: Option<Value>,
+    output: Option<String>,
+    index: usize,
+    #[serde(default)]
+    tool_call_id: Option<String>,
+    #[serde(default)]
+    started_at: Option<String>,
+    #[serde(default)]
+    finished_at: Option<String>,
+    #[serde(default)]
+    duration_ms: Option<u128>,
+    #[serde(default)]
+    status: Option<ToolCallStatus>,
+}
+
+impl LegacyActionEvent {
+    fn into_current(self) -> ActionEvent {
+        ActionEvent {
+            kind: self.kind,
+            name: self.name,
+            input: self.input,
+            output: self.output,
+            index: self.index,
+            tool_call_id: self.tool_call_id,
+            started_at: self.started_at,
+            finished_at: self.finished_at,
+            duration_ms: self.duration_ms,
+            status: self.status,
+        }
+    }
 }
 
 /// One line emitted by `history watch --format jsonl`. The tagged envelope lets

@@ -203,6 +203,152 @@ struct HistoryIndexEntry {
     record: HistoryRunRecord,
 }
 
+/// Outcome for one session file processed by [`migrate`]. Counts refer to
+/// whole legacy records and current v1.0 lines; unreadable lines are preserved
+/// byte-for-byte and reported as skipped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MigrationSummary {
+    pub path: String,
+    pub records_migrated: usize,
+    pub skipped: usize,
+    pub already_current: usize,
+}
+
+/// Rewrite every legacy session in a history store to v1.0 and rebuild its
+/// index. Each session and the index are replaced from a fully flushed sibling
+/// temp file, so a failed conversion never leaves a partially written target.
+pub fn migrate(dir: &Path) -> Result<Vec<MigrationSummary>, OneharnessError> {
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let lock_path = dir.join(INDEX_LOCK_FILE);
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|source| history_io_error(&lock_path, source))?;
+    FileExt::lock_exclusive(&lock).map_err(|source| history_io_error(&lock_path, source))?;
+    let result = migrate_locked(dir);
+    let unlock = FileExt::unlock(&lock).map_err(|source| history_io_error(&lock_path, source));
+    match (result, unlock) {
+        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+        (Ok(summaries), Ok(())) => Ok(summaries),
+    }
+}
+
+fn migrate_locked(dir: &Path) -> Result<Vec<MigrationSummary>, OneharnessError> {
+    let mut summaries = Vec::new();
+    for project_dir in read_subdirs_if_present(dir)? {
+        for path in read_session_files(&project_dir)? {
+            summaries.push(migrate_file(dir, &path)?);
+        }
+    }
+    summaries.sort_by(|a, b| a.path.cmp(&b.path));
+    rebuild_index_locked(dir)?;
+    Ok(summaries)
+}
+
+fn migrate_file(dir: &Path, path: &Path) -> Result<MigrationSummary, OneharnessError> {
+    let text = fs::read_to_string(path).map_err(|source| history_io_error(path, source))?;
+    let relative = path.strip_prefix(dir).unwrap_or(path).display().to_string();
+    let mut output = Vec::new();
+    let mut summary = MigrationSummary {
+        path: path.display().to_string(),
+        records_migrated: 0,
+        skipped: 0,
+        already_current: 0,
+    };
+    for (index, raw) in text.lines().enumerate() {
+        if raw.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(raw) else {
+            summary.skipped += 1;
+            output.extend_from_slice(raw.as_bytes());
+            output.push(b'\n');
+            continue;
+        };
+        if serde_json::from_value::<HistoryLine>(value.clone()).is_ok() {
+            summary.already_current += 1;
+            output.extend_from_slice(raw.as_bytes());
+            output.push(b'\n');
+            continue;
+        }
+        let identity = format!("{}:{}", relative, index + 1);
+        let Ok(record) = HistoryRecord::from_legacy_value(value, &identity) else {
+            summary.skipped += 1;
+            output.extend_from_slice(raw.as_bytes());
+            output.push(b'\n');
+            continue;
+        };
+        if let Some(events) = &record.events {
+            for event in events {
+                append_json_line(
+                    &mut output,
+                    &HistoryLine::Event(HistoryEventLine {
+                        schema_version: history::SCHEMA_VERSION.to_string(),
+                        run_id: record.history_id,
+                        harness: record.harness.clone(),
+                        event: event.clone(),
+                    }),
+                )?;
+            }
+        }
+        append_json_line(
+            &mut output,
+            &HistoryLine::Run(HistoryRunRecord::from_record(&record)),
+        )?;
+        summary.records_migrated += 1;
+    }
+    atomic_write(path, &output)?;
+    Ok(summary)
+}
+
+fn append_json_line<T: Serialize>(output: &mut Vec<u8>, value: &T) -> Result<(), OneharnessError> {
+    serde_json::to_writer(&mut *output, value).map_err(OneharnessError::Serialize)?;
+    output.push(b'\n');
+    Ok(())
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), OneharnessError> {
+    let tmp = path.with_extension(format!("jsonl.{}.oneharness.tmp", std::process::id()));
+    let result = (|| {
+        let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result.map_err(|source| history_io_error(path, source))
+}
+
+fn rebuild_index_locked(dir: &Path) -> Result<(), OneharnessError> {
+    let mut bytes = Vec::new();
+    for project_dir in read_subdirs_if_present(dir)? {
+        for path in read_session_files(&project_dir)? {
+            let session_path = path
+                .strip_prefix(dir)
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            for record in read_run_lines(&path)? {
+                append_json_line(
+                    &mut bytes,
+                    &HistoryIndexEntry {
+                        session_path: session_path.clone(),
+                        record,
+                    },
+                )?;
+            }
+        }
+    }
+    atomic_write(&dir.join(INDEX_FILE), &bytes)
+}
+
 struct ReconciledIndex {
     entries: Vec<HistoryIndexEntry>,
     active_ids: BTreeSet<HistoryId>,

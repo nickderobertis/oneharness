@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.4](https://github.com/nickderobertis/oneharness/compare/v0.5.3...v0.5.4) - 2026-07-22
+
+### Fixed
+
+- *(llmlint)* run judge when a harness is authenticated ([#1179](https://github.com/nickderobertis/oneharness/pull/1179))
+
 ## [0.5.3](https://github.com/nickderobertis/oneharness/compare/v0.5.2...v0.5.3) - 2026-07-22
 
 ### Fixed

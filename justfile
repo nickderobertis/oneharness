@@ -299,7 +299,7 @@ lint-llm-validate *args:
 lint-llm-diff base="origin/main" *args:
     PATH="$HOME/.local/bin:$PATH"; export PATH; if ! command -v llmlint >/dev/null 2>&1; then echo "llmlint not installed: run 'just setup-llmlint'" >&2; exit 1; fi; llmlint --diff --diff-base "{{base}}" {{args}}
 
-# Local complete-gate tier. Validation is model-free; the judge authenticates
-# and runs only when its committed primary harness and API key are available.
+# Local complete-gate tier. Validation is model-free; the judge uses an API key
+# bootstrap when provided, otherwise the committed authenticated fallback chain.
 lint-llm-local base:
     scripts/local-llmlint-gate.sh "{{base}}"

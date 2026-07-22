@@ -82,6 +82,29 @@ test("a missing generated contract is reported as stale", () => {
 	expect(generatedFileMatches(missing, Buffer.from("expected"))).toBe(false);
 });
 
+test("schema generation is isolated from shared Cargo artifacts", () => {
+	const sharedTarget = resolve(
+		tmpdir(),
+		`oneharness-shared-target-${crypto.randomUUID()}`,
+	);
+	try {
+		const generated = spawnSync(
+			process.execPath,
+			["scripts/generate.mjs", "--check"],
+			{
+				cwd: resolve(root, sdkDirectory),
+				env: { ...process.env, CARGO_TARGET_DIR: sharedTarget },
+				encoding: "utf8",
+			},
+		);
+		expect(generated.status).toBe(0);
+		expect(generated.stderr).toBe("");
+		expect(existsSync(sharedTarget)).toBe(false);
+	} finally {
+		rmSync(sharedTarget, { recursive: true, force: true });
+	}
+});
+
 test("generated optional properties remain exact-optional compatible", () => {
 	expect(
 		exactOptionalProperties(

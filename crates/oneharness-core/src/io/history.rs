@@ -84,6 +84,11 @@ pub struct HistoryWriter {
     project: String,
 }
 
+#[derive(Debug)]
+pub struct EventAppendOutcome {
+    pub index_error: Option<std::io::Error>,
+}
+
 impl HistoryWriter {
     /// Mint the id shared by a live run's incremental event lines and closing run line.
     pub fn begin_run(&self) -> HistoryId {
@@ -97,6 +102,23 @@ impl HistoryWriter {
         harness: &str,
         event: crate::domain::events::ActionEvent,
     ) -> std::io::Result<()> {
+        match self
+            .append_event_tracked(run_id, harness, event)?
+            .index_error
+        {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    /// Append an event while distinguishing session durability from a later
+    /// best-effort event-index failure.
+    pub fn append_event_tracked(
+        &self,
+        run_id: HistoryId,
+        harness: &str,
+        event: crate::domain::events::ActionEvent,
+    ) -> std::io::Result<EventAppendOutcome> {
         let line = HistoryEventLine {
             schema_version: history::SCHEMA_VERSION.to_string(),
             run_id,
@@ -105,7 +127,7 @@ impl HistoryWriter {
         };
         let mut file = open_session_for_append(&self.path)?;
         write_session_line(&mut file, &HistoryLine::Event(line.clone()))?;
-        append_event_index_entry(
+        let index_error = append_event_index_entry(
             &self.dir,
             &HistoryEventIndexEntry {
                 session_path: self.relative_path.clone(),
@@ -113,6 +135,8 @@ impl HistoryWriter {
                 line,
             },
         )
+        .err();
+        Ok(EventAppendOutcome { index_error })
     }
 
     /// Open (create) the session file under `dir` for a run in `project`. Mints
@@ -171,7 +195,7 @@ impl HistoryWriter {
         run_prompt: &str,
         result: &RunResult,
     ) -> std::io::Result<()> {
-        self.append_with_id(self.begin_run(), mode, model, run_prompt, result, true)
+        self.append_with_id(self.begin_run(), mode, model, run_prompt, result, None)
     }
 
     /// Append the terminal line for a run whose events were already persisted live.
@@ -182,8 +206,16 @@ impl HistoryWriter {
         model: Option<&str>,
         run_prompt: &str,
         result: &RunResult,
+        persisted_event_indexes: &std::collections::BTreeSet<usize>,
     ) -> std::io::Result<()> {
-        self.append_with_id(run_id, mode, model, run_prompt, result, false)
+        self.append_with_id(
+            run_id,
+            mode,
+            model,
+            run_prompt,
+            result,
+            Some(persisted_event_indexes),
+        )
     }
 
     fn append_with_id(
@@ -193,7 +225,7 @@ impl HistoryWriter {
         model: Option<&str>,
         run_prompt: &str,
         result: &RunResult,
-        include_events: bool,
+        persisted_event_indexes: Option<&std::collections::BTreeSet<usize>>,
     ) -> std::io::Result<()> {
         let record = HistoryRecord::from_result(
             run_id,
@@ -214,11 +246,10 @@ impl HistoryWriter {
                 "new history run lacks complete v1.0 telemetry",
             ));
         }
-        let mut lines = if include_events {
-            result.events.clone().unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        let mut lines = result.events.clone().unwrap_or_default();
+        if let Some(persisted) = persisted_event_indexes {
+            lines.retain(|event| !persisted.contains(&event.index));
+        }
         lines.sort_by_key(|event| event.index);
         let mut file = open_session_for_append(&self.path)?;
         for event in lines {
@@ -1349,6 +1380,91 @@ mod tests {
         let index = fs::read(dir.join(INDEX_FILE)).unwrap();
         assert_eq!(parse_index_entries(&index).len(), 2);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_live_session_append_is_retried_at_finalization() {
+        let dir = temp_dir("live-fallback");
+        let project = temp_dir("live-fallback-project");
+        let writer = HistoryWriter::open(&dir, &project, "live", HistoryLabels::default()).unwrap();
+        let run_id = writer.begin_run();
+        let event = crate::domain::events::ActionEvent {
+            kind: "message".to_string(),
+            name: None,
+            input: None,
+            output: Some("late".to_string()),
+            index: 0,
+            tool_call_id: None,
+            started_at: None,
+            finished_at: None,
+            duration_ms: None,
+            status: None,
+        };
+        fs::create_dir(writer.path()).unwrap();
+        let error = writer
+            .append_event_tracked(run_id, "codex", event.clone())
+            .unwrap_err();
+        assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
+        fs::remove_dir(writer.path()).unwrap();
+        let mut completed = result("codex");
+        completed.events = Some(vec![event]);
+        writer
+            .append_streamed(
+                run_id,
+                PermissionMode::Default,
+                None,
+                "prompt",
+                &completed,
+                &BTreeSet::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            read_session(writer.path()).unwrap()[0]
+                .events
+                .as_ref()
+                .unwrap()
+                .len(),
+            1
+        );
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn event_index_failure_still_reports_the_session_line_as_persisted() {
+        let dir = temp_dir("live-index-failure");
+        let project = temp_dir("live-index-project");
+        let writer = HistoryWriter::open(&dir, &project, "live", HistoryLabels::default()).unwrap();
+        fs::create_dir(dir.join(EVENT_INDEX_FILE)).unwrap();
+        let event = crate::domain::events::ActionEvent {
+            kind: "message".to_string(),
+            name: None,
+            input: None,
+            output: None,
+            index: 0,
+            tool_call_id: None,
+            started_at: None,
+            finished_at: None,
+            duration_ms: None,
+            status: None,
+        };
+        let outcome = writer
+            .append_event_tracked(writer.begin_run(), "codex", event.clone())
+            .unwrap();
+        assert!(outcome.index_error.is_some());
+        assert!(writer
+            .append_event(writer.begin_run(), "codex", event.clone())
+            .is_err());
+        fs::remove_dir(dir.join(EVENT_INDEX_FILE)).unwrap();
+        writer
+            .append_event(writer.begin_run(), "codex", event)
+            .unwrap();
+        assert_eq!(
+            parse_lines(writer.path(), &fs::read_to_string(writer.path()).unwrap()).len(),
+            3
+        );
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&project);
     }
 
     #[test]

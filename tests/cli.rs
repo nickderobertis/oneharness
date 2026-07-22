@@ -9274,6 +9274,66 @@ fn history_records_a_streamed_run() {
 }
 
 #[test]
+fn streamed_history_falls_back_to_events_only_extractable_at_completion() {
+    let dir = hist_dir("stream-completion-events");
+    let ds = dir.display().to_string();
+    let stdout = r#"{
+  "type": "assistant",
+  "message": {
+    "content": [
+      {
+        "type": "tool_use",
+        "id": "call-1",
+        "name": "Bash",
+        "input": {"command": "echo complete"}
+      }
+    ]
+  }
+}"#;
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--prompt",
+            "completion-only event",
+            "--stream",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--bypass",
+        ],
+        &[("MOCK_STDOUT", stdout), ("MOCK_PRESERVE_STDOUT", "1")],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelopes: Vec<Value> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(envelopes.iter().all(|line| line["type"] != "event"));
+    let history_file = envelopes.last().unwrap()["report"]["history_file"]
+        .as_str()
+        .unwrap();
+    let lines: Vec<HistoryLine> = std::fs::read_to_string(history_file)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2);
+    assert!(matches!(lines[0], HistoryLine::Event(_)));
+    assert!(matches!(lines[1], HistoryLine::Run(_)));
+    let record = first_history_run(Path::new(history_file));
+    assert_eq!(record["events"][0]["name"], "Bash");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn interrupted_stream_preserves_events_without_a_closing_run() {
     use std::io::BufReader;
 

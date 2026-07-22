@@ -211,6 +211,10 @@ The SDK declarations, input contracts, and runtime validation schemas are
 generated from one Rust JSON Schema bundle and drift-checked by `just check`.
 Outputs preserve unknown fields for additive forward compatibility; inputs are
 strict, so unknown option names and misspellings fail before a subprocess starts.
+`HistoryStreamEnvelope` has no independent schema version: its event variant is
+an opt-in additive capability behind history watch's `events` option. Existing
+callers that omit that option continue to receive only `record` envelopes, while
+the nested event/run lines remain governed by history schema version `1.0`.
 Missing history records, sessions, and watch cursors raise a typed
 `HistoryNotFoundError`. See the [Node SDK guide](npm/oneharness-sdk/README.md) and
 [Python SDK guide](python/oneharness-sdk/README.md).

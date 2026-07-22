@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.5.1...oneharness-core-v0.5.2) - 2026-07-22
+
+### Fixed
+
+- *(history)* address llmlint findings in event-sourced history ([#1177](https://github.com/nickderobertis/oneharness/pull/1177))
+
 ## [0.5.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.5.0...oneharness-core-v0.5.1) - 2026-07-22
 
 ### Added

@@ -30,6 +30,33 @@ assert_line_count() {
 cat > "$tmp/bin/llmlint" <<'STUB'
 #!/usr/bin/env bash
 printf 'llmlint %s\n' "$*" >> "$CALL_LOG"
+if [[ ${1:-} == --diff && ${JUDGE_FAIL:-0} == 1 ]]; then
+  echo 'judge found an issue' >&2
+  exit 4
+fi
+STUB
+cat > "$tmp/bin/oneharness" <<'STUB'
+#!/usr/bin/env bash
+printf 'oneharness %s\n' "$*" >> "$CALL_LOG"
+case ${PROBE_MODE:-available} in
+  available)
+    echo '{"fallback":{"ran":"codex"}}'
+    exit 0
+    ;;
+  unavailable)
+    echo '{"fallback":{"ran":null}}'
+    exit 1
+    ;;
+  error)
+    echo '{"fallback":{"ran":"codex"}}'
+    echo 'oneharness: fallback harness ran but did not succeed' >&2
+    exit 1
+    ;;
+  invalid)
+    echo 'not-json'
+    exit 0
+    ;;
+esac
 STUB
 cat > "$tmp/bin/$primary_harness" <<'STUB'
 #!/usr/bin/env bash
@@ -37,7 +64,7 @@ read -r key
 [[ $key == test-key ]]
 printf '%s %s\n' "$(basename "$0")" "$*" >> "$CALL_LOG"
 STUB
-chmod +x "$tmp/bin/llmlint" "$tmp/bin/$primary_harness"
+chmod +x "$tmp/bin/llmlint" "$tmp/bin/oneharness" "$tmp/bin/$primary_harness"
 
 if "$root/scripts/local-llmlint-gate.sh" invalid-comparison-ref 2>"$tmp/invalid-ref"; then
   echo "check-local-gate: invalid comparison ref unexpectedly succeeded" >&2
@@ -81,10 +108,87 @@ assert_file_contains \
 : > "$log"
 
 CALL_LOG="$log" PATH="$tmp/bin:$PATH" HOME="$tmp/home" \
+  "$root/scripts/local-llmlint-gate.sh" HEAD
+assert_file_contains \
+  "oneharness run --config $root/oneharness.toml --compact --prompt Reply with exactly: available" \
+  "$log" \
+  "no-key path did not probe the configured fallback"
+assert_file_contains 'llmlint --diff --diff-base HEAD' "$log" \
+  "no-key path did not invoke the judge after a successful probe"
+: > "$log"
+
+CALL_LOG="$log" PATH="$tmp/bin:$PATH" HOME="$tmp/home" PROBE_MODE=unavailable \
   "$root/scripts/local-llmlint-gate.sh" HEAD 2>"$tmp/skip"
-assert_file_contains 'llmlint: judge skipped locally (OPENAI_API_KEY unavailable)' "$tmp/skip" \
-  "missing no-key skip diagnostic"
-assert_line_count 1 "$log" "no-key path should only validate"
+assert_file_contains \
+  'llmlint: judge skipped locally (no configured harness is available and authenticated)' \
+  "$tmp/skip" "missing unavailable fallback diagnostic"
+assert_line_count 2 "$log" "unavailable path should validate and probe without judging"
+: > "$log"
+
+if CALL_LOG="$log" PATH="$tmp/bin:$PATH" HOME="$tmp/home" PROBE_MODE=error \
+  "$root/scripts/local-llmlint-gate.sh" HEAD 2>"$tmp/probe-error"; then
+  echo "check-local-gate: genuine probe error unexpectedly succeeded" >&2
+  exit 1
+else
+  status=$?
+fi
+[[ $status -eq 1 ]] || {
+  echo "check-local-gate: genuine probe error exited $status, expected 1" >&2
+  exit 1
+}
+assert_file_contains \
+  "llmlint: oneharness availability probe failed; check harness authentication and run 'oneharness run --config oneharness.toml --prompt test'" \
+  "$tmp/probe-error" \
+  "genuine probe error was treated as an unavailable skip"
+: > "$log"
+
+if CALL_LOG="$log" PATH="$tmp/bin:$PATH" HOME="$tmp/home" PROBE_MODE=invalid \
+  "$root/scripts/local-llmlint-gate.sh" HEAD 2>"$tmp/invalid-report"; then
+  echo "check-local-gate: invalid probe report unexpectedly succeeded" >&2
+  exit 1
+fi
+assert_file_contains \
+  "llmlint: oneharness availability probe returned an invalid report; run 'oneharness run --config oneharness.toml --prompt test' to diagnose" \
+  "$tmp/invalid-report" "invalid probe report was not rejected"
+: > "$log"
+
+mv "$tmp/bin/oneharness" "$tmp/oneharness"
+CALL_LOG="$log" PATH="$tmp/bin:/usr/bin:/bin" HOME="$tmp/home" \
+  "$root/scripts/local-llmlint-gate.sh" HEAD 2>"$tmp/no-oneharness"
+assert_file_contains 'llmlint: judge skipped locally (oneharness unavailable)' \
+  "$tmp/no-oneharness" "missing oneharness did not skip clearly"
+mv "$tmp/oneharness" "$tmp/bin/oneharness"
+: > "$log"
+
+if (cd "$tmp" && PATH="bin:/usr/bin:/bin" llmlint_judge_available "$root/oneharness.toml") \
+  2>"$tmp/relative-oneharness"; then
+  echo "check-local-gate: relative oneharness path unexpectedly succeeded" >&2
+  exit 1
+fi
+assert_file_contains \
+  "llmlint: resolved oneharness path is not an absolute executable: bin/oneharness; fix PATH or run 'just setup-llmlint'" \
+  "$tmp/relative-oneharness" "relative oneharness path was not rejected"
+
+if PATH="$tmp/bin" llmlint_judge_available "$root/oneharness.toml" 2>"$tmp/no-jq"; then
+  echo "check-local-gate: missing jq unexpectedly succeeded" >&2
+  exit 1
+fi
+assert_file_contains \
+  'llmlint: jq is required to validate the oneharness availability probe; install jq and retry' \
+  "$tmp/no-jq" "missing jq was not rejected clearly"
+
+if CALL_LOG="$log" PATH="$tmp/bin:$PATH" HOME="$tmp/home" JUDGE_FAIL=1 \
+  "$root/scripts/local-llmlint-gate.sh" HEAD 2>"$tmp/judge-error"; then
+  echo "check-local-gate: judge finding unexpectedly succeeded" >&2
+  exit 1
+else
+  status=$?
+fi
+[[ $status -eq 4 ]] || {
+  echo "check-local-gate: judge finding exited $status, expected 4" >&2
+  exit 1
+}
+: > "$log"
 
 CALL_LOG="$log" PATH="$tmp/bin:$PATH" HOME="$tmp/home" OPENAI_API_KEY=test-key \
   "$root/scripts/local-llmlint-gate.sh" HEAD

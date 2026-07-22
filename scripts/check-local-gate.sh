@@ -2,6 +2,13 @@
 # Hermetic behavioral check for the local llmlint gate and comparison-base helper.
 set -euo pipefail
 
+case $(uname -s) in
+  MINGW* | MSYS* | CYGWIN*)
+    echo "check-local-gate: skipped on Windows because this Unix behavioral harness relies on extensionless executable stubs" >&2
+    exit 0
+    ;;
+esac
+
 root=$(cd "$(dirname "$0")/.." && pwd)
 source "$root/scripts/local-llmlint-gate-lib.sh"
 tmp=$(mktemp -d)

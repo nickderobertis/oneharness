@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/nickderobertis/oneharness/compare/v0.4.6...v0.5.0) - 2026-07-22
+
+### Added
+
+- [**breaking**] add event-sourced history migration; define event-sourced histor… ([#1173](https://github.com/nickderobertis/oneharness/pull/1173))
+
 ## [0.4.6](https://github.com/nickderobertis/oneharness/compare/v0.4.5...v0.4.6) - 2026-07-21
 
 ### Added

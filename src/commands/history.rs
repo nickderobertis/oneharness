@@ -64,16 +64,23 @@ fn watch(args: &HistoryWatchArgs) -> Result<i32, OneharnessError> {
     let labels = history::parse_labels(args.label.iter().map(String::as_str))
         .map_err(OneharnessError::HistoryLabelInvalid)?;
     let slug = project_slug(args.all_projects, args.project.as_deref());
-    let mut watcher = history_io::HistoryWatcher::open(&dir, after, labels, slug)?;
+    let mut watcher = history_io::HistoryWatcher::open(&dir, after, labels, slug, args.events)?;
 
     match args.format {
         HistoryWatchFormat::Jsonl => loop {
+            if args.events && !write_watch_events(&watcher.drain_events())? {
+                return Ok(EXIT_OK);
+            }
             let records = watcher.drain_available();
             if !write_watch_records(&records)? {
                 return Ok(EXIT_OK);
             }
             std::thread::sleep(Duration::from_millis(100));
-            for record in watcher.poll()? {
+            let records = watcher.poll()?;
+            if args.events && !write_watch_events(&watcher.drain_events())? {
+                return Ok(EXIT_OK);
+            }
+            for record in records {
                 if !write_watch_records(&[record])? {
                     return Ok(EXIT_OK);
                 }
@@ -82,15 +89,34 @@ fn watch(args: &HistoryWatchArgs) -> Result<i32, OneharnessError> {
     }
 }
 
+fn write_watch_events(
+    events: &[oneharness_core::domain::history::HistoryEventLine],
+) -> Result<bool, OneharnessError> {
+    write_watch_envelopes(
+        events
+            .iter()
+            .cloned()
+            .map(|line| HistoryStreamEnvelope::Event { line }),
+    )
+}
+
 fn write_watch_records(records: &[HistoryRecord]) -> Result<bool, OneharnessError> {
+    write_watch_envelopes(
+        records
+            .iter()
+            .cloned()
+            .map(|record| HistoryStreamEnvelope::Record { record }),
+    )
+}
+
+fn write_watch_envelopes(
+    envelopes: impl IntoIterator<Item = HistoryStreamEnvelope>,
+) -> Result<bool, OneharnessError> {
     use std::io::Write;
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    for record in records {
-        let envelope = HistoryStreamEnvelope::Record {
-            record: record.clone(),
-        };
+    for envelope in envelopes {
         let line = serde_json::to_string(&envelope)?;
         if let Err(error) = writeln!(out, "{line}") {
             return if error.kind() == std::io::ErrorKind::BrokenPipe {

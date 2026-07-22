@@ -336,176 +336,7 @@
             "description": "One normalized action observed during a run.",
             "properties": {
               "event": {
-                "oneOf": [
-                  {
-                    "allOf": [
-                      {
-                        "$ref": "#/$defs/ActionEvent"
-                      },
-                      {
-                        "properties": {
-                          "duration_ms": {
-                            "minimum": 0,
-                            "type": "integer"
-                          },
-                          "finished_at": {
-                            "type": "string"
-                          },
-                          "kind": {
-                            "const": "tool_call",
-                            "type": "string"
-                          },
-                          "started_at": {
-                            "type": "string"
-                          },
-                          "status": {
-                            "const": "completed",
-                            "type": "string"
-                          },
-                          "tool_call_id": {
-                            "minLength": 1,
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "kind",
-                          "tool_call_id",
-                          "started_at",
-                          "status",
-                          "finished_at",
-                          "duration_ms"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
-                  {
-                    "allOf": [
-                      {
-                        "$ref": "#/$defs/ActionEvent"
-                      },
-                      {
-                        "properties": {
-                          "duration_ms": {
-                            "minimum": 0,
-                            "type": "integer"
-                          },
-                          "finished_at": {
-                            "type": "string"
-                          },
-                          "kind": {
-                            "const": "tool_call",
-                            "type": "string"
-                          },
-                          "started_at": {
-                            "type": "string"
-                          },
-                          "status": {
-                            "const": "failed",
-                            "type": "string"
-                          },
-                          "tool_call_id": {
-                            "minLength": 1,
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "kind",
-                          "tool_call_id",
-                          "started_at",
-                          "status",
-                          "finished_at",
-                          "duration_ms"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
-                  {
-                    "allOf": [
-                      {
-                        "$ref": "#/$defs/ActionEvent"
-                      },
-                      {
-                        "properties": {
-                          "kind": {
-                            "const": "tool_call",
-                            "type": "string"
-                          },
-                          "started_at": {
-                            "type": "string"
-                          },
-                          "status": {
-                            "const": "timeout",
-                            "type": "string"
-                          },
-                          "tool_call_id": {
-                            "minLength": 1,
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "kind",
-                          "tool_call_id",
-                          "started_at",
-                          "status"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
-                  {
-                    "allOf": [
-                      {
-                        "$ref": "#/$defs/ActionEvent"
-                      },
-                      {
-                        "properties": {
-                          "kind": {
-                            "const": "tool_call",
-                            "type": "string"
-                          },
-                          "started_at": {
-                            "type": "string"
-                          },
-                          "status": {
-                            "const": "interrupted",
-                            "type": "string"
-                          },
-                          "tool_call_id": {
-                            "minLength": 1,
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "kind",
-                          "tool_call_id",
-                          "started_at",
-                          "status"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
-                  {
-                    "allOf": [
-                      {
-                        "$ref": "#/$defs/ActionEvent"
-                      },
-                      {
-                        "properties": {
-                          "kind": {
-                            "not": {
-                              "pattern": "^tool_call$"
-                            },
-                            "type": "string"
-                          }
-                        },
-                        "type": "object"
-                      }
-                    ]
-                  }
-                ]
+                "$ref": "#/$defs/ActionEvent"
               },
               "harness": {
                 "type": "string"
@@ -3311,6 +3142,33 @@
           }
         ]
       },
+      "HistoryEventLine": {
+        "description": "One normalized action observed during a run.",
+        "properties": {
+          "event": {
+            "$ref": "#/$defs/ActionEvent"
+          },
+          "harness": {
+            "type": "string"
+          },
+          "run_id": {
+            "maxLength": 36,
+            "minLength": 36,
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "run_id",
+          "harness",
+          "event"
+        ],
+        "type": "object"
+      },
       "HistoryLabels": {
         "additionalProperties": {
           "maxLength": 256,
@@ -4227,6 +4085,40 @@
           "record"
         ],
         "type": "object"
+      },
+      {
+        "description": "A normalized action event observed before its run closes.",
+        "properties": {
+          "line": {
+            "$ref": "#/$defs/HistoryEventLine"
+          },
+          "type": {
+            "const": "event",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "line"
+        ],
+        "type": "object"
+      },
+      {
+        "description": "A normalized action event observed before its run closes.",
+        "properties": {
+          "line": {
+            "$ref": "#/$defs/HistoryEventLine"
+          },
+          "type": {
+            "const": "event",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "line"
+        ],
+        "type": "object"
       }
     ],
     "title": "HistoryStreamEnvelope"
@@ -4264,6 +4156,9 @@
         "type": "string"
       },
       "all_projects": {
+        "type": "boolean"
+      },
+      "events": {
         "type": "boolean"
       },
       "history_dir": {

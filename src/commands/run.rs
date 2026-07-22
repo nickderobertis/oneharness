@@ -580,6 +580,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // moment it sees a disallowed action. `--print-command` still just prints the
     // planned command (nothing executes), so it falls through to the normal path.
     if args.stream && !args.print_command {
+        let streamed_run_id = history_writer.as_ref().map(HistoryWriter::begin_run);
         let result = match plan.into_iter().next().expect("stream: one unit") {
             // The harness was unavailable/skipped — nothing to stream; emit only
             // the terminal report line so the shape is still complete.
@@ -591,14 +592,26 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 job_index,
                 prompt,
                 model,
-            } => stream_one_harness(&jobs[job_index], spec, &bin, output_format, prompt, model),
+            } => stream_one_harness(
+                &jobs[job_index],
+                spec,
+                &bin,
+                output_format,
+                prompt,
+                model,
+                history_writer.as_ref().zip(streamed_run_id),
+            ),
         };
-        record_history(
-            &history_writer,
-            mode,
-            &prompts[0],
-            std::slice::from_ref(&result),
-        );
+        if let (Some(writer), Some(run_id)) = (&history_writer, streamed_run_id) {
+            if let Err(err) =
+                writer.append_streamed(run_id, mode, result.model.as_deref(), &prompts[0], &result)
+            {
+                eprintln!(
+                    "oneharness: warning: could not write history record for `{}`: {err}",
+                    result.harness
+                );
+            }
+        }
         // The run is over: put the workspace back before anything else can fail.
         let mock_report = mock_wiring.map(MockWiring::finish);
         // Persist the captured session token (if `--session` was in play) and
@@ -1406,6 +1419,7 @@ fn stream_one_harness(
     output_format: OutputFormat,
     prompt: Option<String>,
     model: Option<String>,
+    history: Option<(&HistoryWriter, oneharness_core::domain::history::HistoryId)>,
 ) -> RunResult {
     use oneharness_core::domain::report::RunStreamEnvelope;
     use oneharness_core::io::runner::StreamStep;
@@ -1424,6 +1438,14 @@ fn stream_one_harness(
         next_index += evs.len();
         let mut out = std::io::stdout().lock();
         for ev in &evs {
+            if let Some((writer, run_id)) = history {
+                if let Err(err) = writer.append_event(run_id, spec.id, ev.clone()) {
+                    eprintln!(
+                        "oneharness: warning: could not write history event for `{}`: {err}",
+                        spec.id
+                    );
+                }
+            }
             let envelope = RunStreamEnvelope::Event { event: ev.clone() };
             // A broken pipe (consumer closed the stream) is the short-circuit
             // signal: stop reading and tear the child down.

@@ -94,23 +94,7 @@ pub struct HistoryEventLine {
 
 impl HistoryEventLine {
     pub(crate) fn valid(&self) -> bool {
-        if self.schema_version != SCHEMA_VERSION || self.event.kind != "tool_call" {
-            return self.schema_version == SCHEMA_VERSION;
-        }
-        let event = &self.event;
-        let base = event
-            .tool_call_id
-            .as_deref()
-            .is_some_and(|id| !id.is_empty())
-            && event.started_at.is_some()
-            && event.status.is_some();
-        base && match event.status {
-            Some(ToolCallStatus::Completed | ToolCallStatus::Failed) => {
-                event.finished_at.is_some() && event.duration_ms.is_some()
-            }
-            Some(ToolCallStatus::Timeout | ToolCallStatus::Interrupted) => true,
-            None => false,
-        }
+        self.schema_version == SCHEMA_VERSION
     }
 }
 
@@ -899,6 +883,8 @@ impl LegacyActionEvent {
 pub enum HistoryStreamEnvelope {
     /// A newly observed history record.
     Record { record: HistoryRecord },
+    /// A normalized action event observed before its run closes.
+    Event { line: HistoryEventLine },
 }
 
 /// A filesystem-safe slug for a project directory, so history is partitioned by

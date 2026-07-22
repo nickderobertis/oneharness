@@ -13,6 +13,21 @@
       }
     },
     {
+      "name": "history stream envelope valid event",
+      "root": "history_stream_envelope",
+      "accepted": true,
+      "value": {
+        "type": "event",
+        "line": {
+          "schema_version": "1.0",
+          "run_id": "0198f0d0-7b31-7000-8000-000000000001", "harness": "codex",
+          "event": {"kind": "tool_call", "name": "shell", "input": {}, "output": null, "index": 0,
+            "tool_call_id": "call-1", "started_at": "2026-07-19T00:00:00Z",
+            "finished_at": null, "duration_ms": null, "status": null}
+        }
+      }
+    },
+    {
       "name": "history line valid run",
       "root": "history_line",
       "accepted": true,
@@ -29,9 +44,9 @@
       }
     },
     {
-      "name": "history line tool call missing identity and status",
+      "name": "history line accepts an in-progress tool call verbatim",
       "root": "history_line",
-      "accepted": false,
+      "accepted": true,
       "value": {
         "type": "event", "schema_version": "1.0",
         "run_id": "0198f0d0-7b31-7000-8000-000000000001", "harness": "codex",

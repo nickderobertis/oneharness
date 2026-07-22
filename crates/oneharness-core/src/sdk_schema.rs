@@ -41,10 +41,37 @@ pub fn bundle() -> SdkSchemaBundle {
         history_watch_options: schema_for!(HistoryWatchOptions),
         history_line: history_line_schema(schema_for_serialize::<HistoryLine>()),
         history_record: history_schema(schema_for_serialize::<HistoryRecord>()),
-        history_stream_envelope: history_schema(schema_for_serialize::<HistoryStreamEnvelope>()),
+        history_stream_envelope: history_stream_schema(),
         history_records: history_schema(schema_for_serialize::<Vec<HistoryRecord>>()),
         history_list: schema_for_serialize::<Vec<SessionSummary>>(),
     }
+}
+
+fn history_stream_schema() -> Schema {
+    let mut value = serde_json::to_value(schema_for_serialize::<HistoryStreamEnvelope>())
+        .expect("Schema serializes");
+    let history_line =
+        serde_json::to_value(schema_for_serialize::<HistoryLine>()).expect("Schema serializes");
+    let definitions = history_line["$defs"]
+        .as_object()
+        .expect("history line definitions");
+    for name in ["ActionEvent", "HistoryEventLine"] {
+        value["$defs"][name] = definitions[name].clone();
+    }
+    value["oneOf"]
+        .as_array_mut()
+        .expect("history stream variants")
+        .push(serde_json::json!({
+            "description": "A normalized action event observed before its run closes.",
+            "type": "object",
+            "properties": {
+                "line": {"$ref": "#/$defs/HistoryEventLine"},
+                "type": {"type": "string", "const": "event"}
+            },
+            "required": ["type", "line"]
+        }));
+    add_v03_condition(&mut value);
+    Schema::try_from(value).expect("history stream schema remains an object")
 }
 
 fn history_line_schema(schema: Schema) -> Schema {
@@ -119,36 +146,6 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
             if properties.contains_key("run_id") && properties.contains_key("event") {
                 object["properties"]["schema_version"] =
                     serde_json::json!({"const": "1.0", "type": "string"});
-                let event_base = object["properties"]["event"].clone();
-                let tool_call = |status: &str, ended: bool| {
-                    let mut properties = serde_json::json!({
-                        "kind": {"const": "tool_call", "type": "string"},
-                        "tool_call_id": {"type": "string", "minLength": 1},
-                        "started_at": {"type": "string"},
-                        "status": {"const": status, "type": "string"}
-                    });
-                    let mut required =
-                        serde_json::json!(["kind", "tool_call_id", "started_at", "status"]);
-                    if ended {
-                        properties["finished_at"] = serde_json::json!({"type": "string"});
-                        properties["duration_ms"] =
-                            serde_json::json!({"type": "integer", "minimum": 0});
-                        required.as_array_mut().expect("array").extend([
-                            serde_json::Value::String("finished_at".to_string()),
-                            serde_json::Value::String("duration_ms".to_string()),
-                        ]);
-                    }
-                    serde_json::json!({"allOf": [event_base.clone(), {
-                        "type": "object", "properties": properties, "required": required
-                    }]})
-                };
-                object["properties"]["event"] = serde_json::json!({"oneOf": [
-                    tool_call("completed", true), tool_call("failed", true),
-                    tool_call("timeout", false), tool_call("interrupted", false),
-                    {"allOf": [event_base, {"type": "object", "properties": {
-                        "kind": {"not": {"pattern": "^tool_call$"}, "type": "string"}
-                    }}]}
-                ]});
                 return;
             }
             if properties.contains_key("history_id")

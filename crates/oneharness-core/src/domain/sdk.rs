@@ -348,6 +348,9 @@ pub struct HistoryWatchOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub history_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub events: Option<bool>,
 }
 
 #[cfg(test)]

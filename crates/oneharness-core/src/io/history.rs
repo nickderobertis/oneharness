@@ -32,6 +32,7 @@ use crate::errors::OneharnessError;
 const SESSION_EXT: &str = "jsonl";
 const INDEX_FILE: &str = ".index.jsonl";
 const INDEX_LOCK_FILE: &str = ".index.lock";
+const EVENT_INDEX_FILE: &str = ".event-index.jsonl";
 
 /// Seconds since the UNIX epoch, UTC. The single clock read the history feature
 /// makes — kept here in the I/O layer so `domain::history` stays pure.
@@ -84,6 +85,36 @@ pub struct HistoryWriter {
 }
 
 impl HistoryWriter {
+    /// Mint the id shared by a live run's incremental event lines and closing run line.
+    pub fn begin_run(&self) -> HistoryId {
+        HistoryId::from_uuid(uuid::Uuid::now_v7())
+    }
+
+    /// Durably append one live event and make it visible to event-mode watchers.
+    pub fn append_event(
+        &self,
+        run_id: HistoryId,
+        harness: &str,
+        event: crate::domain::events::ActionEvent,
+    ) -> std::io::Result<()> {
+        let line = HistoryEventLine {
+            schema_version: history::SCHEMA_VERSION.to_string(),
+            run_id,
+            harness: harness.to_string(),
+            event,
+        };
+        let mut file = open_session_for_append(&self.path)?;
+        write_session_line(&mut file, &HistoryLine::Event(line.clone()))?;
+        append_event_index_entry(
+            &self.dir,
+            &HistoryEventIndexEntry {
+                session_path: self.relative_path.clone(),
+                labels: self.labels.clone(),
+                line,
+            },
+        )
+    }
+
     /// Open (create) the session file under `dir` for a run in `project`. Mints
     /// the session id from the sanitized `name`, the current instant, and the pid
     /// so concurrent runs never collide: `<name>-<YYYYMMDDThhmmssZ>-<pid>`. The
@@ -140,8 +171,32 @@ impl HistoryWriter {
         run_prompt: &str,
         result: &RunResult,
     ) -> std::io::Result<()> {
+        self.append_with_id(self.begin_run(), mode, model, run_prompt, result, true)
+    }
+
+    /// Append the terminal line for a run whose events were already persisted live.
+    pub fn append_streamed(
+        &self,
+        run_id: HistoryId,
+        mode: PermissionMode,
+        model: Option<&str>,
+        run_prompt: &str,
+        result: &RunResult,
+    ) -> std::io::Result<()> {
+        self.append_with_id(run_id, mode, model, run_prompt, result, false)
+    }
+
+    fn append_with_id(
+        &self,
+        run_id: HistoryId,
+        mode: PermissionMode,
+        model: Option<&str>,
+        run_prompt: &str,
+        result: &RunResult,
+        include_events: bool,
+    ) -> std::io::Result<()> {
         let record = HistoryRecord::from_result(
-            HistoryId::from_uuid(uuid::Uuid::now_v7()),
+            run_id,
             &self.session,
             &self.name,
             &self.labels,
@@ -159,12 +214,13 @@ impl HistoryWriter {
                 "new history run lacks complete v1.0 telemetry",
             ));
         }
-        let mut lines = result.events.clone().unwrap_or_default();
+        let mut lines = if include_events {
+            result.events.clone().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         lines.sort_by_key(|event| event.index);
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
+        let mut file = open_session_for_append(&self.path)?;
         for event in lines {
             write_session_line(
                 &mut file,
@@ -195,12 +251,31 @@ fn write_session_line(file: &mut File, line: &HistoryLine) -> std::io::Result<()
     file.flush()
 }
 
+fn open_session_for_append(path: &Path) -> std::io::Result<File> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)?;
+    recover_partial_tail_io(&mut file)?;
+    file.seek(SeekFrom::End(0))?;
+    Ok(file)
+}
+
 /// One append-only index entry. The session JSONL remains authoritative; the
 /// relative path lets reconciliation suppress entries whose session was cleared.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct HistoryIndexEntry {
     session_path: String,
     record: HistoryRunRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct HistoryEventIndexEntry {
+    session_path: String,
+    labels: HistoryLabels,
+    line: HistoryEventLine,
 }
 
 /// Outcome for one session file processed by [`migrate`]. Counts refer to
@@ -362,6 +437,9 @@ pub struct HistoryWatcher {
     index_path: PathBuf,
     offset: u64,
     pending: VecDeque<HistoryRecord>,
+    event_index_path: Option<PathBuf>,
+    event_offset: u64,
+    pending_events: VecDeque<HistoryEventLine>,
     seen: BTreeSet<HistoryId>,
     labels: HistoryLabels,
     project_slug: Option<String>,
@@ -375,6 +453,7 @@ impl HistoryWatcher {
         after: Option<HistoryId>,
         labels: HistoryLabels,
         project_slug: Option<String>,
+        events: bool,
     ) -> Result<Self, OneharnessError> {
         let reconciled = reconcile_index(dir)?;
         let start = match after {
@@ -393,6 +472,9 @@ impl HistoryWatcher {
             index_path: dir.join(INDEX_FILE),
             offset: reconciled.offset,
             pending: VecDeque::new(),
+            event_index_path: events.then(|| dir.join(EVENT_INDEX_FILE)),
+            event_offset: 0,
+            pending_events: VecDeque::new(),
             seen: reconciled
                 .entries
                 .iter()
@@ -402,6 +484,13 @@ impl HistoryWatcher {
             labels,
             project_slug,
         };
+        if events {
+            let (event_entries, event_offset) = reconcile_event_index(dir)?;
+            watcher.event_offset = event_offset;
+            for entry in event_entries {
+                watcher.accept_event(entry);
+            }
+        }
         for entry in reconciled.entries.into_iter().skip(start) {
             if reconciled.active_ids.contains(&entry.record.history_id) {
                 watcher.accept(entry);
@@ -415,9 +504,14 @@ impl HistoryWatcher {
         self.pending.drain(..).collect()
     }
 
+    pub fn drain_events(&mut self) -> Vec<HistoryEventLine> {
+        self.pending_events.drain(..).collect()
+    }
+
     /// Read newly appended complete index lines. A concurrent partial write is
     /// retained at the current offset and retried only after its newline lands.
     pub fn poll(&mut self) -> Result<Vec<HistoryRecord>, OneharnessError> {
+        self.poll_events()?;
         let mut file = OpenOptions::new()
             .read(true)
             .open(&self.index_path)
@@ -441,6 +535,47 @@ impl HistoryWatcher {
             }
         }
         Ok(self.drain_available())
+    }
+
+    fn poll_events(&mut self) -> Result<(), OneharnessError> {
+        let Some(path) = self.event_index_path.clone() else {
+            return Ok(());
+        };
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(&path)
+            .map_err(|source| history_io_error(&path, source))?;
+        file.seek(SeekFrom::Start(self.event_offset))
+            .map_err(|source| history_io_error(&path, source))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|source| history_io_error(&path, source))?;
+        let Some(last_newline) = bytes.iter().rposition(|byte| *byte == b'\n') else {
+            return Ok(());
+        };
+        let complete = &bytes[..=last_newline];
+        self.event_offset += complete.len() as u64;
+        for line in complete
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+        {
+            if let Ok(entry) = serde_json::from_slice::<HistoryEventIndexEntry>(line) {
+                self.accept_event(entry);
+            }
+        }
+        Ok(())
+    }
+
+    fn accept_event(&mut self, entry: HistoryEventIndexEntry) {
+        let in_project = self.project_slug.as_ref().is_none_or(|slug| {
+            Path::new(&entry.session_path)
+                .components()
+                .next()
+                .is_some_and(|component| component.as_os_str() == slug.as_str())
+        });
+        if in_project && entry.labels.matches(&self.labels) {
+            self.pending_events.push_back(entry.line);
+        }
     }
 
     fn accept(&mut self, entry: HistoryIndexEntry) {
@@ -741,6 +876,80 @@ fn append_index_entry(dir: &Path, entry: &HistoryIndexEntry) -> std::io::Result<
     })();
     let unlock = FileExt::unlock(&lock);
     result.and(unlock)
+}
+
+fn append_event_index_entry(dir: &Path, entry: &HistoryEventIndexEntry) -> std::io::Result<()> {
+    let lock_path = dir.join(INDEX_LOCK_FILE);
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)?;
+    FileExt::lock_exclusive(&lock)?;
+    let result = (|| {
+        let path = dir.join(EVENT_INDEX_FILE);
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        recover_partial_tail_io(&mut file)?;
+        file.seek(SeekFrom::End(0))?;
+        let mut bytes = serde_json::to_vec(entry)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        bytes.push(b'\n');
+        file.write_all(&bytes)?;
+        file.flush()
+    })();
+    let unlock = FileExt::unlock(&lock);
+    result.and(unlock)
+}
+
+fn reconcile_event_index(
+    dir: &Path,
+) -> Result<(Vec<HistoryEventIndexEntry>, u64), OneharnessError> {
+    let lock_path = dir.join(INDEX_LOCK_FILE);
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|source| history_io_error(&lock_path, source))?;
+    FileExt::lock_exclusive(&lock).map_err(|source| history_io_error(&lock_path, source))?;
+    let result = (|| {
+        let path = dir.join(EVENT_INDEX_FILE);
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|source| history_io_error(&path, source))?;
+        recover_partial_tail(&mut file, &path)?;
+        file.seek(SeekFrom::Start(0))
+            .map_err(|source| history_io_error(&path, source))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|source| history_io_error(&path, source))?;
+        let entries = bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .filter_map(|line| serde_json::from_slice(line).ok())
+            .filter(|entry: &HistoryEventIndexEntry| dir.join(&entry.session_path).is_file())
+            .collect();
+        let offset = file
+            .stream_position()
+            .map_err(|source| history_io_error(&path, source))?;
+        Ok((entries, offset))
+    })();
+    let unlock = FileExt::unlock(&lock).map_err(|source| history_io_error(&lock_path, source));
+    match (result, unlock) {
+        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+        (Ok(entries), Ok(())) => Ok(entries),
+    }
 }
 
 fn recover_partial_tail(file: &mut File, path: &Path) -> Result<(), OneharnessError> {
@@ -1393,6 +1602,7 @@ mod tests {
             Some(first_id),
             history::parse_labels(["graph=release"]).unwrap(),
             None,
+            false,
         )
         .unwrap();
         assert!(watcher.drain_available().is_empty());
@@ -1411,6 +1621,7 @@ mod tests {
             None,
             history::parse_labels(["graph=other"]).unwrap(),
             None,
+            false,
         )
         .unwrap();
         assert!(no_match.drain_available().is_empty());
@@ -1436,7 +1647,8 @@ mod tests {
             .set_len(len / 2)
             .unwrap();
 
-        let mut watcher = HistoryWatcher::open(&dir, None, HistoryLabels::default(), None).unwrap();
+        let mut watcher =
+            HistoryWatcher::open(&dir, None, HistoryLabels::default(), None, false).unwrap();
         let recovered = watcher.drain_available();
         assert_eq!(recovered.len(), 1);
         assert_eq!(recovered[0].prompt, "prompt");

@@ -8126,6 +8126,58 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
     }
 }
 
+/// A telemetry/history-recording shortfall must never fail a run whose harness
+/// actually succeeded. codex here returns a real answer, but the trace carries
+/// no provider-request boundary (`turn.started`), so its v1.0 telemetry is
+/// incomplete and no history record can be written. The run must still exit 0,
+/// surface the harness's successful result and answer text, and only warn about
+/// the skipped record — never discard the work (the 0.5.4 regression that took
+/// down every codex worker and its orchestrator by exiting 1 here).
+#[test]
+fn incomplete_history_telemetry_warns_but_preserves_a_successful_run() {
+    let dir = hist_dir("incomplete-telemetry-resilient");
+    // A valid codex answer with no `turn.started`/`turn.completed` boundary: the
+    // answer extracts fine, but v1.0 timing telemetry cannot be derived.
+    let trace =
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"the answer is 42\"}}\n";
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "q",
+            "--bin",
+            &bin_override("codex"),
+            "--history",
+            "--history-dir",
+            &dir.display().to_string(),
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", trace)],
+    );
+    // The exit status reflects the harness result, not the history-write.
+    assert!(
+        output.status.success(),
+        "an incomplete history record must not fail the run: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("could not write history record")
+            && stderr.contains("lacks complete v1.0 telemetry"),
+        "the shortfall is warned about: {stderr}"
+    );
+    let report = json_stdout(&output);
+    // The harness's successful result is returned intact.
+    assert_eq!(report["results"][0]["status"], "ok");
+    assert_eq!(report["results"][0]["text"], "the answer is 42");
+    // No partial/corrupt history record was written.
+    assert!(!Path::new(report["history_file"].as_str().unwrap()).exists());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn history_accepts_each_advertised_provider_trace_shape() {
     let cases = [
@@ -8563,6 +8615,74 @@ fn history_validates_codex_terminal_tool_states_without_guessing() {
         );
         let _ = std::fs::remove_dir_all(dir);
     }
+}
+
+/// codex-cli 0.145.0 emits `file_change` items with both an `item.started`
+/// (status `in_progress`) and an `item.completed` (status `completed`), so a
+/// normal file-editing turn now carries a real execution boundary and must
+/// produce a complete v1.0 history record — no incomplete-telemetry warning,
+/// with the `file_change` surfaced as a measured tool call. This is the exact
+/// shape that broke every real codex run under history in 0.5.4.
+#[test]
+fn history_measures_codex_file_change_with_start_and_completion() {
+    let dir = hist_dir("codex-file-change");
+    // Mirrors a real `codex exec --json` file-editing turn: a message, a shell
+    // command with started/completed boundaries, then a `file_change` with the
+    // same boundary shape, a final message, and the terminal `turn.completed`.
+    let trace = concat!(
+        "{\"type\":\"turn.started\"}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"m0\",\"type\":\"agent_message\",\"text\":\"I'll edit it.\"}}\n",
+        "{\"type\":\"item.started\",\"item\":{\"id\":\"cmd1\",\"type\":\"command_execution\",\"command\":\"echo hi\",\"aggregated_output\":\"\",\"exit_code\":null,\"status\":\"in_progress\"}}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"cmd1\",\"type\":\"command_execution\",\"command\":\"echo hi\",\"aggregated_output\":\"hi\\n\",\"exit_code\":0,\"status\":\"completed\"}}\n",
+        "{\"type\":\"item.started\",\"item\":{\"id\":\"fc1\",\"type\":\"file_change\",\"changes\":[{\"path\":\"note.txt\",\"kind\":\"add\"}],\"status\":\"in_progress\"}}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"fc1\",\"type\":\"file_change\",\"changes\":[{\"path\":\"note.txt\",\"kind\":\"add\"}],\"status\":\"completed\"}}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"Done.\"}}\n",
+        "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":10,\"cached_input_tokens\":0,\"output_tokens\":5}}\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "edit a file",
+            "--bin",
+            &bin_override("codex"),
+            "--history",
+            "--history-dir",
+            &dir.display().to_string(),
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", trace), ("MOCK_STREAM_DELAY_MS", "20")],
+    );
+    assert!(output.status.success());
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("lacks complete v1.0 telemetry"),
+        "a boundaried file_change must not degrade telemetry: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
+    // Complete v1.0 timing telemetry was derived (not left absent).
+    assert_eq!(record["schema_version"], "1.0");
+    assert!(record["started_at"].is_string());
+    assert!(record["model_ms"].is_u64());
+    assert!(record["tool_ms"].is_u64());
+    // The file_change is a measured tool call, not silently dropped.
+    let file_change = record["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["name"] == "file_change")
+        .expect("file_change surfaced as a tool call");
+    assert_eq!(file_change["kind"], "tool_call");
+    assert_eq!(file_change["status"], "completed");
+    assert_eq!(file_change["tool_call_id"], "fc1");
+    assert!(file_change["started_at"].is_string());
+    assert!(file_change["finished_at"].is_string());
+    assert!(file_change["duration_ms"].is_u64());
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

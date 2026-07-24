@@ -324,8 +324,12 @@ fn cursor_tool_call(value: &Value) -> Option<PartialEvent> {
 
 /// Codex `exec --json` executable items. Started, updated, and completed records
 /// share `item.id`; [`extract_events`] folds them into one normalized call. The
-/// allow-list follows Codex's typed exec interface and deliberately excludes
-/// completion-only `file_change` items because they expose no execution start.
+/// allow-list follows Codex's typed exec interface. `file_change` items are
+/// included: codex-cli 0.145.0 emits them with both `item.started` (status
+/// `in_progress`) and `item.completed` (status `completed`), so they carry a real
+/// execution boundary. A `file_change` seen only as `item.completed` (an older,
+/// completion-only shape) still normalizes but lacks a start, so timing stays
+/// honestly incomplete rather than being fabricated.
 fn codex_tool_item(value: &Value) -> Option<PartialEvent> {
     let obj = value.as_object()?;
     if !matches!(
@@ -347,6 +351,12 @@ fn codex_tool_item(value: &Value) -> Option<PartialEvent> {
             item.get("aggregated_output")
                 .and_then(Value::as_str)
                 .map(str::to_string),
+        ),
+        "file_change" => (
+            "file_change".to_string(),
+            item.get("changes")
+                .map(|changes| serde_json::json!({ "changes": changes.clone() })),
+            None,
         ),
         "mcp_tool_call" => (
             item.get("tool")
@@ -398,7 +408,7 @@ fn codex_tool_item(value: &Value) -> Option<PartialEvent> {
 fn is_codex_tool_type(item_type: &str) -> bool {
     matches!(
         item_type,
-        "command_execution" | "mcp_tool_call" | "collab_tool_call" | "web_search"
+        "command_execution" | "file_change" | "mcp_tool_call" | "collab_tool_call" | "web_search"
     )
 }
 
@@ -495,11 +505,8 @@ pub fn apply_observed_timing(
     let mut model_start = None;
     let mut last_model_byte = None;
     let mut saw_model_boundary = false;
-    let mut saw_unmeasurable_tool = false;
     let mut model_intervals = Vec::new();
     for (value, offset, utc) in &lines {
-        saw_unmeasurable_tool |= trace == TelemetryTrace::CodexJson
-            && value.pointer("/item/type").and_then(Value::as_str) == Some("file_change");
         if is_provider_start(value, trace) {
             request_start.get_or_insert(*offset);
             model_start.get_or_insert(*offset);
@@ -596,7 +603,6 @@ pub fn apply_observed_timing(
                 .any(|(value, _, _)| is_provider_finish(value, trace))
                 || !matches!(run_status, Status::Ok | Status::Nonzero))
             && saw_model_boundary
-            && !saw_unmeasurable_tool
             && events
                 .iter()
                 .filter(|event| event.kind == "tool_call")
@@ -1093,6 +1099,29 @@ mod tests {
             Some(json!({"command": "/bin/bash -lc 'echo hi'"}))
         );
         assert_eq!(got.events[0].output.as_deref(), Some("hi\n"));
+    }
+
+    #[test]
+    fn codex_file_change_item_is_a_measured_tool_call() {
+        // codex-cli 0.145.0 emits `file_change` items with a started/completed
+        // lifecycle sharing one id — a real execution boundary — so they must
+        // normalize to a `file_change` tool call (input carries the `changes`),
+        // not be silently dropped as the older completion-only shape was.
+        let raw = concat!(
+            r#"{"type":"item.started","item":{"id":"item_2","type":"file_change","changes":[{"path":"note.txt","kind":"add"}],"status":"in_progress"}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"id":"item_2","type":"file_change","changes":[{"path":"note.txt","kind":"add"}],"status":"completed"}}"#,
+            "\n",
+        );
+        let got = extract_events(raw, OutputFormat::Json).unwrap();
+        assert_eq!(got.events.len(), 1);
+        assert_eq!(got.events[0].kind, "tool_call");
+        assert_eq!(got.events[0].name.as_deref(), Some("file_change"));
+        assert_eq!(got.events[0].tool_call_id.as_deref(), Some("item_2"));
+        assert_eq!(
+            got.events[0].input,
+            Some(json!({"changes": [{"path": "note.txt", "kind": "add"}]}))
+        );
     }
 
     #[test]

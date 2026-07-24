@@ -8126,6 +8126,58 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
     }
 }
 
+/// A telemetry/history-recording shortfall must never fail a run whose harness
+/// actually succeeded. codex here returns a real answer, but the trace carries
+/// no provider-request boundary (`turn.started`), so its v1.0 telemetry is
+/// incomplete and no history record can be written. The run must still exit 0,
+/// surface the harness's successful result and answer text, and only warn about
+/// the skipped record — never discard the work (the 0.5.4 regression that took
+/// down every codex worker and its orchestrator by exiting 1 here).
+#[test]
+fn incomplete_history_telemetry_warns_but_preserves_a_successful_run() {
+    let dir = hist_dir("incomplete-telemetry-resilient");
+    // A valid codex answer with no `turn.started`/`turn.completed` boundary: the
+    // answer extracts fine, but v1.0 timing telemetry cannot be derived.
+    let trace =
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"the answer is 42\"}}\n";
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "q",
+            "--bin",
+            &bin_override("codex"),
+            "--history",
+            "--history-dir",
+            &dir.display().to_string(),
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", trace)],
+    );
+    // The exit status reflects the harness result, not the history-write.
+    assert!(
+        output.status.success(),
+        "an incomplete history record must not fail the run: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("could not write history record")
+            && stderr.contains("lacks complete v1.0 telemetry"),
+        "the shortfall is warned about: {stderr}"
+    );
+    let report = json_stdout(&output);
+    // The harness's successful result is returned intact.
+    assert_eq!(report["results"][0]["status"], "ok");
+    assert_eq!(report["results"][0]["text"], "the answer is 42");
+    // No partial/corrupt history record was written.
+    assert!(!Path::new(report["history_file"].as_str().unwrap()).exists());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn history_accepts_each_advertised_provider_trace_shape() {
     let cases = [

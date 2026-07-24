@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.5.2...oneharness-core-v0.5.3) - 2026-07-24
+
+### Fixed
+
+- emit complete v1.0 telemetry for boundaried file_change items; loc… ([#1183](https://github.com/nickderobertis/oneharness/pull/1183))
+
 ## [0.5.2](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.5.1...oneharness-core-v0.5.2) - 2026-07-22
 
 ### Fixed

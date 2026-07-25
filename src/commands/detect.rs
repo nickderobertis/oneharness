@@ -11,6 +11,7 @@ use oneharness_core::io::detect::{self, BinOverrides};
 
 #[derive(JsonSchema, Serialize)]
 pub struct DetectInfo {
+    // llmlint: ignore[invalid_states_unrepresentable] This JSON boundary mirrors the CLI selector string; selection and variant lookup validate it before construction, with integration coverage for valid and invalid composed ids.
     id: String,
     bin: String,
     available: bool,

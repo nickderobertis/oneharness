@@ -10314,20 +10314,23 @@ fn history_watch_filters_and_resumes_as_jsonl() {
     let bin = mock_bin().display().to_string().replace('\\', "\\\\");
     let fx = ConfigFixture::new(
         "watch-variant",
-        &format!("[harness.codex.variant.work]\nbin = \"{bin}\"\n"),
+        &format!(
+            "[harness.codex.variant.work]\nbin = \"{bin}\"\n\
+             [harness.codex.variant.personal]\nbin = \"{bin}\"\n"
+        ),
         "",
     );
     let mut ids = Vec::new();
-    for (name, graph) in [
-        ("first", "release"),
-        ("second", "release"),
-        ("third", "other"),
+    for (name, graph, variant) in [
+        ("first", "release", "work"),
+        ("second", "release", "personal"),
+        ("third", "release", "work"),
     ] {
         let out = run_with_config(
             &[
                 "run",
                 "--harness",
-                "codex:work",
+                &format!("codex:{variant}"),
                 "--prompt",
                 name,
                 "--cwd",
@@ -10410,12 +10413,12 @@ fn history_watch_filters_and_resumes_as_jsonl() {
     let envelope: Value = serde_json::from_str(&line).unwrap();
     let typed: HistoryStreamEnvelope = serde_json::from_str(&line).unwrap();
     assert_eq!(envelope["type"], "record");
-    assert_eq!(envelope["record"]["history_id"], ids[1]);
-    assert_eq!(envelope["record"]["prompt"], "second");
+    assert_eq!(envelope["record"]["history_id"], ids[2]);
+    assert_eq!(envelope["record"]["prompt"], "third");
     match typed {
         HistoryStreamEnvelope::Record { record } => {
-            assert_eq!(record.history_id.to_string(), ids[1]);
-            assert_eq!(record.prompt, "second");
+            assert_eq!(record.history_id.to_string(), ids[2]);
+            assert_eq!(record.prompt, "third");
         }
         HistoryStreamEnvelope::Event { .. } => panic!("record-only watch emitted an event"),
     }

@@ -89,7 +89,9 @@ pub struct HarnessInfo {
 
 #[derive(JsonSchema, Serialize)]
 pub struct VariantInfo {
+    // llmlint: ignore[invalid_states_unrepresentable] The JSON/SDK field is a string sourced exclusively from validated VariantName map keys, not arbitrary caller input.
     name: String,
+    // llmlint: ignore[invalid_states_unrepresentable] This selector is constructed only from a registry base id plus that validated VariantName, and integration assertions pin the composition.
     harness_id: String,
     model: Option<String>,
     bin: Option<String>,

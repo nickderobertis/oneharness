@@ -126,4 +126,8 @@ else
     :
 fi
 evidence "IDENTITY codex:apikey: empty CODEX_HOME plus per-process CODEX_API_KEY (sourced from OpenAI API auth material)"
-note "live variants: ok (API, subscription, masking, identity evidence, fallback)"
+if [ -n "${OH_E2E_VARIANTS_API_ONLY:-}" ]; then
+    note "live variants: ok (API identity evidence and fallback)"
+else
+    note "live variants: ok (API, subscription, masking, identity evidence, fallback)"
+fi

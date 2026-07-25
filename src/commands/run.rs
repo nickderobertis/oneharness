@@ -1010,6 +1010,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
 }
 
 fn apply_result_identity(result: &mut RunResult, composed: &str) {
+    // llmlint: ignore[invalid_states_unrepresentable] This private helper is called only with ids returned by select_specs after successful config variant lookup; retaining &str avoids introducing a competing identity representation behind that validation boundary.
     result.harness_id = composed.to_string();
     result.variant = composed
         .split_once(':')

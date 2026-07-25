@@ -4998,6 +4998,39 @@ fn invalid_env_override_is_a_usage_error() {
 }
 
 #[test]
+fn invalid_config_environment_names_are_usage_errors() {
+    for (name, project) in [
+        ("top-level", "[env]\nBAD-NAME = \"value\"\n"),
+        (
+            "base-harness",
+            "[harness.claude-code.env]\nBAD-NAME = \"value\"\n",
+        ),
+    ] {
+        let fx = ConfigFixture::new(&format!("invalid-config-env-{name}"), project, "");
+        let output = run_with_config(
+            &[
+                "run",
+                "--harness",
+                "claude-code",
+                "--prompt",
+                "hi",
+                "--print-command",
+                "--cwd",
+                &fx.cwd(),
+            ],
+            &[],
+            &fx.user_config(),
+        );
+        assert_eq!(output.status.code(), Some(2), "{name}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("environment variable names must match"),
+            "{name}: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn config_command_attributes_env_overrides() {
     // The `config` provenance surface shows an env-sourced value as coming from
     // `environment`, beating the file it overrides.
@@ -12484,6 +12517,38 @@ fn fallback_falls_through_a_clean_exit_provider_auth_error() {
     assert_eq!(value["fallback"]["fell_through"][0]["reason"], "auth");
     assert_eq!(value["results"][0]["status"], "ok");
     assert_eq!(value["results"][0]["failure_kind"], "auth");
+    assert_eq!(value["results"][1]["status"], "ok");
+}
+
+#[test]
+fn fallback_falls_through_a_clean_exit_provider_quota_error() {
+    let mock = mock_bin().display().to_string();
+    let provider_error = r#"{"type":"result","subtype":"success","is_error":true,"api_error_status":400,"result":"insufficient_quota: credit balance exhausted"}"#;
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "codex"]
+        run_mode = "fallback"
+
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_STDOUT = '{provider_error}' }}
+
+        [harness.codex]
+        bin = '{mock}'
+        "#
+    );
+    let fx = ConfigFixture::new("fallback-clean-provider-quota", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    assert_eq!(value["fallback"]["ran"], "codex");
+    assert_eq!(value["fallback"]["fell_through"][0]["reason"], "quota");
+    assert_eq!(value["results"][0]["status"], "ok");
+    assert_eq!(value["results"][0]["failure_kind"], "quota");
     assert_eq!(value["results"][1]["status"], "ok");
 }
 

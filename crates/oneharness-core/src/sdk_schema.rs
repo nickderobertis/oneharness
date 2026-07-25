@@ -7,7 +7,10 @@
 use schemars::{schema_for, Schema};
 use serde::Serialize;
 
-use crate::domain::history::{HistoryLine, HistoryRecord, HistoryStreamEnvelope};
+use crate::domain::history::{
+    HistoryLine, HistoryRecord, HistoryStreamEnvelope, PREVIOUS_CURRENT_SCHEMA_VERSION,
+    SCHEMA_VERSION as HISTORY_SCHEMA_VERSION,
+};
 use crate::domain::report::{RunReport, RunStreamEnvelope};
 use crate::domain::sdk::{
     schema_for_serialize, HistoryListOptions, HistoryLookup, HistoryWatchOptions, RunOptions,
@@ -135,8 +138,7 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                 return;
             };
             if properties.contains_key("run_id") && properties.contains_key("event") {
-                object["properties"]["schema_version"] =
-                    serde_json::json!({"enum": ["1.0", "1.1"], "type": "string"});
+                object["properties"]["schema_version"] = current_history_versions_schema();
                 return;
             }
             if properties.contains_key("history_id")
@@ -146,8 +148,7 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
             {
                 let base = serde_json::Value::Object(object.clone());
                 let mut measured = base.clone();
-                measured["properties"]["schema_version"] =
-                    serde_json::json!({"enum": ["1.0", "1.1"], "type": "string"});
+                measured["properties"]["schema_version"] = current_history_versions_schema();
                 for field in ["started_at", "duration_ms", "model_ms", "tool_ms"] {
                     let required = measured["required"].as_array_mut().expect("required array");
                     if !required.iter().any(|value| value.as_str() == Some(field)) {
@@ -169,8 +170,7 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                     "type": "string"
                 });
                 let mut unavailable = base;
-                unavailable["properties"]["schema_version"] =
-                    serde_json::json!({"enum": ["1.0", "1.1"], "type": "string"});
+                unavailable["properties"]["schema_version"] = current_history_versions_schema();
                 unavailable["properties"]["finished_at"] = serde_json::json!({"type": "null"});
                 for field in [
                     "started_at",
@@ -207,6 +207,13 @@ fn history_schema(schema: Schema) -> Schema {
     Schema::try_from(value).expect("conditional history schema remains an object")
 }
 
+fn current_history_versions_schema() -> serde_json::Value {
+    serde_json::json!({
+        "enum": [PREVIOUS_CURRENT_SCHEMA_VERSION, HISTORY_SCHEMA_VERSION],
+        "type": "string"
+    })
+}
+
 fn add_v03_condition(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Array(values) => values.iter_mut().for_each(add_v03_condition),
@@ -226,8 +233,7 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                     .collect::<serde_json::Map<_, _>>();
                 let base = serde_json::Value::Object(object.clone());
                 let mut current = base.clone();
-                current["properties"]["schema_version"] =
-                    serde_json::json!({"enum": ["1.0", "1.1"], "type": "string"});
+                current["properties"]["schema_version"] = current_history_versions_schema();
                 let required = current["required"]
                     .as_array_mut()
                     .expect("history required array");
@@ -293,8 +299,7 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                     ]
                 });
                 let mut unavailable = base.clone();
-                unavailable["properties"]["schema_version"] =
-                    serde_json::json!({"enum": ["1.0", "1.1"], "type": "string"});
+                unavailable["properties"]["schema_version"] = current_history_versions_schema();
                 unavailable["properties"]["finished_at"] = serde_json::json!({"type": "null"});
                 if let Some(required) = unavailable["required"].as_array_mut() {
                     required.retain(|value| {

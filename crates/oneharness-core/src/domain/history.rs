@@ -31,7 +31,7 @@ use crate::domain::signals::{FailureKind, Usage};
 /// Independent of [`crate::domain::report::SCHEMA_VERSION`] — the history file and
 /// the run report are separate contracts and version on their own cadence.
 pub const SCHEMA_VERSION: &str = "1.1";
-const PREVIOUS_CURRENT_SCHEMA_VERSION: &str = "1.0";
+pub(crate) const PREVIOUS_CURRENT_SCHEMA_VERSION: &str = "1.0";
 
 /// The legacy record contract accepted by the migration reader.
 pub const LEGACY_SCHEMA_VERSION: &str = "0.1";

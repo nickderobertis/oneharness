@@ -9794,6 +9794,82 @@ fn history_records_a_streamed_run() {
 }
 
 #[test]
+fn history_cli_reads_v1_0_records_without_variant_identity_fields() {
+    let dir = hist_dir("history-v1-0-identity");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--bin",
+            &bin_override("codex"),
+            "--prompt",
+            "legacy identity",
+            "--history",
+            "--history-dir",
+            &dir.display().to_string(),
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)],
+    );
+    assert!(output.status.success());
+    let path = json_stdout(&output)["history_file"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let legacy = std::fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let mut value: Value = serde_json::from_str(line).unwrap();
+            value["schema_version"] = Value::String("1.0".to_string());
+            value.as_object_mut().unwrap().remove("variant");
+            value.as_object_mut().unwrap().remove("harness_id");
+            serde_json::to_string(&value).unwrap()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let legacy_dir = hist_dir("history-v1-0-copy");
+    let legacy_path = legacy_dir.join(Path::new(&path).strip_prefix(&dir).unwrap());
+    std::fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+    std::fs::write(&legacy_path, format!("{legacy}\n")).unwrap();
+    for line in legacy.lines() {
+        serde_json::from_str::<HistoryLine>(line).unwrap();
+    }
+    let session = legacy_path.file_stem().unwrap().to_string_lossy();
+    let shown = run(
+        &[
+            "history",
+            "show",
+            &session,
+            "--all-projects",
+            "--history-dir",
+            &legacy_dir.display().to_string(),
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(
+        shown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shown.stderr)
+    );
+    let shown_value = json_stdout(&shown);
+    let record = shown_value
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|value| value["harness"] == "codex")
+        .unwrap_or_else(|| panic!("no codex record in {shown_value}"));
+    assert_eq!(record["harness"], "codex");
+    assert_eq!(record["harness_id"], "codex");
+    assert!(record["variant"].is_null());
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&legacy_dir);
+}
+
+#[test]
 fn streamed_variant_history_events_keep_the_composed_identity() {
     let bin = mock_bin().display().to_string().replace('\\', "\\\\");
     let fx = ConfigFixture::new(

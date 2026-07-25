@@ -1217,10 +1217,7 @@ fn parse_lines(path: &Path, text: &str) -> Vec<HistoryLine> {
         .filter_map(|line| {
             let value: Value = serde_json::from_str(line).ok()?;
             let line_type = value.get("type").and_then(Value::as_str);
-            let version = value.get("schema_version").and_then(Value::as_str);
-            if line_type.is_none()
-                || version.is_some_and(|version| version < history::SCHEMA_VERSION)
-            {
+            if line_type.is_none() {
                 legacy = true;
                 return None;
             }

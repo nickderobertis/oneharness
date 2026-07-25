@@ -105,6 +105,10 @@ impl HistoryEventLine {
         matches!(
             self.schema_version.as_str(),
             SCHEMA_VERSION | PREVIOUS_CURRENT_SCHEMA_VERSION
+        ) && identity_fields_valid(
+            &self.harness,
+            self.variant.as_deref(),
+            self.harness_id.as_deref(),
         )
     }
 }

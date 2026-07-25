@@ -7,7 +7,7 @@
 use serde::Serialize;
 
 use crate::cli::SyncArgs;
-use crate::commands::{print_json, select_specs};
+use crate::commands::{dedupe_exact_ids, print_json, select_specs};
 use oneharness_core::domain::report::SCHEMA_VERSION;
 use oneharness_core::domain::{harness, sync as sync_domain};
 use oneharness_core::errors::OneharnessError;
@@ -72,6 +72,7 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
     } else {
         args.harness.clone()
     };
+    let selected_ids = dedupe_exact_ids(&selected_ids);
     let selected_variants: Vec<_> = selected_ids
         .iter()
         .filter_map(|id| id.split_once(':').map(|(base, name)| (id, base, name)))
@@ -125,7 +126,6 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
     let global_dirs = hooks_io::GlobalDirs::from_env();
 
     for (index, spec) in specs.into_iter().enumerate() {
-        // llmlint: ignore[invalid_states_unrepresentable] select_specs preserves and validates explicit selector order; this index is its established spec-to-selector association, covered by successful and unknown-variant sync integration tests.
         let selected_id = selected_ids.get(index).map_or(spec.id, String::as_str);
         let plan = sync_domain::plan_for(cfg, spec, selected_id).map_err(|message| {
             OneharnessError::HarnessConfigUnmergeable {

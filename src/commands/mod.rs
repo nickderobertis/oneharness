@@ -16,6 +16,15 @@ use serde::Serialize;
 use oneharness_core::domain::harness::{self, HarnessSpec};
 use oneharness_core::errors::OneharnessError;
 
+/// Preserve selector order while removing exactly repeated ids.
+pub fn dedupe_exact_ids(ids: &[String]) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    ids.iter()
+        .filter(|id| seen.insert((*id).clone()))
+        .cloned()
+        .collect()
+}
+
 /// Resolve a harness selection into specs, in registry order.
 ///
 /// `all` selects every harness (minus `exclude`); otherwise `include` lists the
@@ -54,10 +63,8 @@ pub fn select_specs(
 
     // Preserve caller order: variants of one base harness are distinct
     // candidates, while an exactly repeated composed id is de-duplicated.
-    let mut seen = std::collections::BTreeSet::new();
-    Ok(include
+    Ok(dedupe_exact_ids(include)
         .iter()
-        .filter(|id| seen.insert((*id).clone()))
         .map(|id| {
             let base = id.split_once(':').map_or(id.as_str(), |(base, _)| base);
             harness::by_id(base).expect("validated above")

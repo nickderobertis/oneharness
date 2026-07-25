@@ -500,7 +500,7 @@ RUST_LOG = "warn"
 model = "claude-sonnet-4-5"     # each harness can name its own model
 bin = "/opt/claude"             # like --bin (the flag and ONEHARNESS_BIN_* win)
 args = ["--max-turns", "6"]     # extra argv appended for this harness only
-allowed_tools = ["Bash(git status:*)", "Bash(git diff:*)", "Read"]  # bounded commands
+allowed_tools = ["Bash(git status:*)", "Bash(git diff:*)"]  # bounded commands
 env = { ANTHROPIC_LOG = "debug" }
 
 [harness.claude-code.variant.work]

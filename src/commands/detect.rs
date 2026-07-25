@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::cli::DetectArgs;
-use crate::commands::{print_json, select_specs};
+use crate::commands::{dedupe_exact_ids, print_json, select_specs};
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::config as config_io;
 use oneharness_core::io::detect::{self, BinOverrides};
@@ -29,6 +29,7 @@ pub fn run(args: &DetectArgs) -> Result<i32, OneharnessError> {
     // Detection defaults to every harness; an explicit selection narrows it.
     let all = args.all || (args.harness.is_empty() && args.exclude.is_empty());
     let specs = select_specs(all, &args.harness, &args.exclude)?;
+    let selected_ids = dedupe_exact_ids(&args.harness);
     // Configured binaries apply to probing too, so `detect` reports the same
     // binary `run` would invoke. Discovery starts from the current directory
     // (detect has no --cwd).
@@ -65,8 +66,7 @@ pub fn run(args: &DetectArgs) -> Result<i32, OneharnessError> {
         .iter()
         .enumerate()
         .map(|(index, spec)| {
-            let id = args
-                .harness
+            let id = selected_ids
                 .get(index)
                 .map_or(spec.id.to_string(), Clone::clone);
             let resolved = detect::resolve_named(spec, &id, &overrides);

@@ -4602,6 +4602,78 @@ fn sync_applies_a_selected_variants_settings_to_the_shared_native_file() {
 }
 
 #[test]
+fn duplicate_variant_selectors_keep_following_detect_and_sync_associations() {
+    let bin = mock_bin().display().to_string().replace('\\', "\\\\");
+    let fx = ConfigFixture::new(
+        "variant-duplicate-selector-association",
+        &format!(
+            r#"
+[harness.codex.variant.work]
+bin = "{bin}"
+[harness.claude-code.variant.personal]
+bin = "{bin}"
+allowed_tools = ["Bash(git status:*)"]
+"#
+        ),
+        "",
+    );
+    let project_config = std::path::Path::new(&fx.cwd()).join("oneharness.toml");
+    let detect = run_with_config(
+        &[
+            "detect",
+            "--harness",
+            "codex:work",
+            "--harness",
+            "codex:work",
+            "--harness",
+            "claude-code:personal",
+            "--compact",
+        ],
+        &[],
+        &project_config,
+    );
+    assert!(
+        detect.status.success(),
+        "{}",
+        String::from_utf8_lossy(&detect.stderr)
+    );
+    let detected = json_stdout(&detect);
+    assert_eq!(detected["detected"].as_array().unwrap().len(), 2);
+    assert_eq!(detected["detected"][0]["id"], "codex:work");
+    assert_eq!(detected["detected"][1]["id"], "claude-code:personal");
+
+    let sync = run_with_config(
+        &[
+            "sync",
+            "--harness",
+            "codex:work",
+            "--harness",
+            "codex:work",
+            "--harness",
+            "claude-code:personal",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        sync.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    let synced = json_stdout(&sync);
+    assert_eq!(synced["results"].as_array().unwrap().len(), 2);
+    assert_eq!(synced["results"][0]["harness"], "codex");
+    assert_eq!(synced["results"][0]["status"], "skipped");
+    assert_eq!(synced["results"][1]["harness"], "claude-code");
+    assert_eq!(synced["results"][1]["status"], "created");
+    let settings = read_json(&std::path::Path::new(&fx.cwd()).join(".claude/settings.json"));
+    assert_eq!(settings["permissions"]["allow"][0], "Bash(git status:*)");
+}
+
+#[test]
 fn sync_uses_a_variant_selected_by_config() {
     let fx = ConfigFixture::new(
         "variant-sync-config-selection",

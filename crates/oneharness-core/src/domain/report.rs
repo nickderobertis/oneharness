@@ -14,7 +14,7 @@ use crate::domain::session::SessionPhase;
 use crate::domain::signals::{FailureKind, Usage};
 
 /// Bumped when the JSON shape changes in a way consumers must notice.
-pub const SCHEMA_VERSION: &str = "0.1";
+pub const SCHEMA_VERSION: &str = "0.2";
 
 /// How a harness emits its result, which decides how `text` is extracted.
 ///
@@ -101,8 +101,15 @@ pub struct ExecutionTelemetry {
 /// One harness's entry in the report.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RunResult {
+    // llmlint: ignore[invalid_states_unrepresentable] These three additive wire fields must remain directly addressable for the stable JSON/SDK contract; command construction always derives all three together from one validated composed selection in `apply_result_identity`, and round-trip integration tests pin their consistency.
     /// Canonical harness id (e.g. `claude-code`).
     pub harness: String,
+    /// Named preset, when this result came from a composed harness id.
+    // llmlint: ignore[invalid_states_unrepresentable] This additive public wire field must remain an Option<String> for generated SDK compatibility; all production constructors set it together with harness/harness_id via `apply_result_identity`, and subprocess tests assert the triplet.
+    pub variant: Option<String>,
+    /// Base id or `<base>:<variant>`, suitable for selecting the same candidate.
+    // llmlint: ignore[invalid_states_unrepresentable] This stable serialized selector remains a String so existing consumers can round-trip it; production code derives it from the validated selection alongside base/variant and integration tests pin consistency.
+    pub harness_id: String,
     /// The binary name or path oneharness resolved and would invoke.
     pub bin: String,
     /// Whether that binary was found.

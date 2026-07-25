@@ -215,6 +215,10 @@ pub struct HistoryWatchArgs {
     #[arg(long = "label", value_name = "KEY=VALUE")]
     pub label: Vec<String>,
 
+    /// Emit only records from this variant name.
+    #[arg(long, value_name = "NAME")]
+    pub variant: Option<oneharness_core::domain::config::VariantName>,
+
     /// Follow records for this project; defaults to the current directory.
     #[arg(long, value_name = "DIR")]
     pub project: Option<PathBuf>,
@@ -247,6 +251,9 @@ pub struct HistoryWatchArgs {
 
 #[derive(Args, Debug)]
 pub struct HistoryListArgs {
+    /// List only sessions containing this variant name.
+    #[arg(long, value_name = "NAME")]
+    pub variant: Option<oneharness_core::domain::config::VariantName>,
     /// The project whose sessions to list (its history subdir); defaults to the
     /// current directory. Ignored when --all-projects is given.
     #[arg(long, value_name = "DIR")]

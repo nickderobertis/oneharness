@@ -77,7 +77,14 @@ pub struct Resolved {
 
 /// Resolve the binary for a harness without running it.
 pub fn resolve(spec: &HarnessSpec, overrides: &BinOverrides) -> Resolved {
-    let bin = overrides.binary_for(spec.id, spec.default_bin);
+    resolve_named(spec, spec.id, overrides)
+}
+
+/// Resolve a composed harness id, allowing a variant-specific config/CLI bin
+/// while retaining the base adapter's default.
+// llmlint: ignore[invalid_states_unrepresentable] Callers pass only config-validated selectors paired with their registry-resolved base spec; keeping the serialized id here lets BinOverrides preserve exact per-variant lookup, covered by detect integration tests for valid and unknown variants.
+pub fn resolve_named(spec: &HarnessSpec, id: &str, overrides: &BinOverrides) -> Resolved {
+    let bin = overrides.binary_for(id, spec.default_bin);
     match which::which(&bin) {
         Ok(path) => Resolved {
             bin,

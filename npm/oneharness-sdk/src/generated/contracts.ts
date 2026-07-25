@@ -258,6 +258,10 @@ export interface RunResult {
    */
   harness: string;
   /**
+   * Base id or `<base>:<variant>`, suitable for selecting the same candidate.
+   */
+  harness_id: string;
+  /**
    * The model this result ran with (the value oneharness put on the harness's
    * model flag), or `null` when no model was requested and the harness used its
    * own default. On a **model fan-out** run (`RunReport::models`), this is what
@@ -328,6 +332,10 @@ export interface RunResult {
    * How `usage` was read (e.g. `json`); `null` when nothing was found.
    */
   usage_source: string | null;
+  /**
+   * Named preset, when this result came from a composed harness id.
+   */
+  variant: string | null;
   [k: string]: unknown;
 }
 /**

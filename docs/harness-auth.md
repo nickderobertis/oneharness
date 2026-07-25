@@ -25,8 +25,10 @@ selected directory is still unsafe if two processes mutate that same directory.
 containing a copied credential produced `authMethod: "claude.ai"` and
 `subscriptionType: "max"`, then completed a real call. Thus the directory is a
 per-process identity selector, while login/logout against a shared directory is
-global mutable state. A second subscription account was unavailable, so
-cross-account routing was not exercised.
+global mutable state. Later variant live runs exercised two separately
+provisioned subscription directories concurrently and confirmed both served
+their selected runs while an ambient API key was present but explicitly masked
+from each child.
 
 `ANTHROPIC_API_KEY` is per-process and beats the stored subscription login. With
 both present, the CLI warned:
@@ -45,9 +47,9 @@ also defines per-process `ANTHROPIC_AUTH_TOKEN` (Bearer header),
 `CLAUDE_CODE_OAUTH_TOKEN` (ahead of keychain credentials), and
 `CLAUDE_CODE_OAUTH_REFRESH_TOKEN` plus `CLAUDE_CODE_OAUTH_SCOPES`.
 `settings.json` may set these under `env`, and `apiKeyHelper` is another settings
-source; `--settings` selects a settings file for one invocation. These were not
-exercised because no second token/account was available. The installed CLI's
-`--bare` help says it ignores OAuth/keychain and accepts only
+source; `--settings` selects a settings file for one invocation. These token
+levers were not exercised because no separate OAuth token was available. The
+installed CLI's `--bare` help says it ignores OAuth/keychain and accepts only
 `ANTHROPIC_API_KEY` or `apiKeyHelper` (plus third-party cloud credentials).
 
 **Live proof and evidence.** The successful isolated-home probe used a
@@ -75,6 +77,17 @@ directory. The completed result proves the same selected directory successfully
 served a real turn, but it contains no account identifier. Its nonzero
 `total_cost_usd` means cost is **not** a reliable API-key versus subscription
 discriminator in this version.
+
+The later first-class variant suite completed the exact-marker contract through
+two stored Max subscriptions and one API-key identity. Each subscription run
+combined its independently selected `CLAUDE_CONFIG_DIR`, `authMethod:
+"claude.ai"` preflight, an exact marker response, and one-hour cache creation.
+The API-key run used an empty config directory, an isolated
+`ANTHROPIC_API_KEY`, an exact marker response, and five-minute cache creation.
+These signals distinguish the identity axes without exposing an account
+identifier. Both subscription runs reported `ambient_api_key=present` and
+`child_api_key=masked`, live-proving that variant masking prevents ambient
+API-key precedence from hijacking subscription auth.
 
 The precedence probe explicitly retained the stored login while setting an
 invalid per-process key:
@@ -109,15 +122,23 @@ login/logout concurrently against one home.
 
 In 0.145.0, an inline invalid `OPENAI_API_KEY` did **not** override the stored
 ChatGPT login: the run still completed. An empty `CODEX_HOME` also did not consume
-that environment variable automatically. Conversely, piping a key to
-`CODEX_HOME=<isolated> codex login --with-api-key` wrote the selected home and
-the subsequent run used it. `--profile` and `-c` select configuration, but no
-tested config key selected a different credential inside one home. The installed
-help only says `--profile` layers a named configuration profile; its storage
-shape/path was not probed, so this document makes no stronger claim.
-`CODEX_ACCESS_TOKEN` is not a direct run-time lever either; the CLI exposes
-`login --with-access-token`. No second ChatGPT account or valid API key was
-available, so successful cross-account precedence could not be exercised.
+that environment variable automatically. A later live run established that
+`CODEX_API_KEY` is the direct per-process API-key selector: with an empty
+`CODEX_HOME`, it completed and echoed the marker while `OPENAI_API_KEY` alone
+under the same condition failed with `401 Unauthorized: Missing bearer or basic
+authentication in header`. oneharness therefore maps externally sourced OpenAI
+API-key material to `CODEX_API_KEY` for only the selected child.
+
+Piping a key to `CODEX_HOME=<isolated> codex login --with-api-key` also writes
+the selected home and makes subsequent runs use it, but that mutation is not
+needed for variants and must not happen during dispatch. `--profile` and `-c`
+select configuration, but no tested config key selected a different credential
+inside one home. The installed help only says `--profile` layers a named
+configuration profile; its storage shape/path was not probed, so this document
+makes no stronger claim. `CODEX_ACCESS_TOKEN` is not a direct run-time lever
+either; the CLI exposes `login --with-access-token`. No second ChatGPT account
+was available, so Codex's proven identity axis is ChatGPT subscription versus
+API key, not subscription A versus B.
 
 **Live proof and evidence.** The successful isolated-home probe used a
 pre-provisioned directory (again omitting the secret-handling copy step):
@@ -136,6 +157,14 @@ $ printf 'Reply exactly AUTH_PROBE_OK' |
 turn. The completed event stream proves the selected home served the turn but
 has no account, plan, cost, or billing-mode field; therefore it cannot identify
 which ChatGPT account owned that home.
+
+The guarded, local-only variant phase later repeated that proof against the
+host login: `codex login status` reported `Logged in using ChatGPT`, API-key
+variables were masked, and the run returned the exact marker. A separate empty
+`CODEX_HOME` plus per-process `CODEX_API_KEY` run also returned the marker.
+Together the selected home/key and preflight status are the available positive
+subscription-versus-API identity evidence; completed JSONL alone cannot
+distinguish those billing modes.
 
 The environment-precedence probe retained the stored ChatGPT login and set an
 invalid API-key variable:
@@ -177,6 +206,10 @@ $ printf 'Reply exactly AUTH_PROBE_OK' |
 ```
 
 Both classify as `auth`.
+
+A deliberately invalid direct `CODEX_API_KEY` also produced `401 Unauthorized`
+and is classified as `auth`, allowing fallback to the next variant without
+mutating a credential file.
 
 ## `opencode`
 

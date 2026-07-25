@@ -113,16 +113,22 @@ impl HistoryWriter {
 
     /// Append an event while distinguishing session durability from a later
     /// best-effort event-index failure.
+    // llmlint: ignore[invalid_states_unrepresentable] This I/O boundary receives the normalized composed id already stored on the run result, then atomically derives all three wire fields; history materialization validates their consistency and CLI round-trip tests cover variant filtering.
     pub fn append_event_tracked(
         &self,
         run_id: HistoryId,
         harness: &str,
         event: crate::domain::events::ActionEvent,
     ) -> std::io::Result<EventAppendOutcome> {
+        let (base, variant) = harness
+            .split_once(':')
+            .map_or((harness, None), |(base, variant)| (base, Some(variant)));
         let line = HistoryEventLine {
             schema_version: history::SCHEMA_VERSION.to_string(),
             run_id,
-            harness: harness.to_string(),
+            harness: base.to_string(),
+            variant: variant.map(str::to_string),
+            harness_id: Some(harness.to_string()),
             event,
         };
         let mut file = open_session_for_append(&self.path)?;
@@ -259,6 +265,8 @@ impl HistoryWriter {
                     schema_version: history::SCHEMA_VERSION.to_string(),
                     run_id: run.history_id,
                     harness: run.harness.clone(),
+                    variant: run.variant.clone(),
+                    harness_id: run.harness_id.clone(),
                     event,
                 }),
             )?;
@@ -397,6 +405,8 @@ fn migrate_file(dir: &Path, path: &Path) -> Result<MigrationSummary, OneharnessE
                         schema_version: history::SCHEMA_VERSION.to_string(),
                         run_id: record.history_id,
                         harness: record.harness.clone(),
+                        variant: record.variant.clone(),
+                        harness_id: Some(record.harness_id.clone()),
                         event: event.clone(),
                     }),
                 )?;
@@ -1141,8 +1151,9 @@ fn summarize(path: &Path) -> Result<SessionSummary, OneharnessError> {
     };
     let mut harnesses: Vec<String> = Vec::new();
     for r in &records {
-        if !harnesses.iter().any(|x| x == &r.harness) {
-            harnesses.push(r.harness.clone());
+        let harness_id = r.harness_id.as_ref().unwrap_or(&r.harness);
+        if !harnesses.iter().any(|x| x == harness_id) {
+            harnesses.push(harness_id.clone());
         }
     }
     Ok(SessionSummary {
@@ -1207,10 +1218,7 @@ fn parse_lines(path: &Path, text: &str) -> Vec<HistoryLine> {
         .filter_map(|line| {
             let value: Value = serde_json::from_str(line).ok()?;
             let line_type = value.get("type").and_then(Value::as_str);
-            let version = value.get("schema_version").and_then(Value::as_str);
-            if line_type.is_none()
-                || version.is_some_and(|version| version < history::SCHEMA_VERSION)
-            {
+            if line_type.is_none() {
                 legacy = true;
                 return None;
             }
@@ -1246,6 +1254,8 @@ mod tests {
     fn result(harness: &str) -> RunResult {
         RunResult {
             harness: harness.to_string(),
+            variant: None,
+            harness_id: harness.to_string(),
             bin: "bin".to_string(),
             available: true,
             status: Status::Ok,
@@ -1540,6 +1550,8 @@ mod tests {
             schema_version: history::SCHEMA_VERSION.to_string(),
             run_id,
             harness: "codex".to_string(),
+            variant: None,
+            harness_id: Some("codex".to_string()),
             event: crate::domain::events::ActionEvent {
                 kind: "message".to_string(),
                 name: None,

@@ -110,6 +110,7 @@ export interface HarnessInfo {
    * harness; `null` when it has none (sync settings are then rejected).
    */
   sync_file: string | null;
+  variants: VariantInfo[];
   [k: string]: unknown;
 }
 /**
@@ -124,5 +125,19 @@ export interface ModeInfo {
    */
   headless: "clean" | "hangs";
   mode: PermissionMode;
+  [k: string]: unknown;
+}
+export interface VariantInfo {
+  args: string[];
+  bin: string | null;
+  env_file: string | null;
+  env_from: {
+    [k: string]: string;
+  };
+  env_keys: string[];
+  harness_id: string;
+  model: string | null;
+  name: string;
+  unset_env: string[];
   [k: string]: unknown;
 }

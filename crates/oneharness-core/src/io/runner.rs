@@ -19,6 +19,8 @@ pub struct Job {
     pub argv: Vec<String>,
     pub cwd: Option<PathBuf>,
     pub env: Vec<(String, String)>,
+    // llmlint: ignore[invalid_states_unrepresentable] Jobs are internal spawn plans built only after config validation checks every environment name; retaining Command's native string shape here avoids a second conversion/type at the I/O boundary, and real-spawn tests assert masking and parent isolation.
+    pub env_remove: Vec<String>,
     pub timeout: Duration,
     /// Bytes to pipe to the child's stdin, when the prompt is delivered that way
     /// instead of on the argv (the large-prompt escape hatch — a prompt too big
@@ -111,6 +113,7 @@ where
             argv: next.argv,
             cwd: job.cwd.clone(),
             env: job.env.clone(),
+            env_remove: job.env_remove.clone(),
             timeout: job.timeout,
             stdin: next.stdin,
         };
@@ -254,6 +257,9 @@ pub fn run_job(job: &Job) -> Capture {
     for (key, value) in &job.env {
         command.env(key, value);
     }
+    for key in &job.env_remove {
+        command.env_remove(key);
+    }
 
     let mut process = match Process::spawn(command) {
         Ok(process) => process,
@@ -375,6 +381,9 @@ where
     }
     for (key, value) in &job.env {
         command.env(key, value);
+    }
+    for key in &job.env_remove {
+        command.env_remove(key);
     }
 
     let mut process = match Process::spawn(command) {
@@ -544,6 +553,7 @@ mod tests {
             argv: argv.iter().map(|s| s.to_string()).collect(),
             cwd: None,
             env: Vec::new(),
+            env_remove: Vec::new(),
             timeout: Duration::from_secs(5),
             stdin: None,
         }
@@ -611,6 +621,7 @@ mod tests {
             argv: vec!["cat".to_string()],
             cwd: None,
             env: Vec::new(),
+            env_remove: Vec::new(),
             timeout: Duration::from_secs(30),
             stdin: Some(payload.clone()),
         };
@@ -648,6 +659,7 @@ mod tests {
             argv,
             cwd: None,
             env: Vec::new(),
+            env_remove: Vec::new(),
             timeout: Duration::from_secs(10),
             stdin: None,
         }
@@ -711,6 +723,7 @@ mod tests {
             argv: vec!["sh".to_string(), "-c".to_string(), script.to_string()],
             cwd: None,
             env: vec![("TICK_FILE".to_string(), tick_file.display().to_string())],
+            env_remove: Vec::new(),
             timeout,
             stdin: None,
         }

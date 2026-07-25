@@ -7,7 +7,7 @@
 use serde::Serialize;
 
 use crate::cli::SyncArgs;
-use crate::commands::{print_json, select_specs};
+use crate::commands::{dedupe_exact_ids, print_json, select_specs};
 use oneharness_core::domain::report::SCHEMA_VERSION;
 use oneharness_core::domain::{harness, sync as sync_domain};
 use oneharness_core::errors::OneharnessError;
@@ -67,13 +67,55 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
     };
     let loaded = config_io::load(args.config.as_deref(), args.no_config, &project_dir)?;
     let cfg = &loaded.config;
+    let selected_ids = if args.harness.is_empty() {
+        cfg.harnesses.clone().unwrap_or_default()
+    } else {
+        args.harness.clone()
+    };
+    let selected_ids = dedupe_exact_ids(&selected_ids);
+    let selected_variants: Vec<_> = selected_ids
+        .iter()
+        .filter_map(|id| id.split_once(':').map(|(base, name)| (id, base, name)))
+        .collect();
+    for (index, (first_id, base, first_name)) in selected_variants.iter().enumerate() {
+        let first =
+            cfg.variant_for(first_id)
+                .ok_or_else(|| OneharnessError::UnknownHarnessVariant {
+                    id: (*first_id).clone(),
+                    base: (*base).to_string(),
+                    variant: (*first_name).to_string(),
+                })?;
+        for (second_id, second_base, second_name) in selected_variants.iter().skip(index + 1) {
+            if base != second_base {
+                continue;
+            }
+            let second = cfg.variant_for(second_id).ok_or_else(|| {
+                OneharnessError::UnknownHarnessVariant {
+                    id: (*second_id).clone(),
+                    base: (*second_base).to_string(),
+                    variant: (*second_name).to_string(),
+                }
+            })?;
+            if first.allowed_tools != second.allowed_tools
+                || first.denied_tools != second.denied_tools
+                || first.hooks != second.hooks
+                || first.settings != second.settings
+            {
+                return Err(OneharnessError::VariantSyncConflict {
+                    base: (*base).to_string(),
+                    first: (*first_id).clone(),
+                    second: (*second_id).clone(),
+                });
+            }
+        }
+    }
 
-    // Default selection: every harness (those with nothing to sync report
-    // `skipped`, so the report always covers the full registry).
-    let specs = if args.harness.is_empty() {
+    // With no CLI/config selection, cover every harness; those with nothing to
+    // sync report `skipped`. A configured selection stays explicit and ordered.
+    let specs = if selected_ids.is_empty() {
         harness::all().iter().collect()
     } else {
-        select_specs(false, &args.harness, &[])?
+        select_specs(false, &selected_ids, &[])?
     };
 
     let mut results = Vec::with_capacity(specs.len());
@@ -83,8 +125,9 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
     // under. Unused (but harmless) for a project sync.
     let global_dirs = hooks_io::GlobalDirs::from_env();
 
-    for spec in specs {
-        let plan = sync_domain::plan(cfg, spec).map_err(|message| {
+    for (index, spec) in specs.into_iter().enumerate() {
+        let selected_id = selected_ids.get(index).map_or(spec.id, String::as_str);
+        let plan = sync_domain::plan_for(cfg, spec, selected_id).map_err(|message| {
             OneharnessError::HarnessConfigUnmergeable {
                 path: format!("[harness.{}]", spec.id),
                 message,

@@ -62,6 +62,13 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         """Return a hermetic client for the real development binary."""
         return OneHarness(executable=str(BINARY), env={"ONEHARNESS_NO_CONFIG": "1"})
 
+    def test_variant_composed_id_is_a_typed_run_input(self) -> None:
+        value = {
+            "prompt": "typed variant",
+            "harnesses": ["codex:apikey"],
+        }
+        self.assertEqual(_validate("run_options", value, "variant options"), value)
+
     async def test_run_mock_uses_shipped_responder(self) -> None:
         report = await self.client().run_mock(
             "claude-code",
@@ -152,7 +159,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         unmeasured = await client.history(
             {"session": "python-session-unmeasured", "history_dir": history_dir}
         )
-        self.assertEqual(unmeasured[0]["schema_version"], "1.0")
+        self.assertEqual(unmeasured[0]["schema_version"], "1.1")
         self.assertNotIn("model_ms", unmeasured[0])
         unmeasured_event = json.loads(json.dumps(unmeasured[0]))
         unmeasured_event["events"] = [

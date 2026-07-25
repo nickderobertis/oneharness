@@ -7,7 +7,10 @@
 use schemars::{schema_for, Schema};
 use serde::Serialize;
 
-use crate::domain::history::{HistoryLine, HistoryRecord, HistoryStreamEnvelope};
+use crate::domain::history::{
+    HistoryLine, HistoryRecord, HistoryStreamEnvelope, PREVIOUS_CURRENT_SCHEMA_VERSION,
+    SCHEMA_VERSION as HISTORY_SCHEMA_VERSION,
+};
 use crate::domain::report::{RunReport, RunStreamEnvelope};
 use crate::domain::sdk::{
     schema_for_serialize, HistoryListOptions, HistoryLookup, HistoryWatchOptions, RunOptions,
@@ -60,6 +63,7 @@ fn history_stream_schema() -> Schema {
     for name in ["ActionEvent", "HistoryEventLine"] {
         value["$defs"][name] = definitions[name].clone();
     }
+    add_history_line_conditions(&mut value);
     add_v03_condition(&mut value);
     Schema::try_from(value).expect("history stream schema remains an object")
 }
@@ -134,8 +138,7 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                 return;
             };
             if properties.contains_key("run_id") && properties.contains_key("event") {
-                object["properties"]["schema_version"] =
-                    serde_json::json!({"const": "1.0", "type": "string"});
+                object["properties"]["schema_version"] = current_history_versions_schema();
                 return;
             }
             if properties.contains_key("history_id")
@@ -145,8 +148,7 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
             {
                 let base = serde_json::Value::Object(object.clone());
                 let mut measured = base.clone();
-                measured["properties"]["schema_version"] =
-                    serde_json::json!({"const": "1.0", "type": "string"});
+                measured["properties"]["schema_version"] = current_history_versions_schema();
                 for field in ["started_at", "duration_ms", "model_ms", "tool_ms"] {
                     let required = measured["required"].as_array_mut().expect("required array");
                     if !required.iter().any(|value| value.as_str() == Some(field)) {
@@ -168,8 +170,7 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                     "type": "string"
                 });
                 let mut unavailable = base;
-                unavailable["properties"]["schema_version"] =
-                    serde_json::json!({"const": "1.0", "type": "string"});
+                unavailable["properties"]["schema_version"] = current_history_versions_schema();
                 unavailable["properties"]["finished_at"] = serde_json::json!({"type": "null"});
                 for field in [
                     "started_at",
@@ -206,6 +207,29 @@ fn history_schema(schema: Schema) -> Schema {
     Schema::try_from(value).expect("conditional history schema remains an object")
 }
 
+fn current_history_versions_schema() -> serde_json::Value {
+    serde_json::json!({
+        "enum": [PREVIOUS_CURRENT_SCHEMA_VERSION, HISTORY_SCHEMA_VERSION],
+        "type": "string"
+    })
+}
+
+fn set_history_identity_version(
+    schema: &mut serde_json::Value,
+    version: &str,
+    identity_required: bool,
+) {
+    schema["properties"]["schema_version"] =
+        serde_json::json!({"const": version, "type": "string"});
+    let required = schema["required"]
+        .as_array_mut()
+        .expect("history required array");
+    required.retain(|value| value.as_str() != Some("harness_id"));
+    if identity_required {
+        required.push(serde_json::Value::String("harness_id".to_string()));
+    }
+}
+
 fn add_v03_condition(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Array(values) => values.iter_mut().for_each(add_v03_condition),
@@ -225,8 +249,7 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                     .collect::<serde_json::Map<_, _>>();
                 let base = serde_json::Value::Object(object.clone());
                 let mut current = base.clone();
-                current["properties"]["schema_version"] =
-                    serde_json::json!({"const": "1.0", "type": "string"});
+                set_history_identity_version(&mut current, HISTORY_SCHEMA_VERSION, true);
                 let required = current["required"]
                     .as_array_mut()
                     .expect("history required array");
@@ -291,9 +314,14 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                         }]}
                     ]
                 });
+                let mut previous_current = current.clone();
+                set_history_identity_version(
+                    &mut previous_current,
+                    PREVIOUS_CURRENT_SCHEMA_VERSION,
+                    false,
+                );
                 let mut unavailable = base.clone();
-                unavailable["properties"]["schema_version"] =
-                    serde_json::json!({"const": "1.0", "type": "string"});
+                set_history_identity_version(&mut unavailable, HISTORY_SCHEMA_VERSION, true);
                 unavailable["properties"]["finished_at"] = serde_json::json!({"type": "null"});
                 if let Some(required) = unavailable["required"].as_array_mut() {
                     required.retain(|value| {
@@ -329,6 +357,12 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                     },
                     "required": ["kind", "name", "input", "output", "index"]
                 });
+                let mut previous_unavailable = unavailable.clone();
+                set_history_identity_version(
+                    &mut previous_unavailable,
+                    PREVIOUS_CURRENT_SCHEMA_VERSION,
+                    false,
+                );
                 let mut legacy = base;
                 legacy["properties"]["schema_version"] =
                     serde_json::json!({"enum": ["0.1", "0.2"], "type": "string"});
@@ -364,7 +398,13 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                 object.extend(metadata);
                 object.insert(
                     "oneOf".to_string(),
-                    serde_json::json!([current, unavailable, legacy]),
+                    serde_json::json!([
+                        current,
+                        previous_current,
+                        unavailable,
+                        previous_unavailable,
+                        legacy
+                    ]),
                 );
                 return;
             }

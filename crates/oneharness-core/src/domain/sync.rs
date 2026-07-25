@@ -29,14 +29,19 @@ pub struct SyncPlan {
 /// the registry's key paths — an explicit `allowed_tools`/`denied_tools`/
 /// `hooks` wins over the same key in the raw table.
 pub fn plan(cfg: &FileConfig, spec: &HarnessSpec) -> Result<SyncPlan, String> {
+    plan_for(cfg, spec, spec.id)
+}
+
+// llmlint: ignore[invalid_states_unrepresentable] This pure API receives the serialized selector only after command-layer selection and variant lookup; borrowing it avoids a competing identity type while integration tests pin invalid selectors at the boundary.
+pub fn plan_for(cfg: &FileConfig, spec: &HarnessSpec, id: &str) -> Result<SyncPlan, String> {
     let Some(sync) = &spec.sync else {
         // No config surface at all: anything aimed at this harness from the
         // top level is unmapped (per-harness fields were parse-rejected).
         let mut unmapped = Vec::new();
-        if !cfg.allowed_tools_for(spec.id).is_empty() {
+        if !cfg.allowed_tools_for(id).is_empty() {
             unmapped.push("allowed_tools");
         }
-        if !cfg.denied_tools_for(spec.id).is_empty() {
+        if !cfg.denied_tools_for(id).is_empty() {
             unmapped.push("denied_tools");
         }
         return Ok(SyncPlan {
@@ -45,7 +50,7 @@ pub fn plan(cfg: &FileConfig, spec: &HarnessSpec) -> Result<SyncPlan, String> {
         });
     };
 
-    let mut root = match cfg.settings_for(spec.id) {
+    let mut root = match cfg.settings_for(id) {
         Some(table) => {
             let value = serde_json::to_value(table)
                 .map_err(|e| format!("settings table is not representable as JSON: {e}"))?;
@@ -59,16 +64,8 @@ pub fn plan(cfg: &FileConfig, spec: &HarnessSpec) -> Result<SyncPlan, String> {
     let mut unmapped = Vec::new();
 
     let rules = [
-        (
-            "allowed_tools",
-            cfg.allowed_tools_for(spec.id),
-            sync.allow_path,
-        ),
-        (
-            "denied_tools",
-            cfg.denied_tools_for(spec.id),
-            sync.deny_path,
-        ),
+        ("allowed_tools", cfg.allowed_tools_for(id), sync.allow_path),
+        ("denied_tools", cfg.denied_tools_for(id), sync.deny_path),
     ];
     for (name, values, path) in rules {
         if values.is_empty() {
@@ -98,7 +95,7 @@ pub fn plan(cfg: &FileConfig, spec: &HarnessSpec) -> Result<SyncPlan, String> {
         }
     }
 
-    if let Some(hooks) = cfg.hooks_for(spec.id) {
+    if let Some(hooks) = cfg.hooks_for(id) {
         // Parse-time validation guarantees hooks only appear where a path
         // exists, so this expect cannot fire on user input.
         let path = sync.hooks_path.expect("hooks validated against hooks_path");

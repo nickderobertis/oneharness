@@ -261,6 +261,13 @@ live-cursor: _live-install
 live-schema: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-schema.sh
 
+live-variants: _live-install
+    ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-variants.sh
+
+# Install the real CLIs required by the harness-variant live test.
+live-variants-tools:
+    log="$(mktemp)"; if npm install -g @anthropic-ai/claude-code @openai/codex >"$log" 2>&1; then rm -f "$log"; echo "live-variants-tools: installed Claude Code and Codex"; else cat "$log" >&2; rm -f "$log"; echo "live-variants-tools: install failed; run 'npm install -g @anthropic-ai/claude-code @openai/codex' and resolve the reported npm error" >&2; exit 1; fi
+
 # Run every per-harness live check plus the per-feature ones; skips count as
 # passes, only real failures fail.
 live-all: _live-install
@@ -268,8 +275,7 @@ live-all: _live-install
     set -uo pipefail
     export ONEHARNESS_BIN="{{ONEHARNESS_BIN}}"
     fails=0
-    for h in claude codex opencode goose qwen crush copilot cursor schema; do
-        printf '\n=================== live: %s ===================\n' "$h"
+    for h in claude codex opencode goose qwen crush copilot cursor schema variants; do
         bash "scripts/e2e-$h.sh" || fails=$((fails + 1))
     done
     printf '\nlive-all: %d harness check(s) failed\n' "$fails"

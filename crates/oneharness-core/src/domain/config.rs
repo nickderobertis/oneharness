@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::domain::fallback::RunMode;
 use crate::domain::harness;
@@ -164,6 +164,81 @@ pub struct HarnessConfig {
     /// Extra environment for this harness only; beats the top-level `[env]`.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub variant: BTreeMap<VariantName, VariantConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(transparent)]
+pub struct VariantName(String);
+
+pub const VARIANT_NAME_PATTERN: &str = "[A-Za-z0-9][A-Za-z0-9_-]{0,63}";
+
+/// Whether `name` has the portable environment-variable identifier shape.
+pub fn valid_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
+impl VariantName {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for VariantName {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl std::borrow::Borrow<str> for VariantName {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for VariantName {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        validate_variant_name(&value).map_err(serde::de::Error::custom)?;
+        Ok(Self(value))
+    }
+}
+
+impl std::str::FromStr for VariantName {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        validate_variant_name(value)?;
+        Ok(Self(value.to_string()))
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VariantConfig {
+    pub model: Option<String>,
+    pub reasoning: Option<String>,
+    pub bin: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub allowed_tools: Option<Vec<String>>,
+    pub denied_tools: Option<Vec<String>>,
+    pub hooks: Option<toml::Value>,
+    pub settings: Option<toml::Value>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    // llmlint: ignore[invalid_states_unrepresentable] The TOML contract intentionally stores a portable path string; deserialization rejects empty/NUL values and the I/O boundary resolves it, verifies it is a regular mode-private file, and reports the concrete path.
+    pub env_file: Option<String>,
+    #[serde(default)]
+    // llmlint: ignore[invalid_states_unrepresentable] Environment names are TOML map keys/values that must remain strings for backward-compatible config merging; `validate` checks every target/source before FileConfig is exposed and the env-file parser independently validates external names.
+    pub env_from: BTreeMap<String, String>,
+    #[serde(default)]
+    // llmlint: ignore[invalid_states_unrepresentable] These names share the established string-list config shape; `validate` checks the complete list before FileConfig is exposed, and Command receives only validated values.
+    pub unset_env: Vec<String>,
 }
 
 /// One `[[hooks]]` entry: a pre-tool gate installed into each targeted harness.
@@ -200,6 +275,17 @@ pub fn parse(text: &str) -> Result<FileConfig, String> {
 }
 
 fn validate(config: &FileConfig) -> Result<(), String> {
+    for harness in config.harness.values() {
+        for variant in harness.variant.values() {
+            if variant
+                .env_file
+                .as_ref()
+                .is_some_and(|path| path.is_empty() || path.contains('\0'))
+            {
+                return Err("variant `env_file` must be a non-empty path without NUL".to_string());
+            }
+        }
+    }
     if config.all == Some(true) && config.harnesses.is_some() {
         return Err("`all = true` and `harnesses` are mutually exclusive".to_string());
     }
@@ -214,7 +300,10 @@ fn validate(config: &FileConfig) -> Result<(), String> {
         .flatten()
         .chain(config.exclude.iter().flatten())
         .chain(hook_harnesses)
-        .map(String::as_str)
+        .filter_map(|id| {
+            id.split_once(':')
+                .map_or(Some(id.as_str()), |(base, _)| Some(base))
+        })
         .chain(config.harness.keys().map(String::as_str));
     for id in named {
         if harness::by_id(id).is_none() {
@@ -249,6 +338,9 @@ fn validate(config: &FileConfig) -> Result<(), String> {
     // hook that silently would not land is worse than an error.
     for (id, h) in &config.harness {
         let spec = harness::by_id(id).expect("ids validated above");
+        for name in h.variant.keys() {
+            validate_variant_name(name.as_str())?;
+        }
         let sync = spec.sync.as_ref();
         let unsupported = [
             (h.allowed_tools.is_some() && sync.and_then(|s| s.allow_path).is_none())
@@ -275,17 +367,79 @@ fn validate(config: &FileConfig) -> Result<(), String> {
                 ));
             }
         }
+        for (name, variant) in &h.variant {
+            let unsupported = [
+                (variant.allowed_tools.is_some()
+                    && sync.and_then(|value| value.allow_path).is_none())
+                .then_some("allowed_tools"),
+                (variant.denied_tools.is_some()
+                    && sync.and_then(|value| value.deny_path).is_none())
+                .then_some("denied_tools"),
+                (variant.hooks.is_some() && sync.and_then(|value| value.hooks_path).is_none())
+                    .then_some("hooks"),
+                (variant.settings.is_some() && sync.is_none()).then_some("settings"),
+            ];
+            if let Some(setting) = unsupported.into_iter().flatten().next() {
+                return Err(format!(
+                    "`oneharness sync` cannot deliver `{setting}` for harness variant \
+                     `{id}:{name}`"
+                ));
+            }
+            for (field, value) in [("hooks", &variant.hooks), ("settings", &variant.settings)] {
+                if value.as_ref().is_some_and(|value| !value.is_table()) {
+                    return Err(format!(
+                        "`{field}` for harness variant `{id}:{name}` must be a table"
+                    ));
+                }
+            }
+        }
     }
     for key in config
         .env
         .keys()
         .chain(config.harness.values().flat_map(|h| h.env.keys()))
+        .chain(
+            config
+                .harness
+                .values()
+                .flat_map(|h| h.variant.values())
+                .flat_map(|variant| {
+                    variant
+                        .env
+                        .keys()
+                        .chain(variant.env_from.keys())
+                        .chain(variant.env_from.values())
+                        .chain(variant.unset_env.iter())
+                }),
+        )
     {
-        if key.is_empty() {
-            return Err("environment variable names must be non-empty".to_string());
+        if !valid_env_name(key) {
+            return Err("environment variable names must match [A-Za-z_][A-Za-z0-9_]*".to_string());
+        }
+    }
+    for composed in config
+        .harnesses
+        .iter()
+        .flatten()
+        .chain(config.exclude.iter().flatten())
+    {
+        if let Some((_, name)) = composed.split_once(':') {
+            validate_variant_name(name)?;
         }
     }
     Ok(())
+}
+
+fn validate_variant_name(name: &str) -> Result<(), String> {
+    let valid = !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .enumerate()
+            .all(|(i, b)| b.is_ascii_alphanumeric() || (i > 0 && matches!(b, b'-' | b'_')));
+    valid.then_some(()).ok_or_else(|| {
+        format!("invalid harness variant name `{name}`; expected {VARIANT_NAME_PATTERN}")
+    })
 }
 
 /// The `source` recorded for a value that comes from an `ONEHARNESS_*`
@@ -473,6 +627,7 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
             hooks: o.hooks.or(entry.hooks.take()),
             settings: o.settings.or(entry.settings.take()),
             env: merged_env,
+            variant: merge_variant_maps(std::mem::take(&mut entry.variant), o.variant),
         };
     }
 
@@ -504,12 +659,60 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
     }
 }
 
+fn merge_variant_maps(
+    mut base: BTreeMap<VariantName, VariantConfig>,
+    over: BTreeMap<VariantName, VariantConfig>,
+) -> BTreeMap<VariantName, VariantConfig> {
+    for (name, o) in over {
+        let e = base.entry(name).or_default();
+        let mut env = std::mem::take(&mut e.env);
+        env.extend(o.env);
+        let mut env_from = std::mem::take(&mut e.env_from);
+        env_from.extend(o.env_from);
+        *e = VariantConfig {
+            model: o.model.or(e.model.take()),
+            reasoning: o.reasoning.or(e.reasoning.take()),
+            bin: o.bin.or(e.bin.take()),
+            args: o.args.or(e.args.take()),
+            allowed_tools: o.allowed_tools.or(e.allowed_tools.take()),
+            denied_tools: o.denied_tools.or(e.denied_tools.take()),
+            hooks: o.hooks.or(e.hooks.take()),
+            settings: o.settings.or(e.settings.take()),
+            env,
+            env_file: o.env_file.or(e.env_file.take()),
+            env_from,
+            unset_env: if o.unset_env.is_empty() {
+                std::mem::take(&mut e.unset_env)
+            } else {
+                o.unset_env
+            },
+        };
+    }
+    base
+}
+
 impl FileConfig {
+    // llmlint: ignore[invalid_states_unrepresentable] This public helper preserves the existing serialized-selector API used across the core/binary crate boundary; config validation and command selection reject malformed/unknown variants before resolution, while this function only borrows the base/name slices without asserting validity.
+    pub fn split_harness_id<'a>(&self, composed: &'a str) -> (&'a str, Option<&'a str>) {
+        composed
+            .split_once(':')
+            .map_or((composed, None), |(id, variant)| (id, Some(variant)))
+    }
+
+    pub fn variant_for(&self, composed: &str) -> Option<&VariantConfig> {
+        let (id, name) = self.split_harness_id(composed);
+        self.harness.get(id)?.variant.get(name?)
+    }
+
     /// The model for one harness: its `[harness.<id>]` override, else the
     /// top-level `model`. (A CLI `--model` beats both; the caller applies it.)
     pub fn model_for(&self, id: &str) -> Option<&str> {
+        let (base, _) = self.split_harness_id(id);
+        if let Some(value) = self.variant_for(id).and_then(|v| v.model.as_deref()) {
+            return Some(value);
+        }
         self.harness
-            .get(id)
+            .get(base)
             .and_then(|h| h.model.as_deref())
             .or(self.model.as_deref())
     }
@@ -518,21 +721,32 @@ impl FileConfig {
     /// the top-level `reasoning`. (A CLI `--reasoning` beats both; the caller
     /// applies it.)
     pub fn reasoning_for(&self, id: &str) -> Option<&str> {
+        let (base, _) = self.split_harness_id(id);
+        if let Some(value) = self.variant_for(id).and_then(|v| v.reasoning.as_deref()) {
+            return Some(value);
+        }
         self.harness
-            .get(id)
+            .get(base)
             .and_then(|h| h.reasoning.as_deref())
             .or(self.reasoning.as_deref())
     }
 
     /// The configured binary override for one harness, if any.
     pub fn bin_for(&self, id: &str) -> Option<&str> {
-        self.harness.get(id).and_then(|h| h.bin.as_deref())
+        let (base, _) = self.split_harness_id(id);
+        self.variant_for(id)
+            .and_then(|v| v.bin.as_deref())
+            .or_else(|| self.harness.get(base).and_then(|h| h.bin.as_deref()))
     }
 
     /// Extra args appended to one harness's command (before CLI passthrough).
     pub fn args_for(&self, id: &str) -> &[String] {
+        let (base, _) = self.split_harness_id(id);
+        if let Some(args) = self.variant_for(id).and_then(|v| v.args.as_deref()) {
+            return args;
+        }
         self.harness
-            .get(id)
+            .get(base)
             .and_then(|h| h.args.as_deref())
             .unwrap_or(&[])
     }
@@ -540,8 +754,15 @@ impl FileConfig {
     /// Allow rules for one harness: its `[harness.<id>]` override, else the
     /// top-level `allowed_tools`. (CLI `--allowed-tools` beats both.)
     pub fn allowed_tools_for(&self, id: &str) -> &[String] {
+        let (base, _) = self.split_harness_id(id);
+        if let Some(value) = self
+            .variant_for(id)
+            .and_then(|variant| variant.allowed_tools.as_deref())
+        {
+            return value;
+        }
         self.harness
-            .get(id)
+            .get(base)
             .and_then(|h| h.allowed_tools.as_deref())
             .or(self.allowed_tools.as_deref())
             .unwrap_or(&[])
@@ -549,8 +770,15 @@ impl FileConfig {
 
     /// Deny rules for one harness, resolved like [`Self::allowed_tools_for`].
     pub fn denied_tools_for(&self, id: &str) -> &[String] {
+        let (base, _) = self.split_harness_id(id);
+        if let Some(value) = self
+            .variant_for(id)
+            .and_then(|variant| variant.denied_tools.as_deref())
+        {
+            return value;
+        }
         self.harness
-            .get(id)
+            .get(base)
             .and_then(|h| h.denied_tools.as_deref())
             .or(self.denied_tools.as_deref())
             .unwrap_or(&[])
@@ -559,7 +787,10 @@ impl FileConfig {
     /// The hooks table for one harness, if configured (per-harness only:
     /// hooks schemas are harness-specific, so there is no top-level form).
     pub fn hooks_for(&self, id: &str) -> Option<&toml::Value> {
-        self.harness.get(id).and_then(|h| h.hooks.as_ref())
+        let (base, _) = self.split_harness_id(id);
+        self.variant_for(id)
+            .and_then(|variant| variant.hooks.as_ref())
+            .or_else(|| self.harness.get(base).and_then(|h| h.hooks.as_ref()))
     }
 
     /// The normalized `[[hooks]]` that apply to harness `id`, ready to install:
@@ -587,7 +818,10 @@ impl FileConfig {
     /// The raw settings table for one harness, if configured (per-harness
     /// only: the shape is that harness's own config schema).
     pub fn settings_for(&self, id: &str) -> Option<&toml::Value> {
-        self.harness.get(id).and_then(|h| h.settings.as_ref())
+        let (base, _) = self.split_harness_id(id);
+        self.variant_for(id)
+            .and_then(|variant| variant.settings.as_ref())
+            .or_else(|| self.harness.get(base).and_then(|h| h.settings.as_ref()))
     }
 
     /// The configured environment for one harness, in application order:
@@ -595,13 +829,17 @@ impl FileConfig {
     /// collision. (The harness's own `default_env` goes before these, and CLI
     /// `--env` after; the runner applies env last-write-wins.)
     pub fn env_for(&self, id: &str) -> Vec<(String, String)> {
+        let (base, _) = self.split_harness_id(id);
         let mut env: Vec<(String, String)> = self
             .env
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        if let Some(h) = self.harness.get(id) {
+        if let Some(h) = self.harness.get(base) {
             env.extend(h.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+        if let Some(v) = self.variant_for(id) {
+            env.extend(v.env.iter().map(|(k, v)| (k.clone(), v.clone())));
         }
         env
     }
@@ -701,6 +939,23 @@ pub struct HarnessReport {
     pub hooks: Field<toml::Value>,
     pub settings: Field<toml::Value>,
     pub env: BTreeMap<String, Field<String>>,
+    pub variant: BTreeMap<String, VariantReport>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VariantReport {
+    pub model: Field<String>,
+    pub reasoning: Field<String>,
+    pub bin: Field<String>,
+    pub args: Field<Vec<String>>,
+    pub allowed_tools: Field<Vec<String>>,
+    pub denied_tools: Field<Vec<String>>,
+    pub hooks: Field<toml::Value>,
+    pub settings: Field<toml::Value>,
+    pub env_file: Field<String>,
+    pub env_from: BTreeMap<String, Field<String>>,
+    pub unset_env: Field<Vec<String>>,
+    pub env: BTreeMap<String, Field<String>>,
 }
 
 /// The last layer that sets the field wins — the same precedence [`merge`]
@@ -791,6 +1046,57 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                 }
             }
         }
+        let mut variants = BTreeMap::new();
+        let names: std::collections::BTreeSet<&VariantName> = layers
+            .iter()
+            .filter_map(|(_, config)| config.harness.get(id))
+            .flat_map(|harness| harness.variant.keys())
+            .collect();
+        for name in names {
+            let variant =
+                |config: &FileConfig| config.harness.get(id)?.variant.get(name.as_str()).cloned();
+            let mut v_env = BTreeMap::new();
+            let mut env_from = BTreeMap::new();
+            for (path, config) in layers {
+                if let Some(value) = variant(config) {
+                    for (key, value) in value.env {
+                        v_env.insert(
+                            key,
+                            Field {
+                                value: Some(value),
+                                source: Some(path.clone()),
+                            },
+                        );
+                    }
+                    for (key, value) in value.env_from {
+                        env_from.insert(
+                            key,
+                            Field {
+                                value: Some(value),
+                                source: Some(path.clone()),
+                            },
+                        );
+                    }
+                }
+            }
+            variants.insert(
+                name.to_string(),
+                VariantReport {
+                    model: pick(layers, |c| variant(c).and_then(|v| v.model)),
+                    reasoning: pick(layers, |c| variant(c).and_then(|v| v.reasoning)),
+                    bin: pick(layers, |c| variant(c).and_then(|v| v.bin)),
+                    args: pick(layers, |c| variant(c).and_then(|v| v.args)),
+                    allowed_tools: pick(layers, |c| variant(c).and_then(|v| v.allowed_tools)),
+                    denied_tools: pick(layers, |c| variant(c).and_then(|v| v.denied_tools)),
+                    hooks: pick(layers, |c| variant(c).and_then(|v| v.hooks)),
+                    settings: pick(layers, |c| variant(c).and_then(|v| v.settings)),
+                    env_file: pick(layers, |c| variant(c).and_then(|v| v.env_file)),
+                    unset_env: pick(layers, |c| variant(c).map(|v| v.unset_env)),
+                    env: v_env,
+                    env_from,
+                },
+            );
+        }
         harness.insert(
             id.clone(),
             HarnessReport {
@@ -803,6 +1109,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                 hooks: pick(layers, |c| section(c).and_then(|h| h.hooks)),
                 settings: pick(layers, |c| section(c).and_then(|h| h.settings)),
                 env: h_env,
+                variant: variants,
             },
         );
     }
@@ -851,6 +1158,145 @@ mod tests {
     fn empty_config_is_all_defaults() {
         let c = parsed("");
         assert_eq!(c, FileConfig::default());
+    }
+
+    #[test]
+    fn variant_fields_layer_over_harness_and_top_level() {
+        let base = parsed(
+            r#"
+model = "top"
+[harness.claude-code]
+model = "base"
+args = ["base"]
+[harness.claude-code.variant.work]
+model = "work"
+env_file = "/outside/work.env"
+unset_env = ["ANTHROPIC_API_KEY"]
+[harness.claude-code.variant.work.env_from]
+ANTHROPIC_API_KEY = "ANTHROPIC_API_KEY_WORK"
+"#,
+        );
+        let higher = parsed("[harness.claude-code.variant.work]\nargs = [\"higher\"]\n");
+        let config = merge(base, higher);
+        assert_eq!(config.model_for("claude-code:work"), Some("work"));
+        assert_eq!(config.args_for("claude-code:work"), ["higher"]);
+        assert_eq!(
+            config.variant_for("claude-code:work").unwrap().env_from["ANTHROPIC_API_KEY"],
+            "ANTHROPIC_API_KEY_WORK"
+        );
+    }
+
+    #[test]
+    fn variant_resolvers_cover_every_supported_override_and_base_fallback() {
+        let config = parsed(
+            r#"
+allowed_tools = ["top-allow"]
+denied_tools = ["top-deny"]
+[env]
+SHARED = "top"
+[harness.claude-code]
+reasoning = "base-reasoning"
+bin = "base-bin"
+args = ["base-arg"]
+[harness.claude-code.env]
+SHARED = "base"
+BASE_ONLY = "yes"
+[harness.claude-code.hooks]
+base = true
+[harness.claude-code.settings]
+base = true
+[harness.claude-code.variant.work]
+reasoning = "variant-reasoning"
+bin = "variant-bin"
+allowed_tools = ["variant-allow"]
+denied_tools = ["variant-deny"]
+[harness.claude-code.variant.work.env]
+SHARED = "variant"
+[harness.claude-code.variant.work.hooks]
+variant = true
+[harness.claude-code.variant.work.settings]
+variant = true
+"#,
+        );
+        assert_eq!(
+            config.reasoning_for("claude-code:work"),
+            Some("variant-reasoning")
+        );
+        assert_eq!(config.bin_for("claude-code:work"), Some("variant-bin"));
+        assert_eq!(
+            config.allowed_tools_for("claude-code:work"),
+            ["variant-allow"]
+        );
+        assert_eq!(
+            config.denied_tools_for("claude-code:work"),
+            ["variant-deny"]
+        );
+        assert_eq!(
+            config.hooks_for("claude-code:work").unwrap()["variant"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            config.settings_for("claude-code:work").unwrap()["variant"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            config.env_for("claude-code:work"),
+            [
+                ("SHARED".to_string(), "top".to_string()),
+                ("BASE_ONLY".to_string(), "yes".to_string()),
+                ("SHARED".to_string(), "base".to_string()),
+                ("SHARED".to_string(), "variant".to_string()),
+            ]
+        );
+        assert_eq!(config.reasoning_for("claude-code"), Some("base-reasoning"));
+        assert_eq!(config.bin_for("claude-code"), Some("base-bin"));
+        assert_eq!(config.args_for("claude-code"), ["base-arg"]);
+        assert_eq!(config.allowed_tools_for("claude-code"), ["top-allow"]);
+        assert_eq!(config.denied_tools_for("claude-code"), ["top-deny"]);
+        assert_eq!(
+            config.hooks_for("claude-code").unwrap()["base"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            config.settings_for("claude-code").unwrap()["base"].as_bool(),
+            Some(true)
+        );
+        assert!(config.variant_for("claude-code:missing").is_none());
+    }
+
+    #[test]
+    fn malformed_variant_names_fail_loudly() {
+        for name in ["-work", "work.personal", "work:personal"] {
+            assert!(parse(&format!(
+                "[harness.claude-code.variant.\"{name}\"]\nmodel = \"x\""
+            ))
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn documented_variant_name_grammar_tracks_the_parser_constant() {
+        assert!(include_str!("../../../../README.md").contains(VARIANT_NAME_PATTERN));
+    }
+
+    #[test]
+    fn malformed_variant_boundaries_fail_at_parse_time() {
+        let too_long = "a".repeat(65);
+        assert!(parse(&format!(
+            "[harness.claude-code.variant.{too_long}]\nmodel = \"x\""
+        ))
+        .unwrap_err()
+        .to_string()
+        .contains("invalid harness variant name"));
+        for text in [
+            "[harness.claude-code.variant.work]\nhooks = \"not-a-table\"",
+            "[harness.claude-code.variant.work]\nsettings = [\"not-a-table\"]",
+            "[harness.claude-code.variant.work]\nunset_env = [\"\"]",
+            "[harness.claude-code.variant.work]\nunset_env = [\"BAD-NAME\"]",
+            "[harness.claude-code.variant.work.env_from]\nANTHROPIC_API_KEY = \"\"",
+        ] {
+            assert!(parse(text).is_err(), "{text}");
+        }
     }
 
     #[test]
@@ -1026,6 +1472,10 @@ mod tests {
             (
                 "[harness.goose.settings]\nGOOSE_MODE = \"auto\"",
                 "settings",
+            ),
+            (
+                "[harness.copilot.variant.work]\nallowed_tools = [\"x\"]",
+                "allowed_tools",
             ),
         ] {
             let err = parse(text).unwrap_err();

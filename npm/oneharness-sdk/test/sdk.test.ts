@@ -67,6 +67,7 @@ const contractMatrix = JSON.parse(
 			| "history_list_options"
 			| "history_watch_options"
 			| "history_line"
+			| "history_record"
 			| "history_stream_envelope";
 		accepted: boolean;
 		value: unknown;
@@ -144,6 +145,7 @@ describe("OneHarness", () => {
 			history_list_options: HistoryListOptionsSchema,
 			history_watch_options: HistoryWatchOptionsSchema,
 			history_line: HistoryLineSchema,
+			history_record: HistoryRecordSchema,
 			history_stream_envelope: HistoryStreamEnvelopeSchema,
 		};
 		expect(contractMatrix.cases.length).toBeGreaterThan(0);
@@ -159,12 +161,17 @@ describe("OneHarness", () => {
 		expect(inferredSchemasMatchGeneratedTypes.every(Boolean)).toBe(true);
 		const readonlyOptions = {
 			prompt: "typed caller",
-			harnesses: ["codex"] as const,
-			models: ["provider/model"] as const,
+			harnesses: ["codex:apikey"],
+			models: ["provider/model"],
 		} satisfies RunOptions;
 		expect(RunOptionsSchema.parse(readonlyOptions).harnesses).toEqual([
-			"codex",
+			"codex:apikey",
 		]);
+		const identity: Pick<RunResult, "variant" | "harness_id"> = {
+			variant: "apikey",
+			harness_id: "codex:apikey",
+		};
+		expect(identity.variant).toBe("apikey");
 		expect(
 			BatchReportSchema.parse({
 				forked: false,
@@ -578,7 +585,7 @@ describe("OneHarness", () => {
 			session: "node-session-unmeasured",
 			historyDir,
 		});
-		expect(unmeasured?.schema_version).toBe("1.0");
+		expect(unmeasured?.schema_version).toBe("1.1");
 		expect(unmeasured).not.toHaveProperty("model_ms");
 		expect(HistoryRecordSchema.safeParse(unmeasured).success).toBe(true);
 		expect(
@@ -682,11 +689,12 @@ describe("OneHarness", () => {
 		);
 		const client = sdk();
 		const records: HistoryRecord[] = [];
-		for (const [name, prompt, graph] of [
+		const fixtures: Array<[name: string, prompt: string, graph: string]> = [
 			["cursor-record", "cursor record", "release"],
 			["filtered-record", "filtered record", "other"],
 			["resumed-record", "resumed record", "release"],
-		] as const) {
+		];
+		for (const [name, prompt, graph] of fixtures) {
 			await client.run({
 				prompt,
 				harnesses: ["codex"],

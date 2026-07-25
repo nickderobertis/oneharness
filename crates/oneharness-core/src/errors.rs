@@ -14,6 +14,54 @@ pub enum OneharnessError {
     #[error("unknown harness id `{id}`. valid ids: {valid}")]
     UnknownHarness { id: String, valid: String },
 
+    #[error(
+        "unknown harness variant `{id}`; declare it under `[harness.{base}.variant.{variant}]`"
+    )]
+    UnknownHarnessVariant {
+        // llmlint: ignore[invalid_states_unrepresentable] Error payloads preserve the exact untrusted selector text that failed validation; a validated selector cannot represent malformed input.
+        id: String,
+        // llmlint: ignore[invalid_states_unrepresentable] This is the raw base segment from the rejected selector, retained so the diagnostic can show the declaration path the user attempted.
+        base: String,
+        // llmlint: ignore[invalid_states_unrepresentable] VariantName cannot represent the malformed or unknown raw segment that this diagnostic must quote.
+        variant: String,
+    },
+
+    #[error("could not read variant environment file `{path}`: {source}")]
+    VariantEnvFile {
+        // llmlint: ignore[invalid_states_unrepresentable] The I/O boundary stores the path's lossy display form deliberately because this error is a terminal user-facing diagnostic, not a path used for later I/O.
+        path: String,
+        source: std::io::Error,
+    },
+
+    #[error("variant environment file `{path}` must be a regular file readable only by its owner (mode 0600 or stricter)")]
+    VariantEnvFilePermissions {
+        // llmlint: ignore[invalid_states_unrepresentable] The checked PathBuf has already served its I/O purpose; the payload retains only its safe display form for the terminal diagnostic.
+        path: String,
+    },
+
+    #[error("invalid line {line} in variant environment file `{path}`; expected KEY=VALUE")]
+    VariantEnvFileLine {
+        // llmlint: ignore[invalid_states_unrepresentable] This display string identifies the already-opened file to the user and is never converted back into a filesystem path.
+        path: String,
+        line: usize,
+    },
+
+    #[error("variant environment indirection `{name}` is not set in the parent process")]
+    VariantEnvSourceMissing {
+        // llmlint: ignore[invalid_states_unrepresentable] The raw configured environment-variable name is the failed lookup key and must be quoted exactly in the diagnostic.
+        name: String,
+    },
+
+    #[error("harness variants `{first}` and `{second}` declare conflicting sync settings for the shared `{base}` config file")]
+    VariantSyncConflict {
+        // llmlint: ignore[invalid_states_unrepresentable] variant_for has validated this base against the configured harness before the conflict error is constructed; the error keeps its printable spelling.
+        base: String,
+        // llmlint: ignore[invalid_states_unrepresentable] variant_for has validated this composed selector before conflict comparison; the diagnostic payload keeps its printable spelling.
+        first: String,
+        // llmlint: ignore[invalid_states_unrepresentable] variant_for has validated this composed selector before conflict comparison; the diagnostic payload keeps its printable spelling.
+        second: String,
+    },
+
     #[error("--mock-harness `{id}` must name a selected harness")]
     MockHarnessNotSelected { id: String },
 

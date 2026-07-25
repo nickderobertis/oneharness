@@ -30,7 +30,8 @@ use crate::domain::signals::{FailureKind, Usage};
 /// Bumped when the history record shape changes in a way a consumer must notice.
 /// Independent of [`crate::domain::report::SCHEMA_VERSION`] — the history file and
 /// the run report are separate contracts and version on their own cadence.
-pub const SCHEMA_VERSION: &str = "1.0";
+pub const SCHEMA_VERSION: &str = "1.1";
+pub(crate) const PREVIOUS_CURRENT_SCHEMA_VERSION: &str = "1.0";
 
 /// The legacy record contract accepted by the migration reader.
 pub const LEGACY_SCHEMA_VERSION: &str = "0.1";
@@ -90,12 +91,25 @@ pub struct HistoryEventLine {
     pub schema_version: String,
     pub run_id: HistoryId,
     pub harness: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // llmlint: ignore[invalid_states_unrepresentable] History v1.0 compatibility requires an optional string here; current writers derive it from a validated composed selector and materialization validates/normalizes the legacy tuple.
+    pub variant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // llmlint: ignore[invalid_states_unrepresentable] This field is optional specifically to read v1.0 event lines; current writers always derive it with base/variant from one composed id, and event-stream integration coverage asserts all three.
+    pub harness_id: Option<String>,
     pub event: ActionEvent,
 }
 
 impl HistoryEventLine {
     pub(crate) fn valid(&self) -> bool {
-        self.schema_version == SCHEMA_VERSION
+        matches!(
+            self.schema_version.as_str(),
+            SCHEMA_VERSION | PREVIOUS_CURRENT_SCHEMA_VERSION
+        ) && identity_fields_valid(
+            &self.harness,
+            self.variant.as_deref(),
+            self.harness_id.as_deref(),
+        )
     }
 }
 
@@ -111,7 +125,14 @@ pub struct HistoryRunRecord {
     pub labels: HistoryLabels,
     pub project: String,
     pub timestamp: String,
+    // llmlint: ignore[invalid_states_unrepresentable] These legacy-compatible wire fields must deserialize v1.0 records where the composed field is absent; `materialize` derives the composed identity and current writers copy the already-normalized run identity, with cross-contract tests pinning consistency.
     pub harness: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // llmlint: ignore[invalid_states_unrepresentable] The v1.0 wire contract requires this optional string; current writers copy the validated run identity and deserialization/materialization validates the supported schema before exposure.
+    pub variant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // llmlint: ignore[invalid_states_unrepresentable] This remains optional to read v1.0 records; v1.1 writers always derive it with base/variant from one composed selector and round-trip tests pin consistency.
+    pub harness_id: Option<String>,
     pub model: Option<String>,
     pub prompt: String,
     pub permission_mode: PermissionMode,
@@ -136,7 +157,17 @@ pub struct HistoryRunRecord {
 
 impl HistoryRunRecord {
     pub(crate) fn valid(&self) -> bool {
-        if self.schema_version != SCHEMA_VERSION {
+        if !matches!(
+            self.schema_version.as_str(),
+            SCHEMA_VERSION | PREVIOUS_CURRENT_SCHEMA_VERSION
+        ) {
+            return false;
+        }
+        if !identity_fields_valid(
+            &self.harness,
+            self.variant.as_deref(),
+            self.harness_id.as_deref(),
+        ) {
             return false;
         }
         match (
@@ -170,6 +201,8 @@ impl HistoryRunRecord {
             project: record.project.clone(),
             timestamp: record.timestamp.clone(),
             harness: record.harness.clone(),
+            variant: record.variant.clone(),
+            harness_id: Some(record.harness_id.clone()),
             model: record.model.clone(),
             prompt: record.prompt.clone(),
             permission_mode: record.permission_mode,
@@ -191,6 +224,10 @@ impl HistoryRunRecord {
 
     /// Rebuild the stable per-run presentation object from event-sourced lines.
     pub fn materialize(self, events: Vec<ActionEvent>) -> HistoryRecord {
+        let harness_id = self
+            .harness_id
+            .clone()
+            .unwrap_or_else(|| self.harness.clone());
         HistoryRecord {
             schema_version: SCHEMA_VERSION.to_string(),
             history_id: self.history_id,
@@ -200,6 +237,8 @@ impl HistoryRunRecord {
             project: self.project,
             timestamp: self.timestamp,
             harness: self.harness,
+            variant: self.variant,
+            harness_id,
             model: self.model,
             prompt: self.prompt,
             permission_mode: self.permission_mode,
@@ -504,6 +543,11 @@ pub struct HistoryRecord {
     pub timestamp: String,
     /// Canonical harness id (e.g. `claude-code`).
     pub harness: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // llmlint: ignore[invalid_states_unrepresentable] Materialized records preserve the stable SDK string contract; the only constructors normalize a validated current/legacy wire identity before creating this value.
+    pub variant: Option<String>,
+    // llmlint: ignore[invalid_states_unrepresentable] The composed selector is a public serialized SDK field; materialization derives it from the validated wire tuple and never accepts caller-provided independent pieces.
+    pub harness_id: String,
     /// The effective top-level model for the run, if any.
     pub model: Option<String>,
     /// The prompt this harness run received (its own, on a batch run; else the
@@ -604,6 +648,8 @@ impl HistoryRecord {
             project: project.to_string(),
             timestamp: timestamp.clone(),
             harness: r.harness.clone(),
+            variant: r.variant.clone(),
+            harness_id: r.harness_id.clone(),
             model: model.map(str::to_string),
             prompt: r.prompt.clone().unwrap_or_else(|| run_prompt.to_string()),
             permission_mode: mode,
@@ -714,7 +760,10 @@ impl HistoryRecord {
     /// Deserialize the materialized view of a current event-sourced run.
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
         let wire: HistoryRecordWire = serde_json::from_value(value)?;
-        if wire.schema_version != SCHEMA_VERSION {
+        if !matches!(
+            wire.schema_version.as_str(),
+            SCHEMA_VERSION | PREVIOUS_CURRENT_SCHEMA_VERSION
+        ) {
             return Err(serde_json::Error::io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
@@ -722,6 +771,13 @@ impl HistoryRecord {
                     wire.schema_version
                 ),
             )));
+        }
+        if !identity_fields_valid(
+            &wire.harness,
+            wire.variant.as_deref(),
+            wire.harness_id.as_deref(),
+        ) {
+            return Err(invalid_history("inconsistent history harness identity"));
         }
         let history_id = wire.history_id.ok_or_else(|| {
             serde_json::Error::io(std::io::Error::new(
@@ -747,7 +803,9 @@ impl HistoryRecord {
             labels: wire.labels,
             project: wire.project,
             timestamp: wire.timestamp.clone(),
-            harness: wire.harness,
+            harness: wire.harness.clone(),
+            variant: wire.variant,
+            harness_id: wire.harness_id.unwrap_or_else(|| wire.harness.clone()),
             model: wire.model,
             prompt: wire.prompt,
             permission_mode: wire.permission_mode,
@@ -772,6 +830,21 @@ impl HistoryRecord {
             failure_kind: wire.failure_kind,
         }
     }
+}
+
+fn identity_fields_valid(harness: &str, variant: Option<&str>, harness_id: Option<&str>) -> bool {
+    let expected = match variant {
+        Some(variant)
+            if variant
+                .parse::<crate::domain::config::VariantName>()
+                .is_ok() =>
+        {
+            format!("{harness}:{variant}")
+        }
+        Some(_) => return false,
+        None => harness.to_string(),
+    };
+    harness_id.is_none_or(|harness_id| harness_id == expected)
 }
 
 fn invalid_history(message: &str) -> serde_json::Error {
@@ -815,6 +888,12 @@ struct HistoryRecordWire {
     project: String,
     timestamp: String,
     harness: String,
+    #[serde(default)]
+    // llmlint: ignore[invalid_states_unrepresentable] This private compatibility wire type must deserialize legacy optional strings before schema-aware normalization; it is never exposed directly.
+    variant: Option<String>,
+    #[serde(default)]
+    // llmlint: ignore[invalid_states_unrepresentable] This private optional field exists only for v1.0 compatibility and is normalized into the required materialized composed id.
+    harness_id: Option<String>,
     model: Option<String>,
     prompt: String,
     permission_mode: PermissionMode,
@@ -1094,6 +1173,8 @@ mod tests {
     fn result() -> RunResult {
         RunResult {
             harness: "claude-code".to_string(),
+            variant: None,
+            harness_id: "claude-code".to_string(),
             bin: "claude".to_string(),
             available: true,
             status: Status::Ok,
@@ -1318,6 +1399,13 @@ mod tests {
             serde_json::from_value::<HistoryRecord>(value).unwrap(),
             current
         );
+        let mut inconsistent = serde_json::to_value(&current).unwrap();
+        inconsistent["harness_id"] = Value::String("codex:work".to_string());
+        assert!(serde_json::from_value::<HistoryRecord>(inconsistent).is_err());
+        let mut malformed_variant = serde_json::to_value(&current).unwrap();
+        malformed_variant["variant"] = Value::String("bad.name".to_string());
+        malformed_variant["harness_id"] = Value::String("claude-code:bad.name".to_string());
+        assert!(serde_json::from_value::<HistoryRecord>(malformed_variant).is_err());
 
         let mut invalid_v03 = serde_json::to_value(&current).unwrap();
         invalid_v03.as_object_mut().unwrap().remove("model_ms");

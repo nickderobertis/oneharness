@@ -63,9 +63,9 @@ impl RunMode {
 ///
 /// - [`Status::Skipped`] → `"not-installed"` (the binary was not on PATH).
 /// - [`Status::SpawnError`] → `"spawn-error"` (resolved but could not execute).
-/// - [`Status::Nonzero`] with `failure_kind == "auth"` → `"auth"` (rejected
+/// - [`Status::Nonzero`] or [`Status::Ok`] with `failure_kind == "auth"` → `"auth"` (rejected
 ///   before doing any work — bad/absent credentials).
-/// - [`Status::Nonzero`] with `failure_kind == "quota"` → `"quota"` (the account
+/// - [`Status::Nonzero`] or [`Status::Ok`] with `failure_kind == "quota"` → `"quota"` (the account
 ///   has no credit/quota to do work — a provisioning problem like `auth`).
 ///
 /// Everything else is a **real run**, so `None`: a clean [`Status::Ok`]; a
@@ -91,19 +91,23 @@ pub fn startup_failure_reason(
     failure_kind: Option<FailureKind>,
     model_fallback: bool,
 ) -> Option<&'static str> {
-    match status {
-        Status::Skipped => Some("not-installed"),
-        Status::SpawnError => Some("spawn-error"),
-        Status::Nonzero => match failure_kind {
-            Some(FailureKind::Auth) => Some("auth"),
-            Some(FailureKind::Quota) => Some("quota"),
+    match (status, failure_kind) {
+        (_, Some(FailureKind::Auth)) if matches!(status, Status::Ok | Status::Nonzero) => {
+            Some("auth")
+        }
+        (_, Some(FailureKind::Quota)) if matches!(status, Status::Ok | Status::Nonzero) => {
+            Some("quota")
+        }
+        (Status::Skipped, _) => Some("not-installed"),
+        (Status::SpawnError, _) => Some("spawn-error"),
+        (Status::Nonzero, _) => match failure_kind {
             // Only when a model list is being tried: an unusable/over-limit model
             // means "try the next model", not "stop with a real failure".
             Some(FailureKind::ModelNotFound) if model_fallback => Some("model-not-found"),
             Some(FailureKind::RateLimit) if model_fallback => Some("rate-limit"),
             _ => None,
         },
-        Status::Ok | Status::Timeout | Status::Planned => None,
+        (Status::Ok | Status::Timeout | Status::Planned, _) => None,
     }
 }
 

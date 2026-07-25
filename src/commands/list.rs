@@ -9,6 +9,7 @@ use oneharness_core::domain::harness::{self, BuildCtx};
 use oneharness_core::domain::mode::{ModeHeadless, PermissionMode};
 use oneharness_core::domain::report::OutputFormat;
 use oneharness_core::errors::OneharnessError;
+use oneharness_core::io::config as config_io;
 
 /// One supported approval mode for a harness, with its headless behavior, in
 /// `oneharness list`. A [`PermissionMode`] absent from a harness's array is
@@ -83,6 +84,22 @@ pub struct HarnessInfo {
     /// The argv oneharness would build, with placeholders, so the adapter's
     /// shape is visible without running anything.
     example_command: Vec<String>,
+    variants: Vec<VariantInfo>,
+}
+
+#[derive(JsonSchema, Serialize)]
+pub struct VariantInfo {
+    // llmlint: ignore[invalid_states_unrepresentable] The JSON/SDK field is a string sourced exclusively from validated VariantName map keys, not arbitrary caller input.
+    name: String,
+    // llmlint: ignore[invalid_states_unrepresentable] This selector is constructed only from a registry base id plus that validated VariantName, and integration assertions pin the composition.
+    harness_id: String,
+    model: Option<String>,
+    bin: Option<String>,
+    args: Vec<String>,
+    env_keys: Vec<String>,
+    env_file: Option<String>,
+    env_from: std::collections::BTreeMap<String, String>,
+    unset_env: Vec<String>,
 }
 
 #[derive(JsonSchema, Serialize)]
@@ -92,6 +109,9 @@ pub struct ListReport {
 }
 
 pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let loaded = config_io::load(None, false, &cwd)?;
+    let cfg = &loaded.config;
     let harnesses = harness::all()
         .iter()
         .map(|spec| {
@@ -138,6 +158,26 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 supports_prompt_stdin: spec.large_input.prompt_stdin,
                 supports_system_file: spec.large_input.system_file_flag.is_some(),
                 example_command: (spec.build_argv)(&ctx),
+                variants: cfg
+                    .harness
+                    .get(spec.id)
+                    .into_iter()
+                    .flat_map(|harness| &harness.variant)
+                    .map(|(name, variant)| {
+                        let id = format!("{}:{name}", spec.id);
+                        VariantInfo {
+                            name: name.to_string(),
+                            harness_id: id.clone(),
+                            model: cfg.model_for(&id).map(str::to_string),
+                            bin: cfg.bin_for(&id).map(str::to_string),
+                            args: cfg.args_for(&id).to_vec(),
+                            env_keys: variant.env.keys().cloned().collect(),
+                            env_file: variant.env_file.clone(),
+                            env_from: variant.env_from.clone(),
+                            unset_env: variant.unset_env.clone(),
+                        }
+                    })
+                    .collect(),
             }
         })
         .collect();

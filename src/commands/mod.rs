@@ -16,10 +16,21 @@ use serde::Serialize;
 use oneharness_core::domain::harness::{self, HarnessSpec};
 use oneharness_core::errors::OneharnessError;
 
-/// Resolve a harness selection into specs, in registry order.
+/// Preserve selector order while removing exactly repeated ids.
+// llmlint: ignore[invalid_states_unrepresentable] This boundary intentionally normalizes raw CLI/config selector text before select_specs validates it; a validated selector type could not carry malformed input into the precise usage diagnostic.
+pub fn dedupe_exact_ids(ids: &[String]) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    ids.iter()
+        .filter(|id| seen.insert((*id).clone()))
+        .cloned()
+        .collect()
+}
+
+/// Resolve `all` in registry order or an explicit selection in caller order.
 ///
 /// `all` selects every harness (minus `exclude`); otherwise `include` lists the
 /// ids to run. An empty selection, or any unknown id, is a usage error.
+// llmlint: ignore[invalid_states_unrepresentable] Raw external selector strings are the input contract here so unknown/malformed ids can be reported verbatim; every id is registry-validated before any HarnessSpec is returned, and callers retain the same ordered selectors only for variant resolution.
 pub fn select_specs(
     all: bool,
     include: &[String],
@@ -27,7 +38,8 @@ pub fn select_specs(
 ) -> Result<Vec<&'static HarnessSpec>, OneharnessError> {
     // Validate every named id up front so a typo fails loudly, not silently.
     for id in include.iter().chain(exclude.iter()) {
-        if harness::by_id(id).is_none() {
+        let base = id.split_once(':').map_or(id.as_str(), |(base, _)| base);
+        if harness::by_id(base).is_none() {
             return Err(OneharnessError::UnknownHarness {
                 id: id.clone(),
                 valid: harness::valid_ids(),
@@ -51,11 +63,14 @@ pub fn select_specs(
         return Err(OneharnessError::NoSelection);
     }
 
-    // Preserve registry order and de-duplicate a repeated id.
-    let wanted: Vec<&str> = include.iter().map(String::as_str).collect();
-    Ok(harness::all()
+    // Preserve caller order: variants of one base harness are distinct
+    // candidates, while an exactly repeated composed id is de-duplicated.
+    Ok(dedupe_exact_ids(include)
         .iter()
-        .filter(|s| wanted.contains(&s.id))
+        .map(|id| {
+            let base = id.split_once(':').map_or(id.as_str(), |(base, _)| base);
+            harness::by_id(base).expect("validated above")
+        })
         .collect())
 }
 
@@ -82,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    fn include_preserves_registry_order_and_dedupes() {
+    fn include_preserves_caller_order_and_dedupes_exact_ids() {
         let specs = select_specs(
             false,
             &["cursor".into(), "claude-code".into(), "cursor".into()],
@@ -90,7 +105,7 @@ mod tests {
         )
         .unwrap();
         let ids: Vec<_> = specs.iter().map(|s| s.id).collect();
-        assert_eq!(ids, vec!["claude-code", "cursor"]);
+        assert_eq!(ids, vec!["cursor", "claude-code"]);
     }
 
     #[test]

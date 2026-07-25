@@ -61,16 +61,16 @@ The table doubles as the **config support matrix**: each column after the
 binary is a unified setting (CLI flag and/or `oneharness.toml` field) and shows
 how — or whether — it reaches that harness.
 
-| id | CLI | default binary | `model` | `system` | `reasoning` | bypass mode requested | synced config file | allow / deny | hooks | output format | `--resume` (continue / fork) |
-|----|-----|----------------|:-------:|----------|-------------|-----------------------|--------------------|:------------:|:-----:|:-------------:|:---------:|
-| `claude-code` | Claude Code | `claude` | ✓ | native flag | `--effort` | `--permission-mode bypassPermissions` | `.claude/settings.json` | ✓ / ✓ | ✓ | ✓ | `--resume` + `--fork-session` |
-| `codex` | OpenAI Codex CLI | `codex` | ✓ | prepended | `model_reasoning_effort` | `--dangerously-bypass-approvals-and-sandbox` | — | — | — | ✓ | `exec resume <id>` (linear) |
-| `opencode` | OpenCode | `opencode` | ✓ | prepended | config only | `--dangerously-skip-permissions` | `opencode.json` | via `settings` | — | ✓ | `--session` + `--fork` |
-| `goose` | Goose | `goose` | — | native flag | — | (runs unattended) | — | — | — | — | `--resume --name` (linear)¹ |
-| `qwen` | Qwen Code | `qwen` | ✓ | prepended | config only | `--yolo` | `.qwen/settings.json` | ✓ / ✓ (interactive) | — | ✓ | `--resume` (linear) |
-| `crush` | Crush | `crush` | ✓ | prepended | config only | `run -q` (non-interactive) | `crush.json` | ✓ / ✓ | — | — | `--session` (linear) |
-| `copilot` | GitHub Copilot CLI | `copilot` | ✓ | prepended | `--reasoning-effort` | `--allow-all-tools --allow-all-paths --no-ask-user` | — | — | — | — | `--resume` (linear)¹ |
-| `cursor` | Cursor CLI | `cursor-agent` | ✓ | prepended | `--model 'M-<effort>'` | `--force` (`--trust` under `--no-bypass`) | `.cursor/cli.json` | ✓ / ✓ | — | ✓ | `--resume` (linear) |
+| id | CLI | default binary | auth identity axis | `model` | `system` | `reasoning` | bypass mode requested | synced config file | allow / deny | hooks | output format | `--resume` (continue / fork) |
+|----|-----|----------------|--------------------|:-------:|----------|-------------|-----------------------|--------------------|:------------:|:-----:|:-------------:|:---------:|
+| `claude-code` | Claude Code | `claude` | `CLAUDE_CONFIG_DIR`, `ANTHROPIC_API_KEY` (live-proven) | ✓ | native flag | `--effort` | `--permission-mode bypassPermissions` | `.claude/settings.json` | ✓ / ✓ | ✓ | ✓ | `--resume` + `--fork-session` |
+| `codex` | OpenAI Codex CLI | `codex` | `CODEX_HOME`, `CODEX_API_KEY` (live-proven) | ✓ | prepended | `model_reasoning_effort` | `--dangerously-bypass-approvals-and-sandbox` | — | — | — | ✓ | `exec resume <id>` (linear) |
+| `opencode` | OpenCode | `opencode` | provider env/config home (mapped, unproven) | ✓ | prepended | config only | `--dangerously-skip-permissions` | `opencode.json` | via `settings` | — | ✓ | `--session` + `--fork` |
+| `goose` | Goose | `goose` | provider env/config home (mapped, unproven) | — | native flag | — | (runs unattended) | — | — | — | — | `--resume --name` (linear)¹ |
+| `qwen` | Qwen Code | `qwen` | `OPENAI_API_KEY`/base URL (mapped, unproven) | ✓ | prepended | config only | `--yolo` | `.qwen/settings.json` | ✓ / ✓ (interactive) | — | ✓ | `--resume` (linear) |
+| `crush` | Crush | `crush` | provider env/config home (mapped, unproven) | ✓ | prepended | config only | `run -q` (non-interactive) | `crush.json` | ✓ / ✓ | — | — | `--session` (linear) |
+| `copilot` | GitHub Copilot CLI | `copilot` | `COPILOT_GITHUB_TOKEN` (mapped, unproven) | ✓ | prepended | `--reasoning-effort` | `--allow-all-tools --allow-all-paths --no-ask-user` | — | — | — | — | `--resume` (linear)¹ |
+| `cursor` | Cursor CLI | `cursor-agent` | `CURSOR_API_KEY` (mapped, unproven) | ✓ | prepended | `--model 'M-<effort>'` | `--force` (`--trust` under `--no-bypass`) | `.cursor/cli.json` | ✓ / ✓ | — | ✓ | `--resume` (linear) |
 
 The `--resume` column shows each harness's headless continuation flag and whether
 it can **fork** (`run --resume <id> --fork`: branch a new session from the resumed
@@ -439,6 +439,28 @@ harness. Every field is optional, and an unknown field or harness id is a loud
 usage error (exit 2), never silently ignored. The run report's `config_files`
 array records exactly which files shaped a run.
 
+A `[harness.<id>.variant.<name>]` section is an opt-in named preset selected
+everywhere as `<id>:<name>`. `--all` selects base harnesses only; variants never
+silently join an all-run. Names match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`.
+Variants accept the same model/bin/args/env/reasoning and sync fields as their
+base section. Precedence is built-ins → top level → base harness → variant →
+CLI. Each report result retains the base `harness`, and also records `variant`
+and the composed `harness_id`.
+
+Credential values stay outside committed config. Within a variant child,
+ordinary top-level/base environment is applied first, then `env_file`, variant
+`env`, and `env_from` indirection; CLI `--env` follows, and `unset_env` masking
+is final. `env_file` is a `KEY=VALUE` file (relative to the project unless
+absolute). `env_from = { ANTHROPIC_API_KEY = "ANTHROPIC_API_KEY_WORK" }` maps a
+differently named parent variable without changing the parent. `unset_env`
+removes even an ambient canonical key, which is required for subscription
+variants. These operations affect only the spawned child, so variants run
+concurrently without credential leakage.
+
+Variants share the base harness's one native project config file. Selecting two
+variants with conflicting sync fields is therefore a usage error, not
+last-writer-wins.
+
 ```toml
 # oneharness.toml — every field optional; shown with its CLI counterpart
 harnesses = ["claude-code", "codex"]  # --harness (or `all = true` for --all)
@@ -478,8 +500,16 @@ RUST_LOG = "warn"
 model = "claude-sonnet-4-5"     # each harness can name its own model
 bin = "/opt/claude"             # like --bin (the flag and ONEHARNESS_BIN_* win)
 args = ["--max-turns", "6"]     # extra argv appended for this harness only
-allowed_tools = ["Bash(git:*)", "Read"]  # this harness's rule syntax
+allowed_tools = ["Bash(git status:*)", "Bash(git diff:*)"]  # bounded commands
 env = { ANTHROPIC_LOG = "debug" }
+
+[harness.claude-code.variant.work]
+env_file = "/home/me/.config/oneharness/work.env"
+env_from = { ANTHROPIC_API_KEY = "ANTHROPIC_API_KEY_WORK" }
+
+[harness.claude-code.variant.subscription]
+env = { CLAUDE_CONFIG_DIR = "/home/me/.claude-work" }
+unset_env = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
 
 # Lifecycle hooks, in the harness's own hooks schema, synced into its config
 # file (Claude Code's .claude/settings.json `hooks` key) uninterpreted.
@@ -1433,9 +1463,12 @@ contract and CLI, Python, and Node examples.
 
 ## Live end-to-end testing
 
-See [Harness authentication identity](docs/harness-auth.md) for the observed
-per-process auth selectors, precedence, credential stores, and concurrency
-safety behind these live checks.
+Live variant coverage selects Claude subscription identities with isolated
+`CLAUDE_CONFIG_DIR` values, selects Claude/Codex API identities with child-only
+key injection, and masks ambient keys for subscription runs. It requires both
+the marker assertion and provider-specific identity evidence; the complete
+lever, precedence, concurrency, and evidence support matrix is maintained in
+[Harness authentication identity](docs/harness-auth.md).
 
 `just smoke-live` is the quick "does any installed harness work" check. The
 **per-harness** suite is the allowlister-style counterpart: each
@@ -1542,6 +1575,20 @@ just secrets-sync    # gh-secrets manifest sync: Bitwarden -> .env + GitHub Acti
 
 The manifest names *which* secrets go *where*; the values never touch the repo.
 `.env` and the sync-state file are gitignored.
+
+`just live-variants` does not globally export keys. It prefers an explicitly
+set phase variable, otherwise reads `KEY=VALUE` material from
+`$OH_LIVE_AUTH_FILE` (default
+`~/.config/oneharness/live-auth.env`, required mode 0600), and passes the value
+only to the child phase that needs it. The justfile deliberately has no
+`set dotenv-load`: gh-secrets' repo `.env` destination is not automatically
+loaded. Likewise, `scripts/e2e-lib.sh`'s `need_env` reads only the current
+process environment.
+
+The Codex ChatGPT-subscription phase is local-only and guarded by
+`OH_E2E_CODEX_SUBSCRIPTION=1`; interactive `codex login` cannot run in CI. CI
+therefore excludes that phase by configuration rather than runtime-skipping
+under `OH_E2E_NO_SKIP=1`.
 
 ## Releasing
 

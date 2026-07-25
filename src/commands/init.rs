@@ -43,6 +43,15 @@ model = \"gpt-5.5\"
 [harness.claude-code]
 model = \"claude-opus-4-8\"
 
+# Variants are opt-in named presets selected as <id>:<name>. Keep credential
+# values outside this file; env_from maps a uniquely named parent variable into
+# the canonical variable for only this child, while unset_env masks ambient auth.
+# [harness.claude-code.variant.work]
+# env_from = { ANTHROPIC_API_KEY = \"ANTHROPIC_API_KEY_WORK\" }
+# [harness.claude-code.variant.subscription]
+# unset_env = [\"ANTHROPIC_API_KEY\", \"CLAUDE_CODE_OAUTH_TOKEN\"]
+# env = { CLAUDE_CONFIG_DIR = \"/absolute/path/to/an/isolated/login\" }
+
 # Inspect the effective, fully layered config (and where each value came from)
 # with `oneharness config`.
 "

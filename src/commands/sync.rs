@@ -67,8 +67,12 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
     };
     let loaded = config_io::load(args.config.as_deref(), args.no_config, &project_dir)?;
     let cfg = &loaded.config;
-    let selected_variants: Vec<_> = args
-        .harness
+    let selected_ids = if args.harness.is_empty() {
+        cfg.harnesses.clone().unwrap_or_default()
+    } else {
+        args.harness.clone()
+    };
+    let selected_variants: Vec<_> = selected_ids
         .iter()
         .filter_map(|id| id.split_once(':').map(|(base, name)| (id, base, name)))
         .collect();
@@ -107,10 +111,10 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
 
     // Default selection: every harness (those with nothing to sync report
     // `skipped`, so the report always covers the full registry).
-    let specs = if args.harness.is_empty() {
+    let specs = if selected_ids.is_empty() {
         harness::all().iter().collect()
     } else {
-        select_specs(false, &args.harness, &[])?
+        select_specs(false, &selected_ids, &[])?
     };
 
     let mut results = Vec::with_capacity(specs.len());
@@ -122,7 +126,7 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
 
     for (index, spec) in specs.into_iter().enumerate() {
         // llmlint: ignore[invalid_states_unrepresentable] select_specs preserves and validates explicit selector order; this index is its established spec-to-selector association, covered by successful and unknown-variant sync integration tests.
-        let selected_id = args.harness.get(index).map_or(spec.id, String::as_str);
+        let selected_id = selected_ids.get(index).map_or(spec.id, String::as_str);
         let plan = sync_domain::plan_for(cfg, spec, selected_id).map_err(|message| {
             OneharnessError::HarnessConfigUnmergeable {
                 path: format!("[harness.{}]", spec.id),

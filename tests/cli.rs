@@ -4509,6 +4509,34 @@ fn sync_applies_a_selected_variants_settings_to_the_shared_native_file() {
 }
 
 #[test]
+fn sync_uses_a_variant_selected_by_config() {
+    let fx = ConfigFixture::new(
+        "variant-sync-config-selection",
+        r#"
+harnesses = ["claude-code:work"]
+[harness.claude-code.variant.work]
+allowed_tools = ["Read"]
+"#,
+        "",
+    );
+    let output = run_with_config(
+        &["sync", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    assert_eq!(report["results"].as_array().unwrap().len(), 1);
+    assert_eq!(report["results"][0]["harness"], "claude-code");
+    let settings = read_json(&std::path::Path::new(&fx.cwd()).join(".claude/settings.json"));
+    assert_eq!(settings["permissions"]["allow"][0], "Read");
+}
+
+#[test]
 fn config_bin_override_is_used_to_execute() {
     let fx = ConfigFixture::new(
         "bin",

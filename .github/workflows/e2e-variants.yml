@@ -34,11 +34,12 @@ jobs:
     env:
       OH_E2E_NO_SKIP: 1
       OH_E2E_VARIANTS_API_ONLY: 1
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - name: Verify API identities
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           [ -n "${ANTHROPIC_API_KEY:-}" ] || { echo "::error::ANTHROPIC_API_KEY is missing"; exit 1; }
           [ -n "${OPENAI_API_KEY:-}" ] || { echo "::error::OPENAI_API_KEY is missing"; exit 1; }
@@ -52,4 +53,7 @@ jobs:
       - name: Install real CLIs
         run: npm install -g @anthropic-ai/claude-code @openai/codex
       - name: Live API variants and same-harness fallback
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: just live-variants

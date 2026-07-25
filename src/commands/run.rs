@@ -41,6 +41,7 @@ const EXIT_FAILURE: i32 = 1;
 /// issue #1115.
 const LARGE_INPUT_THRESHOLD: usize = 64 * 1024;
 
+// llmlint: ignore[invalid_states_unrepresentable] This private spawn-boundary helper only receives selectors after config validation and select_specs resolution; introducing a second identity type here would duplicate VariantName while its real subprocess tests pin masking, sourcing, and isolation.
 fn variant_environment(
     cfg: &oneharness_core::domain::config::FileConfig,
     composed: &str,

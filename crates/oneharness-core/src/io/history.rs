@@ -113,6 +113,7 @@ impl HistoryWriter {
 
     /// Append an event while distinguishing session durability from a later
     /// best-effort event-index failure.
+    // llmlint: ignore[invalid_states_unrepresentable] This I/O boundary receives the normalized composed id already stored on the run result, then atomically derives all three wire fields; history materialization validates their consistency and CLI round-trip tests cover variant filtering.
     pub fn append_event_tracked(
         &self,
         run_id: HistoryId,

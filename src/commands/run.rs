@@ -2963,10 +2963,10 @@ mod tests {
     }
 
     #[test]
-    fn is_failure_treats_tool_deferred_as_failure_on_a_clean_exit() {
-        // A tool_deferred run exits 0 (Status::Ok), which is normally a success;
-        // the typed signal is what makes it fail (so exit_code / fallback_exit see
-        // the dead-end). Without the signal the same ok run is a success.
+    fn is_failure_treats_provider_failures_as_failure_on_a_clean_exit() {
+        // A provider-declared failure can exit 0 (Status::Ok), which is normally
+        // a success; the typed signal is what makes it fail so exit_code and
+        // fallback orchestration see the dead-end. Without a signal, it succeeds.
         assert!(is_failure(
             Status::Ok,
             true,
@@ -2974,7 +2974,7 @@ mod tests {
             None,
             Some(signals::FailureKind::ToolDeferred)
         ));
-        assert!(!is_failure(
+        assert!(is_failure(
             Status::Ok,
             true,
             false,

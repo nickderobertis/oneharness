@@ -214,6 +214,22 @@ fn current_history_versions_schema() -> serde_json::Value {
     })
 }
 
+fn set_history_identity_version(
+    schema: &mut serde_json::Value,
+    version: &str,
+    identity_required: bool,
+) {
+    schema["properties"]["schema_version"] =
+        serde_json::json!({"const": version, "type": "string"});
+    let required = schema["required"]
+        .as_array_mut()
+        .expect("history required array");
+    required.retain(|value| value.as_str() != Some("harness_id"));
+    if identity_required {
+        required.push(serde_json::Value::String("harness_id".to_string()));
+    }
+}
+
 fn add_v03_condition(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Array(values) => values.iter_mut().for_each(add_v03_condition),
@@ -233,7 +249,7 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                     .collect::<serde_json::Map<_, _>>();
                 let base = serde_json::Value::Object(object.clone());
                 let mut current = base.clone();
-                current["properties"]["schema_version"] = current_history_versions_schema();
+                set_history_identity_version(&mut current, HISTORY_SCHEMA_VERSION, true);
                 let required = current["required"]
                     .as_array_mut()
                     .expect("history required array");
@@ -298,8 +314,14 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                         }]}
                     ]
                 });
+                let mut previous_current = current.clone();
+                set_history_identity_version(
+                    &mut previous_current,
+                    PREVIOUS_CURRENT_SCHEMA_VERSION,
+                    false,
+                );
                 let mut unavailable = base.clone();
-                unavailable["properties"]["schema_version"] = current_history_versions_schema();
+                set_history_identity_version(&mut unavailable, HISTORY_SCHEMA_VERSION, true);
                 unavailable["properties"]["finished_at"] = serde_json::json!({"type": "null"});
                 if let Some(required) = unavailable["required"].as_array_mut() {
                     required.retain(|value| {
@@ -335,6 +357,12 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                     },
                     "required": ["kind", "name", "input", "output", "index"]
                 });
+                let mut previous_unavailable = unavailable.clone();
+                set_history_identity_version(
+                    &mut previous_unavailable,
+                    PREVIOUS_CURRENT_SCHEMA_VERSION,
+                    false,
+                );
                 let mut legacy = base;
                 legacy["properties"]["schema_version"] =
                     serde_json::json!({"enum": ["0.1", "0.2"], "type": "string"});
@@ -370,7 +398,13 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                 object.extend(metadata);
                 object.insert(
                     "oneOf".to_string(),
-                    serde_json::json!([current, unavailable, legacy]),
+                    serde_json::json!([
+                        current,
+                        previous_current,
+                        unavailable,
+                        previous_unavailable,
+                        legacy
+                    ]),
                 );
                 return;
             }

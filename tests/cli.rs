@@ -10087,8 +10087,9 @@ fn history_cli_reads_v1_0_records_without_variant_identity_fields() {
         .collect::<Vec<_>>()
         .join("\n");
     let legacy_dir = hist_dir("history-v1-0-copy");
-    let canonical_dir = std::fs::canonicalize(&dir).unwrap();
-    let legacy_path = legacy_dir.join(Path::new(&path).strip_prefix(&canonical_dir).unwrap());
+    let legacy_path = legacy_dir
+        .join("legacy-project")
+        .join(Path::new(&path).file_name().unwrap());
     std::fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
     std::fs::write(&legacy_path, format!("{legacy}\n")).unwrap();
     for line in legacy.lines() {

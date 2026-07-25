@@ -10308,6 +10308,100 @@ fn history_canonicalizes_relative_cwd_for_project_lookup() {
 }
 
 #[test]
+fn history_watch_variant_filters_nonmatching_event_envelopes() {
+    use std::io::BufReader;
+
+    let dir = hist_dir("watch-variant-events");
+    let ds = dir.display().to_string();
+    let bin = mock_bin().display().to_string().replace('\\', "\\\\");
+    let fx = ConfigFixture::new(
+        "watch-filter-events",
+        &format!(
+            "[harness.codex.variant.work]\nbin = \"{bin}\"\n\
+             [harness.codex.variant.personal]\nbin = \"{bin}\"\n"
+        ),
+        "",
+    );
+    let trace = concat!(
+        "{\"type\":\"turn.started\"}\n",
+        "{\"type\":\"item.started\",\"item\":{\"id\":\"call-1\",\"type\":\"command_execution\",\"command\":\"echo hi\",\"status\":\"in_progress\"}}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"call-1\",\"type\":\"command_execution\",\"command\":\"echo hi\",\"aggregated_output\":\"hi\",\"exit_code\":0,\"status\":\"completed\"}}\n",
+        "{\"type\":\"turn.completed\"}\n",
+    );
+    let record = |variant: &str, prompt: &str| {
+        let output = run_with_config(
+            &[
+                "run",
+                "--harness",
+                &format!("codex:{variant}"),
+                "--prompt",
+                prompt,
+                "--cwd",
+                &fx.cwd(),
+                "--stream",
+                "--history",
+                "--history-dir",
+                &ds,
+            ],
+            &[("MOCK_STDOUT", trace)],
+            &fx.user_config(),
+        );
+        assert!(output.status.success());
+        let terminal = String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .last()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .unwrap();
+        let path = terminal["report"]["history_file"].as_str().unwrap();
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .find(|line| line["type"] == "run")
+            .unwrap()["history_id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let after = record("work", "seed");
+    record("personal", "must be filtered");
+    record("work", "must be emitted");
+
+    let mut watcher = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args([
+            "history",
+            "watch",
+            "--project",
+            &fx.cwd(),
+            "--events",
+            "--variant",
+            "work",
+            "--after",
+            &after,
+            "--history-dir",
+            &ds,
+            "--format",
+            "jsonl",
+        ])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    let mut reader = BufReader::new(watcher.stdout.take().unwrap());
+    reader.read_line(&mut line).unwrap();
+    let envelope: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(envelope["type"], "event");
+    assert_eq!(envelope["line"]["variant"], "work");
+    assert_eq!(envelope["line"]["harness_id"], "codex:work");
+    drop(reader);
+    record("work", "close watcher");
+    assert!(watcher.wait().unwrap().success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn history_watch_filters_and_resumes_as_jsonl() {
     let dir = hist_dir("watch-cli");
     let ds = dir.display().to_string();

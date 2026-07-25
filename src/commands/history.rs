@@ -68,7 +68,16 @@ fn watch(args: &HistoryWatchArgs) -> Result<i32, OneharnessError> {
 
     match args.format {
         HistoryWatchFormat::Jsonl => loop {
-            if args.events && !write_watch_events(&watcher.drain_events())? {
+            let events: Vec<_> = watcher
+                .drain_events()
+                .into_iter()
+                .filter(|line| {
+                    args.variant
+                        .as_ref()
+                        .is_none_or(|variant| line.variant.as_deref() == Some(variant.as_str()))
+                })
+                .collect();
+            if args.events && !write_watch_events(&events)? {
                 return Ok(EXIT_OK);
             }
             let records: Vec<_> = watcher
@@ -93,7 +102,16 @@ fn watch(args: &HistoryWatchArgs) -> Result<i32, OneharnessError> {
                         .is_none_or(|variant| record.variant.as_deref() == Some(variant.as_str()))
                 })
                 .collect();
-            if args.events && !write_watch_events(&watcher.drain_events())? {
+            let events: Vec<_> = watcher
+                .drain_events()
+                .into_iter()
+                .filter(|line| {
+                    args.variant
+                        .as_ref()
+                        .is_none_or(|variant| line.variant.as_deref() == Some(variant.as_str()))
+                })
+                .collect();
+            if args.events && !write_watch_events(&events)? {
                 return Ok(EXIT_OK);
             }
             for record in records {

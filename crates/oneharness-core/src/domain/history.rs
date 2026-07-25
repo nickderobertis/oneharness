@@ -159,6 +159,13 @@ impl HistoryRunRecord {
         ) {
             return false;
         }
+        if !identity_fields_valid(
+            &self.harness,
+            self.variant.as_deref(),
+            self.harness_id.as_deref(),
+        ) {
+            return false;
+        }
         match (
             self.started_at.as_deref(),
             self.finished_at.as_deref(),
@@ -761,6 +768,13 @@ impl HistoryRecord {
                 ),
             )));
         }
+        if !identity_fields_valid(
+            &wire.harness,
+            wire.variant.as_deref(),
+            wire.harness_id.as_deref(),
+        ) {
+            return Err(invalid_history("inconsistent history harness identity"));
+        }
         let history_id = wire.history_id.ok_or_else(|| {
             serde_json::Error::io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -812,6 +826,21 @@ impl HistoryRecord {
             failure_kind: wire.failure_kind,
         }
     }
+}
+
+fn identity_fields_valid(harness: &str, variant: Option<&str>, harness_id: Option<&str>) -> bool {
+    let expected = match variant {
+        Some(variant)
+            if variant
+                .parse::<crate::domain::config::VariantName>()
+                .is_ok() =>
+        {
+            format!("{harness}:{variant}")
+        }
+        Some(_) => return false,
+        None => harness.to_string(),
+    };
+    harness_id.is_none_or(|harness_id| harness_id == expected)
 }
 
 fn invalid_history(message: &str) -> serde_json::Error {
@@ -1366,6 +1395,13 @@ mod tests {
             serde_json::from_value::<HistoryRecord>(value).unwrap(),
             current
         );
+        let mut inconsistent = serde_json::to_value(&current).unwrap();
+        inconsistent["harness_id"] = Value::String("codex:work".to_string());
+        assert!(serde_json::from_value::<HistoryRecord>(inconsistent).is_err());
+        let mut malformed_variant = serde_json::to_value(&current).unwrap();
+        malformed_variant["variant"] = Value::String("bad.name".to_string());
+        malformed_variant["harness_id"] = Value::String("claude-code:bad.name".to_string());
+        assert!(serde_json::from_value::<HistoryRecord>(malformed_variant).is_err());
 
         let mut invalid_v03 = serde_json::to_value(&current).unwrap();
         invalid_v03.as_object_mut().unwrap().remove("model_ms");

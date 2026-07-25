@@ -1433,6 +1433,10 @@ contract and CLI, Python, and Node examples.
 
 ## Live end-to-end testing
 
+See [Harness authentication identity](docs/harness-auth.md) for the observed
+per-process auth selectors, precedence, credential stores, and concurrency
+safety behind these live checks.
+
 `just smoke-live` is the quick "does any installed harness work" check. The
 **per-harness** suite is the allowlister-style counterpart: each
 `scripts/e2e-<harness>.sh` drives one *real* harness through `oneharness` with

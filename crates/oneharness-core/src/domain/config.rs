@@ -224,11 +224,11 @@ pub struct VariantConfig {
     pub env: BTreeMap<String, String>,
     // llmlint: ignore[invalid_states_unrepresentable] The TOML contract intentionally stores a portable path string; deserialization rejects empty/NUL values and the I/O boundary resolves it, verifies it is a regular mode-private file, and reports the concrete path.
     pub env_file: Option<String>,
+    #[serde(default)]
     // llmlint: ignore[invalid_states_unrepresentable] Environment names are TOML map keys/values that must remain strings for backward-compatible config merging; `validate` checks every target/source before FileConfig is exposed and the env-file parser independently validates external names.
-    #[serde(default)]
     pub env_from: BTreeMap<String, String>,
-    // llmlint: ignore[invalid_states_unrepresentable] These names share the established string-list config shape; `validate` checks the complete list before FileConfig is exposed, and Command receives only validated values.
     #[serde(default)]
+    // llmlint: ignore[invalid_states_unrepresentable] These names share the established string-list config shape; `validate` checks the complete list before FileConfig is exposed, and Command receives only validated values.
     pub unset_env: Vec<String>,
 }
 

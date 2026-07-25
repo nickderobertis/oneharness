@@ -19,6 +19,7 @@ pub struct Job {
     pub argv: Vec<String>,
     pub cwd: Option<PathBuf>,
     pub env: Vec<(String, String)>,
+    // llmlint: ignore[invalid_states_unrepresentable] Jobs are internal spawn plans built only after config validation checks every environment name; retaining Command's native string shape here avoids a second conversion/type at the I/O boundary, and real-spawn tests assert masking and parent isolation.
     pub env_remove: Vec<String>,
     pub timeout: Duration,
     /// Bytes to pipe to the child's stdin, when the prompt is delivered that way

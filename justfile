@@ -266,7 +266,8 @@ live-variants: _live-install
 
 # Install the real CLIs required by the harness-variant live test.
 live-variants-tools:
-    npm install -g @anthropic-ai/claude-code @openai/codex
+    npm install -g --silent @anthropic-ai/claude-code @openai/codex
+    @echo "live-variants-tools: installed Claude Code and Codex"
 
 # Run every per-harness live check plus the per-feature ones; skips count as
 # passes, only real failures fail.

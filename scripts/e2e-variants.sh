@@ -64,8 +64,12 @@ run_marker() {
         --prompt "Reply exactly $marker" --compact >"$report"
     jq -e --arg marker "$marker" \
         '.results[0].status == "ok" and (.results[0].stdout | contains($marker))' \
-        "$report" >/dev/null ||
-        fail "$id did not complete with marker; inspect the sanitized report status/stderr and verify that variant's selected credential source"
+        "$report" >/dev/null || {
+        diagnostic="$(jq -r --arg marker "$marker" \
+            '.results[0] | "status=\(.status) exit_code=\(.exit_code) failure_kind=\(.failure_kind) stderr_present=\((.stderr // "") | length > 0) marker_present=\((.stdout // "") | contains($marker))"' \
+            "$report")"
+        fail "$id did not complete with marker ($diagnostic); verify that variant's selected credential source"
+    }
     evidence "COMMAND $id: oneharness run --config <temporary> --harness $id --prompt 'Reply exactly <marker>' --compact"
     evidence "ASSERT $id: status=ok marker=exact harness_id=$id"
 }
@@ -89,7 +93,7 @@ if [ -z "${OH_E2E_VARIANTS_API_ONLY:-}" ]; then
         )" ||
             fail "Claude subscription preflight failed; run 'CLAUDE_CONFIG_DIR=<dir> claude auth login' for the missing identity"
         [ "$auth_method" = "claude.ai" ] ||
-            fail "Claude subscription preflight used an unexpected auth method; remove API auth from that config home and run 'claude auth login'"
+            fail "Claude subscription preflight used authMethod='$auth_method', expected 'claude.ai'; remove API auth from that config home and run 'claude auth login'"
     done
     run_marker claude-code:subscription-a "${marker}_ca" \
         ANTHROPIC_API_KEY="$ANTHROPIC_MATERIAL" OH_VARIANT_CLAUDE_A="$claude_a"
@@ -113,8 +117,12 @@ OH_VARIANT_ANTHROPIC_KEY="$ANTHROPIC_MATERIAL" OH_VARIANT_CLAUDE_A="$claude_a" \
     --run-mode fallback --prompt "Reply exactly ${marker}_fb" --compact >"$fallback"
 jq -e --arg marker "${marker}_fb" \
     '.results[0].failure_kind == "auth" and
-     (.results[-1].stdout | contains($marker))' "$fallback" >/dev/null ||
-    fail "same-harness auth fallback failed; inspect failure_kind for the invalid candidate and fallback ordering in the report"
+     (.results[-1].stdout | contains($marker))' "$fallback" >/dev/null || {
+    diagnostic="$(jq -r --arg marker "${marker}_fb" \
+        '"first_failure_kind=\(.results[0].failure_kind) next_harness_id=\(.results[-1].harness_id) next_status=\(.results[-1].status) marker_present=\((.results[-1].stdout // "") | contains($marker))"' \
+        "$fallback")"
+    fail "same-harness auth fallback failed ($diagnostic); verify invalid-key classification and candidate ordering"
+}
 evidence "COMMAND fallback: oneharness run --config <temporary> --harness claude-code:invalid --harness $fallback_target --run-mode fallback --prompt 'Reply exactly <marker>' --compact"
 evidence "ASSERT fallback: first_failure_kind=auth next_harness_id=$fallback_target status=ok marker=exact"
 if [ -n "${OH_E2E_CODEX_SUBSCRIPTION:-}" ]; then

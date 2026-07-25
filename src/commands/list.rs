@@ -96,9 +96,13 @@ pub struct VariantInfo {
     model: Option<String>,
     bin: Option<String>,
     args: Vec<String>,
+    // llmlint: ignore[invalid_states_unrepresentable] This read-only JSON/SDK projection is populated only from a FileConfig that has passed environment-name validation; strings preserve the public list contract without duplicating the input boundary's validated representation.
     env_keys: Vec<String>,
+    // llmlint: ignore[invalid_states_unrepresentable] This is the portable display value of an already-validated config path, not a path used for I/O; retaining a string preserves the established JSON/SDK contract.
     env_file: Option<String>,
+    // llmlint: ignore[invalid_states_unrepresentable] Both sides are serialized environment names copied only after FileConfig validation; introducing output-only newtypes would duplicate the validated input boundary and change generated SDK types.
     env_from: std::collections::BTreeMap<String, String>,
+    // llmlint: ignore[invalid_states_unrepresentable] These serialized names come only from the validated config and are never accepted back as process inputs through this DTO; strings are the intentional stable output shape.
     unset_env: Vec<String>,
 }
 

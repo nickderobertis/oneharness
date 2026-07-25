@@ -1,30 +1,18 @@
 # Harness authentication identity
 
-This is the auth-routing reference for the eight adapters in
-`domain::harness::REGISTRY`. It records observations made on 2026-07-25. “Observed”
+This is the auth-routing reference for the adapters in
+[`domain::harness::REGISTRY`](../crates/oneharness-core/src/domain/harness.rs).
+It records observations made on 2026-07-25. “Observed”
 means the real CLI completed a model call (or rejected a deliberately invalid
 credential); “documented, unverified” means the CLI was not installed or no
 credential/account was available. Values, account identifiers, request IDs, and
 session IDs are omitted.
 
-oneharness classifies text containing `unauthorized`, `authentication`,
-`not authenticated`, `invalid api key`, `missing api key`, `no api key`,
-`credentials`, `forbidden`, `401`, or `403` as `auth`
-([`signals.rs`](../crates/oneharness-core/src/domain/signals.rs#L295-L344)).
+Whether observed output classifies as `auth` is evaluated against the canonical
+recognizer in
+[`signals.rs`](../crates/oneharness-core/src/domain/signals.rs#L295-L344);
+this document deliberately does not duplicate its evolving literal list.
 The classifications below apply that exact recognizer to the observed text.
-
-## Summary
-
-| Harness | Live status | Safe concurrent identity selector |
-| --- | --- | --- |
-| `claude-code` | Verified, 2.1.220, stored Max login and invalid API key | `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or `CLAUDE_CONFIG_DIR` |
-| `codex` | Verified, 0.145.0, stored ChatGPT login and invalid stored API key | `CODEX_HOME` (with a pre-provisioned `auth.json`) |
-| `opencode` | Unverified: CLI not installed and no account/key available | Unknown; likely isolated data home, not merely `OPENCODE_CONFIG_DIR` |
-| `goose` | Unverified: CLI not installed and no account/key available | Documented provider API-key env plus `GOOSE_PATH_ROOT` |
-| `qwen` | Unverified: CLI not installed and no account/key available | Documented API-key env |
-| `crush` | Unverified: CLI not installed and no account/key available | Unknown |
-| `copilot` | Unverified: CLI not installed and no account/token available | Documented token env or `COPILOT_HOME` |
-| `cursor` | Unverified: CLI not installed and no account/key available | Documented `CURSOR_API_KEY` or `--api-key` |
 
 “Safe” means selection itself is per-process. A login command that rewrites the
 selected directory is still unsafe if two processes mutate that same directory.

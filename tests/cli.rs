@@ -11709,6 +11709,35 @@ fn multiple_models_execute_each_pair_in_parallel() {
 }
 
 #[test]
+fn explicit_base_harnesses_preserve_cli_order() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "cursor",
+            "--harness",
+            "claude-code",
+            "--harness",
+            "cursor",
+            "--prompt",
+            "ordered",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success());
+    let value = json_stdout(&output);
+    let harnesses: Vec<_> = value["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|result| result["harness"].as_str().unwrap())
+        .collect();
+    assert_eq!(harnesses, ["cursor", "claude-code"]);
+}
+
+#[test]
 fn a_single_model_is_not_a_fan_out() {
     // One --model behaves exactly as before: no `models` list on the report, and
     // the single result still records its model.

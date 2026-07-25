@@ -9064,7 +9064,7 @@ fn history_measures_codex_file_change_with_start_and_completion() {
     );
     let report = json_stdout(&output);
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-    // Complete v1.0 timing telemetry was derived (not left absent).
+    // Complete timing telemetry was derived into the v1.1 history record.
     assert_eq!(record["schema_version"], "1.1");
     assert!(record["started_at"].is_string());
     assert!(record["model_ms"].is_u64());

@@ -2194,13 +2194,20 @@ fn executed_result(
     // Classify only an actual non-zero run: timeouts/spawn failures already carry
     // a oneharness-generated `error`, and `status` explains them. A detected
     // deferral is more specific and actionable, so it wins over a coarse match.
-    let failure = match (&deferred, capture.status) {
-        (Some(_), _) => Some(signals::FailureReading {
+    let provider_failure = match capture.status {
+        Status::Ok | Status::Nonzero => signals::detect_provider_failure(&capture.stdout),
+        _ => None,
+    };
+    let failure = match (&deferred, provider_failure, capture.status) {
+        (Some(_), _, _) => Some(signals::FailureReading {
             kind: signals::FailureKind::ToolDeferred,
             source: "stdout".to_string(),
         }),
-        (None, Status::Nonzero) => signals::classify_failure(&capture.stdout, &capture.stderr),
-        (None, _) => None,
+        (None, Some(failure), _) => Some(failure),
+        (None, None, Status::Nonzero) => {
+            signals::classify_failure(&capture.stdout, &capture.stderr)
+        }
+        (None, None, _) => None,
     };
     let (failure_kind, failure_kind_source) = match failure {
         Some(f) => (Some(f.kind), Some(f.source)),
@@ -2458,7 +2465,7 @@ fn is_failure(
     if schema_valid == Some(false) {
         return true;
     }
-    if failure_kind == Some(signals::FailureKind::ToolDeferred) {
+    if failure_kind.is_some() {
         return true;
     }
     match status {

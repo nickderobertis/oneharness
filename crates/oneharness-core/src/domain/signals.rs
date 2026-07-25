@@ -291,6 +291,24 @@ pub fn classify_failure(stdout: &str, stderr: &str) -> Option<FailureReading> {
     None
 }
 
+/// Classify a provider-declared failed result even when its CLI exits zero.
+///
+/// Some harnesses, including Claude Code on Windows, report an API rejection in
+/// a terminal JSON record with `is_error: true` but still exit successfully.
+/// Restricting this check to those explicit error records avoids treating
+/// incidental warning text in an otherwise successful transcript as failure.
+pub fn detect_provider_failure(stdout: &str) -> Option<FailureReading> {
+    json_candidates(stdout).into_iter().rev().find_map(|value| {
+        if value.get("is_error").and_then(Value::as_bool) != Some(true) {
+            return None;
+        }
+        match_failure(&value.to_string()).map(|kind| FailureReading {
+            kind,
+            source: "stdout".to_string(),
+        })
+    })
+}
+
 /// Match the first known failure signal in `text` (case-insensitive). Ordered
 /// most-specific first so a 429 reads as `rate_limit`, not `auth`.
 fn match_failure(text: &str) -> Option<FailureKind> {
@@ -632,6 +650,22 @@ mod tests {
     #[test]
     fn classify_none_when_no_signal() {
         assert!(classify_failure("just some output", "a normal error").is_none());
+    }
+
+    #[test]
+    fn provider_error_record_is_classified_on_a_clean_process_exit() {
+        let stdout = concat!(
+            r#"{"type":"system","subtype":"init"}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":true,"api_error_status":401,"result":"Invalid API key · Fix external API key"}"#
+        );
+        let got = detect_provider_failure(stdout).unwrap();
+        assert_eq!(got.kind, FailureKind::Auth);
+        assert_eq!(got.source, "stdout");
+        assert!(detect_provider_failure(
+            r#"{"type":"result","is_error":false,"result":"mentions a 401 example"}"#
+        )
+        .is_none());
     }
 
     #[test]

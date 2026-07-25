@@ -10087,7 +10087,8 @@ fn history_cli_reads_v1_0_records_without_variant_identity_fields() {
         .collect::<Vec<_>>()
         .join("\n");
     let legacy_dir = hist_dir("history-v1-0-copy");
-    let legacy_path = legacy_dir.join(Path::new(&path).strip_prefix(&dir).unwrap());
+    let canonical_dir = std::fs::canonicalize(&dir).unwrap();
+    let legacy_path = legacy_dir.join(Path::new(&path).strip_prefix(&canonical_dir).unwrap());
     std::fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
     std::fs::write(&legacy_path, format!("{legacy}\n")).unwrap();
     for line in legacy.lines() {
@@ -12446,6 +12447,38 @@ fn fallback_falls_through_an_auth_failure_to_a_working_harness() {
     assert_eq!(results[0]["failure_kind"], "auth");
     assert_eq!(results[1]["harness"], "codex");
     assert_eq!(results[1]["status"], "ok");
+}
+
+#[test]
+fn fallback_falls_through_a_clean_exit_provider_auth_error() {
+    let mock = mock_bin().display().to_string();
+    let provider_error = r#"{"type":"result","subtype":"success","is_error":true,"api_error_status":401,"result":"Invalid API key · Fix external API key"}"#;
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "codex"]
+        run_mode = "fallback"
+
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_STDOUT = '{provider_error}' }}
+
+        [harness.codex]
+        bin = '{mock}'
+        "#
+    );
+    let fx = ConfigFixture::new("fallback-clean-provider-auth", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    assert_eq!(value["fallback"]["ran"], "codex");
+    assert_eq!(value["fallback"]["fell_through"][0]["reason"], "auth");
+    assert_eq!(value["results"][0]["status"], "ok");
+    assert_eq!(value["results"][0]["failure_kind"], "auth");
+    assert_eq!(value["results"][1]["status"], "ok");
 }
 
 #[test]

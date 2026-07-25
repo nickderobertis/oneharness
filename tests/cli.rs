@@ -4451,6 +4451,9 @@ env_file = "absent.env"
 [harness.claude-code.variant.bad-line]
 bin = "{bin}"
 env_file = "bad.env"
+[harness.claude-code.variant.bad-name]
+bin = "{bin}"
+env_file = "bad-name.env"
 [harness.claude-code.variant.insecure]
 bin = "{bin}"
 env_file = "insecure.env"
@@ -4464,12 +4467,15 @@ ANTHROPIC_API_KEY = "ONEHARNESS_TEST_PARENT_IS_ABSENT"
     );
     let bad_env = std::path::Path::new(&fx.cwd()).join("bad.env");
     std::fs::write(&bad_env, "not-key-value\n").unwrap();
+    let bad_name_env = std::path::Path::new(&fx.cwd()).join("bad-name.env");
+    std::fs::write(&bad_name_env, "BAD-NAME=value\n").unwrap();
     let insecure_env = std::path::Path::new(&fx.cwd()).join("insecure.env");
     std::fs::write(&insecure_env, "ANTHROPIC_API_KEY=not-a-real-key\n").unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&bad_env, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(&bad_name_env, std::fs::Permissions::from_mode(0o600)).unwrap();
         std::fs::set_permissions(&insecure_env, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
     #[cfg(unix)]
@@ -4493,6 +4499,7 @@ ANTHROPIC_API_KEY = "ONEHARNESS_TEST_PARENT_IS_ABSENT"
     for (variant, expected) in [
         ("missing-file", "could not read variant environment file"),
         ("bad-line", "expected KEY=VALUE"),
+        ("bad-name", "expected KEY=VALUE"),
         ("missing-parent", "is not set in the parent process"),
     ] {
         let output = run_with_config(

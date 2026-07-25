@@ -6,6 +6,7 @@ use std::time::Duration;
 use crate::cli::RunArgs;
 use crate::commands::{print_json, select_specs};
 use oneharness_core::domain::batch::{self, BatchStrategy};
+use oneharness_core::domain::config::valid_env_name;
 use oneharness_core::domain::fallback::{self, RunMode};
 use oneharness_core::domain::harness::{self, BuildCtx, HarnessSpec};
 use oneharness_core::domain::mock::{self, MockDelivery};
@@ -106,7 +107,7 @@ fn variant_environment(
                     line: index + 1,
                 });
             };
-            if key.is_empty() || key.contains(['=', '\0']) {
+            if !valid_env_name(key) {
                 return Err(OneharnessError::VariantEnvFileLine {
                     path: path.display().to_string(),
                     line: index + 1,

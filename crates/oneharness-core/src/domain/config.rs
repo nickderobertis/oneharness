@@ -174,6 +174,15 @@ pub struct VariantName(String);
 
 pub const VARIANT_NAME_PATTERN: &str = "[A-Za-z0-9][A-Za-z0-9_-]{0,63}";
 
+/// Whether `name` has the portable environment-variable identifier shape.
+pub fn valid_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
 impl VariantName {
     pub fn as_str(&self) -> &str {
         &self.0
@@ -404,11 +413,8 @@ fn validate(config: &FileConfig) -> Result<(), String> {
                 }),
         )
     {
-        if key.is_empty() || key.contains(['=', '\0']) {
-            return Err(
-                "environment variable names must be non-empty and contain neither `=` nor NUL"
-                    .to_string(),
-            );
+        if !valid_env_name(key) {
+            return Err("environment variable names must match [A-Za-z_][A-Za-z0-9_]*".to_string());
         }
     }
     for composed in config
@@ -1286,6 +1292,7 @@ variant = true
             "[harness.claude-code.variant.work]\nhooks = \"not-a-table\"",
             "[harness.claude-code.variant.work]\nsettings = [\"not-a-table\"]",
             "[harness.claude-code.variant.work]\nunset_env = [\"\"]",
+            "[harness.claude-code.variant.work]\nunset_env = [\"BAD-NAME\"]",
             "[harness.claude-code.variant.work.env_from]\nANTHROPIC_API_KEY = \"\"",
         ] {
             assert!(parse(text).is_err(), "{text}");

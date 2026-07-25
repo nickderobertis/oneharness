@@ -109,8 +109,8 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
         }
     }
 
-    // Default selection: every harness (those with nothing to sync report
-    // `skipped`, so the report always covers the full registry).
+    // With no CLI/config selection, cover every harness; those with nothing to
+    // sync report `skipped`. A configured selection stays explicit and ordered.
     let specs = if selected_ids.is_empty() {
         harness::all().iter().collect()
     } else {

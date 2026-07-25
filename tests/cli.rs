@@ -10075,7 +10075,12 @@ fn history_cli_reads_v1_0_records_without_variant_identity_fields() {
         .unwrap()
         .to_string();
     let legacy = std::fs::read_to_string(&path)
-        .unwrap()
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to read history file {path}: {error}; stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+        })
         .lines()
         .map(|line| {
             let mut value: Value = serde_json::from_str(line).unwrap();

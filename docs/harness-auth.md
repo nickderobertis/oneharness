@@ -1,79 +1,326 @@
 # Harness authentication identity
 
-This reference records the identity selectors observed on 2026-07-25. Values
-and account identifiers are intentionally omitted. “Per-process” means two
-children can safely use different identities concurrently; login commands that
-rewrite a shared credential file are not per-process.
+This is the auth-routing reference for the adapters in
+[`domain::harness::REGISTRY`](../crates/oneharness-core/src/domain/harness.rs).
+It records observations made on 2026-07-25. “Observed”
+means the real CLI completed a model call (or rejected a deliberately invalid
+credential); “documented, unverified” means the CLI was not installed or no
+credential/account was available. Values, account identifiers, request IDs, and
+session IDs are omitted.
 
-## Live-proven adapters
+Whether observed output classifies as `auth` is evaluated against the canonical
+recognizer in
+[`signals.rs`](../crates/oneharness-core/src/domain/signals.rs#L295-L344);
+this document deliberately does not duplicate its evolving literal list.
+The classifications below apply that exact recognizer to the observed text.
 
-### Claude Code 2.1.220
+“Safe” means selection itself is per-process. A login command that rewrites the
+selected directory is still unsafe if two processes mutate that same directory.
 
-- `CLAUDE_CONFIG_DIR` selects the directory containing stored Claude login
-  state. It is per-process; `claude auth login/logout` mutates that directory.
-- `ANTHROPIC_API_KEY` selects API-key billing per-process and takes precedence
-  over stored subscription login. `CLAUDE_CODE_OAUTH_TOKEN` similarly supplies
-  OAuth auth. `apiKeyHelper` in `--settings` is another documented API-key
-  source, but was not used because it executes a helper.
-- `claude auth status --json` reports `authMethod`, provider, and subscription
-  type before a run. Completed JSON output does not expose an account id. In the
-  probes, subscription runs showed the first-party provider and one-hour cache
-  creation; API-key auth showed five-minute cache creation and inference
-  geography. Together with the independently selected config directory and
-  preflight status, this is positive identity-axis evidence.
-- Two stored Max subscriptions and one API key each completed
-  `claude -p "Reply exactly <marker>" --output-format json`, returning the exact
-  marker. Subscription commands set `CLAUDE_CONFIG_DIR` and removed
-  `ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN`; the API command used an empty
-  config directory and set only `ANTHROPIC_API_KEY`.
-- An invalid key produces HTTP `401` authentication text, which the existing
-  signal classifier recognizes as `auth`.
+## `claude-code`
 
-### Codex CLI 0.145.0
+**Observed levers and precedence.** The stored Claude.ai login lives in
+`$CLAUDE_CONFIG_DIR/.credentials.json` (default `~/.claude/.credentials.json`);
+`claude auth login/logout` mutates it. Setting `CLAUDE_CONFIG_DIR` to a directory
+containing a copied credential produced `authMethod: "claude.ai"` and
+`subscriptionType: "max"`, then completed a real call. Thus the directory is a
+per-process identity selector, while login/logout against a shared directory is
+global mutable state. Later variant live runs exercised two separately
+provisioned subscription directories concurrently and confirmed both served
+their selected runs while an ambient API key was present but explicitly masked
+from each child.
 
-- `CODEX_HOME` selects `config.toml` and stored `auth.json`; it is per-process.
-  `codex login` mutates the selected home, so switching a shared home by logging
-  in is global mutable state.
-- `CODEX_API_KEY` is the live-proven per-process API-key selector. Despite older
-  ecosystem convention, `OPENAI_API_KEY` alone with an empty `CODEX_HOME` was
-  not honored by this build: the run failed `401 Unauthorized: Missing bearer
-  or basic authentication in header`. `CODEX_API_KEY` under the same empty home
-  completed and echoed the marker.
-- With `OPENAI_API_KEY` removed, the host `CODEX_HOME` completed through its
-  ChatGPT subscription; `codex login status` reported `Logged in using ChatGPT`.
-  With an empty home plus `CODEX_API_KEY`, the API-key run completed. JSONL
-  completion records contain the marker and usage but no stable account id, so
-  the selected isolated home/key plus login-status preflight is the available
-  positive identity-axis evidence.
-- A deliberately invalid `CODEX_API_KEY` produces `401 Unauthorized`; the
-  existing classifier recognizes this as `auth`.
-- `-c` and `--profile` select configuration/model behavior, not a distinct
-  credential independently of `CODEX_HOME`.
+`ANTHROPIC_API_KEY` is per-process and beats the stored subscription login. With
+both present, the CLI warned:
 
-## Other registry adapters
+```text
+ANTHROPIC_API_KEY or another auth source is set and takes precedence over your claude.ai login
+```
 
-These CLIs were not installed on the probe host, so the mappings below remain
-unverified and must not be represented as live-proven:
+The deliberately invalid key then produced JSON with `api_error_status: 401`
+and `result: "Invalid API key · Fix external API key"`. oneharness classifies
+that as `auth`. An empty `CLAUDE_CONFIG_DIR` produced
+`"Not logged in · Please run /login"`; that also classifies as `auth`.
 
-| harness | mapped selectors | state/evidence |
-|---|---|---|
-| OpenCode | provider API-key env vars; XDG/config home and stored auth | Unverified: CLI unavailable |
-| Goose | provider API-key env vars plus `GOOSE_PROVIDER`/`GOOSE_MODEL`; config home | Unverified: CLI unavailable |
-| Qwen Code | `OPENAI_API_KEY`, optional `OPENAI_BASE_URL`; Qwen config home | Unverified: CLI unavailable |
-| Crush | provider API-key env vars; config home/stored auth | Unverified: CLI unavailable |
-| Copilot CLI | `COPILOT_GITHUB_TOKEN`; stored GitHub login | Unverified: CLI unavailable |
-| Cursor CLI | `CURSOR_API_KEY`; stored Cursor login | Unverified: CLI unavailable |
+The current [Claude environment reference](https://code.claude.com/docs/en/env-vars)
+also defines per-process `ANTHROPIC_AUTH_TOKEN` (Bearer header),
+`CLAUDE_CODE_OAUTH_TOKEN` (ahead of keychain credentials), and
+`CLAUDE_CODE_OAUTH_REFRESH_TOKEN` plus `CLAUDE_CODE_OAUTH_SCOPES`.
+`settings.json` may set these under `env`, and `apiKeyHelper` is another settings
+source; `--settings` selects a settings file for one invocation. These token
+levers were not exercised because no separate OAuth token was available. The
+installed CLI's `--bare` help says it ignores OAuth/keychain and accepts only
+`ANTHROPIC_API_KEY` or `apiKeyHelper` (plus third-party cloud credentials).
 
-Environment selectors are expected to be per-process. Stored-login files are
-global mutable state unless each child receives a distinct config/home
-directory. None of the unavailable adapters has completed-run identity evidence
-or a live-observed invalid-auth string yet.
+**Live proof and evidence.** The successful isolated-home probe used a
+pre-provisioned directory (the copy step is omitted because it handles a secret):
 
-## Design consequence
+```console
+$ CLAUDE_CONFIG_DIR=<isolated-claude-home> claude auth status
+{
+  "loggedIn": true,
+  "authMethod": "claude.ai",
+  "apiProvider": "firstParty",
+  "email": "[REDACTED]",
+  "orgId": "[REDACTED]",
+  "orgName": "[REDACTED]",
+  "subscriptionType": "max"
+}
+$ printf 'Reply exactly AUTH_PROBE_OK' |
+    CLAUDE_CONFIG_DIR=<isolated-claude-home> \
+    claude -p --input-format text --output-format json --model haiku --tools ''
+{"type":"result","is_error":false,"result":"AUTH_PROBE_OK","total_cost_usd":0.046732,"usage":{"input_tokens":10,"output_tokens":72}, ...}
+```
 
-Variants must only select credentials through the child environment: set a
-key, map a differently named parent variable to the canonical child variable,
-load a mode-0600 external env file, remove ambient auth variables, or select an
-already-prepared isolated config home. oneharness must never log in, rewrite a
-credential store, copy a secret into project config, or mutate its own parent
-environment.
+The status output is **pre-run auth-mode/identity evidence** tied to that
+directory. The completed result proves the same selected directory successfully
+served a real turn, but it contains no account identifier. Its nonzero
+`total_cost_usd` means cost is **not** a reliable API-key versus subscription
+discriminator in this version.
+
+The later first-class variant suite completed the exact-marker contract through
+two stored Max subscriptions and one API-key identity. Each subscription run
+combined its independently selected `CLAUDE_CONFIG_DIR`, `authMethod:
+"claude.ai"` preflight, an exact marker response, and one-hour cache creation.
+The API-key run used an empty config directory, an isolated
+`ANTHROPIC_API_KEY`, an exact marker response, and five-minute cache creation.
+These signals distinguish the identity axes without exposing an account
+identifier. Both subscription runs reported `ambient_api_key=present` and
+`child_api_key=masked`, live-proving that variant masking prevents ambient
+API-key precedence from hijacking subscription auth.
+
+The precedence probe explicitly retained the stored login while setting an
+invalid per-process key:
+
+```console
+$ printf 'Reply exactly AUTH_PROBE_OK' |
+    ANTHROPIC_API_KEY=<invalid-api-key> \
+    claude -p --input-format text --output-format json --model haiku --tools ''
+⚠ claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth source is set and takes precedence over your claude.ai login · Unset it to load your organization's connectors
+{"type":"result","is_error":true,"api_error_status":401,"result":"Invalid API key · Fix external API key", ...}
+```
+
+This completed failed turn is concrete evidence that the env key, rather than
+the stored subscription, was selected. The empty-home probe was:
+
+```console
+$ printf 'Reply exactly AUTH_PROBE_OK' |
+    CLAUDE_CONFIG_DIR=<empty-claude-home> \
+    claude -p --input-format text --output-format json --model haiku --tools ''
+{"type":"result","is_error":true,"api_error_status":null,"result":"Not logged in · Please run /login", ...}
+```
+
+## `codex`
+
+**Observed levers and precedence.** Credentials live in
+`$CODEX_HOME/auth.json` (default `~/.codex/auth.json`). `codex login`,
+`login --with-api-key`, `login --with-access-token`, and `logout` mutate that
+file. `CODEX_HOME` is per-process: a directory containing copied `auth.json` and
+`config.toml` reported `Logged in using ChatGPT` and completed a real call.
+Use a distinct, pre-provisioned home for each concurrent identity; never run
+login/logout concurrently against one home.
+
+In 0.145.0, an inline invalid `OPENAI_API_KEY` did **not** override the stored
+ChatGPT login: the run still completed. An empty `CODEX_HOME` also did not consume
+that environment variable automatically. A later live run established that
+`CODEX_API_KEY` is the direct per-process API-key selector: with an empty
+`CODEX_HOME`, it completed and echoed the marker while `OPENAI_API_KEY` alone
+under the same condition failed with `401 Unauthorized: Missing bearer or basic
+authentication in header`. oneharness therefore maps externally sourced OpenAI
+API-key material to `CODEX_API_KEY` for only the selected child.
+
+Piping a key to `CODEX_HOME=<isolated> codex login --with-api-key` also writes
+the selected home and makes subsequent runs use it, but that mutation is not
+needed for variants and must not happen during dispatch. `--profile` and `-c`
+select configuration, but no tested config key selected a different credential
+inside one home. The installed help only says `--profile` layers a named
+configuration profile; its storage shape/path was not probed, so this document
+makes no stronger claim. `CODEX_ACCESS_TOKEN` is not a direct run-time lever
+either; the CLI exposes `login --with-access-token`. No second ChatGPT account
+was available, so Codex's proven identity axis is ChatGPT subscription versus
+API key, not subscription A versus B.
+
+**Live proof and evidence.** The successful isolated-home probe used a
+pre-provisioned directory (again omitting the secret-handling copy step):
+
+```console
+$ CODEX_HOME=<isolated-codex-home> codex login status
+Logged in using ChatGPT
+$ printf 'Reply exactly AUTH_PROBE_OK' |
+    CODEX_HOME=<isolated-codex-home> \
+    codex --ask-for-approval never exec --json --sandbox read-only -
+{"type":"item.completed","item":{"type":"agent_message","text":"AUTH_PROBE_OK", ...}}
+{"type":"turn.completed","usage":{"input_tokens":24011,"cached_input_tokens":13056,"cache_write_input_tokens":0,"output_tokens":8,"reasoning_output_tokens":0}}
+```
+
+`login status` is **pre-run auth-mode evidence**, not evidence embedded in the
+turn. The completed event stream proves the selected home served the turn but
+has no account, plan, cost, or billing-mode field; therefore it cannot identify
+which ChatGPT account owned that home.
+
+The guarded, local-only variant phase later repeated that proof against the
+host login: `codex login status` reported `Logged in using ChatGPT`, API-key
+variables were masked, and the run returned the exact marker. A separate empty
+`CODEX_HOME` plus per-process `CODEX_API_KEY` run also returned the marker.
+Together the selected home/key and preflight status are the available positive
+subscription-versus-API identity evidence; completed JSONL alone cannot
+distinguish those billing modes.
+
+The environment-precedence probe retained the stored ChatGPT login and set an
+invalid API-key variable:
+
+```console
+$ printf 'Reply exactly AUTH_PROBE_OK' |
+    OPENAI_API_KEY=<invalid-api-key> \
+    codex --ask-for-approval never exec --json --sandbox read-only -
+{"type":"item.completed","item":{"type":"agent_message","text":"AUTH_PROBE_OK", ...}}
+{"type":"turn.completed","usage":{...}}
+```
+
+Success is the observed evidence that 0.145.0 did not select that env value over
+the stored ChatGPT credential.
+
+An empty-home probe failed with:
+
+```console
+$ printf 'Reply exactly AUTH_PROBE_OK' |
+    CODEX_HOME=<empty-codex-home> \
+    codex --ask-for-approval never exec --json --sandbox read-only -
+{"type":"error","message":"... 401 Unauthorized: Missing bearer or basic authentication in header ..."}
+{"type":"turn.failed","error":{"message":"... 401 Unauthorized: Missing bearer or basic authentication in header ..."}}
+```
+
+The invalid stored-API-key probe both selected the isolated home during login
+and then ran from it:
+
+```console
+$ printf '<invalid-api-key>' |
+    CODEX_HOME=<invalid-key-codex-home> codex login --with-api-key
+Reading API key from stdin...
+Successfully logged in
+$ printf 'Reply exactly AUTH_PROBE_OK' |
+    CODEX_HOME=<invalid-key-codex-home> \
+    codex --ask-for-approval never exec --json --sandbox read-only -
+{"type":"error","message":"... 401 Unauthorized: Incorrect API key provided: [REDACTED] ..."}
+{"type":"turn.failed","error":{"message":"... 401 Unauthorized: Incorrect API key provided: [REDACTED] ..."}}
+```
+
+Both classify as `auth`.
+
+A deliberately invalid direct `CODEX_API_KEY` also produced `401 Unauthorized`
+and is classified as `auth`, allowing fallback to the next variant without
+mutating a credential file.
+
+## `opencode`
+
+**Unverified:** not installed; no provider account/key was available. Official
+[CLI documentation](https://dev.opencode.ai/docs/cli/) says `opencode auth login`
+stores credentials in `~/.local/share/opencode/auth.json`. Provider API-key
+environment variables depend on the provider. The documented
+`OPENCODE_CONFIG_DIR` changes the config directory, but documentation does not
+say it relocates the data-directory `auth.json`; do not treat it as an identity
+selector without a live probe. Config files (`opencode.json[c]`) select provider
+and model, not necessarily credentials.
+
+Precedence between env keys and stored credentials, concurrent isolation,
+completed-run identity evidence, invalid-auth text, and oneharness
+classification remain unknown.
+
+## `goose`
+
+**Unverified:** not installed; no provider account/key was available. The
+official [environment reference](https://github.com/block/goose/blob/main/documentation/docs/guides/environment-variables.md)
+documents per-process `GOOSE_PROVIDER`, `GOOSE_MODEL`,
+`GOOSE_PROVIDER__API_KEY`, provider-specific API-key variables, and
+`GOOSE_PATH_ROOT` (root for data/config/state). `goose configure` stores provider
+configuration and credentials in the OS keyring, falling back to file storage.
+Provider/model choose the backend identity namespace; the key chooses the
+account.
+
+Use per-process key env for variants. An isolated `GOOSE_PATH_ROOT` is the
+documented candidate for stored identities; shared keyring/config mutation is
+unsafe concurrently. Precedence, completed-run evidence, exact invalid-auth
+text, and classification were not observed.
+
+## `qwen`
+
+**Unverified:** not installed; no Coding Plan or API-key account was available.
+The official [auth reference](https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/)
+documents `--openai-api-key` as highest priority, then process env, the first
+discovered `.env`, then `settings.json` `env`. Provider definitions select an
+`envKey`; common keys include `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+`GEMINI_API_KEY`, and `BAILIAN_CODING_PLAN_API_KEY`. `OPENAI_BASE_URL`,
+provider/model config, `security.auth.selectedType`, and `model.name` select the
+service/model. OAuth/Coding Plan login is interactive and stored under Qwen's
+user state.
+
+CLI/env keys are per-process. Project `.env`, user `~/.qwen/.env`,
+`~/.qwen/settings.json`, and interactive login are mutable shared state and
+unsafe account switches during concurrent runs. No documented home override was
+confirmed. Completed-run identity evidence, exact invalid-auth text, and
+classification remain unknown.
+
+## `crush`
+
+**Unverified:** not installed; no provider account/key was available. The
+registry installs `@charmland/crush`, but current public documentation did not
+provide a sufficiently authoritative, version-matched list of auth variables,
+credential paths, or precedence. Provider config is expected to choose provider,
+model, and credential source, but that is an inference and must not become a
+variant contract.
+
+All five details—levers, precedence, concurrency safety, completed-run evidence,
+and invalid-auth text/classification—require a live probe.
+
+## `copilot`
+
+**Unverified:** not installed; no GitHub/Copilot token was available. GitHub's
+[authentication reference](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/authenticate-copilot-cli)
+documents this precedence:
+`COPILOT_GITHUB_TOKEN` > `GH_TOKEN` > `GITHUB_TOKEN` > stored OAuth in the OS
+keychain (or plaintext `$COPILOT_HOME/config.json`) > `gh auth token`.
+`COPILOT_PROVIDER_API_KEY` plus provider base/model settings is BYOK and routes
+model requests regardless of GitHub login.
+
+Token/BYOK env and `COPILOT_HOME` are per-process; a shared OS-keychain login,
+`copilot login/logout`, plaintext config, and `gh` login are mutable global
+state. Exact completed-run account/plan evidence, invalid-auth output, and
+oneharness classification were not observed.
+
+## `cursor`
+
+**Unverified:** not installed; no Cursor account/key was available. Cursor's
+[authentication reference](https://docs.cursor.com/en/cli/reference/authentication)
+documents `CURSOR_API_KEY`, `--api-key`, and browser `cursor-agent login`, which
+stores credentials locally; `status` displays account and endpoint information.
+The CLI flag is the most explicit selector, but its precedence over env/stored
+login was not observed.
+
+The flag and env are per-process. Browser login/logout and its shared credential
+store are global mutable state; no documented home override was confirmed.
+Completed-run identity fields, exact invalid-auth output, and oneharness
+classification remain unknown.
+
+## Recommendation for oneharness variants
+
+The minimal variant execution surface is:
+
+- an explicit environment map (API/OAuth tokens and provider-specific keys);
+- a config/home-directory environment map (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
+  and verified equivalents);
+- extra argv (notably Cursor `--api-key` and Qwen's key flag);
+- `bin`, `model`, and `reasoning`, because provider wrappers and account
+  entitlements can differ.
+
+Before spawning, strip ambient auth variables not declared by the variant; an
+ambient key can silently outrank the requested stored login (observed for
+Claude, documented for Copilot and Qwen). Prefer ephemeral env/argv. For
+subscription identities, provision one immutable credential directory per
+variant and point each process at it.
+
+Unsafe for two concurrent variants: any login/logout/configure command targeting
+the same credential directory, Claude/Codex shared default homes, Copilot's
+shared keychain or `gh` fallback, Goose's shared keyring, Qwen shared
+settings/`.env`/OAuth state, Cursor's shared browser-login store, and OpenCode's
+shared data-directory `auth.json`. `OPENCODE_CONFIG_DIR` must not be offered as
+auth isolation until a live probe proves it also isolates the data directory.

@@ -11,7 +11,7 @@ use oneharness_core::io::detect::{self, BinOverrides};
 
 #[derive(JsonSchema, Serialize)]
 pub struct DetectInfo {
-    id: &'static str,
+    id: String,
     bin: String,
     available: bool,
     path: Option<String>,
@@ -33,25 +33,49 @@ pub fn run(args: &DetectArgs) -> Result<i32, OneharnessError> {
     // (detect has no --cwd).
     let project_start = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let loaded = config_io::load(args.config.as_deref(), args.no_config, &project_start)?;
-    let config_bins: std::collections::HashMap<String, String> = loaded
+    for id in args.harness.iter().chain(&args.exclude) {
+        if let Some((base, variant)) = id.split_once(':') {
+            if loaded.config.variant_for(id).is_none() {
+                return Err(OneharnessError::UnknownHarnessVariant {
+                    id: id.clone(),
+                    base: base.to_string(),
+                    variant: variant.to_string(),
+                });
+            }
+        }
+    }
+    let mut config_bins: std::collections::HashMap<String, String> = loaded
         .config
         .harness
         .iter()
         .filter_map(|(id, h)| h.bin.clone().map(|bin| (id.clone(), bin)))
         .collect();
+    for (base, harness) in &loaded.config.harness {
+        for name in harness.variant.keys() {
+            let id = format!("{base}:{name}");
+            if let Some(bin) = loaded.config.bin_for(&id) {
+                config_bins.insert(id, bin.to_string());
+            }
+        }
+    }
     let overrides = BinOverrides::parse(&args.bin)?.with_config_bins(config_bins);
 
     let detected: Vec<DetectInfo> = specs
         .iter()
-        .map(|spec| {
-            let resolved = detect::resolve(spec, &overrides);
+        .enumerate()
+        .map(|(index, spec)| {
+            let id = args
+                .harness
+                .get(index)
+                .map_or(spec.id.to_string(), Clone::clone);
+            let resolved = detect::resolve_named(spec, &id, &overrides);
             let version = if resolved.available {
                 detect::probe_version(&resolved.bin)
             } else {
                 None
             };
             DetectInfo {
-                id: spec.id,
+                id,
                 bin: resolved.bin,
                 available: resolved.available,
                 path: resolved.path.map(|p| p.display().to_string()),

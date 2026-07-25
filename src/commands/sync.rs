@@ -67,6 +67,43 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
     };
     let loaded = config_io::load(args.config.as_deref(), args.no_config, &project_dir)?;
     let cfg = &loaded.config;
+    let selected_variants: Vec<_> = args
+        .harness
+        .iter()
+        .filter_map(|id| id.split_once(':').map(|(base, name)| (id, base, name)))
+        .collect();
+    for (index, (first_id, base, first_name)) in selected_variants.iter().enumerate() {
+        let first =
+            cfg.variant_for(first_id)
+                .ok_or_else(|| OneharnessError::UnknownHarnessVariant {
+                    id: (*first_id).clone(),
+                    base: (*base).to_string(),
+                    variant: (*first_name).to_string(),
+                })?;
+        for (second_id, second_base, second_name) in selected_variants.iter().skip(index + 1) {
+            if base != second_base {
+                continue;
+            }
+            let second = cfg.variant_for(second_id).ok_or_else(|| {
+                OneharnessError::UnknownHarnessVariant {
+                    id: (*second_id).clone(),
+                    base: (*second_base).to_string(),
+                    variant: (*second_name).to_string(),
+                }
+            })?;
+            if first.allowed_tools != second.allowed_tools
+                || first.denied_tools != second.denied_tools
+                || first.hooks != second.hooks
+                || first.settings != second.settings
+            {
+                return Err(OneharnessError::VariantSyncConflict {
+                    base: (*base).to_string(),
+                    first: (*first_id).clone(),
+                    second: (*second_id).clone(),
+                });
+            }
+        }
+    }
 
     // Default selection: every harness (those with nothing to sync report
     // `skipped`, so the report always covers the full registry).
@@ -83,8 +120,9 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
     // under. Unused (but harmless) for a project sync.
     let global_dirs = hooks_io::GlobalDirs::from_env();
 
-    for spec in specs {
-        let plan = sync_domain::plan(cfg, spec).map_err(|message| {
+    for (index, spec) in specs.into_iter().enumerate() {
+        let selected_id = args.harness.get(index).map_or(spec.id, String::as_str);
+        let plan = sync_domain::plan_for(cfg, spec, selected_id).map_err(|message| {
             OneharnessError::HarnessConfigUnmergeable {
                 path: format!("[harness.{}]", spec.id),
                 message,

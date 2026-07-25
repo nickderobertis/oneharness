@@ -41,6 +41,78 @@ const EXIT_FAILURE: i32 = 1;
 /// issue #1115.
 const LARGE_INPUT_THRESHOLD: usize = 64 * 1024;
 
+fn variant_environment(
+    cfg: &oneharness_core::domain::config::FileConfig,
+    composed: &str,
+    project_start: &std::path::Path,
+) -> Result<Vec<(String, String)>, OneharnessError> {
+    let (base, _) = cfg.split_harness_id(composed);
+    let mut env: Vec<(String, String)> = cfg
+        .env
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    if let Some(harness) = cfg.harness.get(base) {
+        env.extend(
+            harness
+                .env
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
+    }
+    let Some(variant) = cfg.variant_for(composed) else {
+        return Ok(env);
+    };
+    if let Some(file) = &variant.env_file {
+        let path = {
+            let path = std::path::PathBuf::from(file);
+            if path.is_absolute() {
+                path
+            } else {
+                project_start.join(path)
+            }
+        };
+        let text =
+            std::fs::read_to_string(&path).map_err(|source| OneharnessError::VariantEnvFile {
+                path: path.display().to_string(),
+                source,
+            })?;
+        for (index, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=') else {
+                return Err(OneharnessError::VariantEnvFileLine {
+                    path: path.display().to_string(),
+                    line: index + 1,
+                });
+            };
+            if key.is_empty() {
+                return Err(OneharnessError::VariantEnvFileLine {
+                    path: path.display().to_string(),
+                    line: index + 1,
+                });
+            }
+            env.push((key.to_string(), value.to_string()));
+        }
+    }
+    env.extend(
+        variant
+            .env
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone())),
+    );
+    for (target, source) in &variant.env_from {
+        let value =
+            std::env::var(source).map_err(|_| OneharnessError::VariantEnvSourceMissing {
+                name: source.clone(),
+            })?;
+        env.push((target.clone(), value));
+    }
+    Ok(env)
+}
+
 /// Temp files holding off-argv prompt/system text for the duration of a run,
 /// removed on drop — so every early return (stream path, an I/O error, normal
 /// completion) cleans them up, like the mock hook's snapshot-and-restore. Writes
@@ -199,7 +271,28 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     } else {
         args.exclude.clone()
     };
+    for id in include.iter().chain(exclude.iter()) {
+        if let Some((base, variant)) = id.split_once(':') {
+            if cfg.variant_for(id).is_none() {
+                return Err(OneharnessError::UnknownHarnessVariant {
+                    id: id.clone(),
+                    base: base.to_string(),
+                    variant: variant.to_string(),
+                });
+            }
+        }
+    }
     let specs = select_specs(all, &include, &exclude)?;
+    let selected_ids: Vec<String> = if all {
+        specs.iter().map(|spec| spec.id.to_string()).collect()
+    } else {
+        let mut seen = BTreeSet::new();
+        include
+            .iter()
+            .filter(|id| seen.insert((*id).clone()))
+            .cloned()
+            .collect()
+    };
     // `--run-mode` (CLI beats config; default `parallel`). Fallback runs the
     // selected harnesses in priority order, stopping at the first that runs and
     // falling through only harnesses that cannot run at all. It is single-outcome
@@ -222,11 +315,6 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // In fallback the run order is the priority chain: the caller's `--harness` /
     // config order (registry order under `--all`), not the registry order
     // `select_specs` returns. Parallel keeps registry order.
-    let specs = if fallback_mode {
-        fallback_order(specs, &include)
-    } else {
-        specs
-    };
     // A batch (multi-prompt) run is single-harness by nature — a provider cache
     // prefix is per harness/model/tools — and is a fresh fan-out, not a session
     // continuation. Refuse both before anything spawns (loud usage errors).
@@ -290,6 +378,15 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         .iter()
         .filter_map(|(id, h)| h.bin.clone().map(|bin| (id.clone(), bin)))
         .collect();
+    let mut config_bins = config_bins;
+    for (base, harness) in &cfg.harness {
+        for name in harness.variant.keys() {
+            let id = format!("{base}:{name}");
+            if let Some(bin) = cfg.bin_for(&id) {
+                config_bins.insert(id, bin.to_string());
+            }
+        }
+    }
     for id in &args.mock_harness {
         if !specs.iter().any(|spec| spec.id == id) {
             return Err(OneharnessError::MockHarnessNotSelected { id: id.clone() });
@@ -357,30 +454,37 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     //    own resolved model (`model_for`) — the historical behavior.
     // In fallback mode `specs` is already in priority order, so this ordering is
     // the fallback chain.
-    let units: Vec<(&'static HarnessSpec, Option<String>, &str)> = if batch_run {
+    let units: Vec<(&'static HarnessSpec, String, Option<String>, &str)> = if batch_run {
         let m = explicit_models
             .as_ref()
             .and_then(|l| l.first().cloned())
             .or_else(|| cfg.model_for(specs[0].id).map(str::to_string));
         prompts
             .iter()
-            .map(|p| (specs[0], m.clone(), p.as_str()))
+            .map(|p| (specs[0], selected_ids[0].clone(), m.clone(), p.as_str()))
             .collect()
     } else if let Some(list) = &explicit_models {
         let mut units = Vec::with_capacity(specs.len() * list.len());
-        for spec in &specs {
+        for (spec, selected_id) in specs.iter().zip(&selected_ids) {
             for m in list {
-                units.push((*spec, Some(m.clone()), prompts[0].as_str()));
+                units.push((
+                    *spec,
+                    selected_id.clone(),
+                    Some(m.clone()),
+                    prompts[0].as_str(),
+                ));
             }
         }
         units
     } else {
         specs
             .iter()
-            .map(|s| {
+            .zip(&selected_ids)
+            .map(|(s, selected_id)| {
                 (
                     *s,
-                    cfg.model_for(s.id).map(str::to_string),
+                    selected_id.clone(),
+                    cfg.model_for(selected_id).map(str::to_string),
                     prompts[0].as_str(),
                 )
             })
@@ -398,12 +502,12 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // return path below). Never populated under --print-command (nothing spawns).
     let mut temp_files = TempPromptFiles::default();
 
-    for (spec, unit_model, unit_prompt) in &units {
+    for (spec, selected_id, unit_model, unit_prompt) in &units {
         let spec = *spec;
         // On a batch run each result records the prompt it ran (they differ);
         // on an ordinary run the single top-level `prompt` covers them all.
         let result_prompt = batch_run.then(|| unit_prompt.to_string());
-        let resolved = detect::resolve(spec, &overrides);
+        let resolved = detect::resolve_named(spec, selected_id, &overrides);
         // Explicit format (CLI or config) always wins (and was validated above
         // when a named session is in play). Otherwise events/streaming selects the
         // harness's transcript-bearing format; absent that, the named-session
@@ -457,7 +561,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         if let Some(value) = args
             .reasoning
             .as_deref()
-            .or_else(|| cfg.reasoning_for(spec.id))
+            .or_else(|| cfg.reasoning_for(selected_id))
         {
             let delivery = spec.reasoning.expect(
                 "validate_reasoning refused a reasoning value for a harness without delivery",
@@ -475,7 +579,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 extra.extend(delivery.args(value));
             }
         }
-        extra.extend(cfg.args_for(spec.id).iter().cloned());
+        extra.extend(cfg.args_for(selected_id).iter().cloned());
         extra.extend(args.passthrough.iter().cloned());
         if let Some(wiring) = &mock_wiring {
             extra.extend(wiring.extra_args_for(spec.id));
@@ -555,12 +659,16 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             if let Some(ms) = spec.mode(mode) {
                 job_env.extend(ms.env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
             }
-            job_env.extend(cfg.env_for(spec.id));
+            job_env.extend(variant_environment(cfg, selected_id, &project_start)?);
             job_env.extend(cli_env.iter().cloned());
+            let env_remove = cfg
+                .variant_for(selected_id)
+                .map_or_else(Vec::new, |variant| variant.unset_env.clone());
             jobs.push(Job {
                 argv: built.argv,
                 cwd: args.cwd.clone(),
                 env: job_env,
+                env_remove,
                 timeout: Duration::from_secs(timeout),
                 stdin: built.stdin,
             });
@@ -582,7 +690,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // planned command (nothing executes), so it falls through to the normal path.
     if args.stream && !args.print_command {
         let streamed_run_id = history_writer.as_ref().map(HistoryWriter::begin_run);
-        let (result, persisted_event_indexes) =
+        let (mut result, persisted_event_indexes) =
             match plan.into_iter().next().expect("stream: one unit") {
                 // The harness was unavailable/skipped — nothing to stream; emit only
                 // the terminal report line so the shape is still complete.
@@ -601,9 +709,13 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                     output_format,
                     prompt,
                     model,
-                    history_writer.as_ref().zip(streamed_run_id),
+                    history_writer
+                        .as_ref()
+                        .zip(streamed_run_id)
+                        .map(|(writer, run_id)| (writer, run_id, selected_ids[0].as_str())),
                 ),
             };
+        apply_result_identity(&mut result, &selected_ids[0]);
         if let (Some(writer), Some(run_id)) = (&history_writer, streamed_run_id) {
             if let Err(err) = writer.append_streamed(
                 run_id,
@@ -661,117 +773,127 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // never uses the wave scheduler. `--print-command` never executes, so it
     // always takes the parallel branch (which emits the planned rows).
     let mut forked = false;
-    let (results, fallback_report): (Vec<RunResult>, Option<FallbackReport>) = if fallback_mode
-        && !args.print_command
-    {
-        // Sequential fallback: run the priority chain until one harness runs.
-        // The workspace-restoring mock finish happens below, after every spawn
-        // this branch does is complete.
-        let (results, fb) = run_fallback(
-            plan,
-            &jobs,
-            &job_plans,
-            schema.as_ref(),
-            max_retries,
-            multi_model,
-        );
-        (results, Some(fb))
-    } else {
-        let max_parallel = args
-            .max_parallel
-            .or(cfg.max_parallel)
-            .unwrap_or(jobs.len().max(1));
-        // Fork-based `min-tokens`: when a batch's single harness can fork, the
-        // warm-up (prompt[0]) establishes a session and the fan-out branches
-        // forks of it, so each reuses the warmed cached prefix — the realizable
-        // token saving on these CLIs (a static --system is re-created per
-        // process, so plain warm-then-fan saves nothing). It needs the warm-up's
-        // *runtime* session id, so it cannot run under --print-command.
-        let fork_batch = batch_run
-            && batch_strategy == BatchStrategy::MinTokens
-            && specs[0].fork_reuses_cache
-            && !args.print_command
-            && !jobs.is_empty();
-        // `min-tokens` reduces tokens only when the harness has a *cache-reusing*
-        // fork (the warm-up writes the shared prefix, the forked fan-out reads
-        // it). When it does not — no fork at all, or a fork that re-sends the
-        // prefix cold, like OpenCode — `min-tokens` can only order the calls; say
-        // so rather than imply a saving the harness can't deliver.
-        if batch_run
-            && batch_strategy == BatchStrategy::MinTokens
-            && !specs[0].fork_reuses_cache
-            && !args.print_command
-        {
-            eprintln!(
+    let (mut results, mut fallback_report): (Vec<RunResult>, Option<FallbackReport>) =
+        if fallback_mode && !args.print_command {
+            // Sequential fallback: run the priority chain until one harness runs.
+            // The workspace-restoring mock finish happens below, after every spawn
+            // this branch does is complete.
+            let (results, fb) = run_fallback(
+                plan,
+                &jobs,
+                &job_plans,
+                schema.as_ref(),
+                max_retries,
+                multi_model,
+            );
+            (results, Some(fb))
+        } else {
+            let max_parallel = args
+                .max_parallel
+                .or(cfg.max_parallel)
+                .unwrap_or(jobs.len().max(1));
+            // Fork-based `min-tokens`: when a batch's single harness can fork, the
+            // warm-up (prompt[0]) establishes a session and the fan-out branches
+            // forks of it, so each reuses the warmed cached prefix — the realizable
+            // token saving on these CLIs (a static --system is re-created per
+            // process, so plain warm-then-fan saves nothing). It needs the warm-up's
+            // *runtime* session id, so it cannot run under --print-command.
+            let fork_batch = batch_run
+                && batch_strategy == BatchStrategy::MinTokens
+                && specs[0].fork_reuses_cache
+                && !args.print_command
+                && !jobs.is_empty();
+            // `min-tokens` reduces tokens only when the harness has a *cache-reusing*
+            // fork (the warm-up writes the shared prefix, the forked fan-out reads
+            // it). When it does not — no fork at all, or a fork that re-sends the
+            // prefix cold, like OpenCode — `min-tokens` can only order the calls; say
+            // so rather than imply a saving the harness can't deliver.
+            if batch_run
+                && batch_strategy == BatchStrategy::MinTokens
+                && !specs[0].fork_reuses_cache
+                && !args.print_command
+            {
+                eprintln!(
                     "oneharness: warning: `--batch-strategy min-tokens` cannot reduce tokens on `{}` \
                      (no cache-reusing fork available); it only orders the calls. Token savings need a \
                      harness whose fork reuses the prompt cache (see `fork_reuses_cache` in \
                      `oneharness list`).",
                     specs[0].id
                 );
-        }
-        let outcomes = if fork_batch {
-            let o = run_fork_batch(
-                &mut jobs,
-                &mut job_plans,
-                schema.as_ref(),
-                max_retries,
-                max_parallel,
-            );
-            // The fan-out actually forked iff the warm-up exposed a session to
-            // branch (run_fork_batch sets the fan-out plans' `resume` only then).
-            forked = job_plans.len() > 1 && job_plans[1].resume.is_some();
-            o
-        } else {
-            let waves = if batch_run {
-                batch::waves(batch_strategy, jobs.len())
-            } else if jobs.is_empty() {
-                Vec::new()
+            }
+            let outcomes = if fork_batch {
+                let o = run_fork_batch(
+                    &mut jobs,
+                    &mut job_plans,
+                    schema.as_ref(),
+                    max_retries,
+                    max_parallel,
+                );
+                // The fan-out actually forked iff the warm-up exposed a session to
+                // branch (run_fork_batch sets the fan-out plans' `resume` only then).
+                forked = job_plans.len() > 1 && job_plans[1].resume.is_some();
+                o
             } else {
-                vec![(0..jobs.len()).collect()]
+                let waves = if batch_run {
+                    batch::waves(batch_strategy, jobs.len())
+                } else if jobs.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![(0..jobs.len()).collect()]
+                };
+                run_in_waves(
+                    &jobs,
+                    &job_plans,
+                    schema.as_ref(),
+                    max_retries,
+                    max_parallel,
+                    &waves,
+                )
             };
-            run_in_waves(
-                &jobs,
-                &job_plans,
-                schema.as_ref(),
-                max_retries,
-                max_parallel,
-                &waves,
-            )
-        };
 
-        let results: Vec<RunResult> = plan
-            .into_iter()
-            .map(|entry| match entry {
-                Plan::Ready(result) => *result,
-                Plan::Pending {
-                    spec,
-                    bin,
-                    output_format,
-                    job_index,
-                    prompt,
-                    model,
-                } => {
-                    let outcome = &outcomes[job_index];
-                    // The argv actually run (fork-batch rewrites the fan-out jobs
-                    // to resume+fork the warmed session, so read it back).
-                    let command = jobs[job_index].argv.clone();
-                    executed_result(
+            let results: Vec<RunResult> = plan
+                .into_iter()
+                .map(|entry| match entry {
+                    Plan::Ready(result) => *result,
+                    Plan::Pending {
                         spec,
                         bin,
-                        command,
                         output_format,
-                        &outcome.capture,
-                        schema.as_ref(),
-                        outcome.attempts,
+                        job_index,
                         prompt,
                         model,
-                    )
-                }
-            })
-            .collect();
-        (results, None)
-    };
+                    } => {
+                        let outcome = &outcomes[job_index];
+                        // The argv actually run (fork-batch rewrites the fan-out jobs
+                        // to resume+fork the warmed session, so read it back).
+                        let command = jobs[job_index].argv.clone();
+                        executed_result(
+                            spec,
+                            bin,
+                            command,
+                            output_format,
+                            &outcome.capture,
+                            schema.as_ref(),
+                            outcome.attempts,
+                            prompt,
+                            model,
+                        )
+                    }
+                })
+                .collect();
+            (results, None)
+        };
+    for (result, (_, selected_id, _, _)) in results.iter_mut().zip(&units) {
+        apply_result_identity(result, selected_id);
+    }
+    if let Some(report) = fallback_report.as_mut() {
+        for (fallthrough, result) in report.fell_through.iter_mut().zip(&results) {
+            fallthrough.harness = result.harness_id.clone();
+        }
+        if report.ran.is_some() {
+            report.ran = results.last().map(|result| result.harness_id.clone());
+        }
+    }
 
     // Every job is done (or nothing ran under --print-command, where mock
     // wiring is refused by clap): put the workspace back before anything else
@@ -862,6 +984,13 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         }
     }
     Ok(exit)
+}
+
+fn apply_result_identity(result: &mut RunResult, composed: &str) {
+    result.harness_id = composed.to_string();
+    result.variant = composed
+        .split_once(':')
+        .map(|(_, variant)| variant.to_string());
 }
 
 /// Assemble the top-level [`RunReport`] from the finished results and the shared
@@ -1426,7 +1555,11 @@ fn stream_one_harness(
     output_format: OutputFormat,
     prompt: Option<String>,
     model: Option<String>,
-    history: Option<(&HistoryWriter, oneharness_core::domain::history::HistoryId)>,
+    history: Option<(
+        &HistoryWriter,
+        oneharness_core::domain::history::HistoryId,
+        &str,
+    )>,
 ) -> (RunResult, BTreeSet<usize>) {
     use oneharness_core::domain::report::RunStreamEnvelope;
     use oneharness_core::io::runner::StreamStep;
@@ -1446,21 +1579,21 @@ fn stream_one_harness(
         next_index += evs.len();
         let mut out = std::io::stdout().lock();
         for ev in &evs {
-            if let Some((writer, run_id)) = history {
-                match writer.append_event_tracked(run_id, spec.id, ev.clone()) {
+            if let Some((writer, run_id, harness_id)) = history {
+                match writer.append_event_tracked(run_id, harness_id, ev.clone()) {
                     Ok(outcome) => {
                         persisted_event_indexes.insert(ev.index);
                         if let Some(err) = outcome.index_error {
                             eprintln!(
                                 "oneharness: warning: could not index history event for `{}`: {err}",
-                                spec.id
+                                harness_id
                             );
                         }
                     }
                     Err(err) => {
                         eprintln!(
                             "oneharness: warning: could not write history event for `{}`: {err}",
-                            spec.id
+                            harness_id
                         );
                     }
                 }
@@ -1718,29 +1851,6 @@ fn validate_multi_model(batch_run: bool, args: &RunArgs) -> Result<(), Oneharnes
     Ok(())
 }
 
-/// Order the selected specs into the fallback priority chain. When the caller
-/// named harnesses (`--harness` / config `harnesses`), that order *is* the
-/// priority; under `--all` (no explicit list) the registry order `select_specs`
-/// already returns is the priority. Every id in `include` is present in `specs`
-/// (both are validated the same way) and duplicates collapse to first mention.
-fn fallback_order(
-    specs: Vec<&'static HarnessSpec>,
-    include: &[String],
-) -> Vec<&'static HarnessSpec> {
-    if include.is_empty() {
-        return specs;
-    }
-    let mut ordered: Vec<&'static HarnessSpec> = Vec::with_capacity(specs.len());
-    for id in include {
-        if let Some(spec) = specs.iter().find(|s| s.id == id.as_str()) {
-            if !ordered.iter().any(|o| o.id == spec.id) {
-                ordered.push(*spec);
-            }
-        }
-    }
-    ordered
-}
-
 /// Run a single harness job under the structured-output retry loop — the
 /// one-harness analogue of a [`run_in_waves`] wave of size one — returning its
 /// outcome. Used by the fallback driver, which spawns harnesses one at a time.
@@ -1879,6 +1989,8 @@ fn planned_result(
 ) -> RunResult {
     RunResult {
         harness: spec.id.to_string(),
+        variant: None,
+        harness_id: spec.id.to_string(),
         bin: bin.to_string(),
         available,
         status: Status::Planned,
@@ -1918,6 +2030,8 @@ fn skipped_result(
 ) -> RunResult {
     RunResult {
         harness: spec.id.to_string(),
+        variant: None,
+        harness_id: spec.id.to_string(),
         bin: bin.to_string(),
         available: false,
         status: Status::Skipped,
@@ -2074,6 +2188,8 @@ fn executed_result(
     };
     RunResult {
         harness: spec.id.to_string(),
+        variant: None,
+        harness_id: spec.id.to_string(),
         bin,
         available: true,
         status: capture.status,
@@ -2641,6 +2757,8 @@ mod tests {
     fn result(status: Status, available: bool) -> RunResult {
         RunResult {
             harness: "x".into(),
+            variant: None,
+            harness_id: "x".into(),
             bin: "x".into(),
             available,
             status,

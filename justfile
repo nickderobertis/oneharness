@@ -261,6 +261,9 @@ live-cursor: _live-install
 live-schema: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-schema.sh
 
+live-variants: _live-install
+    ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-variants.sh
+
 # Run every per-harness live check plus the per-feature ones; skips count as
 # passes, only real failures fail.
 live-all: _live-install
@@ -268,7 +271,7 @@ live-all: _live-install
     set -uo pipefail
     export ONEHARNESS_BIN="{{ONEHARNESS_BIN}}"
     fails=0
-    for h in claude codex opencode goose qwen crush copilot cursor schema; do
+    for h in claude codex opencode goose qwen crush copilot cursor schema variants; do
         printf '\n=================== live: %s ===================\n' "$h"
         bash "scripts/e2e-$h.sh" || fails=$((fails + 1))
     done

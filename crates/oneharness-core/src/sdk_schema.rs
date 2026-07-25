@@ -135,7 +135,7 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
             };
             if properties.contains_key("run_id") && properties.contains_key("event") {
                 object["properties"]["schema_version"] =
-                    serde_json::json!({"const": "1.0", "type": "string"});
+                    serde_json::json!({"enum": ["1.0", "1.1"], "type": "string"});
                 return;
             }
             if properties.contains_key("history_id")
@@ -146,7 +146,7 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                 let base = serde_json::Value::Object(object.clone());
                 let mut measured = base.clone();
                 measured["properties"]["schema_version"] =
-                    serde_json::json!({"const": "1.0", "type": "string"});
+                    serde_json::json!({"enum": ["1.0", "1.1"], "type": "string"});
                 for field in ["started_at", "duration_ms", "model_ms", "tool_ms"] {
                     let required = measured["required"].as_array_mut().expect("required array");
                     if !required.iter().any(|value| value.as_str() == Some(field)) {
@@ -169,7 +169,7 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                 });
                 let mut unavailable = base;
                 unavailable["properties"]["schema_version"] =
-                    serde_json::json!({"const": "1.0", "type": "string"});
+                    serde_json::json!({"enum": ["1.0", "1.1"], "type": "string"});
                 unavailable["properties"]["finished_at"] = serde_json::json!({"type": "null"});
                 for field in [
                     "started_at",
@@ -226,7 +226,7 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                 let base = serde_json::Value::Object(object.clone());
                 let mut current = base.clone();
                 current["properties"]["schema_version"] =
-                    serde_json::json!({"const": "1.0", "type": "string"});
+                    serde_json::json!({"enum": ["1.0", "1.1"], "type": "string"});
                 let required = current["required"]
                     .as_array_mut()
                     .expect("history required array");
@@ -293,7 +293,7 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                 });
                 let mut unavailable = base.clone();
                 unavailable["properties"]["schema_version"] =
-                    serde_json::json!({"const": "1.0", "type": "string"});
+                    serde_json::json!({"enum": ["1.0", "1.1"], "type": "string"});
                 unavailable["properties"]["finished_at"] = serde_json::json!({"type": "null"});
                 if let Some(required) = unavailable["required"].as_array_mut() {
                     required.retain(|value| {

@@ -1,0 +1,55 @@
+name: E2E (Harness variants)
+
+on:
+  pull_request:
+    paths:
+      - src/**
+      - crates/**
+      - scripts/e2e-variants.sh
+      - .github/workflows/e2e-variants.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-variants-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live:
+    if: >-
+      github.repository == 'nickderobertis/oneharness' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    env:
+      OH_E2E_NO_SKIP: 1
+      OH_E2E_VARIANTS_API_ONLY: 1
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify API identities
+        run: |
+          [ -n "${ANTHROPIC_API_KEY:-}" ] || { echo "::error::ANTHROPIC_API_KEY is missing"; exit 1; }
+          [ -n "${OPENAI_API_KEY:-}" ] || { echo "::error::OPENAI_API_KEY is missing"; exit 1; }
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - name: Install real CLIs
+        run: npm install -g @anthropic-ai/claude-code @openai/codex
+      - name: Live API variants and same-harness fallback
+        run: just live-variants

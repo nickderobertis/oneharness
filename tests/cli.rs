@@ -249,7 +249,7 @@ fn list_describes_every_harness() {
     let output = run(&["list"], &[]);
     assert!(output.status.success());
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.1");
+    assert_eq!(value["schema_version"], "0.2");
     let ids: Vec<&str> = value["harnesses"]
         .as_array()
         .unwrap()
@@ -2543,7 +2543,7 @@ fn codex_usage_and_known_model_cost_flow_into_history_while_unknown_cost_is_omit
         assert_eq!(result["usage"]["output_tokens"], 100);
         assert_eq!(result["usage"]["cost_usd"].is_number(), expect_cost);
         let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-        assert_eq!(record["schema_version"], "1.0");
+        assert_eq!(record["schema_version"], "1.1");
         assert_eq!(record["usage"]["cost_usd"].is_number(), expect_cost);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3613,6 +3613,7 @@ fn windows_streaming_stop_terminates_native_descendant() {
                 "native stream stderr\n".to_string(),
             ),
         ],
+        env_remove: Vec::new(),
         timeout: std::time::Duration::from_secs(10),
         stdin: None,
     };
@@ -4106,6 +4107,214 @@ fn config_env_reaches_the_child_and_explicit_env_wins() {
         value["results"][0]["stdout"],
         "ONEHARNESS_TEST_VAR=from-cli"
     );
+}
+
+#[test]
+fn variants_spawn_concurrently_with_isolated_environment_and_identity() {
+    let bin = mock_bin().display().to_string().replace('\\', "\\\\");
+    let fx = ConfigFixture::new(
+        "variant-env",
+        &format!(
+            r#"
+harnesses = ["claude-code:masked", "claude-code:file", "claude-code:sourced"]
+max_parallel = 2
+[harness.claude-code.variant.masked]
+bin = "{bin}"
+unset_env = ["ANTHROPIC_API_KEY"]
+[harness.claude-code.variant.sourced]
+bin = "{bin}"
+[harness.claude-code.variant.sourced.env_from]
+ANTHROPIC_API_KEY = "ANTHROPIC_API_KEY_WORK"
+[harness.claude-code.variant.file]
+bin = "{bin}"
+env_file = "variant.env"
+"#
+        ),
+        "",
+    );
+    std::fs::write(
+        std::path::Path::new(&fx.cwd()).join("variant.env"),
+        "ANTHROPIC_API_KEY=file-only\n",
+    )
+    .unwrap();
+    let history_dir = std::path::Path::new(&fx.cwd()).join("history");
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--history",
+            "--history-dir",
+            &history_dir.display().to_string(),
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[
+            ("MOCK_ECHO_ENV", "ANTHROPIC_API_KEY"),
+            ("ANTHROPIC_API_KEY", "ambient-must-not-leak"),
+            ("ANTHROPIC_API_KEY_WORK", "work-only"),
+        ],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["harness"], "claude-code");
+    assert_eq!(value["results"][0]["variant"], "masked");
+    assert_eq!(value["results"][0]["harness_id"], "claude-code:masked");
+    assert_eq!(value["results"][0]["stdout"], "ANTHROPIC_API_KEY=");
+    assert_eq!(value["results"][1]["variant"], "file");
+    assert_eq!(value["results"][1]["stdout"], "ANTHROPIC_API_KEY=file-only");
+    assert_eq!(value["results"][2]["variant"], "sourced");
+    assert_eq!(value["results"][2]["stdout"], "ANTHROPIC_API_KEY=work-only");
+    let records: Vec<Value> = std::fs::read_to_string(value["history_file"].as_str().unwrap())
+        .unwrap()
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .filter(|line: &Value| line["type"] == "run")
+        .collect();
+    assert_eq!(records[0]["variant"], "masked");
+    assert_eq!(records[1]["harness_id"], "claude-code:file");
+    let config = json_stdout(&run_with_config(
+        &["config", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    ));
+    assert_eq!(
+        config["harness"]["claude-code"]["variant"]["file"]["env_file"]["value"],
+        "variant.env"
+    );
+    let listed = json_stdout(&run_with_config(
+        &["list", "--compact"],
+        &[],
+        &std::path::Path::new(&fx.cwd()).join("oneharness.toml"),
+    ));
+    let claude = listed["harnesses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == "claude-code")
+        .unwrap();
+    assert_eq!(claude["variants"].as_array().unwrap().len(), 3);
+
+    let history = json_stdout(&run_with_config(
+        &[
+            "history",
+            "list",
+            "--all-projects",
+            "--history-dir",
+            &history_dir.display().to_string(),
+            "--variant",
+            "file",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    ));
+    assert_eq!(history.as_array().unwrap().len(), 1);
+    assert_eq!(history[0]["harnesses"][1], "claude-code:file");
+
+    let detected = json_stdout(&run_with_config(
+        &["detect", "--harness", "claude-code:file", "--compact"],
+        &[("MOCK_STDOUT", "mock-harness variant")],
+        &std::path::Path::new(&fx.cwd()).join("oneharness.toml"),
+    ));
+    assert_eq!(detected["detected"][0]["id"], "claude-code:file");
+    assert_eq!(detected["detected"][0]["available"], true);
+}
+
+#[test]
+fn unknown_and_malformed_variants_are_usage_errors() {
+    let fx = ConfigFixture::new(
+        "variant-errors",
+        "[harness.claude-code.variant.work]\nmodel = \"sonnet\"\n",
+        "",
+    );
+    for id in ["claude-code:missing", "claude-code:-bad"] {
+        let output = run_with_config(
+            &["run", "--harness", id, "--prompt", "hi", "--cwd", &fx.cwd()],
+            &[],
+            &fx.user_config(),
+        );
+        assert_eq!(output.status.code(), Some(2), "{id}");
+    }
+}
+
+#[test]
+fn fallback_treats_same_harness_variants_as_distinct_auth_candidates() {
+    let bin = mock_bin().display().to_string().replace('\\', "\\\\");
+    let fx = ConfigFixture::new(
+        "variant-fallback",
+        &format!(
+            r#"
+harnesses = ["claude-code:bad", "claude-code:good"]
+run_mode = "fallback"
+[harness.claude-code.variant.bad]
+bin = "{bin}"
+[harness.claude-code.variant.bad.env]
+MOCK_STDERR = "401 Unauthorized: invalid API key"
+MOCK_EXIT = "1"
+[harness.claude-code.variant.good]
+bin = "{bin}"
+[harness.claude-code.variant.good.env]
+MOCK_STDOUT = "{{\"type\":\"result\",\"result\":\"served-by-good\"}}"
+"#
+        ),
+        "",
+    );
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["harness_id"], "claude-code:bad");
+    assert_eq!(value["results"][0]["failure_kind"], "auth");
+    assert_eq!(value["results"][1]["harness_id"], "claude-code:good");
+    assert_eq!(value["results"][1]["text"], "served-by-good");
+    assert_eq!(value["fallback"]["ran"], "claude-code:good");
+    assert_eq!(
+        value["fallback"]["fell_through"][0]["harness"],
+        "claude-code:bad"
+    );
+}
+
+#[test]
+fn sync_rejects_conflicting_variants_sharing_one_native_config() {
+    let fx = ConfigFixture::new(
+        "variant-sync-conflict",
+        r#"
+[harness.claude-code.variant.work]
+allowed_tools = ["Read"]
+[harness.claude-code.variant.personal]
+allowed_tools = ["Bash(git:*)"]
+"#,
+        "",
+    );
+    let output = run_with_config(
+        &[
+            "sync",
+            "--harness",
+            "claude-code:work",
+            "--harness",
+            "claude-code:personal",
+            "--cwd",
+            &fx.cwd(),
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("conflicting sync settings"));
 }
 
 #[test]
@@ -4910,7 +5119,7 @@ fn config_command_shows_values_with_sources() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.1");
+    assert_eq!(value["schema_version"], "0.2");
     assert_eq!(value["config_files"].as_array().unwrap().len(), 2);
 
     // The project file wins for model and is named as the source...
@@ -8063,7 +8272,7 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
     let report = json_stdout(&unsupported);
     assert_eq!(report["results"][0]["status"], "ok");
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-    assert_eq!(record["schema_version"], "1.0");
+    assert_eq!(record["schema_version"], "1.1");
     for field in [
         "started_at",
         "model_ms",
@@ -8112,7 +8321,7 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
         let report = json_stdout(&output);
         assert_eq!(report["results"][0]["status"], "ok", "{id}");
         let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-        assert_eq!(record["schema_version"], "1.0", "{id}");
+        assert_eq!(record["schema_version"], "1.1", "{id}");
         assert!(record.get("model_ms").is_none(), "{id}");
         assert!(record.get("tool_ms").is_none(), "{id}");
         assert!(record.get("time_to_first_token_ms").is_none(), "{id}");
@@ -8210,7 +8419,7 @@ fn history_accepts_each_advertised_provider_trace_shape() {
         );
         let report = json_stdout(&output);
         let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-        assert_eq!(record["schema_version"], "1.0", "{id}");
+        assert_eq!(record["schema_version"], "1.1", "{id}");
         if matches!(id, "codex" | "opencode") {
             assert_eq!(record["usage"]["input_tokens"], 7, "{id}");
             assert_eq!(record["usage"]["output_tokens"], 2, "{id}");
@@ -8296,7 +8505,7 @@ fn history_preserves_format_contracts_and_composes_with_resume() {
     let report = json_stdout(&resumed);
     assert_eq!(report["results"][0]["text"], "x");
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-    assert_eq!(record["schema_version"], "1.0");
+    assert_eq!(record["schema_version"], "1.1");
 
     let _ = std::fs::remove_file(schema);
     let _ = std::fs::remove_dir_all(explicit_dir);
@@ -8381,7 +8590,7 @@ fn history_measures_overlapping_tool_intervals_from_provider_events() {
     );
     let report = json_stdout(&output);
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-    assert_eq!(record["schema_version"], "1.0");
+    assert_eq!(record["schema_version"], "1.1");
     assert!(record["time_to_first_token_ms"].as_u64().is_some());
     assert!(record["time_to_first_token_ms"].as_u64().unwrap() > 0);
     let calls = record["events"]
@@ -8665,7 +8874,7 @@ fn history_measures_codex_file_change_with_start_and_completion() {
     let report = json_stdout(&output);
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
     // Complete v1.0 timing telemetry was derived (not left absent).
-    assert_eq!(record["schema_version"], "1.0");
+    assert_eq!(record["schema_version"], "1.1");
     assert!(record["started_at"].is_string());
     assert!(record["model_ms"].is_u64());
     assert!(record["tool_ms"].is_u64());
@@ -8715,7 +8924,7 @@ fn history_preserves_an_unfinished_tool_interval_without_fabricating_an_end() {
     assert!(output.status.success());
     let report = json_stdout(&output);
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-    assert_eq!(record["schema_version"], "1.0");
+    assert_eq!(record["schema_version"], "1.1");
     let call = record["events"]
         .as_array()
         .unwrap()
@@ -9394,6 +9603,64 @@ fn history_records_a_streamed_run() {
 }
 
 #[test]
+fn streamed_variant_history_events_keep_the_composed_identity() {
+    let bin = mock_bin().display().to_string().replace('\\', "\\\\");
+    let fx = ConfigFixture::new(
+        "stream-variant-history",
+        &format!("history = true\n[harness.opencode.variant.work]\nbin = \"{bin}\"\n"),
+        "",
+    );
+    let dir = hist_dir("stream-variant");
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "opencode:work",
+            "--prompt",
+            "stream identity",
+            "--stream",
+            "--history-dir",
+            &dir.display().to_string(),
+            "--cwd",
+            &fx.cwd(),
+            "--bypass",
+        ],
+        &[(
+            "MOCK_STDOUT",
+            "{\"type\":\"tool_use\",\"part\":{\"type\":\"tool\",\"tool\":\"bash\",\"state\":{\"status\":\"completed\",\"input\":{\"command\":\"echo hi\"},\"output\":\"hi\"}}}\n",
+        )],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelopes: Vec<Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        envelopes.last().unwrap()["report"]["results"][0]["harness_id"],
+        "opencode:work"
+    );
+    let history_file = envelopes.last().unwrap()["report"]["history_file"]
+        .as_str()
+        .unwrap();
+    let event = std::fs::read_to_string(history_file)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|line| line["type"] == "event")
+        .unwrap();
+    assert_eq!(event["harness"], "opencode");
+    assert_eq!(event["variant"], "work");
+    assert_eq!(event["harness_id"], "opencode:work");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn streamed_history_falls_back_to_events_only_extractable_at_completion() {
     let dir = hist_dir("stream-completion-events");
     let ds = dir.display().to_string();
@@ -9767,7 +10034,7 @@ fn history_labels_layer_cli_over_environment_over_config_and_validate() {
     let record = first_history_run(Path::new(&path));
     // History requests the telemetry trace even though the user selected compact
     // report output, so ordinary new writes always use the current contract.
-    assert_eq!(record["schema_version"], "1.0");
+    assert_eq!(record["schema_version"], "1.1");
     assert!(record["started_at"].is_string());
     assert_eq!(record["labels"]["graph"], "cli");
     for key in ["user", "project", "env", "cli"] {

@@ -30,7 +30,8 @@ use crate::domain::signals::{FailureKind, Usage};
 /// Bumped when the history record shape changes in a way a consumer must notice.
 /// Independent of [`crate::domain::report::SCHEMA_VERSION`] — the history file and
 /// the run report are separate contracts and version on their own cadence.
-pub const SCHEMA_VERSION: &str = "1.0";
+pub const SCHEMA_VERSION: &str = "1.1";
+const PREVIOUS_EVENT_SCHEMA_VERSION: &str = "1.0";
 
 /// The legacy record contract accepted by the migration reader.
 pub const LEGACY_SCHEMA_VERSION: &str = "0.1";
@@ -90,12 +91,19 @@ pub struct HistoryEventLine {
     pub schema_version: String,
     pub run_id: HistoryId,
     pub harness: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_id: Option<String>,
     pub event: ActionEvent,
 }
 
 impl HistoryEventLine {
     pub(crate) fn valid(&self) -> bool {
-        self.schema_version == SCHEMA_VERSION
+        matches!(
+            self.schema_version.as_str(),
+            SCHEMA_VERSION | PREVIOUS_EVENT_SCHEMA_VERSION
+        )
     }
 }
 
@@ -112,6 +120,10 @@ pub struct HistoryRunRecord {
     pub project: String,
     pub timestamp: String,
     pub harness: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_id: Option<String>,
     pub model: Option<String>,
     pub prompt: String,
     pub permission_mode: PermissionMode,
@@ -136,7 +148,10 @@ pub struct HistoryRunRecord {
 
 impl HistoryRunRecord {
     pub(crate) fn valid(&self) -> bool {
-        if self.schema_version != SCHEMA_VERSION {
+        if !matches!(
+            self.schema_version.as_str(),
+            SCHEMA_VERSION | PREVIOUS_EVENT_SCHEMA_VERSION
+        ) {
             return false;
         }
         match (
@@ -170,6 +185,8 @@ impl HistoryRunRecord {
             project: record.project.clone(),
             timestamp: record.timestamp.clone(),
             harness: record.harness.clone(),
+            variant: record.variant.clone(),
+            harness_id: Some(record.harness_id.clone()),
             model: record.model.clone(),
             prompt: record.prompt.clone(),
             permission_mode: record.permission_mode,
@@ -191,6 +208,10 @@ impl HistoryRunRecord {
 
     /// Rebuild the stable per-run presentation object from event-sourced lines.
     pub fn materialize(self, events: Vec<ActionEvent>) -> HistoryRecord {
+        let harness_id = self
+            .harness_id
+            .clone()
+            .unwrap_or_else(|| self.harness.clone());
         HistoryRecord {
             schema_version: SCHEMA_VERSION.to_string(),
             history_id: self.history_id,
@@ -200,6 +221,8 @@ impl HistoryRunRecord {
             project: self.project,
             timestamp: self.timestamp,
             harness: self.harness,
+            variant: self.variant,
+            harness_id,
             model: self.model,
             prompt: self.prompt,
             permission_mode: self.permission_mode,
@@ -504,6 +527,9 @@ pub struct HistoryRecord {
     pub timestamp: String,
     /// Canonical harness id (e.g. `claude-code`).
     pub harness: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    pub harness_id: String,
     /// The effective top-level model for the run, if any.
     pub model: Option<String>,
     /// The prompt this harness run received (its own, on a batch run; else the
@@ -604,6 +630,8 @@ impl HistoryRecord {
             project: project.to_string(),
             timestamp: timestamp.clone(),
             harness: r.harness.clone(),
+            variant: r.variant.clone(),
+            harness_id: r.harness_id.clone(),
             model: model.map(str::to_string),
             prompt: r.prompt.clone().unwrap_or_else(|| run_prompt.to_string()),
             permission_mode: mode,
@@ -714,7 +742,10 @@ impl HistoryRecord {
     /// Deserialize the materialized view of a current event-sourced run.
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
         let wire: HistoryRecordWire = serde_json::from_value(value)?;
-        if wire.schema_version != SCHEMA_VERSION {
+        if !matches!(
+            wire.schema_version.as_str(),
+            SCHEMA_VERSION | PREVIOUS_EVENT_SCHEMA_VERSION
+        ) {
             return Err(serde_json::Error::io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
@@ -747,7 +778,9 @@ impl HistoryRecord {
             labels: wire.labels,
             project: wire.project,
             timestamp: wire.timestamp.clone(),
-            harness: wire.harness,
+            harness: wire.harness.clone(),
+            variant: wire.variant,
+            harness_id: wire.harness_id.unwrap_or_else(|| wire.harness.clone()),
             model: wire.model,
             prompt: wire.prompt,
             permission_mode: wire.permission_mode,
@@ -815,6 +848,10 @@ struct HistoryRecordWire {
     project: String,
     timestamp: String,
     harness: String,
+    #[serde(default)]
+    variant: Option<String>,
+    #[serde(default)]
+    harness_id: Option<String>,
     model: Option<String>,
     prompt: String,
     permission_mode: PermissionMode,
@@ -1094,6 +1131,8 @@ mod tests {
     fn result() -> RunResult {
         RunResult {
             harness: "claude-code".to_string(),
+            variant: None,
+            harness_id: "claude-code".to_string(),
             bin: "claude".to_string(),
             available: true,
             status: Status::Ok,

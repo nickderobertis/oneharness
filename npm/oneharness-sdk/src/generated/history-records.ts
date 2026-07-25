@@ -63,6 +63,7 @@ export type HistoryRecord =
        * Canonical harness id (e.g. `claude-code`).
        */
       harness: string;
+      harness_id: string;
       /**
        * Globally unique, time-ordered record id. This is also the cursor accepted
        * by `history watch --after` and the exact id accepted by history lookup.
@@ -93,7 +94,7 @@ export type HistoryRecord =
        * run's single prompt).
        */
       prompt: string;
-      schema_version: "1.0";
+      schema_version: "1.0" | "1.1";
       /**
        * The oneharness session id this run belongs to (the history file's stem).
        */
@@ -119,6 +120,7 @@ export type HistoryRecord =
       timestamp: string;
       tool_ms: number;
       usage: Usage;
+      variant?: string | null | undefined;
       [k: string]: unknown;
     }
   | {
@@ -153,6 +155,7 @@ export type HistoryRecord =
        * Canonical harness id (e.g. `claude-code`).
        */
       harness: string;
+      harness_id: string;
       /**
        * Globally unique, time-ordered record id. This is also the cursor accepted
        * by `history watch --after` and the exact id accepted by history lookup.
@@ -183,7 +186,7 @@ export type HistoryRecord =
        * run's single prompt).
        */
       prompt: string;
-      schema_version: "1.0";
+      schema_version: "1.0" | "1.1";
       /**
        * The oneharness session id this run belongs to (the history file's stem).
        */
@@ -209,6 +212,7 @@ export type HistoryRecord =
       timestamp: string;
       tool_ms?: never | undefined;
       usage: Usage1;
+      variant?: string | null | undefined;
       [k: string]: unknown;
     }
   | {
@@ -234,6 +238,7 @@ export type HistoryRecord =
        * Canonical harness id (e.g. `claude-code`).
        */
       harness: string;
+      harness_id: string;
       /**
        * Globally unique, time-ordered record id. This is also the cursor accepted
        * by `history watch --after` and the exact id accepted by history lookup.
@@ -296,6 +301,7 @@ export type HistoryRecord =
       timestamp: string;
       tool_ms?: number | null | undefined;
       usage: Usage2;
+      variant?: string | null | undefined;
       [k: string]: unknown;
     };
 export type ToolCallStatus = "completed" | "failed" | "timeout" | "interrupted";

@@ -7,9 +7,11 @@ export type HistoryLine =
   | {
       event: ActionEvent;
       harness: string;
+      harness_id?: string | null | undefined;
       run_id: string;
-      schema_version: "1.0";
+      schema_version: "1.0" | "1.1";
       type: "event";
+      variant?: string | null | undefined;
       [k: string]: unknown;
     }
   | (
@@ -19,6 +21,7 @@ export type HistoryLine =
           failure_kind: FailureKind | null;
           finished_at: string;
           harness: string;
+          harness_id?: string | null | undefined;
           history_id: string;
           labels?: HistoryLabels | undefined;
           model: string | null;
@@ -27,7 +30,7 @@ export type HistoryLine =
           permission_mode: PermissionMode;
           project: string;
           prompt: string;
-          schema_version: "1.0";
+          schema_version: "1.0" | "1.1";
           session: string;
           session_id: string | null;
           started_at: string;
@@ -39,6 +42,7 @@ export type HistoryLine =
           tool_ms: number;
           type: "run";
           usage: Usage;
+          variant?: string | null | undefined;
           [k: string]: unknown;
         }
       | {
@@ -47,6 +51,7 @@ export type HistoryLine =
           failure_kind: FailureKind | null;
           finished_at: string | null;
           harness: string;
+          harness_id?: string | null | undefined;
           history_id: string;
           labels?: HistoryLabels | undefined;
           model: string | null;
@@ -55,7 +60,7 @@ export type HistoryLine =
           permission_mode: PermissionMode;
           project: string;
           prompt: string;
-          schema_version: "1.0";
+          schema_version: "1.0" | "1.1";
           session: string;
           session_id: string | null;
           started_at: string;
@@ -67,6 +72,7 @@ export type HistoryLine =
           tool_ms: number;
           type: "run";
           usage: Usage;
+          variant?: string | null | undefined;
           [k: string]: unknown;
         }
       | {
@@ -75,6 +81,7 @@ export type HistoryLine =
           failure_kind: FailureKind | null;
           finished_at: null;
           harness: string;
+          harness_id?: string | null | undefined;
           history_id: string;
           labels?: HistoryLabels | undefined;
           model: string | null;
@@ -83,7 +90,7 @@ export type HistoryLine =
           permission_mode: PermissionMode;
           project: string;
           prompt: string;
-          schema_version: "1.0";
+          schema_version: "1.0" | "1.1";
           session: string;
           session_id: string | null;
           started_at?: never | undefined;
@@ -95,6 +102,7 @@ export type HistoryLine =
           tool_ms?: never | undefined;
           type: "run";
           usage: Usage;
+          variant?: string | null | undefined;
           [k: string]: unknown;
         }
     );

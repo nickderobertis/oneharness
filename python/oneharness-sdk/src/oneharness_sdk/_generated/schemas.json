@@ -341,6 +341,12 @@
               "harness": {
                 "type": "string"
               },
+              "harness_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "run_id": {
                 "maxLength": 36,
                 "minLength": 36,
@@ -348,12 +354,21 @@
                 "type": "string"
               },
               "schema_version": {
-                "const": "1.0",
+                "enum": [
+                  "1.0",
+                  "1.1"
+                ],
                 "type": "string"
               },
               "type": {
                 "const": "event",
                 "type": "string"
+              },
+              "variant": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -403,6 +418,12 @@
                       "harness": {
                         "type": "string"
                       },
+                      "harness_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
                       "history_id": {
                         "maxLength": 36,
                         "minLength": 36,
@@ -435,7 +456,10 @@
                         "type": "string"
                       },
                       "schema_version": {
-                        "const": "1.0",
+                        "enum": [
+                          "1.0",
+                          "1.1"
+                        ],
                         "type": "string"
                       },
                       "session": {
@@ -491,6 +515,12 @@
                       },
                       "usage": {
                         "$ref": "#/$defs/Usage"
+                      },
+                      "variant": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
                       }
                     },
                     "required": [
@@ -557,6 +587,12 @@
                       "harness": {
                         "type": "string"
                       },
+                      "harness_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
                       "history_id": {
                         "maxLength": 36,
                         "minLength": 36,
@@ -589,7 +625,10 @@
                         "type": "string"
                       },
                       "schema_version": {
-                        "const": "1.0",
+                        "enum": [
+                          "1.0",
+                          "1.1"
+                        ],
                         "type": "string"
                       },
                       "session": {
@@ -647,6 +686,12 @@
                       },
                       "usage": {
                         "$ref": "#/$defs/Usage"
+                      },
+                      "variant": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
                       }
                     },
                     "required": [
@@ -714,6 +759,12 @@
                       "harness": {
                         "type": "string"
                       },
+                      "harness_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
                       "history_id": {
                         "maxLength": 36,
                         "minLength": 36,
@@ -743,7 +794,10 @@
                         "type": "string"
                       },
                       "schema_version": {
-                        "const": "1.0",
+                        "enum": [
+                          "1.0",
+                          "1.1"
+                        ],
                         "type": "string"
                       },
                       "session": {
@@ -782,6 +836,12 @@
                       },
                       "usage": {
                         "$ref": "#/$defs/Usage"
+                      },
+                      "variant": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
                       }
                     },
                     "required": [
@@ -1476,6 +1536,9 @@
             "description": "Canonical harness id (e.g. `claude-code`).",
             "type": "string"
           },
+          "harness_id": {
+            "type": "string"
+          },
           "history_id": {
             "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
             "maxLength": 36,
@@ -1515,7 +1578,10 @@
             "type": "string"
           },
           "schema_version": {
-            "const": "1.0",
+            "enum": [
+              "1.0",
+              "1.1"
+            ],
             "type": "string"
           },
           "session": {
@@ -1569,6 +1635,12 @@
           "usage": {
             "$ref": "#/$defs/Usage",
             "description": "Best-effort token/cost accounting (every field `null` when unreported)."
+          },
+          "variant": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -1579,6 +1651,7 @@
           "project",
           "timestamp",
           "harness",
+          "harness_id",
           "model",
           "prompt",
           "permission_mode",
@@ -1690,6 +1763,9 @@
             "description": "Canonical harness id (e.g. `claude-code`).",
             "type": "string"
           },
+          "harness_id": {
+            "type": "string"
+          },
           "history_id": {
             "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
             "maxLength": 36,
@@ -1726,7 +1802,10 @@
             "type": "string"
           },
           "schema_version": {
-            "const": "1.0",
+            "enum": [
+              "1.0",
+              "1.1"
+            ],
             "type": "string"
           },
           "session": {
@@ -1767,6 +1846,12 @@
           "usage": {
             "$ref": "#/$defs/Usage",
             "description": "Best-effort token/cost accounting (every field `null` when unreported)."
+          },
+          "variant": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -1777,6 +1862,7 @@
           "project",
           "timestamp",
           "harness",
+          "harness_id",
           "model",
           "prompt",
           "permission_mode",
@@ -1867,6 +1953,9 @@
           },
           "harness": {
             "description": "Canonical harness id (e.g. `claude-code`).",
+            "type": "string"
+          },
+          "harness_id": {
             "type": "string"
           },
           "history_id": {
@@ -1976,6 +2065,12 @@
           "usage": {
             "$ref": "#/$defs/Usage",
             "description": "Best-effort token/cost accounting (every field `null` when unreported)."
+          },
+          "variant": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -1986,6 +2081,7 @@
           "project",
           "timestamp",
           "harness",
+          "harness_id",
           "model",
           "prompt",
           "permission_mode",
@@ -2354,6 +2450,9 @@
                 "description": "Canonical harness id (e.g. `claude-code`).",
                 "type": "string"
               },
+              "harness_id": {
+                "type": "string"
+              },
               "history_id": {
                 "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
                 "maxLength": 36,
@@ -2393,7 +2492,10 @@
                 "type": "string"
               },
               "schema_version": {
-                "const": "1.0",
+                "enum": [
+                  "1.0",
+                  "1.1"
+                ],
                 "type": "string"
               },
               "session": {
@@ -2447,6 +2549,12 @@
               "usage": {
                 "$ref": "#/$defs/Usage",
                 "description": "Best-effort token/cost accounting (every field `null` when unreported)."
+              },
+              "variant": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -2457,6 +2565,7 @@
               "project",
               "timestamp",
               "harness",
+              "harness_id",
               "model",
               "prompt",
               "permission_mode",
@@ -2568,6 +2677,9 @@
                 "description": "Canonical harness id (e.g. `claude-code`).",
                 "type": "string"
               },
+              "harness_id": {
+                "type": "string"
+              },
               "history_id": {
                 "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
                 "maxLength": 36,
@@ -2604,7 +2716,10 @@
                 "type": "string"
               },
               "schema_version": {
-                "const": "1.0",
+                "enum": [
+                  "1.0",
+                  "1.1"
+                ],
                 "type": "string"
               },
               "session": {
@@ -2645,6 +2760,12 @@
               "usage": {
                 "$ref": "#/$defs/Usage",
                 "description": "Best-effort token/cost accounting (every field `null` when unreported)."
+              },
+              "variant": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -2655,6 +2776,7 @@
               "project",
               "timestamp",
               "harness",
+              "harness_id",
               "model",
               "prompt",
               "permission_mode",
@@ -2745,6 +2867,9 @@
               },
               "harness": {
                 "description": "Canonical harness id (e.g. `claude-code`).",
+                "type": "string"
+              },
+              "harness_id": {
                 "type": "string"
               },
               "history_id": {
@@ -2854,6 +2979,12 @@
               "usage": {
                 "$ref": "#/$defs/Usage",
                 "description": "Best-effort token/cost accounting (every field `null` when unreported)."
+              },
+              "variant": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -2864,6 +2995,7 @@
               "project",
               "timestamp",
               "harness",
+              "harness_id",
               "model",
               "prompt",
               "permission_mode",
@@ -3151,6 +3283,12 @@
           "harness": {
             "type": "string"
           },
+          "harness_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "run_id": {
             "maxLength": 36,
             "minLength": 36,
@@ -3159,6 +3297,12 @@
           },
           "schema_version": {
             "type": "string"
+          },
+          "variant": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -3402,6 +3546,9 @@
                 "description": "Canonical harness id (e.g. `claude-code`).",
                 "type": "string"
               },
+              "harness_id": {
+                "type": "string"
+              },
               "history_id": {
                 "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
                 "maxLength": 36,
@@ -3441,7 +3588,10 @@
                 "type": "string"
               },
               "schema_version": {
-                "const": "1.0",
+                "enum": [
+                  "1.0",
+                  "1.1"
+                ],
                 "type": "string"
               },
               "session": {
@@ -3495,6 +3645,12 @@
               "usage": {
                 "$ref": "#/$defs/Usage",
                 "description": "Best-effort token/cost accounting (every field `null` when unreported)."
+              },
+              "variant": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -3505,6 +3661,7 @@
               "project",
               "timestamp",
               "harness",
+              "harness_id",
               "model",
               "prompt",
               "permission_mode",
@@ -3616,6 +3773,9 @@
                 "description": "Canonical harness id (e.g. `claude-code`).",
                 "type": "string"
               },
+              "harness_id": {
+                "type": "string"
+              },
               "history_id": {
                 "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
                 "maxLength": 36,
@@ -3652,7 +3812,10 @@
                 "type": "string"
               },
               "schema_version": {
-                "const": "1.0",
+                "enum": [
+                  "1.0",
+                  "1.1"
+                ],
                 "type": "string"
               },
               "session": {
@@ -3693,6 +3856,12 @@
               "usage": {
                 "$ref": "#/$defs/Usage",
                 "description": "Best-effort token/cost accounting (every field `null` when unreported)."
+              },
+              "variant": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -3703,6 +3872,7 @@
               "project",
               "timestamp",
               "harness",
+              "harness_id",
               "model",
               "prompt",
               "permission_mode",
@@ -3793,6 +3963,9 @@
               },
               "harness": {
                 "description": "Canonical harness id (e.g. `claude-code`).",
+                "type": "string"
+              },
+              "harness_id": {
                 "type": "string"
               },
               "history_id": {
@@ -3902,6 +4075,12 @@
               "usage": {
                 "$ref": "#/$defs/Usage",
                 "description": "Best-effort token/cost accounting (every field `null` when unreported)."
+              },
+              "variant": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -3912,6 +4091,7 @@
               "project",
               "timestamp",
               "harness",
+              "harness_id",
               "model",
               "prompt",
               "permission_mode",
@@ -4249,6 +4429,12 @@
               "string",
               "null"
             ]
+          },
+          "variants": {
+            "items": {
+              "$ref": "#/$defs/VariantInfo"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -4272,7 +4458,8 @@
           "mock_rewrite",
           "supports_prompt_stdin",
           "supports_system_file",
-          "example_command"
+          "example_command",
+          "variants"
         ],
         "type": "object"
       },
@@ -4362,6 +4549,70 @@
             "type": "string"
           }
         ]
+      },
+      "VariantInfo": {
+        "properties": {
+          "args": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "bin": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "env_file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "env_from": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "env_keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "harness_id": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "unset_env": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "harness_id",
+          "model",
+          "bin",
+          "args",
+          "env_keys",
+          "env_file",
+          "env_from",
+          "unset_env"
+        ],
+        "type": "object"
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -4856,6 +5107,10 @@
             "description": "Canonical harness id (e.g. `claude-code`).",
             "type": "string"
           },
+          "harness_id": {
+            "description": "Base id or `<base>:<variant>`, suitable for selecting the same candidate.",
+            "type": "string"
+          },
           "model": {
             "description": "The model this result ran with (the value oneharness put on the harness's\nmodel flag), or `null` when no model was requested and the harness used its\nown default. On a **model fan-out** run (`RunReport::models`), this is what\ndistinguishes results that share a harness \u2014 each entry is one (harness,\nmodel) pair. The model is also visible in `command`; this field surfaces it\nwithout parsing the argv.",
             "type": [
@@ -4941,10 +5196,19 @@
               "string",
               "null"
             ]
+          },
+          "variant": {
+            "description": "Named preset, when this result came from a composed harness id.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "harness",
+          "variant",
+          "harness_id",
           "bin",
           "available",
           "status",
@@ -5764,6 +6028,10 @@
             "description": "Canonical harness id (e.g. `claude-code`).",
             "type": "string"
           },
+          "harness_id": {
+            "description": "Base id or `<base>:<variant>`, suitable for selecting the same candidate.",
+            "type": "string"
+          },
           "model": {
             "description": "The model this result ran with (the value oneharness put on the harness's\nmodel flag), or `null` when no model was requested and the harness used its\nown default. On a **model fan-out** run (`RunReport::models`), this is what\ndistinguishes results that share a harness \u2014 each entry is one (harness,\nmodel) pair. The model is also visible in `command`; this field surfaces it\nwithout parsing the argv.",
             "type": [
@@ -5849,10 +6117,19 @@
               "string",
               "null"
             ]
+          },
+          "variant": {
+            "description": "Named preset, when this result came from a composed harness id.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "harness",
+          "variant",
+          "harness_id",
           "bin",
           "available",
           "status",

@@ -71,12 +71,28 @@ fn watch(args: &HistoryWatchArgs) -> Result<i32, OneharnessError> {
             if args.events && !write_watch_events(&watcher.drain_events())? {
                 return Ok(EXIT_OK);
             }
-            let records = watcher.drain_available();
+            let records: Vec<_> = watcher
+                .drain_available()
+                .into_iter()
+                .filter(|record| {
+                    args.variant
+                        .as_ref()
+                        .is_none_or(|variant| record.variant.as_ref() == Some(variant))
+                })
+                .collect();
             if !write_watch_records(&records)? {
                 return Ok(EXIT_OK);
             }
             std::thread::sleep(Duration::from_millis(100));
-            let records = watcher.poll()?;
+            let records: Vec<_> = watcher
+                .poll()?
+                .into_iter()
+                .filter(|record| {
+                    args.variant
+                        .as_ref()
+                        .is_none_or(|variant| record.variant.as_ref() == Some(variant))
+                })
+                .collect();
             if args.events && !write_watch_events(&watcher.drain_events())? {
                 return Ok(EXIT_OK);
             }
@@ -184,7 +200,16 @@ fn list(args: &HistoryListArgs) -> Result<i32, OneharnessError> {
         args.no_config,
     )?;
     let slug = project_slug(args.all_projects, args.project.as_deref());
-    let sessions = history_io::list_sessions(&dir, slug.as_deref())?;
+    let mut sessions = history_io::list_sessions(&dir, slug.as_deref())?;
+    if let Some(variant) = &args.variant {
+        let suffix = format!(":{variant}");
+        sessions.retain(|session| {
+            session
+                .harnesses
+                .iter()
+                .any(|harness| harness.ends_with(&suffix))
+        });
+    }
     match args.format {
         HistoryFormat::Json => print_json(&sessions, args.compact)?,
         HistoryFormat::Text => print!("{}", render_list_text(&sessions)),

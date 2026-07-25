@@ -2,6 +2,7 @@ const METADATA_KEYS = new Set([
 	"$defs",
 	"$schema",
 	"description",
+	"default",
 	"examples",
 	"title",
 ]);
@@ -11,6 +12,7 @@ const METADATA_KEYS = new Set([
  * @property {string | string[]=} type
  * @property {string=} title
  * @property {string=} description
+ * @property {unknown=} default
  * @property {string=} $schema
  * @property {unknown[]=} examples
  * @property {string=} format

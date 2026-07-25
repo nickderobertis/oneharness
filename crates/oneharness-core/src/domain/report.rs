@@ -14,7 +14,7 @@ use crate::domain::session::SessionPhase;
 use crate::domain::signals::{FailureKind, Usage};
 
 /// Bumped when the JSON shape changes in a way consumers must notice.
-pub const SCHEMA_VERSION: &str = "0.1";
+pub const SCHEMA_VERSION: &str = "0.2";
 
 /// How a harness emits its result, which decides how `text` is extracted.
 ///
@@ -103,6 +103,10 @@ pub struct ExecutionTelemetry {
 pub struct RunResult {
     /// Canonical harness id (e.g. `claude-code`).
     pub harness: String,
+    /// Named preset, when this result came from a composed harness id.
+    pub variant: Option<String>,
+    /// Base id or `<base>:<variant>`, suitable for selecting the same candidate.
+    pub harness_id: String,
     /// The binary name or path oneharness resolved and would invoke.
     pub bin: String,
     /// Whether that binary was found.

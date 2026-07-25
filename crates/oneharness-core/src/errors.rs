@@ -14,6 +14,34 @@ pub enum OneharnessError {
     #[error("unknown harness id `{id}`. valid ids: {valid}")]
     UnknownHarness { id: String, valid: String },
 
+    #[error(
+        "unknown harness variant `{id}`; declare it under `[harness.{base}.variant.{variant}]`"
+    )]
+    UnknownHarnessVariant {
+        id: String,
+        base: String,
+        variant: String,
+    },
+
+    #[error("could not read variant environment file `{path}`: {source}")]
+    VariantEnvFile {
+        path: String,
+        source: std::io::Error,
+    },
+
+    #[error("invalid line {line} in variant environment file `{path}`; expected KEY=VALUE")]
+    VariantEnvFileLine { path: String, line: usize },
+
+    #[error("variant environment indirection `{name}` is not set in the parent process")]
+    VariantEnvSourceMissing { name: String },
+
+    #[error("harness variants `{first}` and `{second}` declare conflicting sync settings for the shared `{base}` config file")]
+    VariantSyncConflict {
+        base: String,
+        first: String,
+        second: String,
+    },
+
     #[error("--mock-harness `{id}` must name a selected harness")]
     MockHarnessNotSelected { id: String },
 

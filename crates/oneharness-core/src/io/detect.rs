@@ -77,7 +77,13 @@ pub struct Resolved {
 
 /// Resolve the binary for a harness without running it.
 pub fn resolve(spec: &HarnessSpec, overrides: &BinOverrides) -> Resolved {
-    let bin = overrides.binary_for(spec.id, spec.default_bin);
+    resolve_named(spec, spec.id, overrides)
+}
+
+/// Resolve a composed harness id, allowing a variant-specific config/CLI bin
+/// while retaining the base adapter's default.
+pub fn resolve_named(spec: &HarnessSpec, id: &str, overrides: &BinOverrides) -> Resolved {
+    let bin = overrides.binary_for(id, spec.default_bin);
     match which::which(&bin) {
         Ok(path) => Resolved {
             bin,

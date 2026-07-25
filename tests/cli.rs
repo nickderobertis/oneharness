@@ -4286,6 +4286,82 @@ env_file = "variant.env"
 }
 
 #[test]
+fn variant_masking_wins_over_explicit_cli_env_at_spawn() {
+    let bin = mock_bin().display().to_string().replace('\\', "\\\\");
+    let fx = ConfigFixture::new(
+        "variant-mask-cli-env",
+        &format!(
+            r#"
+[harness.claude-code.variant.subscription]
+bin = "{bin}"
+unset_env = ["ANTHROPIC_API_KEY"]
+"#
+        ),
+        "",
+    );
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "claude-code:subscription",
+            "--prompt",
+            "hi",
+            "--env",
+            "ANTHROPIC_API_KEY=cli-must-be-masked",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[("MOCK_ECHO_ENV", "ANTHROPIC_API_KEY")],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        json_stdout(&output)["results"][0]["stdout"],
+        "ANTHROPIC_API_KEY="
+    );
+}
+
+#[test]
+fn variant_identity_is_reported_by_print_command() {
+    let fx = ConfigFixture::new(
+        "variant-print-command",
+        "[harness.claude-code.variant.work]\nmodel = \"sonnet\"\n",
+        "",
+    );
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "claude-code:work",
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result = json_stdout(&output)["results"][0].clone();
+    assert_eq!(result["harness"], "claude-code");
+    assert_eq!(result["variant"], "work");
+    assert_eq!(result["harness_id"], "claude-code:work");
+    assert_eq!(result["model"], "sonnet");
+    assert_eq!(result["status"], "planned");
+}
+
+#[test]
 fn unknown_and_malformed_variants_are_usage_errors() {
     let fx = ConfigFixture::new(
         "variant-errors",

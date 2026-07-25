@@ -21,7 +21,6 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 note "== oneharness live e2e: structured output (--schema) =="
 need jq
 need_env "Claude auth" CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY
-oh_sandbox_prepare claude-code "$PWD"
 
 export OH_MODEL="${CLAUDE_E2E_MODEL:-haiku}"
 

@@ -4327,6 +4327,55 @@ unset_env = ["ANTHROPIC_API_KEY"]
 }
 
 #[test]
+fn variant_absolute_env_file_reaches_the_spawned_process() {
+    let bin = mock_bin().display().to_string().replace('\\', "\\\\");
+    let fx = ConfigFixture::new("variant-absolute-env-file", "", "");
+    let env_file = std::path::Path::new(&fx.cwd()).join("absolute.env");
+    std::fs::write(&env_file, "VARIANT_ABSOLUTE=from-absolute-file\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&env_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let escaped_env_file = env_file.display().to_string().replace('\\', "\\\\");
+    std::fs::write(
+        std::path::Path::new(&fx.cwd()).join("oneharness.toml"),
+        format!(
+            r#"
+[harness.claude-code.variant.absolute]
+bin = "{bin}"
+env_file = "{escaped_env_file}"
+"#
+        ),
+    )
+    .unwrap();
+
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "claude-code:absolute",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[("MOCK_ECHO_ENV", "VARIANT_ABSOLUTE")],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        json_stdout(&output)["results"][0]["stdout"],
+        "VARIANT_ABSOLUTE=from-absolute-file"
+    );
+}
+
+#[test]
 fn variant_identity_is_reported_by_print_command() {
     let fx = ConfigFixture::new(
         "variant-print-command",

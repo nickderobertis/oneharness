@@ -135,9 +135,12 @@ jq -e --arg marker "${marker}_fb" \
 evidence "COMMAND fallback: oneharness run --config <temporary> --harness claude-code:invalid --harness $fallback_target --run-mode fallback --prompt 'Reply exactly <marker>' --compact"
 evidence "ASSERT fallback: first_failure_kind=auth next_harness_id=$fallback_target status=ok marker=exact"
 if [ -n "${OH_E2E_CODEX_SUBSCRIPTION:-}" ]; then
-    env -u CODEX_API_KEY -u OPENAI_API_KEY codex login status 2>&1 |
-        grep -q "Logged in using ChatGPT" ||
-        fail "Codex ChatGPT login unavailable; run 'CODEX_HOME=<host-login-home> codex login' interactively"
+    codex_login_status="$(
+        env -u CODEX_API_KEY -u OPENAI_API_KEY codex login status 2>&1
+    )" ||
+        fail "Codex ChatGPT login preflight failed with status: $codex_login_status"
+    printf '%s\n' "$codex_login_status" | grep -q "Logged in using ChatGPT" ||
+        fail "Codex ChatGPT login unavailable; observed status: $codex_login_status; run 'CODEX_HOME=<host-login-home> codex login' interactively"
     run_marker codex:subscription "${marker}_cs" \
         OH_VARIANT_CODEX_SUBSCRIPTION_HOME="$HOME/.codex"
     evidence "IDENTITY codex:subscription: login_status='Logged in using ChatGPT' CODEX_HOME=host-login API keys masked"

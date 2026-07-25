@@ -4476,6 +4476,14 @@ ANTHROPIC_API_KEY = "ONEHARNESS_TEST_PARENT_IS_ABSENT"
     assert_eq!(detect.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&detect.stderr).contains("unknown harness variant"));
 
+    let detect_exclude = run_with_config(
+        &["detect", "--all", "--exclude", "claude-code:unknown"],
+        &[],
+        &project_config,
+    );
+    assert_eq!(detect_exclude.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&detect_exclude.stderr).contains("unknown harness variant"));
+
     let sync = run_with_config(
         &[
             "sync",

@@ -1463,8 +1463,12 @@ contract and CLI, Python, and Node examples.
 
 ## Live end-to-end testing
 
-The observed authentication selectors, precedence, concurrency safety, and
-identity evidence are recorded in [Harness authentication identity](docs/harness-auth.md).
+Live variant coverage selects Claude subscription identities with isolated
+`CLAUDE_CONFIG_DIR` values, selects Claude/Codex API identities with child-only
+key injection, and masks ambient keys for subscription runs. It requires both
+the marker assertion and provider-specific identity evidence; the complete
+lever, precedence, concurrency, and evidence support matrix is maintained in
+[Harness authentication identity](docs/harness-auth.md).
 
 `just smoke-live` is the quick "does any installed harness work" check. The
 **per-harness** suite is the allowlister-style counterpart: each

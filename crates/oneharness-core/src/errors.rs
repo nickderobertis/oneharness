@@ -18,6 +18,7 @@ pub enum OneharnessError {
         "unknown harness variant `{id}`; declare it under `[harness.{base}.variant.{variant}]`"
     )]
     UnknownHarnessVariant {
+        // llmlint: ignore[invalid_states_unrepresentable] Error payloads intentionally preserve exact untrusted text that failed validation; VariantName cannot represent the malformed input the diagnostic must quote.
         id: String,
         base: String,
         variant: String,

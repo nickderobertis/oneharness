@@ -7,7 +7,7 @@ need jq
 need claude
 need codex
 OH="$(oh_bin)"
-[ -n "$OH" ] || skip "oneharness binary not found"
+[ -n "$OH" ] || skip "oneharness binary not found; run 'just live-variants' or set ONEHARNESS_BIN"
 AUTH_FILE="${OH_LIVE_AUTH_FILE:-$HOME/.config/oneharness/live-auth.env}"
 if [ -f "$AUTH_FILE" ]; then
     mode="$(stat -c %a "$AUTH_FILE" 2>/dev/null || stat -f %Lp "$AUTH_FILE")"
@@ -16,7 +16,7 @@ fi
 auth_value() {
     local name="$1"
     [ -f "$AUTH_FILE" ] || return 1
-    awk -F= -v key="$name" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$AUTH_FILE"
+    awk -F= -v key="$name" 'index($0, "=") > 0 && $1 == key { sub(/^[^=]*=/, ""); print; exit }' "$AUTH_FILE"
 }
 evidence() {
     [ -n "${OH_E2E_EVIDENCE:-}" ] && printf '%s\n' "$*"
@@ -24,8 +24,10 @@ evidence() {
 }
 ANTHROPIC_MATERIAL="${ANTHROPIC_API_KEY:-$(auth_value ANTHROPIC_API_KEY || true)}"
 OPENAI_MATERIAL="${CODEX_API_KEY:-${OPENAI_API_KEY:-$(auth_value OPENAI_API_KEY || true)}}"
-[ -n "$ANTHROPIC_MATERIAL" ] || skip "Anthropic API key unavailable"
-[ -n "$OPENAI_MATERIAL" ] || skip "OpenAI API key unavailable"
+[ -n "$ANTHROPIC_MATERIAL" ] ||
+    skip "Anthropic API key unavailable; set ANTHROPIC_API_KEY or add it to OH_LIVE_AUTH_FILE"
+[ -n "$OPENAI_MATERIAL" ] ||
+    skip "OpenAI API key unavailable; set CODEX_API_KEY/OPENAI_API_KEY or add OPENAI_API_KEY to OH_LIVE_AUTH_FILE"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 config="$tmp/oneharness.toml"

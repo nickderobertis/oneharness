@@ -32,6 +32,7 @@ pub fn plan(cfg: &FileConfig, spec: &HarnessSpec) -> Result<SyncPlan, String> {
     plan_for(cfg, spec, spec.id)
 }
 
+// llmlint: ignore[invalid_states_unrepresentable] This pure API receives the serialized selector only after command-layer selection and variant lookup; borrowing it avoids a competing identity type while integration tests pin invalid selectors at the boundary.
 pub fn plan_for(cfg: &FileConfig, spec: &HarnessSpec, id: &str) -> Result<SyncPlan, String> {
     let Some(sync) = &spec.sync else {
         // No config surface at all: anything aimed at this harness from the

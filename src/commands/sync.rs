@@ -121,6 +121,7 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
     let global_dirs = hooks_io::GlobalDirs::from_env();
 
     for (index, spec) in specs.into_iter().enumerate() {
+        // llmlint: ignore[invalid_states_unrepresentable] select_specs preserves and validates explicit selector order; this index is its established spec-to-selector association, covered by successful and unknown-variant sync integration tests.
         let selected_id = args.harness.get(index).map_or(spec.id, String::as_str);
         let plan = sync_domain::plan_for(cfg, spec, selected_id).map_err(|message| {
             OneharnessError::HarnessConfigUnmergeable {

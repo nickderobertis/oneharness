@@ -17,6 +17,7 @@ use oneharness_core::domain::harness::{self, HarnessSpec};
 use oneharness_core::errors::OneharnessError;
 
 /// Preserve selector order while removing exactly repeated ids.
+// llmlint: ignore[invalid_states_unrepresentable] This boundary intentionally normalizes raw CLI/config selector text before select_specs validates it; a validated selector type could not carry malformed input into the precise usage diagnostic.
 pub fn dedupe_exact_ids(ids: &[String]) -> Vec<String> {
     let mut seen = std::collections::BTreeSet::new();
     ids.iter()
@@ -29,6 +30,7 @@ pub fn dedupe_exact_ids(ids: &[String]) -> Vec<String> {
 ///
 /// `all` selects every harness (minus `exclude`); otherwise `include` lists the
 /// ids to run. An empty selection, or any unknown id, is a usage error.
+// llmlint: ignore[invalid_states_unrepresentable] Raw external selector strings are the input contract here so unknown/malformed ids can be reported verbatim; every id is registry-validated before any HarnessSpec is returned, and callers retain the same ordered selectors only for variant resolution.
 pub fn select_specs(
     all: bool,
     include: &[String],

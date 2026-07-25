@@ -18,6 +18,10 @@ auth_value() {
     [ -f "$AUTH_FILE" ] || return 1
     awk -F= -v key="$name" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$AUTH_FILE"
 }
+evidence() {
+    [ -n "${OH_E2E_EVIDENCE:-}" ] && printf '%s\n' "$*"
+    return 0
+}
 ANTHROPIC_MATERIAL="${ANTHROPIC_API_KEY:-$(auth_value ANTHROPIC_API_KEY || true)}"
 OPENAI_MATERIAL="${CODEX_API_KEY:-${OPENAI_API_KEY:-$(auth_value OPENAI_API_KEY || true)}}"
 [ -n "$ANTHROPIC_MATERIAL" ] || skip "Anthropic API key unavailable"
@@ -59,6 +63,8 @@ run_marker() {
     jq -e --arg marker "$marker" \
         '.results[0].status == "ok" and (.results[0].stdout | contains($marker))' \
         "$report" >/dev/null || fail "$id did not complete with marker"
+    evidence "COMMAND $id: oneharness run --config <temporary> --harness $id --prompt 'Reply exactly <marker>' --compact"
+    evidence "ASSERT $id: status=ok marker=exact harness_id=$id"
 }
 marker="OH_VARIANT_$(date +%s)_$RANDOM"
 run_marker claude-code:apikey "${marker}_ck" OH_VARIANT_ANTHROPIC_KEY="$ANTHROPIC_MATERIAL"
@@ -68,14 +74,18 @@ jq -e '.results[0].stdout | fromjson |
     .usage.cache_creation.ephemeral_5m_input_tokens > 0' \
     "$tmp/claude-code-apikey.json" >/dev/null ||
     fail "Claude API-key cache evidence missing; verify the current Claude CLI still reports ephemeral_5m_input_tokens for API billing"
+evidence "IDENTITY claude-code:apikey: isolated API key source; ephemeral_5m_input_tokens>0"
 fallback="$tmp/fallback.json"
 fallback_target="claude-code:apikey"
 if [ -z "${OH_E2E_VARIANTS_API_ONLY:-}" ]; then
     for config_dir in "$claude_a" "$claude_b"; do
-        CLAUDE_CONFIG_DIR="$config_dir" env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \
-            claude auth status --json |
-            jq -e '.loggedIn == true and .authMethod == "claude.ai"' >/dev/null ||
+        auth_method="$(
+            CLAUDE_CONFIG_DIR="$config_dir" env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \
+                claude auth status --json |
+                jq -er 'select(.loggedIn == true) | .authMethod'
+        )" ||
             fail "Claude subscription preflight failed"
+        [ "$auth_method" = "claude.ai" ] || fail "Claude subscription preflight used an unexpected auth method"
     done
     run_marker claude-code:subscription-a "${marker}_ca" \
         ANTHROPIC_API_KEY="$ANTHROPIC_MATERIAL" OH_VARIANT_CLAUDE_A="$claude_a"
@@ -85,10 +95,12 @@ if [ -z "${OH_E2E_VARIANTS_API_ONLY:-}" ]; then
         .usage.cache_creation.ephemeral_1h_input_tokens > 0' \
         "$tmp/claude-code-subscription-a.json" >/dev/null ||
         fail "Claude subscription A lacked subscription cache evidence"
+    evidence "IDENTITY claude-code:subscription-a: authMethod=claude.ai alternate_config=no ambient_api_key=present child_api_key=masked ephemeral_1h_input_tokens>0"
     jq -e '.results[0].stdout | fromjson |
         .usage.cache_creation.ephemeral_1h_input_tokens > 0' \
         "$tmp/claude-code-subscription-b.json" >/dev/null ||
         fail "Claude subscription B lacked subscription cache evidence"
+    evidence "IDENTITY claude-code:subscription-b: authMethod=claude.ai alternate_config=yes ambient_api_key=present child_api_key=masked ephemeral_1h_input_tokens>0"
     fallback_target="claude-code:subscription-a"
 fi
 OH_VARIANT_ANTHROPIC_KEY="$ANTHROPIC_MATERIAL" OH_VARIANT_CLAUDE_A="$claude_a" \
@@ -99,12 +111,16 @@ jq -e --arg marker "${marker}_fb" \
     '.results[0].failure_kind == "auth" and
      (.results[-1].stdout | contains($marker))' "$fallback" >/dev/null ||
     fail "same-harness auth fallback failed; inspect failure_kind for the invalid candidate and fallback ordering in the report"
+evidence "COMMAND fallback: oneharness run --config <temporary> --harness claude-code:invalid --harness $fallback_target --run-mode fallback --prompt 'Reply exactly <marker>' --compact"
+evidence "ASSERT fallback: first_failure_kind=auth next_harness_id=$fallback_target status=ok marker=exact"
 if [ -n "${OH_E2E_CODEX_SUBSCRIPTION:-}" ]; then
     env -u CODEX_API_KEY -u OPENAI_API_KEY codex login status 2>&1 |
         grep -q "Logged in using ChatGPT" || fail "Codex ChatGPT login unavailable"
     run_marker codex:subscription "${marker}_cs" \
         OH_VARIANT_CODEX_SUBSCRIPTION_HOME="$HOME/.codex"
+    evidence "IDENTITY codex:subscription: login_status='Logged in using ChatGPT' CODEX_HOME=host-login API keys masked"
 else
     note "Codex subscription phase not requested (set OH_E2E_CODEX_SUBSCRIPTION=1)"
 fi
+evidence "IDENTITY codex:apikey: empty CODEX_HOME plus per-process CODEX_API_KEY (sourced from OpenAI API auth material)"
 note "live variants: ok (API, subscription, masking, identity evidence, fallback)"

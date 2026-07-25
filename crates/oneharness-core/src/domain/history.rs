@@ -31,7 +31,7 @@ use crate::domain::signals::{FailureKind, Usage};
 /// Independent of [`crate::domain::report::SCHEMA_VERSION`] — the history file and
 /// the run report are separate contracts and version on their own cadence.
 pub const SCHEMA_VERSION: &str = "1.1";
-const PREVIOUS_EVENT_SCHEMA_VERSION: &str = "1.0";
+const PREVIOUS_CURRENT_SCHEMA_VERSION: &str = "1.0";
 
 /// The legacy record contract accepted by the migration reader.
 pub const LEGACY_SCHEMA_VERSION: &str = "0.1";
@@ -102,7 +102,7 @@ impl HistoryEventLine {
     pub(crate) fn valid(&self) -> bool {
         matches!(
             self.schema_version.as_str(),
-            SCHEMA_VERSION | PREVIOUS_EVENT_SCHEMA_VERSION
+            SCHEMA_VERSION | PREVIOUS_CURRENT_SCHEMA_VERSION
         )
     }
 }
@@ -119,6 +119,7 @@ pub struct HistoryRunRecord {
     pub labels: HistoryLabels,
     pub project: String,
     pub timestamp: String,
+    // llmlint: ignore[invalid_states_unrepresentable] These legacy-compatible wire fields must deserialize v1.0 records where the composed field is absent; `materialize` derives the composed identity and current writers copy the already-normalized run identity, with cross-contract tests pinning consistency.
     pub harness: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant: Option<String>,
@@ -150,7 +151,7 @@ impl HistoryRunRecord {
     pub(crate) fn valid(&self) -> bool {
         if !matches!(
             self.schema_version.as_str(),
-            SCHEMA_VERSION | PREVIOUS_EVENT_SCHEMA_VERSION
+            SCHEMA_VERSION | PREVIOUS_CURRENT_SCHEMA_VERSION
         ) {
             return false;
         }
@@ -744,7 +745,7 @@ impl HistoryRecord {
         let wire: HistoryRecordWire = serde_json::from_value(value)?;
         if !matches!(
             wire.schema_version.as_str(),
-            SCHEMA_VERSION | PREVIOUS_EVENT_SCHEMA_VERSION
+            SCHEMA_VERSION | PREVIOUS_CURRENT_SCHEMA_VERSION
         ) {
             return Err(serde_json::Error::io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,

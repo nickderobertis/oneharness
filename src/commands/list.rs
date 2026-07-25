@@ -164,7 +164,7 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                     .map(|(name, variant)| {
                         let id = format!("{}:{name}", spec.id);
                         VariantInfo {
-                            name: name.clone(),
+                            name: name.to_string(),
                             harness_id: id.clone(),
                             model: cfg.model_for(&id).map(str::to_string),
                             bin: cfg.bin_for(&id).map(str::to_string),

@@ -101,6 +101,7 @@ pub struct ExecutionTelemetry {
 /// One harness's entry in the report.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RunResult {
+    // llmlint: ignore[invalid_states_unrepresentable] These three additive wire fields must remain directly addressable for the stable JSON/SDK contract; command construction always derives all three together from one validated composed selection in `apply_result_identity`, and round-trip integration tests pin their consistency.
     /// Canonical harness id (e.g. `claude-code`).
     pub harness: String,
     /// Named preset, when this result came from a composed harness id.

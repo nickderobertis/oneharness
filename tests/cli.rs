@@ -4318,6 +4318,35 @@ allowed_tools = ["Bash(git:*)"]
 }
 
 #[test]
+fn sync_applies_a_selected_variants_settings_to_the_shared_native_file() {
+    let fx = ConfigFixture::new(
+        "variant-sync-success",
+        "[harness.claude-code.variant.work]\nallowed_tools = [\"Read\"]\n",
+        "",
+    );
+    let output = run_with_config(
+        &[
+            "sync",
+            "--harness",
+            "claude-code:work",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(json_stdout(&output)["results"][0]["harness"], "claude-code");
+    let settings = read_json(&std::path::Path::new(&fx.cwd()).join(".claude/settings.json"));
+    assert_eq!(settings["permissions"]["allow"][0], "Read");
+}
+
+#[test]
 fn config_bin_override_is_used_to_execute() {
     let fx = ConfigFixture::new(
         "bin",
@@ -10120,21 +10149,27 @@ fn history_canonicalizes_relative_cwd_for_project_lookup() {
 fn history_watch_filters_and_resumes_as_jsonl() {
     let dir = hist_dir("watch-cli");
     let ds = dir.display().to_string();
+    let bin = mock_bin().display().to_string().replace('\\', "\\\\");
+    let fx = ConfigFixture::new(
+        "watch-variant",
+        &format!("[harness.codex.variant.work]\nbin = \"{bin}\"\n"),
+        "",
+    );
     let mut ids = Vec::new();
     for (name, graph) in [
         ("first", "release"),
         ("second", "release"),
         ("third", "other"),
     ] {
-        let out = run(
+        let out = run_with_config(
             &[
                 "run",
                 "--harness",
-                "codex",
-                "--bin",
-                &bin_override("codex"),
+                "codex:work",
                 "--prompt",
                 name,
+                "--cwd",
+                &fx.cwd(),
                 "--history",
                 "--history-dir",
                 &ds,
@@ -10146,6 +10181,7 @@ fn history_watch_filters_and_resumes_as_jsonl() {
                 "--compact",
             ],
             &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)],
+            &fx.user_config(),
         );
         let path = json_stdout(&out)["history_file"]
             .as_str()
@@ -10167,6 +10203,8 @@ fn history_watch_filters_and_resumes_as_jsonl() {
             &ids[0],
             "--label",
             "graph=release",
+            "--variant",
+            "work",
             "--format",
             "jsonl",
         ])
@@ -10181,15 +10219,15 @@ fn history_watch_filters_and_resumes_as_jsonl() {
     // proving the follow path while also letting coverage data flush (killing a
     // watcher would discard that process's profile).
     drop(reader);
-    let trigger = run(
+    let trigger = run_with_config(
         &[
             "run",
             "--harness",
-            "codex",
-            "--bin",
-            &bin_override("codex"),
+            "codex:work",
             "--prompt",
             "fourth",
+            "--cwd",
+            &fx.cwd(),
             "--history",
             "--history-dir",
             &ds,
@@ -10201,6 +10239,7 @@ fn history_watch_filters_and_resumes_as_jsonl() {
             "--compact",
         ],
         &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)],
+        &fx.user_config(),
     );
     assert!(trigger.status.success());
     let status = child.wait().unwrap();

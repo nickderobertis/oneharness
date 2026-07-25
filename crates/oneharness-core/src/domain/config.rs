@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::domain::fallback::RunMode;
 use crate::domain::harness;
@@ -165,7 +165,37 @@ pub struct HarnessConfig {
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     #[serde(default)]
-    pub variant: BTreeMap<String, VariantConfig>,
+    pub variant: BTreeMap<VariantName, VariantConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(transparent)]
+pub struct VariantName(String);
+
+impl VariantName {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for VariantName {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl std::borrow::Borrow<str> for VariantName {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for VariantName {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        validate_variant_name(&value).map_err(serde::de::Error::custom)?;
+        Ok(Self(value))
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -275,7 +305,7 @@ fn validate(config: &FileConfig) -> Result<(), String> {
     for (id, h) in &config.harness {
         let spec = harness::by_id(id).expect("ids validated above");
         for name in h.variant.keys() {
-            validate_variant_name(name)?;
+            validate_variant_name(name.as_str())?;
         }
         let sync = spec.sync.as_ref();
         let unsupported = [
@@ -349,8 +379,11 @@ fn validate(config: &FileConfig) -> Result<(), String> {
                 }),
         )
     {
-        if key.is_empty() {
-            return Err("environment variable names must be non-empty".to_string());
+        if key.is_empty() || key.contains(['=', '\0']) {
+            return Err(
+                "environment variable names must be non-empty and contain neither `=` nor NUL"
+                    .to_string(),
+            );
         }
     }
     for composed in config
@@ -599,9 +632,9 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
 }
 
 fn merge_variant_maps(
-    mut base: BTreeMap<String, VariantConfig>,
-    over: BTreeMap<String, VariantConfig>,
-) -> BTreeMap<String, VariantConfig> {
+    mut base: BTreeMap<VariantName, VariantConfig>,
+    over: BTreeMap<VariantName, VariantConfig>,
+) -> BTreeMap<VariantName, VariantConfig> {
     for (name, o) in over {
         let e = base.entry(name).or_default();
         let mut env = std::mem::take(&mut e.env);
@@ -985,13 +1018,14 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
             }
         }
         let mut variants = BTreeMap::new();
-        let names: std::collections::BTreeSet<&String> = layers
+        let names: std::collections::BTreeSet<&VariantName> = layers
             .iter()
             .filter_map(|(_, config)| config.harness.get(id))
             .flat_map(|harness| harness.variant.keys())
             .collect();
         for name in names {
-            let variant = |config: &FileConfig| config.harness.get(id)?.variant.get(name).cloned();
+            let variant =
+                |config: &FileConfig| config.harness.get(id)?.variant.get(name.as_str()).cloned();
             let mut v_env = BTreeMap::new();
             let mut env_from = BTreeMap::new();
             for (path, config) in layers {
@@ -1017,7 +1051,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                 }
             }
             variants.insert(
-                name.clone(),
+                name.to_string(),
                 VariantReport {
                     model: pick(layers, |c| variant(c).and_then(|v| v.model)),
                     reasoning: pick(layers, |c| variant(c).and_then(|v| v.reasoning)),

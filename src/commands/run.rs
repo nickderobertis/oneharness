@@ -88,7 +88,7 @@ fn variant_environment(
                     line: index + 1,
                 });
             };
-            if key.is_empty() {
+            if key.is_empty() || key.contains(['=', '\0']) {
                 return Err(OneharnessError::VariantEnvFileLine {
                     path: path.display().to_string(),
                     line: index + 1,

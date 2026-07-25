@@ -50,19 +50,52 @@ exercised because no second token/account was available. The installed CLI's
 `--bare` help says it ignores OAuth/keychain and accepts only
 `ANTHROPIC_API_KEY` or `apiKeyHelper` (plus third-party cloud credentials).
 
-**Completed-run evidence.** The stored-Max run:
+**Live proof and evidence.** The successful isolated-home probe used a
+pre-provisioned directory (the copy step is omitted because it handles a secret):
 
 ```console
-printf 'Reply exactly AUTH_PROBE_OK' |
-  claude -p --input-format text --output-format json --model haiku --tools ''
+$ CLAUDE_CONFIG_DIR=<isolated-claude-home> claude auth status
+{
+  "loggedIn": true,
+  "authMethod": "claude.ai",
+  "apiProvider": "firstParty",
+  "email": "[REDACTED]",
+  "orgId": "[REDACTED]",
+  "orgName": "[REDACTED]",
+  "subscriptionType": "max"
+}
+$ printf 'Reply exactly AUTH_PROBE_OK' |
+    CLAUDE_CONFIG_DIR=<isolated-claude-home> \
+    claude -p --input-format text --output-format json --model haiku --tools ''
+{"type":"result","is_error":false,"result":"AUTH_PROBE_OK","total_cost_usd":0.046732,"usage":{"input_tokens":10,"output_tokens":72}, ...}
 ```
 
-returned `result: "AUTH_PROBE_OK"`, nonzero input/output usage, and
-`total_cost_usd: 0.046732`. Cost is therefore **not** a reliable API-key versus
-subscription discriminator in this version. `claude auth status` is the concrete
-pre-run identity evidence (`authMethod`, `subscriptionType`, and account fields);
-the completed result contains no account identifier. The invalid-key precedence
-probe was the same command with `ANTHROPIC_API_KEY=<invalid>`.
+The status output is **pre-run auth-mode/identity evidence** tied to that
+directory. The completed result proves the same selected directory successfully
+served a real turn, but it contains no account identifier. Its nonzero
+`total_cost_usd` means cost is **not** a reliable API-key versus subscription
+discriminator in this version.
+
+The precedence probe explicitly retained the stored login while setting an
+invalid per-process key:
+
+```console
+$ printf 'Reply exactly AUTH_PROBE_OK' |
+    ANTHROPIC_API_KEY=<invalid-api-key> \
+    claude -p --input-format text --output-format json --model haiku --tools ''
+⚠ claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth source is set and takes precedence over your claude.ai login · Unset it to load your organization's connectors
+{"type":"result","is_error":true,"api_error_status":401,"result":"Invalid API key · Fix external API key", ...}
+```
+
+This completed failed turn is concrete evidence that the env key, rather than
+the stored subscription, was selected. The empty-home probe was:
+
+```console
+$ printf 'Reply exactly AUTH_PROBE_OK' |
+    CLAUDE_CONFIG_DIR=<empty-claude-home> \
+    claude -p --input-format text --output-format json --model haiku --tools ''
+{"type":"result","is_error":true,"api_error_status":null,"result":"Not logged in · Please run /login", ...}
+```
 
 ## `codex`
 
@@ -78,37 +111,69 @@ In 0.145.0, an inline invalid `OPENAI_API_KEY` did **not** override the stored
 ChatGPT login: the run still completed. An empty `CODEX_HOME` also did not consume
 that environment variable automatically. Conversely, piping a key to
 `CODEX_HOME=<isolated> codex login --with-api-key` wrote the selected home and
-the subsequent run used it. Profiles (`--profile`, loading
-`$CODEX_HOME/<name>.config.toml`) and `-c` select configuration/model/provider,
-but no tested config key selected a different credential inside one home.
+the subsequent run used it. `--profile` and `-c` select configuration, but no
+tested config key selected a different credential inside one home. The installed
+help only says `--profile` layers a named configuration profile; its storage
+shape/path was not probed, so this document makes no stronger claim.
 `CODEX_ACCESS_TOKEN` is not a direct run-time lever either; the CLI exposes
 `login --with-access-token`. No second ChatGPT account or valid API key was
 available, so successful cross-account precedence could not be exercised.
 
-**Completed-run evidence.**
+**Live proof and evidence.** The successful isolated-home probe used a
+pre-provisioned directory (again omitting the secret-handling copy step):
 
 ```console
-printf 'Reply exactly AUTH_PROBE_OK' |
-  codex --ask-for-approval never exec --json --sandbox read-only -
+$ CODEX_HOME=<isolated-codex-home> codex login status
+Logged in using ChatGPT
+$ printf 'Reply exactly AUTH_PROBE_OK' |
+    CODEX_HOME=<isolated-codex-home> \
+    codex --ask-for-approval never exec --json --sandbox read-only -
+{"type":"item.completed","item":{"type":"agent_message","text":"AUTH_PROBE_OK", ...}}
+{"type":"turn.completed","usage":{"input_tokens":24011,"cached_input_tokens":13056,"cache_write_input_tokens":0,"output_tokens":8,"reasoning_output_tokens":0}}
 ```
 
-returned an `agent_message` containing `AUTH_PROBE_OK`, followed by
-`turn.completed` usage (`input_tokens`, `cached_input_tokens`,
-`output_tokens`, and `reasoning_output_tokens`). The event stream has no account,
-plan, cost, or billing-mode field. `codex login status` (`Logged in using
-ChatGPT`) is the concrete pre-run auth-mode evidence; there is no observed
-completed-run identity proof beyond success under an isolated `CODEX_HOME`.
+`login status` is **pre-run auth-mode evidence**, not evidence embedded in the
+turn. The completed event stream proves the selected home served the turn but
+has no account, plan, cost, or billing-mode field; therefore it cannot identify
+which ChatGPT account owned that home.
 
-An empty home failed with:
+The environment-precedence probe retained the stored ChatGPT login and set an
+invalid API-key variable:
 
-```text
-401 Unauthorized: Missing bearer or basic authentication in header
+```console
+$ printf 'Reply exactly AUTH_PROBE_OK' |
+    OPENAI_API_KEY=<invalid-api-key> \
+    codex --ask-for-approval never exec --json --sandbox read-only -
+{"type":"item.completed","item":{"type":"agent_message","text":"AUTH_PROBE_OK", ...}}
+{"type":"turn.completed","usage":{...}}
 ```
 
-An isolated home provisioned with an invalid API key failed with:
+Success is the observed evidence that 0.145.0 did not select that env value over
+the stored ChatGPT credential.
 
-```text
-401 Unauthorized: Incorrect API key provided: [REDACTED]
+An empty-home probe failed with:
+
+```console
+$ printf 'Reply exactly AUTH_PROBE_OK' |
+    CODEX_HOME=<empty-codex-home> \
+    codex --ask-for-approval never exec --json --sandbox read-only -
+{"type":"error","message":"... 401 Unauthorized: Missing bearer or basic authentication in header ..."}
+{"type":"turn.failed","error":{"message":"... 401 Unauthorized: Missing bearer or basic authentication in header ..."}}
+```
+
+The invalid stored-API-key probe both selected the isolated home during login
+and then ran from it:
+
+```console
+$ printf '<invalid-api-key>' |
+    CODEX_HOME=<invalid-key-codex-home> codex login --with-api-key
+Reading API key from stdin...
+Successfully logged in
+$ printf 'Reply exactly AUTH_PROBE_OK' |
+    CODEX_HOME=<invalid-key-codex-home> \
+    codex --ask-for-approval never exec --json --sandbox read-only -
+{"type":"error","message":"... 401 Unauthorized: Incorrect API key provided: [REDACTED] ..."}
+{"type":"turn.failed","error":{"message":"... 401 Unauthorized: Incorrect API key provided: [REDACTED] ..."}}
 ```
 
 Both classify as `auth`.

@@ -10049,6 +10049,99 @@ fn streamed_variant_history_events_keep_the_composed_identity() {
 }
 
 #[test]
+fn history_cli_rejects_inconsistent_variant_identities_in_run_and_event_lines() {
+    let dir = hist_dir("invalid-variant-identities-source");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--bin",
+            &bin_override("opencode"),
+            "--prompt",
+            "history identity",
+            "--stream",
+            "--history",
+            "--history-dir",
+            &dir.display().to_string(),
+            "--bypass",
+        ],
+        &[(
+            "MOCK_STDOUT",
+            "{\"type\":\"tool_use\",\"part\":{\"type\":\"tool\",\"tool\":\"bash\",\"state\":{\"status\":\"completed\",\"input\":{\"command\":\"echo hi\"},\"output\":\"hi\"}}}\n",
+        )],
+    );
+    assert!(output.status.success());
+    let terminal: Value = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .next_back()
+        .unwrap();
+    let source = PathBuf::from(terminal["report"]["history_file"].as_str().unwrap());
+    let source_lines: Vec<Value> = std::fs::read_to_string(&source)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+
+    let write_mutated = |tag: &str, line_type: &str| {
+        let target_dir = hist_dir(tag);
+        let target = target_dir.join("project").join(source.file_name().unwrap());
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        let text = source_lines
+            .iter()
+            .cloned()
+            .map(|mut line| {
+                if line["type"] == line_type {
+                    line["harness_id"] = Value::String("codex:work".to_string());
+                }
+                serde_json::to_string(&line).unwrap()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&target, format!("{text}\n")).unwrap();
+        (target_dir, target)
+    };
+
+    let (bad_run_dir, _) = write_mutated("invalid-variant-run", "run");
+    let listed = run(
+        &[
+            "history",
+            "list",
+            "--all-projects",
+            "--history-dir",
+            &bad_run_dir.display().to_string(),
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(listed.status.success());
+    assert!(json_stdout(&listed).as_array().unwrap().is_empty());
+
+    let (bad_event_dir, bad_event_path) = write_mutated("invalid-variant-event", "event");
+    let shown = run(
+        &[
+            "history",
+            "show",
+            &bad_event_path.file_stem().unwrap().to_string_lossy(),
+            "--all-projects",
+            "--history-dir",
+            &bad_event_dir.display().to_string(),
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(shown.status.success());
+    let records = json_stdout(&shown);
+    assert!(records.as_array().unwrap().is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&bad_run_dir);
+    let _ = std::fs::remove_dir_all(&bad_event_dir);
+}
+
+#[test]
 fn streamed_history_falls_back_to_events_only_extractable_at_completion() {
     let dir = hist_dir("stream-completion-events");
     let ds = dir.display().to_string();

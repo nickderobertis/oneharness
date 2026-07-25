@@ -98,12 +98,12 @@ if [ -z "${OH_E2E_VARIANTS_API_ONLY:-}" ]; then
     jq -e '.results[0].stdout | fromjson |
         .usage.cache_creation.ephemeral_1h_input_tokens > 0' \
         "$tmp/claude-code-subscription-a.json" >/dev/null ||
-        fail "Claude subscription A lacked subscription cache evidence"
+        fail "Claude subscription A lacked subscription cache evidence; run 'CLAUDE_CONFIG_DIR=<subscription-a-dir> claude auth status --json', confirm a Max subscription, then rerun"
     evidence "IDENTITY claude-code:subscription-a: authMethod=claude.ai alternate_config=no ambient_api_key=present child_api_key=masked ephemeral_1h_input_tokens>0"
     jq -e '.results[0].stdout | fromjson |
         .usage.cache_creation.ephemeral_1h_input_tokens > 0' \
         "$tmp/claude-code-subscription-b.json" >/dev/null ||
-        fail "Claude subscription B lacked subscription cache evidence"
+        fail "Claude subscription B lacked subscription cache evidence; run 'CLAUDE_CONFIG_DIR=<subscription-b-dir> claude auth status --json', confirm a Max subscription, then rerun"
     evidence "IDENTITY claude-code:subscription-b: authMethod=claude.ai alternate_config=yes ambient_api_key=present child_api_key=masked ephemeral_1h_input_tokens>0"
     fallback_target="claude-code:subscription-a"
 fi

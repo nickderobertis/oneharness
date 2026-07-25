@@ -686,6 +686,7 @@ fn merge_variant_maps(
 }
 
 impl FileConfig {
+    // llmlint: ignore[invalid_states_unrepresentable] This public helper preserves the existing serialized-selector API used across the core/binary crate boundary; config validation and command selection reject malformed/unknown variants before resolution, while this function only borrows the base/name slices without asserting validity.
     pub fn split_harness_id<'a>(&self, composed: &'a str) -> (&'a str, Option<&'a str>) {
         composed
             .split_once(':')

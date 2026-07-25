@@ -26,7 +26,7 @@ pub fn dedupe_exact_ids(ids: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Resolve a harness selection into specs, in registry order.
+/// Resolve `all` in registry order or an explicit selection in caller order.
 ///
 /// `all` selects every harness (minus `exclude`); otherwise `include` lists the
 /// ids to run. An empty selection, or any unknown id, is a usage error.

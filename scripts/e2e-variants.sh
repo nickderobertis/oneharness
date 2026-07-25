@@ -12,6 +12,15 @@ AUTH_FILE="${OH_LIVE_AUTH_FILE:-$HOME/.config/oneharness/live-auth.env}"
 if [ -f "$AUTH_FILE" ]; then
     mode="$(stat -c %a "$AUTH_FILE" 2>/dev/null || stat -f %Lp "$AUTH_FILE")"
     [ "$mode" = 600 ] || fail "$AUTH_FILE must have mode 0600; run: chmod 600 '$AUTH_FILE'"
+    invalid_line="$(
+        awk '
+            /^[[:space:]]*($|#)/ { next }
+            /^[A-Za-z_][A-Za-z0-9_]*=/ { next }
+            { print NR; exit }
+        ' "$AUTH_FILE"
+    )"
+    [ -z "$invalid_line" ] ||
+        fail "$AUTH_FILE has invalid KEY=VALUE syntax at line $invalid_line; fix or comment that line without printing its secret value"
 fi
 auth_value() {
     local name="$1"

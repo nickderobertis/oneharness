@@ -92,8 +92,10 @@ pub struct HistoryEventLine {
     pub run_id: HistoryId,
     pub harness: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    // llmlint: ignore[invalid_states_unrepresentable] History v1.0 compatibility requires an optional string here; current writers derive it from a validated composed selector and materialization validates/normalizes the legacy tuple.
     pub variant: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    // llmlint: ignore[invalid_states_unrepresentable] This field is optional specifically to read v1.0 event lines; current writers always derive it with base/variant from one composed id, and event-stream integration coverage asserts all three.
     pub harness_id: Option<String>,
     pub event: ActionEvent,
 }

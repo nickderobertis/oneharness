@@ -4120,7 +4120,11 @@ harnesses = ["claude-code:masked", "claude-code:file", "claude-code:sourced"]
 max_parallel = 2
 [harness.claude-code.variant.masked]
 bin = "{bin}"
+model = "sonnet"
+args = ["--variant-arg"]
 unset_env = ["ANTHROPIC_API_KEY"]
+[harness.claude-code.variant.masked.env]
+VARIANT_LABEL = "masked"
 [harness.claude-code.variant.sourced]
 bin = "{bin}"
 [harness.claude-code.variant.sourced.env_from]
@@ -4190,6 +4194,20 @@ env_file = "variant.env"
         config["harness"]["claude-code"]["variant"]["file"]["env_file"]["value"],
         "variant.env"
     );
+    let masked_config = &config["harness"]["claude-code"]["variant"]["masked"];
+    assert_eq!(masked_config["model"]["value"], "sonnet");
+    assert_eq!(masked_config["args"]["value"][0], "--variant-arg");
+    assert_eq!(masked_config["env"]["VARIANT_LABEL"]["value"], "masked");
+    assert_eq!(masked_config["unset_env"]["value"][0], "ANTHROPIC_API_KEY");
+    assert!(masked_config["model"]["source"]
+        .as_str()
+        .unwrap()
+        .ends_with("oneharness.toml"));
+    assert_eq!(
+        config["harness"]["claude-code"]["variant"]["sourced"]["env_from"]["ANTHROPIC_API_KEY"]
+            ["value"],
+        "ANTHROPIC_API_KEY_WORK"
+    );
     let listed = json_stdout(&run_with_config(
         &["list", "--compact"],
         &[],
@@ -4202,6 +4220,35 @@ env_file = "variant.env"
         .find(|item| item["id"] == "claude-code")
         .unwrap();
     assert_eq!(claude["variants"].as_array().unwrap().len(), 3);
+    let masked = claude["variants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|variant| variant["name"] == "masked")
+        .unwrap();
+    assert_eq!(masked["harness_id"], "claude-code:masked");
+    assert_eq!(masked["model"], "sonnet");
+    assert_eq!(masked["bin"], mock_bin().display().to_string());
+    assert_eq!(masked["args"][0], "--variant-arg");
+    assert_eq!(masked["env_keys"][0], "VARIANT_LABEL");
+    assert_eq!(masked["unset_env"][0], "ANTHROPIC_API_KEY");
+    let sourced = claude["variants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|variant| variant["name"] == "sourced")
+        .unwrap();
+    assert_eq!(
+        sourced["env_from"]["ANTHROPIC_API_KEY"],
+        "ANTHROPIC_API_KEY_WORK"
+    );
+    let file = claude["variants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|variant| variant["name"] == "file")
+        .unwrap();
+    assert_eq!(file["env_file"], "variant.env");
 
     let history = json_stdout(&run_with_config(
         &[

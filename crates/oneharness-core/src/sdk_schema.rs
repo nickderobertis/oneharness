@@ -60,6 +60,7 @@ fn history_stream_schema() -> Schema {
     for name in ["ActionEvent", "HistoryEventLine"] {
         value["$defs"][name] = definitions[name].clone();
     }
+    add_history_line_conditions(&mut value);
     add_v03_condition(&mut value);
     Schema::try_from(value).expect("history stream schema remains an object")
 }

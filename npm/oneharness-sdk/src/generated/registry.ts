@@ -131,7 +131,9 @@ export interface VariantInfo {
   args: string[];
   bin: string | null;
   env_file: string | null;
-  env_from: string[];
+  env_from: {
+    [k: string]: string;
+  };
   env_keys: string[];
   harness_id: string;
   model: string | null;

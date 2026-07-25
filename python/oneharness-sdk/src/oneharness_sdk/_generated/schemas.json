@@ -3296,6 +3296,10 @@
             "type": "string"
           },
           "schema_version": {
+            "enum": [
+              "1.0",
+              "1.1"
+            ],
             "type": "string"
           },
           "variant": {
@@ -4571,10 +4575,10 @@
             ]
           },
           "env_from": {
-            "items": {
+            "additionalProperties": {
               "type": "string"
             },
-            "type": "array"
+            "type": "object"
           },
           "env_keys": {
             "items": {

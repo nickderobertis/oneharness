@@ -131,7 +131,9 @@ export const HistoryEventLineSchema: z.ZodType<HistoryEventLine> = z.looseObject
     )
     .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
     .refine((value) => value !== undefined, { message: "Required" }),
-  schema_version: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  schema_version: z
+    .union([z.literal("1.0"), z.literal("1.1")])
+    .refine((value) => value !== undefined, { message: "Required" }),
   variant: z.union([z.string(), z.null()]).optional(),
 });
 
@@ -817,7 +819,7 @@ export const VariantInfoSchema: z.ZodType<VariantInfo> = z.looseObject({
   args: z.array(z.string()).refine((value) => value !== undefined, { message: "Required" }),
   bin: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   env_file: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-  env_from: z.array(z.string()).refine((value) => value !== undefined, { message: "Required" }),
+  env_from: z.record(z.string(), z.string()).refine((value) => value !== undefined, { message: "Required" }),
   env_keys: z.array(z.string()).refine((value) => value !== undefined, { message: "Required" }),
   harness_id: z.string().refine((value) => value !== undefined, { message: "Required" }),
   model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),

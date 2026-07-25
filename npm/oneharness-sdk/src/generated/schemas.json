@@ -3909,7 +3909,11 @@
             "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
           },
           "schema_version": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "1.0",
+              "1.1"
+            ]
           },
           "variant": {
             "type": [
@@ -6250,8 +6254,8 @@
             ]
           },
           "env_from": {
-            "type": "array",
-            "items": {
+            "type": "object",
+            "additionalProperties": {
               "type": "string"
             }
           },

@@ -105,8 +105,10 @@ pub struct RunResult {
     /// Canonical harness id (e.g. `claude-code`).
     pub harness: String,
     /// Named preset, when this result came from a composed harness id.
+    // llmlint: ignore[invalid_states_unrepresentable] This additive public wire field must remain an Option<String> for generated SDK compatibility; all production constructors set it together with harness/harness_id via `apply_result_identity`, and subprocess tests assert the triplet.
     pub variant: Option<String>,
     /// Base id or `<base>:<variant>`, suitable for selecting the same candidate.
+    // llmlint: ignore[invalid_states_unrepresentable] This stable serialized selector remains a String so existing consumers can round-trip it; production code derives it from the validated selection alongside base/variant and integration tests pin consistency.
     pub harness_id: String,
     /// The binary name or path oneharness resolved and would invoke.
     pub bin: String,

@@ -111,6 +111,12 @@ fn variant_environment(
                     line: index + 1,
                 });
             }
+            if value.contains('\0') {
+                return Err(OneharnessError::VariantEnvFileLine {
+                    path: path.display().to_string(),
+                    line: index + 1,
+                });
+            }
             env.push((key.to_string(), value.to_string()));
         }
     }

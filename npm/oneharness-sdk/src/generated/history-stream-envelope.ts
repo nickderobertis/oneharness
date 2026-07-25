@@ -509,7 +509,7 @@ export interface HistoryEventLine {
   harness: string;
   harness_id?: string | null | undefined;
   run_id: string;
-  schema_version: string;
+  schema_version: "1.0" | "1.1";
   variant?: string | null | undefined;
   [k: string]: unknown;
 }

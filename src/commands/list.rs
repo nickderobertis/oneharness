@@ -96,7 +96,7 @@ pub struct VariantInfo {
     args: Vec<String>,
     env_keys: Vec<String>,
     env_file: Option<String>,
-    env_from: Vec<String>,
+    env_from: std::collections::BTreeMap<String, String>,
     unset_env: Vec<String>,
 }
 
@@ -171,7 +171,7 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                             args: cfg.args_for(&id).to_vec(),
                             env_keys: variant.env.keys().cloned().collect(),
                             env_file: variant.env_file.clone(),
-                            env_from: variant.env_from.keys().cloned().collect(),
+                            env_from: variant.env_from.clone(),
                             unset_env: variant.unset_env.clone(),
                         }
                     })

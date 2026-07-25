@@ -62,7 +62,8 @@ run_marker() {
         --prompt "Reply exactly $marker" --compact >"$report"
     jq -e --arg marker "$marker" \
         '.results[0].status == "ok" and (.results[0].stdout | contains($marker))' \
-        "$report" >/dev/null || fail "$id did not complete with marker"
+        "$report" >/dev/null ||
+        fail "$id did not complete with marker; inspect the sanitized report status/stderr and verify that variant's selected credential source"
     evidence "COMMAND $id: oneharness run --config <temporary> --harness $id --prompt 'Reply exactly <marker>' --compact"
     evidence "ASSERT $id: status=ok marker=exact harness_id=$id"
 }
@@ -116,7 +117,8 @@ evidence "COMMAND fallback: oneharness run --config <temporary> --harness claude
 evidence "ASSERT fallback: first_failure_kind=auth next_harness_id=$fallback_target status=ok marker=exact"
 if [ -n "${OH_E2E_CODEX_SUBSCRIPTION:-}" ]; then
     env -u CODEX_API_KEY -u OPENAI_API_KEY codex login status 2>&1 |
-        grep -q "Logged in using ChatGPT" || fail "Codex ChatGPT login unavailable"
+        grep -q "Logged in using ChatGPT" ||
+        fail "Codex ChatGPT login unavailable; run 'CODEX_HOME=<host-login-home> codex login' interactively"
     run_marker codex:subscription "${marker}_cs" \
         OH_VARIANT_CODEX_SUBSCRIPTION_HOME="$HOME/.codex"
     evidence "IDENTITY codex:subscription: login_status='Logged in using ChatGPT' CODEX_HOME=host-login API keys masked"

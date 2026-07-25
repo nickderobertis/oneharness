@@ -11,7 +11,7 @@ OH="$(oh_bin)"
 AUTH_FILE="${OH_LIVE_AUTH_FILE:-$HOME/.config/oneharness/live-auth.env}"
 if [ -f "$AUTH_FILE" ]; then
     mode="$(stat -c %a "$AUTH_FILE" 2>/dev/null || stat -f %Lp "$AUTH_FILE")"
-    [ "$mode" = 600 ] || fail "$AUTH_FILE must have mode 0600"
+    [ "$mode" = 600 ] || fail "$AUTH_FILE must have mode 0600; run: chmod 600 '$AUTH_FILE'"
 fi
 auth_value() {
     local name="$1"

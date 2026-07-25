@@ -264,6 +264,10 @@ live-schema: _live-install
 live-variants: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-variants.sh
 
+# Install the real CLIs required by the harness-variant live test.
+live-variants-tools:
+    npm install -g @anthropic-ai/claude-code @openai/codex
+
 # Run every per-harness live check plus the per-feature ones; skips count as
 # passes, only real failures fail.
 live-all: _live-install

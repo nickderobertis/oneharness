@@ -51,7 +51,7 @@ jobs:
         with:
           node-version: lts/*
       - name: Install real CLIs
-        run: npm install -g @anthropic-ai/claude-code @openai/codex
+        run: just live-variants-tools
       - name: Live API variants and same-harness fallback
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

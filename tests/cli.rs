@@ -262,6 +262,15 @@ fn list_describes_every_harness() {
 }
 
 #[test]
+fn list_rejects_a_malformed_loaded_config() {
+    let fx = ConfigFixture::new("list-malformed-config", "", "not valid = [");
+    let output = run_with_config(&["list", "--compact"], &[], &fx.user_config());
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid config"));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
 fn print_command_pins_argv_for_every_harness() {
     // The deterministic, network-free proof that each adapter builds the right
     // invocation. argv[0] is the default binary; we pin argv[1..].

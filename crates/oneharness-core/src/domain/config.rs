@@ -198,6 +198,15 @@ impl<'de> Deserialize<'de> for VariantName {
     }
 }
 
+impl std::str::FromStr for VariantName {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        validate_variant_name(value)?;
+        Ok(Self(value.to_string()))
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VariantConfig {
@@ -211,9 +220,12 @@ pub struct VariantConfig {
     pub settings: Option<toml::Value>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    // llmlint: ignore[invalid_states_unrepresentable] The TOML contract intentionally stores a portable path string; deserialization rejects empty/NUL values and the I/O boundary resolves it, verifies it is a regular mode-private file, and reports the concrete path.
     pub env_file: Option<String>,
+    // llmlint: ignore[invalid_states_unrepresentable] Environment names are TOML map keys/values that must remain strings for backward-compatible config merging; `validate` checks every target/source before FileConfig is exposed and the env-file parser independently validates external names.
     #[serde(default)]
     pub env_from: BTreeMap<String, String>,
+    // llmlint: ignore[invalid_states_unrepresentable] These names share the established string-list config shape; `validate` checks the complete list before FileConfig is exposed, and Command receives only validated values.
     #[serde(default)]
     pub unset_env: Vec<String>,
 }
@@ -252,6 +264,17 @@ pub fn parse(text: &str) -> Result<FileConfig, String> {
 }
 
 fn validate(config: &FileConfig) -> Result<(), String> {
+    for harness in config.harness.values() {
+        for variant in harness.variant.values() {
+            if variant
+                .env_file
+                .as_ref()
+                .is_some_and(|path| path.is_empty() || path.contains('\0'))
+            {
+                return Err("variant `env_file` must be a non-empty path without NUL".to_string());
+            }
+        }
+    }
     if config.all == Some(true) && config.harnesses.is_some() {
         return Err("`all = true` and `harnesses` are mutually exclusive".to_string());
     }

@@ -4132,11 +4132,13 @@ env_file = "variant.env"
         ),
         "",
     );
-    std::fs::write(
-        std::path::Path::new(&fx.cwd()).join("variant.env"),
-        "ANTHROPIC_API_KEY=file-only\n",
-    )
-    .unwrap();
+    let variant_env = std::path::Path::new(&fx.cwd()).join("variant.env");
+    std::fs::write(&variant_env, "ANTHROPIC_API_KEY=file-only\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&variant_env, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
     let history_dir = std::path::Path::new(&fx.cwd()).join("history");
     let output = run_with_config(
         &[
@@ -4242,6 +4244,110 @@ fn unknown_and_malformed_variants_are_usage_errors() {
         );
         assert_eq!(output.status.code(), Some(2), "{id}");
     }
+}
+
+#[test]
+fn variant_external_source_errors_are_loud_at_cli_boundaries() {
+    let bin = mock_bin().display().to_string().replace('\\', "\\\\");
+    let fx = ConfigFixture::new(
+        "variant-source-errors",
+        &format!(
+            r#"
+[harness.claude-code.variant.work]
+bin = "{bin}"
+[harness.claude-code.variant.missing-file]
+bin = "{bin}"
+env_file = "absent.env"
+[harness.claude-code.variant.bad-line]
+bin = "{bin}"
+env_file = "bad.env"
+[harness.claude-code.variant.insecure]
+bin = "{bin}"
+env_file = "insecure.env"
+[harness.claude-code.variant.missing-parent]
+bin = "{bin}"
+[harness.claude-code.variant.missing-parent.env_from]
+ANTHROPIC_API_KEY = "ONEHARNESS_TEST_PARENT_IS_ABSENT"
+"#
+        ),
+        "",
+    );
+    let bad_env = std::path::Path::new(&fx.cwd()).join("bad.env");
+    std::fs::write(&bad_env, "not-key-value\n").unwrap();
+    let insecure_env = std::path::Path::new(&fx.cwd()).join("insecure.env");
+    std::fs::write(&insecure_env, "ANTHROPIC_API_KEY=not-a-real-key\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bad_env, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(&insecure_env, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    #[cfg(unix)]
+    {
+        let output = run_with_config(
+            &[
+                "run",
+                "--harness",
+                "claude-code:insecure",
+                "--prompt",
+                "hi",
+                "--cwd",
+                &fx.cwd(),
+            ],
+            &[],
+            &fx.user_config(),
+        );
+        assert_eq!(output.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("mode 0600 or stricter"));
+    }
+    for (variant, expected) in [
+        ("missing-file", "could not read variant environment file"),
+        ("bad-line", "expected KEY=VALUE"),
+        ("missing-parent", "is not set in the parent process"),
+    ] {
+        let output = run_with_config(
+            &[
+                "run",
+                "--harness",
+                &format!("claude-code:{variant}"),
+                "--prompt",
+                "hi",
+                "--cwd",
+                &fx.cwd(),
+            ],
+            &[],
+            &fx.user_config(),
+        );
+        assert_eq!(output.status.code(), Some(2), "{variant}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "{variant}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let project_config = std::path::Path::new(&fx.cwd()).join("oneharness.toml");
+    let detect = run_with_config(
+        &["detect", "--harness", "claude-code:unknown"],
+        &[],
+        &project_config,
+    );
+    assert_eq!(detect.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&detect.stderr).contains("unknown harness variant"));
+
+    let sync = run_with_config(
+        &[
+            "sync",
+            "--harness",
+            "claude-code:unknown",
+            "--cwd",
+            &fx.cwd(),
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(sync.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&sync.stderr).contains("unknown harness variant"));
 }
 
 #[test]

@@ -84,8 +84,9 @@ if [ -z "${OH_E2E_VARIANTS_API_ONLY:-}" ]; then
                 claude auth status --json |
                 jq -er 'select(.loggedIn == true) | .authMethod'
         )" ||
-            fail "Claude subscription preflight failed"
-        [ "$auth_method" = "claude.ai" ] || fail "Claude subscription preflight used an unexpected auth method"
+            fail "Claude subscription preflight failed; run 'CLAUDE_CONFIG_DIR=<dir> claude auth login' for the missing identity"
+        [ "$auth_method" = "claude.ai" ] ||
+            fail "Claude subscription preflight used an unexpected auth method; remove API auth from that config home and run 'claude auth login'"
     done
     run_marker claude-code:subscription-a "${marker}_ca" \
         ANTHROPIC_API_KEY="$ANTHROPIC_MATERIAL" OH_VARIANT_CLAUDE_A="$claude_a"
@@ -120,7 +121,7 @@ if [ -n "${OH_E2E_CODEX_SUBSCRIPTION:-}" ]; then
         OH_VARIANT_CODEX_SUBSCRIPTION_HOME="$HOME/.codex"
     evidence "IDENTITY codex:subscription: login_status='Logged in using ChatGPT' CODEX_HOME=host-login API keys masked"
 else
-    note "Codex subscription phase not requested (set OH_E2E_CODEX_SUBSCRIPTION=1)"
+    :
 fi
 evidence "IDENTITY codex:apikey: empty CODEX_HOME plus per-process CODEX_API_KEY (sourced from OpenAI API auth material)"
 note "live variants: ok (API, subscription, masking, identity evidence, fallback)"

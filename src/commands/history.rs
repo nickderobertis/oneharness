@@ -77,7 +77,7 @@ fn watch(args: &HistoryWatchArgs) -> Result<i32, OneharnessError> {
                 .filter(|record| {
                     args.variant
                         .as_ref()
-                        .is_none_or(|variant| record.variant.as_ref() == Some(variant))
+                        .is_none_or(|variant| record.variant.as_deref() == Some(variant.as_str()))
                 })
                 .collect();
             if !write_watch_records(&records)? {
@@ -90,7 +90,7 @@ fn watch(args: &HistoryWatchArgs) -> Result<i32, OneharnessError> {
                 .filter(|record| {
                     args.variant
                         .as_ref()
-                        .is_none_or(|variant| record.variant.as_ref() == Some(variant))
+                        .is_none_or(|variant| record.variant.as_deref() == Some(variant.as_str()))
                 })
                 .collect();
             if args.events && !write_watch_events(&watcher.drain_events())? {

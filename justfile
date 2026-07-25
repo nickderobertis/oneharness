@@ -272,7 +272,6 @@ live-all: _live-install
     export ONEHARNESS_BIN="{{ONEHARNESS_BIN}}"
     fails=0
     for h in claude codex opencode goose qwen crush copilot cursor schema variants; do
-        printf '\n=================== live: %s ===================\n' "$h"
         bash "scripts/e2e-$h.sh" || fails=$((fails + 1))
     done
     printf '\nlive-all: %d harness check(s) failed\n' "$fails"

@@ -29,6 +29,9 @@ pub enum OneharnessError {
         source: std::io::Error,
     },
 
+    #[error("variant environment file `{path}` must be a regular file readable only by its owner (mode 0600 or stricter)")]
+    VariantEnvFilePermissions { path: String },
+
     #[error("invalid line {line} in variant environment file `{path}`; expected KEY=VALUE")]
     VariantEnvFileLine { path: String, line: usize },
 

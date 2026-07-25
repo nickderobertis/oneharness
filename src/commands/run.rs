@@ -72,6 +72,23 @@ fn variant_environment(
                 project_start.join(path)
             }
         };
+        let metadata =
+            std::fs::metadata(&path).map_err(|source| OneharnessError::VariantEnvFile {
+                path: path.display().to_string(),
+                source,
+            })?;
+        #[cfg(unix)]
+        let private = {
+            use std::os::unix::fs::PermissionsExt;
+            metadata.is_file() && metadata.permissions().mode() & 0o077 == 0
+        };
+        #[cfg(not(unix))]
+        let private = metadata.is_file();
+        if !private {
+            return Err(OneharnessError::VariantEnvFilePermissions {
+                path: path.display().to_string(),
+            });
+        }
         let text =
             std::fs::read_to_string(&path).map_err(|source| OneharnessError::VariantEnvFile {
                 path: path.display().to_string(),

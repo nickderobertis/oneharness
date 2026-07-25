@@ -172,6 +172,8 @@ pub struct HarnessConfig {
 #[serde(transparent)]
 pub struct VariantName(String);
 
+pub const VARIANT_NAME_PATTERN: &str = "[A-Za-z0-9][A-Za-z0-9_-]{0,63}";
+
 impl VariantName {
     pub fn as_str(&self) -> &str {
         &self.0
@@ -430,10 +432,7 @@ fn validate_variant_name(name: &str) -> Result<(), String> {
             .enumerate()
             .all(|(i, b)| b.is_ascii_alphanumeric() || (i > 0 && matches!(b, b'-' | b'_')));
     valid.then_some(()).ok_or_else(|| {
-        format!(
-            "invalid harness variant name `{name}`; expected \
-             [A-Za-z0-9][A-Za-z0-9_-]{{0,63}}"
-        )
+        format!("invalid harness variant name `{name}`; expected {VARIANT_NAME_PATTERN}")
     })
 }
 
@@ -1266,6 +1265,11 @@ variant = true
             ))
             .is_err());
         }
+    }
+
+    #[test]
+    fn documented_variant_name_grammar_tracks_the_parser_constant() {
+        assert!(include_str!("../../../../README.md").contains(VARIANT_NAME_PATTERN));
     }
 
     #[test]

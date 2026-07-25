@@ -4291,6 +4291,15 @@ fn unknown_and_malformed_variants_are_usage_errors() {
         );
         assert_eq!(output.status.code(), Some(2), "{id}");
     }
+    std::fs::write(
+        std::path::Path::new(&fx.cwd()).join("oneharness.toml"),
+        "[harness.claude-code.variant.\"bad.name\"]\nmodel = \"x\"\n",
+    )
+    .unwrap();
+    let malformed_config = run_with_config(&["config", "--cwd", &fx.cwd()], &[], &fx.user_config());
+    assert_eq!(malformed_config.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&malformed_config.stderr)
+        .contains("invalid harness variant name `bad.name`"));
 }
 
 #[test]
@@ -11412,13 +11421,21 @@ fn fallback_reports_no_run_when_every_model_of_every_harness_fails() {
 #[test]
 fn all_selects_every_harness_by_model_cross_product() {
     // `--all` composes with the model fan-out: every harness runs once per model,
-    // harness-major then model-minor. Pinned with --print-command (no spawning).
-    let output = run(
+    // harness-major then model-minor. Declared variants remain opt-in and never
+    // join this base-only selection. Pinned with --print-command (no spawning).
+    let fx = ConfigFixture::new(
+        "all-excludes-variants",
+        "[harness.claude-code.variant.work]\nmodel = \"variant-only\"\n",
+        "",
+    );
+    let output = run_with_config(
         &[
             "run",
             "--all",
             "--prompt",
             "hi",
+            "--cwd",
+            &fx.cwd(),
             "--model",
             "a",
             "--model",
@@ -11427,6 +11444,7 @@ fn all_selects_every_harness_by_model_cross_product() {
             "--compact",
         ],
         &[],
+        &fx.user_config(),
     );
     assert!(output.status.success());
     let v = json_stdout(&output);
@@ -11438,6 +11456,8 @@ fn all_selects_every_harness_by_model_cross_product() {
     // Each harness's two models are adjacent (model-minor within a harness).
     for chunk in results.chunks(2) {
         assert_eq!(chunk[0]["harness"], chunk[1]["harness"]);
+        assert!(chunk[0]["variant"].is_null());
+        assert_eq!(chunk[0]["harness_id"], chunk[0]["harness"]);
         assert_eq!(chunk[0]["model"], "a");
         assert_eq!(chunk[1]["model"], "b");
     }

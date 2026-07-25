@@ -124,8 +124,10 @@ pub struct HistoryRunRecord {
     // llmlint: ignore[invalid_states_unrepresentable] These legacy-compatible wire fields must deserialize v1.0 records where the composed field is absent; `materialize` derives the composed identity and current writers copy the already-normalized run identity, with cross-contract tests pinning consistency.
     pub harness: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    // llmlint: ignore[invalid_states_unrepresentable] The v1.0 wire contract requires this optional string; current writers copy the validated run identity and deserialization/materialization validates the supported schema before exposure.
     pub variant: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    // llmlint: ignore[invalid_states_unrepresentable] This remains optional to read v1.0 records; v1.1 writers always derive it with base/variant from one composed selector and round-trip tests pin consistency.
     pub harness_id: Option<String>,
     pub model: Option<String>,
     pub prompt: String,
@@ -531,7 +533,9 @@ pub struct HistoryRecord {
     /// Canonical harness id (e.g. `claude-code`).
     pub harness: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    // llmlint: ignore[invalid_states_unrepresentable] Materialized records preserve the stable SDK string contract; the only constructors normalize a validated current/legacy wire identity before creating this value.
     pub variant: Option<String>,
+    // llmlint: ignore[invalid_states_unrepresentable] The composed selector is a public serialized SDK field; materialization derives it from the validated wire tuple and never accepts caller-provided independent pieces.
     pub harness_id: String,
     /// The effective top-level model for the run, if any.
     pub model: Option<String>,
@@ -852,8 +856,10 @@ struct HistoryRecordWire {
     timestamp: String,
     harness: String,
     #[serde(default)]
+    // llmlint: ignore[invalid_states_unrepresentable] This private compatibility wire type must deserialize legacy optional strings before schema-aware normalization; it is never exposed directly.
     variant: Option<String>,
     #[serde(default)]
+    // llmlint: ignore[invalid_states_unrepresentable] This private optional field exists only for v1.0 compatibility and is normalized into the required materialized composed id.
     harness_id: Option<String>,
     model: Option<String>,
     prompt: String,

@@ -13,4 +13,3 @@ for binary in claude codex opencode qwen crush; do
         exit 1
     fi
 done
-echo "live-variants-tools-e2e: ok (all required CLI executables installed)"

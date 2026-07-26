@@ -13,3 +13,23 @@ for binary in claude codex opencode qwen crush; do
         exit 1
     fi
 done
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+failure="$tmp/npm-failure.log"
+if npm_config_registry="http://127.0.0.1:9" \
+    npm_config_cache="$tmp/npm-cache" \
+    npm_config_fetch_retries=0 \
+    npm_config_fetch_timeout=1000 \
+    just live-variants-tools >"$failure" 2>&1; then
+    echo "live-variants-tools-e2e: unreachable npm registry unexpectedly succeeded; verify the failure-path test isolation" >&2
+    exit 1
+fi
+if ! grep -Fq "rerun 'just live-variants-tools'" "$failure"; then
+    echo "live-variants-tools-e2e: failure output omitted the retry action; inspect the live-variants-tools error branch" >&2
+    exit 1
+fi
+if ! grep -Fq "run 'npm config get registry'" "$failure"; then
+    echo "live-variants-tools-e2e: failure output omitted the registry diagnostic; inspect the live-variants-tools error branch" >&2
+    exit 1
+fi

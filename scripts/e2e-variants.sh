@@ -32,7 +32,7 @@ auth_value() {
 EVIDENCE_FILE="${OH_E2E_EVIDENCE_FILE:-}"
 if [ -n "$EVIDENCE_FILE" ]; then
     case "$EVIDENCE_FILE" in
-        *$'\n'*) fail "OH_E2E_EVIDENCE_FILE must be a single-line file path" ;;
+        *$'\n'*) fail "OH_E2E_EVIDENCE_FILE must be a single-line file path; choose a path without newline characters and retry" ;;
     esac
     evidence_dir="$(dirname -- "$EVIDENCE_FILE")"
     if [ -e "$EVIDENCE_FILE" ]; then

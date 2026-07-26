@@ -2,15 +2,19 @@
 # Install the real CLIs used by e2e-variants.sh, validating downloaded installers.
 set -euo pipefail
 
-npm install -g \
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+log="$tmp/install.log"
+if ! npm install -g \
     @anthropic-ai/claude-code \
     @openai/codex \
     opencode-ai \
     @qwen-code/qwen-code \
-    @charmland/crush
-
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+    @charmland/crush >"$log" 2>&1; then
+    cat "$log" >&2
+    printf 'npm CLI installation failed; resolve the error above, then rerun just live-variants-tools\n' >&2
+    exit 1
+fi
 sha256() {
     if command -v sha256sum >/dev/null 2>&1; then
         sha256sum "$1" | awk '{print $1}'
@@ -26,7 +30,11 @@ MINGW* | MSYS* | CYGWIN*)
     curl -fsSL "$url" -o "$installer"
     [ "$(sha256 "$installer")" = "$expected" ] ||
         { printf 'Goose installer checksum mismatch: update the pinned commit and reviewed checksum\n' >&2; exit 1; }
-    CONFIGURE=false pwsh -NoProfile -File "$installer"
+    if ! CONFIGURE=false pwsh -NoProfile -File "$installer" >"$log" 2>&1; then
+        cat "$log" >&2
+        printf 'Goose installation failed; resolve the error above, then rerun just live-variants-tools\n' >&2
+        exit 1
+    fi
     ;;
 *)
     installer="$tmp/download_cli.sh"
@@ -35,7 +43,11 @@ MINGW* | MSYS* | CYGWIN*)
     curl -fsSL "$url" -o "$installer"
     [ "$(sha256 "$installer")" = "$expected" ] ||
         { printf 'Goose installer checksum mismatch: review the stable installer and update its checksum\n' >&2; exit 1; }
-    CONFIGURE=false bash "$installer"
+    if ! CONFIGURE=false bash "$installer" >"$log" 2>&1; then
+        cat "$log" >&2
+        printf 'Goose installation failed; resolve the error above, then rerun just live-variants-tools\n' >&2
+        exit 1
+    fi
     ;;
 esac
 [ -z "${GITHUB_PATH:-}" ] || printf '%s\n' "$HOME/.local/bin" >>"$GITHUB_PATH"

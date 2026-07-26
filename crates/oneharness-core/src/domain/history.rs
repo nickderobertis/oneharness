@@ -786,11 +786,7 @@ impl HistoryRecord {
 
     fn observed_timing_valid(&self) -> bool {
         match self.observed_tool_ms {
-            None => self.events.as_ref().is_none_or(|events| {
-                events.iter().all(|event| {
-                    event.timing_source != Some(crate::domain::events::TimingSource::StdoutObserved)
-                })
-            }),
+            None => true,
             Some(observed_tool_ms) => {
                 self.duration_ms
                     .is_some_and(|duration| observed_tool_ms <= duration)

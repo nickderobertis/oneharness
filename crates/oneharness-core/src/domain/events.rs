@@ -78,6 +78,7 @@ pub struct ActionEvent {
     pub status: Option<ToolCallStatus>,
     /// Provenance for the tool interval. Omitted when timing is unavailable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    // llmlint: ignore[invalid_states_unrepresentable] ActionEvent is a stable additive wire shape shared by live in-progress and terminal events; lifecycle combinations are necessarily optional and producer/history validation governs which fields are available at each phase.
     pub timing_source: Option<TimingSource>,
 }
 

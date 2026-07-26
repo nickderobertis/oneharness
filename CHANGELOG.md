@@ -6,6 +6,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.6](https://github.com/nickderobertis/oneharness/compare/v0.5.5...v0.5.6) - 2026-07-25
+
+### Added
+
+- add first-class harness variants ([#1186](https://github.com/nickderobertis/oneharness/pull/1186))
+
+### Documentation
+
+- record live-probed harness auth identity levers ([#1185](https://github.com/nickderobertis/oneharness/pull/1185))
+
 ## [0.5.5](https://github.com/nickderobertis/oneharness/compare/v0.5.4...v0.5.5) - 2026-07-24
 
 ### Fixed

@@ -64,6 +64,13 @@ config="$tmp/oneharness.toml"
 mkdir -p "$tmp/codex-api-home"
 claude_a="${OH_CLAUDE_CONFIG_A:-$HOME/.claude}"
 claude_b="${OH_CLAUDE_CONFIG_B:-$HOME/.claude-alt}"
+validate_claude_config_dir() {
+    local name="$1" value="$2"
+    case "$value" in
+        "" | *$'\n'*) fail "$name must be a non-empty single-line directory path" ;;
+    esac
+    [ -d "$value" ] || fail "$name must name an existing directory"
+}
 cat >"$config" <<'EOF'
 [harness.claude-code.variant.subscription-a]
 unset_env = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
@@ -124,6 +131,8 @@ evidence "IDENTITY claude-code:apikey: isolated API key source; ephemeral_5m_inp
 fallback="$tmp/fallback.json"
 fallback_target="claude-code:apikey"
 if [ -z "${OH_E2E_VARIANTS_API_ONLY:-}" ]; then
+    validate_claude_config_dir OH_CLAUDE_CONFIG_A "$claude_a"
+    validate_claude_config_dir OH_CLAUDE_CONFIG_B "$claude_b"
     for config_dir in "$claude_a" "$claude_b"; do
         auth_method="$(
             CLAUDE_CONFIG_DIR="$config_dir" env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \

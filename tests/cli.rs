@@ -4664,7 +4664,7 @@ fn sync_rejects_conflicting_variants_sharing_one_native_config() {
 [harness.claude-code.variant.work]
 allowed_tools = ["Read"]
 [harness.claude-code.variant.personal]
-allowed_tools = ["Bash(git:*)"]
+allowed_tools = ["Bash(git status --short)"]
 "#,
         "",
     );

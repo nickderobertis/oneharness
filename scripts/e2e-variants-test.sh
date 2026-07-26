@@ -22,9 +22,9 @@ assert_contains() {
 
 oh="$root/target/debug/oneharness"
 mock="$root/target/debug/oneharness-mock-harness"
-[ -x "$oh" ] || fail "built oneharness binary is missing; run 'cargo build' and retry"
+[ -x "$oh" ] || fail "built oneharness binary is missing; run 'just check' and retry"
 [ -x "$mock" ] ||
-    fail "provider subprocess double is missing; run 'cargo build --features mock-harness --bin oneharness-mock-harness' and retry"
+    fail "provider subprocess double is missing; run 'just check' and retry"
 
 # The real oneharness process launches these provider-boundary adapters. Each
 # adapter delegates to the repository's shipped subprocess double with the

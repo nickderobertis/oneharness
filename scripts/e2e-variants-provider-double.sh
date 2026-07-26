@@ -5,7 +5,7 @@ set -euo pipefail
 
 provider_double="${OH_E2E_PROVIDER_DOUBLE:-}"
 if [ -z "$provider_double" ] || [ ! -f "$provider_double" ] || [ ! -x "$provider_double" ]; then
-    echo "e2e-variants-provider-double: OH_E2E_PROVIDER_DOUBLE must name the executable mock-harness fixture; build it with 'cargo build --features mock-harness --bin oneharness-mock-harness' and retry" >&2
+    echo "e2e-variants-provider-double: OH_E2E_PROVIDER_DOUBLE must name the executable mock-harness fixture; build the checked fixture with 'just check' and retry" >&2
     exit 2
 fi
 

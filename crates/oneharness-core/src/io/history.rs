@@ -1263,13 +1263,12 @@ mod tests {
             model: None,
             exit_code: Some(0),
             duration_ms: Some(10),
-            telemetry: Some(ExecutionTelemetry {
+            telemetry: Some(ExecutionTelemetry::ProviderMeasured {
                 started_at: "2026-07-19T00:00:00Z".to_string(),
                 finished_at: Some("2026-07-19T00:00:00Z".to_string()),
                 model_ms: Some(7),
                 tool_ms: Some(0),
                 time_to_first_token_ms: None,
-                observed_tool_ms: None,
             }),
             command: vec!["bin".to_string()],
             output_format: OutputFormat::Json,

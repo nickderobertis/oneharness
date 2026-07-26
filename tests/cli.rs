@@ -8896,6 +8896,20 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
         );
         let report = json_stdout(&output);
         assert_eq!(report["results"][0]["status"], "ok", "{id}");
+        let report_call = report["results"][0]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["kind"] == "tool_call")
+            .unwrap();
+        assert_eq!(
+            report_call["timing_source"], "stdout_observed",
+            "{id}: report event provenance"
+        );
+        assert!(
+            report["results"][0].get("observed_tool_ms").is_none(),
+            "{id}: the aggregate is a history-only contract"
+        );
         let history_path = Path::new(report["history_file"].as_str().unwrap());
         assert!(
             history_path.exists(),

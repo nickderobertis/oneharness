@@ -152,6 +152,7 @@ pub struct HistoryRunRecord {
     /// Union of tool intervals derived from stdout pipe-read observations.
     /// This is deliberately separate from provider-measured `tool_ms`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    // llmlint: ignore[invalid_states_unrepresentable] This additive published wire field must remain flat beside legacy provider timing fields; `valid()` rejects mixed states and constructors derive exactly one timing mode.
     pub observed_tool_ms: Option<u128>,
     pub text: Option<String>,
     pub text_source: Option<String>,
@@ -591,6 +592,7 @@ pub struct HistoryRecord {
     /// Union of tool intervals observed at the stdout pipe. Unlike `tool_ms`,
     /// this is not provider-measured and has no model-latency counterpart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    // llmlint: ignore[invalid_states_unrepresentable] The published history record is an additive flat JSON contract; constructors use the internal timing enum and deserialization rejects mixed provider/observed states.
     pub observed_tool_ms: Option<u128>,
     /// Best-effort final assistant text; `null` when extraction was impossible.
     pub text: Option<String>,
@@ -660,7 +662,22 @@ impl HistoryRecord {
         r: &RunResult,
     ) -> Self {
         let telemetry = r.telemetry.as_ref();
-        let measured = telemetry.filter(|telemetry| telemetry.observed_tool_ms.is_none());
+        let measured = telemetry.and_then(|telemetry| match telemetry {
+            crate::domain::report::ExecutionTelemetry::ProviderMeasured {
+                started_at,
+                finished_at,
+                model_ms,
+                tool_ms,
+                time_to_first_token_ms,
+            } => Some((
+                started_at,
+                finished_at,
+                model_ms,
+                tool_ms,
+                time_to_first_token_ms,
+            )),
+            crate::domain::report::ExecutionTelemetry::StdoutObserved { .. } => None,
+        });
         HistoryRecord {
             schema_version: SCHEMA_VERSION.to_string(),
             history_id,
@@ -678,13 +695,17 @@ impl HistoryRecord {
             status: r.status,
             exit_code: r.exit_code,
             duration_ms: r.duration_ms,
-            started_at: measured.map(|telemetry| telemetry.started_at.clone()),
-            finished_at: measured.and_then(|telemetry| telemetry.finished_at.clone()),
-            model_ms: telemetry.and_then(|telemetry| telemetry.model_ms),
-            tool_ms: telemetry.and_then(|telemetry| telemetry.tool_ms),
-            time_to_first_token_ms: telemetry
-                .and_then(|telemetry| telemetry.time_to_first_token_ms),
-            observed_tool_ms: telemetry.and_then(|telemetry| telemetry.observed_tool_ms),
+            started_at: measured.map(|timing| timing.0.clone()),
+            finished_at: measured.and_then(|timing| timing.1.clone()),
+            model_ms: measured.and_then(|timing| *timing.2),
+            tool_ms: measured.and_then(|timing| *timing.3),
+            time_to_first_token_ms: measured.and_then(|timing| *timing.4),
+            observed_tool_ms: telemetry.and_then(|telemetry| match telemetry {
+                crate::domain::report::ExecutionTelemetry::StdoutObserved { tool_ms } => {
+                    Some(*tool_ms)
+                }
+                crate::domain::report::ExecutionTelemetry::ProviderMeasured { .. } => None,
+            }),
             text: r.text.clone(),
             text_source: r.text_source.clone(),
             usage: r.usage.clone(),
@@ -1230,14 +1251,15 @@ mod tests {
             model: None,
             exit_code: Some(0),
             duration_ms: Some(42),
-            telemetry: Some(crate::domain::report::ExecutionTelemetry {
-                started_at: "2026-07-07T13:14:14.958Z".to_string(),
-                finished_at: Some("2026-07-07T13:14:15.000Z".to_string()),
-                model_ms: Some(42),
-                tool_ms: Some(0),
-                time_to_first_token_ms: Some(10),
-                observed_tool_ms: None,
-            }),
+            telemetry: Some(
+                crate::domain::report::ExecutionTelemetry::ProviderMeasured {
+                    started_at: "2026-07-07T13:14:14.958Z".to_string(),
+                    finished_at: Some("2026-07-07T13:14:15.000Z".to_string()),
+                    model_ms: Some(42),
+                    tool_ms: Some(0),
+                    time_to_first_token_ms: Some(10),
+                },
+            ),
             command: vec!["claude".to_string()],
             output_format: OutputFormat::Json,
             text: Some("hello".to_string()),

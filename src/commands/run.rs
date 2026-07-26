@@ -2187,24 +2187,18 @@ fn executed_result(
     let telemetry = timing
         .filter(|timing| timing.trace_complete)
         .map(
-            |timing| oneharness_core::domain::report::ExecutionTelemetry {
+            |timing| oneharness_core::domain::report::ExecutionTelemetry::ProviderMeasured {
                 started_at: capture.started_at.clone(),
                 finished_at: capture.finished_at.clone(),
                 model_ms: timing.model_ms,
                 tool_ms: timing.tool_ms,
                 time_to_first_token_ms: timing.time_to_first_token_ms,
-                observed_tool_ms: None,
             },
         )
         .or_else(|| {
             observed_tool_ms.map(|observed_tool_ms| {
-                oneharness_core::domain::report::ExecutionTelemetry {
-                    started_at: capture.started_at.clone(),
-                    finished_at: capture.finished_at.clone(),
-                    model_ms: None,
-                    tool_ms: None,
-                    time_to_first_token_ms: None,
-                    observed_tool_ms: Some(observed_tool_ms),
+                oneharness_core::domain::report::ExecutionTelemetry::StdoutObserved {
+                    tool_ms: observed_tool_ms,
                 }
             })
         });

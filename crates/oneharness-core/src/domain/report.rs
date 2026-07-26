@@ -89,16 +89,18 @@ pub struct OutputObservation {
 
 /// Measured execution telemetry carried internally from the runner/parser to
 /// the history writer. It is deliberately not part of the run-report contract.
-#[derive(Debug, Clone, Default)]
-pub struct ExecutionTelemetry {
-    pub started_at: String,
-    pub finished_at: Option<String>,
-    pub model_ms: Option<u128>,
-    pub tool_ms: Option<u128>,
-    pub time_to_first_token_ms: Option<u128>,
-    /// Union of tool intervals observed at the stdout pipe, without provider
-    /// request boundaries. Distinct from provider-measured `tool_ms`.
-    pub observed_tool_ms: Option<u128>,
+#[derive(Debug, Clone)]
+pub enum ExecutionTelemetry {
+    ProviderMeasured {
+        started_at: String,
+        finished_at: Option<String>,
+        model_ms: Option<u128>,
+        tool_ms: Option<u128>,
+        time_to_first_token_ms: Option<u128>,
+    },
+    /// History-only union observed at the stdout pipe. `RunResult::telemetry`
+    /// is skipped on the report wire; report provenance lives on `ActionEvent`.
+    StdoutObserved { tool_ms: u128 },
 }
 
 /// One harness's entry in the report.

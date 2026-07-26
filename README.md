@@ -500,7 +500,7 @@ RUST_LOG = "warn"
 model = "claude-sonnet-4-5"     # each harness can name its own model
 bin = "/opt/claude"             # like --bin (the flag and ONEHARNESS_BIN_* win)
 args = ["--max-turns", "6"]     # extra argv appended for this harness only
-allowed_tools = ["Bash(git status:*)", "Bash(git diff:*)"]  # bounded commands
+allowed_tools = ["Bash(git status --short)", "Bash(git diff --check)"]
 env = { ANTHROPIC_LOG = "debug" }
 
 [harness.claude-code.variant.work]
@@ -1470,10 +1470,14 @@ separately proved its API-key axis and provider/model banner. The suite also mas
 ambient keys for subscription runs and live-proves OpenCode child isolation.
 Every phase requires both the marker assertion and provider-specific identity
 evidence.
+Set `OH_E2E_EVIDENCE_FILE` to an external file path when a sanitized
+command/assertion transcript is needed; successful runs keep stdout concise and
+append the identity evidence to that file.
 
-The extended-adapter CI matrix deliberately omits Qwen 0.21.0 on macOS: the
-real CLI exited successfully but did not emit the required exact marker, so
-that platform cannot satisfy the live contract. It also omits the OpenCode
+The extended-adapter CI matrix deliberately omits Qwen 0.21.0 on macOS: its
+tool-enabled run exited successfully without the required exact marker (the
+same version can treat a marker request as a file-write task), so that platform
+cannot satisfy the live contract. It also omits the OpenCode
 isolation phase on Windows because the probe's temporary Bash wrapper is not a
 native Windows executable and oneharness correctly reports it unavailable.
 Linux runs every extended phase; macOS still runs OpenCode and Crush, while

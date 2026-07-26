@@ -4437,6 +4437,56 @@ fn unknown_and_malformed_variants_are_usage_errors() {
 }
 
 #[test]
+fn detect_applies_a_composed_id_cli_bin_override() {
+    let bin = mock_bin().display().to_string();
+    let fx = ConfigFixture::new(
+        "variant-detect-cli-bin",
+        "[harness.claude-code.variant.work]\nmodel = \"sonnet\"\n",
+        "",
+    );
+    let project_config = std::path::Path::new(&fx.cwd())
+        .join("oneharness.toml")
+        .display()
+        .to_string();
+    let output = run_with_config(
+        &[
+            "detect",
+            "--config",
+            &project_config,
+            "--harness",
+            "claude-code:work",
+            "--bin",
+            &format!("claude-code:work={bin}"),
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let detected = &json_stdout(&output)["detected"][0];
+    assert_eq!(detected["id"], "claude-code:work");
+    assert_eq!(detected["bin"], bin);
+    assert_eq!(detected["available"], true);
+}
+
+#[test]
+fn hook_harness_filters_reject_variant_selectors_at_the_cli_boundary() {
+    let fx = ConfigFixture::new(
+        "hook-variant-filter",
+        "[[hooks]]\ncommand = \"oneharness gate {harness}\"\nharnesses = [\"claude-code:-bad\"]\n",
+        "",
+    );
+    let output = run_with_config(&["config", "--cwd", &fx.cwd()], &[], &fx.user_config());
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("accepts base harness ids"), "{stderr}");
+    assert!(stderr.contains("claude-code:-bad"), "{stderr}");
+}
+
+#[test]
 fn variant_external_source_errors_are_loud_at_cli_boundaries() {
     let bin = mock_bin().display().to_string().replace('\\', "\\\\");
     let fx = ConfigFixture::new(
@@ -4614,7 +4664,7 @@ fn sync_rejects_conflicting_variants_sharing_one_native_config() {
 [harness.claude-code.variant.work]
 allowed_tools = ["Read"]
 [harness.claude-code.variant.personal]
-allowed_tools = ["Bash(git:*)"]
+allowed_tools = ["Bash(git status --short)"]
 "#,
         "",
     );
@@ -4632,7 +4682,48 @@ allowed_tools = ["Bash(git:*)"]
         &fx.user_config(),
     );
     assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("conflicting sync settings"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "harness selections `claude-code:work` and `claude-code:personal` resolve to conflicting sync settings"
+        ),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn sync_rejects_conflicting_base_and_variant_sharing_one_native_config() {
+    let fx = ConfigFixture::new(
+        "base-variant-sync-conflict",
+        r#"
+[harness.claude-code]
+allowed_tools = ["Read"]
+[harness.claude-code.variant.work]
+allowed_tools = ["Bash(git status --short)"]
+"#,
+        "",
+    );
+    let output = run_with_config(
+        &[
+            "sync",
+            "--harness",
+            "claude-code",
+            "--harness",
+            "claude-code:work",
+            "--cwd",
+            &fx.cwd(),
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "harness selections `claude-code` and `claude-code:work` resolve to conflicting sync settings"
+        ),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -4675,7 +4766,7 @@ fn duplicate_variant_selectors_keep_following_detect_and_sync_associations() {
 bin = "{bin}"
 [harness.claude-code.variant.personal]
 bin = "{bin}"
-allowed_tools = ["Bash(git status:*)"]
+allowed_tools = ["Bash(git status --short)"]
 "#
         ),
         "",
@@ -4733,7 +4824,10 @@ allowed_tools = ["Bash(git status:*)"]
     assert_eq!(synced["results"][1]["harness"], "claude-code");
     assert_eq!(synced["results"][1]["status"], "created");
     let settings = read_json(&std::path::Path::new(&fx.cwd()).join(".claude/settings.json"));
-    assert_eq!(settings["permissions"]["allow"][0], "Bash(git status:*)");
+    assert_eq!(
+        settings["permissions"]["allow"][0],
+        "Bash(git status --short)"
+    );
 }
 
 #[test]

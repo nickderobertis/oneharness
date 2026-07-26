@@ -27,8 +27,13 @@ auth_value() {
     [ -f "$AUTH_FILE" ] || return 1
     awk -F= -v key="$name" 'index($0, "=") > 0 && $1 == key { sub(/^[^=]*=/, ""); print; exit }' "$AUTH_FILE"
 }
+EVIDENCE_LINES=0
+EVIDENCE_MAX_LINES=16
 evidence() {
-    [ -n "${OH_E2E_EVIDENCE:-}" ] && printf '%s\n' "$*"
+    if [ -n "${OH_E2E_EVIDENCE:-}" ] && [ "$EVIDENCE_LINES" -lt "$EVIDENCE_MAX_LINES" ]; then
+        printf '%s\n' "$*"
+        EVIDENCE_LINES=$((EVIDENCE_LINES + 1))
+    fi
     return 0
 }
 ANTHROPIC_MATERIAL="${ANTHROPIC_API_KEY:-$(auth_value ANTHROPIC_API_KEY || true)}"

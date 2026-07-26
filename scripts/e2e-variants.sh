@@ -7,6 +7,12 @@ need jq
 need opencode
 need qwen
 need crush
+RUN_OPENCODE="${OH_E2E_VARIANTS_RUN_OPENCODE:-1}"
+RUN_QWEN="${OH_E2E_VARIANTS_RUN_QWEN:-1}"
+case "$RUN_OPENCODE:$RUN_QWEN" in
+    0:0 | 0:1 | 1:0 | 1:1) ;;
+    *) fail "OH_E2E_VARIANTS_RUN_OPENCODE and OH_E2E_VARIANTS_RUN_QWEN must each be 0 or 1" ;;
+esac
 if [ -z "${OH_E2E_VARIANTS_EXTENDED_ONLY:-}" ]; then
     need claude
     need codex
@@ -131,21 +137,25 @@ run_marker() {
     evidence "ASSERT $id: status=ok marker=exact harness_id=$id"
 }
 marker="OH_VARIANT_$(date +%s)_$RANDOM"
-run_marker opencode:apikey "${marker}_oc" \
-    OPENAI_API_KEY="$OPENAI_MATERIAL" \
-    OH_VARIANT_ANTHROPIC_KEY="$ANTHROPIC_MATERIAL" \
-    OH_VARIANT_REAL_OPENCODE="$opencode_bin"
-jq -e '.results[0].stderr | contains("oneharness-variant-isolation: api_key=present ambient_openai=masked")' \
-    "$tmp/opencode-apikey.json" >/dev/null ||
-    fail "OpenCode variant child did not receive only its selected API credential; inspect unset_env/env_from in the generated config with OH_E2E_EVIDENCE=1"
-jq -e '.results[0].stdout | split("\n") | map(select(length > 0) | fromjson) |
-    any(.type == "step_finish" and .part.cost > 0)' \
-    "$tmp/opencode-apikey.json" >/dev/null ||
-    fail "OpenCode API identity evidence missing; rerun with OH_E2E_EVIDENCE=1 and verify OpenCode still emits step_finish.part.cost"
-evidence "IDENTITY opencode:apikey: provider=anthropic model=claude-haiku-4-5 api_key=present ambient_openai=masked completed_step_cost>0"
+if [ "$RUN_OPENCODE" = 1 ]; then
+    run_marker opencode:apikey "${marker}_oc" \
+        OPENAI_API_KEY="$OPENAI_MATERIAL" \
+        OH_VARIANT_ANTHROPIC_KEY="$ANTHROPIC_MATERIAL" \
+        OH_VARIANT_REAL_OPENCODE="$opencode_bin"
+    jq -e '.results[0].stderr | contains("oneharness-variant-isolation: api_key=present ambient_openai=masked")' \
+        "$tmp/opencode-apikey.json" >/dev/null ||
+        fail "OpenCode variant child did not receive only its selected API credential; inspect unset_env/env_from in the generated config with OH_E2E_EVIDENCE=1"
+    jq -e '.results[0].stdout | split("\n") | map(select(length > 0) | fromjson) |
+        any(.type == "step_finish" and .part.cost > 0)' \
+        "$tmp/opencode-apikey.json" >/dev/null ||
+        fail "OpenCode API identity evidence missing; rerun with OH_E2E_EVIDENCE=1 and verify OpenCode still emits step_finish.part.cost"
+    evidence "IDENTITY opencode:apikey: provider=anthropic model=claude-haiku-4-5 api_key=present ambient_openai=masked completed_step_cost>0"
+fi
 
-run_marker qwen:apikey "${marker}_qw" OH_VARIANT_OPENAI_KEY="$OPENAI_MATERIAL"
-evidence "IDENTITY qwen:apikey: provider=openai base_url=api.openai.com model=gpt-4o-mini isolated_home=yes"
+if [ "$RUN_QWEN" = 1 ]; then
+    run_marker qwen:apikey "${marker}_qw" OH_VARIANT_OPENAI_KEY="$OPENAI_MATERIAL"
+    evidence "IDENTITY qwen:apikey: provider=openai base_url=api.openai.com model=gpt-4o-mini isolated_home=yes"
+fi
 
 run_marker crush:apikey "${marker}_cr" OH_VARIANT_ANTHROPIC_KEY="$ANTHROPIC_MATERIAL"
 evidence "IDENTITY crush:apikey: provider=anthropic model=claude-haiku-4-5-20251001 isolated_home=yes"

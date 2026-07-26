@@ -1472,6 +1472,15 @@ Every phase requires both the marker assertion and provider-specific identity
 evidence; the complete lever, precedence, concurrency, and evidence matrix is maintained in
 [Harness authentication identity](docs/harness-auth.md).
 
+The extended-adapter CI matrix deliberately omits Qwen 0.21.0 on macOS: the
+real CLI exited successfully but did not emit the required exact marker, so
+that platform cannot satisfy the live contract. It also omits the OpenCode
+isolation phase on Windows because the probe's temporary Bash wrapper is not a
+native Windows executable and oneharness correctly reports it unavailable.
+Linux runs every extended phase; macOS still runs OpenCode and Crush, while
+Windows still runs Qwen and Crush. These are matrix selections, not runtime
+skips, so `OH_E2E_NO_SKIP=1` remains strict for every selected adapter.
+
 `just smoke-live` is the quick "does any installed harness work" check. The
 **per-harness** suite is the allowlister-style counterpart: each
 `scripts/e2e-<harness>.sh` drives one *real* harness through `oneharness` with

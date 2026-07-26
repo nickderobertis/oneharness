@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.7](https://github.com/nickderobertis/oneharness/compare/v0.5.6...v0.5.7) - 2026-07-26
+
+### Added
+
+- extend variant auth coverage to remaining adapters ([#1188](https://github.com/nickderobertis/oneharness/pull/1188))
+
 ## [0.5.6](https://github.com/nickderobertis/oneharness/compare/v0.5.5...v0.5.6) - 2026-07-25
 
 ### Added

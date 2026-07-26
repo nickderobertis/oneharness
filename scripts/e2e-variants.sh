@@ -50,6 +50,9 @@ evidence() {
     if [ -n "$EVIDENCE_FILE" ]; then
         printf '%s\n' "$*" >>"$EVIDENCE_FILE"
     fi
+    if [ -n "${OH_E2E_EVIDENCE:-}" ]; then
+        printf '%s\n' "$*"
+    fi
     return 0
 }
 ANTHROPIC_MATERIAL="${ANTHROPIC_API_KEY:-$(auth_value ANTHROPIC_API_KEY || true)}"

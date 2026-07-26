@@ -67,6 +67,11 @@ assert_contains "$tmp/success.err" 'live variants: ok' \
 [ ! -s "$tmp/success.out" ] ||
     fail "successful live workflow wrote unexpected stdout; keep machine-readable evidence in OH_E2E_EVIDENCE_FILE"
 
+env "${common_env[@]}" OH_E2E_EVIDENCE=1 \
+    bash "$root/scripts/e2e-variants.sh" >"$tmp/legacy.out" 2>"$tmp/legacy.err"
+assert_contains "$tmp/legacy.out" 'IDENTITY claude-code:apikey' \
+    "legacy OH_E2E_EVIDENCE mode omitted its sanitized stdout evidence"
+
 if env "${common_env[@]}" OH_E2E_EVIDENCE_FILE=$'bad\npath' \
     bash "$root/scripts/e2e-variants.sh" >"$tmp/path.out" 2>"$tmp/path.err"; then
     fail "multiline evidence target unexpectedly succeeded"

@@ -17,6 +17,10 @@ for arg in "$@"; do
 done
 
 if [ -n "${OH_E2E_DOUBLE_INVALID_REPORT:-}" ]; then
+    if [ -z "${TMPDIR:-}" ] || [ ! -d "$TMPDIR" ] || [ ! -r "$TMPDIR" ]; then
+        echo "e2e-variants-provider-double: TMPDIR must name the readable test temp directory; run through scripts/e2e-variants-test.sh and retry" >&2
+        exit 2
+    fi
     report="$(find "$TMPDIR" -name claude-code-apikey.json -type f -print -quit)"
     [ -n "$report" ] || {
         echo "e2e-variants-provider-double: could not locate the open report; run through scripts/e2e-variants-test.sh so TMPDIR owns the report and retry" >&2
@@ -38,11 +42,15 @@ case "$(basename "$0")" in
             export MOCK_STDERR="authentication_error"
             export MOCK_EXIT=1
         else
-            export MOCK_STDOUT="{\"result\":\"$marker\",\"usage\":{\"cache_creation\":{\"ephemeral_5m_input_tokens\":1}}}"
+            MOCK_STDOUT="$(jq -nc --arg marker "$marker" \
+                '{result: $marker, usage: {cache_creation: {ephemeral_5m_input_tokens: 1}}}')"
+            export MOCK_STDOUT
         fi
         ;;
     codex)
-        export MOCK_STDOUT="{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"$marker\"}}"
+        MOCK_STDOUT="$(jq -nc --arg marker "$marker" \
+            '{type: "item.completed", item: {id: "m1", type: "agent_message", text: $marker}}')"
+        export MOCK_STDOUT
         ;;
     *)
         echo "e2e-variants-provider-double: unknown provider executable; install it as the test's claude or codex adapter and retry" >&2

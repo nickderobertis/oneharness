@@ -4682,7 +4682,13 @@ allowed_tools = ["Bash(git status --short)"]
         &fx.user_config(),
     );
     assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("conflicting sync settings"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "harness selections `claude-code:work` and `claude-code:personal` resolve to conflicting sync settings"
+        ),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -4712,8 +4718,12 @@ allowed_tools = ["Bash(git status --short)"]
     );
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("conflicting sync settings"), "{stderr}");
-    assert!(stderr.contains("claude-code:work"), "{stderr}");
+    assert!(
+        stderr.contains(
+            "harness selections `claude-code` and `claude-code:work` resolve to conflicting sync settings"
+        ),
+        "{stderr}"
+    );
 }
 
 #[test]

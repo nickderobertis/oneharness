@@ -10,7 +10,7 @@ mkdir -p "$tmp/bin"
 mkdir -p "$tmp/live"
 
 fail() {
-    echo "e2e-variants-test: $1" >&2
+    echo "e2e-variants-test: $1; rerun with 'bash -x scripts/e2e-variants-test.sh' to inspect the failing boundary" >&2
     exit 1
 }
 

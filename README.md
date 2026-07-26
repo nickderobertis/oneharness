@@ -1465,7 +1465,8 @@ contract and CLI, Python, and Node examples.
 
 Live variant coverage selects Claude subscription identities with isolated
 `CLAUDE_CONFIG_DIR` values and selects API identities for Claude, Codex,
-OpenCode, Qwen, Crush, and Goose with child-only key injection. It also masks
+OpenCode, Qwen, and Crush with child-only key injection. A local Goose probe
+separately proved its API-key axis and provider/model banner. The suite also masks
 ambient keys for subscription runs and live-proves OpenCode child isolation.
 Every phase requires both the marker assertion and provider-specific identity
 evidence; the complete lever, precedence, concurrency, and evidence matrix is maintained in

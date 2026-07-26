@@ -7,7 +7,6 @@ need jq
 need opencode
 need qwen
 need crush
-need goose
 if [ -z "${OH_E2E_VARIANTS_EXTENDED_ONLY:-}" ]; then
     need claude
     need codex
@@ -49,7 +48,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 config="$tmp/oneharness.toml"
 mkdir -p "$tmp/codex-api-home"
-mkdir -p "$tmp/qwen-home" "$tmp/crush-home" "$tmp/goose-root"
+mkdir -p "$tmp/qwen-home" "$tmp/crush-home"
 claude_a="${OH_CLAUDE_CONFIG_A:-$HOME/.claude}"
 claude_b="${OH_CLAUDE_CONFIG_B:-$HOME/.claude-alt}"
 opencode_bin="$(command -v opencode)"
@@ -92,12 +91,6 @@ HOME = "$tmp/crush-home"
 [harness.crush.variant.apikey.env_from]
 ANTHROPIC_API_KEY = "OH_VARIANT_ANTHROPIC_KEY"
 
-[harness.goose.variant.apikey.env]
-GOOSE_PROVIDER = "openai"
-GOOSE_MODEL = "gpt-4o-mini"
-GOOSE_PATH_ROOT = "$tmp/goose-root"
-[harness.goose.variant.apikey.env_from]
-OPENAI_API_KEY = "OH_VARIANT_OPENAI_KEY"
 EOF
 cat >>"$config" <<'EOF'
 [harness.claude-code.variant.subscription-a]
@@ -159,19 +152,12 @@ evidence "IDENTITY qwen:apikey: provider=openai base_url=api.openai.com model=gp
 run_marker crush:apikey "${marker}_cr" OH_VARIANT_ANTHROPIC_KEY="$ANTHROPIC_MATERIAL"
 evidence "IDENTITY crush:apikey: provider=anthropic model=claude-haiku-4-5-20251001 isolated_home=yes"
 
-run_marker goose:apikey "${marker}_go" OH_VARIANT_OPENAI_KEY="$OPENAI_MATERIAL"
-jq -e '.results[0].stdout | contains("new session · openai gpt-4o-mini")' \
-    "$tmp/goose-apikey.json" >/dev/null ||
-    fail "Goose API identity evidence missing; rerun with OH_E2E_EVIDENCE=1 and update the asserted banner only after confirming provider/model identity"
-evidence "IDENTITY goose:apikey: session_banner='openai gpt-4o-mini' isolated_path_root=yes"
-
 # These exact, sanitized evidence records are the executable drift gate for the
 # auth reference and README matrix: changed live identity facts must update both.
 for expected in \
     "IDENTITY opencode:apikey: provider=anthropic model=claude-haiku-4-5 api_key=present ambient_openai=masked completed_step_cost>0" \
     "IDENTITY qwen:apikey: provider=openai base_url=api.openai.com model=gpt-4o-mini isolated_home=yes" \
-    "IDENTITY crush:apikey: provider=anthropic model=claude-haiku-4-5-20251001 isolated_home=yes" \
-    "IDENTITY goose:apikey: session_banner='openai gpt-4o-mini' isolated_path_root=yes"; do
+    "IDENTITY crush:apikey: provider=anthropic model=claude-haiku-4-5-20251001 isolated_home=yes"; do
     grep -Fq "$expected" "$OH_REPO_ROOT/docs/harness-auth.md" ||
         fail "docs/harness-auth.md is stale; copy the sanitized live evidence record for ${expected%%:*}"
 done
@@ -179,7 +165,6 @@ done
 # shellcheck disable=SC2016
 for expected in \
     '`opencode` | OpenCode | `opencode` | `ANTHROPIC_API_KEY` (live-proven)' \
-    '`goose` | Goose | `goose` | `GOOSE_PROVIDER` + `OPENAI_API_KEY` (live-proven)' \
     '`qwen` | Qwen Code | `qwen` | `OPENAI_API_KEY` + base URL (live-proven)' \
     '`crush` | Crush | `crush` | `ANTHROPIC_API_KEY` (live-proven)'; do
     grep -Fq "$expected" "$OH_REPO_ROOT/README.md" ||

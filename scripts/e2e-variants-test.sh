@@ -128,7 +128,8 @@ fi
 assert_contains "$tmp/report.err" 'exited nonzero (status=nonzero exit_code=7' \
     "valid nonzero report omitted its structured status diagnostic"
 
-if env "${common_env[@]}" OH_E2E_DOUBLE_INVALID_REPORT=1 \
+if env "${common_env[@]}" \
+    ONEHARNESS_BIN="$root/scripts/e2e-variants-invalid-report-double.sh" \
     bash "$root/scripts/e2e-variants.sh" >"$tmp/failure.out" 2>"$tmp/failure.err"; then
     fail "invalid provider report unexpectedly succeeded"
 fi

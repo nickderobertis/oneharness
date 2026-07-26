@@ -42,22 +42,22 @@ if [ -n "$EVIDENCE_FILE" ]; then
         *$'\n'*) fail "OH_E2E_EVIDENCE_FILE must be a single-line file path; choose a path without newline characters and retry" ;;
     esac
     evidence_dir="$(dirname -- "$EVIDENCE_FILE")"
+    if [ ! -d "$evidence_dir" ] || [ ! -w "$evidence_dir" ] || [ ! -x "$evidence_dir" ]; then
+        fail "OH_E2E_EVIDENCE_FILE must have a writable, searchable parent directory; create it with mkdir -p and grant the current user write and search access"
+    fi
     if [ -e "$EVIDENCE_FILE" ]; then
         [ -f "$EVIDENCE_FILE" ] ||
             fail "OH_E2E_EVIDENCE_FILE must name a regular file; remove the non-file target or choose a new file path"
         [ -w "$EVIDENCE_FILE" ] ||
             fail "OH_E2E_EVIDENCE_FILE must name a writable file; run chmod u+w on it or choose another path"
-    else
-        if [ ! -d "$evidence_dir" ] || [ ! -w "$evidence_dir" ]; then
-            fail "OH_E2E_EVIDENCE_FILE must have a writable parent directory; create it with mkdir -p and grant the current user write access"
-        fi
     fi
 fi
 evidence() {
     # Detailed proof is opt-in for an operator collecting sanitized evidence;
     # ordinary local/CI output remains the final one-line summary.
     if [ -n "$EVIDENCE_FILE" ]; then
-        printf '%s\n' "$*" >>"$EVIDENCE_FILE"
+        printf '%s\n' "$*" >>"$EVIDENCE_FILE" ||
+            fail "could not append OH_E2E_EVIDENCE_FILE; verify its parent remains writable and searchable"
     fi
     if [ -n "${OH_E2E_EVIDENCE:-}" ]; then
         printf '%s\n' "$*"

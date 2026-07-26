@@ -860,6 +860,28 @@ export type FailureKind = "auth" | "rate_limit" | "model_not_found" | "quota" | 
  * The outcome of attempting to run one harness.
  */
 export type Status = "ok" | "nonzero" | "timeout" | "spawn-error" | "skipped" | "planned";
+export type HistoryEventLine =
+  | {
+      event: ActionEvent;
+      harness: string;
+      harness_id?: string | null | undefined;
+      run_id: string;
+      schema_version: "1.2";
+      variant?: string | null | undefined;
+      [k: string]: unknown;
+    }
+  | {
+      event: ActionEvent & {
+        timing_source?: never | undefined;
+        [k: string]: unknown;
+      };
+      harness: string;
+      harness_id?: string | null | undefined;
+      run_id: string;
+      schema_version: "1.0" | "1.1";
+      variant?: string | null | undefined;
+      [k: string]: unknown;
+    };
 
 /**
  * One normalized action a harness took, harness-agnostic so a single consumer
@@ -1212,17 +1234,5 @@ export interface Usage7 {
    * Completion/output tokens billed, when the harness reports them.
    */
   output_tokens: number | null;
-  [k: string]: unknown;
-}
-/**
- * One normalized action observed during a run.
- */
-export interface HistoryEventLine {
-  event: ActionEvent;
-  harness: string;
-  harness_id?: string | null | undefined;
-  run_id: string;
-  schema_version: "1.0" | "1.1" | "1.2";
-  variant?: string | null | undefined;
   [k: string]: unknown;
 }

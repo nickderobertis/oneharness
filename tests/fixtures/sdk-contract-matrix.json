@@ -71,6 +71,19 @@
       }
     },
     {
+      "name": "history event line v1.1 rejects timing provenance",
+      "root": "history_line",
+      "accepted": false,
+      "value": {
+        "type": "event", "schema_version": "1.1",
+        "run_id": "0198f0d0-7b31-7000-8000-000000000001", "harness": "codex",
+        "event": {"kind": "tool_call", "name": "shell", "input": {}, "output": "ok", "index": 0,
+          "tool_call_id": "call-1", "started_at": "2026-07-19T00:00:00Z",
+          "finished_at": "2026-07-19T00:00:01Z", "duration_ms": 1000, "status": "completed",
+          "timing_source": "stdout_observed"}
+      }
+    },
+    {
       "name": "history line valid run",
       "root": "history_line",
       "accepted": true,

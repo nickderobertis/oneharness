@@ -138,7 +138,28 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                 return;
             };
             if properties.contains_key("run_id") && properties.contains_key("event") {
-                object["properties"]["schema_version"] = current_history_versions_schema();
+                let mut current = serde_json::Value::Object(object.clone());
+                current["properties"]["schema_version"] = serde_json::json!({
+                    "const": HISTORY_SCHEMA_VERSION,
+                    "type": "string"
+                });
+                let mut previous = serde_json::Value::Object(object.clone());
+                previous["properties"]["schema_version"] = serde_json::json!({
+                    "enum": [
+                        FIRST_EVENT_SCHEMA_VERSION,
+                        PREVIOUS_CURRENT_SCHEMA_VERSION
+                    ],
+                    "type": "string"
+                });
+                forbid_action_event_timing_source(&mut previous["properties"]["event"]);
+                object.clear();
+                object.insert(
+                    "oneOf".to_string(),
+                    serde_json::json!([
+                        {"allOf": [current]},
+                        {"allOf": [previous]}
+                    ]),
+                );
                 return;
             }
             if properties.contains_key("history_id")
@@ -252,9 +273,9 @@ fn set_history_identity_version(
     }
 }
 
-fn forbid_record_event_timing_source(schema: &mut serde_json::Value) {
-    let event = schema["properties"]["events"]["items"].take();
-    schema["properties"]["events"]["items"] = serde_json::json!({
+fn forbid_action_event_timing_source(schema: &mut serde_json::Value) {
+    let event = schema.take();
+    *schema = serde_json::json!({
         "allOf": [
             event,
             {
@@ -263,6 +284,10 @@ fn forbid_record_event_timing_source(schema: &mut serde_json::Value) {
             }
         ]
     });
+}
+
+fn forbid_record_event_timing_source(schema: &mut serde_json::Value) {
+    forbid_action_event_timing_source(&mut schema["properties"]["events"]["items"]);
 }
 
 fn add_v03_condition(value: &mut serde_json::Value) {

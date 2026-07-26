@@ -4,16 +4,31 @@
  * One event-sourced history JSONL line.
  */
 export type HistoryLine =
-  | {
-      event: ActionEvent;
-      harness: string;
-      harness_id?: string | null | undefined;
-      run_id: string;
-      schema_version: "1.0" | "1.1" | "1.2";
-      type: "event";
-      variant?: string | null | undefined;
-      [k: string]: unknown;
-    }
+  | (
+      | {
+          event: ActionEvent;
+          harness: string;
+          harness_id?: string | null | undefined;
+          run_id: string;
+          schema_version: "1.2";
+          type: "event";
+          variant?: string | null | undefined;
+          [k: string]: unknown;
+        }
+      | {
+          event: ActionEvent & {
+            timing_source?: never | undefined;
+            [k: string]: unknown;
+          };
+          harness: string;
+          harness_id?: string | null | undefined;
+          run_id: string;
+          schema_version: "1.0" | "1.1";
+          type: "event";
+          variant?: string | null | undefined;
+          [k: string]: unknown;
+        }
+    )
   | (
       | {
           duration_ms: number;

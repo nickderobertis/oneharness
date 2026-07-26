@@ -1916,52 +1916,118 @@
       {
         "allOf": [
           {
-            "description": "One normalized action observed during a run.",
-            "type": "object",
-            "properties": {
-              "event": {
-                "$ref": "#/$defs/ActionEvent"
-              },
-              "harness": {
-                "type": "string"
-              },
-              "harness_id": {
-                "type": [
-                  "string",
-                  "null"
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "description": "One normalized action observed during a run.",
+                    "type": "object",
+                    "properties": {
+                      "event": {
+                        "$ref": "#/$defs/ActionEvent"
+                      },
+                      "harness": {
+                        "type": "string"
+                      },
+                      "harness_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "run_id": {
+                        "type": "string",
+                        "maxLength": 36,
+                        "minLength": 36,
+                        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                      },
+                      "schema_version": {
+                        "type": "string",
+                        "const": "1.2"
+                      },
+                      "type": {
+                        "type": "string",
+                        "const": "event"
+                      },
+                      "variant": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "schema_version",
+                      "run_id",
+                      "harness",
+                      "event",
+                      "type"
+                    ]
+                  }
                 ]
               },
-              "run_id": {
-                "type": "string",
-                "maxLength": 36,
-                "minLength": 36,
-                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
-              },
-              "schema_version": {
-                "type": "string",
-                "enum": [
-                  "1.0",
-                  "1.1",
-                  "1.2"
-                ]
-              },
-              "type": {
-                "type": "string",
-                "const": "event"
-              },
-              "variant": {
-                "type": [
-                  "string",
-                  "null"
+              {
+                "allOf": [
+                  {
+                    "description": "One normalized action observed during a run.",
+                    "type": "object",
+                    "properties": {
+                      "event": {
+                        "allOf": [
+                          {
+                            "$ref": "#/$defs/ActionEvent"
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "timing_source": false
+                            }
+                          }
+                        ]
+                      },
+                      "harness": {
+                        "type": "string"
+                      },
+                      "harness_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "run_id": {
+                        "type": "string",
+                        "maxLength": 36,
+                        "minLength": 36,
+                        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                      },
+                      "schema_version": {
+                        "type": "string",
+                        "enum": [
+                          "1.0",
+                          "1.1"
+                        ]
+                      },
+                      "type": {
+                        "type": "string",
+                        "const": "event"
+                      },
+                      "variant": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "schema_version",
+                      "run_id",
+                      "harness",
+                      "event",
+                      "type"
+                    ]
+                  }
                 ]
               }
-            },
-            "required": [
-              "schema_version",
-              "run_id",
-              "harness",
-              "event",
-              "type"
             ]
           }
         ]
@@ -5454,47 +5520,108 @@
         ]
       },
       "HistoryEventLine": {
-        "description": "One normalized action observed during a run.",
-        "type": "object",
-        "properties": {
-          "event": {
-            "$ref": "#/$defs/ActionEvent"
-          },
-          "harness": {
-            "type": "string"
-          },
-          "harness_id": {
-            "type": [
-              "string",
-              "null"
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "description": "One normalized action observed during a run.",
+                "type": "object",
+                "properties": {
+                  "event": {
+                    "$ref": "#/$defs/ActionEvent"
+                  },
+                  "harness": {
+                    "type": "string"
+                  },
+                  "harness_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "run_id": {
+                    "type": "string",
+                    "maxLength": 36,
+                    "minLength": 36,
+                    "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                  },
+                  "schema_version": {
+                    "type": "string",
+                    "const": "1.2"
+                  },
+                  "variant": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "schema_version",
+                  "run_id",
+                  "harness",
+                  "event"
+                ]
+              }
             ]
           },
-          "run_id": {
-            "type": "string",
-            "maxLength": 36,
-            "minLength": 36,
-            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
-          },
-          "schema_version": {
-            "type": "string",
-            "enum": [
-              "1.0",
-              "1.1",
-              "1.2"
-            ]
-          },
-          "variant": {
-            "type": [
-              "string",
-              "null"
+          {
+            "allOf": [
+              {
+                "description": "One normalized action observed during a run.",
+                "type": "object",
+                "properties": {
+                  "event": {
+                    "allOf": [
+                      {
+                        "$ref": "#/$defs/ActionEvent"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "timing_source": false
+                        }
+                      }
+                    ]
+                  },
+                  "harness": {
+                    "type": "string"
+                  },
+                  "harness_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "run_id": {
+                    "type": "string",
+                    "maxLength": 36,
+                    "minLength": 36,
+                    "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                  },
+                  "schema_version": {
+                    "type": "string",
+                    "enum": [
+                      "1.0",
+                      "1.1"
+                    ]
+                  },
+                  "variant": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "schema_version",
+                  "run_id",
+                  "harness",
+                  "event"
+                ]
+              }
             ]
           }
-        },
-        "required": [
-          "schema_version",
-          "run_id",
-          "harness",
-          "event"
         ]
       },
       "HistoryLabels": {

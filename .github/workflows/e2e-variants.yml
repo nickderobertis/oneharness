@@ -51,12 +51,7 @@ jobs:
         with:
           node-version: lts/*
       - name: Install real CLIs
-        run: |
-          just live-variants-tools
-          npm install -g \
-            opencode-ai@1.18.5 \
-            @qwen-code/qwen-code@0.21.0 \
-            @charmland/crush@0.87.0
+        run: just live-variants-tools
       - name: Live API variants and same-harness fallback
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

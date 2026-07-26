@@ -57,9 +57,9 @@ cat >"$opencode_wrapper" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ -n "${ANTHROPIC_API_KEY:-}" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
-    printf 'api_key=present ambient_openai=masked\n' >"$OH_VARIANT_ISOLATION_EVIDENCE"
+    printf 'oneharness-variant-isolation: api_key=present ambient_openai=masked\n' >&2
 else
-    printf 'api_key_or_masking_check=failed\n' >"$OH_VARIANT_ISOLATION_EVIDENCE"
+    printf 'oneharness-variant-isolation: api_key_or_masking_check=failed\n' >&2
     exit 97
 fi
 exec "$OH_REAL_OPENCODE" "$@"
@@ -73,7 +73,6 @@ unset_env = ["OPENAI_API_KEY"]
 [harness.opencode.variant.apikey.env_from]
 ANTHROPIC_API_KEY = "OH_VARIANT_ANTHROPIC_KEY"
 OH_REAL_OPENCODE = "OH_VARIANT_REAL_OPENCODE"
-OH_VARIANT_ISOLATION_EVIDENCE = "OH_VARIANT_ISOLATION_EVIDENCE_FILE"
 
 [harness.qwen.variant.apikey]
 model = "gpt-4o-mini"
@@ -132,13 +131,12 @@ run_marker() {
     evidence "ASSERT $id: status=ok marker=exact harness_id=$id"
 }
 marker="OH_VARIANT_$(date +%s)_$RANDOM"
-isolation_file="$tmp/opencode-isolation.txt"
 run_marker opencode:apikey "${marker}_oc" \
     OPENAI_API_KEY="$OPENAI_MATERIAL" \
     OH_VARIANT_ANTHROPIC_KEY="$ANTHROPIC_MATERIAL" \
-    OH_VARIANT_REAL_OPENCODE="$opencode_bin" \
-    OH_VARIANT_ISOLATION_EVIDENCE_FILE="$isolation_file"
-[ "$(cat "$isolation_file")" = "api_key=present ambient_openai=masked" ] ||
+    OH_VARIANT_REAL_OPENCODE="$opencode_bin"
+jq -e '.results[0].stderr | contains("oneharness-variant-isolation: api_key=present ambient_openai=masked")' \
+    "$tmp/opencode-apikey.json" >/dev/null ||
     fail "OpenCode variant child did not receive only its selected API credential; inspect unset_env/env_from in the generated config with OH_E2E_EVIDENCE=1"
 jq -e '.results[0].stdout | split("\n") | map(select(length > 0) | fromjson) |
     any(.type == "step_finish" and .part.cost > 0)' \

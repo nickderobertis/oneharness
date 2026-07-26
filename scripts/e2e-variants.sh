@@ -90,8 +90,17 @@ run_marker() {
     local id="$1" marker="$2"
     local report="$tmp/${id//:/-}.json"
     shift 2
-    env "$@" "$OH" run --config "$config" --harness "$id" \
-        --prompt "Reply exactly $marker" --compact >"$report"
+    if env "$@" "$OH" run --config "$config" --harness "$id" \
+        --prompt "Reply exactly $marker" --compact >"$report"; then
+        :
+    elif jq -e '.results[0]' "$report" >/dev/null 2>&1; then
+        diagnostic="$(jq -r \
+            '.results[0] | "status=\(.status) exit_code=\(.exit_code) failure_kind=\(.failure_kind) stderr_present=\((.stderr // "") | length > 0)"' \
+            "$report")"
+        fail "$id exited nonzero ($diagnostic); verify that variant's selected credential source"
+    else
+        fail "$id exited before producing a valid report; verify the harness installation, auth source, and config"
+    fi
     jq -e --arg marker "$marker" \
         '.results[0].status == "ok" and (.results[0].stdout | contains($marker))' \
         "$report" >/dev/null || {

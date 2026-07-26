@@ -8936,6 +8936,45 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
         assert_eq!(call["duration_ms"], record["observed_tool_ms"], "{id}");
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    let dir = hist_dir("claude-incomplete-observed-tool");
+    let incomplete = concat!(
+        "{\"type\":\"system\",\"subtype\":\"init\"}\n",
+        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"open\",\"name\":\"Bash\",\"input\":{}}]}}\n",
+        "{\"type\":\"result\",\"result\":\"stopped\"}\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "incomplete",
+            "--bin",
+            &bin_override("claude-code"),
+            "--history",
+            "--history-dir",
+            &dir.display().to_string(),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", incomplete), ("MOCK_STREAM_DELAY_MS", "40")],
+    );
+    assert!(output.status.success());
+    let report = json_stdout(&output);
+    let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
+    let call = record["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["kind"] == "tool_call")
+        .unwrap();
+    assert_eq!(call["timing_source"], "stdout_observed");
+    assert_eq!(call["status"], "interrupted");
+    assert!(call["finished_at"].is_null());
+    assert!(call["duration_ms"].is_null());
+    assert!(record["observed_tool_ms"].as_u64().is_some());
+    assert!(record.get("model_ms").is_none());
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A telemetry/history-recording shortfall must never fail a run whose harness

@@ -128,7 +128,7 @@ smoke-live:
 
 # Debug build.
 build:
-    cargo build --locked
+    @RUSTFLAGS="-D warnings" cargo build --quiet --locked
 
 # Build the provider-process double used by hermetic boundary tests.
 build-mock-harness:

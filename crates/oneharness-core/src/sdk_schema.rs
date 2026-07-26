@@ -193,6 +193,8 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                 });
                 observed["properties"]["observed_tool_ms"] =
                     serde_json::json!({"type": "integer", "minimum": 0});
+                observed["properties"]["duration_ms"] =
+                    serde_json::json!({"type": "integer", "minimum": 0});
                 for field in ["duration_ms", "observed_tool_ms"] {
                     let required = observed["required"].as_array_mut().expect("required array");
                     if !required.iter().any(|value| value.as_str() == Some(field)) {

@@ -176,10 +176,8 @@ impl HistoryRunRecord {
         ) {
             return false;
         }
-        if let Some(observed_tool_ms) = self.observed_tool_ms {
-            return self
-                .duration_ms
-                .is_some_and(|duration| observed_tool_ms <= duration)
+        if self.observed_tool_ms.is_some() {
+            return self.duration_ms.is_some()
                 && self.started_at.is_none()
                 && self.finished_at.is_none()
                 && self.model_ms.is_none()
@@ -787,9 +785,8 @@ impl HistoryRecord {
     fn observed_timing_valid(&self) -> bool {
         match self.observed_tool_ms {
             None => true,
-            Some(observed_tool_ms) => {
-                self.duration_ms
-                    .is_some_and(|duration| observed_tool_ms <= duration)
+            Some(_) => {
+                self.duration_ms.is_some()
                     && matches!(self.timing_state(), Ok(HistoryTiming::Unavailable))
             }
         }

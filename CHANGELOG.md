@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.10](https://github.com/nickderobertis/oneharness/compare/v0.5.9...v0.5.10) - 2026-07-26
+
+### Added
+
+- record observed tool timing for Anthropic-envelope harnesses ([#1196](https://github.com/nickderobertis/oneharness/pull/1196))
+
 ## [0.5.9](https://github.com/nickderobertis/oneharness/compare/v0.5.8...v0.5.9) - 2026-07-26
 
 ### Fixed

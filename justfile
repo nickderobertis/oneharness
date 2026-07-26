@@ -61,6 +61,7 @@ clippy: lint
 lint-sh:
     if ! command -v shellcheck >/dev/null 2>&1; then echo "shellcheck not installed: 'apt-get install shellcheck' / 'brew install shellcheck' / https://github.com/koalaman/shellcheck#installing" >&2; exit 1; fi
     shellcheck scripts/*.sh
+    bash scripts/install-live-variant-tools-e2e.sh
 
 # Drift gates for the live-e2e matrix, Rust toolchain, and release lifecycle,
 # plus the hermetic behavioral test of the idempotent crates.io publisher.

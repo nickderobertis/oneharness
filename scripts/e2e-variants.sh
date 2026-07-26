@@ -152,10 +152,15 @@ evidence "IDENTITY crush:apikey: provider=anthropic model=claude-haiku-4-5-20251
 
 # These exact, sanitized evidence records are the executable drift gate for the
 # auth reference and README matrix: changed live identity facts must update both.
+# Backticks below are literal Markdown delimiters, not shell substitutions.
+# shellcheck disable=SC2016
 for expected in \
     "IDENTITY opencode:apikey: provider=anthropic model=claude-haiku-4-5 api_key=present ambient_openai=masked completed_step_cost>0" \
+    "IDENTITY goose:apikey: session_banner='openai gpt-4o-mini' isolated_path_root=yes" \
     "IDENTITY qwen:apikey: provider=openai base_url=api.openai.com model=gpt-4o-mini isolated_home=yes" \
-    "IDENTITY crush:apikey: provider=anthropic model=claude-haiku-4-5-20251001 isolated_home=yes"; do
+    "IDENTITY crush:apikey: provider=anthropic model=claude-haiku-4-5-20251001 isolated_home=yes" \
+    'Copilot request quota, and has no' \
+    'The installed CLI reported `Not logged in`'; do
     grep -Fq "$expected" "$OH_REPO_ROOT/docs/harness-auth.md" ||
         fail "docs/harness-auth.md is stale; copy the sanitized live evidence record for ${expected%%:*}"
 done
@@ -163,8 +168,11 @@ done
 # shellcheck disable=SC2016
 for expected in \
     '`opencode` | OpenCode | `opencode` | `ANTHROPIC_API_KEY` (live-proven)' \
+    '`goose` | Goose | `goose` | `GOOSE_PROVIDER` + `OPENAI_API_KEY` (live-proven)' \
     '`qwen` | Qwen Code | `qwen` | `OPENAI_API_KEY` + base URL (live-proven)' \
-    '`crush` | Crush | `crush` | `ANTHROPIC_API_KEY` (live-proven)'; do
+    '`crush` | Crush | `crush` | `ANTHROPIC_API_KEY` (live-proven)' \
+    '`copilot` | GitHub Copilot CLI | `copilot` | token/BYOK/stored login (mapped, unproven; no usable host quota)' \
+    '`cursor` | Cursor CLI | `cursor-agent` | API key/browser login (mapped, unproven; credentials absent)'; do
     grep -Fq "$expected" "$OH_REPO_ROOT/README.md" ||
         fail "README support matrix is stale for ${expected%% *}; update it from docs/harness-auth.md"
 done

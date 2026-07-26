@@ -266,7 +266,7 @@ live-variants: _live-install
 
 # Install the real CLIs required by the harness-variant live test.
 live-variants-tools:
-    log="$(mktemp)"; if npm install -g @anthropic-ai/claude-code@2.1.220 @openai/codex@0.145.0 opencode-ai@1.18.5 @qwen-code/qwen-code@0.21.0 @charmland/crush@0.87.0 >"$log" 2>&1; then rm -f "$log"; echo "live-variants-tools: installed Claude Code, Codex, OpenCode, Qwen Code, and Crush"; else cat "$log" >&2; rm -f "$log"; echo "live-variants-tools: npm install failed; resolve the reported error" >&2; exit 1; fi
+    @log="$(mktemp)"; if npm install -g @anthropic-ai/claude-code@2.1.220 @openai/codex@0.145.0 opencode-ai@1.18.5 @qwen-code/qwen-code@0.21.0 @charmland/crush@0.87.0 >"$log" 2>&1; then rm -f "$log"; echo "live-variants-tools: installed Claude Code, Codex, OpenCode, Qwen Code, and Crush"; else cat "$log" >&2; rm -f "$log"; echo "live-variants-tools: npm install failed; resolve the reported error" >&2; exit 1; fi
 
 # Run every per-harness live check plus the per-feature ones; skips count as
 # passes, only real failures fail.

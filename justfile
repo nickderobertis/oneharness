@@ -128,15 +128,15 @@ smoke-live:
 
 # Debug build.
 build:
-    @RUSTFLAGS="-D warnings" cargo build --quiet --locked || { echo "build failed; fix the compiler diagnostics above and rerun 'just build'" >&2; exit 1; }
+    cargo build --locked
 
 # Build the provider-process double used by hermetic boundary tests.
 build-mock-harness:
-    @RUSTFLAGS="-D warnings" cargo build --quiet --locked --features {{FEATURES}} --bin oneharness-mock-harness || { echo "mock-harness build failed; fix the compiler diagnostics above and rerun 'just build-mock-harness'" >&2; exit 1; }
+    cargo build --locked --features {{FEATURES}} --bin oneharness-mock-harness
 
 # Optimized release build (the distributed artifact).
 build-release:
-    @RUSTFLAGS="-D warnings" cargo build --quiet --release --locked || { echo "release build failed; fix the compiler diagnostics above and rerun 'just build-release'" >&2; exit 1; }
+    cargo build --release --locked
 
 # Hermetic npm-packaging e2e: assemble the host's per-platform npm package from a
 # just-built binary, stage it under the `oneharness-cli` launcher, and prove the

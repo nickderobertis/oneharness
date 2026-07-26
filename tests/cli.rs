@@ -4437,6 +4437,42 @@ fn unknown_and_malformed_variants_are_usage_errors() {
 }
 
 #[test]
+fn detect_applies_a_composed_id_cli_bin_override() {
+    let bin = mock_bin().display().to_string();
+    let fx = ConfigFixture::new(
+        "variant-detect-cli-bin",
+        "[harness.claude-code.variant.work]\nmodel = \"sonnet\"\n",
+        "",
+    );
+    let project_config = std::path::Path::new(&fx.cwd())
+        .join("oneharness.toml")
+        .display()
+        .to_string();
+    let output = run_with_config(
+        &[
+            "detect",
+            "--config",
+            &project_config,
+            "--harness",
+            "claude-code:work",
+            "--bin",
+            &format!("claude-code:work={bin}"),
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let detected = &json_stdout(&output)["detected"][0];
+    assert_eq!(detected["id"], "claude-code:work");
+    assert_eq!(detected["bin"], bin);
+    assert_eq!(detected["available"], true);
+}
+
+#[test]
 fn hook_harness_filters_reject_variant_selectors_at_the_cli_boundary() {
     let fx = ConfigFixture::new(
         "hook-variant-filter",

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Live identity/variant drift alarm. Secret values are never printed.
 set -euo pipefail
+# The runtime path is anchored to this script; this directive gives ShellCheck
+# the equivalent repository-relative source for cross-file analysis.
 # shellcheck source=scripts/e2e-lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 need jq
@@ -28,6 +30,22 @@ auth_value() {
     awk -F= -v key="$name" 'index($0, "=") > 0 && $1 == key { sub(/^[^=]*=/, ""); print; exit }' "$AUTH_FILE"
 }
 EVIDENCE_FILE="${OH_E2E_EVIDENCE_FILE:-}"
+if [ -n "$EVIDENCE_FILE" ]; then
+    case "$EVIDENCE_FILE" in
+        *$'\n'*) fail "OH_E2E_EVIDENCE_FILE must be a single-line file path" ;;
+    esac
+    evidence_dir="$(dirname -- "$EVIDENCE_FILE")"
+    if [ -e "$EVIDENCE_FILE" ]; then
+        [ -f "$EVIDENCE_FILE" ] ||
+            fail "OH_E2E_EVIDENCE_FILE must name a regular file"
+        [ -w "$EVIDENCE_FILE" ] ||
+            fail "OH_E2E_EVIDENCE_FILE must name a writable file"
+    else
+        if [ ! -d "$evidence_dir" ] || [ ! -w "$evidence_dir" ]; then
+            fail "OH_E2E_EVIDENCE_FILE must have a writable parent directory"
+        fi
+    fi
+fi
 evidence() {
     if [ -n "$EVIDENCE_FILE" ]; then
         printf '%s\n' "$*" >>"$EVIDENCE_FILE"

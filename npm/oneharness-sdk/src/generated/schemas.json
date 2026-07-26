@@ -2318,11 +2318,7 @@
                     "type": "object",
                     "properties": {
                       "duration_ms": {
-                        "type": [
-                          "integer",
-                          "null"
-                        ],
-                        "format": "uint128",
+                        "type": "integer",
                         "minimum": 0
                       },
                       "exit_code": {

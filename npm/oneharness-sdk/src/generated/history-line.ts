@@ -78,7 +78,7 @@ export type HistoryLine =
           [k: string]: unknown;
         }
       | {
-          duration_ms: number | null;
+          duration_ms: number;
           exit_code: number | null;
           failure_kind: FailureKind | null;
           finished_at: null;

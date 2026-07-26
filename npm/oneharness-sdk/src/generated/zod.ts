@@ -291,7 +291,10 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
       variant: z.union([z.string(), z.null()]).optional(),
     }),
     z.looseObject({
-      duration_ms: z.union([z.int().gte(0), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      duration_ms: z
+        .int()
+        .gte(0)
+        .refine((value) => value !== undefined, { message: "Required" }),
       exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
       failure_kind: z
         .union([z.lazy(() => FailureKindSchema), z.null()])

@@ -72,6 +72,7 @@ lint-workflows: build build-mock-harness
     @bash scripts/check-publish-crates.sh >/dev/null
     @bash scripts/check-publish-npm.sh >/dev/null
     @bash scripts/check-local-gate.sh >/dev/null
+    @bash scripts/check-build-mock-harness.sh >/dev/null
     @bash scripts/e2e-variants-test.sh >/dev/null
     @echo 'lint-workflows: ok'
 
@@ -132,7 +133,7 @@ build:
 
 # Build the provider-process double used by hermetic boundary tests.
 build-mock-harness:
-    cargo build --locked --features {{FEATURES}} --bin oneharness-mock-harness
+    @RUSTFLAGS="-D warnings" cargo build --quiet --locked --features {{FEATURES}} --bin oneharness-mock-harness || { echo "mock-harness build failed; fix the compiler diagnostics above and rerun 'just build-mock-harness'" >&2; exit 1; }
 
 # Optimized release build (the distributed artifact).
 build-release:

@@ -263,6 +263,7 @@ pub struct HookEntry {
     pub plugin_name: Option<String>,
     /// Restrict this entry to these harness ids; absent means every harness
     /// being synced.
+    // llmlint: ignore[invalid_states_unrepresentable] HookEntry is the deny-unknown-fields TOML boundary DTO, so it must retain raw strings long enough to issue precise errors for unknown ids and variant selectors; `validate` rejects both before hooks are normalized or exposed to sync.
     pub harnesses: Option<Vec<String>>,
 }
 

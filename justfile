@@ -64,7 +64,7 @@ lint-sh:
 
 # Drift gates for the live-e2e matrix, Rust toolchain, and release lifecycle,
 # plus the hermetic behavioral test of the idempotent crates.io publisher.
-lint-workflows:
+lint-workflows: build build-mock-harness
     @bash scripts/check-pr-title-e2e.sh >/dev/null
     @bash scripts/check-e2e-matrix.sh >/dev/null
     @bash scripts/check-workflows.sh >/dev/null
@@ -130,6 +130,10 @@ smoke-live:
 build:
     cargo build --locked
 
+# Build the provider-process double used by hermetic boundary tests.
+build-mock-harness:
+    cargo build --locked --features {{FEATURES}} --bin oneharness-mock-harness
+
 # Optimized release build (the distributed artifact).
 build-release:
     cargo build --release --locked
@@ -159,8 +163,7 @@ sdk-generate:
     bun run --cwd npm/oneharness-sdk generate
 
 # Strict Node SDK gate, including the Rust->TypeScript drift check and real CLI e2e.
-sdk-check: build
-    cargo build --features {{FEATURES}} --bin oneharness-mock-harness
+sdk-check: build build-mock-harness
     bun run --cwd npm/oneharness-sdk generate:check
     bun run --cwd npm/oneharness-sdk format:check
     bun run --cwd npm/oneharness-sdk lint

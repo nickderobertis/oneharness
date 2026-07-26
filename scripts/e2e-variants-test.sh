@@ -20,8 +20,19 @@ assert_contains() {
         fail "$description; inspect the captured output by running: bash -x scripts/e2e-variants-test.sh"
 }
 
-oh="$root/target/debug/oneharness"
-mock="$root/target/debug/oneharness-mock-harness"
+resolve_executable() {
+    local path="$1"
+    if [ -x "$path" ]; then
+        printf '%s' "$path"
+    elif [ -x "$path.exe" ]; then
+        printf '%s' "$path.exe"
+    else
+        return 1
+    fi
+}
+
+oh="$(resolve_executable "$root/target/debug/oneharness" || true)"
+mock="$(resolve_executable "$root/target/debug/oneharness-mock-harness" || true)"
 [ -x "$oh" ] || fail "built oneharness binary is missing; run 'just check' and retry"
 [ -x "$mock" ] ||
     fail "provider subprocess double is missing; run 'just check' and retry"

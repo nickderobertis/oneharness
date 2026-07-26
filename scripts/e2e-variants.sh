@@ -34,6 +34,8 @@ auth_value() {
     awk -F= -v key="$name" 'index($0, "=") > 0 && $1 == key { sub(/^[^=]*=/, ""); print; exit }' "$AUTH_FILE"
 }
 evidence() {
+    # Detailed proof is opt-in for an operator collecting sanitized evidence;
+    # ordinary local/CI output remains the final one-line summary.
     [ -n "${OH_E2E_EVIDENCE:-}" ] && printf '%s\n' "$*"
     return 0
 }
@@ -144,11 +146,11 @@ run_marker opencode:apikey "${marker}_oc" \
     OH_VARIANT_REAL_OPENCODE="$opencode_bin" \
     OH_VARIANT_ISOLATION_EVIDENCE_FILE="$isolation_file"
 [ "$(cat "$isolation_file")" = "api_key=present ambient_openai=masked" ] ||
-    fail "OpenCode variant child did not receive only its selected API credential"
+    fail "OpenCode variant child did not receive only its selected API credential; inspect unset_env/env_from in the generated config with OH_E2E_EVIDENCE=1"
 jq -e '.results[0].stdout | split("\n") | map(select(length > 0) | fromjson) |
     any(.type == "step_finish" and .part.cost > 0)' \
     "$tmp/opencode-apikey.json" >/dev/null ||
-    fail "OpenCode API identity evidence missing; expected a billed completed step"
+    fail "OpenCode API identity evidence missing; rerun with OH_E2E_EVIDENCE=1 and verify OpenCode still emits step_finish.part.cost"
 evidence "IDENTITY opencode:apikey: provider=anthropic model=claude-haiku-4-5 api_key=present ambient_openai=masked completed_step_cost>0"
 
 run_marker qwen:apikey "${marker}_qw" OH_VARIANT_OPENAI_KEY="$OPENAI_MATERIAL"
@@ -160,8 +162,29 @@ evidence "IDENTITY crush:apikey: provider=anthropic model=claude-haiku-4-5-20251
 run_marker goose:apikey "${marker}_go" OH_VARIANT_OPENAI_KEY="$OPENAI_MATERIAL"
 jq -e '.results[0].stdout | contains("new session · openai gpt-4o-mini")' \
     "$tmp/goose-apikey.json" >/dev/null ||
-    fail "Goose API identity evidence missing; expected its provider/model session banner"
+    fail "Goose API identity evidence missing; rerun with OH_E2E_EVIDENCE=1 and update the asserted banner only after confirming provider/model identity"
 evidence "IDENTITY goose:apikey: session_banner='openai gpt-4o-mini' isolated_path_root=yes"
+
+# These exact, sanitized evidence records are the executable drift gate for the
+# auth reference and README matrix: changed live identity facts must update both.
+for expected in \
+    "IDENTITY opencode:apikey: provider=anthropic model=claude-haiku-4-5 api_key=present ambient_openai=masked completed_step_cost>0" \
+    "IDENTITY qwen:apikey: provider=openai base_url=api.openai.com model=gpt-4o-mini isolated_home=yes" \
+    "IDENTITY crush:apikey: provider=anthropic model=claude-haiku-4-5-20251001 isolated_home=yes" \
+    "IDENTITY goose:apikey: session_banner='openai gpt-4o-mini' isolated_path_root=yes"; do
+    grep -Fq "$expected" "$OH_REPO_ROOT/docs/harness-auth.md" ||
+        fail "docs/harness-auth.md is stale; copy the sanitized live evidence record for ${expected%%:*}"
+done
+# Backticks below are literal Markdown delimiters, not shell substitutions.
+# shellcheck disable=SC2016
+for expected in \
+    '`opencode` | OpenCode | `opencode` | `ANTHROPIC_API_KEY` (live-proven)' \
+    '`goose` | Goose | `goose` | `GOOSE_PROVIDER` + `OPENAI_API_KEY` (live-proven)' \
+    '`qwen` | Qwen Code | `qwen` | `OPENAI_API_KEY` + base URL (live-proven)' \
+    '`crush` | Crush | `crush` | `ANTHROPIC_API_KEY` (live-proven)'; do
+    grep -Fq "$expected" "$OH_REPO_ROOT/README.md" ||
+        fail "README support matrix is stale for ${expected%% *}; update it from docs/harness-auth.md"
+done
 
 fallback="$tmp/fallback.json"
 fallback_target="claude-code:apikey"

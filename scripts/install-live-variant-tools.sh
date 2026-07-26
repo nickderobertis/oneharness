@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Install the real CLIs used by e2e-variants.sh, validating downloaded installers.
+set -euo pipefail
+
+npm install -g \
+    @anthropic-ai/claude-code \
+    @openai/codex \
+    opencode-ai \
+    @qwen-code/qwen-code \
+    @charmland/crush
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
+case "$(uname -s)" in
+MINGW* | MSYS* | CYGWIN*)
+    installer="$tmp/download_cli.ps1"
+    url="https://raw.githubusercontent.com/aaif-goose/goose/ce928f04e8352d570c0c525d11bcd23e46a03d12/download_cli.ps1"
+    expected="a979f5b92879954657d307a24bf9c2e0386fbf7d185be68c56d64c5403644489"
+    curl -fsSL "$url" -o "$installer"
+    [ "$(sha256 "$installer")" = "$expected" ] ||
+        { printf 'Goose installer checksum mismatch: update the pinned commit and reviewed checksum\n' >&2; exit 1; }
+    CONFIGURE=false pwsh -NoProfile -File "$installer"
+    ;;
+*)
+    installer="$tmp/download_cli.sh"
+    url="https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh"
+    expected="54d64de9b10befba030d3fdc4f6c316de55557c203abeaa9525c04f450c34280"
+    curl -fsSL "$url" -o "$installer"
+    [ "$(sha256 "$installer")" = "$expected" ] ||
+        { printf 'Goose installer checksum mismatch: review the stable installer and update its checksum\n' >&2; exit 1; }
+    CONFIGURE=false bash "$installer"
+    ;;
+esac
+[ -z "${GITHUB_PATH:-}" ] || printf '%s\n' "$HOME/.local/bin" >>"$GITHUB_PATH"
+
+printf 'live-variants-tools: installed Claude Code, Codex, OpenCode, Qwen Code, Crush, and Goose\n'

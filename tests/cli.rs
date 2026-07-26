@@ -4686,6 +4686,37 @@ allowed_tools = ["Bash(git:*)"]
 }
 
 #[test]
+fn sync_rejects_conflicting_base_and_variant_sharing_one_native_config() {
+    let fx = ConfigFixture::new(
+        "base-variant-sync-conflict",
+        r#"
+[harness.claude-code]
+allowed_tools = ["Read"]
+[harness.claude-code.variant.work]
+allowed_tools = ["Bash(git status --short)"]
+"#,
+        "",
+    );
+    let output = run_with_config(
+        &[
+            "sync",
+            "--harness",
+            "claude-code",
+            "--harness",
+            "claude-code:work",
+            "--cwd",
+            &fx.cwd(),
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("conflicting sync settings"), "{stderr}");
+    assert!(stderr.contains("claude-code:work"), "{stderr}");
+}
+
+#[test]
 fn sync_applies_a_selected_variants_settings_to_the_shared_native_file() {
     let fx = ConfigFixture::new(
         "variant-sync-success",

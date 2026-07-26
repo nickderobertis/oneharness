@@ -47,6 +47,10 @@ if [ "${OS:-}" = "Windows_NT" ]; then
     bash_windows="$(cygpath -w "$(command -v bash)")"
     provider_windows="$(cygpath -w "$provider")"
     for tool in claude codex; do
+        # Git Bash's command lookup needs an extensionless executable, while
+        # the native Rust child lookup selects the PATHEXT-backed .cmd shim.
+        cp "$provider" "$tmp/bin/$tool"
+        chmod +x "$tmp/bin/$tool"
         printf '@"%s" "%s" "--provider-tool=%s" %%*\r\n' \
             "$bash_windows" "$provider_windows" "$tool" >"$tmp/bin/$tool.cmd"
     done

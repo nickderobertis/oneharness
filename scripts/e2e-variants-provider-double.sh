@@ -29,12 +29,12 @@ if [ -n "${OH_E2E_DOUBLE_INVALID_REPORT:-}" ]; then
         echo "e2e-variants-provider-double: TMPDIR must name the readable test temp directory; run through scripts/e2e-variants-test.sh and retry" >&2
         exit 2
     fi
-    report="$(find "$TMPDIR" -name claude-code-apikey.json -type f -print -quit)"
-    [ -n "$report" ] || {
+    reports="$(find "$TMPDIR" -name claude-code-apikey.json -type f -print)"
+    [ -n "$reports" ] || {
         echo "e2e-variants-provider-double: could not locate the open report; run through scripts/e2e-variants-test.sh so TMPDIR owns the report and retry" >&2
         exit 2
     }
-    rm -f "$report"
+    find "$TMPDIR" -name claude-code-apikey.json -type f -delete
     exit 7
 fi
 

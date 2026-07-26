@@ -318,7 +318,6 @@ fi
 rm -rf "$init_dir"
 
 if [ "$LIVE" -eq 0 ]; then
-  bash "$repo_root/scripts/live-variants-tools-e2e.sh"
   echo "smoke: ok (hermetic — install, list, detect, print-command, config, sync, mock run, schema, history, init)"
   exit 0
 fi

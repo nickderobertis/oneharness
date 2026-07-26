@@ -500,7 +500,7 @@ RUST_LOG = "warn"
 model = "claude-sonnet-4-5"     # each harness can name its own model
 bin = "/opt/claude"             # like --bin (the flag and ONEHARNESS_BIN_* win)
 args = ["--max-turns", "6"]     # extra argv appended for this harness only
-allowed_tools = ["Bash(git status:*)", "Bash(git diff:*)"]  # bounded commands
+allowed_tools = ["Bash(git status --short)", "Bash(git diff --check)"]
 env = { ANTHROPIC_LOG = "debug" }
 
 [harness.claude-code.variant.work]
@@ -1469,6 +1469,9 @@ key injection, and masks ambient keys for subscription runs. It requires both
 the marker assertion and provider-specific identity evidence; the complete
 lever, precedence, concurrency, and evidence support matrix is maintained in
 [Harness authentication identity](docs/harness-auth.md).
+Set `OH_E2E_EVIDENCE_FILE` to an external file path when a sanitized
+command/assertion transcript is needed; successful runs keep stdout concise and
+append the identity evidence to that file.
 
 `just smoke-live` is the quick "does any installed harness work" check. The
 **per-harness** suite is the allowlister-style counterpart: each

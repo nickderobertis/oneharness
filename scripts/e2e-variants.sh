@@ -27,12 +27,10 @@ auth_value() {
     [ -f "$AUTH_FILE" ] || return 1
     awk -F= -v key="$name" 'index($0, "=") > 0 && $1 == key { sub(/^[^=]*=/, ""); print; exit }' "$AUTH_FILE"
 }
-EVIDENCE_LINES=0
-EVIDENCE_MAX_LINES=16
+EVIDENCE_FILE="${OH_E2E_EVIDENCE_FILE:-}"
 evidence() {
-    if [ -n "${OH_E2E_EVIDENCE:-}" ] && [ "$EVIDENCE_LINES" -lt "$EVIDENCE_MAX_LINES" ]; then
-        printf '%s\n' "$*"
-        EVIDENCE_LINES=$((EVIDENCE_LINES + 1))
+    if [ -n "$EVIDENCE_FILE" ]; then
+        printf '%s\n' "$*" >>"$EVIDENCE_FILE"
     fi
     return 0
 }

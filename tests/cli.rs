@@ -4437,6 +4437,20 @@ fn unknown_and_malformed_variants_are_usage_errors() {
 }
 
 #[test]
+fn hook_harness_filters_reject_variant_selectors_at_the_cli_boundary() {
+    let fx = ConfigFixture::new(
+        "hook-variant-filter",
+        "[[hooks]]\ncommand = \"oneharness gate {harness}\"\nharnesses = [\"claude-code:-bad\"]\n",
+        "",
+    );
+    let output = run_with_config(&["config", "--cwd", &fx.cwd()], &[], &fx.user_config());
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("accepts base harness ids"), "{stderr}");
+    assert!(stderr.contains("claude-code:-bad"), "{stderr}");
+}
+
+#[test]
 fn variant_external_source_errors_are_loud_at_cli_boundaries() {
     let bin = mock_bin().display().to_string().replace('\\', "\\\\");
     let fx = ConfigFixture::new(

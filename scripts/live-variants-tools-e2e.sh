@@ -17,12 +17,11 @@ done
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 failure="$tmp/npm-failure.log"
-if npm_config_registry="http://127.0.0.1:9" \
-    npm_config_cache="$tmp/npm-cache" \
-    npm_config_fetch_retries=0 \
-    npm_config_fetch_timeout=1000 \
+invalid_prefix="$tmp/not-a-directory"
+: >"$invalid_prefix"
+if npm_config_prefix="$invalid_prefix" \
     just live-variants-tools >"$failure" 2>&1; then
-    echo "live-variants-tools-e2e: unreachable npm registry unexpectedly succeeded; verify the failure-path test isolation" >&2
+    echo "live-variants-tools-e2e: npm unexpectedly installed into a regular-file prefix; verify the failure-path test isolation" >&2
     exit 1
 fi
 if ! grep -Fq "rerun 'just live-variants-tools'" "$failure"; then

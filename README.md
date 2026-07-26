@@ -1469,11 +1469,20 @@ OpenCode, Qwen, and Crush with child-only key injection. A local Goose probe
 separately proved its API-key axis and provider/model banner. The suite also masks
 ambient keys for subscription runs and live-proves OpenCode child isolation.
 Every phase requires both the marker assertion and provider-specific identity
-evidence; the complete lever, precedence, concurrency, and evidence matrix is maintained in
-[Harness authentication identity](docs/harness-auth.md).
+evidence.
 Set `OH_E2E_EVIDENCE_FILE` to an external file path when a sanitized
 command/assertion transcript is needed; successful runs keep stdout concise and
 append the identity evidence to that file.
+
+The extended-adapter CI matrix deliberately omits Qwen 0.21.0 on macOS: its
+tool-enabled run exited successfully without the required exact marker (the
+same version can treat a marker request as a file-write task), so that platform
+cannot satisfy the live contract. It also omits the OpenCode
+isolation phase on Windows because the probe's temporary Bash wrapper is not a
+native Windows executable and oneharness correctly reports it unavailable.
+Linux runs every extended phase; macOS still runs OpenCode and Crush, while
+Windows still runs Qwen and Crush. These are matrix selections, not runtime
+skips, so `OH_E2E_NO_SKIP=1` remains strict for every selected adapter.
 
 `just smoke-live` is the quick "does any installed harness work" check. The
 **per-harness** suite is the allowlister-style counterpart: each

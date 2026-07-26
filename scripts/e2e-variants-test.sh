@@ -72,6 +72,16 @@ common_env=(
     OH_E2E_VARIANTS_CORE_ONLY=1
 )
 
+for selector in OH_E2E_VARIANTS_RUN_OPENCODE OH_E2E_VARIANTS_RUN_QWEN; do
+    if env "${common_env[@]}" "$selector=invalid" \
+        bash "$root/scripts/e2e-variants.sh" >"$tmp/selector.out" 2>"$tmp/selector.err"; then
+        fail "invalid $selector value unexpectedly succeeded"
+    fi
+    assert_contains "$tmp/selector.err" \
+        'OH_E2E_VARIANTS_RUN_OPENCODE and OH_E2E_VARIANTS_RUN_QWEN must each be 0 or 1' \
+        "invalid $selector value omitted its validation diagnostic"
+done
+
 evidence="$tmp/evidence.log"
 if ! env "${common_env[@]}" OH_E2E_EVIDENCE_FILE="$evidence" \
     bash "$root/scripts/e2e-variants.sh" >"$tmp/success.out" 2>"$tmp/success.err"; then

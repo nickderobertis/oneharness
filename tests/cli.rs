@@ -8,8 +8,10 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-use oneharness_core::domain::history::{HistoryLine, HistoryStreamEnvelope};
+use oneharness_core::domain::events::{ActionEvent, TimingSource, ToolCallStatus};
+use oneharness_core::domain::history::{HistoryLabels, HistoryLine, HistoryStreamEnvelope};
 use oneharness_core::domain::report::RunStreamEnvelope;
+use oneharness_core::io::history::HistoryWriter;
 use serde_json::Value;
 
 const ALL_IDS: &[&str] = &[
@@ -9525,7 +9527,8 @@ fn history_measures_codex_file_change_with_start_and_completion() {
     );
     let report = json_stdout(&output);
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-    // Complete timing telemetry was derived into the current history record.
+    // Provider-measured Codex records deliberately retain their pre-feature 1.1
+    // wire shape; history 1.2 is reserved for stdout-observed timing.
     assert_eq!(record["schema_version"], "1.1");
     assert!(record["started_at"].is_string());
     assert!(record["model_ms"].is_u64());
@@ -10826,6 +10829,62 @@ fn history_watch_event_mode_observes_event_before_stream_finishes() {
     assert!(trigger.status.success());
     assert!(watcher.wait().unwrap().success());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn history_watch_streams_stdout_observed_event_as_v1_2() {
+    let dir = hist_dir("watch-observed-event-version");
+    let project = std::env::current_dir().unwrap();
+    let writer =
+        HistoryWriter::open(&dir, &project, "observed-event", HistoryLabels::default()).unwrap();
+    let run_id = writer.begin_run();
+    let event = ActionEvent {
+        kind: "tool_call".to_string(),
+        name: Some("Bash".to_string()),
+        input: Some(serde_json::json!({"command": "true"})),
+        output: Some("".to_string()),
+        index: 0,
+        tool_call_id: Some("tool-1".to_string()),
+        started_at: Some("2026-07-26T12:00:00.000Z".to_string()),
+        finished_at: Some("2026-07-26T12:00:00.010Z".to_string()),
+        duration_ms: Some(10),
+        status: Some(ToolCallStatus::Completed),
+        timing_source: Some(TimingSource::StdoutObserved),
+    };
+    writer
+        .append_event(run_id, "claude-code", event.clone())
+        .unwrap();
+
+    let mut watcher = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args([
+            "history",
+            "watch",
+            "--all-projects",
+            "--events",
+            "--history-dir",
+            &dir.display().to_string(),
+            "--format",
+            "jsonl",
+        ])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut reader = std::io::BufReader::new(watcher.stdout.take().unwrap());
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let envelope: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(envelope["type"], "event");
+    assert_eq!(envelope["line"]["schema_version"], "1.2");
+    assert_eq!(
+        envelope["line"]["event"]["timing_source"],
+        "stdout_observed"
+    );
+
+    drop(reader);
+    writer.append_event(run_id, "claude-code", event).unwrap();
+    assert!(watcher.wait().unwrap().success());
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

@@ -72,6 +72,7 @@ lint-workflows:
     @bash scripts/check-publish-crates.sh >/dev/null
     @bash scripts/check-publish-npm.sh >/dev/null
     @bash scripts/check-local-gate.sh >/dev/null
+    @bash scripts/e2e-variants-test.sh >/dev/null
     @echo 'lint-workflows: ok'
 
 # Run the test suite across the workspace (core unit tests + binary unit and

@@ -180,7 +180,7 @@ jq -e --arg marker "${marker}_fb" \
     '.results[0].failure_kind == "auth" and
      (.results[-1].stdout | contains($marker))' "$fallback" >/dev/null || {
     diagnostic="$(jq -r --arg marker "${marker}_fb" \
-        '"first_failure_kind=\(.results[0].failure_kind) next_harness_id=\(.results[-1].harness_id) next_status=\(.results[-1].status) marker_present=\((.results[-1].stdout // "") | contains($marker))"' \
+        '"first_status=\(.results[0].status) first_failure_kind=\(.results[0].failure_kind) next_harness_id=\(.results[-1].harness_id) next_status=\(.results[-1].status) marker_present=\((.results[-1].stdout // "") | contains($marker))"' \
         "$fallback")"
     fail "same-harness auth fallback failed ($diagnostic); verify invalid-key classification and candidate ordering"
 }

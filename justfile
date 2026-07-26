@@ -128,11 +128,11 @@ smoke-live:
 
 # Debug build.
 build:
-    @RUSTFLAGS="-D warnings" cargo build --quiet --locked
+    @RUSTFLAGS="-D warnings" cargo build --quiet --locked || { echo "build failed; fix the compiler diagnostics above and rerun 'just build'" >&2; exit 1; }
 
 # Build the provider-process double used by hermetic boundary tests.
 build-mock-harness:
-    @RUSTFLAGS="-D warnings" cargo build --quiet --locked --features {{FEATURES}} --bin oneharness-mock-harness
+    @RUSTFLAGS="-D warnings" cargo build --quiet --locked --features {{FEATURES}} --bin oneharness-mock-harness || { echo "mock-harness build failed; fix the compiler diagnostics above and rerun 'just build-mock-harness'" >&2; exit 1; }
 
 # Optimized release build (the distributed artifact).
 build-release:

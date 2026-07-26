@@ -2552,7 +2552,7 @@ fn codex_usage_and_known_model_cost_flow_into_history_while_unknown_cost_is_omit
         assert_eq!(result["usage"]["output_tokens"], 100);
         assert_eq!(result["usage"]["cost_usd"].is_number(), expect_cost);
         let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-        assert_eq!(record["schema_version"], "1.2");
+        assert_eq!(record["schema_version"], "1.1");
         assert_eq!(record["usage"]["cost_usd"].is_number(), expect_cost);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -8846,7 +8846,7 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
     let report = json_stdout(&unsupported);
     assert_eq!(report["results"][0]["status"], "ok");
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-    assert_eq!(record["schema_version"], "1.2");
+    assert_eq!(record["schema_version"], "1.1");
     for field in [
         "started_at",
         "model_ms",
@@ -9061,7 +9061,7 @@ fn history_accepts_each_advertised_provider_trace_shape() {
         );
         let report = json_stdout(&output);
         let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-        assert_eq!(record["schema_version"], "1.2", "{id}");
+        assert_eq!(record["schema_version"], "1.1", "{id}");
         if matches!(id, "codex" | "opencode") {
             assert_eq!(record["usage"]["input_tokens"], 7, "{id}");
             assert_eq!(record["usage"]["output_tokens"], 2, "{id}");
@@ -9147,7 +9147,7 @@ fn history_preserves_format_contracts_and_composes_with_resume() {
     let report = json_stdout(&resumed);
     assert_eq!(report["results"][0]["text"], "x");
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-    assert_eq!(record["schema_version"], "1.2");
+    assert_eq!(record["schema_version"], "1.1");
 
     let _ = std::fs::remove_file(schema);
     let _ = std::fs::remove_dir_all(explicit_dir);
@@ -9232,7 +9232,7 @@ fn history_measures_overlapping_tool_intervals_from_provider_events() {
     );
     let report = json_stdout(&output);
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-    assert_eq!(record["schema_version"], "1.2");
+    assert_eq!(record["schema_version"], "1.1");
     assert!(record["time_to_first_token_ms"].as_u64().is_some());
     assert!(record["time_to_first_token_ms"].as_u64().unwrap() > 0);
     let calls = record["events"]
@@ -9526,7 +9526,7 @@ fn history_measures_codex_file_change_with_start_and_completion() {
     let report = json_stdout(&output);
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
     // Complete timing telemetry was derived into the current history record.
-    assert_eq!(record["schema_version"], "1.2");
+    assert_eq!(record["schema_version"], "1.1");
     assert!(record["started_at"].is_string());
     assert!(record["model_ms"].is_u64());
     assert!(record["tool_ms"].is_u64());
@@ -9576,7 +9576,7 @@ fn history_preserves_an_unfinished_tool_interval_without_fabricating_an_end() {
     assert!(output.status.success());
     let report = json_stdout(&output);
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-    assert_eq!(record["schema_version"], "1.2");
+    assert_eq!(record["schema_version"], "1.1");
     let call = record["events"]
         .as_array()
         .unwrap()
@@ -10916,7 +10916,7 @@ fn history_labels_layer_cli_over_environment_over_config_and_validate() {
     let record = first_history_run(Path::new(&path));
     // History requests the telemetry trace even though the user selected compact
     // report output, so ordinary new writes always use the current contract.
-    assert_eq!(record["schema_version"], "1.2");
+    assert_eq!(record["schema_version"], "1.1");
     assert!(record["started_at"].is_string());
     assert_eq!(record["labels"]["graph"], "cli");
     for key in ["user", "project", "env", "cli"] {

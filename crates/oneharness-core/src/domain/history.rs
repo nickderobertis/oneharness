@@ -106,11 +106,12 @@ impl HistoryEventLine {
         matches!(
             self.schema_version.as_str(),
             SCHEMA_VERSION | PREVIOUS_CURRENT_SCHEMA_VERSION | FIRST_EVENT_SCHEMA_VERSION
-        ) && identity_fields_valid(
-            &self.harness,
-            self.variant.as_deref(),
-            self.harness_id.as_deref(),
-        )
+        ) && (self.event.timing_source.is_none() || self.schema_version == SCHEMA_VERSION)
+            && identity_fields_valid(
+                &self.harness,
+                self.variant.as_deref(),
+                self.harness_id.as_deref(),
+            )
     }
 }
 
@@ -177,7 +178,8 @@ impl HistoryRunRecord {
             return false;
         }
         if self.observed_tool_ms.is_some() {
-            return self.duration_ms.is_some()
+            return self.schema_version == SCHEMA_VERSION
+                && self.duration_ms.is_some()
                 && self.started_at.is_none()
                 && self.finished_at.is_none()
                 && self.model_ms.is_none()
@@ -207,7 +209,7 @@ impl HistoryRunRecord {
     /// Split the terminal portion from the familiar materialized record.
     pub fn from_record(record: &HistoryRecord) -> Self {
         Self {
-            schema_version: SCHEMA_VERSION.to_string(),
+            schema_version: record.schema_version.clone(),
             history_id: record.history_id,
             session: record.session.clone(),
             name: record.name.clone(),
@@ -244,7 +246,7 @@ impl HistoryRunRecord {
             .clone()
             .unwrap_or_else(|| self.harness.clone());
         HistoryRecord {
-            schema_version: SCHEMA_VERSION.to_string(),
+            schema_version: self.schema_version,
             history_id: self.history_id,
             session: self.session,
             name: self.name,
@@ -677,7 +679,15 @@ impl HistoryRecord {
             crate::domain::report::ExecutionTelemetry::StdoutObserved { .. } => None,
         });
         HistoryRecord {
-            schema_version: SCHEMA_VERSION.to_string(),
+            schema_version: if matches!(
+                telemetry,
+                Some(crate::domain::report::ExecutionTelemetry::StdoutObserved { .. })
+            ) {
+                SCHEMA_VERSION
+            } else {
+                PREVIOUS_CURRENT_SCHEMA_VERSION
+            }
+            .to_string(),
             history_id,
             session: session.to_string(),
             name: name.to_string(),
@@ -786,7 +796,8 @@ impl HistoryRecord {
         match self.observed_tool_ms {
             None => true,
             Some(_) => {
-                self.duration_ms.is_some()
+                self.schema_version == SCHEMA_VERSION
+                    && self.duration_ms.is_some()
                     && matches!(self.timing_state(), Ok(HistoryTiming::Unavailable))
             }
         }
@@ -841,7 +852,8 @@ impl HistoryRecord {
                 "history record is missing `history_id`",
             ))
         })?;
-        let record = Self::from_wire(wire, history_id, SCHEMA_VERSION.to_string());
+        let schema_version = wire.schema_version.clone();
+        let record = Self::from_wire(wire, history_id, schema_version);
         if !record.complete() {
             return Err(invalid_history(
                 "history schema v1.0 record has incomplete telemetry",
@@ -1289,7 +1301,7 @@ mod tests {
             "fix the bug",
             &r,
         );
-        assert_eq!(rec.schema_version, SCHEMA_VERSION);
+        assert_eq!(rec.schema_version, PREVIOUS_CURRENT_SCHEMA_VERSION);
         assert_eq!(rec.session, "fix-bug-20260707T131415Z-9");
         assert_eq!(rec.name, "fix-bug");
         assert_eq!(rec.labels.as_map().get("graph").unwrap(), "deploy");
@@ -1300,6 +1312,30 @@ mod tests {
         assert_eq!(rec.status, Status::Ok);
         // No per-result prompt → the run prompt is used.
         assert_eq!(rec.prompt, "fix the bug");
+    }
+
+    #[test]
+    fn codex_provider_record_matches_the_pre_observed_timing_bytes() {
+        let mut r = result();
+        r.harness = "codex".to_string();
+        r.harness_id = "codex".to_string();
+        r.bin = "codex".to_string();
+        let rec = HistoryRecord::from_result(
+            HistoryId::legacy(b"codex-provider-golden"),
+            "measure-20260707T131415Z-9",
+            "measure",
+            &parse_labels(["graph=deploy"]).unwrap(),
+            "/home/user/proj",
+            "2026-07-07T13:14:15Z".to_string(),
+            PermissionMode::Bypass,
+            Some("gpt-5"),
+            "measure the run",
+            &r,
+        );
+
+        let actual = serde_json::to_string(&rec).unwrap();
+        let expected = include_str!("../../../../tests/fixtures/history-codex-v11.json").trim_end();
+        assert_eq!(actual.as_bytes(), expected.as_bytes());
     }
 
     #[test]

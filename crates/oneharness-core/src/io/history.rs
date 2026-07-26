@@ -124,7 +124,12 @@ impl HistoryWriter {
             .split_once(':')
             .map_or((harness, None), |(base, variant)| (base, Some(variant)));
         let line = HistoryEventLine {
-            schema_version: history::SCHEMA_VERSION.to_string(),
+            schema_version: if event.timing_source.is_some() {
+                history::SCHEMA_VERSION
+            } else {
+                history::PREVIOUS_CURRENT_SCHEMA_VERSION
+            }
+            .to_string(),
             run_id,
             harness: base.to_string(),
             variant: variant.map(str::to_string),

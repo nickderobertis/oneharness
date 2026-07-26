@@ -132,7 +132,7 @@ build:
 
 # Build the provider-process double used by hermetic boundary tests.
 build-mock-harness:
-    cargo build --locked --features {{FEATURES}} --bin oneharness-mock-harness
+    RUSTFLAGS="-D warnings" cargo build --locked --features {{FEATURES}} --bin oneharness-mock-harness
 
 # Optimized release build (the distributed artifact).
 build-release:

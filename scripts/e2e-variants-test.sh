@@ -53,6 +53,15 @@ assert_contains "$evidence" 'ASSERT fallback: first_failure_kind=auth' \
     "successful run omitted same-harness fallback evidence"
 assert_contains "$tmp/success.err" 'live variants: ok' \
     "successful run omitted its completion diagnostic"
+[ ! -s "$tmp/success.out" ] ||
+    fail "successful live workflow wrote unexpected stdout; keep machine-readable evidence in OH_E2E_EVIDENCE_FILE"
+
+if env "${common_env[@]}" OH_E2E_EVIDENCE_FILE=$'bad\npath' \
+    bash "$root/scripts/e2e-variants.sh" >"$tmp/path.out" 2>"$tmp/path.err"; then
+    fail "multiline evidence target unexpectedly succeeded"
+fi
+assert_contains "$tmp/path.err" 'must be a single-line file path' \
+    "multiline evidence target omitted its validation diagnostic"
 
 if env "${common_env[@]}" OH_E2E_EVIDENCE_FILE="$tmp/bin" \
     bash "$root/scripts/e2e-variants.sh" >"$tmp/path.out" 2>"$tmp/path.err"; then
@@ -60,6 +69,22 @@ if env "${common_env[@]}" OH_E2E_EVIDENCE_FILE="$tmp/bin" \
 fi
 assert_contains "$tmp/path.err" 'remove the non-file target or choose a new file path' \
     "invalid evidence target omitted its recovery action"
+
+touch "$tmp/read-only-evidence"
+chmod 400 "$tmp/read-only-evidence"
+if env "${common_env[@]}" OH_E2E_EVIDENCE_FILE="$tmp/read-only-evidence" \
+    bash "$root/scripts/e2e-variants.sh" >"$tmp/path.out" 2>"$tmp/path.err"; then
+    fail "unwritable evidence target unexpectedly succeeded"
+fi
+assert_contains "$tmp/path.err" 'run chmod u+w on it or choose another path' \
+    "unwritable evidence target omitted its recovery action"
+
+if env "${common_env[@]}" OH_E2E_EVIDENCE_FILE="$tmp/missing/evidence.log" \
+    bash "$root/scripts/e2e-variants.sh" >"$tmp/path.out" 2>"$tmp/path.err"; then
+    fail "missing evidence parent unexpectedly succeeded"
+fi
+assert_contains "$tmp/path.err" 'create it with mkdir -p' \
+    "missing evidence parent omitted its recovery action"
 
 if env "${common_env[@]}" OH_E2E_DOUBLE_VALID_FAILURE=1 \
     bash "$root/scripts/e2e-variants.sh" >"$tmp/report.out" 2>"$tmp/report.err"; then

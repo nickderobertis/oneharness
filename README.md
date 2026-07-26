@@ -1469,8 +1469,7 @@ OpenCode, Qwen, and Crush with child-only key injection. A local Goose probe
 separately proved its API-key axis and provider/model banner. The suite also masks
 ambient keys for subscription runs and live-proves OpenCode child isolation.
 Every phase requires both the marker assertion and provider-specific identity
-evidence; the complete lever, precedence, concurrency, and evidence matrix is maintained in
-[Harness authentication identity](docs/harness-auth.md).
+evidence.
 
 The extended-adapter CI matrix deliberately omits Qwen 0.21.0 on macOS: the
 real CLI exited successfully but did not emit the required exact marker, so

@@ -51,7 +51,7 @@ jobs:
         with:
           node-version: lts/*
       - name: Install real CLIs
-        run: just live-variants-tools
+        run: bash scripts/live-variants-tools-e2e.sh
       - name: Live API variants and same-harness fallback
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

@@ -53,6 +53,7 @@ common_env=(
     ANTHROPIC_API_KEY="test-anthropic-material"
     OPENAI_API_KEY="test-openai-material"
     OH_E2E_VARIANTS_API_ONLY=1
+    OH_E2E_VARIANTS_CORE_ONLY=1
 )
 
 evidence="$tmp/evidence.log"

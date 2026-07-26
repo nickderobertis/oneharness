@@ -214,8 +214,8 @@ strict, so unknown option names and misspellings fail before a subprocess starts
 `HistoryStreamEnvelope` has no independent schema version: its event variant is
 an opt-in additive capability behind history watch's `events` option. Existing
 callers that omit that option continue to receive only `record` envelopes, while
-the nested event/run lines remain governed by the history schema version (1.2;
-readers also accept 1.0 and 1.1).
+the nested event/run lines remain governed by the current history schema;
+readers also accept prior event-sourced versions.
 Missing history records, sessions, and watch cursors raise a typed
 `HistoryNotFoundError`. See the [Node SDK guide](npm/oneharness-sdk/README.md) and
 [Python SDK guide](python/oneharness-sdk/README.md).

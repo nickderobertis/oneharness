@@ -4,8 +4,14 @@ set -euo pipefail
 # shellcheck source=scripts/e2e-lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 need jq
-need claude
-need codex
+need opencode
+need qwen
+need crush
+need goose
+if [ -z "${OH_E2E_VARIANTS_EXTENDED_ONLY:-}" ]; then
+    need claude
+    need codex
+fi
 OH="$(oh_bin)"
 [ -n "$OH" ] || skip "oneharness binary not found; run 'just live-variants' or set ONEHARNESS_BIN"
 AUTH_FILE="${OH_LIVE_AUTH_FILE:-$HOME/.config/oneharness/live-auth.env}"
@@ -41,9 +47,57 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 config="$tmp/oneharness.toml"
 mkdir -p "$tmp/codex-api-home"
+mkdir -p "$tmp/qwen-home" "$tmp/crush-home" "$tmp/goose-root"
 claude_a="${OH_CLAUDE_CONFIG_A:-$HOME/.claude}"
 claude_b="${OH_CLAUDE_CONFIG_B:-$HOME/.claude-alt}"
-cat >"$config" <<'EOF'
+opencode_bin="$(command -v opencode)"
+opencode_wrapper="$tmp/opencode-isolation-wrapper"
+cat >"$opencode_wrapper" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ -n "${ANTHROPIC_API_KEY:-}" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+    printf 'api_key=present ambient_openai=masked\n' >"$OH_VARIANT_ISOLATION_EVIDENCE"
+else
+    printf 'api_key_or_masking_check=failed\n' >"$OH_VARIANT_ISOLATION_EVIDENCE"
+    exit 97
+fi
+exec "$OH_REAL_OPENCODE" "$@"
+EOF
+chmod 700 "$opencode_wrapper"
+cat >"$config" <<EOF
+[harness.opencode.variant.apikey]
+bin = "$opencode_wrapper"
+model = "anthropic/claude-haiku-4-5"
+unset_env = ["OPENAI_API_KEY"]
+[harness.opencode.variant.apikey.env_from]
+ANTHROPIC_API_KEY = "OH_VARIANT_ANTHROPIC_KEY"
+OH_REAL_OPENCODE = "OH_VARIANT_REAL_OPENCODE"
+OH_VARIANT_ISOLATION_EVIDENCE = "OH_VARIANT_ISOLATION_EVIDENCE_FILE"
+
+[harness.qwen.variant.apikey]
+model = "gpt-4o-mini"
+[harness.qwen.variant.apikey.env]
+HOME = "$tmp/qwen-home"
+OPENAI_BASE_URL = "https://api.openai.com/v1"
+OPENAI_MODEL = "gpt-4o-mini"
+[harness.qwen.variant.apikey.env_from]
+OPENAI_API_KEY = "OH_VARIANT_OPENAI_KEY"
+
+[harness.crush.variant.apikey]
+model = "anthropic/claude-haiku-4-5-20251001"
+[harness.crush.variant.apikey.env]
+HOME = "$tmp/crush-home"
+[harness.crush.variant.apikey.env_from]
+ANTHROPIC_API_KEY = "OH_VARIANT_ANTHROPIC_KEY"
+
+[harness.goose.variant.apikey.env]
+GOOSE_PROVIDER = "openai"
+GOOSE_MODEL = "gpt-4o-mini"
+GOOSE_PATH_ROOT = "$tmp/goose-root"
+[harness.goose.variant.apikey.env_from]
+OPENAI_API_KEY = "OH_VARIANT_OPENAI_KEY"
+EOF
+cat >>"$config" <<'EOF'
 [harness.claude-code.variant.subscription-a]
 unset_env = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
 [harness.claude-code.variant.subscription-a.env_from]
@@ -83,17 +137,47 @@ run_marker() {
     evidence "ASSERT $id: status=ok marker=exact harness_id=$id"
 }
 marker="OH_VARIANT_$(date +%s)_$RANDOM"
-run_marker claude-code:apikey "${marker}_ck" OH_VARIANT_ANTHROPIC_KEY="$ANTHROPIC_MATERIAL"
-run_marker codex:apikey "${marker}_ok" OH_VARIANT_CODEX_KEY="$OPENAI_MATERIAL" \
-    OH_VARIANT_CODEX_API_HOME="$tmp/codex-api-home"
-jq -e '.results[0].stdout | fromjson |
-    .usage.cache_creation.ephemeral_5m_input_tokens > 0' \
-    "$tmp/claude-code-apikey.json" >/dev/null ||
-    fail "Claude API-key cache evidence missing; verify the current Claude CLI still reports ephemeral_5m_input_tokens for API billing"
-evidence "IDENTITY claude-code:apikey: isolated API key source; ephemeral_5m_input_tokens>0"
+isolation_file="$tmp/opencode-isolation.txt"
+run_marker opencode:apikey "${marker}_oc" \
+    OPENAI_API_KEY="$OPENAI_MATERIAL" \
+    OH_VARIANT_ANTHROPIC_KEY="$ANTHROPIC_MATERIAL" \
+    OH_VARIANT_REAL_OPENCODE="$opencode_bin" \
+    OH_VARIANT_ISOLATION_EVIDENCE_FILE="$isolation_file"
+[ "$(cat "$isolation_file")" = "api_key=present ambient_openai=masked" ] ||
+    fail "OpenCode variant child did not receive only its selected API credential"
+jq -e '.results[0].stdout | split("\n") | map(select(length > 0) | fromjson) |
+    any(.type == "step_finish" and .part.cost > 0)' \
+    "$tmp/opencode-apikey.json" >/dev/null ||
+    fail "OpenCode API identity evidence missing; expected a billed completed step"
+evidence "IDENTITY opencode:apikey: provider=anthropic model=claude-haiku-4-5 api_key=present ambient_openai=masked completed_step_cost>0"
+
+run_marker qwen:apikey "${marker}_qw" OH_VARIANT_OPENAI_KEY="$OPENAI_MATERIAL"
+evidence "IDENTITY qwen:apikey: provider=openai base_url=api.openai.com model=gpt-4o-mini isolated_home=yes"
+
+run_marker crush:apikey "${marker}_cr" OH_VARIANT_ANTHROPIC_KEY="$ANTHROPIC_MATERIAL"
+evidence "IDENTITY crush:apikey: provider=anthropic model=claude-haiku-4-5-20251001 isolated_home=yes"
+
+run_marker goose:apikey "${marker}_go" OH_VARIANT_OPENAI_KEY="$OPENAI_MATERIAL"
+jq -e '.results[0].stdout | contains("new session · openai gpt-4o-mini")' \
+    "$tmp/goose-apikey.json" >/dev/null ||
+    fail "Goose API identity evidence missing; expected its provider/model session banner"
+evidence "IDENTITY goose:apikey: session_banner='openai gpt-4o-mini' isolated_path_root=yes"
+
 fallback="$tmp/fallback.json"
 fallback_target="claude-code:apikey"
-if [ -z "${OH_E2E_VARIANTS_API_ONLY:-}" ]; then
+if [ -n "${OH_E2E_VARIANTS_EXTENDED_ONLY:-}" ]; then
+    :
+else
+    run_marker claude-code:apikey "${marker}_ck" OH_VARIANT_ANTHROPIC_KEY="$ANTHROPIC_MATERIAL"
+    run_marker codex:apikey "${marker}_ok" OH_VARIANT_CODEX_KEY="$OPENAI_MATERIAL" \
+        OH_VARIANT_CODEX_API_HOME="$tmp/codex-api-home"
+    jq -e '.results[0].stdout | fromjson |
+        .usage.cache_creation.ephemeral_5m_input_tokens > 0' \
+        "$tmp/claude-code-apikey.json" >/dev/null ||
+        fail "Claude API-key cache evidence missing; verify the current Claude CLI still reports ephemeral_5m_input_tokens for API billing"
+    evidence "IDENTITY claude-code:apikey: isolated API key source; ephemeral_5m_input_tokens>0"
+fi
+if [ -z "${OH_E2E_VARIANTS_API_ONLY:-}" ] && [ -z "${OH_E2E_VARIANTS_EXTENDED_ONLY:-}" ]; then
     for config_dir in "$claude_a" "$claude_b"; do
         auth_method="$(
             CLAUDE_CONFIG_DIR="$config_dir" env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \
@@ -120,21 +204,23 @@ if [ -z "${OH_E2E_VARIANTS_API_ONLY:-}" ]; then
     evidence "IDENTITY claude-code:subscription-b: authMethod=claude.ai alternate_config=yes ambient_api_key=present child_api_key=masked ephemeral_1h_input_tokens>0"
     fallback_target="claude-code:subscription-a"
 fi
-OH_VARIANT_ANTHROPIC_KEY="$ANTHROPIC_MATERIAL" OH_VARIANT_CLAUDE_A="$claude_a" \
-    "$OH" run --config "$config" \
-    --harness claude-code:invalid --harness "$fallback_target" \
-    --run-mode fallback --prompt "Reply exactly ${marker}_fb" --compact >"$fallback"
-jq -e --arg marker "${marker}_fb" \
-    '.results[0].failure_kind == "auth" and
-     (.results[-1].stdout | contains($marker))' "$fallback" >/dev/null || {
-    diagnostic="$(jq -r --arg marker "${marker}_fb" \
-        '"first_status=\(.results[0].status) first_failure_kind=\(.results[0].failure_kind) next_harness_id=\(.results[-1].harness_id) next_status=\(.results[-1].status) marker_present=\((.results[-1].stdout // "") | contains($marker))"' \
-        "$fallback")"
-    fail "same-harness auth fallback failed ($diagnostic); verify invalid-key classification and candidate ordering"
-}
-evidence "COMMAND fallback: oneharness run --config <temporary> --harness claude-code:invalid --harness $fallback_target --run-mode fallback --prompt 'Reply exactly <marker>' --compact"
-evidence "ASSERT fallback: first_failure_kind=auth next_harness_id=$fallback_target status=ok marker=exact"
-if [ -n "${OH_E2E_CODEX_SUBSCRIPTION:-}" ]; then
+if [ -z "${OH_E2E_VARIANTS_EXTENDED_ONLY:-}" ]; then
+    OH_VARIANT_ANTHROPIC_KEY="$ANTHROPIC_MATERIAL" OH_VARIANT_CLAUDE_A="$claude_a" \
+        "$OH" run --config "$config" \
+        --harness claude-code:invalid --harness "$fallback_target" \
+        --run-mode fallback --prompt "Reply exactly ${marker}_fb" --compact >"$fallback"
+    jq -e --arg marker "${marker}_fb" \
+        '.results[0].failure_kind == "auth" and
+         (.results[-1].stdout | contains($marker))' "$fallback" >/dev/null || {
+        diagnostic="$(jq -r --arg marker "${marker}_fb" \
+            '"first_status=\(.results[0].status) first_failure_kind=\(.results[0].failure_kind) next_harness_id=\(.results[-1].harness_id) next_status=\(.results[-1].status) marker_present=\((.results[-1].stdout // "") | contains($marker))"' \
+            "$fallback")"
+        fail "same-harness auth fallback failed ($diagnostic); verify invalid-key classification and candidate ordering"
+    }
+    evidence "COMMAND fallback: oneharness run --config <temporary> --harness claude-code:invalid --harness $fallback_target --run-mode fallback --prompt 'Reply exactly <marker>' --compact"
+    evidence "ASSERT fallback: first_failure_kind=auth next_harness_id=$fallback_target status=ok marker=exact"
+fi
+if [ -n "${OH_E2E_CODEX_SUBSCRIPTION:-}" ] && [ -z "${OH_E2E_VARIANTS_EXTENDED_ONLY:-}" ]; then
     codex_login_status="$(
         env -u CODEX_API_KEY -u OPENAI_API_KEY codex login status 2>&1
     )" ||
@@ -147,8 +233,12 @@ if [ -n "${OH_E2E_CODEX_SUBSCRIPTION:-}" ]; then
 else
     :
 fi
-evidence "IDENTITY codex:apikey: empty CODEX_HOME plus per-process CODEX_API_KEY (sourced from OpenAI API auth material)"
-if [ -n "${OH_E2E_VARIANTS_API_ONLY:-}" ]; then
+if [ -z "${OH_E2E_VARIANTS_EXTENDED_ONLY:-}" ]; then
+    evidence "IDENTITY codex:apikey: empty CODEX_HOME plus per-process CODEX_API_KEY (sourced from OpenAI API auth material)"
+fi
+if [ -n "${OH_E2E_VARIANTS_EXTENDED_ONLY:-}" ]; then
+    note "live variants: ok (extended adapter API identity and isolation evidence)"
+elif [ -n "${OH_E2E_VARIANTS_API_ONLY:-}" ]; then
     note "live variants: ok (API identity evidence and fallback)"
 else
     note "live variants: ok (API, subscription, masking, identity evidence, fallback)"

@@ -213,70 +213,93 @@ mutating a credential file.
 
 ## `opencode`
 
-**Unverified:** not installed; no provider account/key was available. Official
-[CLI documentation](https://dev.opencode.ai/docs/cli/) says `opencode auth login`
-stores credentials in `~/.local/share/opencode/auth.json`. Provider API-key
-environment variables depend on the provider. The documented
-`OPENCODE_CONFIG_DIR` changes the config directory, but documentation does not
-say it relocates the data-directory `auth.json`; do not treat it as an identity
-selector without a live probe. Config files (`opencode.json[c]`) select provider
-and model, not necessarily credentials.
+**Live-proven:** a named variant injected only `ANTHROPIC_API_KEY`, selected
+`anthropic/claude-haiku-4-5`, and completed the exact-marker contract. OpenCode's
+JSONL ended in a billed `step_finish` (`cost > 0`), tying the selected Anthropic
+provider/model and child-only key to a real request:
 
-Precedence between env keys and stored credentials, concurrent isolation,
-completed-run identity evidence, invalid-auth text, and oneharness
-classification remain unknown.
+```text
+ASSERT opencode:apikey: status=ok marker=exact harness_id=opencode:apikey
+IDENTITY opencode:apikey: provider=anthropic model=claude-haiku-4-5 api_key=present ambient_openai=masked completed_step_cost>0
+```
+
+The probe deliberately placed `OPENAI_API_KEY` in oneharness's ambient
+environment while the variant declared it in `unset_env`. A wrapper immediately
+around the real OpenCode binary observed the selected Anthropic key present and
+the ambient OpenAI key absent, then `exec`ed OpenCode. This live-proves both
+child-only injection and masking without printing either value.
+
+**Mapped, unproven:** `opencode auth login` stores credentials in
+`~/.local/share/opencode/auth.json`. `OPENCODE_CONFIG_DIR` changes configuration,
+but has not been shown to relocate that data-directory credential file; it is
+not a stored-identity selector. Stored-auth precedence, invalid-auth text, and
+classification remain unproven. No auth axis is known unsupported.
 
 ## `goose`
 
-**Unverified:** not installed; no provider account/key was available. The
-official [environment reference](https://github.com/block/goose/blob/main/documentation/docs/guides/environment-variables.md)
-documents per-process `GOOSE_PROVIDER`, `GOOSE_MODEL`,
-`GOOSE_PROVIDER__API_KEY`, provider-specific API-key variables, and
-`GOOSE_PATH_ROOT` (root for data/config/state). `goose configure` stores provider
-configuration and credentials in the OS keyring, falling back to file storage.
-Provider/model choose the backend identity namespace; the key chooses the
-account.
+**Live-proven:** a named variant selected `GOOSE_PROVIDER=openai`,
+`GOOSE_MODEL=gpt-4o-mini`, injected `OPENAI_API_KEY`, and used an isolated
+`GOOSE_PATH_ROOT`. The real CLI completed the marker and identified the provider
+and model in its session banner:
 
-Use per-process key env for variants. An isolated `GOOSE_PATH_ROOT` is the
-documented candidate for stored identities; shared keyring/config mutation is
-unsafe concurrently. Precedence, completed-run evidence, exact invalid-auth
-text, and classification were not observed.
+```text
+ASSERT goose:apikey: status=ok marker=exact harness_id=goose:apikey
+IDENTITY goose:apikey: session_banner='openai gpt-4o-mini' isolated_path_root=yes
+```
+
+These env selectors are per-process and safe for concurrent API-key variants.
+
+**Mapped, unproven:** Goose also supports `GOOSE_PROVIDER__API_KEY` and other
+provider-specific keys. `goose configure` stores credentials in the OS keyring
+with file fallback. Although `GOOSE_PATH_ROOT` was used successfully with env
+auth, stored credentials were not provisioned under two roots, so stored-login
+isolation and precedence remain unproven. Exact invalid-auth text and
+classification are also unproven. No auth axis is known unsupported.
 
 ## `qwen`
 
-**Unverified:** not installed; no Coding Plan or API-key account was available.
-The official [auth reference](https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/)
-documents `--openai-api-key` as highest priority, then process env, the first
-discovered `.env`, then `settings.json` `env`. Provider definitions select an
-`envKey`; common keys include `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
-`GEMINI_API_KEY`, and `BAILIAN_CODING_PLAN_API_KEY`. `OPENAI_BASE_URL`,
-provider/model config, `security.auth.selectedType`, and `model.name` select the
-service/model. OAuth/Coding Plan login is interactive and stored under Qwen's
-user state.
+**Live-proven:** a named variant injected `OPENAI_API_KEY`, selected
+`OPENAI_BASE_URL=https://api.openai.com/v1` and `gpt-4o-mini`, and completed the
+exact marker from an isolated `HOME`:
 
-CLI/env keys are per-process. Project `.env`, user `~/.qwen/.env`,
-`~/.qwen/settings.json`, and interactive login are mutable shared state and
-unsafe account switches during concurrent runs. No documented home override was
-confirmed. Completed-run identity evidence, exact invalid-auth text, and
-classification remain unknown.
+```text
+ASSERT qwen:apikey: status=ok marker=exact harness_id=qwen:apikey
+IDENTITY qwen:apikey: provider=openai base_url=api.openai.com model=gpt-4o-mini isolated_home=yes
+```
+
+The isolated home mattered: the host's existing Qwen state changed prompt
+behavior, while the fresh home honored the marker. API-key/base/model env and
+the home selector are therefore live-proven per-process variant inputs.
+
+**Mapped, unproven:** the documented `--openai-api-key` precedence over env,
+discovered `.env`, and settings was not re-probed. Other provider `envKey`
+values and interactive OAuth/Coding Plan state remain unproven. Shared project
+`.env`, `~/.qwen` settings, and interactive login remain unsafe concurrent
+switches. Exact invalid-auth text and classification are unproven. No auth axis
+is known unsupported.
 
 ## `crush`
 
-**Unverified:** not installed; no provider account/key was available. The
-registry installs `@charmland/crush`, but current public documentation did not
-provide a sufficiently authoritative, version-matched list of auth variables,
-credential paths, or precedence. Provider config is expected to choose provider,
-model, and credential source, but that is an inference and must not become a
-variant contract.
+**Live-proven:** a named variant injected `ANTHROPIC_API_KEY`, selected Crush's
+fully-qualified `anthropic/claude-haiku-4-5-20251001` model, used an isolated
+`HOME`, and completed the exact marker:
 
-All five details—levers, precedence, concurrency safety, completed-run evidence,
-and invalid-auth text/classification—require a live probe.
+```text
+ASSERT crush:apikey: status=ok marker=exact harness_id=crush:apikey
+IDENTITY crush:apikey: provider=anthropic model=claude-haiku-4-5-20251001 isolated_home=yes
+```
+
+The provider-qualified model is significant: the unqualified model name was
+rejected by Crush 0.87.0. The env key and home are safe per-process selectors.
+
+**Mapped, unproven:** Crush exposes stored platform login and `--data-dir`, but
+neither stored-login isolation nor credential precedence was exercised. Other
+provider keys, exact invalid-auth text, and classification remain unproven. No
+auth axis is known unsupported.
 
 ## `copilot`
 
-**Unverified:** not installed; no GitHub/Copilot token was available. GitHub's
-[authentication reference](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/authenticate-copilot-cli)
-documents this precedence:
+**Mapped, unproven:** GitHub's authentication reference documents this precedence:
 `COPILOT_GITHUB_TOKEN` > `GH_TOKEN` > `GITHUB_TOKEN` > stored OAuth in the OS
 keychain (or plaintext `$COPILOT_HOME/config.json`) > `gh auth token`.
 `COPILOT_PROVIDER_API_KEY` plus provider base/model settings is BYOK and routes
@@ -284,22 +307,29 @@ model requests regardless of GitHub login.
 
 Token/BYOK env and `COPILOT_HOME` are per-process; a shared OS-keychain login,
 `copilot login/logout`, plaintext config, and `gh` login are mutable global
-state. Exact completed-run account/plan evidence, invalid-auth output, and
-oneharness classification were not observed.
+state.
+
+The installed CLI found the host's `gh` login, but the attempted model call was
+rejected with `You've reached your additional usage limit for your plan`.
+Therefore the adapter is not live-proven: this host specifically lacks available
+Copilot request quota, and has no `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or
+`GITHUB_TOKEN` environment credential. BYOK was not attempted because no
+`COPILOT_PROVIDER_API_KEY` exists. No auth axis is known unsupported.
 
 ## `cursor`
 
-**Unverified:** not installed; no Cursor account/key was available. Cursor's
-[authentication reference](https://docs.cursor.com/en/cli/reference/authentication)
-documents `CURSOR_API_KEY`, `--api-key`, and browser `cursor-agent login`, which
+**Mapped, unproven:** Cursor's authentication reference documents
+`CURSOR_API_KEY`, `--api-key`, and browser `cursor-agent login`, which
 stores credentials locally; `status` displays account and endpoint information.
 The CLI flag is the most explicit selector, but its precedence over env/stored
 login was not observed.
 
 The flag and env are per-process. Browser login/logout and its shared credential
 store are global mutable state; no documented home override was confirmed.
-Completed-run identity fields, exact invalid-auth output, and oneharness
-classification remain unknown.
+The installed CLI reported `Not logged in`; this host specifically lacks both a
+`CURSOR_API_KEY` and stored browser credential, so no model call could be made.
+Completed-run identity fields, exact invalid-auth output, and classification
+remain unproven. No auth axis is known unsupported.
 
 ## Recommendation for oneharness variants
 

@@ -52,6 +52,19 @@ jobs:
           node-version: lts/*
       - name: Install real CLIs
         run: just live-variants-tools
+      - name: Install Goose CLI (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install Goose CLI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:CONFIGURE = 'false'
+          irm 'https://raw.githubusercontent.com/aaif-goose/goose/main/download_cli.ps1' | iex
+          $dir = Join-Path $env:USERPROFILE '.local\bin'
+          if (Test-Path $dir) { Add-Content -Path $env:GITHUB_PATH -Value $dir }
       - name: Live API variants and same-harness fallback
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

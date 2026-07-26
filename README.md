@@ -65,12 +65,12 @@ how — or whether — it reaches that harness.
 |----|-----|----------------|--------------------|:-------:|----------|-------------|-----------------------|--------------------|:------------:|:-----:|:-------------:|:---------:|
 | `claude-code` | Claude Code | `claude` | `CLAUDE_CONFIG_DIR`, `ANTHROPIC_API_KEY` (live-proven) | ✓ | native flag | `--effort` | `--permission-mode bypassPermissions` | `.claude/settings.json` | ✓ / ✓ | ✓ | ✓ | `--resume` + `--fork-session` |
 | `codex` | OpenAI Codex CLI | `codex` | `CODEX_HOME`, `CODEX_API_KEY` (live-proven) | ✓ | prepended | `model_reasoning_effort` | `--dangerously-bypass-approvals-and-sandbox` | — | — | — | ✓ | `exec resume <id>` (linear) |
-| `opencode` | OpenCode | `opencode` | provider env/config home (mapped, unproven) | ✓ | prepended | config only | `--dangerously-skip-permissions` | `opencode.json` | via `settings` | — | ✓ | `--session` + `--fork` |
-| `goose` | Goose | `goose` | provider env/config home (mapped, unproven) | — | native flag | — | (runs unattended) | — | — | — | — | `--resume --name` (linear)¹ |
-| `qwen` | Qwen Code | `qwen` | `OPENAI_API_KEY`/base URL (mapped, unproven) | ✓ | prepended | config only | `--yolo` | `.qwen/settings.json` | ✓ / ✓ (interactive) | — | ✓ | `--resume` (linear) |
-| `crush` | Crush | `crush` | provider env/config home (mapped, unproven) | ✓ | prepended | config only | `run -q` (non-interactive) | `crush.json` | ✓ / ✓ | — | — | `--session` (linear) |
-| `copilot` | GitHub Copilot CLI | `copilot` | `COPILOT_GITHUB_TOKEN` (mapped, unproven) | ✓ | prepended | `--reasoning-effort` | `--allow-all-tools --allow-all-paths --no-ask-user` | — | — | — | — | `--resume` (linear)¹ |
-| `cursor` | Cursor CLI | `cursor-agent` | `CURSOR_API_KEY` (mapped, unproven) | ✓ | prepended | `--model 'M-<effort>'` | `--force` (`--trust` under `--no-bypass`) | `.cursor/cli.json` | ✓ / ✓ | — | ✓ | `--resume` (linear) |
+| `opencode` | OpenCode | `opencode` | `ANTHROPIC_API_KEY` (live-proven); stored auth (mapped, unproven) | ✓ | prepended | config only | `--dangerously-skip-permissions` | `opencode.json` | via `settings` | — | ✓ | `--session` + `--fork` |
+| `goose` | Goose | `goose` | `GOOSE_PROVIDER` + `OPENAI_API_KEY` (live-proven); stored auth (mapped, unproven) | — | native flag | — | (runs unattended) | — | — | — | — | `--resume --name` (linear)¹ |
+| `qwen` | Qwen Code | `qwen` | `OPENAI_API_KEY` + base URL (live-proven); OAuth/Coding Plan (mapped, unproven) | ✓ | prepended | config only | `--yolo` | `.qwen/settings.json` | ✓ / ✓ (interactive) | — | ✓ | `--resume` (linear) |
+| `crush` | Crush | `crush` | `ANTHROPIC_API_KEY` (live-proven); stored login (mapped, unproven) | ✓ | prepended | config only | `run -q` (non-interactive) | `crush.json` | ✓ / ✓ | — | — | `--session` (linear) |
+| `copilot` | GitHub Copilot CLI | `copilot` | token/BYOK/stored login (mapped, unproven; no usable host quota) | ✓ | prepended | `--reasoning-effort` | `--allow-all-tools --allow-all-paths --no-ask-user` | — | — | — | — | `--resume` (linear)¹ |
+| `cursor` | Cursor CLI | `cursor-agent` | API key/browser login (mapped, unproven; credentials absent) | ✓ | prepended | `--model 'M-<effort>'` | `--force` (`--trust` under `--no-bypass`) | `.cursor/cli.json` | ✓ / ✓ | — | ✓ | `--resume` (linear) |
 
 The `--resume` column shows each harness's headless continuation flag and whether
 it can **fork** (`run --resume <id> --fork`: branch a new session from the resumed
@@ -1464,10 +1464,11 @@ contract and CLI, Python, and Node examples.
 ## Live end-to-end testing
 
 Live variant coverage selects Claude subscription identities with isolated
-`CLAUDE_CONFIG_DIR` values, selects Claude/Codex API identities with child-only
-key injection, and masks ambient keys for subscription runs. It requires both
-the marker assertion and provider-specific identity evidence; the complete
-lever, precedence, concurrency, and evidence support matrix is maintained in
+`CLAUDE_CONFIG_DIR` values and selects API identities for Claude, Codex,
+OpenCode, Qwen, Crush, and Goose with child-only key injection. It also masks
+ambient keys for subscription runs and live-proves OpenCode child isolation.
+Every phase requires both the marker assertion and provider-specific identity
+evidence; the complete lever, precedence, concurrency, and evidence matrix is maintained in
 [Harness authentication identity](docs/harness-auth.md).
 
 `just smoke-live` is the quick "does any installed harness work" check. The

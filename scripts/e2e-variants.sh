@@ -99,17 +99,27 @@ EOF
 run_marker() {
     local id="$1" marker="$2"
     local report="$tmp/${id//:/-}.json"
+    local command_stderr="$tmp/${id//:/-}.stderr"
     shift 2
     if env "$@" "$OH" run --config "$config" --harness "$id" \
-        --prompt "Reply exactly $marker" --compact >"$report"; then
+        --prompt "Reply exactly $marker" --compact >"$report" 2>"$command_stderr"; then
         :
-    elif jq -e '.results[0]' "$report" >/dev/null 2>&1; then
-        diagnostic="$(jq -r \
-            '.results[0] | "status=\(.status) exit_code=\(.exit_code) failure_kind=\(.failure_kind) stderr_present=\((.stderr // "") | length > 0)"' \
-            "$report")"
-        fail "$id exited nonzero ($diagnostic); verify that variant's selected credential source"
     else
-        fail "$id exited before producing a valid report; verify the harness installation, auth source, and config"
+        run_exit=$?
+        if jq -e '.results[0]' "$report" >/dev/null 2>&1; then
+            diagnostic="$(jq -r \
+                '.results[0] | "status=\(.status) exit_code=\(.exit_code) failure_kind=\(.failure_kind) stderr_present=\((.stderr // "") | length > 0)"' \
+                "$report")"
+            fail "$id exited nonzero ($diagnostic); verify that variant's selected credential source"
+        else
+            stderr_tail="$(
+                tail -5 "$command_stderr" |
+                    sed -E \
+                        -e 's/(sk-ant-|sk-proj-|sk-)[A-Za-z0-9_-]+/<redacted>/g' \
+                        -e 's/(Bearer )[A-Za-z0-9._-]+/\1<redacted>/g'
+            )"
+            fail "$id exited $run_exit before producing a valid report; stderr tail: ${stderr_tail:-<empty>}; verify the harness installation, auth source, and config"
+        fi
     fi
     jq -e --arg marker "$marker" \
         '.results[0].status == "ok" and (.results[0].stdout | contains($marker))' \

@@ -230,6 +230,7 @@ pub struct VariantConfig {
     pub hooks: Option<toml::Value>,
     pub settings: Option<toml::Value>,
     #[serde(default)]
+    // llmlint: ignore[invalid_states_unrepresentable] This map shares the established TOML `[env]` string-key contract; `validate` checks every key before FileConfig is exposed, preserving backward-compatible merging without a second map-key representation.
     pub env: BTreeMap<String, String>,
     // llmlint: ignore[invalid_states_unrepresentable] The TOML contract intentionally stores a portable path string; deserialization rejects empty/NUL values and the I/O boundary resolves it, verifies it is a regular mode-private file, and reports the concrete path.
     pub env_file: Option<String>,

@@ -31,7 +31,7 @@ if [ -n "${OH_E2E_DOUBLE_INVALID_REPORT:-}" ]; then
 fi
 
 if [ -n "${OH_E2E_DOUBLE_VALID_FAILURE:-}" ]; then
-    export MOCK_STDERR="provider rejected request"
+    export MOCK_STDERR="provider rejected request; verify the injected failure fixture and retry"
     export MOCK_EXIT=7
     exec "$provider_double" "$@"
 fi
@@ -39,7 +39,7 @@ fi
 case "$(basename "$0")" in
     claude)
         if [ "${ANTHROPIC_API_KEY:-}" = "deliberately-invalid" ]; then
-            export MOCK_STDERR="authentication_error"
+            export MOCK_STDERR="authentication_error: verify the deliberately invalid fallback fixture and retry"
             export MOCK_EXIT=1
         else
             MOCK_STDOUT="$(jq -nc --arg marker "$marker" \

@@ -40,10 +40,22 @@ mock="$(resolve_executable "$root/target/debug/oneharness-mock-harness" || true)
 # The real oneharness process launches these provider-boundary adapters. Each
 # adapter delegates to the repository's shipped subprocess double with the
 # provider's real output shape, derived from the prompt oneharness delivered.
-for tool in claude codex; do
-    cp "$root/scripts/e2e-variants-provider-double.sh" "$tmp/bin/$tool"
-    chmod +x "$tmp/bin/$tool"
-done
+if [ "${OS:-}" = "Windows_NT" ]; then
+    provider="$tmp/bin/e2e-variants-provider-double.sh"
+    cp "$root/scripts/e2e-variants-provider-double.sh" "$provider"
+    chmod +x "$provider"
+    bash_windows="$(cygpath -w "$(command -v bash)")"
+    provider_windows="$(cygpath -w "$provider")"
+    for tool in claude codex; do
+        printf '@"%s" "%s" "--provider-tool=%s" %%*\r\n' \
+            "$bash_windows" "$provider_windows" "$tool" >"$tmp/bin/$tool.cmd"
+    done
+else
+    for tool in claude codex; do
+        cp "$root/scripts/e2e-variants-provider-double.sh" "$tmp/bin/$tool"
+        chmod +x "$tmp/bin/$tool"
+    done
+fi
 
 common_env=(
     PATH="$tmp/bin:$PATH"
@@ -57,8 +69,10 @@ common_env=(
 )
 
 evidence="$tmp/evidence.log"
-env "${common_env[@]}" OH_E2E_EVIDENCE_FILE="$evidence" \
-    bash "$root/scripts/e2e-variants.sh" >"$tmp/success.out" 2>"$tmp/success.err"
+if ! env "${common_env[@]}" OH_E2E_EVIDENCE_FILE="$evidence" \
+    bash "$root/scripts/e2e-variants.sh" >"$tmp/success.out" 2>"$tmp/success.err"; then
+    fail "successful boundary run failed: $(tail -1 "$tmp/success.err")"
+fi
 assert_contains "$evidence" 'IDENTITY claude-code:apikey' \
     "successful run omitted Claude API identity evidence"
 assert_contains "$evidence" 'ASSERT fallback: first_failure_kind=auth' \

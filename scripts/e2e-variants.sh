@@ -211,7 +211,8 @@ if [ -z "${OH_E2E_VARIANTS_CORE_ONLY:-}" ]; then
     evidence "IDENTITY crush:apikey: provider=anthropic model=claude-haiku-4-5-20251001 isolated_home=yes"
 
     # These exact, sanitized evidence records are the executable drift gate for
-    # the auth reference and README matrix.
+    # the auth reference and README matrix. SC2016 is intentional because the
+    # single-quoted backticks below are literal Markdown, never shell commands.
     # shellcheck disable=SC2016
     for expected in \
     "IDENTITY opencode:apikey: provider=anthropic model=claude-haiku-4-5 api_key=present ambient_openai=masked completed_step_cost>0" \

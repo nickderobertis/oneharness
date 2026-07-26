@@ -9,6 +9,14 @@ if [ -z "$provider_double" ] || [ ! -f "$provider_double" ] || [ ! -x "$provider
     exit 2
 fi
 
+tool="$(basename "$0")"
+case "${1:-}" in
+    --provider-tool=*)
+        tool="${1#--provider-tool=}"
+        shift
+        ;;
+esac
+
 marker=""
 for arg in "$@"; do
     case "$arg" in
@@ -36,7 +44,7 @@ if [ -n "${OH_E2E_DOUBLE_VALID_FAILURE:-}" ]; then
     exec "$provider_double" "$@"
 fi
 
-case "$(basename "$0")" in
+case "$tool" in
     claude)
         if [ "${ANTHROPIC_API_KEY:-}" = "deliberately-invalid" ]; then
             export MOCK_STDERR="authentication_error: verify the deliberately invalid fallback fixture and retry"

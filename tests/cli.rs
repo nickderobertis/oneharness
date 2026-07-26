@@ -249,7 +249,7 @@ fn list_describes_every_harness() {
     let output = run(&["list"], &[]);
     assert!(output.status.success());
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.2");
+    assert_eq!(value["schema_version"], "0.3");
     let ids: Vec<&str> = value["harnesses"]
         .as_array()
         .unwrap()
@@ -2552,7 +2552,7 @@ fn codex_usage_and_known_model_cost_flow_into_history_while_unknown_cost_is_omit
         assert_eq!(result["usage"]["output_tokens"], 100);
         assert_eq!(result["usage"]["cost_usd"].is_number(), expect_cost);
         let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-        assert_eq!(record["schema_version"], "1.1");
+        assert_eq!(record["schema_version"], "1.2");
         assert_eq!(record["usage"]["cost_usd"].is_number(), expect_cost);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -5693,7 +5693,7 @@ fn config_command_shows_values_with_sources() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.2");
+    assert_eq!(value["schema_version"], "0.3");
     assert_eq!(value["config_files"].as_array().unwrap().len(), 2);
 
     // The project file wins for model and is named as the source...
@@ -8846,12 +8846,13 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
     let report = json_stdout(&unsupported);
     assert_eq!(report["results"][0]["status"], "ok");
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-    assert_eq!(record["schema_version"], "1.1");
+    assert_eq!(record["schema_version"], "1.2");
     for field in [
         "started_at",
         "model_ms",
         "tool_ms",
         "time_to_first_token_ms",
+        "observed_tool_ms",
     ] {
         assert!(
             record.get(field).is_none(),
@@ -8866,6 +8867,7 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
     let anthropic = concat!(
         "{\"type\":\"system\",\"subtype\":\"init\"}\n",
         "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Bash\",\"input\":{}}]}}\n",
+        "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"content\":\"ok\"}]}}\n",
         "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n",
         "{\"type\":\"result\",\"result\":\"done\"}\n",
     );
@@ -8894,17 +8896,30 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
         );
         let report = json_stdout(&output);
         assert_eq!(report["results"][0]["status"], "ok", "{id}");
-        let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-        assert_eq!(record["schema_version"], "1.1", "{id}");
+        let history_path = Path::new(report["history_file"].as_str().unwrap());
+        assert!(
+            history_path.exists(),
+            "{id}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let record = first_history_run(history_path);
+        assert_eq!(record["schema_version"], "1.2", "{id}");
         assert!(record.get("model_ms").is_none(), "{id}");
         assert!(record.get("tool_ms").is_none(), "{id}");
         assert!(record.get("time_to_first_token_ms").is_none(), "{id}");
-        if let Some(events) = record["events"].as_array() {
-            for event in events.iter().filter(|event| event["kind"] == "tool_call") {
-                assert!(event["started_at"].is_null(), "{id}");
-                assert!(event["duration_ms"].is_null(), "{id}");
-            }
-        }
+        let observed = record["observed_tool_ms"].as_u64().unwrap();
+        assert!(observed >= 40, "{id}: {observed}");
+        let call = record["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["kind"] == "tool_call")
+            .unwrap();
+        assert_eq!(call["timing_source"], "stdout_observed", "{id}");
+        assert!(call["started_at"].is_string(), "{id}");
+        assert!(call["finished_at"].is_string(), "{id}");
+        assert_eq!(call["status"], "completed", "{id}");
+        assert_eq!(call["duration_ms"], record["observed_tool_ms"], "{id}");
         let _ = std::fs::remove_dir_all(dir);
     }
 }
@@ -8993,7 +9008,7 @@ fn history_accepts_each_advertised_provider_trace_shape() {
         );
         let report = json_stdout(&output);
         let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-        assert_eq!(record["schema_version"], "1.1", "{id}");
+        assert_eq!(record["schema_version"], "1.2", "{id}");
         if matches!(id, "codex" | "opencode") {
             assert_eq!(record["usage"]["input_tokens"], 7, "{id}");
             assert_eq!(record["usage"]["output_tokens"], 2, "{id}");
@@ -9079,7 +9094,7 @@ fn history_preserves_format_contracts_and_composes_with_resume() {
     let report = json_stdout(&resumed);
     assert_eq!(report["results"][0]["text"], "x");
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-    assert_eq!(record["schema_version"], "1.1");
+    assert_eq!(record["schema_version"], "1.2");
 
     let _ = std::fs::remove_file(schema);
     let _ = std::fs::remove_dir_all(explicit_dir);
@@ -9164,7 +9179,7 @@ fn history_measures_overlapping_tool_intervals_from_provider_events() {
     );
     let report = json_stdout(&output);
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-    assert_eq!(record["schema_version"], "1.1");
+    assert_eq!(record["schema_version"], "1.2");
     assert!(record["time_to_first_token_ms"].as_u64().is_some());
     assert!(record["time_to_first_token_ms"].as_u64().unwrap() > 0);
     let calls = record["events"]
@@ -9177,6 +9192,16 @@ fn history_measures_overlapping_tool_intervals_from_provider_events() {
     assert_eq!(calls[0]["tool_call_id"], "call-a");
     assert_eq!(calls[1]["tool_call_id"], "call-b");
     assert_eq!(calls[0]["status"], "completed");
+    assert!(
+        calls
+            .iter()
+            .all(|event| event.get("timing_source").is_none()),
+        "provider-measured Codex events must retain their prior serialized shape"
+    );
+    assert!(
+        record.get("observed_tool_ms").is_none(),
+        "Codex provider telemetry must not acquire observed timing fields"
+    );
     let individual = calls
         .iter()
         .map(|event| event["duration_ms"].as_u64().unwrap())
@@ -9447,8 +9472,8 @@ fn history_measures_codex_file_change_with_start_and_completion() {
     );
     let report = json_stdout(&output);
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-    // Complete timing telemetry was derived into the v1.1 history record.
-    assert_eq!(record["schema_version"], "1.1");
+    // Complete timing telemetry was derived into the current history record.
+    assert_eq!(record["schema_version"], "1.2");
     assert!(record["started_at"].is_string());
     assert!(record["model_ms"].is_u64());
     assert!(record["tool_ms"].is_u64());
@@ -9498,7 +9523,7 @@ fn history_preserves_an_unfinished_tool_interval_without_fabricating_an_end() {
     assert!(output.status.success());
     let report = json_stdout(&output);
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-    assert_eq!(record["schema_version"], "1.1");
+    assert_eq!(record["schema_version"], "1.2");
     let call = record["events"]
         .as_array()
         .unwrap()
@@ -10784,7 +10809,7 @@ fn history_labels_layer_cli_over_environment_over_config_and_validate() {
     let record = first_history_run(Path::new(&path));
     // History requests the telemetry trace even though the user selected compact
     // report output, so ordinary new writes always use the current contract.
-    assert_eq!(record["schema_version"], "1.1");
+    assert_eq!(record["schema_version"], "1.2");
     assert!(record["started_at"].is_string());
     assert_eq!(record["labels"]["graph"], "cli");
     for key in ["user", "project", "env", "cli"] {

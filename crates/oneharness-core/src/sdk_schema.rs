@@ -8,8 +8,8 @@ use schemars::{schema_for, Schema};
 use serde::Serialize;
 
 use crate::domain::history::{
-    HistoryLine, HistoryRecord, HistoryStreamEnvelope, PREVIOUS_CURRENT_SCHEMA_VERSION,
-    SCHEMA_VERSION as HISTORY_SCHEMA_VERSION,
+    HistoryLine, HistoryRecord, HistoryStreamEnvelope, FIRST_EVENT_SCHEMA_VERSION,
+    PREVIOUS_CURRENT_SCHEMA_VERSION, SCHEMA_VERSION as HISTORY_SCHEMA_VERSION,
 };
 use crate::domain::report::{RunReport, RunStreamEnvelope};
 use crate::domain::sdk::{
@@ -161,6 +161,7 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                     measured["properties"][field] =
                         serde_json::json!({"type": "integer", "minimum": 0});
                 }
+                measured["properties"]["observed_tool_ms"] = serde_json::Value::Bool(false);
                 let mut terminal = measured.clone();
                 terminal["properties"]["status"] =
                     serde_json::json!({"enum": ["ok", "nonzero"], "type": "string"});
@@ -177,6 +178,7 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                     "model_ms",
                     "tool_ms",
                     "time_to_first_token_ms",
+                    "observed_tool_ms",
                 ] {
                     unavailable["properties"][field] = serde_json::Value::Bool(false);
                     unavailable["required"]
@@ -184,12 +186,26 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                         .expect("required array")
                         .retain(|value| value.as_str() != Some(field));
                 }
+                let mut observed = unavailable.clone();
+                observed["properties"]["schema_version"] = serde_json::json!({
+                    "const": HISTORY_SCHEMA_VERSION,
+                    "type": "string"
+                });
+                observed["properties"]["observed_tool_ms"] =
+                    serde_json::json!({"type": "integer", "minimum": 0});
+                for field in ["duration_ms", "observed_tool_ms"] {
+                    let required = observed["required"].as_array_mut().expect("required array");
+                    if !required.iter().any(|value| value.as_str() == Some(field)) {
+                        required.push(serde_json::Value::String(field.to_string()));
+                    }
+                }
                 object.clear();
                 object.insert(
                     "oneOf".to_string(),
                     serde_json::json!([
                         {"allOf": [terminal]},
                         {"allOf": [measured]},
+                        {"allOf": [observed]},
                         {"allOf": [unavailable]}
                     ]),
                 );
@@ -209,7 +225,11 @@ fn history_schema(schema: Schema) -> Schema {
 
 fn current_history_versions_schema() -> serde_json::Value {
     serde_json::json!({
-        "enum": [PREVIOUS_CURRENT_SCHEMA_VERSION, HISTORY_SCHEMA_VERSION],
+        "enum": [
+            FIRST_EVENT_SCHEMA_VERSION,
+            PREVIOUS_CURRENT_SCHEMA_VERSION,
+            HISTORY_SCHEMA_VERSION
+        ],
         "type": "string"
     })
 }
@@ -270,6 +290,7 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                     current["properties"][field] =
                         serde_json::json!({"type": "integer", "minimum": 0});
                 }
+                current["properties"]["observed_tool_ms"] = serde_json::Value::Bool(false);
                 let event_base = current["properties"]["events"]["items"].clone();
                 let terminal_event = |status: &str, ended: bool| {
                     let mut properties = serde_json::json!({
@@ -320,6 +341,8 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                     PREVIOUS_CURRENT_SCHEMA_VERSION,
                     false,
                 );
+                let mut first_current = current.clone();
+                set_history_identity_version(&mut first_current, FIRST_EVENT_SCHEMA_VERSION, false);
                 let mut unavailable = base.clone();
                 set_history_identity_version(&mut unavailable, HISTORY_SCHEMA_VERSION, true);
                 unavailable["properties"]["finished_at"] = serde_json::json!({"type": "null"});
@@ -338,6 +361,7 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                     "model_ms",
                     "tool_ms",
                     "time_to_first_token_ms",
+                    "observed_tool_ms",
                 ] {
                     unavailable["properties"][field] = serde_json::Value::Bool(false);
                 }
@@ -363,6 +387,37 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                     PREVIOUS_CURRENT_SCHEMA_VERSION,
                     false,
                 );
+                let mut first_unavailable = unavailable.clone();
+                set_history_identity_version(
+                    &mut first_unavailable,
+                    FIRST_EVENT_SCHEMA_VERSION,
+                    false,
+                );
+                let mut observed = base.clone();
+                set_history_identity_version(&mut observed, HISTORY_SCHEMA_VERSION, true);
+                observed["properties"]["finished_at"] = serde_json::json!({"type": "null"});
+                for field in [
+                    "started_at",
+                    "model_ms",
+                    "tool_ms",
+                    "time_to_first_token_ms",
+                ] {
+                    observed["properties"][field] = serde_json::Value::Bool(false);
+                    observed["required"]
+                        .as_array_mut()
+                        .expect("required array")
+                        .retain(|value| value.as_str() != Some(field));
+                }
+                for field in ["duration_ms", "observed_tool_ms"] {
+                    let required = observed["required"].as_array_mut().expect("required array");
+                    if !required.iter().any(|value| value.as_str() == Some(field)) {
+                        required.push(serde_json::Value::String(field.to_string()));
+                    }
+                }
+                observed["properties"]["duration_ms"] =
+                    serde_json::json!({"type": "integer", "minimum": 0});
+                observed["properties"]["observed_tool_ms"] =
+                    serde_json::json!({"type": "integer", "minimum": 0});
                 let mut legacy = base;
                 legacy["properties"]["schema_version"] =
                     serde_json::json!({"enum": ["0.1", "0.2"], "type": "string"});
@@ -401,8 +456,11 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                     serde_json::json!([
                         current,
                         previous_current,
+                        first_current,
                         unavailable,
+                        observed,
                         previous_unavailable,
+                        first_unavailable,
                         legacy
                     ]),
                 );
@@ -514,5 +572,37 @@ mod tests {
         unavailable.as_object_mut().unwrap().remove("model_ms");
         unavailable["events"][0]["started_at"] = json!("2026-07-19T00:00:00Z");
         assert!(!validator.is_valid(&unavailable));
+    }
+
+    #[test]
+    fn current_schema_distinguishes_stdout_observed_from_provider_timing() {
+        let schema = serde_json::to_value(bundle().history_record).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let event = json!({
+            "kind": "tool_call", "name": "Bash", "input": {}, "output": "ok", "index": 0,
+            "tool_call_id": "call-1", "started_at": "2026-07-19T00:00:00Z",
+            "finished_at": "2026-07-19T00:00:00Z", "duration_ms": 3,
+            "status": "completed", "timing_source": "stdout_observed"
+        });
+        let mut observed = current_record(event);
+        observed["schema_version"] = json!("1.2");
+        observed["harness_id"] = json!("codex");
+        observed["finished_at"] = serde_json::Value::Null;
+        for field in [
+            "started_at",
+            "model_ms",
+            "tool_ms",
+            "time_to_first_token_ms",
+        ] {
+            observed.as_object_mut().unwrap().remove(field);
+        }
+        observed["observed_tool_ms"] = json!(3);
+        assert!(validator.is_valid(&observed));
+
+        observed["model_ms"] = json!(1);
+        assert!(!validator.is_valid(&observed));
+        observed.as_object_mut().unwrap().remove("model_ms");
+        observed["events"][0]["timing_source"] = json!("estimated");
+        assert!(!validator.is_valid(&observed));
     }
 }

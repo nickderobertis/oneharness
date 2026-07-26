@@ -1269,6 +1269,7 @@ mod tests {
                 model_ms: Some(7),
                 tool_ms: Some(0),
                 time_to_first_token_ms: None,
+                observed_tool_ms: None,
             }),
             command: vec!["bin".to_string()],
             output_format: OutputFormat::Json,
@@ -1347,6 +1348,7 @@ mod tests {
             finished_at: None,
             duration_ms: None,
             status: None,
+            timing_source: None,
         }]);
         w.append(PermissionMode::Bypass, Some("sonnet"), "do it", &first)
             .unwrap();
@@ -1409,6 +1411,7 @@ mod tests {
             finished_at: None,
             duration_ms: None,
             status: None,
+            timing_source: None,
         };
         fs::create_dir(writer.path()).unwrap();
         let error = writer
@@ -1457,6 +1460,7 @@ mod tests {
             finished_at: None,
             duration_ms: None,
             status: None,
+            timing_source: None,
         };
         let outcome = writer
             .append_event_tracked(writer.begin_run(), "codex", event.clone())
@@ -1563,6 +1567,7 @@ mod tests {
                 finished_at: None,
                 duration_ms: None,
                 status: None,
+                timing_source: None,
             },
         });
         fs::write(

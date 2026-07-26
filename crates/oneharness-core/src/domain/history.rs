@@ -30,8 +30,9 @@ use crate::domain::signals::{FailureKind, Usage};
 /// Bumped when the history record shape changes in a way a consumer must notice.
 /// Independent of [`crate::domain::report::SCHEMA_VERSION`] — the history file and
 /// the run report are separate contracts and version on their own cadence.
-pub const SCHEMA_VERSION: &str = "1.1";
-pub(crate) const PREVIOUS_CURRENT_SCHEMA_VERSION: &str = "1.0";
+pub const SCHEMA_VERSION: &str = "1.2";
+pub(crate) const PREVIOUS_CURRENT_SCHEMA_VERSION: &str = "1.1";
+pub(crate) const FIRST_EVENT_SCHEMA_VERSION: &str = "1.0";
 
 /// The legacy record contract accepted by the migration reader.
 pub const LEGACY_SCHEMA_VERSION: &str = "0.1";
@@ -104,7 +105,7 @@ impl HistoryEventLine {
     pub(crate) fn valid(&self) -> bool {
         matches!(
             self.schema_version.as_str(),
-            SCHEMA_VERSION | PREVIOUS_CURRENT_SCHEMA_VERSION
+            SCHEMA_VERSION | PREVIOUS_CURRENT_SCHEMA_VERSION | FIRST_EVENT_SCHEMA_VERSION
         ) && identity_fields_valid(
             &self.harness,
             self.variant.as_deref(),
@@ -148,6 +149,10 @@ pub struct HistoryRunRecord {
     pub tool_ms: Option<u128>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_to_first_token_ms: Option<u128>,
+    /// Union of tool intervals derived from stdout pipe-read observations.
+    /// This is deliberately separate from provider-measured `tool_ms`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_tool_ms: Option<u128>,
     pub text: Option<String>,
     pub text_source: Option<String>,
     pub usage: Usage,
@@ -159,7 +164,7 @@ impl HistoryRunRecord {
     pub(crate) fn valid(&self) -> bool {
         if !matches!(
             self.schema_version.as_str(),
-            SCHEMA_VERSION | PREVIOUS_CURRENT_SCHEMA_VERSION
+            SCHEMA_VERSION | PREVIOUS_CURRENT_SCHEMA_VERSION | FIRST_EVENT_SCHEMA_VERSION
         ) {
             return false;
         }
@@ -169,6 +174,16 @@ impl HistoryRunRecord {
             self.harness_id.as_deref(),
         ) {
             return false;
+        }
+        if let Some(observed_tool_ms) = self.observed_tool_ms {
+            return self
+                .duration_ms
+                .is_some_and(|duration| observed_tool_ms <= duration)
+                && self.started_at.is_none()
+                && self.finished_at.is_none()
+                && self.model_ms.is_none()
+                && self.tool_ms.is_none()
+                && self.time_to_first_token_ms.is_none();
         }
         match (
             self.started_at.as_deref(),
@@ -214,6 +229,7 @@ impl HistoryRunRecord {
             model_ms: record.model_ms,
             tool_ms: record.tool_ms,
             time_to_first_token_ms: record.time_to_first_token_ms,
+            observed_tool_ms: record.observed_tool_ms,
             text: record.text.clone(),
             text_source: record.text_source.clone(),
             usage: record.usage.clone(),
@@ -250,6 +266,7 @@ impl HistoryRunRecord {
             model_ms: self.model_ms,
             tool_ms: self.tool_ms,
             time_to_first_token_ms: self.time_to_first_token_ms,
+            observed_tool_ms: self.observed_tool_ms,
             text: self.text,
             text_source: self.text_source,
             usage: self.usage,
@@ -571,6 +588,10 @@ pub struct HistoryRecord {
     pub tool_ms: Option<u128>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_to_first_token_ms: Option<u128>,
+    /// Union of tool intervals observed at the stdout pipe. Unlike `tool_ms`,
+    /// this is not provider-measured and has no model-latency counterpart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_tool_ms: Option<u128>,
     /// Best-effort final assistant text; `null` when extraction was impossible.
     pub text: Option<String>,
     /// How `text` was extracted; `null` when absent.
@@ -639,6 +660,7 @@ impl HistoryRecord {
         r: &RunResult,
     ) -> Self {
         let telemetry = r.telemetry.as_ref();
+        let measured = telemetry.filter(|telemetry| telemetry.observed_tool_ms.is_none());
         HistoryRecord {
             schema_version: SCHEMA_VERSION.to_string(),
             history_id,
@@ -656,12 +678,13 @@ impl HistoryRecord {
             status: r.status,
             exit_code: r.exit_code,
             duration_ms: r.duration_ms,
-            started_at: telemetry.map(|telemetry| telemetry.started_at.clone()),
-            finished_at: telemetry.and_then(|telemetry| telemetry.finished_at.clone()),
+            started_at: measured.map(|telemetry| telemetry.started_at.clone()),
+            finished_at: measured.and_then(|telemetry| telemetry.finished_at.clone()),
             model_ms: telemetry.and_then(|telemetry| telemetry.model_ms),
             tool_ms: telemetry.and_then(|telemetry| telemetry.tool_ms),
             time_to_first_token_ms: telemetry
                 .and_then(|telemetry| telemetry.time_to_first_token_ms),
+            observed_tool_ms: telemetry.and_then(|telemetry| telemetry.observed_tool_ms),
             text: r.text.clone(),
             text_source: r.text_source.clone(),
             usage: r.usage.clone(),
@@ -678,6 +701,7 @@ impl HistoryRecord {
                 .find(|spec| spec.id == self.harness)
                 .is_some_and(|spec| spec.telemetry.is_none());
         self.valid_v03()
+            && self.observed_timing_valid()
             && (!matches!(self.timing_state(), Ok(HistoryTiming::Unavailable))
                 || timing_unavailable)
     }
@@ -688,6 +712,9 @@ impl HistoryRecord {
         // invalid so a trace-capable harness cannot silently write corrupt data.
         let timing = match self.timing_state() {
             Ok(HistoryTiming::Unavailable) => {
+                if self.observed_tool_ms.is_some() {
+                    return true;
+                }
                 return self.events.as_ref().is_none_or(|events| {
                     events.iter().all(|event| {
                         event.started_at.is_none()
@@ -736,6 +763,21 @@ impl HistoryRecord {
         })
     }
 
+    fn observed_timing_valid(&self) -> bool {
+        match self.observed_tool_ms {
+            None => self.events.as_ref().is_none_or(|events| {
+                events.iter().all(|event| {
+                    event.timing_source != Some(crate::domain::events::TimingSource::StdoutObserved)
+                })
+            }),
+            Some(observed_tool_ms) => {
+                self.duration_ms
+                    .is_some_and(|duration| observed_tool_ms <= duration)
+                    && matches!(self.timing_state(), Ok(HistoryTiming::Unavailable))
+            }
+        }
+    }
+
     fn timing_state(&self) -> Result<HistoryTiming<'_>, ()> {
         match (
             self.started_at.as_deref(),
@@ -762,7 +804,7 @@ impl HistoryRecord {
         let wire: HistoryRecordWire = serde_json::from_value(value)?;
         if !matches!(
             wire.schema_version.as_str(),
-            SCHEMA_VERSION | PREVIOUS_CURRENT_SCHEMA_VERSION
+            SCHEMA_VERSION | PREVIOUS_CURRENT_SCHEMA_VERSION | FIRST_EVENT_SCHEMA_VERSION
         ) {
             return Err(serde_json::Error::io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -817,6 +859,7 @@ impl HistoryRecord {
             model_ms: wire.model_ms,
             tool_ms: wire.tool_ms,
             time_to_first_token_ms: wire.time_to_first_token_ms,
+            observed_tool_ms: wire.observed_tool_ms,
             text: wire.text,
             text_source: wire.text_source,
             usage: wire.usage,
@@ -910,6 +953,8 @@ struct HistoryRecordWire {
     tool_ms: Option<u128>,
     #[serde(default)]
     time_to_first_token_ms: Option<u128>,
+    #[serde(default)]
+    observed_tool_ms: Option<u128>,
     text: Option<String>,
     text_source: Option<String>,
     usage: Usage,
@@ -937,6 +982,8 @@ struct LegacyActionEvent {
     duration_ms: Option<u128>,
     #[serde(default)]
     status: Option<ToolCallStatus>,
+    #[serde(default)]
+    timing_source: Option<crate::domain::events::TimingSource>,
 }
 
 impl LegacyActionEvent {
@@ -952,6 +999,7 @@ impl LegacyActionEvent {
             finished_at: self.finished_at,
             duration_ms: self.duration_ms,
             status: self.status,
+            timing_source: self.timing_source,
         }
     }
 }
@@ -1188,6 +1236,7 @@ mod tests {
                 model_ms: Some(42),
                 tool_ms: Some(0),
                 time_to_first_token_ms: Some(10),
+                observed_tool_ms: None,
             }),
             command: vec!["claude".to_string()],
             output_format: OutputFormat::Json,

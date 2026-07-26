@@ -14,7 +14,7 @@ use crate::domain::session::SessionPhase;
 use crate::domain::signals::{FailureKind, Usage};
 
 /// Bumped when the JSON shape changes in a way consumers must notice.
-pub const SCHEMA_VERSION: &str = "0.2";
+pub const SCHEMA_VERSION: &str = "0.3";
 
 /// How a harness emits its result, which decides how `text` is extracted.
 ///
@@ -96,6 +96,9 @@ pub struct ExecutionTelemetry {
     pub model_ms: Option<u128>,
     pub tool_ms: Option<u128>,
     pub time_to_first_token_ms: Option<u128>,
+    /// Union of tool intervals observed at the stdout pipe, without provider
+    /// request boundaries. Distinct from provider-measured `tool_ms`.
+    pub observed_tool_ms: Option<u128>,
 }
 
 /// One harness's entry in the report.

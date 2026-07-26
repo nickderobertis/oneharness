@@ -159,7 +159,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         unmeasured = await client.history(
             {"session": "python-session-unmeasured", "history_dir": history_dir}
         )
-        self.assertEqual(unmeasured[0]["schema_version"], "1.1")
+        self.assertEqual(unmeasured[0]["schema_version"], "1.2")
         self.assertNotIn("model_ms", unmeasured[0])
         unmeasured_event = json.loads(json.dumps(unmeasured[0]))
         unmeasured_event["events"] = [

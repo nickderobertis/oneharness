@@ -2172,15 +2172,42 @@ fn executed_result(
                 telemetry.trace,
             )
         });
-    let telemetry = timing.filter(|timing| timing.trace_complete).map(|timing| {
-        oneharness_core::domain::report::ExecutionTelemetry {
-            started_at: capture.started_at.clone(),
-            finished_at: capture.finished_at.clone(),
-            model_ms: timing.model_ms,
-            tool_ms: timing.tool_ms,
-            time_to_first_token_ms: timing.time_to_first_token_ms,
-        }
-    });
+    let observed_tool_ms = if timing.is_none() {
+        let mut no_events = Vec::new();
+        let timed_events = normalized_events.as_mut().unwrap_or(&mut no_events);
+        events::apply_stdout_observed_tool_timing(
+            timed_events,
+            &capture.stdout_observations,
+            capture.status,
+            capture.duration_ms,
+        )
+    } else {
+        None
+    };
+    let telemetry = timing
+        .filter(|timing| timing.trace_complete)
+        .map(
+            |timing| oneharness_core::domain::report::ExecutionTelemetry {
+                started_at: capture.started_at.clone(),
+                finished_at: capture.finished_at.clone(),
+                model_ms: timing.model_ms,
+                tool_ms: timing.tool_ms,
+                time_to_first_token_ms: timing.time_to_first_token_ms,
+                observed_tool_ms: None,
+            },
+        )
+        .or_else(|| {
+            observed_tool_ms.map(|observed_tool_ms| {
+                oneharness_core::domain::report::ExecutionTelemetry {
+                    started_at: capture.started_at.clone(),
+                    finished_at: capture.finished_at.clone(),
+                    model_ms: None,
+                    tool_ms: None,
+                    time_to_first_token_ms: None,
+                    observed_tool_ms: Some(observed_tool_ms),
+                }
+            })
+        });
     // A deferred-tool dead-end: the harness completed cleanly (exit 0) but only
     // *deferred* a builtin tool call instead of running it (Claude Code bridge
     // deployments — issue #1114). It exits 0, so it is not caught by the non-zero

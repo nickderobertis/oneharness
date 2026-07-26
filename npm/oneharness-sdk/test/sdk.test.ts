@@ -585,7 +585,7 @@ describe("OneHarness", () => {
 			session: "node-session-unmeasured",
 			historyDir,
 		});
-		expect(unmeasured?.schema_version).toBe("1.1");
+		expect(unmeasured?.schema_version).toBe("1.2");
 		expect(unmeasured).not.toHaveProperty("model_ms");
 		expect(HistoryRecordSchema.safeParse(unmeasured).success).toBe(true);
 		expect(

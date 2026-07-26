@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.9](https://github.com/nickderobertis/oneharness/compare/v0.5.8...v0.5.9) - 2026-07-26
+
+### Fixed
+
+- stabilize cross-platform variant auth CI ([#1194](https://github.com/nickderobertis/oneharness/pull/1194))
+
 ## [0.5.8](https://github.com/nickderobertis/oneharness/compare/v0.5.7...v0.5.8) - 2026-07-26
 
 ### Fixed

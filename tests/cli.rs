@@ -4756,7 +4756,7 @@ fn duplicate_variant_selectors_keep_following_detect_and_sync_associations() {
 bin = "{bin}"
 [harness.claude-code.variant.personal]
 bin = "{bin}"
-allowed_tools = ["Bash(git status:*)"]
+allowed_tools = ["Bash(git status --short)"]
 "#
         ),
         "",
@@ -4814,7 +4814,10 @@ allowed_tools = ["Bash(git status:*)"]
     assert_eq!(synced["results"][1]["harness"], "claude-code");
     assert_eq!(synced["results"][1]["status"], "created");
     let settings = read_json(&std::path::Path::new(&fx.cwd()).join(".claude/settings.json"));
-    assert_eq!(settings["permissions"]["allow"][0], "Bash(git status:*)");
+    assert_eq!(
+        settings["permissions"]["allow"][0],
+        "Bash(git status --short)"
+    );
 }
 
 #[test]

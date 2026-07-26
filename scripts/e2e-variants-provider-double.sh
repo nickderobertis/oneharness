@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Provider-process adapter used only by the hermetic live-variants script test.
+# llmlint: ignore-file[e2e_not_mocked] This adapter is the narrow paid-provider substitute for scripts/e2e-variants-test.sh: the test still executes the real CLI and live workflow, while deterministic failure injection cannot be obtained safely or repeatably from real billed providers. The separate scripts/e2e-variants.sh live job covers the real provider boundary.
 set -euo pipefail
 
 marker=""

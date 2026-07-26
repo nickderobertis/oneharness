@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Hermetic boundary coverage for e2e-variants.sh; no provider API is contacted.
+# llmlint: ignore-file[e2e_not_mocked] This deterministic test drives the real built oneharness CLI and the complete live-variants shell workflow. Only paid model-provider processes are replaced by the repository's shipped subprocess double, which is necessary to exercise provider failure and malformed-report recovery paths reliably without credentials, network calls, or billable CI; scripts/e2e-variants.sh remains the separate real-provider drift alarm.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

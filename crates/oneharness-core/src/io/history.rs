@@ -124,7 +124,12 @@ impl HistoryWriter {
             .split_once(':')
             .map_or((harness, None), |(base, variant)| (base, Some(variant)));
         let line = HistoryEventLine {
-            schema_version: history::SCHEMA_VERSION.to_string(),
+            schema_version: if event.timing_source.is_some() {
+                history::SCHEMA_VERSION
+            } else {
+                history::PREVIOUS_CURRENT_SCHEMA_VERSION
+            }
+            .to_string(),
             run_id,
             harness: base.to_string(),
             variant: variant.map(str::to_string),
@@ -1263,7 +1268,7 @@ mod tests {
             model: None,
             exit_code: Some(0),
             duration_ms: Some(10),
-            telemetry: Some(ExecutionTelemetry {
+            telemetry: Some(ExecutionTelemetry::ProviderMeasured {
                 started_at: "2026-07-19T00:00:00Z".to_string(),
                 finished_at: Some("2026-07-19T00:00:00Z".to_string()),
                 model_ms: Some(7),
@@ -1347,6 +1352,7 @@ mod tests {
             finished_at: None,
             duration_ms: None,
             status: None,
+            timing_source: None,
         }]);
         w.append(PermissionMode::Bypass, Some("sonnet"), "do it", &first)
             .unwrap();
@@ -1409,6 +1415,7 @@ mod tests {
             finished_at: None,
             duration_ms: None,
             status: None,
+            timing_source: None,
         };
         fs::create_dir(writer.path()).unwrap();
         let error = writer
@@ -1457,6 +1464,7 @@ mod tests {
             finished_at: None,
             duration_ms: None,
             status: None,
+            timing_source: None,
         };
         let outcome = writer
             .append_event_tracked(writer.begin_run(), "codex", event.clone())
@@ -1563,6 +1571,7 @@ mod tests {
                 finished_at: None,
                 duration_ms: None,
                 status: None,
+                timing_source: None,
             },
         });
         fs::write(

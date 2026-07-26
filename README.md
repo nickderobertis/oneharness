@@ -214,10 +214,24 @@ strict, so unknown option names and misspellings fail before a subprocess starts
 `HistoryStreamEnvelope` has no independent schema version: its event variant is
 an opt-in additive capability behind history watch's `events` option. Existing
 callers that omit that option continue to receive only `record` envelopes, while
-the nested event/run lines remain governed by history schema version `1.0`.
+the nested event/run lines remain governed by the current history schema;
+readers also accept prior event-sourced versions.
 Missing history records, sessions, and watch cursors raise a typed
 `HistoryNotFoundError`. See the [Node SDK guide](npm/oneharness-sdk/README.md) and
 [Python SDK guide](python/oneharness-sdk/README.md).
+
+History distinguishes provider timing from tool intervals observed by
+oneharness. `model_ms` and `tool_ms` remain reserved for harnesses with explicit
+provider lifecycle boundaries. Anthropic-envelope harnesses instead emit
+`observed_tool_ms`, and each timed tool call carries
+`timing_source: "stdout_observed"`; `model_ms` stays absent. These intervals run
+from the pipe-read observation of a `tool_use` JSON record to its matching
+`tool_result`, not from provider or harness-internal timestamps. They can include
+error from JSON-line buffering, CLI flush timing, OS pipe and reader scheduling,
+and delay between the model selecting a tool and the CLI emitting the record.
+If no start boundary is observed, the fields are omitted—unknown is never
+reported as zero.
+
 The install script honors `ONEHARNESS_VERSION`, `ONEHARNESS_INSTALL_DIR`,
 `ONEHARNESS_RELEASE_BASE_URL`/`--base-url`, `ONEHARNESS_CHECKSUM_BASE_URL`, and
 `GITHUB_TOKEN` (for higher GitHub API rate limits when resolving the latest

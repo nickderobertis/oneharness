@@ -4,16 +4,31 @@
  * One event-sourced history JSONL line.
  */
 export type HistoryLine =
-  | {
-      event: ActionEvent;
-      harness: string;
-      harness_id?: string | null | undefined;
-      run_id: string;
-      schema_version: "1.0" | "1.1";
-      type: "event";
-      variant?: string | null | undefined;
-      [k: string]: unknown;
-    }
+  | (
+      | {
+          event: ActionEvent;
+          harness: string;
+          harness_id?: string | null | undefined;
+          run_id: string;
+          schema_version: "1.2";
+          type: "event";
+          variant?: string | null | undefined;
+          [k: string]: unknown;
+        }
+      | {
+          event: ActionEvent & {
+            timing_source?: never | undefined;
+            [k: string]: unknown;
+          };
+          harness: string;
+          harness_id?: string | null | undefined;
+          run_id: string;
+          schema_version: "1.0" | "1.1";
+          type: "event";
+          variant?: string | null | undefined;
+          [k: string]: unknown;
+        }
+    )
   | (
       | {
           duration_ms: number;
@@ -27,10 +42,11 @@ export type HistoryLine =
           model: string | null;
           model_ms: number;
           name: string;
+          observed_tool_ms?: never | undefined;
           permission_mode: PermissionMode;
           project: string;
           prompt: string;
-          schema_version: "1.0" | "1.1";
+          schema_version: "1.0" | "1.1" | "1.2";
           session: string;
           session_id: string | null;
           started_at: string;
@@ -57,10 +73,11 @@ export type HistoryLine =
           model: string | null;
           model_ms: number;
           name: string;
+          observed_tool_ms?: never | undefined;
           permission_mode: PermissionMode;
           project: string;
           prompt: string;
-          schema_version: "1.0" | "1.1";
+          schema_version: "1.0" | "1.1" | "1.2";
           session: string;
           session_id: string | null;
           started_at: string;
@@ -70,6 +87,37 @@ export type HistoryLine =
           time_to_first_token_ms?: number | null | undefined;
           timestamp: string;
           tool_ms: number;
+          type: "run";
+          usage: Usage;
+          variant?: string | null | undefined;
+          [k: string]: unknown;
+        }
+      | {
+          duration_ms: number;
+          exit_code: number | null;
+          failure_kind: FailureKind | null;
+          finished_at: null;
+          harness: string;
+          harness_id?: string | null | undefined;
+          history_id: string;
+          labels?: HistoryLabels | undefined;
+          model: string | null;
+          model_ms?: never | undefined;
+          name: string;
+          observed_tool_ms: number;
+          permission_mode: PermissionMode;
+          project: string;
+          prompt: string;
+          schema_version: "1.2";
+          session: string;
+          session_id: string | null;
+          started_at?: never | undefined;
+          status: Status;
+          text: string | null;
+          text_source: string | null;
+          time_to_first_token_ms?: never | undefined;
+          timestamp: string;
+          tool_ms?: never | undefined;
           type: "run";
           usage: Usage;
           variant?: string | null | undefined;
@@ -87,10 +135,11 @@ export type HistoryLine =
           model: string | null;
           model_ms?: never | undefined;
           name: string;
+          observed_tool_ms?: never | undefined;
           permission_mode: PermissionMode;
           project: string;
           prompt: string;
-          schema_version: "1.0" | "1.1";
+          schema_version: "1.0" | "1.1" | "1.2";
           session: string;
           session_id: string | null;
           started_at?: never | undefined;
@@ -107,6 +156,10 @@ export type HistoryLine =
         }
     );
 export type ToolCallStatus = "completed" | "failed" | "timeout" | "interrupted";
+/**
+ * How a normalized tool interval was obtained.
+ */
+export type TimingSource = "provider_measured" | "stdout_observed";
 /**
  * The normalized, closed set of failure reasons oneharness can classify from a
  * harness's output. It is the single source for the `failure_kind` contract
@@ -175,6 +228,10 @@ export interface ActionEvent {
    * Terminal tool state, populated on history tool-call events.
    */
   status: ToolCallStatus | null;
+  /**
+   * Provenance for the tool interval. Omitted when timing is unavailable.
+   */
+  timing_source?: TimingSource | null | undefined;
   /**
    * Stable call identity within the session. Present on tool calls and their
    * matching results when the provider exposes an identity; history fills a

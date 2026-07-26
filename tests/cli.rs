@@ -8,8 +8,10 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-use oneharness_core::domain::history::{HistoryLine, HistoryStreamEnvelope};
+use oneharness_core::domain::events::{ActionEvent, TimingSource, ToolCallStatus};
+use oneharness_core::domain::history::{HistoryLabels, HistoryLine, HistoryStreamEnvelope};
 use oneharness_core::domain::report::RunStreamEnvelope;
+use oneharness_core::io::history::HistoryWriter;
 use serde_json::Value;
 
 const ALL_IDS: &[&str] = &[
@@ -249,7 +251,7 @@ fn list_describes_every_harness() {
     let output = run(&["list"], &[]);
     assert!(output.status.success());
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.2");
+    assert_eq!(value["schema_version"], "0.3");
     let ids: Vec<&str> = value["harnesses"]
         .as_array()
         .unwrap()
@@ -5693,7 +5695,7 @@ fn config_command_shows_values_with_sources() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.2");
+    assert_eq!(value["schema_version"], "0.3");
     assert_eq!(value["config_files"].as_array().unwrap().len(), 2);
 
     // The project file wins for model and is named as the source...
@@ -8852,6 +8854,7 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
         "model_ms",
         "tool_ms",
         "time_to_first_token_ms",
+        "observed_tool_ms",
     ] {
         assert!(
             record.get(field).is_none(),
@@ -8866,6 +8869,7 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
     let anthropic = concat!(
         "{\"type\":\"system\",\"subtype\":\"init\"}\n",
         "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Bash\",\"input\":{}}]}}\n",
+        "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"content\":\"ok\"}]}}\n",
         "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n",
         "{\"type\":\"result\",\"result\":\"done\"}\n",
     );
@@ -8894,19 +8898,85 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
         );
         let report = json_stdout(&output);
         assert_eq!(report["results"][0]["status"], "ok", "{id}");
-        let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-        assert_eq!(record["schema_version"], "1.1", "{id}");
+        let report_call = report["results"][0]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["kind"] == "tool_call")
+            .unwrap();
+        assert_eq!(
+            report_call["timing_source"], "stdout_observed",
+            "{id}: report event provenance"
+        );
+        assert!(
+            report["results"][0].get("observed_tool_ms").is_none(),
+            "{id}: the aggregate is a history-only contract"
+        );
+        let history_path = Path::new(report["history_file"].as_str().unwrap());
+        assert!(
+            history_path.exists(),
+            "{id}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let record = first_history_run(history_path);
+        assert_eq!(record["schema_version"], "1.2", "{id}");
         assert!(record.get("model_ms").is_none(), "{id}");
         assert!(record.get("tool_ms").is_none(), "{id}");
         assert!(record.get("time_to_first_token_ms").is_none(), "{id}");
-        if let Some(events) = record["events"].as_array() {
-            for event in events.iter().filter(|event| event["kind"] == "tool_call") {
-                assert!(event["started_at"].is_null(), "{id}");
-                assert!(event["duration_ms"].is_null(), "{id}");
-            }
-        }
+        let observed = record["observed_tool_ms"].as_u64().unwrap();
+        assert!(observed >= 40, "{id}: {observed}");
+        let call = record["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["kind"] == "tool_call")
+            .unwrap();
+        assert_eq!(call["timing_source"], "stdout_observed", "{id}");
+        assert!(call["started_at"].is_string(), "{id}");
+        assert!(call["finished_at"].is_string(), "{id}");
+        assert_eq!(call["status"], "completed", "{id}");
+        assert_eq!(call["duration_ms"], record["observed_tool_ms"], "{id}");
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    let dir = hist_dir("claude-incomplete-observed-tool");
+    let incomplete = concat!(
+        "{\"type\":\"system\",\"subtype\":\"init\"}\n",
+        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"open\",\"name\":\"Bash\",\"input\":{}}]}}\n",
+        "{\"type\":\"result\",\"result\":\"stopped\"}\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "incomplete",
+            "--bin",
+            &bin_override("claude-code"),
+            "--history",
+            "--history-dir",
+            &dir.display().to_string(),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", incomplete), ("MOCK_STREAM_DELAY_MS", "40")],
+    );
+    assert!(output.status.success());
+    let report = json_stdout(&output);
+    let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
+    let call = record["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["kind"] == "tool_call")
+        .unwrap();
+    assert_eq!(call["timing_source"], "stdout_observed");
+    assert_eq!(call["status"], "interrupted");
+    assert!(call["finished_at"].is_null());
+    assert!(call["duration_ms"].is_null());
+    assert!(record["observed_tool_ms"].as_u64().is_some());
+    assert!(record.get("model_ms").is_none());
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A telemetry/history-recording shortfall must never fail a run whose harness
@@ -9177,6 +9247,16 @@ fn history_measures_overlapping_tool_intervals_from_provider_events() {
     assert_eq!(calls[0]["tool_call_id"], "call-a");
     assert_eq!(calls[1]["tool_call_id"], "call-b");
     assert_eq!(calls[0]["status"], "completed");
+    assert!(
+        calls
+            .iter()
+            .all(|event| event.get("timing_source").is_none()),
+        "provider-measured Codex events must retain their prior serialized shape"
+    );
+    assert!(
+        record.get("observed_tool_ms").is_none(),
+        "Codex provider telemetry must not acquire observed timing fields"
+    );
     let individual = calls
         .iter()
         .map(|event| event["duration_ms"].as_u64().unwrap())
@@ -9447,7 +9527,8 @@ fn history_measures_codex_file_change_with_start_and_completion() {
     );
     let report = json_stdout(&output);
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-    // Complete timing telemetry was derived into the v1.1 history record.
+    // Provider-measured Codex records deliberately retain their pre-feature 1.1
+    // wire shape; history 1.2 is reserved for stdout-observed timing.
     assert_eq!(record["schema_version"], "1.1");
     assert!(record["started_at"].is_string());
     assert!(record["model_ms"].is_u64());
@@ -10260,6 +10341,60 @@ fn history_cli_reads_v1_0_records_without_variant_identity_fields() {
 }
 
 #[test]
+fn history_cli_rejects_mixed_provider_and_observed_timing() {
+    let dir = hist_dir("history-mixed-timing");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--bin",
+            &bin_override("codex"),
+            "--prompt",
+            "mixed timing",
+            "--history",
+            "--history-dir",
+            &dir.display().to_string(),
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)],
+    );
+    assert!(output.status.success());
+    let path = json_stdout(&output)["history_file"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let corrupted = std::fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let mut value: Value = serde_json::from_str(line).unwrap();
+            if value["type"] == "run" {
+                value["observed_tool_ms"] = serde_json::json!(1);
+            }
+            serde_json::to_string(&value).unwrap()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&path, format!("{corrupted}\n")).unwrap();
+
+    let listed = json_stdout(&run(
+        &[
+            "history",
+            "list",
+            "--all-projects",
+            "--history-dir",
+            &dir.display().to_string(),
+            "--compact",
+        ],
+        &[],
+    ));
+    assert!(listed.as_array().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn streamed_variant_history_events_keep_the_composed_identity() {
     let bin = mock_bin().display().to_string().replace('\\', "\\\\");
     let fx = ConfigFixture::new(
@@ -10694,6 +10829,62 @@ fn history_watch_event_mode_observes_event_before_stream_finishes() {
     assert!(trigger.status.success());
     assert!(watcher.wait().unwrap().success());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn history_watch_streams_stdout_observed_event_as_v1_2() {
+    let dir = hist_dir("watch-observed-event-version");
+    let project = std::env::current_dir().unwrap();
+    let writer =
+        HistoryWriter::open(&dir, &project, "observed-event", HistoryLabels::default()).unwrap();
+    let run_id = writer.begin_run();
+    let event = ActionEvent {
+        kind: "tool_call".to_string(),
+        name: Some("Bash".to_string()),
+        input: Some(serde_json::json!({"command": "true"})),
+        output: Some("".to_string()),
+        index: 0,
+        tool_call_id: Some("tool-1".to_string()),
+        started_at: Some("2026-07-26T12:00:00.000Z".to_string()),
+        finished_at: Some("2026-07-26T12:00:00.010Z".to_string()),
+        duration_ms: Some(10),
+        status: Some(ToolCallStatus::Completed),
+        timing_source: Some(TimingSource::StdoutObserved),
+    };
+    writer
+        .append_event(run_id, "claude-code", event.clone())
+        .unwrap();
+
+    let mut watcher = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args([
+            "history",
+            "watch",
+            "--all-projects",
+            "--events",
+            "--history-dir",
+            &dir.display().to_string(),
+            "--format",
+            "jsonl",
+        ])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut reader = std::io::BufReader::new(watcher.stdout.take().unwrap());
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let envelope: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(envelope["type"], "event");
+    assert_eq!(envelope["line"]["schema_version"], "1.2");
+    assert_eq!(
+        envelope["line"]["event"]["timing_source"],
+        "stdout_observed"
+    );
+
+    drop(reader);
+    writer.append_event(run_id, "claude-code", event).unwrap();
+    assert!(watcher.wait().unwrap().success());
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

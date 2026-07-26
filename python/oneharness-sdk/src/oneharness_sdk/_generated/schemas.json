@@ -119,6 +119,17 @@
             ],
             "description": "Terminal tool state, populated on history tool-call events."
           },
+          "timing_source": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/TimingSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Provenance for the tool interval. Omitted when timing is unavailable."
+          },
           "tool_call_id": {
             "description": "Stable call identity within the session. Present on tool calls and their\nmatching results when the provider exposes an identity; history fills a\ndeterministic run-local identity for providers that do not.",
             "type": [
@@ -260,6 +271,21 @@
           }
         ]
       },
+      "TimingSource": {
+        "description": "How a normalized tool interval was obtained.",
+        "oneOf": [
+          {
+            "const": "provider_measured",
+            "description": "Derived from provider lifecycle records with explicit request boundaries.",
+            "type": "string"
+          },
+          {
+            "const": "stdout_observed",
+            "description": "Derived from JSON records as they crossed oneharness's stdout pipe.",
+            "type": "string"
+          }
+        ]
+      },
       "ToolCallStatus": {
         "enum": [
           "completed",
@@ -333,52 +359,119 @@
       {
         "allOf": [
           {
-            "description": "One normalized action observed during a run.",
-            "properties": {
-              "event": {
-                "$ref": "#/$defs/ActionEvent"
-              },
-              "harness": {
-                "type": "string"
-              },
-              "harness_id": {
-                "type": [
-                  "string",
-                  "null"
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "description": "One normalized action observed during a run.",
+                    "properties": {
+                      "event": {
+                        "$ref": "#/$defs/ActionEvent"
+                      },
+                      "harness": {
+                        "type": "string"
+                      },
+                      "harness_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "run_id": {
+                        "maxLength": 36,
+                        "minLength": 36,
+                        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+                        "type": "string"
+                      },
+                      "schema_version": {
+                        "const": "1.2",
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "event",
+                        "type": "string"
+                      },
+                      "variant": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "schema_version",
+                      "run_id",
+                      "harness",
+                      "event",
+                      "type"
+                    ],
+                    "type": "object"
+                  }
                 ]
               },
-              "run_id": {
-                "maxLength": 36,
-                "minLength": 36,
-                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
-                "type": "string"
-              },
-              "schema_version": {
-                "enum": [
-                  "1.0",
-                  "1.1"
-                ],
-                "type": "string"
-              },
-              "type": {
-                "const": "event",
-                "type": "string"
-              },
-              "variant": {
-                "type": [
-                  "string",
-                  "null"
+              {
+                "allOf": [
+                  {
+                    "description": "One normalized action observed during a run.",
+                    "properties": {
+                      "event": {
+                        "allOf": [
+                          {
+                            "$ref": "#/$defs/ActionEvent"
+                          },
+                          {
+                            "properties": {
+                              "timing_source": false
+                            },
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      "harness": {
+                        "type": "string"
+                      },
+                      "harness_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "run_id": {
+                        "maxLength": 36,
+                        "minLength": 36,
+                        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+                        "type": "string"
+                      },
+                      "schema_version": {
+                        "enum": [
+                          "1.0",
+                          "1.1"
+                        ],
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "event",
+                        "type": "string"
+                      },
+                      "variant": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "schema_version",
+                      "run_id",
+                      "harness",
+                      "event",
+                      "type"
+                    ],
+                    "type": "object"
+                  }
                 ]
               }
-            },
-            "required": [
-              "schema_version",
-              "run_id",
-              "harness",
-              "event",
-              "type"
-            ],
-            "type": "object"
+            ]
           }
         ]
       },
@@ -446,6 +539,7 @@
                       "name": {
                         "type": "string"
                       },
+                      "observed_tool_ms": false,
                       "permission_mode": {
                         "$ref": "#/$defs/PermissionMode"
                       },
@@ -458,7 +552,8 @@
                       "schema_version": {
                         "enum": [
                           "1.0",
-                          "1.1"
+                          "1.1",
+                          "1.2"
                         ],
                         "type": "string"
                       },
@@ -615,6 +710,7 @@
                       "name": {
                         "type": "string"
                       },
+                      "observed_tool_ms": false,
                       "permission_mode": {
                         "$ref": "#/$defs/PermissionMode"
                       },
@@ -627,7 +723,8 @@
                       "schema_version": {
                         "enum": [
                           "1.0",
-                          "1.1"
+                          "1.1",
+                          "1.2"
                         ],
                         "type": "string"
                       },
@@ -729,6 +826,151 @@
                     "description": "The terminal summary for one harness run.",
                     "properties": {
                       "duration_ms": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "exit_code": {
+                        "format": "int32",
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "failure_kind": {
+                        "anyOf": [
+                          {
+                            "$ref": "#/$defs/FailureKind"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "finished_at": {
+                        "type": "null"
+                      },
+                      "harness": {
+                        "type": "string"
+                      },
+                      "harness_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "history_id": {
+                        "maxLength": 36,
+                        "minLength": 36,
+                        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+                        "type": "string"
+                      },
+                      "labels": {
+                        "$ref": "#/$defs/HistoryLabels"
+                      },
+                      "model": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "model_ms": false,
+                      "name": {
+                        "type": "string"
+                      },
+                      "observed_tool_ms": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "permission_mode": {
+                        "$ref": "#/$defs/PermissionMode"
+                      },
+                      "project": {
+                        "type": "string"
+                      },
+                      "prompt": {
+                        "type": "string"
+                      },
+                      "schema_version": {
+                        "const": "1.2",
+                        "type": "string"
+                      },
+                      "session": {
+                        "type": "string"
+                      },
+                      "session_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "started_at": false,
+                      "status": {
+                        "$ref": "#/$defs/Status"
+                      },
+                      "text": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "text_source": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "time_to_first_token_ms": false,
+                      "timestamp": {
+                        "type": "string"
+                      },
+                      "tool_ms": false,
+                      "type": {
+                        "const": "run",
+                        "type": "string"
+                      },
+                      "usage": {
+                        "$ref": "#/$defs/Usage"
+                      },
+                      "variant": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "schema_version",
+                      "history_id",
+                      "session",
+                      "name",
+                      "project",
+                      "timestamp",
+                      "harness",
+                      "model",
+                      "prompt",
+                      "permission_mode",
+                      "status",
+                      "exit_code",
+                      "duration_ms",
+                      "finished_at",
+                      "text",
+                      "text_source",
+                      "usage",
+                      "session_id",
+                      "failure_kind",
+                      "type",
+                      "observed_tool_ms"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              {
+                "allOf": [
+                  {
+                    "description": "The terminal summary for one harness run.",
+                    "properties": {
+                      "duration_ms": {
                         "format": "uint128",
                         "minimum": 0,
                         "type": [
@@ -784,6 +1026,7 @@
                       "name": {
                         "type": "string"
                       },
+                      "observed_tool_ms": false,
                       "permission_mode": {
                         "$ref": "#/$defs/PermissionMode"
                       },
@@ -796,7 +1039,8 @@
                       "schema_version": {
                         "enum": [
                           "1.0",
-                          "1.1"
+                          "1.1",
+                          "1.2"
                         ],
                         "type": "string"
                       },
@@ -1114,6 +1358,17 @@
             ],
             "description": "Terminal tool state, populated on history tool-call events."
           },
+          "timing_source": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/TimingSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Provenance for the tool interval. Omitted when timing is unavailable."
+          },
           "tool_call_id": {
             "description": "Stable call identity within the session. Present on tool calls and their\nmatching results when the provider exposes an identity; history fills a\ndeterministic run-local identity for providers that do not.",
             "type": [
@@ -1251,6 +1506,21 @@
           {
             "const": "planned",
             "description": "`--print-command`: the command was built but not executed.",
+            "type": "string"
+          }
+        ]
+      },
+      "TimingSource": {
+        "description": "How a normalized tool interval was obtained.",
+        "oneOf": [
+          {
+            "const": "provider_measured",
+            "description": "Derived from provider lifecycle records with explicit request boundaries.",
+            "type": "string"
+          },
+          {
+            "const": "stdout_observed",
+            "description": "Derived from JSON records as they crossed oneharness's stdout pipe.",
             "type": "string"
           }
         ]
@@ -1565,6 +1835,7 @@
             "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
             "type": "string"
           },
+          "observed_tool_ms": false,
           "permission_mode": {
             "$ref": "#/$defs/PermissionMode",
             "description": "The normalized approval mode requested for the run."
@@ -1578,7 +1849,7 @@
             "type": "string"
           },
           "schema_version": {
-            "const": "1.1",
+            "const": "1.2",
             "type": "string"
           },
           "session": {
@@ -1677,172 +1948,182 @@
           "events": {
             "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
             "items": {
-              "oneOf": [
+              "allOf": [
                 {
-                  "allOf": [
+                  "oneOf": [
                     {
-                      "$ref": "#/$defs/ActionEvent"
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "properties": {
+                            "duration_ms": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "finished_at": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "const": "tool_call",
+                              "type": "string"
+                            },
+                            "started_at": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "const": "completed",
+                              "type": "string"
+                            },
+                            "tool_call_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "tool_call_id",
+                            "started_at",
+                            "status",
+                            "finished_at",
+                            "duration_ms"
+                          ],
+                          "type": "object"
+                        }
+                      ]
                     },
                     {
-                      "properties": {
-                        "duration_ms": {
-                          "minimum": 0,
-                          "type": "integer"
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
                         },
-                        "finished_at": {
-                          "type": "string"
-                        },
-                        "kind": {
-                          "const": "tool_call",
-                          "type": "string"
-                        },
-                        "started_at": {
-                          "type": "string"
-                        },
-                        "status": {
-                          "const": "completed",
-                          "type": "string"
-                        },
-                        "tool_call_id": {
-                          "minLength": 1,
-                          "type": "string"
+                        {
+                          "properties": {
+                            "duration_ms": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "finished_at": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "const": "tool_call",
+                              "type": "string"
+                            },
+                            "started_at": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "const": "failed",
+                              "type": "string"
+                            },
+                            "tool_call_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "tool_call_id",
+                            "started_at",
+                            "status",
+                            "finished_at",
+                            "duration_ms"
+                          ],
+                          "type": "object"
                         }
-                      },
-                      "required": [
-                        "kind",
-                        "tool_call_id",
-                        "started_at",
-                        "status",
-                        "finished_at",
-                        "duration_ms"
-                      ],
-                      "type": "object"
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "tool_call",
+                              "type": "string"
+                            },
+                            "started_at": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "const": "timeout",
+                              "type": "string"
+                            },
+                            "tool_call_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "tool_call_id",
+                            "started_at",
+                            "status"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "tool_call",
+                              "type": "string"
+                            },
+                            "started_at": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "const": "interrupted",
+                              "type": "string"
+                            },
+                            "tool_call_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "tool_call_id",
+                            "started_at",
+                            "status"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "tool_result",
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        }
+                      ]
                     }
                   ]
                 },
                 {
-                  "allOf": [
-                    {
-                      "$ref": "#/$defs/ActionEvent"
-                    },
-                    {
-                      "properties": {
-                        "duration_ms": {
-                          "minimum": 0,
-                          "type": "integer"
-                        },
-                        "finished_at": {
-                          "type": "string"
-                        },
-                        "kind": {
-                          "const": "tool_call",
-                          "type": "string"
-                        },
-                        "started_at": {
-                          "type": "string"
-                        },
-                        "status": {
-                          "const": "failed",
-                          "type": "string"
-                        },
-                        "tool_call_id": {
-                          "minLength": 1,
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "kind",
-                        "tool_call_id",
-                        "started_at",
-                        "status",
-                        "finished_at",
-                        "duration_ms"
-                      ],
-                      "type": "object"
-                    }
-                  ]
-                },
-                {
-                  "allOf": [
-                    {
-                      "$ref": "#/$defs/ActionEvent"
-                    },
-                    {
-                      "properties": {
-                        "kind": {
-                          "const": "tool_call",
-                          "type": "string"
-                        },
-                        "started_at": {
-                          "type": "string"
-                        },
-                        "status": {
-                          "const": "timeout",
-                          "type": "string"
-                        },
-                        "tool_call_id": {
-                          "minLength": 1,
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "kind",
-                        "tool_call_id",
-                        "started_at",
-                        "status"
-                      ],
-                      "type": "object"
-                    }
-                  ]
-                },
-                {
-                  "allOf": [
-                    {
-                      "$ref": "#/$defs/ActionEvent"
-                    },
-                    {
-                      "properties": {
-                        "kind": {
-                          "const": "tool_call",
-                          "type": "string"
-                        },
-                        "started_at": {
-                          "type": "string"
-                        },
-                        "status": {
-                          "const": "interrupted",
-                          "type": "string"
-                        },
-                        "tool_call_id": {
-                          "minLength": 1,
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "kind",
-                        "tool_call_id",
-                        "started_at",
-                        "status"
-                      ],
-                      "type": "object"
-                    }
-                  ]
-                },
-                {
-                  "allOf": [
-                    {
-                      "$ref": "#/$defs/ActionEvent"
-                    },
-                    {
-                      "properties": {
-                        "kind": {
-                          "const": "tool_result",
-                          "type": "string"
-                        }
-                      },
-                      "type": "object"
-                    }
-                  ]
+                  "properties": {
+                    "timing_source": false
+                  },
+                  "type": "object"
                 }
               ]
             },
@@ -1908,6 +2189,360 @@
             "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
             "type": "string"
           },
+          "observed_tool_ms": false,
+          "permission_mode": {
+            "$ref": "#/$defs/PermissionMode",
+            "description": "The normalized approval mode requested for the run."
+          },
+          "project": {
+            "description": "The project directory the run operated in (the real path, not the\non-disk slug), so the list view can show where a session ran.",
+            "type": "string"
+          },
+          "prompt": {
+            "description": "The prompt this harness run received (its own, on a batch run; else the\nrun's single prompt).",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.1",
+            "type": "string"
+          },
+          "session": {
+            "description": "The oneharness session id this run belongs to (the history file's stem).",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "The harness's own continuation id, when it exposed one; `null` otherwise.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/$defs/Status"
+          },
+          "text": {
+            "description": "Best-effort final assistant text; `null` when extraction was impossible.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text_source": {
+            "description": "How `text` was extracted; `null` when absent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "time_to_first_token_ms": {
+            "format": "uint128",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "timestamp": {
+            "description": "RFC3339 UTC instant the record was written (append time).",
+            "type": "string"
+          },
+          "tool_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "usage": {
+            "$ref": "#/$defs/Usage",
+            "description": "Best-effort token/cost accounting (every field `null` when unreported)."
+          },
+          "variant": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "schema_version",
+          "history_id",
+          "session",
+          "name",
+          "project",
+          "timestamp",
+          "harness",
+          "model",
+          "prompt",
+          "permission_mode",
+          "status",
+          "exit_code",
+          "duration_ms",
+          "finished_at",
+          "text",
+          "text_source",
+          "usage",
+          "session_id",
+          "events",
+          "failure_kind",
+          "started_at",
+          "model_ms",
+          "tool_ms"
+        ],
+        "type": "object"
+      },
+      {
+        "properties": {
+          "duration_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "events": {
+            "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
+            "items": {
+              "allOf": [
+                {
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "properties": {
+                            "duration_ms": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "finished_at": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "const": "tool_call",
+                              "type": "string"
+                            },
+                            "started_at": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "const": "completed",
+                              "type": "string"
+                            },
+                            "tool_call_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "tool_call_id",
+                            "started_at",
+                            "status",
+                            "finished_at",
+                            "duration_ms"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "properties": {
+                            "duration_ms": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "finished_at": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "const": "tool_call",
+                              "type": "string"
+                            },
+                            "started_at": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "const": "failed",
+                              "type": "string"
+                            },
+                            "tool_call_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "tool_call_id",
+                            "started_at",
+                            "status",
+                            "finished_at",
+                            "duration_ms"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "tool_call",
+                              "type": "string"
+                            },
+                            "started_at": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "const": "timeout",
+                              "type": "string"
+                            },
+                            "tool_call_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "tool_call_id",
+                            "started_at",
+                            "status"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "tool_call",
+                              "type": "string"
+                            },
+                            "started_at": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "const": "interrupted",
+                              "type": "string"
+                            },
+                            "tool_call_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "tool_call_id",
+                            "started_at",
+                            "status"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "tool_result",
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "properties": {
+                    "timing_source": false
+                  },
+                  "type": "object"
+                }
+              ]
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "exit_code": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "failure_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FailureKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Best-effort classified failure reason (see [`FailureKind`]); `null` when\nunclassified."
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "harness": {
+            "description": "Canonical harness id (e.g. `claude-code`).",
+            "type": "string"
+          },
+          "harness_id": {
+            "type": "string"
+          },
+          "history_id": {
+            "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
+            "maxLength": 36,
+            "minLength": 36,
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "type": "string"
+          },
+          "labels": {
+            "$ref": "#/$defs/HistoryLabels",
+            "description": "Caller-supplied metadata used to select related task-graph records.\nOmitted on the wire when empty for additive compatibility."
+          },
+          "model": {
+            "description": "The effective top-level model for the run, if any.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
+            "type": "string"
+          },
+          "observed_tool_ms": false,
           "permission_mode": {
             "$ref": "#/$defs/PermissionMode",
             "description": "The normalized approval mode requested for the run."
@@ -2128,6 +2763,382 @@
             "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
             "type": "string"
           },
+          "observed_tool_ms": false,
+          "permission_mode": {
+            "$ref": "#/$defs/PermissionMode",
+            "description": "The normalized approval mode requested for the run."
+          },
+          "project": {
+            "description": "The project directory the run operated in (the real path, not the\non-disk slug), so the list view can show where a session ran.",
+            "type": "string"
+          },
+          "prompt": {
+            "description": "The prompt this harness run received (its own, on a batch run; else the\nrun's single prompt).",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.2",
+            "type": "string"
+          },
+          "session": {
+            "description": "The oneharness session id this run belongs to (the history file's stem).",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "The harness's own continuation id, when it exposed one; `null` otherwise.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": false,
+          "status": {
+            "$ref": "#/$defs/Status"
+          },
+          "text": {
+            "description": "Best-effort final assistant text; `null` when extraction was impossible.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text_source": {
+            "description": "How `text` was extracted; `null` when absent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "time_to_first_token_ms": false,
+          "timestamp": {
+            "description": "RFC3339 UTC instant the record was written (append time).",
+            "type": "string"
+          },
+          "tool_ms": false,
+          "usage": {
+            "$ref": "#/$defs/Usage",
+            "description": "Best-effort token/cost accounting (every field `null` when unreported)."
+          },
+          "variant": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "schema_version",
+          "history_id",
+          "session",
+          "name",
+          "project",
+          "timestamp",
+          "harness",
+          "model",
+          "prompt",
+          "permission_mode",
+          "status",
+          "exit_code",
+          "duration_ms",
+          "finished_at",
+          "text",
+          "text_source",
+          "usage",
+          "session_id",
+          "events",
+          "failure_kind",
+          "harness_id"
+        ],
+        "type": "object"
+      },
+      {
+        "properties": {
+          "duration_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "events": {
+            "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
+            "items": {
+              "$ref": "#/$defs/ActionEvent"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "exit_code": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "failure_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FailureKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Best-effort classified failure reason (see [`FailureKind`]); `null` when\nunclassified."
+          },
+          "finished_at": {
+            "type": "null"
+          },
+          "harness": {
+            "description": "Canonical harness id (e.g. `claude-code`).",
+            "type": "string"
+          },
+          "harness_id": {
+            "type": "string"
+          },
+          "history_id": {
+            "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
+            "maxLength": 36,
+            "minLength": 36,
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "type": "string"
+          },
+          "labels": {
+            "$ref": "#/$defs/HistoryLabels",
+            "description": "Caller-supplied metadata used to select related task-graph records.\nOmitted on the wire when empty for additive compatibility."
+          },
+          "model": {
+            "description": "The effective top-level model for the run, if any.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model_ms": false,
+          "name": {
+            "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
+            "type": "string"
+          },
+          "observed_tool_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "permission_mode": {
+            "$ref": "#/$defs/PermissionMode",
+            "description": "The normalized approval mode requested for the run."
+          },
+          "project": {
+            "description": "The project directory the run operated in (the real path, not the\non-disk slug), so the list view can show where a session ran.",
+            "type": "string"
+          },
+          "prompt": {
+            "description": "The prompt this harness run received (its own, on a batch run; else the\nrun's single prompt).",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.2",
+            "type": "string"
+          },
+          "session": {
+            "description": "The oneharness session id this run belongs to (the history file's stem).",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "The harness's own continuation id, when it exposed one; `null` otherwise.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": false,
+          "status": {
+            "$ref": "#/$defs/Status"
+          },
+          "text": {
+            "description": "Best-effort final assistant text; `null` when extraction was impossible.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text_source": {
+            "description": "How `text` was extracted; `null` when absent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "time_to_first_token_ms": false,
+          "timestamp": {
+            "description": "RFC3339 UTC instant the record was written (append time).",
+            "type": "string"
+          },
+          "tool_ms": false,
+          "usage": {
+            "$ref": "#/$defs/Usage",
+            "description": "Best-effort token/cost accounting (every field `null` when unreported)."
+          },
+          "variant": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "schema_version",
+          "history_id",
+          "session",
+          "name",
+          "project",
+          "timestamp",
+          "harness",
+          "model",
+          "prompt",
+          "permission_mode",
+          "status",
+          "exit_code",
+          "duration_ms",
+          "finished_at",
+          "text",
+          "text_source",
+          "usage",
+          "session_id",
+          "events",
+          "failure_kind",
+          "harness_id",
+          "observed_tool_ms"
+        ],
+        "type": "object"
+      },
+      {
+        "properties": {
+          "duration_ms": {
+            "format": "uint128",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "events": {
+            "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
+            "items": {
+              "allOf": [
+                {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "null"
+                    },
+                    "finished_at": {
+                      "type": "null"
+                    },
+                    "index": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "input": true,
+                    "kind": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "output": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "started_at": {
+                      "type": "null"
+                    },
+                    "status": {
+                      "type": "null"
+                    },
+                    "tool_call_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "name",
+                    "input",
+                    "output",
+                    "index"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "timing_source": false
+                  },
+                  "type": "object"
+                }
+              ]
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "exit_code": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "failure_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FailureKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Best-effort classified failure reason (see [`FailureKind`]); `null` when\nunclassified."
+          },
+          "finished_at": {
+            "type": "null"
+          },
+          "harness": {
+            "description": "Canonical harness id (e.g. `claude-code`).",
+            "type": "string"
+          },
+          "harness_id": {
+            "type": "string"
+          },
+          "history_id": {
+            "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
+            "maxLength": 36,
+            "minLength": 36,
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "type": "string"
+          },
+          "labels": {
+            "$ref": "#/$defs/HistoryLabels",
+            "description": "Caller-supplied metadata used to select related task-graph records.\nOmitted on the wire when empty for additive compatibility."
+          },
+          "model": {
+            "description": "The effective top-level model for the run, if any.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model_ms": false,
+          "name": {
+            "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
+            "type": "string"
+          },
+          "observed_tool_ms": false,
           "permission_mode": {
             "$ref": "#/$defs/PermissionMode",
             "description": "The normalized approval mode requested for the run."
@@ -2210,8 +3221,7 @@
           "usage",
           "session_id",
           "events",
-          "failure_kind",
-          "harness_id"
+          "failure_kind"
         ],
         "type": "object"
       },
@@ -2228,54 +3238,64 @@
           "events": {
             "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
             "items": {
-              "properties": {
-                "duration_ms": {
-                  "type": "null"
+              "allOf": [
+                {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "null"
+                    },
+                    "finished_at": {
+                      "type": "null"
+                    },
+                    "index": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "input": true,
+                    "kind": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "output": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "started_at": {
+                      "type": "null"
+                    },
+                    "status": {
+                      "type": "null"
+                    },
+                    "tool_call_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "name",
+                    "input",
+                    "output",
+                    "index"
+                  ],
+                  "type": "object"
                 },
-                "finished_at": {
-                  "type": "null"
-                },
-                "index": {
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "input": true,
-                "kind": {
-                  "type": "string"
-                },
-                "name": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "output": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "started_at": {
-                  "type": "null"
-                },
-                "status": {
-                  "type": "null"
-                },
-                "tool_call_id": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                {
+                  "properties": {
+                    "timing_source": false
+                  },
+                  "type": "object"
                 }
-              },
-              "required": [
-                "kind",
-                "name",
-                "input",
-                "output",
-                "index"
-              ],
-              "type": "object"
+              ]
             },
             "type": [
               "array",
@@ -2333,6 +3353,7 @@
             "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
             "type": "string"
           },
+          "observed_tool_ms": false,
           "permission_mode": {
             "$ref": "#/$defs/PermissionMode",
             "description": "The normalized approval mode requested for the run."
@@ -2527,6 +3548,15 @@
           "name": {
             "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
             "type": "string"
+          },
+          "observed_tool_ms": {
+            "description": "Union of tool intervals observed at the stdout pipe. Unlike `tool_ms`,\nthis is not provider-measured and has no model-latency counterpart.",
+            "format": "uint128",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "permission_mode": {
             "$ref": "#/$defs/PermissionMode",
@@ -2705,6 +3735,17 @@
             ],
             "description": "Terminal tool state, populated on history tool-call events."
           },
+          "timing_source": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/TimingSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Provenance for the tool interval. Omitted when timing is unavailable."
+          },
           "tool_call_id": {
             "description": "Stable call identity within the session. Present on tool calls and their\nmatching results when the provider exposes an identity; history fills a\ndeterministic run-local identity for providers that do not.",
             "type": [
@@ -3019,6 +4060,7 @@
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
               },
+              "observed_tool_ms": false,
               "permission_mode": {
                 "$ref": "#/$defs/PermissionMode",
                 "description": "The normalized approval mode requested for the run."
@@ -3032,7 +4074,7 @@
                 "type": "string"
               },
               "schema_version": {
-                "const": "1.1",
+                "const": "1.2",
                 "type": "string"
               },
               "session": {
@@ -3131,172 +4173,182 @@
               "events": {
                 "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
                 "items": {
-                  "oneOf": [
+                  "allOf": [
                     {
-                      "allOf": [
+                      "oneOf": [
                         {
-                          "$ref": "#/$defs/ActionEvent"
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
+                            },
+                            {
+                              "properties": {
+                                "duration_ms": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "finished_at": {
+                                  "type": "string"
+                                },
+                                "kind": {
+                                  "const": "tool_call",
+                                  "type": "string"
+                                },
+                                "started_at": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "const": "completed",
+                                  "type": "string"
+                                },
+                                "tool_call_id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "tool_call_id",
+                                "started_at",
+                                "status",
+                                "finished_at",
+                                "duration_ms"
+                              ],
+                              "type": "object"
+                            }
+                          ]
                         },
                         {
-                          "properties": {
-                            "duration_ms": {
-                              "minimum": 0,
-                              "type": "integer"
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
                             },
-                            "finished_at": {
-                              "type": "string"
-                            },
-                            "kind": {
-                              "const": "tool_call",
-                              "type": "string"
-                            },
-                            "started_at": {
-                              "type": "string"
-                            },
-                            "status": {
-                              "const": "completed",
-                              "type": "string"
-                            },
-                            "tool_call_id": {
-                              "minLength": 1,
-                              "type": "string"
+                            {
+                              "properties": {
+                                "duration_ms": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "finished_at": {
+                                  "type": "string"
+                                },
+                                "kind": {
+                                  "const": "tool_call",
+                                  "type": "string"
+                                },
+                                "started_at": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "const": "failed",
+                                  "type": "string"
+                                },
+                                "tool_call_id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "tool_call_id",
+                                "started_at",
+                                "status",
+                                "finished_at",
+                                "duration_ms"
+                              ],
+                              "type": "object"
                             }
-                          },
-                          "required": [
-                            "kind",
-                            "tool_call_id",
-                            "started_at",
-                            "status",
-                            "finished_at",
-                            "duration_ms"
-                          ],
-                          "type": "object"
+                          ]
+                        },
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
+                            },
+                            {
+                              "properties": {
+                                "kind": {
+                                  "const": "tool_call",
+                                  "type": "string"
+                                },
+                                "started_at": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "const": "timeout",
+                                  "type": "string"
+                                },
+                                "tool_call_id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "tool_call_id",
+                                "started_at",
+                                "status"
+                              ],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
+                            },
+                            {
+                              "properties": {
+                                "kind": {
+                                  "const": "tool_call",
+                                  "type": "string"
+                                },
+                                "started_at": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "const": "interrupted",
+                                  "type": "string"
+                                },
+                                "tool_call_id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "tool_call_id",
+                                "started_at",
+                                "status"
+                              ],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
+                            },
+                            {
+                              "properties": {
+                                "kind": {
+                                  "const": "tool_result",
+                                  "type": "string"
+                                }
+                              },
+                              "type": "object"
+                            }
+                          ]
                         }
                       ]
                     },
                     {
-                      "allOf": [
-                        {
-                          "$ref": "#/$defs/ActionEvent"
-                        },
-                        {
-                          "properties": {
-                            "duration_ms": {
-                              "minimum": 0,
-                              "type": "integer"
-                            },
-                            "finished_at": {
-                              "type": "string"
-                            },
-                            "kind": {
-                              "const": "tool_call",
-                              "type": "string"
-                            },
-                            "started_at": {
-                              "type": "string"
-                            },
-                            "status": {
-                              "const": "failed",
-                              "type": "string"
-                            },
-                            "tool_call_id": {
-                              "minLength": 1,
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "kind",
-                            "tool_call_id",
-                            "started_at",
-                            "status",
-                            "finished_at",
-                            "duration_ms"
-                          ],
-                          "type": "object"
-                        }
-                      ]
-                    },
-                    {
-                      "allOf": [
-                        {
-                          "$ref": "#/$defs/ActionEvent"
-                        },
-                        {
-                          "properties": {
-                            "kind": {
-                              "const": "tool_call",
-                              "type": "string"
-                            },
-                            "started_at": {
-                              "type": "string"
-                            },
-                            "status": {
-                              "const": "timeout",
-                              "type": "string"
-                            },
-                            "tool_call_id": {
-                              "minLength": 1,
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "kind",
-                            "tool_call_id",
-                            "started_at",
-                            "status"
-                          ],
-                          "type": "object"
-                        }
-                      ]
-                    },
-                    {
-                      "allOf": [
-                        {
-                          "$ref": "#/$defs/ActionEvent"
-                        },
-                        {
-                          "properties": {
-                            "kind": {
-                              "const": "tool_call",
-                              "type": "string"
-                            },
-                            "started_at": {
-                              "type": "string"
-                            },
-                            "status": {
-                              "const": "interrupted",
-                              "type": "string"
-                            },
-                            "tool_call_id": {
-                              "minLength": 1,
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "kind",
-                            "tool_call_id",
-                            "started_at",
-                            "status"
-                          ],
-                          "type": "object"
-                        }
-                      ]
-                    },
-                    {
-                      "allOf": [
-                        {
-                          "$ref": "#/$defs/ActionEvent"
-                        },
-                        {
-                          "properties": {
-                            "kind": {
-                              "const": "tool_result",
-                              "type": "string"
-                            }
-                          },
-                          "type": "object"
-                        }
-                      ]
+                      "properties": {
+                        "timing_source": false
+                      },
+                      "type": "object"
                     }
                   ]
                 },
@@ -3362,6 +4414,360 @@
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
               },
+              "observed_tool_ms": false,
+              "permission_mode": {
+                "$ref": "#/$defs/PermissionMode",
+                "description": "The normalized approval mode requested for the run."
+              },
+              "project": {
+                "description": "The project directory the run operated in (the real path, not the\non-disk slug), so the list view can show where a session ran.",
+                "type": "string"
+              },
+              "prompt": {
+                "description": "The prompt this harness run received (its own, on a batch run; else the\nrun's single prompt).",
+                "type": "string"
+              },
+              "schema_version": {
+                "const": "1.1",
+                "type": "string"
+              },
+              "session": {
+                "description": "The oneharness session id this run belongs to (the history file's stem).",
+                "type": "string"
+              },
+              "session_id": {
+                "description": "The harness's own continuation id, when it exposed one; `null` otherwise.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "started_at": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "status": {
+                "$ref": "#/$defs/Status"
+              },
+              "text": {
+                "description": "Best-effort final assistant text; `null` when extraction was impossible.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "text_source": {
+                "description": "How `text` was extracted; `null` when absent.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "time_to_first_token_ms": {
+                "format": "uint128",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "timestamp": {
+                "description": "RFC3339 UTC instant the record was written (append time).",
+                "type": "string"
+              },
+              "tool_ms": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "usage": {
+                "$ref": "#/$defs/Usage",
+                "description": "Best-effort token/cost accounting (every field `null` when unreported)."
+              },
+              "variant": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "schema_version",
+              "history_id",
+              "session",
+              "name",
+              "project",
+              "timestamp",
+              "harness",
+              "model",
+              "prompt",
+              "permission_mode",
+              "status",
+              "exit_code",
+              "duration_ms",
+              "finished_at",
+              "text",
+              "text_source",
+              "usage",
+              "session_id",
+              "events",
+              "failure_kind",
+              "started_at",
+              "model_ms",
+              "tool_ms"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "duration_ms": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "events": {
+                "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
+                "items": {
+                  "allOf": [
+                    {
+                      "oneOf": [
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
+                            },
+                            {
+                              "properties": {
+                                "duration_ms": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "finished_at": {
+                                  "type": "string"
+                                },
+                                "kind": {
+                                  "const": "tool_call",
+                                  "type": "string"
+                                },
+                                "started_at": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "const": "completed",
+                                  "type": "string"
+                                },
+                                "tool_call_id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "tool_call_id",
+                                "started_at",
+                                "status",
+                                "finished_at",
+                                "duration_ms"
+                              ],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
+                            },
+                            {
+                              "properties": {
+                                "duration_ms": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "finished_at": {
+                                  "type": "string"
+                                },
+                                "kind": {
+                                  "const": "tool_call",
+                                  "type": "string"
+                                },
+                                "started_at": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "const": "failed",
+                                  "type": "string"
+                                },
+                                "tool_call_id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "tool_call_id",
+                                "started_at",
+                                "status",
+                                "finished_at",
+                                "duration_ms"
+                              ],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
+                            },
+                            {
+                              "properties": {
+                                "kind": {
+                                  "const": "tool_call",
+                                  "type": "string"
+                                },
+                                "started_at": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "const": "timeout",
+                                  "type": "string"
+                                },
+                                "tool_call_id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "tool_call_id",
+                                "started_at",
+                                "status"
+                              ],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
+                            },
+                            {
+                              "properties": {
+                                "kind": {
+                                  "const": "tool_call",
+                                  "type": "string"
+                                },
+                                "started_at": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "const": "interrupted",
+                                  "type": "string"
+                                },
+                                "tool_call_id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "tool_call_id",
+                                "started_at",
+                                "status"
+                              ],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
+                            },
+                            {
+                              "properties": {
+                                "kind": {
+                                  "const": "tool_result",
+                                  "type": "string"
+                                }
+                              },
+                              "type": "object"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "properties": {
+                        "timing_source": false
+                      },
+                      "type": "object"
+                    }
+                  ]
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "failure_kind": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FailureKind"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Best-effort classified failure reason (see [`FailureKind`]); `null` when\nunclassified."
+              },
+              "finished_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "harness": {
+                "description": "Canonical harness id (e.g. `claude-code`).",
+                "type": "string"
+              },
+              "harness_id": {
+                "type": "string"
+              },
+              "history_id": {
+                "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
+                "maxLength": 36,
+                "minLength": 36,
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+                "type": "string"
+              },
+              "labels": {
+                "$ref": "#/$defs/HistoryLabels",
+                "description": "Caller-supplied metadata used to select related task-graph records.\nOmitted on the wire when empty for additive compatibility."
+              },
+              "model": {
+                "description": "The effective top-level model for the run, if any.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model_ms": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "name": {
+                "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
+                "type": "string"
+              },
+              "observed_tool_ms": false,
               "permission_mode": {
                 "$ref": "#/$defs/PermissionMode",
                 "description": "The normalized approval mode requested for the run."
@@ -3582,6 +4988,382 @@
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
               },
+              "observed_tool_ms": false,
+              "permission_mode": {
+                "$ref": "#/$defs/PermissionMode",
+                "description": "The normalized approval mode requested for the run."
+              },
+              "project": {
+                "description": "The project directory the run operated in (the real path, not the\non-disk slug), so the list view can show where a session ran.",
+                "type": "string"
+              },
+              "prompt": {
+                "description": "The prompt this harness run received (its own, on a batch run; else the\nrun's single prompt).",
+                "type": "string"
+              },
+              "schema_version": {
+                "const": "1.2",
+                "type": "string"
+              },
+              "session": {
+                "description": "The oneharness session id this run belongs to (the history file's stem).",
+                "type": "string"
+              },
+              "session_id": {
+                "description": "The harness's own continuation id, when it exposed one; `null` otherwise.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "started_at": false,
+              "status": {
+                "$ref": "#/$defs/Status"
+              },
+              "text": {
+                "description": "Best-effort final assistant text; `null` when extraction was impossible.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "text_source": {
+                "description": "How `text` was extracted; `null` when absent.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "time_to_first_token_ms": false,
+              "timestamp": {
+                "description": "RFC3339 UTC instant the record was written (append time).",
+                "type": "string"
+              },
+              "tool_ms": false,
+              "usage": {
+                "$ref": "#/$defs/Usage",
+                "description": "Best-effort token/cost accounting (every field `null` when unreported)."
+              },
+              "variant": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "schema_version",
+              "history_id",
+              "session",
+              "name",
+              "project",
+              "timestamp",
+              "harness",
+              "model",
+              "prompt",
+              "permission_mode",
+              "status",
+              "exit_code",
+              "duration_ms",
+              "finished_at",
+              "text",
+              "text_source",
+              "usage",
+              "session_id",
+              "events",
+              "failure_kind",
+              "harness_id"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "duration_ms": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "events": {
+                "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
+                "items": {
+                  "$ref": "#/$defs/ActionEvent"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "failure_kind": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FailureKind"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Best-effort classified failure reason (see [`FailureKind`]); `null` when\nunclassified."
+              },
+              "finished_at": {
+                "type": "null"
+              },
+              "harness": {
+                "description": "Canonical harness id (e.g. `claude-code`).",
+                "type": "string"
+              },
+              "harness_id": {
+                "type": "string"
+              },
+              "history_id": {
+                "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
+                "maxLength": 36,
+                "minLength": 36,
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+                "type": "string"
+              },
+              "labels": {
+                "$ref": "#/$defs/HistoryLabels",
+                "description": "Caller-supplied metadata used to select related task-graph records.\nOmitted on the wire when empty for additive compatibility."
+              },
+              "model": {
+                "description": "The effective top-level model for the run, if any.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model_ms": false,
+              "name": {
+                "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
+                "type": "string"
+              },
+              "observed_tool_ms": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "permission_mode": {
+                "$ref": "#/$defs/PermissionMode",
+                "description": "The normalized approval mode requested for the run."
+              },
+              "project": {
+                "description": "The project directory the run operated in (the real path, not the\non-disk slug), so the list view can show where a session ran.",
+                "type": "string"
+              },
+              "prompt": {
+                "description": "The prompt this harness run received (its own, on a batch run; else the\nrun's single prompt).",
+                "type": "string"
+              },
+              "schema_version": {
+                "const": "1.2",
+                "type": "string"
+              },
+              "session": {
+                "description": "The oneharness session id this run belongs to (the history file's stem).",
+                "type": "string"
+              },
+              "session_id": {
+                "description": "The harness's own continuation id, when it exposed one; `null` otherwise.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "started_at": false,
+              "status": {
+                "$ref": "#/$defs/Status"
+              },
+              "text": {
+                "description": "Best-effort final assistant text; `null` when extraction was impossible.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "text_source": {
+                "description": "How `text` was extracted; `null` when absent.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "time_to_first_token_ms": false,
+              "timestamp": {
+                "description": "RFC3339 UTC instant the record was written (append time).",
+                "type": "string"
+              },
+              "tool_ms": false,
+              "usage": {
+                "$ref": "#/$defs/Usage",
+                "description": "Best-effort token/cost accounting (every field `null` when unreported)."
+              },
+              "variant": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "schema_version",
+              "history_id",
+              "session",
+              "name",
+              "project",
+              "timestamp",
+              "harness",
+              "model",
+              "prompt",
+              "permission_mode",
+              "status",
+              "exit_code",
+              "duration_ms",
+              "finished_at",
+              "text",
+              "text_source",
+              "usage",
+              "session_id",
+              "events",
+              "failure_kind",
+              "harness_id",
+              "observed_tool_ms"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "duration_ms": {
+                "format": "uint128",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "events": {
+                "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
+                "items": {
+                  "allOf": [
+                    {
+                      "properties": {
+                        "duration_ms": {
+                          "type": "null"
+                        },
+                        "finished_at": {
+                          "type": "null"
+                        },
+                        "index": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "input": true,
+                        "kind": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "output": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "started_at": {
+                          "type": "null"
+                        },
+                        "status": {
+                          "type": "null"
+                        },
+                        "tool_call_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "name",
+                        "input",
+                        "output",
+                        "index"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "properties": {
+                        "timing_source": false
+                      },
+                      "type": "object"
+                    }
+                  ]
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "failure_kind": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FailureKind"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Best-effort classified failure reason (see [`FailureKind`]); `null` when\nunclassified."
+              },
+              "finished_at": {
+                "type": "null"
+              },
+              "harness": {
+                "description": "Canonical harness id (e.g. `claude-code`).",
+                "type": "string"
+              },
+              "harness_id": {
+                "type": "string"
+              },
+              "history_id": {
+                "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
+                "maxLength": 36,
+                "minLength": 36,
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+                "type": "string"
+              },
+              "labels": {
+                "$ref": "#/$defs/HistoryLabels",
+                "description": "Caller-supplied metadata used to select related task-graph records.\nOmitted on the wire when empty for additive compatibility."
+              },
+              "model": {
+                "description": "The effective top-level model for the run, if any.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model_ms": false,
+              "name": {
+                "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
+                "type": "string"
+              },
+              "observed_tool_ms": false,
               "permission_mode": {
                 "$ref": "#/$defs/PermissionMode",
                 "description": "The normalized approval mode requested for the run."
@@ -3664,8 +5446,7 @@
               "usage",
               "session_id",
               "events",
-              "failure_kind",
-              "harness_id"
+              "failure_kind"
             ],
             "type": "object"
           },
@@ -3682,54 +5463,64 @@
               "events": {
                 "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
                 "items": {
-                  "properties": {
-                    "duration_ms": {
-                      "type": "null"
+                  "allOf": [
+                    {
+                      "properties": {
+                        "duration_ms": {
+                          "type": "null"
+                        },
+                        "finished_at": {
+                          "type": "null"
+                        },
+                        "index": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "input": true,
+                        "kind": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "output": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "started_at": {
+                          "type": "null"
+                        },
+                        "status": {
+                          "type": "null"
+                        },
+                        "tool_call_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "name",
+                        "input",
+                        "output",
+                        "index"
+                      ],
+                      "type": "object"
                     },
-                    "finished_at": {
-                      "type": "null"
-                    },
-                    "index": {
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "input": true,
-                    "kind": {
-                      "type": "string"
-                    },
-                    "name": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "output": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "started_at": {
-                      "type": "null"
-                    },
-                    "status": {
-                      "type": "null"
-                    },
-                    "tool_call_id": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                    {
+                      "properties": {
+                        "timing_source": false
+                      },
+                      "type": "object"
                     }
-                  },
-                  "required": [
-                    "kind",
-                    "name",
-                    "input",
-                    "output",
-                    "index"
-                  ],
-                  "type": "object"
+                  ]
                 },
                 "type": [
                   "array",
@@ -3787,6 +5578,7 @@
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
               },
+              "observed_tool_ms": false,
               "permission_mode": {
                 "$ref": "#/$defs/PermissionMode",
                 "description": "The normalized approval mode requested for the run."
@@ -3981,6 +5773,15 @@
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
+              },
+              "observed_tool_ms": {
+                "description": "Union of tool intervals observed at the stdout pipe. Unlike `tool_ms`,\nthis is not provider-measured and has no model-latency counterpart.",
+                "format": "uint128",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "permission_mode": {
                 "$ref": "#/$defs/PermissionMode",
@@ -4159,6 +5960,21 @@
           {
             "const": "planned",
             "description": "`--print-command`: the command was built but not executed.",
+            "type": "string"
+          }
+        ]
+      },
+      "TimingSource": {
+        "description": "How a normalized tool interval was obtained.",
+        "oneOf": [
+          {
+            "const": "provider_measured",
+            "description": "Derived from provider lifecycle records with explicit request boundaries.",
+            "type": "string"
+          },
+          {
+            "const": "stdout_observed",
+            "description": "Derived from JSON records as they crossed oneharness's stdout pipe.",
             "type": "string"
           }
         ]
@@ -4302,6 +6118,17 @@
             ],
             "description": "Terminal tool state, populated on history tool-call events."
           },
+          "timing_source": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/TimingSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Provenance for the tool interval. Omitted when timing is unavailable."
+          },
           "tool_call_id": {
             "description": "Stable call identity within the session. Present on tool calls and their\nmatching results when the provider exposes an identity; history fills a\ndeterministic run-local identity for providers that do not.",
             "type": [
@@ -4355,47 +6182,109 @@
         ]
       },
       "HistoryEventLine": {
-        "description": "One normalized action observed during a run.",
-        "properties": {
-          "event": {
-            "$ref": "#/$defs/ActionEvent"
-          },
-          "harness": {
-            "type": "string"
-          },
-          "harness_id": {
-            "type": [
-              "string",
-              "null"
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "description": "One normalized action observed during a run.",
+                "properties": {
+                  "event": {
+                    "$ref": "#/$defs/ActionEvent"
+                  },
+                  "harness": {
+                    "type": "string"
+                  },
+                  "harness_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "run_id": {
+                    "maxLength": 36,
+                    "minLength": 36,
+                    "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+                    "type": "string"
+                  },
+                  "schema_version": {
+                    "const": "1.2",
+                    "type": "string"
+                  },
+                  "variant": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "schema_version",
+                  "run_id",
+                  "harness",
+                  "event"
+                ],
+                "type": "object"
+              }
             ]
           },
-          "run_id": {
-            "maxLength": 36,
-            "minLength": 36,
-            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
-            "type": "string"
-          },
-          "schema_version": {
-            "enum": [
-              "1.0",
-              "1.1"
-            ],
-            "type": "string"
-          },
-          "variant": {
-            "type": [
-              "string",
-              "null"
+          {
+            "allOf": [
+              {
+                "description": "One normalized action observed during a run.",
+                "properties": {
+                  "event": {
+                    "allOf": [
+                      {
+                        "$ref": "#/$defs/ActionEvent"
+                      },
+                      {
+                        "properties": {
+                          "timing_source": false
+                        },
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "harness": {
+                    "type": "string"
+                  },
+                  "harness_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "run_id": {
+                    "maxLength": 36,
+                    "minLength": 36,
+                    "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+                    "type": "string"
+                  },
+                  "schema_version": {
+                    "enum": [
+                      "1.0",
+                      "1.1"
+                    ],
+                    "type": "string"
+                  },
+                  "variant": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "schema_version",
+                  "run_id",
+                  "harness",
+                  "event"
+                ],
+                "type": "object"
+              }
             ]
           }
-        },
-        "required": [
-          "schema_version",
-          "run_id",
-          "harness",
-          "event"
-        ],
-        "type": "object"
+        ]
       },
       "HistoryLabels": {
         "additionalProperties": {
@@ -4659,6 +6548,7 @@
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
               },
+              "observed_tool_ms": false,
               "permission_mode": {
                 "$ref": "#/$defs/PermissionMode",
                 "description": "The normalized approval mode requested for the run."
@@ -4672,7 +6562,7 @@
                 "type": "string"
               },
               "schema_version": {
-                "const": "1.1",
+                "const": "1.2",
                 "type": "string"
               },
               "session": {
@@ -4771,172 +6661,182 @@
               "events": {
                 "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
                 "items": {
-                  "oneOf": [
+                  "allOf": [
                     {
-                      "allOf": [
+                      "oneOf": [
                         {
-                          "$ref": "#/$defs/ActionEvent"
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
+                            },
+                            {
+                              "properties": {
+                                "duration_ms": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "finished_at": {
+                                  "type": "string"
+                                },
+                                "kind": {
+                                  "const": "tool_call",
+                                  "type": "string"
+                                },
+                                "started_at": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "const": "completed",
+                                  "type": "string"
+                                },
+                                "tool_call_id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "tool_call_id",
+                                "started_at",
+                                "status",
+                                "finished_at",
+                                "duration_ms"
+                              ],
+                              "type": "object"
+                            }
+                          ]
                         },
                         {
-                          "properties": {
-                            "duration_ms": {
-                              "minimum": 0,
-                              "type": "integer"
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
                             },
-                            "finished_at": {
-                              "type": "string"
-                            },
-                            "kind": {
-                              "const": "tool_call",
-                              "type": "string"
-                            },
-                            "started_at": {
-                              "type": "string"
-                            },
-                            "status": {
-                              "const": "completed",
-                              "type": "string"
-                            },
-                            "tool_call_id": {
-                              "minLength": 1,
-                              "type": "string"
+                            {
+                              "properties": {
+                                "duration_ms": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "finished_at": {
+                                  "type": "string"
+                                },
+                                "kind": {
+                                  "const": "tool_call",
+                                  "type": "string"
+                                },
+                                "started_at": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "const": "failed",
+                                  "type": "string"
+                                },
+                                "tool_call_id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "tool_call_id",
+                                "started_at",
+                                "status",
+                                "finished_at",
+                                "duration_ms"
+                              ],
+                              "type": "object"
                             }
-                          },
-                          "required": [
-                            "kind",
-                            "tool_call_id",
-                            "started_at",
-                            "status",
-                            "finished_at",
-                            "duration_ms"
-                          ],
-                          "type": "object"
+                          ]
+                        },
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
+                            },
+                            {
+                              "properties": {
+                                "kind": {
+                                  "const": "tool_call",
+                                  "type": "string"
+                                },
+                                "started_at": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "const": "timeout",
+                                  "type": "string"
+                                },
+                                "tool_call_id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "tool_call_id",
+                                "started_at",
+                                "status"
+                              ],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
+                            },
+                            {
+                              "properties": {
+                                "kind": {
+                                  "const": "tool_call",
+                                  "type": "string"
+                                },
+                                "started_at": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "const": "interrupted",
+                                  "type": "string"
+                                },
+                                "tool_call_id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "tool_call_id",
+                                "started_at",
+                                "status"
+                              ],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
+                            },
+                            {
+                              "properties": {
+                                "kind": {
+                                  "const": "tool_result",
+                                  "type": "string"
+                                }
+                              },
+                              "type": "object"
+                            }
+                          ]
                         }
                       ]
                     },
                     {
-                      "allOf": [
-                        {
-                          "$ref": "#/$defs/ActionEvent"
-                        },
-                        {
-                          "properties": {
-                            "duration_ms": {
-                              "minimum": 0,
-                              "type": "integer"
-                            },
-                            "finished_at": {
-                              "type": "string"
-                            },
-                            "kind": {
-                              "const": "tool_call",
-                              "type": "string"
-                            },
-                            "started_at": {
-                              "type": "string"
-                            },
-                            "status": {
-                              "const": "failed",
-                              "type": "string"
-                            },
-                            "tool_call_id": {
-                              "minLength": 1,
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "kind",
-                            "tool_call_id",
-                            "started_at",
-                            "status",
-                            "finished_at",
-                            "duration_ms"
-                          ],
-                          "type": "object"
-                        }
-                      ]
-                    },
-                    {
-                      "allOf": [
-                        {
-                          "$ref": "#/$defs/ActionEvent"
-                        },
-                        {
-                          "properties": {
-                            "kind": {
-                              "const": "tool_call",
-                              "type": "string"
-                            },
-                            "started_at": {
-                              "type": "string"
-                            },
-                            "status": {
-                              "const": "timeout",
-                              "type": "string"
-                            },
-                            "tool_call_id": {
-                              "minLength": 1,
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "kind",
-                            "tool_call_id",
-                            "started_at",
-                            "status"
-                          ],
-                          "type": "object"
-                        }
-                      ]
-                    },
-                    {
-                      "allOf": [
-                        {
-                          "$ref": "#/$defs/ActionEvent"
-                        },
-                        {
-                          "properties": {
-                            "kind": {
-                              "const": "tool_call",
-                              "type": "string"
-                            },
-                            "started_at": {
-                              "type": "string"
-                            },
-                            "status": {
-                              "const": "interrupted",
-                              "type": "string"
-                            },
-                            "tool_call_id": {
-                              "minLength": 1,
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "kind",
-                            "tool_call_id",
-                            "started_at",
-                            "status"
-                          ],
-                          "type": "object"
-                        }
-                      ]
-                    },
-                    {
-                      "allOf": [
-                        {
-                          "$ref": "#/$defs/ActionEvent"
-                        },
-                        {
-                          "properties": {
-                            "kind": {
-                              "const": "tool_result",
-                              "type": "string"
-                            }
-                          },
-                          "type": "object"
-                        }
-                      ]
+                      "properties": {
+                        "timing_source": false
+                      },
+                      "type": "object"
                     }
                   ]
                 },
@@ -5002,6 +6902,360 @@
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
               },
+              "observed_tool_ms": false,
+              "permission_mode": {
+                "$ref": "#/$defs/PermissionMode",
+                "description": "The normalized approval mode requested for the run."
+              },
+              "project": {
+                "description": "The project directory the run operated in (the real path, not the\non-disk slug), so the list view can show where a session ran.",
+                "type": "string"
+              },
+              "prompt": {
+                "description": "The prompt this harness run received (its own, on a batch run; else the\nrun's single prompt).",
+                "type": "string"
+              },
+              "schema_version": {
+                "const": "1.1",
+                "type": "string"
+              },
+              "session": {
+                "description": "The oneharness session id this run belongs to (the history file's stem).",
+                "type": "string"
+              },
+              "session_id": {
+                "description": "The harness's own continuation id, when it exposed one; `null` otherwise.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "started_at": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "status": {
+                "$ref": "#/$defs/Status"
+              },
+              "text": {
+                "description": "Best-effort final assistant text; `null` when extraction was impossible.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "text_source": {
+                "description": "How `text` was extracted; `null` when absent.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "time_to_first_token_ms": {
+                "format": "uint128",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "timestamp": {
+                "description": "RFC3339 UTC instant the record was written (append time).",
+                "type": "string"
+              },
+              "tool_ms": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "usage": {
+                "$ref": "#/$defs/Usage",
+                "description": "Best-effort token/cost accounting (every field `null` when unreported)."
+              },
+              "variant": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "schema_version",
+              "history_id",
+              "session",
+              "name",
+              "project",
+              "timestamp",
+              "harness",
+              "model",
+              "prompt",
+              "permission_mode",
+              "status",
+              "exit_code",
+              "duration_ms",
+              "finished_at",
+              "text",
+              "text_source",
+              "usage",
+              "session_id",
+              "events",
+              "failure_kind",
+              "started_at",
+              "model_ms",
+              "tool_ms"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "duration_ms": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "events": {
+                "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
+                "items": {
+                  "allOf": [
+                    {
+                      "oneOf": [
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
+                            },
+                            {
+                              "properties": {
+                                "duration_ms": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "finished_at": {
+                                  "type": "string"
+                                },
+                                "kind": {
+                                  "const": "tool_call",
+                                  "type": "string"
+                                },
+                                "started_at": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "const": "completed",
+                                  "type": "string"
+                                },
+                                "tool_call_id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "tool_call_id",
+                                "started_at",
+                                "status",
+                                "finished_at",
+                                "duration_ms"
+                              ],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
+                            },
+                            {
+                              "properties": {
+                                "duration_ms": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "finished_at": {
+                                  "type": "string"
+                                },
+                                "kind": {
+                                  "const": "tool_call",
+                                  "type": "string"
+                                },
+                                "started_at": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "const": "failed",
+                                  "type": "string"
+                                },
+                                "tool_call_id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "tool_call_id",
+                                "started_at",
+                                "status",
+                                "finished_at",
+                                "duration_ms"
+                              ],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
+                            },
+                            {
+                              "properties": {
+                                "kind": {
+                                  "const": "tool_call",
+                                  "type": "string"
+                                },
+                                "started_at": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "const": "timeout",
+                                  "type": "string"
+                                },
+                                "tool_call_id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "tool_call_id",
+                                "started_at",
+                                "status"
+                              ],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
+                            },
+                            {
+                              "properties": {
+                                "kind": {
+                                  "const": "tool_call",
+                                  "type": "string"
+                                },
+                                "started_at": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "const": "interrupted",
+                                  "type": "string"
+                                },
+                                "tool_call_id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "tool_call_id",
+                                "started_at",
+                                "status"
+                              ],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
+                            },
+                            {
+                              "properties": {
+                                "kind": {
+                                  "const": "tool_result",
+                                  "type": "string"
+                                }
+                              },
+                              "type": "object"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "properties": {
+                        "timing_source": false
+                      },
+                      "type": "object"
+                    }
+                  ]
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "failure_kind": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FailureKind"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Best-effort classified failure reason (see [`FailureKind`]); `null` when\nunclassified."
+              },
+              "finished_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "harness": {
+                "description": "Canonical harness id (e.g. `claude-code`).",
+                "type": "string"
+              },
+              "harness_id": {
+                "type": "string"
+              },
+              "history_id": {
+                "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
+                "maxLength": 36,
+                "minLength": 36,
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+                "type": "string"
+              },
+              "labels": {
+                "$ref": "#/$defs/HistoryLabels",
+                "description": "Caller-supplied metadata used to select related task-graph records.\nOmitted on the wire when empty for additive compatibility."
+              },
+              "model": {
+                "description": "The effective top-level model for the run, if any.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model_ms": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "name": {
+                "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
+                "type": "string"
+              },
+              "observed_tool_ms": false,
               "permission_mode": {
                 "$ref": "#/$defs/PermissionMode",
                 "description": "The normalized approval mode requested for the run."
@@ -5222,6 +7476,382 @@
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
               },
+              "observed_tool_ms": false,
+              "permission_mode": {
+                "$ref": "#/$defs/PermissionMode",
+                "description": "The normalized approval mode requested for the run."
+              },
+              "project": {
+                "description": "The project directory the run operated in (the real path, not the\non-disk slug), so the list view can show where a session ran.",
+                "type": "string"
+              },
+              "prompt": {
+                "description": "The prompt this harness run received (its own, on a batch run; else the\nrun's single prompt).",
+                "type": "string"
+              },
+              "schema_version": {
+                "const": "1.2",
+                "type": "string"
+              },
+              "session": {
+                "description": "The oneharness session id this run belongs to (the history file's stem).",
+                "type": "string"
+              },
+              "session_id": {
+                "description": "The harness's own continuation id, when it exposed one; `null` otherwise.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "started_at": false,
+              "status": {
+                "$ref": "#/$defs/Status"
+              },
+              "text": {
+                "description": "Best-effort final assistant text; `null` when extraction was impossible.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "text_source": {
+                "description": "How `text` was extracted; `null` when absent.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "time_to_first_token_ms": false,
+              "timestamp": {
+                "description": "RFC3339 UTC instant the record was written (append time).",
+                "type": "string"
+              },
+              "tool_ms": false,
+              "usage": {
+                "$ref": "#/$defs/Usage",
+                "description": "Best-effort token/cost accounting (every field `null` when unreported)."
+              },
+              "variant": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "schema_version",
+              "history_id",
+              "session",
+              "name",
+              "project",
+              "timestamp",
+              "harness",
+              "model",
+              "prompt",
+              "permission_mode",
+              "status",
+              "exit_code",
+              "duration_ms",
+              "finished_at",
+              "text",
+              "text_source",
+              "usage",
+              "session_id",
+              "events",
+              "failure_kind",
+              "harness_id"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "duration_ms": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "events": {
+                "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
+                "items": {
+                  "$ref": "#/$defs/ActionEvent"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "failure_kind": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FailureKind"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Best-effort classified failure reason (see [`FailureKind`]); `null` when\nunclassified."
+              },
+              "finished_at": {
+                "type": "null"
+              },
+              "harness": {
+                "description": "Canonical harness id (e.g. `claude-code`).",
+                "type": "string"
+              },
+              "harness_id": {
+                "type": "string"
+              },
+              "history_id": {
+                "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
+                "maxLength": 36,
+                "minLength": 36,
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+                "type": "string"
+              },
+              "labels": {
+                "$ref": "#/$defs/HistoryLabels",
+                "description": "Caller-supplied metadata used to select related task-graph records.\nOmitted on the wire when empty for additive compatibility."
+              },
+              "model": {
+                "description": "The effective top-level model for the run, if any.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model_ms": false,
+              "name": {
+                "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
+                "type": "string"
+              },
+              "observed_tool_ms": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "permission_mode": {
+                "$ref": "#/$defs/PermissionMode",
+                "description": "The normalized approval mode requested for the run."
+              },
+              "project": {
+                "description": "The project directory the run operated in (the real path, not the\non-disk slug), so the list view can show where a session ran.",
+                "type": "string"
+              },
+              "prompt": {
+                "description": "The prompt this harness run received (its own, on a batch run; else the\nrun's single prompt).",
+                "type": "string"
+              },
+              "schema_version": {
+                "const": "1.2",
+                "type": "string"
+              },
+              "session": {
+                "description": "The oneharness session id this run belongs to (the history file's stem).",
+                "type": "string"
+              },
+              "session_id": {
+                "description": "The harness's own continuation id, when it exposed one; `null` otherwise.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "started_at": false,
+              "status": {
+                "$ref": "#/$defs/Status"
+              },
+              "text": {
+                "description": "Best-effort final assistant text; `null` when extraction was impossible.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "text_source": {
+                "description": "How `text` was extracted; `null` when absent.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "time_to_first_token_ms": false,
+              "timestamp": {
+                "description": "RFC3339 UTC instant the record was written (append time).",
+                "type": "string"
+              },
+              "tool_ms": false,
+              "usage": {
+                "$ref": "#/$defs/Usage",
+                "description": "Best-effort token/cost accounting (every field `null` when unreported)."
+              },
+              "variant": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "schema_version",
+              "history_id",
+              "session",
+              "name",
+              "project",
+              "timestamp",
+              "harness",
+              "model",
+              "prompt",
+              "permission_mode",
+              "status",
+              "exit_code",
+              "duration_ms",
+              "finished_at",
+              "text",
+              "text_source",
+              "usage",
+              "session_id",
+              "events",
+              "failure_kind",
+              "harness_id",
+              "observed_tool_ms"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "duration_ms": {
+                "format": "uint128",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "events": {
+                "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
+                "items": {
+                  "allOf": [
+                    {
+                      "properties": {
+                        "duration_ms": {
+                          "type": "null"
+                        },
+                        "finished_at": {
+                          "type": "null"
+                        },
+                        "index": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "input": true,
+                        "kind": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "output": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "started_at": {
+                          "type": "null"
+                        },
+                        "status": {
+                          "type": "null"
+                        },
+                        "tool_call_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "name",
+                        "input",
+                        "output",
+                        "index"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "properties": {
+                        "timing_source": false
+                      },
+                      "type": "object"
+                    }
+                  ]
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "failure_kind": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FailureKind"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Best-effort classified failure reason (see [`FailureKind`]); `null` when\nunclassified."
+              },
+              "finished_at": {
+                "type": "null"
+              },
+              "harness": {
+                "description": "Canonical harness id (e.g. `claude-code`).",
+                "type": "string"
+              },
+              "harness_id": {
+                "type": "string"
+              },
+              "history_id": {
+                "description": "Globally unique, time-ordered record id. This is also the cursor accepted\nby `history watch --after` and the exact id accepted by history lookup.",
+                "maxLength": 36,
+                "minLength": 36,
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+                "type": "string"
+              },
+              "labels": {
+                "$ref": "#/$defs/HistoryLabels",
+                "description": "Caller-supplied metadata used to select related task-graph records.\nOmitted on the wire when empty for additive compatibility."
+              },
+              "model": {
+                "description": "The effective top-level model for the run, if any.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model_ms": false,
+              "name": {
+                "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
+                "type": "string"
+              },
+              "observed_tool_ms": false,
               "permission_mode": {
                 "$ref": "#/$defs/PermissionMode",
                 "description": "The normalized approval mode requested for the run."
@@ -5304,8 +7934,7 @@
               "usage",
               "session_id",
               "events",
-              "failure_kind",
-              "harness_id"
+              "failure_kind"
             ],
             "type": "object"
           },
@@ -5322,54 +7951,64 @@
               "events": {
                 "description": "Best-effort normalized tool-call events; `null` when the harness exposes\nno machine-readable trace.",
                 "items": {
-                  "properties": {
-                    "duration_ms": {
-                      "type": "null"
+                  "allOf": [
+                    {
+                      "properties": {
+                        "duration_ms": {
+                          "type": "null"
+                        },
+                        "finished_at": {
+                          "type": "null"
+                        },
+                        "index": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "input": true,
+                        "kind": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "output": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "started_at": {
+                          "type": "null"
+                        },
+                        "status": {
+                          "type": "null"
+                        },
+                        "tool_call_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "name",
+                        "input",
+                        "output",
+                        "index"
+                      ],
+                      "type": "object"
                     },
-                    "finished_at": {
-                      "type": "null"
-                    },
-                    "index": {
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "input": true,
-                    "kind": {
-                      "type": "string"
-                    },
-                    "name": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "output": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "started_at": {
-                      "type": "null"
-                    },
-                    "status": {
-                      "type": "null"
-                    },
-                    "tool_call_id": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                    {
+                      "properties": {
+                        "timing_source": false
+                      },
+                      "type": "object"
                     }
-                  },
-                  "required": [
-                    "kind",
-                    "name",
-                    "input",
-                    "output",
-                    "index"
-                  ],
-                  "type": "object"
+                  ]
                 },
                 "type": [
                   "array",
@@ -5427,6 +8066,7 @@
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
               },
+              "observed_tool_ms": false,
               "permission_mode": {
                 "$ref": "#/$defs/PermissionMode",
                 "description": "The normalized approval mode requested for the run."
@@ -5621,6 +8261,15 @@
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
+              },
+              "observed_tool_ms": {
+                "description": "Union of tool intervals observed at the stdout pipe. Unlike `tool_ms`,\nthis is not provider-measured and has no model-latency counterpart.",
+                "format": "uint128",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "permission_mode": {
                 "$ref": "#/$defs/PermissionMode",
@@ -5799,6 +8448,21 @@
           {
             "const": "planned",
             "description": "`--print-command`: the command was built but not executed.",
+            "type": "string"
+          }
+        ]
+      },
+      "TimingSource": {
+        "description": "How a normalized tool interval was obtained.",
+        "oneOf": [
+          {
+            "const": "provider_measured",
+            "description": "Derived from provider lifecycle records with explicit request boundaries.",
+            "type": "string"
+          },
+          {
+            "const": "stdout_observed",
+            "description": "Derived from JSON records as they crossed oneharness's stdout pipe.",
             "type": "string"
           }
         ]
@@ -6461,6 +9125,17 @@
             ],
             "description": "Terminal tool state, populated on history tool-call events."
           },
+          "timing_source": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/TimingSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Provenance for the tool interval. Omitted when timing is unavailable."
+          },
           "tool_call_id": {
             "description": "Stable call identity within the session. Present on tool calls and their\nmatching results when the provider exposes an identity; history fills a\ndeterministic run-local identity for providers that do not.",
             "type": [
@@ -6945,6 +9620,21 @@
           }
         ]
       },
+      "TimingSource": {
+        "description": "How a normalized tool interval was obtained.",
+        "oneOf": [
+          {
+            "const": "provider_measured",
+            "description": "Derived from provider lifecycle records with explicit request boundaries.",
+            "type": "string"
+          },
+          {
+            "const": "stdout_observed",
+            "description": "Derived from JSON records as they crossed oneharness's stdout pipe.",
+            "type": "string"
+          }
+        ]
+      },
       "ToolCallStatus": {
         "enum": [
           "completed",
@@ -7229,6 +9919,17 @@
               }
             ],
             "description": "Terminal tool state, populated on history tool-call events."
+          },
+          "timing_source": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/TimingSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Provenance for the tool interval. Omitted when timing is unavailable."
           },
           "tool_call_id": {
             "description": "Stable call identity within the session. Present on tool calls and their\nmatching results when the provider exposes an identity; history fills a\ndeterministic run-local identity for providers that do not.",
@@ -7862,6 +10563,21 @@
           {
             "const": "planned",
             "description": "`--print-command`: the command was built but not executed.",
+            "type": "string"
+          }
+        ]
+      },
+      "TimingSource": {
+        "description": "How a normalized tool interval was obtained.",
+        "oneOf": [
+          {
+            "const": "provider_measured",
+            "description": "Derived from provider lifecycle records with explicit request boundaries.",
+            "type": "string"
+          },
+          {
+            "const": "stdout_observed",
+            "description": "Derived from JSON records as they crossed oneharness's stdout pipe.",
             "type": "string"
           }
         ]

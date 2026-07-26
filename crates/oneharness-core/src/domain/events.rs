@@ -76,6 +76,20 @@ pub struct ActionEvent {
     pub duration_ms: Option<u128>,
     /// Terminal tool state, populated on history tool-call events.
     pub status: Option<ToolCallStatus>,
+    /// Provenance for the tool interval. Omitted when timing is unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // llmlint: ignore[invalid_states_unrepresentable] ActionEvent is a stable additive wire shape shared by live in-progress and terminal events; lifecycle combinations are necessarily optional and producer/history validation governs which fields are available at each phase.
+    pub timing_source: Option<TimingSource>,
+}
+
+/// How a normalized tool interval was obtained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TimingSource {
+    /// Derived from provider lifecycle records with explicit request boundaries.
+    ProviderMeasured,
+    /// Derived from JSON records as they crossed oneharness's stdout pipe.
+    StdoutObserved,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -119,6 +133,7 @@ impl PartialEvent {
             finished_at: None,
             duration_ms: None,
             status: None,
+            timing_source: None,
         }
     }
 }
@@ -498,6 +513,47 @@ pub fn apply_observed_timing(
     duration_ms: Option<u128>,
     trace: TelemetryTrace,
 ) -> TimingReading {
+    apply_timing(
+        events,
+        observations,
+        run_status,
+        duration_ms,
+        Some(trace),
+        TimingSource::ProviderMeasured,
+    )
+    .0
+}
+
+/// Enrich tool calls from matching start/result records observed on stdout.
+///
+/// This intentionally does not infer provider/model timing. The returned union
+/// is absent when no tool start was observed, preserving unknown rather than
+/// manufacturing a zero.
+pub fn apply_stdout_observed_tool_timing(
+    events: &mut [ActionEvent],
+    observations: &[OutputObservation],
+    run_status: Status,
+    duration_ms: Option<u128>,
+) -> Option<u128> {
+    apply_timing(
+        events,
+        observations,
+        run_status,
+        duration_ms,
+        None,
+        TimingSource::StdoutObserved,
+    )
+    .1
+}
+
+fn apply_timing(
+    events: &mut [ActionEvent],
+    observations: &[OutputObservation],
+    run_status: Status,
+    duration_ms: Option<u128>,
+    trace: Option<TelemetryTrace>,
+    timing_source: TimingSource,
+) -> (TimingReading, Option<u128>) {
     let lines = observed_json_lines(observations);
     let mut boundaries: Vec<Boundary> = Vec::new();
     let mut request_start = None;
@@ -507,7 +563,7 @@ pub fn apply_observed_timing(
     let mut saw_model_boundary = false;
     let mut model_intervals = Vec::new();
     for (value, offset, utc) in &lines {
-        if is_provider_start(value, trace) {
+        if trace.is_some_and(|trace| is_provider_start(value, trace)) {
             request_start.get_or_insert(*offset);
             model_start.get_or_insert(*offset);
         }
@@ -527,7 +583,7 @@ pub fn apply_observed_timing(
             model_start = Some(*offset);
             last_model_byte = None;
         }
-        if is_provider_finish(value, trace) {
+        if trace.is_some_and(|trace| is_provider_finish(value, trace)) {
             if let (Some(start), Some(finish)) = (model_start.take(), last_model_byte.take()) {
                 model_intervals.push((start, finish.max(start)));
             }
@@ -562,7 +618,11 @@ pub fn apply_observed_timing(
                 }
             })
         });
+        if boundary.start.is_some() && timing_source == TimingSource::StdoutObserved {
+            event.timing_source = Some(timing_source);
+        }
     }
+    let saw_tool_start = boundaries.iter().any(|boundary| boundary.start.is_some());
     let mut intervals = boundaries
         .iter()
         .filter_map(|boundary| {
@@ -591,7 +651,7 @@ pub fn apply_observed_timing(
     if let Some((left, right)) = current {
         union += right.saturating_sub(left);
     }
-    TimingReading {
+    let reading = TimingReading {
         model_ms: request_start.map(|_| interval_union(&mut model_intervals)),
         tool_ms: request_start.map(|_| union),
         time_to_first_token_ms: request_start
@@ -600,7 +660,7 @@ pub fn apply_observed_timing(
         trace_complete: request_start.is_some()
             && (lines
                 .iter()
-                .any(|(value, _, _)| is_provider_finish(value, trace))
+                .any(|(value, _, _)| trace.is_some_and(|trace| is_provider_finish(value, trace)))
                 || !matches!(run_status, Status::Ok | Status::Nonzero))
             && saw_model_boundary
             && events
@@ -615,7 +675,8 @@ pub fn apply_observed_timing(
                             Some(ToolCallStatus::Completed | ToolCallStatus::Failed)
                         ) || (event.finished_at.is_some() && event.duration_ms.is_some()))
                 }),
-    }
+    };
+    (reading, saw_tool_start.then_some(union))
 }
 
 fn interval_union(intervals: &mut [(u128, u128)]) -> u128 {

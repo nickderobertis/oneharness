@@ -21,6 +21,10 @@ export type RunStreamEnvelope =
     };
 export type ToolCallStatus = "completed" | "failed" | "timeout" | "interrupted";
 /**
+ * How a normalized tool interval was obtained.
+ */
+export type TimingSource = "provider_measured" | "stdout_observed";
+/**
  * The normalized, closed set of failure reasons oneharness can classify from a
  * harness's output. It is the single source for the `failure_kind` contract
  * value: serialized as the snake_case token a consumer reads in the report
@@ -89,6 +93,10 @@ export interface ActionEvent {
    * Terminal tool state, populated on history tool-call events.
    */
   status: ToolCallStatus | null;
+  /**
+   * Provenance for the tool interval. Omitted when timing is unavailable.
+   */
+  timing_source?: TimingSource | null | undefined;
   /**
    * Stable call identity within the session. Present on tool calls and their
    * matching results when the provider exposes an identity; history fills a

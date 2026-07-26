@@ -187,6 +187,34 @@ for expected in \
         fail "README support matrix is stale for ${expected%% *}; update it from docs/harness-auth.md"
 done
 
+workflow="$OH_REPO_ROOT/.github/workflows/e2e-variants.yml"
+matrix_value() {
+    local os="$1" field="$2" expected="$3"
+    awk -v os="$os" -v field="$field" -v expected="$expected" '
+        $0 ~ "^[[:space:]]*- os: " os "$" { in_os = 1; next }
+        in_os && $0 ~ "^[[:space:]]*- os:" { exit 1 }
+        in_os && $0 ~ "^[[:space:]]*" field ": \"" expected "\"$" { found = 1; exit }
+        END { exit !found }
+    ' "$workflow" ||
+        fail "e2e-variants workflow matrix must set $field=$expected for $os; keep README live-testing exclusions aligned"
+}
+matrix_value ubuntu-latest run_opencode 1
+matrix_value ubuntu-latest run_qwen 1
+matrix_value macos-latest run_opencode 1
+matrix_value macos-latest run_qwen 0
+matrix_value windows-latest run_opencode 0
+matrix_value windows-latest run_qwen 1
+grep -Fq 'deliberately omits Qwen 0.21.0 on macOS' "$OH_REPO_ROOT/README.md" ||
+    fail "README live-testing section must document the workflow's macOS Qwen exclusion"
+grep -Fq 'omits the OpenCode' "$OH_REPO_ROOT/README.md" ||
+    fail "README live-testing section must document the workflow's Windows OpenCode exclusion"
+grep -Fq '@qwen-code/qwen-code@0.21.0' "$OH_REPO_ROOT/justfile" ||
+    fail "Qwen installer pin changed; update the README live-testing version and this drift gate"
+grep -Fq 'Crush 0.87.0' "$OH_REPO_ROOT/docs/harness-auth.md" ||
+    fail "docs/harness-auth.md must match the pinned Crush version used for live evidence"
+grep -Fq '@charmland/crush@0.87.0' "$OH_REPO_ROOT/justfile" ||
+    fail "Crush installer pin changed; update docs/harness-auth.md and this drift gate"
+
 fallback="$tmp/fallback.json"
 fallback_target="claude-code:apikey"
 if [ -n "${OH_E2E_VARIANTS_EXTENDED_ONLY:-}" ]; then

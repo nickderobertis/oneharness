@@ -37,12 +37,12 @@ if [ -n "$EVIDENCE_FILE" ]; then
     evidence_dir="$(dirname -- "$EVIDENCE_FILE")"
     if [ -e "$EVIDENCE_FILE" ]; then
         [ -f "$EVIDENCE_FILE" ] ||
-            fail "OH_E2E_EVIDENCE_FILE must name a regular file"
+            fail "OH_E2E_EVIDENCE_FILE must name a regular file; remove the non-file target or choose a new file path"
         [ -w "$EVIDENCE_FILE" ] ||
-            fail "OH_E2E_EVIDENCE_FILE must name a writable file"
+            fail "OH_E2E_EVIDENCE_FILE must name a writable file; run chmod u+w on it or choose another path"
     else
         if [ ! -d "$evidence_dir" ] || [ ! -w "$evidence_dir" ]; then
-            fail "OH_E2E_EVIDENCE_FILE must have a writable parent directory"
+            fail "OH_E2E_EVIDENCE_FILE must have a writable parent directory; create it with mkdir -p and grant the current user write access"
         fi
     fi
 fi
@@ -67,9 +67,12 @@ claude_b="${OH_CLAUDE_CONFIG_B:-$HOME/.claude-alt}"
 validate_claude_config_dir() {
     local name="$1" value="$2"
     case "$value" in
-        "" | *$'\n'*) fail "$name must be a non-empty single-line directory path" ;;
+        "" | *$'\n'*)
+            fail "$name must be a non-empty single-line directory path; unset it to use the default or set it to one Claude config home"
+            ;;
     esac
-    [ -d "$value" ] || fail "$name must name an existing directory"
+    [ -d "$value" ] ||
+        fail "$name must name an existing directory; create/authenticate that Claude config home or correct the override"
 }
 cat >"$config" <<'EOF'
 [harness.claude-code.variant.subscription-a]

@@ -10299,6 +10299,60 @@ fn history_cli_reads_v1_0_records_without_variant_identity_fields() {
 }
 
 #[test]
+fn history_cli_rejects_mixed_provider_and_observed_timing() {
+    let dir = hist_dir("history-mixed-timing");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--bin",
+            &bin_override("codex"),
+            "--prompt",
+            "mixed timing",
+            "--history",
+            "--history-dir",
+            &dir.display().to_string(),
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)],
+    );
+    assert!(output.status.success());
+    let path = json_stdout(&output)["history_file"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let corrupted = std::fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let mut value: Value = serde_json::from_str(line).unwrap();
+            if value["type"] == "run" {
+                value["observed_tool_ms"] = serde_json::json!(1);
+            }
+            serde_json::to_string(&value).unwrap()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&path, format!("{corrupted}\n")).unwrap();
+
+    let listed = json_stdout(&run(
+        &[
+            "history",
+            "list",
+            "--all-projects",
+            "--history-dir",
+            &dir.display().to_string(),
+            "--compact",
+        ],
+        &[],
+    ));
+    assert!(listed.as_array().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn streamed_variant_history_events_keep_the_composed_identity() {
     let bin = mock_bin().display().to_string().replace('\\', "\\\\");
     let fx = ConfigFixture::new(

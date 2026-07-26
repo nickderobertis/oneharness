@@ -73,38 +73,45 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
         args.harness.clone()
     };
     let selected_ids = dedupe_exact_ids(&selected_ids);
-    let selected_variants: Vec<_> = selected_ids
-        .iter()
-        .filter_map(|id| id.split_once(':').map(|(base, name)| (id, base, name)))
-        .collect();
-    for (index, (first_id, base, first_name)) in selected_variants.iter().enumerate() {
-        let first =
-            cfg.variant_for(first_id)
-                .ok_or_else(|| OneharnessError::UnknownHarnessVariant {
-                    id: (*first_id).clone(),
-                    base: (*base).to_string(),
-                    variant: (*first_name).to_string(),
-                })?;
-        for (second_id, second_base, second_name) in selected_variants.iter().skip(index + 1) {
+    for id in &selected_ids {
+        if let Some((base, variant)) = id.split_once(':') {
+            if cfg.variant_for(id).is_none() {
+                return Err(OneharnessError::UnknownHarnessVariant {
+                    id: id.clone(),
+                    base: base.to_string(),
+                    variant: variant.to_string(),
+                });
+            }
+        }
+    }
+    for (index, first_id) in selected_ids.iter().enumerate() {
+        let (base, _) = cfg.split_harness_id(first_id);
+        let spec = harness::by_id(base).ok_or_else(|| OneharnessError::UnknownHarness {
+            id: base.to_string(),
+            valid: harness::valid_ids(),
+        })?;
+        let first = sync_domain::plan_for(cfg, spec, first_id).map_err(|message| {
+            OneharnessError::HarnessConfigUnmergeable {
+                path: format!("[harness.{base}]"),
+                message,
+            }
+        })?;
+        for second_id in selected_ids.iter().skip(index + 1) {
+            let (second_base, _) = cfg.split_harness_id(second_id);
             if base != second_base {
                 continue;
             }
-            let second = cfg.variant_for(second_id).ok_or_else(|| {
-                OneharnessError::UnknownHarnessVariant {
-                    id: (*second_id).clone(),
-                    base: (*second_base).to_string(),
-                    variant: (*second_name).to_string(),
+            let second = sync_domain::plan_for(cfg, spec, second_id).map_err(|message| {
+                OneharnessError::HarnessConfigUnmergeable {
+                    path: format!("[harness.{base}]"),
+                    message,
                 }
             })?;
-            if first.allowed_tools != second.allowed_tools
-                || first.denied_tools != second.denied_tools
-                || first.hooks != second.hooks
-                || first.settings != second.settings
-            {
+            if first.fragment != second.fragment || first.unmapped != second.unmapped {
                 return Err(OneharnessError::VariantSyncConflict {
-                    base: (*base).to_string(),
-                    first: (*first_id).clone(),
-                    second: (*second_id).clone(),
+                    base: base.to_string(),
+                    first: first_id.clone(),
+                    second: second_id.clone(),
                 });
             }
         }

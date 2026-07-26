@@ -52,13 +52,13 @@ pub enum OneharnessError {
         name: String,
     },
 
-    #[error("harness variants `{first}` and `{second}` declare conflicting sync settings for the shared `{base}` config file")]
+    #[error("harness selections `{first}` and `{second}` resolve to conflicting sync settings for the shared `{base}` config file")]
     VariantSyncConflict {
-        // llmlint: ignore[invalid_states_unrepresentable] variant_for has validated this base against the configured harness before the conflict error is constructed; the error keeps its printable spelling.
+        // llmlint: ignore[invalid_states_unrepresentable] Selection has validated this base against the registry before conflict comparison; the error keeps its printable spelling.
         base: String,
-        // llmlint: ignore[invalid_states_unrepresentable] variant_for has validated this composed selector before conflict comparison; the diagnostic payload keeps its printable spelling.
+        // llmlint: ignore[invalid_states_unrepresentable] Selection has validated this base or composed selector before conflict comparison; the diagnostic payload keeps its printable spelling.
         first: String,
-        // llmlint: ignore[invalid_states_unrepresentable] variant_for has validated this composed selector before conflict comparison; the diagnostic payload keeps its printable spelling.
+        // llmlint: ignore[invalid_states_unrepresentable] Selection has validated this base or composed selector before conflict comparison; the diagnostic payload keeps its printable spelling.
         second: String,
     },
 

@@ -230,6 +230,7 @@ pub struct VariantConfig {
     pub hooks: Option<toml::Value>,
     pub settings: Option<toml::Value>,
     #[serde(default)]
+    // llmlint: ignore[invalid_states_unrepresentable] This map shares the established TOML `[env]` string-key contract; `validate` checks every key before FileConfig is exposed, preserving backward-compatible merging without a second map-key representation.
     pub env: BTreeMap<String, String>,
     // llmlint: ignore[invalid_states_unrepresentable] The TOML contract intentionally stores a portable path string; deserialization rejects empty/NUL values and the I/O boundary resolves it, verifies it is a regular mode-private file, and reports the concrete path.
     pub env_file: Option<String>,
@@ -262,6 +263,7 @@ pub struct HookEntry {
     pub plugin_name: Option<String>,
     /// Restrict this entry to these harness ids; absent means every harness
     /// being synced.
+    // llmlint: ignore[invalid_states_unrepresentable] HookEntry is the deny-unknown-fields TOML boundary DTO, so it must retain raw strings long enough to issue precise errors for unknown ids and variant selectors; `validate` rejects both before hooks are normalized or exposed to sync.
     pub harnesses: Option<Vec<String>>,
 }
 
@@ -289,17 +291,11 @@ fn validate(config: &FileConfig) -> Result<(), String> {
     if config.all == Some(true) && config.harnesses.is_some() {
         return Err("`all = true` and `harnesses` are mutually exclusive".to_string());
     }
-    let hook_harnesses = config
-        .hooks
-        .iter()
-        .flatten()
-        .flat_map(|h| h.harnesses.iter().flatten());
     let named = config
         .harnesses
         .iter()
         .flatten()
         .chain(config.exclude.iter().flatten())
-        .chain(hook_harnesses)
         .filter_map(|id| {
             id.split_once(':')
                 .map_or(Some(id.as_str()), |(base, _)| Some(base))
@@ -321,12 +317,18 @@ fn validate(config: &FileConfig) -> Result<(), String> {
             return Err("a `[[hooks]]` entry needs a non-empty `command`".to_string());
         }
         for id in entry.harnesses.iter().flatten() {
-            // ids are validated above; unwrap is safe here.
-            if harness::by_id(id)
-                .expect("hook harness id validated")
-                .hooks
-                .is_none()
-            {
+            if id.contains(':') {
+                return Err(format!(
+                    "`[[hooks]].harnesses` accepts base harness ids, not variant selector `{id}`; variants share one synced harness config"
+                ));
+            }
+            let Some(spec) = harness::by_id(id) else {
+                return Err(format!(
+                    "unknown harness id `{id}`. valid ids: {}",
+                    harness::valid_ids()
+                ));
+            };
+            if spec.hooks.is_none() {
                 return Err(format!(
                     "`[[hooks]]` targets harness `{id}`, which oneharness cannot install a hook into"
                 ));
@@ -1399,6 +1401,14 @@ variant = true
     fn a_hook_targeting_an_unknown_harness_is_rejected() {
         let err = parse("[[hooks]]\ncommand = \"x\"\nharnesses = [\"bogus\"]").unwrap_err();
         assert!(err.contains("bogus"), "{err}");
+    }
+
+    #[test]
+    fn a_hook_targeting_a_variant_is_rejected() {
+        let err =
+            parse("[[hooks]]\ncommand = \"x\"\nharnesses = [\"claude-code:-bad\"]").unwrap_err();
+        assert!(err.contains("accepts base harness ids"), "{err}");
+        assert!(err.contains("claude-code:-bad"), "{err}");
     }
 
     #[test]

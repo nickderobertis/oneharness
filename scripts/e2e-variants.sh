@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # Live identity/variant drift alarm. Secret values are never printed.
 set -euo pipefail
+# The runtime path is anchored to this script; this directive gives ShellCheck
+# the equivalent repository-relative source for cross-file analysis.
 # shellcheck source=scripts/e2e-lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 need jq
-need opencode
-need qwen
-need crush
+if [ -z "${OH_E2E_VARIANTS_CORE_ONLY:-}" ]; then
+    need opencode
+    need qwen
+    need crush
+fi
 if [ -z "${OH_E2E_VARIANTS_EXTENDED_ONLY:-}" ]; then
     need claude
     need codex
@@ -32,10 +36,32 @@ auth_value() {
     [ -f "$AUTH_FILE" ] || return 1
     awk -F= -v key="$name" 'index($0, "=") > 0 && $1 == key { sub(/^[^=]*=/, ""); print; exit }' "$AUTH_FILE"
 }
+EVIDENCE_FILE="${OH_E2E_EVIDENCE_FILE:-}"
+if [ -n "$EVIDENCE_FILE" ]; then
+    case "$EVIDENCE_FILE" in
+        *$'\n'*) fail "OH_E2E_EVIDENCE_FILE must be a single-line file path; choose a path without newline characters and retry" ;;
+    esac
+    evidence_dir="$(dirname -- "$EVIDENCE_FILE")"
+    if [ ! -d "$evidence_dir" ] || [ ! -w "$evidence_dir" ] || [ ! -x "$evidence_dir" ]; then
+        fail "OH_E2E_EVIDENCE_FILE must have a writable, searchable parent directory; create it with mkdir -p and grant the current user write and search access"
+    fi
+    if [ -e "$EVIDENCE_FILE" ]; then
+        [ -f "$EVIDENCE_FILE" ] ||
+            fail "OH_E2E_EVIDENCE_FILE must name a regular file; remove the non-file target or choose a new file path"
+        [ -w "$EVIDENCE_FILE" ] ||
+            fail "OH_E2E_EVIDENCE_FILE must name a writable file; run chmod u+w on it or choose another path"
+    fi
+fi
 evidence() {
     # Detailed proof is opt-in for an operator collecting sanitized evidence;
     # ordinary local/CI output remains the final one-line summary.
-    [ -n "${OH_E2E_EVIDENCE:-}" ] && printf '%s\n' "$*"
+    if [ -n "$EVIDENCE_FILE" ]; then
+        printf '%s\n' "$*" >>"$EVIDENCE_FILE" ||
+            fail "could not append OH_E2E_EVIDENCE_FILE; verify its parent remains writable and searchable"
+    fi
+    if [ -n "${OH_E2E_EVIDENCE:-}" ]; then
+        printf '%s\n' "$*"
+    fi
     return 0
 }
 ANTHROPIC_MATERIAL="${ANTHROPIC_API_KEY:-$(auth_value ANTHROPIC_API_KEY || true)}"
@@ -48,12 +74,23 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 config="$tmp/oneharness.toml"
 mkdir -p "$tmp/codex-api-home"
-mkdir -p "$tmp/qwen-home" "$tmp/crush-home"
 claude_a="${OH_CLAUDE_CONFIG_A:-$HOME/.claude}"
 claude_b="${OH_CLAUDE_CONFIG_B:-$HOME/.claude-alt}"
-opencode_bin="$(command -v opencode)"
-opencode_wrapper="$tmp/opencode-isolation-wrapper"
-cat >"$opencode_wrapper" <<'EOF'
+validate_claude_config_dir() {
+    local name="$1" value="$2"
+    case "$value" in
+        "" | *$'\n'*)
+            fail "$name must be a non-empty single-line directory path; unset it to use the default or set it to one Claude config home"
+            ;;
+    esac
+    [ -d "$value" ] ||
+        fail "$name must name an existing directory; create/authenticate that Claude config home or correct the override"
+}
+if [ -z "${OH_E2E_VARIANTS_CORE_ONLY:-}" ]; then
+    mkdir -p "$tmp/qwen-home" "$tmp/crush-home"
+    opencode_bin="$(command -v opencode)"
+    opencode_wrapper="$tmp/opencode-isolation-wrapper"
+    cat >"$opencode_wrapper" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ -n "${ANTHROPIC_API_KEY:-}" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
@@ -64,8 +101,8 @@ else
 fi
 exec "$OH_REAL_OPENCODE" "$@"
 EOF
-chmod 700 "$opencode_wrapper"
-cat >"$config" <<EOF
+    chmod 700 "$opencode_wrapper"
+    cat >"$config" <<EOF
 [harness.opencode.variant.apikey]
 bin = "$opencode_wrapper"
 model = "anthropic/claude-haiku-4-5"
@@ -91,6 +128,9 @@ HOME = "$tmp/crush-home"
 ANTHROPIC_API_KEY = "OH_VARIANT_ANTHROPIC_KEY"
 
 EOF
+else
+    : >"$config"
+fi
 cat >>"$config" <<'EOF'
 [harness.claude-code.variant.subscription-a]
 unset_env = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
@@ -116,9 +156,28 @@ EOF
 run_marker() {
     local id="$1" marker="$2"
     local report="$tmp/${id//:/-}.json"
+    local command_stderr="$tmp/${id//:/-}.stderr"
     shift 2
-    env "$@" "$OH" run --config "$config" --harness "$id" \
-        --prompt "Reply exactly $marker" --compact >"$report"
+    if env "$@" "$OH" run --config "$config" --harness "$id" \
+        --prompt "Reply exactly $marker" --compact >"$report" 2>"$command_stderr"; then
+        :
+    else
+        run_exit=$?
+        if jq -e '.results[0]' "$report" >/dev/null 2>&1; then
+            diagnostic="$(jq -r \
+                '.results[0] | "status=\(.status) exit_code=\(.exit_code) failure_kind=\(.failure_kind) stderr_present=\((.stderr // "") | length > 0)"' \
+                "$report")"
+            fail "$id exited nonzero ($diagnostic); verify that variant's selected credential source"
+        else
+            stderr_tail="$(
+                tail -5 "$command_stderr" |
+                    sed -E \
+                        -e 's/(sk-ant-|sk-proj-|sk-)[A-Za-z0-9_-]+/<redacted>/g' \
+                        -e 's/(Bearer )[A-Za-z0-9._-]+/\1<redacted>/g'
+            )"
+            fail "$id exited $run_exit before producing a valid report; stderr tail: ${stderr_tail:-<empty>}; verify the harness installation, auth source, and config"
+        fi
+    fi
     jq -e --arg marker "$marker" \
         '.results[0].status == "ok" and (.results[0].stdout | contains($marker))' \
         "$report" >/dev/null || {
@@ -131,51 +190,53 @@ run_marker() {
     evidence "ASSERT $id: status=ok marker=exact harness_id=$id"
 }
 marker="OH_VARIANT_$(date +%s)_$RANDOM"
-run_marker opencode:apikey "${marker}_oc" \
-    OPENAI_API_KEY="$OPENAI_MATERIAL" \
-    OH_VARIANT_ANTHROPIC_KEY="$ANTHROPIC_MATERIAL" \
-    OH_VARIANT_REAL_OPENCODE="$opencode_bin"
-jq -e '.results[0].stderr | contains("oneharness-variant-isolation: api_key=present ambient_openai=masked")' \
-    "$tmp/opencode-apikey.json" >/dev/null ||
-    fail "OpenCode variant child did not receive only its selected API credential; inspect unset_env/env_from in the generated config with OH_E2E_EVIDENCE=1"
-jq -e '.results[0].stdout | split("\n") | map(select(length > 0) | fromjson) |
-    any(.type == "step_finish" and .part.cost > 0)' \
-    "$tmp/opencode-apikey.json" >/dev/null ||
-    fail "OpenCode API identity evidence missing; rerun with OH_E2E_EVIDENCE=1 and verify OpenCode still emits step_finish.part.cost"
-evidence "IDENTITY opencode:apikey: provider=anthropic model=claude-haiku-4-5 api_key=present ambient_openai=masked completed_step_cost>0"
+if [ -z "${OH_E2E_VARIANTS_CORE_ONLY:-}" ]; then
+    run_marker opencode:apikey "${marker}_oc" \
+        OPENAI_API_KEY="$OPENAI_MATERIAL" \
+        OH_VARIANT_ANTHROPIC_KEY="$ANTHROPIC_MATERIAL" \
+        OH_VARIANT_REAL_OPENCODE="$opencode_bin"
+    jq -e '.results[0].stderr | contains("oneharness-variant-isolation: api_key=present ambient_openai=masked")' \
+        "$tmp/opencode-apikey.json" >/dev/null ||
+        fail "OpenCode variant child did not receive only its selected API credential; inspect unset_env/env_from in the generated config with OH_E2E_EVIDENCE=1"
+    jq -e '.results[0].stdout | split("\n") | map(select(length > 0) | fromjson) |
+        any(.type == "step_finish" and .part.cost > 0)' \
+        "$tmp/opencode-apikey.json" >/dev/null ||
+        fail "OpenCode API identity evidence missing; rerun with OH_E2E_EVIDENCE=1 and verify OpenCode still emits step_finish.part.cost"
+    evidence "IDENTITY opencode:apikey: provider=anthropic model=claude-haiku-4-5 api_key=present ambient_openai=masked completed_step_cost>0"
 
-run_marker qwen:apikey "${marker}_qw" OH_VARIANT_OPENAI_KEY="$OPENAI_MATERIAL"
-evidence "IDENTITY qwen:apikey: provider=openai base_url=api.openai.com model=gpt-4o-mini isolated_home=yes"
+    run_marker qwen:apikey "${marker}_qw" OH_VARIANT_OPENAI_KEY="$OPENAI_MATERIAL"
+    evidence "IDENTITY qwen:apikey: provider=openai base_url=api.openai.com model=gpt-4o-mini isolated_home=yes"
 
-run_marker crush:apikey "${marker}_cr" OH_VARIANT_ANTHROPIC_KEY="$ANTHROPIC_MATERIAL"
-evidence "IDENTITY crush:apikey: provider=anthropic model=claude-haiku-4-5-20251001 isolated_home=yes"
+    run_marker crush:apikey "${marker}_cr" OH_VARIANT_ANTHROPIC_KEY="$ANTHROPIC_MATERIAL"
+    evidence "IDENTITY crush:apikey: provider=anthropic model=claude-haiku-4-5-20251001 isolated_home=yes"
 
-# These exact, sanitized evidence records are the executable drift gate for the
-# auth reference and README matrix: changed live identity facts must update both.
-# Backticks below are literal Markdown delimiters, not shell substitutions.
-# shellcheck disable=SC2016
-for expected in \
+    # These exact, sanitized evidence records are the executable drift gate for
+    # the auth reference and README matrix. SC2016 is intentional because the
+    # single-quoted backticks below are literal Markdown, never shell commands.
+    # shellcheck disable=SC2016
+    for expected in \
     "IDENTITY opencode:apikey: provider=anthropic model=claude-haiku-4-5 api_key=present ambient_openai=masked completed_step_cost>0" \
     "IDENTITY goose:apikey: session_banner='openai gpt-4o-mini' isolated_path_root=yes" \
     "IDENTITY qwen:apikey: provider=openai base_url=api.openai.com model=gpt-4o-mini isolated_home=yes" \
     "IDENTITY crush:apikey: provider=anthropic model=claude-haiku-4-5-20251001 isolated_home=yes" \
     'Copilot request quota, and has no' \
     'The installed CLI reported `Not logged in`'; do
-    grep -Fq "$expected" "$OH_REPO_ROOT/docs/harness-auth.md" ||
-        fail "docs/harness-auth.md is stale; copy the sanitized live evidence record for ${expected%%:*}"
-done
-# Backticks below are literal Markdown delimiters, not shell substitutions.
-# shellcheck disable=SC2016
-for expected in \
+        grep -Fq "$expected" "$OH_REPO_ROOT/docs/harness-auth.md" ||
+            fail "docs/harness-auth.md is stale; copy the sanitized live evidence record for ${expected%%:*}"
+    done
+    # Backticks below are literal Markdown delimiters, not shell substitutions.
+    # shellcheck disable=SC2016
+    for expected in \
     '`opencode` | OpenCode | `opencode` | `ANTHROPIC_API_KEY` (live-proven)' \
     '`goose` | Goose | `goose` | `GOOSE_PROVIDER` + `OPENAI_API_KEY` (live-proven)' \
     '`qwen` | Qwen Code | `qwen` | `OPENAI_API_KEY` + base URL (live-proven)' \
     '`crush` | Crush | `crush` | `ANTHROPIC_API_KEY` (live-proven)' \
     '`copilot` | GitHub Copilot CLI | `copilot` | token/BYOK/stored login (mapped, unproven; no usable host quota)' \
     '`cursor` | Cursor CLI | `cursor-agent` | API key/browser login (mapped, unproven; credentials absent)'; do
-    grep -Fq "$expected" "$OH_REPO_ROOT/README.md" ||
-        fail "README support matrix is stale for ${expected%% *}; update it from docs/harness-auth.md"
-done
+        grep -Fq "$expected" "$OH_REPO_ROOT/README.md" ||
+            fail "README support matrix is stale for ${expected%% *}; update it from docs/harness-auth.md"
+    done
+fi
 
 fallback="$tmp/fallback.json"
 fallback_target="claude-code:apikey"
@@ -192,6 +253,8 @@ else
     evidence "IDENTITY claude-code:apikey: isolated API key source; ephemeral_5m_input_tokens>0"
 fi
 if [ -z "${OH_E2E_VARIANTS_API_ONLY:-}" ] && [ -z "${OH_E2E_VARIANTS_EXTENDED_ONLY:-}" ]; then
+    validate_claude_config_dir OH_CLAUDE_CONFIG_A "$claude_a"
+    validate_claude_config_dir OH_CLAUDE_CONFIG_B "$claude_b"
     for config_dir in "$claude_a" "$claude_b"; do
         auth_method="$(
             CLAUDE_CONFIG_DIR="$config_dir" env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \

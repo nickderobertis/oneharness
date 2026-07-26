@@ -337,9 +337,9 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     if multi_model {
         validate_multi_model(batch_run, args)?;
     }
-    // In fallback the run order is the priority chain: the caller's `--harness` /
-    // config order (registry order under `--all`), not the registry order
-    // `select_specs` returns. Parallel keeps registry order.
+    // Selection already preserves explicit caller/config order (and uses registry
+    // order for `--all`). Fallback treats that sequence as its priority chain;
+    // parallel schedules it concurrently while retaining the same report order.
     // A batch (multi-prompt) run is single-harness by nature — a provider cache
     // prefix is per harness/model/tools — and is a fresh fan-out, not a session
     // continuation. Refuse both before anything spawns (loud usage errors).

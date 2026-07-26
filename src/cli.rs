@@ -216,6 +216,7 @@ pub struct HistoryWatchArgs {
     pub label: Vec<String>,
 
     /// Emit only records from this variant name.
+    // llmlint: ignore[changed_behavior_has_e2e] History watch deliberately exposes only JSONL, not text; compiled-CLI tests cover variant filtering for both record and event JSONL envelopes.
     #[arg(long, value_name = "NAME")]
     pub variant: Option<oneharness_core::domain::config::VariantName>,
 

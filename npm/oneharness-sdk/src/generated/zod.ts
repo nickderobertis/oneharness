@@ -547,72 +547,77 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.union([
     events: z
       .union([
         z.array(
-          z.union([
-            z.intersection(
-              z.lazy(() => ActionEventSchema),
-              z.looseObject({
-                duration_ms: z
-                  .int()
-                  .gte(0)
-                  .refine((value) => value !== undefined, { message: "Required" }),
-                finished_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-                kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
-                started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-                status: z.literal("completed").refine((value) => value !== undefined, { message: "Required" }),
-                tool_call_id: z
-                  .string()
-                  .min(1)
-                  .refine((value) => value !== undefined, { message: "Required" }),
-              }),
-            ),
-            z.intersection(
-              z.lazy(() => ActionEventSchema),
-              z.looseObject({
-                duration_ms: z
-                  .int()
-                  .gte(0)
-                  .refine((value) => value !== undefined, { message: "Required" }),
-                finished_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-                kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
-                started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-                status: z.literal("failed").refine((value) => value !== undefined, { message: "Required" }),
-                tool_call_id: z
-                  .string()
-                  .min(1)
-                  .refine((value) => value !== undefined, { message: "Required" }),
-              }),
-            ),
-            z.intersection(
-              z.lazy(() => ActionEventSchema),
-              z.looseObject({
-                kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
-                started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-                status: z.literal("timeout").refine((value) => value !== undefined, { message: "Required" }),
-                tool_call_id: z
-                  .string()
-                  .min(1)
-                  .refine((value) => value !== undefined, { message: "Required" }),
-              }),
-            ),
-            z.intersection(
-              z.lazy(() => ActionEventSchema),
-              z.looseObject({
-                kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
-                started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-                status: z.literal("interrupted").refine((value) => value !== undefined, { message: "Required" }),
-                tool_call_id: z
-                  .string()
-                  .min(1)
-                  .refine((value) => value !== undefined, { message: "Required" }),
-              }),
-            ),
-            z.intersection(
-              z.lazy(() => ActionEventSchema),
-              z.looseObject({
-                kind: z.literal("tool_result").optional(),
-              }),
-            ),
-          ]),
+          z.intersection(
+            z.union([
+              z.intersection(
+                z.lazy(() => ActionEventSchema),
+                z.looseObject({
+                  duration_ms: z
+                    .int()
+                    .gte(0)
+                    .refine((value) => value !== undefined, { message: "Required" }),
+                  finished_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+                  kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
+                  started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+                  status: z.literal("completed").refine((value) => value !== undefined, { message: "Required" }),
+                  tool_call_id: z
+                    .string()
+                    .min(1)
+                    .refine((value) => value !== undefined, { message: "Required" }),
+                }),
+              ),
+              z.intersection(
+                z.lazy(() => ActionEventSchema),
+                z.looseObject({
+                  duration_ms: z
+                    .int()
+                    .gte(0)
+                    .refine((value) => value !== undefined, { message: "Required" }),
+                  finished_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+                  kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
+                  started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+                  status: z.literal("failed").refine((value) => value !== undefined, { message: "Required" }),
+                  tool_call_id: z
+                    .string()
+                    .min(1)
+                    .refine((value) => value !== undefined, { message: "Required" }),
+                }),
+              ),
+              z.intersection(
+                z.lazy(() => ActionEventSchema),
+                z.looseObject({
+                  kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
+                  started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+                  status: z.literal("timeout").refine((value) => value !== undefined, { message: "Required" }),
+                  tool_call_id: z
+                    .string()
+                    .min(1)
+                    .refine((value) => value !== undefined, { message: "Required" }),
+                }),
+              ),
+              z.intersection(
+                z.lazy(() => ActionEventSchema),
+                z.looseObject({
+                  kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
+                  started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+                  status: z.literal("interrupted").refine((value) => value !== undefined, { message: "Required" }),
+                  tool_call_id: z
+                    .string()
+                    .min(1)
+                    .refine((value) => value !== undefined, { message: "Required" }),
+                }),
+              ),
+              z.intersection(
+                z.lazy(() => ActionEventSchema),
+                z.looseObject({
+                  kind: z.literal("tool_result").optional(),
+                }),
+              ),
+            ]),
+            z.looseObject({
+              timing_source: z.never().optional(),
+            }),
+          ),
         ),
         z.null(),
       ])
@@ -670,72 +675,77 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.union([
     events: z
       .union([
         z.array(
-          z.union([
-            z.intersection(
-              z.lazy(() => ActionEventSchema),
-              z.looseObject({
-                duration_ms: z
-                  .int()
-                  .gte(0)
-                  .refine((value) => value !== undefined, { message: "Required" }),
-                finished_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-                kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
-                started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-                status: z.literal("completed").refine((value) => value !== undefined, { message: "Required" }),
-                tool_call_id: z
-                  .string()
-                  .min(1)
-                  .refine((value) => value !== undefined, { message: "Required" }),
-              }),
-            ),
-            z.intersection(
-              z.lazy(() => ActionEventSchema),
-              z.looseObject({
-                duration_ms: z
-                  .int()
-                  .gte(0)
-                  .refine((value) => value !== undefined, { message: "Required" }),
-                finished_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-                kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
-                started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-                status: z.literal("failed").refine((value) => value !== undefined, { message: "Required" }),
-                tool_call_id: z
-                  .string()
-                  .min(1)
-                  .refine((value) => value !== undefined, { message: "Required" }),
-              }),
-            ),
-            z.intersection(
-              z.lazy(() => ActionEventSchema),
-              z.looseObject({
-                kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
-                started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-                status: z.literal("timeout").refine((value) => value !== undefined, { message: "Required" }),
-                tool_call_id: z
-                  .string()
-                  .min(1)
-                  .refine((value) => value !== undefined, { message: "Required" }),
-              }),
-            ),
-            z.intersection(
-              z.lazy(() => ActionEventSchema),
-              z.looseObject({
-                kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
-                started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-                status: z.literal("interrupted").refine((value) => value !== undefined, { message: "Required" }),
-                tool_call_id: z
-                  .string()
-                  .min(1)
-                  .refine((value) => value !== undefined, { message: "Required" }),
-              }),
-            ),
-            z.intersection(
-              z.lazy(() => ActionEventSchema),
-              z.looseObject({
-                kind: z.literal("tool_result").optional(),
-              }),
-            ),
-          ]),
+          z.intersection(
+            z.union([
+              z.intersection(
+                z.lazy(() => ActionEventSchema),
+                z.looseObject({
+                  duration_ms: z
+                    .int()
+                    .gte(0)
+                    .refine((value) => value !== undefined, { message: "Required" }),
+                  finished_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+                  kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
+                  started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+                  status: z.literal("completed").refine((value) => value !== undefined, { message: "Required" }),
+                  tool_call_id: z
+                    .string()
+                    .min(1)
+                    .refine((value) => value !== undefined, { message: "Required" }),
+                }),
+              ),
+              z.intersection(
+                z.lazy(() => ActionEventSchema),
+                z.looseObject({
+                  duration_ms: z
+                    .int()
+                    .gte(0)
+                    .refine((value) => value !== undefined, { message: "Required" }),
+                  finished_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+                  kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
+                  started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+                  status: z.literal("failed").refine((value) => value !== undefined, { message: "Required" }),
+                  tool_call_id: z
+                    .string()
+                    .min(1)
+                    .refine((value) => value !== undefined, { message: "Required" }),
+                }),
+              ),
+              z.intersection(
+                z.lazy(() => ActionEventSchema),
+                z.looseObject({
+                  kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
+                  started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+                  status: z.literal("timeout").refine((value) => value !== undefined, { message: "Required" }),
+                  tool_call_id: z
+                    .string()
+                    .min(1)
+                    .refine((value) => value !== undefined, { message: "Required" }),
+                }),
+              ),
+              z.intersection(
+                z.lazy(() => ActionEventSchema),
+                z.looseObject({
+                  kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
+                  started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+                  status: z.literal("interrupted").refine((value) => value !== undefined, { message: "Required" }),
+                  tool_call_id: z
+                    .string()
+                    .min(1)
+                    .refine((value) => value !== undefined, { message: "Required" }),
+                }),
+              ),
+              z.intersection(
+                z.lazy(() => ActionEventSchema),
+                z.looseObject({
+                  kind: z.literal("tool_result").optional(),
+                }),
+              ),
+            ]),
+            z.looseObject({
+              timing_source: z.never().optional(),
+            }),
+          ),
         ),
         z.null(),
       ])
@@ -897,21 +907,26 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.union([
     events: z
       .union([
         z.array(
-          z.looseObject({
-            duration_ms: z.null().optional(),
-            finished_at: z.null().optional(),
-            index: z
-              .int()
-              .gte(0)
-              .refine((value) => value !== undefined, { message: "Required" }),
-            input: z.unknown().refine((value) => value !== undefined, { message: "Required" }),
-            kind: z.string().refine((value) => value !== undefined, { message: "Required" }),
-            name: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-            output: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-            started_at: z.null().optional(),
-            status: z.null().optional(),
-            tool_call_id: z.union([z.string(), z.null()]).optional(),
-          }),
+          z.intersection(
+            z.looseObject({
+              duration_ms: z.null().optional(),
+              finished_at: z.null().optional(),
+              index: z
+                .int()
+                .gte(0)
+                .refine((value) => value !== undefined, { message: "Required" }),
+              input: z.unknown().refine((value) => value !== undefined, { message: "Required" }),
+              kind: z.string().refine((value) => value !== undefined, { message: "Required" }),
+              name: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+              output: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+              started_at: z.null().optional(),
+              status: z.null().optional(),
+              tool_call_id: z.union([z.string(), z.null()]).optional(),
+            }),
+            z.looseObject({
+              timing_source: z.never().optional(),
+            }),
+          ),
         ),
         z.null(),
       ])
@@ -957,21 +972,26 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.union([
     events: z
       .union([
         z.array(
-          z.looseObject({
-            duration_ms: z.null().optional(),
-            finished_at: z.null().optional(),
-            index: z
-              .int()
-              .gte(0)
-              .refine((value) => value !== undefined, { message: "Required" }),
-            input: z.unknown().refine((value) => value !== undefined, { message: "Required" }),
-            kind: z.string().refine((value) => value !== undefined, { message: "Required" }),
-            name: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-            output: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-            started_at: z.null().optional(),
-            status: z.null().optional(),
-            tool_call_id: z.union([z.string(), z.null()]).optional(),
-          }),
+          z.intersection(
+            z.looseObject({
+              duration_ms: z.null().optional(),
+              finished_at: z.null().optional(),
+              index: z
+                .int()
+                .gte(0)
+                .refine((value) => value !== undefined, { message: "Required" }),
+              input: z.unknown().refine((value) => value !== undefined, { message: "Required" }),
+              kind: z.string().refine((value) => value !== undefined, { message: "Required" }),
+              name: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+              output: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+              started_at: z.null().optional(),
+              status: z.null().optional(),
+              tool_call_id: z.union([z.string(), z.null()]).optional(),
+            }),
+            z.looseObject({
+              timing_source: z.never().optional(),
+            }),
+          ),
         ),
         z.null(),
       ])

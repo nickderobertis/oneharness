@@ -147,7 +147,7 @@ export type HistoryRecord =
        * no machine-readable trace.
        */
       events:
-        | (
+        | ((
             | (ActionEvent & {
                 duration_ms: number;
                 finished_at: string;
@@ -184,7 +184,10 @@ export type HistoryRecord =
                 kind?: "tool_result" | undefined;
                 [k: string]: unknown;
               })
-          )[]
+          ) & {
+            timing_source?: never | undefined;
+            [k: string]: unknown;
+          })[]
         | null;
       exit_code: number | null;
       /**
@@ -265,7 +268,7 @@ export type HistoryRecord =
        * no machine-readable trace.
        */
       events:
-        | (
+        | ((
             | (ActionEvent & {
                 duration_ms: number;
                 finished_at: string;
@@ -302,7 +305,10 @@ export type HistoryRecord =
                 kind?: "tool_result" | undefined;
                 [k: string]: unknown;
               })
-          )[]
+          ) & {
+            timing_source?: never | undefined;
+            [k: string]: unknown;
+          })[]
         | null;
       exit_code: number | null;
       /**
@@ -555,7 +561,7 @@ export type HistoryRecord =
        * no machine-readable trace.
        */
       events:
-        | {
+        | ({
             duration_ms?: null | undefined;
             finished_at?: null | undefined;
             index: number;
@@ -567,7 +573,10 @@ export type HistoryRecord =
             status?: null | undefined;
             tool_call_id?: string | null | undefined;
             [k: string]: unknown;
-          }[]
+          } & {
+            timing_source?: never | undefined;
+            [k: string]: unknown;
+          })[]
         | null;
       exit_code: number | null;
       /**
@@ -648,7 +657,7 @@ export type HistoryRecord =
        * no machine-readable trace.
        */
       events:
-        | {
+        | ({
             duration_ms?: null | undefined;
             finished_at?: null | undefined;
             index: number;
@@ -660,7 +669,10 @@ export type HistoryRecord =
             status?: null | undefined;
             tool_call_id?: string | null | undefined;
             [k: string]: unknown;
-          }[]
+          } & {
+            timing_source?: never | undefined;
+            [k: string]: unknown;
+          })[]
         | null;
       exit_code: number | null;
       /**

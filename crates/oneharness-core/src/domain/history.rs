@@ -730,7 +730,7 @@ impl HistoryRecord {
                 .find(|spec| spec.id == self.harness)
                 .is_some_and(|spec| spec.telemetry.is_none());
         self.valid_v03()
-            && self.observed_timing_valid()
+            && self.versioned_timing_valid()
             && (!matches!(self.timing_state(), Ok(HistoryTiming::Unavailable))
                 || timing_unavailable)
     }
@@ -792,7 +792,15 @@ impl HistoryRecord {
         })
     }
 
-    fn observed_timing_valid(&self) -> bool {
+    fn versioned_timing_valid(&self) -> bool {
+        if self.schema_version != SCHEMA_VERSION
+            && self
+                .events
+                .as_ref()
+                .is_some_and(|events| events.iter().any(|event| event.timing_source.is_some()))
+        {
+            return false;
+        }
         match self.observed_tool_ms {
             None => true,
             Some(_) => {
@@ -1569,5 +1577,39 @@ mod tests {
         .unwrap();
         unsupported["schema_version"] = Value::String("9.9".to_string());
         assert!(serde_json::from_value::<HistoryRecord>(unsupported).is_err());
+    }
+
+    #[test]
+    fn pre_v1_2_record_rejects_event_timing_provenance() {
+        let current = HistoryRecord::from_result(
+            HistoryId::legacy(b"pre-v1.2-event-timing"),
+            "session",
+            "name",
+            &HistoryLabels::default(),
+            "/project",
+            "2026-01-01T00:00:00Z".to_string(),
+            PermissionMode::Default,
+            None,
+            "prompt",
+            &result(),
+        );
+        let mut value = serde_json::to_value(current).unwrap();
+        value["events"] = serde_json::json!([{
+            "kind": "tool_call",
+            "name": "Bash",
+            "input": {"command": "true"},
+            "output": "",
+            "index": 0,
+            "tool_call_id": "tool-1",
+            "started_at": "2026-01-01T00:00:00.000Z",
+            "finished_at": "2026-01-01T00:00:00.001Z",
+            "duration_ms": 1,
+            "status": "completed",
+            "timing_source": "stdout_observed"
+        }]);
+
+        assert!(serde_json::from_value::<HistoryRecord>(value.clone()).is_err());
+        value["schema_version"] = Value::String(SCHEMA_VERSION.to_string());
+        assert!(serde_json::from_value::<HistoryRecord>(value).is_ok());
     }
 }

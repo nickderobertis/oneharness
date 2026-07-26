@@ -252,6 +252,19 @@ fn set_history_identity_version(
     }
 }
 
+fn forbid_record_event_timing_source(schema: &mut serde_json::Value) {
+    let event = schema["properties"]["events"]["items"].take();
+    schema["properties"]["events"]["items"] = serde_json::json!({
+        "allOf": [
+            event,
+            {
+                "type": "object",
+                "properties": {"timing_source": false}
+            }
+        ]
+    });
+}
+
 fn add_v03_condition(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Array(values) => values.iter_mut().for_each(add_v03_condition),
@@ -343,8 +356,10 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                     PREVIOUS_CURRENT_SCHEMA_VERSION,
                     false,
                 );
+                forbid_record_event_timing_source(&mut previous_current);
                 let mut first_current = current.clone();
                 set_history_identity_version(&mut first_current, FIRST_EVENT_SCHEMA_VERSION, false);
+                forbid_record_event_timing_source(&mut first_current);
                 let mut unavailable = base.clone();
                 set_history_identity_version(&mut unavailable, HISTORY_SCHEMA_VERSION, true);
                 unavailable["properties"]["finished_at"] = serde_json::json!({"type": "null"});
@@ -389,12 +404,14 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                     PREVIOUS_CURRENT_SCHEMA_VERSION,
                     false,
                 );
+                forbid_record_event_timing_source(&mut previous_unavailable);
                 let mut first_unavailable = unavailable.clone();
                 set_history_identity_version(
                     &mut first_unavailable,
                     FIRST_EVENT_SCHEMA_VERSION,
                     false,
                 );
+                forbid_record_event_timing_source(&mut first_unavailable);
                 let mut observed = base.clone();
                 set_history_identity_version(&mut observed, HISTORY_SCHEMA_VERSION, true);
                 observed["properties"]["finished_at"] = serde_json::json!({"type": "null"});
@@ -423,6 +440,7 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                 let mut legacy = base;
                 legacy["properties"]["schema_version"] =
                     serde_json::json!({"enum": ["0.1", "0.2"], "type": "string"});
+                forbid_record_event_timing_source(&mut legacy);
                 if let Some(required) = legacy["required"].as_array_mut() {
                     required.retain(|value| {
                         !value.as_str().is_some_and(|field| {
@@ -586,6 +604,10 @@ mod tests {
             "finished_at": "2026-07-19T00:00:00Z", "duration_ms": 3,
             "status": "completed", "timing_source": "stdout_observed"
         });
+        let mut previous = current_record(event.clone());
+        previous["schema_version"] = json!("1.1");
+        assert!(!validator.is_valid(&previous));
+
         let mut observed = current_record(event);
         observed["schema_version"] = json!("1.2");
         observed["harness_id"] = json!("codex");

@@ -86,7 +86,10 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
     }
     for (index, first_id) in selected_ids.iter().enumerate() {
         let (base, _) = cfg.split_harness_id(first_id);
-        let spec = harness::by_id(base).expect("selected harness id validated");
+        let spec = harness::by_id(base).ok_or_else(|| OneharnessError::UnknownHarness {
+            id: base.to_string(),
+            valid: harness::valid_ids(),
+        })?;
         let first = sync_domain::plan_for(cfg, spec, first_id).map_err(|message| {
             OneharnessError::HarnessConfigUnmergeable {
                 path: format!("[harness.{base}]"),

@@ -1,4 +1,4 @@
-// llmlint: ignore[changed_behavior_has_e2e] This is the pure half of the `usage` feature, split deliberately: nothing here is reachable by a consumer yet (no CLI verb, no probe, no report field), so there is no user-observable journey to drive end to end. The `oneharness usage` verb and its per-harness live e2e phase land with the probe in the next change on this branch; these parsers are exhaustively unit-tested against captured payload shapes precisely so live credentialed runs are not what proves them.
+// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] None of the three payload contracts has a source this repo can generate from or diff against today: Claude Code publishes no schema for `get_usage`, Copilot's `/copilot_internal/user` is an undocumented internal endpoint, and codex's error literals appear in no emitted schema. This repo's drift gate for an external CLI contract is a live e2e phase, which needs the `usage` probe landing in the next change on this branch; the one generatable artifact (`codex app-server generate-json-schema` → `v2/GetAccountRateLimitsResponse.json`) is snapshot-and-diff work that needs the same probe plumbing. Every parser is written so drift degrades safely — an unrecognized key becomes an opaque window, an unrecognized error a probe failure — rather than a wrong number.
 //! Normalized subscription **headroom**: the shape of a `oneharness usage`
 //! report and one parser per harness payload. Pure — every parser takes an
 //! already-captured payload and returns normalized values, and the observation
@@ -657,6 +657,7 @@ const CODEX_API_KEY_ERROR: &str = "chatgpt authentication required to read rate 
 /// codex's no-stored-credential branch. A genuinely separate code path from
 /// [`CODEX_API_KEY_ERROR`] (both strings exist once each in the codex binary),
 /// so collapsing the two to "error" would throw away a real distinction.
+// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] Same as [`CODEX_API_KEY_ERROR`]: a literal in the codex binary that appears in no schema `generate-json-schema` emits, so there is nothing to generate it from; the drift gate is the live e2e phase landing with the `usage` probe, and drift degrades safely to a probe failure rather than an assumed absence of headroom.
 const CODEX_NOT_LOGGED_IN_ERROR: &str = "codex account authentication required to read rate limits";
 
 /// Parse codex's app-server `account/rateLimits/read` response — the whole

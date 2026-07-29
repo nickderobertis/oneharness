@@ -107,7 +107,6 @@ assert_contains "$tmp/ok.log" "check-codex-usage-schema: ok" \
 grep -qF "skipped" "$tmp/ok.log" &&
     fail "a real run must not report itself as skipped"
 
-# The generator itself fails: a loud failure naming the next action.
 status="$(run_gate "$(write_fake_codex generator-failure)" "$tmp/genfail.log")"
 [ "$status" = "1" ] || fail "a failing generator must fail the gate, got exit $status"
 assert_contains "$tmp/genfail.log" "unrecognized subcommand" \
@@ -115,7 +114,6 @@ assert_contains "$tmp/genfail.log" "unrecognized subcommand" \
 assert_contains "$tmp/genfail.log" "update this script to the new command" \
     "a generator failure must name a concrete next action"
 
-# The generator succeeds but no longer emits the rate-limits response.
 status="$(run_gate "$(write_fake_codex missing-output)" "$tmp/missing.log")"
 [ "$status" = "1" ] || fail "a missing generated file must fail the gate, got exit $status"
 assert_contains "$tmp/missing.log" "no longer emits v2/GetAccountRateLimitsResponse.json" \
@@ -123,7 +121,6 @@ assert_contains "$tmp/missing.log" "no longer emits v2/GetAccountRateLimitsRespo
 assert_contains "$tmp/missing.log" "parse_codex_rate_limits" \
     "the failure must point at the parser that depends on the shape"
 
-# The contract drifted: fail, and show the diff plus how to refresh.
 status="$(run_gate "$(write_fake_codex drift)" "$tmp/drift.log")"
 [ "$status" = "1" ] || fail "a drifted schema must fail the gate, got exit $status"
 assert_contains "$tmp/drift.log" "pctUsed" \

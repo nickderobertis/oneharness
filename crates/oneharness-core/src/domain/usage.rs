@@ -2142,7 +2142,6 @@ mod tests {
         assert_eq!(UsedPercent::new(f64::INFINITY), None);
         assert!(serde_json::from_str::<UsedPercent>("-1").is_err());
 
-        // Each parser drops a window whose percentage cannot be believed.
         let mut claude = claude_subscription_payload();
         claude["rate_limits"]["five_hour"]["utilization"] = json!(-3);
         assert_eq!(

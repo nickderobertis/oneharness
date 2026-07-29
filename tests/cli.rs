@@ -13422,7 +13422,6 @@ fn usage_degrades_to_unknown_when_the_claude_payload_changes_shape() {
 
 #[test]
 fn usage_reports_a_malformed_payload_and_a_timeout_as_data_not_a_crash() {
-    // A harness that answers with something unparseable.
     let garbled = run(
         &[
             "usage",

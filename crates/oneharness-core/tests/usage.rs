@@ -10,9 +10,9 @@
 //! consumer would have to reinvent, fails here.
 
 use oneharness_core::domain::usage::{
-    claude_control_response, parse_claude_get_usage, parse_codex_rate_limits, parse_copilot_user,
-    AuthMode, IdentitySelector, UnavailableReason, UsageAvailability, UsageIdentity, UsageReport,
-    WindowUsage, SCHEMA_VERSION,
+    claude_control_response, normalize_timestamp, parse_claude_get_usage, parse_codex_rate_limits,
+    parse_copilot_user, AuthMode, IdentitySelector, UnavailableReason, UsageAvailability,
+    UsageIdentity, UsageReport, WindowUsage, SCHEMA_VERSION,
 };
 use serde_json::Value;
 
@@ -195,6 +195,88 @@ fn an_api_key_identity_offers_a_consumer_no_percentage_to_render() {
 
     for parsed in [&codex, &claude] {
         assert!(parsed.availability.windows().is_empty());
+    }
+}
+
+/// The degradation paths, which matter more than the happy ones: a consumer
+/// deciding whether to launch a long run must never read "0% used" out of a
+/// probe that simply did not work.
+#[test]
+fn a_degraded_probe_reaches_a_consumer_as_unknown_or_unavailable_never_as_headroom() {
+    // A wedged app-server: a reply carrying neither a result nor an error.
+    let wedged = parse_codex_rate_limits(&serde_json::json!({"jsonrpc": "2.0", "id": 2}));
+    assert!(matches!(
+        wedged.availability,
+        UsageAvailability::Unknown { .. }
+    ));
+
+    // A failure whose message this version does not recognize stays unknown
+    // rather than becoming an assumed absence of headroom.
+    let surprising = parse_codex_rate_limits(&serde_json::json!({
+        "id": 2, "error": {"code": -32603, "message": "internal error"}
+    }));
+    assert!(matches!(
+        surprising.availability,
+        UsageAvailability::Unknown { .. }
+    ));
+
+    // No stored credential is a *different* answer from API-key auth, and both
+    // are affirmative rather than unknown.
+    let logged_out = parse_codex_rate_limits(&serde_json::json!({
+        "id": 2,
+        "error": {"code": -32600, "message": "codex account authentication required to read rate limits"}
+    }));
+    assert_eq!(
+        logged_out.availability,
+        UsageAvailability::Unavailable {
+            reason: UnavailableReason::NotLoggedIn
+        }
+    );
+
+    // A Copilot body with no quota block at all.
+    let bodiless = parse_copilot_user(&serde_json::json!({"copilot_plan": "individual"}));
+    assert_eq!(
+        bodiless.availability,
+        UsageAvailability::Unavailable {
+            reason: UnavailableReason::NoWindowsReported
+        }
+    );
+
+    // A harness that reports a reset instant a consumer cannot trust: the
+    // window still reports its usage, but with no reset rather than a guessed
+    // one. (`2026-08-01T00:00:00` has no offset, so its instant is ambiguous.)
+    assert_eq!(normalize_timestamp("2026-08-01T00:00:00"), None);
+    let unparseable_reset = parse_copilot_user(&serde_json::json!({
+        "copilot_plan": "individual",
+        "quota_reset_date_utc": "2026-08-01T00:00:00",
+        "token_based_billing": true,
+        "quota_snapshots": {"premium_interactions": {
+            "unlimited": false, "percent_remaining": 40.0, "has_quota": true,
+            "entitlement": 1500, "credits_used": 900, "remaining": 600,
+            "overage_permitted": true
+        }}
+    }));
+    let window = &unparseable_reset.availability.windows()[0];
+    assert_eq!(window.resets_at, None);
+    assert!(matches!(window.usage, WindowUsage::Metered { .. }));
+
+    // Not one of these degraded answers exposes a percentage a renderer could
+    // draw as an empty bar.
+    for parsed in [&wedged, &surprising, &logged_out, &bodiless] {
+        assert!(
+            parsed.availability.windows().is_empty(),
+            "a degraded probe must offer no window at all"
+        );
+        let json = serde_json::to_string(&UsageIdentity::new(
+            "codex",
+            IdentitySelector::Ambient,
+            parsed.clone(),
+        ))
+        .expect("the identity serializes");
+        assert!(
+            !json.contains("used_percent"),
+            "no percentage may reach the wire for a degraded probe: {json}"
+        );
     }
 }
 

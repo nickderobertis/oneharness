@@ -14165,3 +14165,35 @@ fn usage_reports_copilot_server_and_shape_failures_as_unknown() {
         let _ = server.join();
     }
 }
+
+#[test]
+fn usage_refuses_a_copilot_api_base_that_could_be_injected() {
+    // The base URL and token are interpolated into curl's own config grammar, so
+    // both are validated before the fetch. A rejected value must reach the
+    // consumer as a named probe failure — never as a silently skipped identity.
+    let output = run_copilot_usage(
+        &["usage", "--harness", "copilot", "--compact"],
+        &[
+            (
+                "ONEHARNESS_COPILOT_API_BASE",
+                "https://api.github.com\"\nheader = \"X: y",
+            ),
+            ("GH_TOKEN", "ghs_hermetic_token"),
+        ],
+    );
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let copilot = usage_identity(&json_stdout(&output), "copilot");
+    assert_eq!(copilot["availability"]["state"], "unknown");
+    let message = copilot["availability"]["reason"]["message"]
+        .as_str()
+        .expect("a message");
+    assert!(
+        message.contains("ONEHARNESS_COPILOT_API_BASE"),
+        "the message must name the variable to fix: {message}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("ghs_hermetic_token"),
+        "a credential must never reach the report"
+    );
+}

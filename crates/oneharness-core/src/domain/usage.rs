@@ -1069,10 +1069,22 @@ pub fn parse_copilot_user(body: &Value) -> ParsedUsage {
             message: "the Copilot quota payload carries no `quota_snapshots` object".to_string(),
         });
     };
-    let windows = snapshots
+    let windows: Vec<UsageWindow> = snapshots
         .iter()
         .filter_map(|(id, snapshot)| copilot_window(id, snapshot, resets_at.clone(), unit))
         .collect();
+    // The same drift rule one level down: entries that are present but carry
+    // none of the expected fields mean the snapshot shape moved, not that the
+    // account has no quota. An empty `quota_snapshots` is still an answer.
+    if windows.is_empty() && !snapshots.is_empty() {
+        return ParsedUsage::unknown(UnknownReason::ProbeFailed {
+            message: format!(
+                "the Copilot quota payload carries {} snapshot(s) with no readable \
+                 `unlimited` or `percent_remaining` field",
+                snapshots.len()
+            ),
+        });
+    }
 
     ParsedUsage {
         auth_mode: AuthMode::Subscription,
@@ -2390,6 +2402,42 @@ mod tests {
                 reason: UnavailableReason::NoWindowsReported
             }
         );
+    }
+
+    #[test]
+    fn copilot_snapshots_with_renamed_fields_are_drift_not_an_empty_quota() {
+        // The entry contract is mirrored from an undocumented endpoint, so a
+        // renamed `percent_remaining` must not collapse into "no windows" — the
+        // guard covers the entries, not just the key they live under.
+        let renamed_fields = json!({
+            "copilot_plan": "individual",
+            "token_based_billing": true,
+            "quota_snapshots": {
+                "premium_interactions": {"is_unlimited": false, "pct_left": 40.0}
+            }
+        });
+
+        let parsed = parse_copilot_user(&renamed_fields);
+
+        let UsageAvailability::Unknown {
+            reason: UnknownReason::ProbeFailed { message },
+        } = &parsed.availability
+        else {
+            panic!("got {:?}", parsed.availability);
+        };
+        assert!(message.contains("percent_remaining"), "{message}");
+
+        // One readable entry alongside an unreadable one is still an answer:
+        // the shape is intact, and a partial payload already degrades per-window.
+        let mixed = json!({
+            "copilot_plan": "individual",
+            "quota_snapshots": {
+                "chat": {"unlimited": true},
+                "premium_interactions": {"pct_left": 40.0}
+            }
+        });
+        let parsed = parse_copilot_user(&mixed);
+        assert_eq!(ids(&parsed), vec!["chat"]);
     }
 
     #[test]

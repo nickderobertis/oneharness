@@ -37,6 +37,14 @@
 //!   `entitlement: 0` / `remaining: 0` / `percent_remaining: 100.0`, meaningless
 //!   as counters) can never render as a full bar.
 
+// llmlint: ignore[changed_behavior_has_e2e] This is the pure half of the `usage`
+// feature, split deliberately: nothing here is reachable by a consumer yet (no
+// CLI verb, no probe, no report field), so there is no user-observable journey
+// to drive end to end. The `oneharness usage` verb and its per-harness live e2e
+// phase land with the probe in the next change on this branch; these parsers are
+// exhaustively unit-tested against captured payload shapes precisely so that
+// live credentialed runs are not what proves them.
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -53,6 +61,7 @@ pub const SCHEMA_VERSION: &str = "0.1";
 pub struct UsageReport {
     /// The report shape version ([`SCHEMA_VERSION`]).
     pub schema_version: String,
+    // llmlint: ignore[invalid_states_unrepresentable] RFC 3339 instants are plain strings across every serialized contract in this crate (`report`, `history`, `session`); a bespoke timestamp type here would diverge from all of them, and the value is minted by `io`'s single clock read rather than parsed from an external payload.
     /// RFC 3339 UTC instant the identities were observed, minted by the io layer.
     pub observed_at: String,
     pub identities: Vec<UsageIdentity>,
@@ -73,6 +82,7 @@ impl UsageReport {
 /// One harness identity's headroom.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageIdentity {
+    // llmlint: ignore[invalid_states_unrepresentable] `RunResult::harness` and `HistoryRunRecord::harness` are the established representation for a registry id on the wire, and matching them is what lets a consumer join a usage identity to a run; a newtype here would make this one contract spell it differently from every sibling.
     /// Canonical harness id, matching a [`crate::domain::harness`] registry id.
     pub harness: String,
     /// How this identity was selected — never the credential itself.
@@ -262,6 +272,7 @@ pub struct UsageWindow {
     /// The window's length, paired with where that length came from.
     #[serde(flatten)]
     pub duration: WindowDuration,
+    // llmlint: ignore[invalid_states_unrepresentable] The RFC 3339 invariant is enforced at the only boundary that can violate it: every value here comes from `normalize_timestamp`/`format_rfc3339`, which reject an unparseable or offset-less instant into `None` rather than storing it, and the string spelling matches every sibling timestamp contract.
     /// When the window resets, always absolute RFC 3339 UTC. `None` when the
     /// harness reported no reset, or one that could not be normalized.
     pub resets_at: Option<String>,
@@ -278,8 +289,9 @@ pub struct UsageWindow {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WindowUsage {
     Metered {
-        /// **Always percent-used**, 0-100, whatever polarity the source used.
-        used_percent: f64,
+        /// **Always percent-used**, whatever polarity the source used, and
+        /// validated at the boundary — see [`UsedPercent`].
+        used_percent: UsedPercent,
         /// The raw counters behind the percentage, when the harness reported
         /// every one of them. Never partially fabricated.
         counters: Option<QuotaCounters>,
@@ -288,6 +300,44 @@ pub enum WindowUsage {
     /// unlimited Copilot snapshot reports `entitlement: 0` / `remaining: 0`
     /// alongside `percent_remaining: 100.0`, which are meaningless as counters.
     Unlimited,
+}
+
+/// A validated percent-**used** figure, whatever polarity the harness reported.
+///
+/// Validated at the boundary rather than trusted: a harness's payload is
+/// external input, and a `NaN`, an infinity, or a negative percentage would
+/// render as a nonsense bar. A value *above* 100 is accepted and preserved
+/// rather than clamped — it means the harness reported consumption past its own
+/// ceiling (an overage), which is precisely when a consumer needs the figure.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(try_from = "f64", into = "f64")]
+pub struct UsedPercent(f64);
+
+impl UsedPercent {
+    /// `Some` iff `value` is finite and non-negative.
+    #[must_use]
+    pub fn new(value: f64) -> Option<Self> {
+        (value.is_finite() && value >= 0.0).then_some(Self(value))
+    }
+
+    #[must_use]
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
+impl TryFrom<f64> for UsedPercent {
+    type Error = &'static str;
+
+    fn try_from(value: f64) -> Result<Self, Self::Error> {
+        Self::new(value).ok_or("a used percentage must be finite and non-negative")
+    }
+}
+
+impl From<UsedPercent> for f64 {
+    fn from(percent: UsedPercent) -> Self {
+        percent.0
+    }
 }
 
 /// The raw counters behind a metered window.
@@ -399,6 +449,7 @@ impl ParsedUsage {
 /// derivable duration — so a key absent from this table becomes
 /// [`WindowDuration::Unknown`], never a guessed length. Extend the table only
 /// from a key whose window length is actually known.
+// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] Claude Code publishes no schema for these key names, so there is no source to generate from; the drift gate this repo uses for an external CLI contract is a live e2e phase, which needs the `usage` probe that lands with the next change on this branch — and the table is drift-*safe* by construction: an unknown key degrades to `Unknown` rather than a wrong duration.
 const CLAUDE_WINDOW_SECONDS: &[(&str, u64)] = &[
     ("five_hour", 5 * 3_600),
     ("seven_day", 7 * 86_400),
@@ -506,8 +557,12 @@ fn claude_windows(rate_limits: &Value) -> Vec<UsageWindow> {
             continue;
         }
         // A null key means "not applicable to this plan" — omitted, never
-        // zero-filled. Anything without a numeric `utilization` is not a window.
-        let Some(used_percent) = value.get("utilization").and_then(Value::as_f64) else {
+        // zero-filled. Anything without a usable `utilization` is not a window.
+        let Some(used_percent) = value
+            .get("utilization")
+            .and_then(Value::as_f64)
+            .and_then(UsedPercent::new)
+        else {
             continue;
         };
         let duration = CLAUDE_WINDOW_SECONDS
@@ -544,7 +599,7 @@ fn claude_windows(rate_limits: &Value) -> Vec<UsageWindow> {
     // Model-scoped weekly limits have no named `rate_limits` key of their own,
     // so the flat array is the only place they appear.
     for limit in limits.iter().filter(|limit| limit.kind == "weekly_scoped") {
-        let Some(used_percent) = limit.percent else {
+        let Some(used_percent) = limit.percent.and_then(UsedPercent::new) else {
             continue;
         };
         let id = match &limit.scope {
@@ -612,6 +667,7 @@ fn claude_limits(rate_limits: &Value) -> Vec<ClaudeLimit> {
 
 /// codex's API-key branch: ChatGPT auth is required to read rate limits, so an
 /// API-key session affirmatively has no plan headroom.
+// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] These strings are literals in the codex binary and appear in no schema `generate-json-schema` emits, so there is nothing to generate them from; the drift gate is the live e2e phase that lands with the `usage` probe in the next change on this branch. Drift degrades safely: an unrecognized message becomes a probe failure (`Unknown`), never an assumed absence of headroom.
 const CODEX_API_KEY_ERROR: &str = "chatgpt authentication required to read rate limits";
 /// codex's no-stored-credential branch. A genuinely separate code path from
 /// [`CODEX_API_KEY_ERROR`] (both strings exist once each in the codex binary),
@@ -718,7 +774,10 @@ fn codex_bucket_windows(limit_id: Option<&str>, bucket: &Value) -> Vec<UsageWind
             // A null `secondary` means this plan surfaced one window, not a
             // second window at 0% used.
             let window = bucket.get(slot).filter(|value| value.is_object())?;
-            let used_percent = window.get("usedPercent").and_then(Value::as_f64)?;
+            let used_percent = window
+                .get("usedPercent")
+                .and_then(Value::as_f64)
+                .and_then(UsedPercent::new)?;
             Some(UsageWindow {
                 id: match limit_id {
                     Some(limit_id) => format!("{limit_id}/{slot}"),
@@ -813,10 +872,12 @@ fn copilot_window(
     let usage = if unlimited {
         WindowUsage::Unlimited
     } else {
-        // percent_remaining is the inverse polarity of the normalized field.
+        // percent_remaining is the inverse polarity of the normalized field, so
+        // an out-of-range one converts to a negative used percentage and is
+        // rejected by the validating constructor rather than rendered.
         let remaining_percent = snapshot.get("percent_remaining").and_then(Value::as_f64)?;
         WindowUsage::Metered {
-            used_percent: 100.0 - remaining_percent,
+            used_percent: UsedPercent::new(100.0 - remaining_percent)?,
             counters: copilot_counters(snapshot, unit),
         }
     };
@@ -958,8 +1019,15 @@ mod tests {
 
     fn used_percent(window: &UsageWindow) -> f64 {
         match window.usage {
-            WindowUsage::Metered { used_percent, .. } => used_percent,
+            WindowUsage::Metered { used_percent, .. } => used_percent.get(),
             WindowUsage::Unlimited => panic!("{} is unlimited, not metered", window.id),
+        }
+    }
+
+    fn metered(used_percent: f64) -> WindowUsage {
+        WindowUsage::Metered {
+            used_percent: UsedPercent::new(used_percent).expect("a valid percentage"),
+            counters: None,
         }
     }
 
@@ -1556,10 +1624,7 @@ mod tests {
 
         assert_eq!(
             window(&parsed, "premium_interactions").usage,
-            WindowUsage::Metered {
-                used_percent: 60.0,
-                counters: None
-            },
+            metered(60.0),
             "no counter field at all still yields the percentage"
         );
 
@@ -1582,13 +1647,48 @@ mod tests {
 
             assert_eq!(
                 window(&parsed, "premium_interactions").usage,
-                WindowUsage::Metered {
-                    used_percent: 100.0,
-                    counters: None
-                },
+                metered(100.0),
                 "a snapshot missing {missing} must carry no counters at all"
             );
         }
+    }
+
+    #[test]
+    fn an_unusable_percentage_drops_its_window_rather_than_rendering_nonsense() {
+        assert_eq!(UsedPercent::new(0.0).map(UsedPercent::get), Some(0.0));
+        assert_eq!(UsedPercent::new(100.0).map(UsedPercent::get), Some(100.0));
+        assert_eq!(
+            UsedPercent::new(140.0).map(UsedPercent::get),
+            Some(140.0),
+            "a harness reporting consumption past its ceiling is real overage, not an error"
+        );
+        assert_eq!(UsedPercent::new(-1.0), None);
+        assert_eq!(UsedPercent::new(f64::NAN), None);
+        assert_eq!(UsedPercent::new(f64::INFINITY), None);
+        assert!(serde_json::from_str::<UsedPercent>("-1").is_err());
+
+        // Each parser drops a window whose percentage cannot be believed.
+        let mut claude = claude_subscription_payload();
+        claude["rate_limits"]["five_hour"]["utilization"] = json!(-3);
+        assert_eq!(
+            ids(&parse_claude_get_usage(&claude)),
+            vec!["seven_day", "weekly_scoped/Opus 5"]
+        );
+
+        let mut codex = codex_result();
+        codex["result"]["rateLimitsByLimitId"]["codex"]["primary"]["usedPercent"] = json!(-5);
+        assert_eq!(
+            ids(&parse_codex_rate_limits(&codex)),
+            vec!["limit_model_x/primary"]
+        );
+
+        let mut copilot = copilot_body();
+        copilot["quota_snapshots"]["premium_interactions"]["percent_remaining"] = json!(140.0);
+        assert_eq!(
+            ids(&parse_copilot_user(&copilot)),
+            vec!["chat", "completions"],
+            "a percent_remaining above 100 inverts to a negative used percentage"
+        );
     }
 
     #[test]

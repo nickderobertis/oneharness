@@ -173,6 +173,34 @@ Use the `just` recipes; do not hand-roll equivalents.
   (including partial-tail recovery), then followed by byte offset without repeated
   tree scans. `clear` is a dry run until `--yes`. History paths are canonicalized
   before writing so `cwd=..` remains discoverable.
+  `usage` is the **pre-flight** verb: how much subscription headroom each
+  identity has left, JSON on stdout (its own `schema_version`, independent of the
+  report's) with `--format text` for humans. Every probe is **zero-turn** — no
+  user message is sent and no turn completed — which is the property that makes it
+  usable before a long run, so any change to an invocation in `io::usage` must
+  preserve it. Pure shapes and one parser per payload live in `domain::usage`; the
+  spawning/HTTP probes in `io::usage`. Tiers are registry data
+  (`HarnessSpec.usage`, sourced from `docs/harness-usage.md`, never guessed): three
+  harnesses report real headroom (claude-code's `get_usage` control request,
+  codex's app-server `account/rateLimits/read`, copilot's out-of-band
+  `/copilot_internal/user` — which needs **no** copilot binary, just a GitHub
+  token), cursor reports a plan tier, and the remaining four report affirmatively
+  that they cannot — split by *which* cannot (`NoPlanQuota` for opencode/goose,
+  whose quota does not exist; `NoHeadroomReader` for crush/qwen, whose quota exists
+  with no reader). Never omit a harness and never render an absent figure as `0%`:
+  an unavailable/unknown identity has **no** reachable percentage by construction.
+  Identity selection reuses `commands::variant_environment` (shared with `run`) —
+  do not add a parallel selector; two variants of one harness must produce
+  separately attributed entries. Two upstream contracts are experimental, so both
+  have guards: codex's is snapshotted from `codex app-server generate-json-schema`
+  into `tests/fixtures/codex-rate-limits.schema.json`, diffed by
+  `scripts/check-codex-usage-schema.sh` in `just check` (skips without codex) and
+  asserted field-by-field in the hermetic suite; Claude publishes no schema, so
+  `claude_usage_drift` asserts on `rate_limits_available` and the expected
+  `limits[].kind` values and degrades to *unknown* rather than to zero. The Cursor
+  probe reads a tier only from a pre-existing login and masks `CURSOR_API_KEY` from
+  its child — that path is a *login* that persists credentials to the shared store
+  (observed clobbering a real one), a hazard any future Cursor dispatch also hits.
   `gate <id>` is the odd one out: the runtime pre-tool gate an
   installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It
@@ -602,6 +630,21 @@ shape. When you add one:
   stdin-only-prompt path was closed-source, so it was **probe-verified** via
   `scripts/explore-cursor-stdin.sh` + the dispatch-only `explore-cursor-stdin.yml`
   before wiring — the pattern to reuse for the next uncertain CLI).
+- Declare its `usage` (`UsageSupport`): what `oneharness usage` can report for
+  it. The honest default is one of the two non-probing tiers — `NoPlanQuota` when
+  the harness has no first-party plan quota at all, `NoHeadroomReader` when a
+  quota exists but the CLI exposes no non-interactive way to read it. Promote it
+  to `Headroom`/`PlanTier` only with a **verified zero-turn** probe: source the
+  exact invocation and field paths from a real capture, add the `UsageProbe`
+  variant plus its arm in `io::usage`, and add a parser (or reuse one) in
+  `domain::usage`. A probe that sends a user message or completes a turn is
+  disqualified — the command's whole value is being free to run before a job.
+  Pin the new tier in the `every_harness_declares_its_usage_tier` registry test
+  (it asserts all eight at once), add the harness to the `usage` column of the
+  README matrix, and record the probe, its evidence, and its reset semantics in
+  `docs/harness-usage.md`. If the CLI generates its own schema, snapshot it and
+  diff it in `just check` the way codex's is; if not, write an assertion-based
+  drift guard that degrades to *unknown* rather than to zero.
 - Give the harness its `global_hook` (the user-global hook location, for `sync
   --global` / `install` at `Scope::Global`) and its `gate_deny` (how it expresses
   a pre-tool deny when it runs `oneharness gate <id>`). Both are registry data

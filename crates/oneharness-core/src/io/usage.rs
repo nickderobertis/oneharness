@@ -77,6 +77,9 @@ const COPILOT_STATUS_MARKER: &str = "oneharness-http-status:";
 const CLAUDE_REQUEST_ID: &str = "oneharness-usage-1";
 /// The JSON-RPC id of codex's `account/rateLimits/read` request.
 const CODEX_RATE_LIMITS_ID: i64 = 2;
+/// How long a child that has already answered gets to exit on its own before its
+/// tree is terminated. Bounded so an idling harness cannot hold the probe.
+const EXIT_GRACE: Duration = Duration::from_millis(500);
 
 /// One identity to probe: which probe, which binary, and the exact environment
 /// the child gets — the same variant environment `run` builds, so a usage
@@ -308,7 +311,20 @@ fn converse(
         }
     }
 
-    let finished = process.finish(Finish::Terminate);
+    // The probe has what it came for and the child's stdin is already closed, so
+    // a well-behaved harness is on its way out: give it a bounded moment to exit
+    // by itself rather than signalling a process that is mid-shutdown (which
+    // costs it whatever it flushes at exit). A harness that idles anyway — or one
+    // that blew the deadline — still gets its whole tree torn down.
+    let finish = if timed_out {
+        Finish::Terminate
+    } else {
+        match process.wait_until(Instant::now() + EXIT_GRACE) {
+            Ok(Some(_)) => Finish::Exited,
+            Ok(None) | Err(_) => Finish::Terminate,
+        }
+    };
+    let finished = process.finish(finish);
     ProbeCapture {
         answer,
         stdout: finished.stdout,

@@ -173,6 +173,23 @@ impl Plan {
         });
         UsageIdentity::new(self.base, probed.selector, probed.parsed)
     }
+
+    /// What this identity reports when its probe panicked outright. Nothing was
+    /// learned, which is exactly `unknown` — and saying so keeps the rest of the
+    /// report readable.
+    fn crashed(&self) -> UsageIdentity {
+        UsageIdentity::new(
+            self.base,
+            usage_io::selector_for(
+                self.support.probe(),
+                &EnvView::new(&self.env, &self.env_remove),
+            ),
+            oneharness_core::domain::usage::ParsedUsage::unknown(UnknownReason::ProbeFailed {
+                message: "the probe stopped unexpectedly".to_string(),
+            }),
+        )
+        .with_variant(self.variant())
+    }
 }
 
 fn unavailable(reason: UnavailableReason) -> oneharness_core::domain::usage::ParsedUsage {
@@ -184,36 +201,27 @@ fn unavailable(reason: UnavailableReason) -> oneharness_core::domain::usage::Par
 }
 
 /// Run every plan's probe concurrently, preserving selection order.
+///
+/// Each probe is joined individually, so one that panics becomes *that
+/// identity's* `unknown` instead of taking the whole report down with it. A
+/// report is the deliverable here; losing seven readings because the eighth
+/// harness misbehaved is the failure mode this command exists to avoid.
 fn probe_all(plans: &[Plan]) -> Vec<UsageIdentity> {
-    if plans.is_empty() {
-        return Vec::new();
+    let mut identities = Vec::with_capacity(plans.len());
+    // Bounded concurrency without a work queue: the selection is at most the
+    // registry's size, so a chunk at a time is both simpler and enough.
+    for chunk in plans.chunks(MAX_PARALLEL_PROBES.max(1)) {
+        std::thread::scope(|scope| {
+            let running: Vec<_> = chunk
+                .iter()
+                .map(|plan| scope.spawn(|| plan.probe()))
+                .collect();
+            for (plan, handle) in chunk.iter().zip(running) {
+                identities.push(handle.join().unwrap_or_else(|_| plan.crashed()));
+            }
+        });
     }
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let slots: Vec<std::sync::Mutex<Option<UsageIdentity>>> = (0..plans.len())
-        .map(|_| std::sync::Mutex::new(None))
-        .collect();
-    let workers = MAX_PARALLEL_PROBES.clamp(1, plans.len());
-
-    std::thread::scope(|scope| {
-        for _ in 0..workers {
-            scope.spawn(|| loop {
-                let index = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                if index >= plans.len() {
-                    break;
-                }
-                *slots[index].lock().expect("probe slot poisoned") = Some(plans[index].probe());
-            });
-        }
-    });
-
-    slots
-        .into_iter()
-        .map(|slot| {
-            slot.into_inner()
-                .expect("probe slot poisoned")
-                .expect("every slot is filled")
-        })
-        .collect()
+    identities
 }
 
 fn config_bins(

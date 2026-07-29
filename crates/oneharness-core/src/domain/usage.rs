@@ -912,9 +912,12 @@ pub fn parse_codex_rate_limits(response: &Value) -> ParsedUsage {
         return codex_error(message);
     }
 
-    let Some(result) = response.get("result") else {
+    // The result must be an *object* before anything is concluded from it: a
+    // success verdict reached from a payload with no readable shape would be an
+    // affirmative "subscription, no windows" built on nothing.
+    let Some(result) = response.get("result").filter(|value| value.is_object()) else {
         return ParsedUsage::unknown(UnknownReason::ProbeFailed {
-            message: "response carried neither a result nor an error".to_string(),
+            message: "response carried neither a result object nor an error".to_string(),
         });
     };
 
@@ -1813,15 +1816,32 @@ mod tests {
     }
 
     #[test]
-    fn codex_response_without_result_or_error_is_a_probe_failure() {
-        let parsed = parse_codex_rate_limits(&json!({"id": 4}));
+    fn codex_response_without_a_result_object_or_error_is_a_probe_failure() {
+        // A missing result, and a result that is not an object: neither carries a
+        // shape to conclude from, so neither may reach a verdict about the plan.
+        for response in [
+            json!({"id": 4}),
+            json!({"id": 4, "result": null}),
+            json!({"id": 4, "result": "ok"}),
+            json!({"id": 4, "result": []}),
+        ] {
+            let parsed = parse_codex_rate_limits(&response);
 
-        assert!(matches!(
-            parsed.availability,
-            UsageAvailability::Unknown {
-                reason: UnknownReason::ProbeFailed { .. }
-            }
-        ));
+            assert!(
+                matches!(
+                    parsed.availability,
+                    UsageAvailability::Unknown {
+                        reason: UnknownReason::ProbeFailed { .. }
+                    }
+                ),
+                "{response} must be nothing learned, not an answer"
+            );
+            assert_eq!(
+                parsed.auth_mode,
+                AuthMode::Unknown,
+                "{response} establishes no auth mode either"
+            );
+        }
     }
 
     /// The observed body: two unlimited snapshots and one exhausted metered one.

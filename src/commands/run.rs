@@ -3241,6 +3241,7 @@ mod tests {
             large_input: oneharness_core::domain::harness::LargeInput::NONE,
             modes: &[],
             reasoning: None,
+            usage: oneharness_core::domain::usage::UsageSupport::NoPlanQuota,
             build_argv: noop_argv,
         }
     }

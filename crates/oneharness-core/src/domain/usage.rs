@@ -204,6 +204,18 @@ pub enum UnavailableReason {
     NotLoggedIn,
     /// The harness answered, but carried no readable window at all.
     NoWindowsReported,
+    /// The harness has **no first-party plan quota** for headroom to exist in:
+    /// OpenCode Zen is pay-as-you-go with nothing that resets, and Goose ships
+    /// no first-party inference plan at all. Nothing is missing here — the
+    /// quantity itself is undefined, which is why this is not
+    /// [`Self::NoHeadroomReader`].
+    NoPlanQuota,
+    /// A plan quota exists but the harness exposes **no non-interactive reader**
+    /// for it: Cursor's dollar pools reach only its interactive TUI, Crush's
+    /// Hyper credits have no balance command or API, and Qwen's Coding Plan
+    /// weekly quota has no reader of any kind. A future CLI release could add
+    /// one, which is exactly what separates this from [`Self::NoPlanQuota`].
+    NoHeadroomReader,
 }
 
 /// Why nothing is known. Reserved **strictly** for unprobed or probe-failed —
@@ -215,6 +227,10 @@ pub enum UnknownReason {
     Unprobed,
     /// A probe ran and failed, carrying the harness's own message.
     ProbeFailed { message: String },
+    /// The harness's binary is not installed, so its probe could not run. The
+    /// harness may well have headroom; this identity simply has no reader on
+    /// this machine. Mirrors a run's `skipped` status: data, never a crash.
+    BinaryMissing { bin: String },
 }
 
 /// A non-empty list of windows. The non-emptiness is the invariant that keeps
@@ -439,6 +455,90 @@ impl ParsedUsage {
     }
 }
 
+/// How much of a subscription's headroom a harness can report, and by which
+/// probe. Registry data ([`crate::domain::harness::HarnessSpec::usage`]) sourced
+/// from `docs/harness-usage.md`, never guessed.
+///
+/// The two non-probing variants are the point of the enum: five of the eight
+/// harnesses cannot report headroom, and *which kind* of cannot they are is a
+/// real distinction — one has no quota, the other has no reader. Collapsing them
+/// (or omitting those harnesses) would make `oneharness usage` quietly cover
+/// three of eight while claiming to cover the fleet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageSupport {
+    /// A probe that reads real remaining-headroom windows: claude-code, codex,
+    /// copilot.
+    Headroom(UsageProbe),
+    /// A probe that reads only the plan tier — the harness publishes no
+    /// non-interactive headroom reader (cursor).
+    PlanTier(UsageProbe),
+    /// No first-party plan quota exists to report ([`UnavailableReason::NoPlanQuota`]).
+    NoPlanQuota,
+    /// A plan quota exists with no non-interactive reader
+    /// ([`UnavailableReason::NoHeadroomReader`]).
+    NoHeadroomReader,
+}
+
+impl UsageSupport {
+    /// The probe to run for this harness, or `None` when nothing is readable.
+    #[must_use]
+    pub fn probe(&self) -> Option<UsageProbe> {
+        match *self {
+            Self::Headroom(probe) | Self::PlanTier(probe) => Some(probe),
+            Self::NoPlanQuota | Self::NoHeadroomReader => None,
+        }
+    }
+
+    /// The affirmative "no headroom to report" verdict for a non-probing
+    /// harness, or `None` when this harness is probed instead.
+    #[must_use]
+    pub fn unprobed_reason(&self) -> Option<UnavailableReason> {
+        match *self {
+            Self::NoPlanQuota => Some(UnavailableReason::NoPlanQuota),
+            Self::NoHeadroomReader => Some(UnavailableReason::NoHeadroomReader),
+            Self::Headroom(_) | Self::PlanTier(_) => None,
+        }
+    }
+}
+
+/// One zero-turn probe. Every variant is chosen because it completes **without
+/// the harness taking a model turn** — no user message is sent and no turn is
+/// completed — which is what makes `oneharness usage` usable as a pre-flight
+/// check rather than a thing that costs what it measures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageProbe {
+    /// Claude Code driven in stream-json input/output mode with an empty tool
+    /// set, sent exactly one `get_usage` control request and read for the
+    /// matching control response. No user message is ever written, which is what
+    /// keeps it free (observed: `num_turns: 0`, `total_cost_usd: 0`).
+    ClaudeGetUsage,
+    /// `codex app-server --stdio`, driven `initialize` → `initialized` →
+    /// `account/rateLimits/read` over JSON-RPC.
+    CodexAppServer,
+    /// An authenticated `GET /copilot_internal/user` against the GitHub API —
+    /// out of band from the Copilot CLI entirely, so it needs no Copilot binary
+    /// and answers before a run rather than after a turn is spent. The
+    /// run-embedded JSONL quota surface is deliberately not used: oneharness
+    /// drives Copilot in text mode, so it is unreachable as wired.
+    CopilotUserEndpoint,
+    /// `cursor-agent about --format json`, read for `subscriptionTier` only, and
+    /// only from a **pre-existing** login. Cursor's `--api-key`/`CURSOR_API_KEY`
+    /// path is not a per-process selector — it performs a token exchange and
+    /// persists credentials to the shared store, observed clobbering a real user
+    /// login — so the probe must never take it.
+    CursorAbout,
+}
+
+impl UsageProbe {
+    /// Whether this probe spawns the harness's own binary (and so needs it
+    /// installed). Copilot's is an out-of-band HTTP GET whose entire credential
+    /// requirement is a GitHub token, so it answers with no Copilot CLI present.
+    #[must_use]
+    pub fn spawns_harness(&self) -> bool {
+        !matches!(self, Self::CopilotUserEndpoint)
+    }
+}
+
 /// Claude's window lengths, derived from its own key names. The key set is
 /// **open** — the observed payload also carries codenames (`tangelo`,
 /// `iguana_necktie`, `nimbus_quill`, `cinder_cove`, `amber_ladder`) with no
@@ -492,6 +592,88 @@ pub fn claude_control_response(line: &Value) -> Option<&Value> {
         return None;
     }
     response.get("response")
+}
+
+/// The contract-drift guard for Claude's `get_usage` payload: `Some(reason)`
+/// when the payload no longer looks like the shape [`parse_claude_get_usage`]
+/// was written against, so a caller can degrade to
+/// [`UsageAvailability::Unknown`] instead of publishing a confident answer.
+///
+/// This exists because Claude's structured usage surface is explicitly
+/// experimental — the SDK method is literally named
+/// `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()` — and, unlike
+/// codex's app-server, it publishes no schema to snapshot and diff. The failure
+/// mode to prevent is a renamed field silently becoming "0% used / plenty of
+/// headroom", so every check here targets a branch whose *absent* input would
+/// otherwise read as a confident negative:
+///
+/// - `rate_limits_available` is the branch the parser takes on absence
+///   (`unwrap_or(false)`), so its disappearance would read as "no headroom
+///   reported" for every user at once.
+/// - Under `rate_limits_available: true` the payload must still carry a
+///   recognizable window surface: the `limits[]` array with at least one
+///   expected [`CLAUDE_LIMIT_KIND_KEYS`]-style `kind`, or a named window key
+///   with a numeric `utilization`. Neither present means the shape moved.
+///
+/// A *new* key or a new `kind` alongside a recognized one is not drift: the key
+/// set is open by contract and unknown keys already degrade to an opaque window.
+#[must_use]
+pub fn claude_usage_drift(payload: &Value) -> Option<String> {
+    let Some(available) = payload.get("rate_limits_available") else {
+        return Some("the payload carries no `rate_limits_available` field".to_string());
+    };
+    let Some(available) = available.as_bool() else {
+        return Some("`rate_limits_available` is not a boolean".to_string());
+    };
+    if !available {
+        // An affirmative "no plan headroom" — the API-key answer, and the one
+        // shape that needs no window surface at all.
+        return None;
+    }
+    let Some(rate_limits) = payload.get("rate_limits").filter(|value| value.is_object()) else {
+        return Some(
+            "`rate_limits_available` is true but `rate_limits` is not an object".to_string(),
+        );
+    };
+
+    let known_kind = rate_limits
+        .get("limits")
+        .and_then(Value::as_array)
+        .is_some_and(|entries| {
+            entries.iter().any(|entry| {
+                entry
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .is_some_and(is_known_claude_limit_kind)
+            })
+        });
+    let metered_window = rate_limits
+        .as_object()
+        .into_iter()
+        .flatten()
+        .any(|(key, value)| {
+            !CLAUDE_NON_WINDOW_KEYS.contains(&key.as_str())
+                && value.get("utilization").and_then(Value::as_f64).is_some()
+        });
+    if known_kind || metered_window {
+        return None;
+    }
+    Some(format!(
+        "`rate_limits_available` is true but no window surface was recognized: \
+         `limits[]` carries none of the expected kinds ({}) and no window key carries a \
+         numeric `utilization`",
+        CLAUDE_LIMIT_KINDS.join(", ")
+    ))
+}
+
+/// Every `limits[].kind` the observed payload carries. `weekly_scoped` maps to
+/// no named window key (see [`CLAUDE_LIMIT_KIND_KEYS`]) but is still an expected
+/// member, so the drift guard recognizes it.
+// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] These kinds ARE the drift gate for a contract with no generatable source: Claude Code publishes no schema for `get_usage`, so the guard asserts on the kinds observed from the real payload and degrades to `Unknown` — never to zero — when none of them is present.
+const CLAUDE_LIMIT_KINDS: &[&str] = &["session", "weekly_all", "weekly_scoped"];
+
+fn is_known_claude_limit_kind(kind: &str) -> bool {
+    CLAUDE_LIMIT_KINDS.contains(&kind)
 }
 
 /// Parse Claude Code's `get_usage` payload (the inner `response` object — see
@@ -893,6 +1075,103 @@ fn copilot_counters(snapshot: &Value, unit: QuotaUnit) -> Option<QuotaCounters> 
         overage_permitted: snapshot.get("overage_permitted").and_then(Value::as_bool)?,
         unit,
     })
+}
+
+/// How much of a failing HTTP body is quoted back in a probe-failure message.
+/// The endpoint returns a server error document (never a credential), but an
+/// unbounded body would swamp the report.
+const COPILOT_ERROR_BODY_CHARS: usize = 200;
+
+/// Turn one `/copilot_internal/user` HTTP response into a parsed identity.
+///
+/// `401` is the token being absent, expired, or rejected — no usable credential,
+/// which is [`UnavailableReason::NotLoggedIn`] rather than an unknown. Every
+/// other non-200, and a 200 whose body is not JSON, stays
+/// [`UnknownReason::ProbeFailed`]: the endpoint is undocumented internal, so an
+/// unrecognized answer must degrade to "nothing learned", never to zero used.
+#[must_use]
+pub fn parse_copilot_http(status: u16, body: &str) -> ParsedUsage {
+    if status == 401 {
+        return ParsedUsage {
+            auth_mode: AuthMode::Unknown,
+            plan: None,
+            availability: UsageAvailability::Unavailable {
+                reason: UnavailableReason::NotLoggedIn,
+            },
+        };
+    }
+    if status != 200 {
+        return ParsedUsage::unknown(UnknownReason::ProbeFailed {
+            message: format!(
+                "GET /copilot_internal/user returned HTTP {status}: {}",
+                snippet(body)
+            ),
+        });
+    }
+    match serde_json::from_str::<Value>(body) {
+        Ok(value) if value.is_object() => parse_copilot_user(&value),
+        _ => ParsedUsage::unknown(UnknownReason::ProbeFailed {
+            message: format!(
+                "GET /copilot_internal/user returned a body that is not a JSON object: {}",
+                snippet(body)
+            ),
+        }),
+    }
+}
+
+/// A single-line, character-bounded excerpt of an external payload, for a
+/// diagnostic message. Bounded in **characters** so a multi-byte body can never
+/// be split mid-code-point.
+fn snippet(text: &str) -> String {
+    let flat: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let flat = flat.trim();
+    match flat.char_indices().nth(COPILOT_ERROR_BODY_CHARS) {
+        Some((at, _)) => format!("{}…", &flat[..at]),
+        None => flat.to_string(),
+    }
+}
+
+/// Parse `cursor-agent about --format json`.
+///
+/// Cursor is a **plan-tier-only** harness: `subscriptionTier` is the sole
+/// plan-level field the non-interactive surface carries, and its dollar pools
+/// reach only the interactive TUI — so a successful read is still an
+/// affirmative [`UnavailableReason::NoHeadroomReader`], never a percentage.
+///
+/// The tier is a display name (`Team`), not a lowercase enum like Claude's `max`
+/// or codex's `pro`, and is kept verbatim like every other harness's plan.
+///
+/// A null tier means no **stored** login: the CLI populates it only when both an
+/// access and a refresh token are on disk, and an API key does not satisfy that
+/// gate. So null is [`UnavailableReason::NotLoggedIn`] — and the probe reports
+/// it rather than resolving it, because Cursor's API-key path is a login that
+/// overwrites the shared credential store.
+#[must_use]
+pub fn parse_cursor_about(payload: &Value) -> ParsedUsage {
+    let plan = payload
+        .get("subscriptionTier")
+        .and_then(Value::as_str)
+        .filter(|tier| !tier.trim().is_empty())
+        .map(str::to_string);
+    match plan {
+        Some(plan) => ParsedUsage {
+            auth_mode: AuthMode::Subscription,
+            plan: Some(plan),
+            availability: UsageAvailability::Unavailable {
+                reason: UnavailableReason::NoHeadroomReader,
+            },
+        },
+        None => ParsedUsage {
+            auth_mode: AuthMode::Unknown,
+            plan: None,
+            availability: UsageAvailability::Unavailable {
+                reason: UnavailableReason::NotLoggedIn,
+            },
+        },
+    }
 }
 
 /// Normalize an RFC 3339 / ISO 8601 instant to absolute RFC 3339 **UTC**,
@@ -1889,6 +2168,235 @@ mod tests {
             None,
             "2026 is not a leap year: the date must be rejected, not rolled into March"
         );
+    }
+
+    #[test]
+    fn claude_drift_guard_passes_the_observed_payload_and_its_api_key_shape() {
+        assert_eq!(claude_usage_drift(&claude_subscription_payload()), None);
+
+        let api_key = json!({
+            "subscription_type": null,
+            "rate_limits_available": false,
+            "rate_limits": null
+        });
+        assert_eq!(
+            claude_usage_drift(&api_key),
+            None,
+            "an affirmative `false` needs no window surface — it is the API-key answer"
+        );
+    }
+
+    #[test]
+    fn claude_drift_guard_catches_a_vanished_availability_flag() {
+        // The parser reads this flag with `unwrap_or(false)`, so a rename would
+        // silently turn every subscription into "no headroom reported". The
+        // guard is what makes that read as `unknown` instead.
+        let mut payload = claude_subscription_payload();
+        payload
+            .as_object_mut()
+            .expect("an object")
+            .remove("rate_limits_available");
+
+        let drift = claude_usage_drift(&payload).expect("a renamed flag is drift");
+        assert!(drift.contains("rate_limits_available"), "{drift}");
+
+        payload["rate_limits_available"] = json!("yes");
+        assert!(claude_usage_drift(&payload).is_some(), "a non-boolean too");
+    }
+
+    #[test]
+    fn claude_drift_guard_catches_a_window_surface_that_moved() {
+        let mut payload = claude_subscription_payload();
+        // Every window key renamed and every `limits[].kind` unrecognized: the
+        // parser would find nothing and report an affirmative "no windows".
+        payload["rate_limits"] = json!({
+            "renamed_five_hour": {"pct_used": 42},
+            "limits": [{"kind": "brand_new_kind", "percent": 42}]
+        });
+
+        let drift = claude_usage_drift(&payload).expect("a moved window surface is drift");
+        assert!(drift.contains("session"), "{drift}");
+        assert_eq!(
+            parse_claude_get_usage(&payload).availability,
+            UsageAvailability::Unavailable {
+                reason: UnavailableReason::NoWindowsReported
+            },
+            "which is exactly the confident answer the guard exists to suppress"
+        );
+    }
+
+    #[test]
+    fn claude_drift_guard_accepts_additive_change_around_a_recognized_surface() {
+        // The key set is open by contract: a new codename or a new `kind` next to
+        // a recognized one is normal evolution, not drift.
+        let mut payload = claude_subscription_payload();
+        payload["rate_limits"]["brand_new_codename"] = json!({"utilization": 3});
+        payload["rate_limits"]["limits"] = json!([
+            {"kind": "brand_new_kind", "percent": 1},
+            {"kind": "session", "percent": 42, "is_active": true}
+        ]);
+        assert_eq!(claude_usage_drift(&payload), None);
+
+        // A recognized window key alone also suffices — the `limits[]` array is
+        // not the only surface.
+        let no_limits = json!({
+            "rate_limits_available": true,
+            "rate_limits": {"five_hour": {"utilization": 12}}
+        });
+        assert_eq!(claude_usage_drift(&no_limits), None);
+    }
+
+    #[test]
+    fn claude_drift_guard_catches_rate_limits_that_stopped_being_an_object() {
+        let payload = json!({"rate_limits_available": true, "rate_limits": []});
+
+        assert!(claude_usage_drift(&payload).is_some());
+    }
+
+    #[test]
+    fn cursor_reports_a_plan_tier_and_affirmatively_no_headroom_reader() {
+        let about = json!({
+            "cliVersion": "2026.07.23-e383d2b",
+            "model": "Auto",
+            "subscriptionTier": "Team",
+            "userEmail": "someone@example.com"
+        });
+
+        let parsed = parse_cursor_about(&about);
+
+        assert_eq!(parsed.auth_mode, AuthMode::Subscription);
+        assert_eq!(
+            parsed.plan.as_deref(),
+            Some("Team"),
+            "Cursor's tier is a display name, kept verbatim like every other plan"
+        );
+        assert_eq!(
+            parsed.availability,
+            UsageAvailability::Unavailable {
+                reason: UnavailableReason::NoHeadroomReader
+            },
+            "the dollar pools exist but reach only the interactive TUI"
+        );
+        assert!(parsed.availability.windows().is_empty());
+    }
+
+    #[test]
+    fn cursor_without_a_stored_login_is_not_logged_in_rather_than_unknown() {
+        for tier in [json!(null), json!(""), json!("   ")] {
+            let parsed = parse_cursor_about(&json!({
+                "cliVersion": "2026.07.23-e383d2b",
+                "subscriptionTier": tier,
+                "userEmail": null
+            }));
+
+            assert_eq!(
+                parsed.availability,
+                UsageAvailability::Unavailable {
+                    reason: UnavailableReason::NotLoggedIn
+                },
+                "a null tier means no stored token pair — reported, never resolved by logging in"
+            );
+            assert_eq!(parsed.plan, None);
+        }
+    }
+
+    #[test]
+    fn copilot_http_200_parses_and_401_is_not_logged_in() {
+        let body = copilot_body().to_string();
+        let parsed = parse_copilot_http(200, &body);
+        assert_eq!(parsed.plan.as_deref(), Some("individual"));
+        assert_eq!(used_percent(window(&parsed, "premium_interactions")), 100.0);
+
+        assert_eq!(
+            parse_copilot_http(401, "{\"message\":\"Bad credentials\"}").availability,
+            UsageAvailability::Unavailable {
+                reason: UnavailableReason::NotLoggedIn
+            }
+        );
+    }
+
+    #[test]
+    fn copilot_http_failures_degrade_to_unknown_never_to_zero_used() {
+        let server_error = parse_copilot_http(503, "upstream unavailable");
+        let UsageAvailability::Unknown {
+            reason: UnknownReason::ProbeFailed { message },
+        } = &server_error.availability
+        else {
+            panic!("a 503 is nothing learned, not an answer");
+        };
+        assert!(message.contains("503"), "{message}");
+        assert!(message.contains("upstream unavailable"), "{message}");
+
+        let not_json = parse_copilot_http(200, "<html>proxy login</html>");
+        assert!(matches!(
+            not_json.availability,
+            UsageAvailability::Unknown {
+                reason: UnknownReason::ProbeFailed { .. }
+            }
+        ));
+        assert!(
+            not_json.availability.windows().is_empty(),
+            "no percentage is reachable from a failed probe"
+        );
+    }
+
+    #[test]
+    fn a_failing_body_is_quoted_back_bounded_and_on_one_line() {
+        let long = format!("é{}", "x".repeat(500));
+
+        let parsed = parse_copilot_http(500, &format!("first\nsecond {long}"));
+        let UsageAvailability::Unknown {
+            reason: UnknownReason::ProbeFailed { message },
+        } = &parsed.availability
+        else {
+            panic!("expected a probe failure");
+        };
+
+        assert!(!message.contains('\n'), "a report line stays one line");
+        assert!(message.ends_with('…'), "and is bounded: {message}");
+        assert!(
+            message.chars().count() < COPILOT_ERROR_BODY_CHARS + 100,
+            "an unbounded body would swamp the report"
+        );
+    }
+
+    #[test]
+    fn usage_support_maps_each_tier_to_a_probe_or_an_affirmative_reason() {
+        assert_eq!(
+            UsageSupport::Headroom(UsageProbe::ClaudeGetUsage).probe(),
+            Some(UsageProbe::ClaudeGetUsage)
+        );
+        assert_eq!(
+            UsageSupport::Headroom(UsageProbe::ClaudeGetUsage).unprobed_reason(),
+            None
+        );
+        assert_eq!(
+            UsageSupport::PlanTier(UsageProbe::CursorAbout).probe(),
+            Some(UsageProbe::CursorAbout)
+        );
+
+        assert_eq!(UsageSupport::NoPlanQuota.probe(), None);
+        assert_eq!(
+            UsageSupport::NoPlanQuota.unprobed_reason(),
+            Some(UnavailableReason::NoPlanQuota)
+        );
+        assert_eq!(
+            UsageSupport::NoHeadroomReader.unprobed_reason(),
+            Some(UnavailableReason::NoHeadroomReader),
+            "a quota that exists with no reader is a different answer from no quota at all"
+        );
+
+        assert!(
+            !UsageProbe::CopilotUserEndpoint.spawns_harness(),
+            "the Copilot probe is out of band: it needs no Copilot binary"
+        );
+        for probe in [
+            UsageProbe::ClaudeGetUsage,
+            UsageProbe::CodexAppServer,
+            UsageProbe::CursorAbout,
+        ] {
+            assert!(probe.spawns_harness());
+        }
     }
 
     #[test]

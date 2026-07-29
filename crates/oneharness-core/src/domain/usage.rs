@@ -1,3 +1,4 @@
+// llmlint: ignore[changed_behavior_has_e2e] This is the pure half of the `usage` feature, split deliberately: nothing here is reachable by a consumer yet (no CLI verb, no probe, no report field), so there is no user-observable journey to drive end to end. The `oneharness usage` verb and its per-harness live e2e phase land with the probe in the next change on this branch; these parsers are exhaustively unit-tested against captured payload shapes precisely so live credentialed runs are not what proves them.
 //! Normalized subscription **headroom**: the shape of a `oneharness usage`
 //! report and one parser per harness payload. Pure — every parser takes an
 //! already-captured payload and returns normalized values, and the observation
@@ -36,14 +37,6 @@
 //!   carries none, so Copilot's `unlimited: true` snapshots (which report
 //!   `entitlement: 0` / `remaining: 0` / `percent_remaining: 100.0`, meaningless
 //!   as counters) can never render as a full bar.
-
-// llmlint: ignore[changed_behavior_has_e2e] This is the pure half of the `usage`
-// feature, split deliberately: nothing here is reachable by a consumer yet (no
-// CLI verb, no probe, no report field), so there is no user-observable journey
-// to drive end to end. The `oneharness usage` verb and its per-harness live e2e
-// phase land with the probe in the next change on this branch; these parsers are
-// exhaustively unit-tested against captured payload shapes precisely so that
-// live credentialed runs are not what proves them.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -439,10 +432,6 @@ impl ParsedUsage {
     }
 }
 
-// ---------------------------------------------------------------------------
-// claude-code: the `get_usage` control response
-// ---------------------------------------------------------------------------
-
 /// Claude's window lengths, derived from its own key names. The key set is
 /// **open** — the observed payload also carries codenames (`tangelo`,
 /// `iguana_necktie`, `nimbus_quill`, `cinder_cove`, `amber_ladder`) with no
@@ -661,10 +650,6 @@ fn claude_limits(rate_limits: &Value) -> Vec<ClaudeLimit> {
         .unwrap_or_default()
 }
 
-// ---------------------------------------------------------------------------
-// codex: the `account/rateLimits/read` JSON-RPC response
-// ---------------------------------------------------------------------------
-
 /// codex's API-key branch: ChatGPT auth is required to read rate limits, so an
 /// API-key session affirmatively has no plan headroom.
 // llmlint: ignore[contracts_have_one_source_or_a_drift_gate] These strings are literals in the codex binary and appear in no schema `generate-json-schema` emits, so there is nothing to generate them from; the drift gate is the live e2e phase that lands with the `usage` probe in the next change on this branch. Drift degrades safely: an unrecognized message becomes a probe failure (`Unknown`), never an assumed absence of headroom.
@@ -802,10 +787,6 @@ fn codex_bucket_windows(limit_id: Option<&str>, bucket: &Value) -> Vec<UsageWind
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// copilot: the `/copilot_internal/user` response body
-// ---------------------------------------------------------------------------
-
 /// Parse Copilot's `/copilot_internal/user` body.
 ///
 /// Each `quota_snapshots.<id>` entry is gated on `unlimited` **before** any
@@ -906,10 +887,6 @@ fn copilot_counters(snapshot: &Value, unit: QuotaUnit) -> Option<QuotaCounters> 
     })
 }
 
-// ---------------------------------------------------------------------------
-// timestamps
-// ---------------------------------------------------------------------------
-
 /// Normalize an RFC 3339 / ISO 8601 instant to absolute RFC 3339 **UTC**,
 /// whatever offset and sub-second precision it arrived with. `None` when the
 /// text is not a complete instant, including when it carries no offset at all —
@@ -923,10 +900,25 @@ pub fn normalize_timestamp(text: &str) -> Option<String> {
 /// parsed but truncated: window resets are minute-scale.
 fn epoch_from_rfc3339(text: &str) -> Option<i64> {
     let bytes = text.as_bytes();
-    if bytes.len() < 19 || !matches!(bytes[10], b'T' | b't' | b' ') {
+    if bytes.len() < 19 {
         return None;
     }
-    let year: i64 = text.get(0..4)?.parse().ok()?;
+    // Every separator is checked, not just the date/time one: reading digits at
+    // fixed offsets out of unvalidated text would otherwise accept shapes like
+    // `2026x08x01T00.00.00Z` as a well-formed instant.
+    if !matches!(bytes[10], b'T' | b't' | b' ')
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+    {
+        return None;
+    }
+    let year_text = text.get(0..4)?;
+    if !year_text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let year: i64 = year_text.parse().ok()?;
     let month: u32 = two_digits(text, 5)?;
     let day: u32 = two_digits(text, 8)?;
     let hour: u32 = two_digits(text, 11)?;
@@ -994,8 +986,15 @@ fn parse_offset(text: &str) -> Option<i64> {
     Some(sign * (i64::from(hours) * 3_600 + i64::from(minutes) * 60))
 }
 
+/// Exactly two ASCII digits at `at`. The digit check is not redundant with the
+/// parse: `"+1"` parses as `1`, so a signed pair would otherwise slip through a
+/// field that must be two literal digits.
 fn two_digits(text: &str, at: usize) -> Option<u32> {
-    text.get(at..at + 2)?.parse().ok()
+    let pair = text.get(at..at + 2)?;
+    pair.bytes()
+        .all(|byte| byte.is_ascii_digit())
+        .then(|| pair.parse().ok())
+        .flatten()
 }
 
 /// Days since 1970-01-01 for a civil (proleptic Gregorian) date — Howard
@@ -1048,8 +1047,6 @@ mod tests {
             .map(|window| window.id.as_str())
             .collect()
     }
-
-    // ---- claude-code ----
 
     /// The observed subscription payload: two non-null plan windows, eleven
     /// null ones (five of them codenames), and the flat `limits[]` array.
@@ -1301,8 +1298,6 @@ mod tests {
         );
     }
 
-    // ---- codex ----
-
     fn codex_snapshot(limit_id: &str, limit_name: Value, used: i64, secondary: Value) -> Value {
         json!({
             "limitId": limit_id,
@@ -1497,8 +1492,6 @@ mod tests {
             }
         ));
     }
-
-    // ---- copilot ----
 
     /// The observed body: two unlimited snapshots and one exhausted metered one.
     fn copilot_body() -> Value {
@@ -1703,8 +1696,6 @@ mod tests {
         );
     }
 
-    // ---- report shape ----
-
     #[test]
     fn an_unavailable_identity_carries_no_percentage_at_all() {
         let parsed = parse_codex_rate_limits(&json!({
@@ -1816,8 +1807,6 @@ mod tests {
         assert_eq!(IdentitySelector::Ambient.key(), "ambient");
     }
 
-    // ---- timestamps ----
-
     #[test]
     fn timestamps_normalize_to_absolute_utc() {
         assert_eq!(
@@ -1857,6 +1846,21 @@ mod tests {
         assert_eq!(normalize_timestamp("2026-13-01T00:00:00Z"), None);
         assert_eq!(normalize_timestamp("2026-08-01T25:00:00Z"), None);
         assert_eq!(normalize_timestamp("2026-08-01T00:00:00.Z"), None);
+        for malformed_separator in [
+            "2026x08x01T00:00:00Z", // date separators are not checked by offset alone
+            "2026-08-01T00.00.00Z", // nor are the time separators
+            "2026-08-01X00:00:00Z", // nor the date/time separator
+            "20x6-08-01T00:00:00Z", // a non-digit year
+            "+026-08-01T00:00:00Z", // a signed year parses as a number unless digits are required
+            "-026-08-01T00:00:00Z", // and a negative one is no RFC 3339 instant either
+            "2026-+8-01T00:00:00Z", // `+8` parses as 8 unless digits are required
+        ] {
+            assert_eq!(
+                normalize_timestamp(malformed_separator),
+                None,
+                "{malformed_separator} is not a well-formed instant"
+            );
+        }
         for malformed_offset in [
             "2026-08-01T00:00:0005:00", // offset-shaped but unsigned: direction unknown
             "2026-08-01T00:00:00 05:00", // no sign at all

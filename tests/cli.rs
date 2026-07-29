@@ -13588,6 +13588,164 @@ fn usage_selection_narrows_with_exclude() {
 }
 
 #[test]
+fn usage_keeps_each_reading_with_the_identity_that_produced_it() {
+    // Every plan is built by pairing the selected ids with the resolved specs
+    // positionally, so anything that could shorten or reorder one list without
+    // the other would silently file one harness's headroom under another's
+    // name. `--exclude` alongside an explicit `--harness` is that risk: the
+    // report must still read the way it was asked for.
+    let fixture = ConfigFixture::new(
+        "usage-attribution",
+        &format!(
+            "[harness.claude-code]\nbin = {bin:?}\n\
+             [harness.claude-code.variant.work]\nenv = {{ CLAUDE_CONFIG_DIR = \"/home/u/.claude-work\" }}\n",
+            bin = mock_bin().display().to_string()
+        ),
+        "",
+    );
+
+    let output = run_with_config(
+        &[
+            "usage",
+            "--harness",
+            "goose,claude-code:work,crush",
+            "--exclude",
+            "goose",
+            "--cwd",
+            &fixture.cwd(),
+            "--compact",
+        ],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "1"),
+            ("MOCK_STDOUT", &claude_usage_response()),
+        ],
+        &fixture.user_config(),
+    );
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let report = json_stdout(&output);
+    let identities = report["identities"].as_array().expect("identities");
+    let named: Vec<(&str, Option<&str>)> = identities
+        .iter()
+        .map(|identity| {
+            (
+                identity["harness"].as_str().expect("an id"),
+                identity["variant"].as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        named,
+        vec![
+            ("goose", None),
+            ("claude-code", Some("work")),
+            ("crush", None)
+        ],
+        "an explicit selection is reported in the order it was named, and \
+         `--exclude` does not narrow one: {report}"
+    );
+
+    // The variant's own reading, not a neighbour's: goose and crush have no
+    // headroom to report at all, so a shifted pairing would show up here.
+    let claude = usage_identity(&report, "claude-code");
+    assert_eq!(claude["selector"]["path"], "/home/u/.claude-work");
+    assert_eq!(claude["availability"]["state"], "available");
+    for headroomless in ["goose", "crush"] {
+        assert_eq!(
+            usage_identity(&report, headroomless)["availability"]["state"],
+            "unavailable",
+            "{headroomless} has no reading to have been given one"
+        );
+    }
+}
+
+#[test]
+fn usage_finds_its_answer_among_the_lines_a_real_harness_interleaves() {
+    // Neither probe's answer arrives alone: Claude writes an init line first and
+    // may carry another control response, and codex replies to `initialize`
+    // before the rate-limit read. Both are matched by their own request id, so a
+    // decoy carrying a *different* id must be walked past rather than parsed —
+    // answering from the wrong message is how a probe reports someone else's
+    // numbers, or none.
+    let claude_stream = [
+        r#"{"type":"system","subtype":"init","apiKeySource":"none"}"#.to_string(),
+        serde_json::json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": "someone-elses-request",
+                "response": {"subscription_type": "pro", "rate_limits_available": false}
+            }
+        })
+        .to_string(),
+        claude_usage_response(),
+    ]
+    .join("\n");
+
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "1"),
+            ("MOCK_STDOUT", &claude_stream),
+            ("MOCK_PRESERVE_STDOUT", "1"),
+        ],
+    );
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let claude = usage_identity(&json_stdout(&output), "claude-code");
+    assert_eq!(
+        claude["plan"], "max",
+        "the decoy response reports `pro` and no rate limits: {claude}"
+    );
+    assert_eq!(claude["availability"]["state"], "available");
+    assert_eq!(
+        claude["availability"]["windows"][0]["usage"]["used_percent"],
+        42.0
+    );
+
+    let codex_stream = [
+        r#"{"jsonrpc":"2.0","id":1,"result":{"userAgent":"codex-cli/0.145.0"}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","method":"sessionConfigured","params":{}}"#.to_string(),
+        codex_usage_response(),
+    ]
+    .join("\n");
+
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "codex",
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "3"),
+            ("MOCK_STDOUT", &codex_stream),
+            ("MOCK_PRESERVE_STDOUT", "1"),
+        ],
+    );
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let codex = usage_identity(&json_stdout(&output), "codex");
+    assert_eq!(
+        codex["plan"], "pro",
+        "the `initialize` reply carries no rate limits to answer from: {codex}"
+    );
+    assert_eq!(
+        codex["availability"]["windows"][0]["usage"]["used_percent"],
+        31.0
+    );
+}
+
+#[test]
 fn usage_attributes_two_identities_of_one_harness_separately() {
     // Two subscriptions of the same harness, selected by the same variant
     // machinery `run` uses. Each entry must carry its own credential directory

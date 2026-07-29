@@ -14197,3 +14197,52 @@ fn usage_refuses_a_copilot_api_base_that_could_be_injected() {
         "a credential must never reach the report"
     );
 }
+
+#[test]
+fn usage_reports_a_failed_stdout_write_instead_of_panicking() {
+    // A command whose output *is* its deliverable must not die mid-sentence:
+    // a reader closing the pipe (`oneharness usage | head -1`) is an ordinary
+    // event, and `print!`/`println!` panic on it.
+    //
+    // The read end is closed immediately after spawn, while the probe is held
+    // for MOCK_SLEEP_MS before the report is rendered — so the close precedes
+    // the first write by a wide margin rather than racing it.
+    for format in ["text", "json"] {
+        let mut child = Command::new(oneharness_bin())
+            .env("ONEHARNESS_NO_CONFIG", "1")
+            .env("MOCK_SLEEP_MS", "400")
+            .env("MOCK_STDOUT", "{}")
+            .args([
+                "usage",
+                "--harness",
+                "cursor",
+                "--bin",
+                &bin_override("cursor"),
+                "--format",
+                format,
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn oneharness");
+        drop(child.stdout.take().expect("stdout was piped"));
+
+        let output = child.wait_with_output().expect("failed to wait");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            !stderr.contains("panicked"),
+            "--format {format} panicked on a closed stdout:\n{stderr}"
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "--format {format} must report the write failure as an error, stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("could not write to stdout"),
+            "--format {format} must name what failed, stderr:\n{stderr}"
+        );
+    }
+}

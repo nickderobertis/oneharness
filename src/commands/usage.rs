@@ -21,7 +21,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::cli::{UsageArgs, UsageFormat};
-use crate::commands::{dedupe_exact_ids, print_json, select_specs, variant_environment};
+use crate::commands::{
+    dedupe_exact_ids, print_json, print_text, select_specs, variant_environment,
+};
 use oneharness_core::domain::usage::{
     AuthMode, QuotaCounters, UnavailableReason, UnknownReason, UsageAvailability, UsageIdentity,
     UsageReport, UsageWindow, WindowUsage,
@@ -100,7 +102,7 @@ pub fn run(args: &UsageArgs) -> Result<i32, OneharnessError> {
 
     match args.format {
         UsageFormat::Json => print_json(&report, args.compact)?,
-        UsageFormat::Text => print!("{}", render_text(&report)),
+        UsageFormat::Text => print_text(&render_text(&report))?,
     }
     Ok(0)
 }

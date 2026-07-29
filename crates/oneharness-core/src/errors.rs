@@ -292,4 +292,11 @@ pub enum OneharnessError {
 
     #[error("failed to write JSON output: {0}")]
     Serialize(#[from] serde_json::Error),
+
+    /// A write to stdout failed — most often a closed downstream reader
+    /// (`oneharness usage | head -1`). Reported like any other I/O fault so a
+    /// command that emits its report cannot die mid-sentence with a panic; the
+    /// report is the deliverable, and a truncated one is worth saying out loud.
+    #[error("could not write to stdout: {0}")]
+    StdoutWrite(std::io::Error),
 }

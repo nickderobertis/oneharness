@@ -80,11 +80,18 @@ const CODEX_RATE_LIMITS_ID: i64 = 2;
 /// How long a child that has already answered gets to exit on its own before its
 /// tree is terminated. Bounded so an idling harness cannot hold the probe.
 const EXIT_GRACE: Duration = Duration::from_millis(500);
-/// The longest deadline a probe will hold, whatever timeout it is handed.
-/// `Instant + Duration` **panics** on overflow, so an unreasonable timeout from
-/// a library caller has to be absorbed here rather than taking the process down
-/// — a probe is never allowed to panic on input.
-const TIMEOUT_CEILING: Duration = Duration::from_secs(3_600);
+/// The longest a probe may wait, in seconds — the ceiling every caller gets,
+/// not just the CLI. A probe is a pre-flight check whose harness answers in
+/// single-digit seconds; an hour is already far past "something is wrong".
+///
+/// The CLI reads this same constant for its `--timeout` range, so the documented
+/// maximum has one source. Enforcing it here as well is what makes it a real
+/// boundary: [`probe`] is public API, and a library caller handing it a
+/// multi-year `Duration` would otherwise hang a process, or — since
+/// `Instant + Duration` **panics** on overflow — take one down.
+pub const MAX_TIMEOUT_SECS: u64 = 3_600;
+/// [`MAX_TIMEOUT_SECS`] as a [`Duration`].
+pub const MAX_TIMEOUT: Duration = Duration::from_secs(MAX_TIMEOUT_SECS);
 
 /// One identity to probe: which probe, which binary, and the exact environment
 /// the child gets — the same variant environment `run` builds, so a usage
@@ -101,7 +108,21 @@ pub struct UsageProbeRequest {
     /// Variables masked from the child. Applied after [`Self::env`], so a
     /// removal wins over a set of the same name — matching the runner.
     pub env_remove: Vec<String>,
+    /// How long to wait for this probe's answer. **Clamped to [`MAX_TIMEOUT`]**
+    /// — see [`UsageProbeRequest::effective_timeout`], which is what the probe
+    /// and its diagnostics actually use.
     pub timeout: Duration,
+}
+
+impl UsageProbeRequest {
+    /// The timeout this request is actually run under: the requested value, or
+    /// [`MAX_TIMEOUT`] when it exceeds the ceiling. Every deadline and every
+    /// timeout message reads from here, so a clamped request is *reported* as
+    /// the value it was run under rather than the one that was asked for.
+    #[must_use]
+    pub fn effective_timeout(&self) -> Duration {
+        self.timeout.min(MAX_TIMEOUT)
+    }
 }
 
 /// One probed identity: how it was selected, and what was learned.
@@ -250,10 +271,9 @@ fn converse(
     stdin_lines: &[String],
     mut on_line: impl FnMut(&str) -> Option<ParsedUsage>,
 ) -> ProbeCapture {
-    let now = Instant::now();
-    let deadline = now
-        .checked_add(request.timeout)
-        .unwrap_or_else(|| now + TIMEOUT_CEILING);
+    // Clamped at the boundary, so this addition cannot overflow whatever a
+    // caller asked for.
+    let deadline = Instant::now() + request.effective_timeout();
     let mut command = Command::new(&argv[0]);
     command
         .args(&argv[1..])
@@ -392,7 +412,10 @@ fn probe_claude(request: &UsageProbeRequest) -> ProbedIdentity {
         },
     );
     let parsed = capture.answer.take().unwrap_or_else(|| {
-        capture.failure("claude-code's `get_usage` control request", request.timeout)
+        capture.failure(
+            "claude-code's `get_usage` control request",
+            request.effective_timeout(),
+        )
     });
     ProbedIdentity { selector, parsed }
 }
@@ -454,10 +477,12 @@ fn probe_codex(request: &UsageProbeRequest) -> ProbedIdentity {
             }
         },
     );
-    let parsed = capture
-        .answer
-        .take()
-        .unwrap_or_else(|| capture.failure("codex's `account/rateLimits/read`", request.timeout));
+    let parsed = capture.answer.take().unwrap_or_else(|| {
+        capture.failure(
+            "codex's `account/rateLimits/read`",
+            request.effective_timeout(),
+        )
+    });
     ProbedIdentity { selector, parsed }
 }
 
@@ -489,7 +514,10 @@ fn probe_cursor(request: &UsageProbeRequest) -> ProbedIdentity {
     let capture = converse(&guarded, &cursor_argv(&request.bin), &[], |_| None);
     let parsed = match serde_json::from_str::<Value>(capture.stdout.trim()) {
         Ok(value) if value.is_object() => parse_cursor_about(&value),
-        _ => capture.failure("cursor's `about --format json`", request.timeout),
+        _ => capture.failure(
+            "cursor's `about --format json`",
+            request.effective_timeout(),
+        ),
     };
     ProbedIdentity {
         selector: IdentitySelector::Ambient,
@@ -579,7 +607,7 @@ fn copilot_fetch(request: &UsageProbeRequest, config: String) -> ParsedUsage {
         Some((status, body)) => parse_copilot_http(status, &body),
         None => capture.failure(
             &format!("the Copilot quota request via `{COPILOT_HTTP_CLIENT}`"),
-            request.timeout,
+            request.effective_timeout(),
         ),
     }
 }
@@ -608,6 +636,77 @@ mod tests {
 
     fn view<'a>(env: &'a [(String, String)], remove: &'a [String]) -> EnvView<'a> {
         EnvView::new(env, remove)
+    }
+
+    fn request(timeout: Duration) -> UsageProbeRequest {
+        UsageProbeRequest {
+            probe: UsageProbe::CursorAbout,
+            bin: "cursor-agent".to_string(),
+            cwd: None,
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            timeout,
+        }
+    }
+
+    #[test]
+    fn a_library_caller_gets_the_documented_timeout_ceiling_too() {
+        // `probe` is public API, so the ceiling has to be enforced here rather
+        // than only by the CLI's flag range: a sibling tool depending on the
+        // engine would otherwise hang its own process for as long as it asked.
+        assert_eq!(
+            request(Duration::from_secs(MAX_TIMEOUT_SECS * 24)).effective_timeout(),
+            MAX_TIMEOUT,
+            "an over-ceiling request runs under the ceiling"
+        );
+        assert_eq!(
+            request(Duration::MAX).effective_timeout(),
+            MAX_TIMEOUT,
+            "including one that would overflow the deadline arithmetic outright"
+        );
+
+        // A deadline built from the clamped value cannot overflow, which is the
+        // panic this boundary exists to make unreachable.
+        assert!(Instant::now()
+            .checked_add(request(Duration::MAX).effective_timeout())
+            .is_some());
+
+        // Anything at or under the ceiling is honored exactly — the clamp is a
+        // ceiling, not a rewrite of every timeout.
+        for secs in [1, 60, MAX_TIMEOUT_SECS] {
+            assert_eq!(
+                request(Duration::from_secs(secs)).effective_timeout(),
+                Duration::from_secs(secs)
+            );
+        }
+    }
+
+    #[test]
+    fn a_clamped_probe_reports_the_timeout_it_actually_waited() {
+        // The diagnostic must not quote a duration nothing waited for: a caller
+        // reading "did not answer within 157680000s" would go looking for an
+        // hours-long hang that never happened.
+        let capture = ProbeCapture {
+            answer: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: true,
+            spawn_error: None,
+        };
+        let over_ceiling = request(Duration::from_secs(MAX_TIMEOUT_SECS * 10));
+
+        let parsed = capture.failure("a probe", over_ceiling.effective_timeout());
+
+        let UnknownReason::ProbeFailed { message } = (match parsed.availability {
+            crate::domain::usage::UsageAvailability::Unknown { reason } => reason,
+            other => panic!("expected a probe failure, got {other:?}"),
+        }) else {
+            panic!("expected a probe failure");
+        };
+        assert!(
+            message.contains(&format!("{MAX_TIMEOUT_SECS}s")),
+            "the message must quote the enforced timeout: {message}"
+        );
     }
 
     #[test]

@@ -1425,9 +1425,6 @@ diffed in `just check`, while Claude — which publishes no schema — is guarde
 asserting on `rate_limits_available` and the expected `limits[].kind` values, so
 a shape change degrades to `unknown` instead of to zero.
 
-Full per-harness evidence — every probe, every reset semantic, and every
-negative finding — is in [`docs/harness-usage.md`](docs/harness-usage.md).
-
 ### Safety note: bypass by default
 
 A headless agent run hangs waiting for a human to approve tool calls. `run`'s

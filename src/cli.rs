@@ -190,10 +190,15 @@ pub struct UsageArgs {
 
     /// Per-probe timeout in seconds (default 60, max 3600). A probe that exceeds
     /// it is reported as unknown, never as headroom.
+    ///
+    /// The maximum is the engine's own ceiling, so the flag rejects what the
+    /// probe would clamp rather than silently accepting a value it will not
+    /// honor.
     #[arg(
         long,
         value_name = "SECS",
-        value_parser = clap::value_parser!(u64).range(1..=3_600)
+        value_parser = clap::value_parser!(u64)
+            .range(1..=oneharness_core::io::usage::MAX_TIMEOUT_SECS)
     )]
     pub timeout: Option<u64>,
 

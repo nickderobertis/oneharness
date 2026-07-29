@@ -175,9 +175,9 @@ Use the `just` recipes; do not hand-roll equivalents.
   before writing so `cwd=..` remains discoverable.
   `usage` is the pre-flight verb: subscription headroom per identity, on its own
   output contract. Parsers are pure (`domain::usage`), probes are I/O
-  (`io::usage`), tiers are registry data (`HarnessSpec.usage`), and every probe
-  and negative is evidenced in `docs/harness-usage.md`. Four constraints, each
-  load-bearing: probes are **zero-turn** (no user message, no completed turn);
+  (`io::usage`), and tiers are registry data (`HarnessSpec.usage`) sourced from a
+  real capture, never guessed. Four constraints, each load-bearing: probes are
+  **zero-turn** (no user message, no completed turn);
   every harness appears and an absent figure is never rendered as `0%`; identity
   selection reuses `commands::variant_environment` rather than a parallel
   selector; and both upstream payloads are experimental, so drift degrades to

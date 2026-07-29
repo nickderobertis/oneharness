@@ -1,13 +1,13 @@
 # Harness subscription headroom
 
-This is the usage-reporting reference for the adapters in
-[`domain::harness::REGISTRY`](../crates/oneharness-core/src/domain/harness.rs),
-the sibling of [`harness-auth.md`](harness-auth.md) and the source for every
-`HarnessSpec.usage` tier and every probe in
-[`io::usage`](../crates/oneharness-core/src/io/usage.rs). It records
-observations made on 2026-07-29. **“Observed”** means the command was actually
-run and its (redacted) output is quoted; **“documented”** quotes an official
-source; **“inferred”** is reasoning, always labelled. Values, account
+This is the usage-reporting reference behind `oneharness usage`: what each
+harness adapter can report about subscription headroom, and the observation each
+answer rests on. Every `HarnessSpec.usage` tier and every probe is derived from
+what is recorded here.
+
+Observations were made on 2026-07-29. **“Observed”** means the command was
+actually run and its (redacted) output is quoted; **“documented”** quotes an
+official source; **“inferred”** is reasoning, always labelled. Values, account
 identifiers, tokens, and percentages are omitted — field names, JSON structure,
 units, and `null`-versus-non-null distinctions are preserved, because those are
 what an implementer needs.
@@ -360,8 +360,8 @@ account.
 returned live data, while the same request against an empty `CODEX_HOME`
 returned the `codex account authentication required` error — so the read
 resolves against the selected home and nothing ambient. Only one ChatGPT account
-was available, matching the gap already recorded in
-[`harness-auth.md`](harness-auth.md).
+was available, so Codex's proven identity axis remains ChatGPT subscription
+versus API key rather than subscription A versus B.
 
 **How `usage` selects an identity.** It reuses `variant_environment`, the same
 helper `run` uses, so an identity is selected by the machinery that already

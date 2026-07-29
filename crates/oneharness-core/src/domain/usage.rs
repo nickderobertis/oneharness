@@ -1059,16 +1059,20 @@ pub fn parse_copilot_user(body: &Value) -> ParsedUsage {
         QuotaUnit::Unspecified
     };
 
-    let windows = body
-        .get("quota_snapshots")
-        .and_then(Value::as_object)
-        .map(|snapshots| {
-            snapshots
-                .iter()
-                .filter_map(|(id, snapshot)| copilot_window(id, snapshot, resets_at.clone(), unit))
-                .collect()
-        })
-        .unwrap_or_default();
+    // `quota_snapshots` is the whole quota surface, and this endpoint is
+    // undocumented internal with no schema to diff — so its absence is drift,
+    // not an answer. Without this the parser would report an affirmative "no
+    // windows" for every user the moment the key is renamed, which is the same
+    // silent-zero failure [`claude_usage_drift`] exists to prevent.
+    let Some(snapshots) = body.get("quota_snapshots").and_then(Value::as_object) else {
+        return ParsedUsage::unknown(UnknownReason::ProbeFailed {
+            message: "the Copilot quota payload carries no `quota_snapshots` object".to_string(),
+        });
+    };
+    let windows = snapshots
+        .iter()
+        .filter_map(|(id, snapshot)| copilot_window(id, snapshot, resets_at.clone(), unit))
+        .collect();
 
     ParsedUsage {
         auth_mode: AuthMode::Subscription,
@@ -2036,18 +2040,6 @@ mod tests {
     }
 
     #[test]
-    fn copilot_without_snapshots_is_unavailable() {
-        let parsed = parse_copilot_user(&json!({"copilot_plan": "individual"}));
-
-        assert_eq!(
-            parsed.availability,
-            UsageAvailability::Unavailable {
-                reason: UnavailableReason::NoWindowsReported
-            }
-        );
-    }
-
-    #[test]
     fn an_unavailable_identity_carries_no_percentage_at_all() {
         let parsed = parse_codex_rate_limits(&json!({
             "id": 4,
@@ -2362,6 +2354,42 @@ mod tests {
             );
             assert_eq!(parsed.plan, None);
         }
+    }
+
+    #[test]
+    fn copilot_payload_without_a_quota_surface_is_drift_not_an_answer() {
+        // The endpoint is undocumented internal with no schema to diff, so a
+        // renamed quota key must degrade to unknown. Reported as "no windows"
+        // it would read as a confident answer for every Copilot user at once.
+        let renamed = json!({
+            "copilot_plan": "individual",
+            "token_based_billing": true,
+            "quotas": {"premium_interactions": {"unlimited": false, "percent_remaining": 40.0}}
+        });
+
+        let parsed = parse_copilot_user(&renamed);
+
+        assert!(
+            matches!(
+                parsed.availability,
+                UsageAvailability::Unknown {
+                    reason: UnknownReason::ProbeFailed { .. }
+                }
+            ),
+            "got {:?}",
+            parsed.availability
+        );
+        assert!(parsed.availability.windows().is_empty());
+
+        // An *empty* quota surface is still an answer: the key is there, the
+        // account simply has no quota bucket on it.
+        let empty = json!({"copilot_plan": "individual", "quota_snapshots": {}});
+        assert_eq!(
+            parse_copilot_user(&empty).availability,
+            UsageAvailability::Unavailable {
+                reason: UnavailableReason::NoWindowsReported
+            }
+        );
     }
 
     #[test]

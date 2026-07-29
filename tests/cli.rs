@@ -14112,3 +14112,56 @@ fn usage_refuses_an_out_of_range_timeout_rather_than_panicking() {
     assert!(ok.status.success(), "exit {:?}", ok.status.code());
     assert_eq!(usage_identity(&json_stdout(&ok), "cursor")["plan"], "Team");
 }
+
+#[test]
+fn usage_reports_copilot_server_and_shape_failures_as_unknown() {
+    if !curl_available() {
+        eprintln!("skipping: curl is not installed (the Copilot probe's HTTP client)");
+        return;
+    }
+
+    // A server error, an HTML body where JSON was expected (a captive proxy),
+    // and a 200 whose quota surface was renamed. The endpoint is undocumented
+    // internal, so each must reach the consumer as "nothing learned" — a
+    // confident "no headroom" from any of them would be a lie about headroom.
+    for (status, body, expected) in [
+        (503u16, "upstream unavailable", "503"),
+        (200, "<html>captive portal</html>", "not a JSON object"),
+        (
+            200,
+            r#"{"copilot_plan":"individual","quotas":{"chat":{"unlimited":true}}}"#,
+            "quota_snapshots",
+        ),
+    ] {
+        let (base, server) = one_shot_http_server(status, body);
+        let output = run_copilot_usage(
+            &["usage", "--harness", "copilot", "--compact"],
+            &[
+                ("ONEHARNESS_COPILOT_API_BASE", &base),
+                ("GH_TOKEN", "ghs_hermetic_token"),
+            ],
+        );
+
+        assert!(
+            output.status.success(),
+            "HTTP {status} is data, not an exit code"
+        );
+        let copilot = usage_identity(&json_stdout(&output), "copilot");
+        assert_eq!(
+            copilot["availability"]["state"], "unknown",
+            "HTTP {status} with body {body}"
+        );
+        let message = copilot["availability"]["reason"]["message"]
+            .as_str()
+            .expect("a message");
+        assert!(
+            message.contains(expected),
+            "expected {expected:?} in {message:?}"
+        );
+        assert!(
+            copilot["availability"]["windows"].is_null(),
+            "no percentage is reachable from a failed probe"
+        );
+        let _ = server.join();
+    }
+}

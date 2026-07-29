@@ -268,14 +268,16 @@ fn a_degraded_probe_reaches_a_consumer_as_unknown_or_unavailable_never_as_headro
         }
     );
 
-    // A Copilot body with no quota block at all.
+    // A Copilot body with no quota block at all. The endpoint is undocumented
+    // internal, so a vanished quota surface is drift — nothing was learned —
+    // rather than an affirmative "this account has no quota window".
     let bodiless = parse_copilot_user(&serde_json::json!({"copilot_plan": "individual"}));
-    assert_eq!(
+    assert!(matches!(
         bodiless.availability,
-        UsageAvailability::Unavailable {
-            reason: UnavailableReason::NoWindowsReported
+        UsageAvailability::Unknown {
+            reason: UnknownReason::ProbeFailed { .. }
         }
-    );
+    ));
 
     // A harness that reports a reset instant a consumer cannot trust: the
     // window still reports its usage, but with no reset rather than a guessed

@@ -10,9 +10,11 @@ pub mod list;
 pub mod mock;
 pub mod run;
 pub mod sync;
+pub mod usage;
 
 use serde::Serialize;
 
+use oneharness_core::domain::config::valid_env_name;
 use oneharness_core::domain::harness::{self, HarnessSpec};
 use oneharness_core::errors::OneharnessError;
 
@@ -72,6 +74,111 @@ pub fn select_specs(
             harness::by_id(base).expect("validated above")
         })
         .collect())
+}
+
+/// The environment a variant selects for one harness: `[env]`, then
+/// `[harness.<id>.env]`, then the variant's `env_file`, `env`, and `env_from`,
+/// last write winning — the layering the runner applies to a child.
+///
+/// Shared by `run` and `usage` on purpose: an identity is an environment, so a
+/// usage probe must be pointed at a subscription by the same machinery that
+/// points a run at one. A second selector here would be a second thing to keep
+/// in step, and a usage report attributed to an identity `run` would not have
+/// used is worse than no report.
+// llmlint: ignore[invalid_states_unrepresentable] This spawn-boundary helper only receives selectors after config validation and select_specs resolution; introducing a second identity type here would duplicate VariantName while its real subprocess tests pin masking, sourcing, and isolation.
+pub fn variant_environment(
+    cfg: &oneharness_core::domain::config::FileConfig,
+    composed: &str,
+    project_start: &std::path::Path,
+) -> Result<Vec<(String, String)>, OneharnessError> {
+    let (base, _) = cfg.split_harness_id(composed);
+    let mut env: Vec<(String, String)> = cfg
+        .env
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    if let Some(harness) = cfg.harness.get(base) {
+        env.extend(
+            harness
+                .env
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
+    }
+    let Some(variant) = cfg.variant_for(composed) else {
+        return Ok(env);
+    };
+    if let Some(file) = &variant.env_file {
+        let path = {
+            let path = std::path::PathBuf::from(file);
+            if path.is_absolute() {
+                path
+            } else {
+                project_start.join(path)
+            }
+        };
+        let metadata =
+            std::fs::metadata(&path).map_err(|source| OneharnessError::VariantEnvFile {
+                path: path.display().to_string(),
+                source,
+            })?;
+        #[cfg(unix)]
+        let private = {
+            use std::os::unix::fs::PermissionsExt;
+            metadata.is_file() && metadata.permissions().mode() & 0o077 == 0
+        };
+        #[cfg(not(unix))]
+        let private = metadata.is_file();
+        if !private {
+            return Err(OneharnessError::VariantEnvFilePermissions {
+                path: path.display().to_string(),
+            });
+        }
+        let text =
+            std::fs::read_to_string(&path).map_err(|source| OneharnessError::VariantEnvFile {
+                path: path.display().to_string(),
+                source,
+            })?;
+        for (index, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=') else {
+                return Err(OneharnessError::VariantEnvFileLine {
+                    path: path.display().to_string(),
+                    line: index + 1,
+                });
+            };
+            if !valid_env_name(key) {
+                return Err(OneharnessError::VariantEnvFileLine {
+                    path: path.display().to_string(),
+                    line: index + 1,
+                });
+            }
+            if value.contains('\0') {
+                return Err(OneharnessError::VariantEnvFileLine {
+                    path: path.display().to_string(),
+                    line: index + 1,
+                });
+            }
+            env.push((key.to_string(), value.to_string()));
+        }
+    }
+    env.extend(
+        variant
+            .env
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone())),
+    );
+    for (target, source) in &variant.env_from {
+        let value =
+            std::env::var(source).map_err(|_| OneharnessError::VariantEnvSourceMissing {
+                name: source.clone(),
+            })?;
+        env.push((target.clone(), value));
+    }
+    Ok(env)
 }
 
 /// Write a value as JSON to stdout (pretty unless `compact`).

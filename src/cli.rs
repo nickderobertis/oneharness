@@ -152,6 +152,78 @@ pub enum Command {
     /// The `list`/`show` views print JSON to stdout by default (the programmatic
     /// contract); pass `--format text` for a human-readable view.
     History(HistoryArgs),
+    /// Report how much subscription headroom each harness identity has left,
+    /// as JSON (pass `--format text` for a human-readable view).
+    ///
+    /// Every probe is free: no harness takes a model turn, so this is a
+    /// pre-flight check you can run before launching long jobs. Three harnesses
+    /// report real headroom (claude-code, codex, copilot), one reports a plan
+    /// tier (cursor), and the rest say plainly that they cannot — a missing
+    /// binary, an unauthenticated harness, or a failed probe is reported as
+    /// data, never as 0% used.
+    Usage(UsageArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct UsageArgs {
+    /// Probe every supported harness (the default when none are named).
+    #[arg(long, conflicts_with = "harness")]
+    pub all: bool,
+
+    /// Harness id(s) to probe, `<id>` or `<id>:<variant>` (repeatable,
+    /// comma-separated). A variant selects a *distinct identity* — the same
+    /// per-process credential directory `run` would use — so two subscriptions
+    /// of one harness are reported as separately attributed entries.
+    #[arg(long, value_delimiter = ',', value_name = "ID")]
+    pub harness: Vec<String>,
+
+    /// Harness id(s) to exclude (repeatable, comma-separated).
+    #[arg(long, value_delimiter = ',', value_name = "ID")]
+    pub exclude: Vec<String>,
+
+    /// Override a harness binary: --bin ID=PATH (repeatable).
+    #[arg(long = "bin", value_name = "ID=PATH")]
+    pub bin: Vec<String>,
+
+    /// Working directory for the probes (also where config discovery starts).
+    #[arg(long, value_name = "DIR")]
+    pub cwd: Option<PathBuf>,
+
+    /// Per-probe timeout in seconds (default 60). A probe that exceeds it is
+    /// reported as unknown, never as headroom.
+    #[arg(long, value_name = "SECS")]
+    pub timeout: Option<u64>,
+
+    /// Load configuration from this file only (skip user/project discovery).
+    #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
+    pub config: Option<PathBuf>,
+
+    /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
+    #[arg(long)]
+    pub no_config: bool,
+
+    /// Output format: `json` (default, the programmatic contract) or `text`
+    /// (human-readable).
+    #[arg(long, value_parser = usage_format_parser(), default_value = "json")]
+    pub format: UsageFormat,
+
+    /// Emit compact single-line JSON instead of pretty-printed.
+    #[arg(long)]
+    pub compact: bool,
+}
+
+/// How `usage` renders its report. JSON is the contract; text is for humans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageFormat {
+    Json,
+    Text,
+}
+
+fn usage_format_parser() -> impl TypedValueParser<Value = UsageFormat> {
+    PossibleValuesParser::new(["json", "text"]).map(|s| match s.as_str() {
+        "text" => UsageFormat::Text,
+        _ => UsageFormat::Json,
+    })
 }
 
 #[derive(Args, Debug)]

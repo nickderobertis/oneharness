@@ -11,8 +11,9 @@
 
 use oneharness_core::domain::usage::{
     claude_control_response, normalize_timestamp, parse_claude_get_usage, parse_codex_rate_limits,
-    parse_copilot_user, AuthMode, IdentitySelector, ParsedUsage, UnavailableReason, UnknownReason,
-    UsageAvailability, UsageIdentity, UsageReport, UsedPercent, WindowUsage, SCHEMA_VERSION,
+    parse_copilot_user, parse_cursor_about, AuthMode, IdentitySelector, ParsedUsage,
+    UnavailableReason, UnknownReason, UsageAvailability, UsageIdentity, UsageReport, UsedPercent,
+    WindowUsage, SCHEMA_VERSION,
 };
 use serde_json::Value;
 
@@ -457,6 +458,48 @@ fn golden_report() -> UsageReport {
                     }
                 })),
             ),
+            // A second subscription of the same harness, selected by a named
+            // variant: the entry a consumer must be able to tell apart from the
+            // first even though both are `claude-code`.
+            UsageIdentity::new(
+                "claude-code",
+                IdentitySelector::EnvPath {
+                    env: "CLAUDE_CONFIG_DIR".to_string(),
+                    path: "/home/u/.claude-work".to_string(),
+                },
+                ParsedUsage::unknown(UnknownReason::ProbeFailed {
+                    message: "claude-code's `get_usage` control request did not answer within 60s"
+                        .to_string(),
+                }),
+            )
+            .with_variant(Some("work".to_string())),
+            // Plan tier only: a real plan name with an affirmative "no reader".
+            UsageIdentity::new(
+                "cursor",
+                IdentitySelector::Ambient,
+                parse_cursor_about(&serde_json::json!({"subscriptionTier": "Team"})),
+            ),
+            // The two affirmative "cannot report headroom" answers, which a
+            // consumer must be able to tell apart from each other and from
+            // `unknown`.
+            UsageIdentity::new(
+                "opencode",
+                IdentitySelector::Ambient,
+                unavailable(UnavailableReason::NoPlanQuota),
+            ),
+            UsageIdentity::new(
+                "qwen",
+                IdentitySelector::Ambient,
+                unavailable(UnavailableReason::NoHeadroomReader),
+            ),
+            // A harness that is simply not installed here.
+            UsageIdentity::new(
+                "crush",
+                IdentitySelector::Ambient,
+                ParsedUsage::unknown(UnknownReason::BinaryMissing {
+                    bin: "crush".to_string(),
+                }),
+            ),
             UsageIdentity::new(
                 "goose",
                 IdentitySelector::Ambient,
@@ -464,6 +507,15 @@ fn golden_report() -> UsageReport {
             ),
         ],
     )
+}
+
+/// An affirmative "no headroom to report", as the command layer builds it.
+fn unavailable(reason: UnavailableReason) -> ParsedUsage {
+    ParsedUsage {
+        auth_mode: AuthMode::Unknown,
+        plan: None,
+        availability: UsageAvailability::Unavailable { reason },
+    }
 }
 
 #[test]
@@ -570,4 +622,21 @@ fn absent_optionals_are_omitted_from_the_wire_rather_than_written_as_null() {
         "an API-key identity has no plan, and says so by omission"
     );
     assert_eq!(json["identities"][0]["plan"], "max");
+}
+
+/// Rewrites `tests/fixtures/usage-report-v01.json` from [`golden_report`].
+/// Ignored by default — run with `--ignored` after a deliberate contract change,
+/// then read the diff before committing it.
+#[test]
+#[ignore = "regenerates the checked-in golden; run deliberately"]
+fn regenerate_the_golden() {
+    let json = serde_json::to_string(&golden_report()).expect("the report serializes");
+    std::fs::write(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/usage-report-v01.json"
+        ),
+        format!("{json}\n"),
+    )
+    .expect("the fixture is writable");
 }

@@ -13049,3 +13049,839 @@ fn fallback_applies_a_schema_to_the_harness_that_runs() {
     assert_eq!(results[1]["schema_valid"], true);
     assert_eq!(results[1]["structured"]["name"], "Ada");
 }
+
+// ---------------------------------------------------------------------------
+// `oneharness usage` — subscription headroom, probed without spending a turn
+// ---------------------------------------------------------------------------
+
+/// One `control_response` line carrying the observed `get_usage` payload shape:
+/// two live plan windows, a null one, and the flat `limits[]` array.
+fn claude_usage_response() -> String {
+    serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": "oneharness-usage-1",
+            "response": {
+                "session": {"total_cost_usd": 0, "model_usage": {}},
+                "subscription_type": "max",
+                "rate_limits_available": true,
+                "rate_limits": {
+                    "five_hour": {
+                        "utilization": 42,
+                        "resets_at": "2026-07-29T18:30:00.123456+00:00"
+                    },
+                    "seven_day": {
+                        "utilization": 61,
+                        "resets_at": "2026-08-02T09:00:00.000000-04:00"
+                    },
+                    "seven_day_opus": null,
+                    "limits": [
+                        {"kind": "session", "percent": 42, "is_active": false},
+                        {"kind": "weekly_all", "percent": 61, "is_active": true}
+                    ]
+                }
+            }
+        }
+    })
+    .to_string()
+}
+
+/// codex's `account/rateLimits/read` reply, keyed by the JSON-RPC id the probe
+/// sent.
+fn codex_usage_response() -> String {
+    serde_json::json!({
+        "id": 2,
+        "result": {
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "limitId": "codex",
+                    "limitName": null,
+                    "primary": {
+                        "usedPercent": 31,
+                        "windowDurationMins": 10080,
+                        "resetsAt": 1_785_000_000
+                    },
+                    "secondary": null,
+                    "planType": "pro"
+                }
+            }
+        }
+    })
+    .to_string()
+}
+
+/// One harness's entry, cloned so a caller can read it from a temporary report.
+fn usage_identity(report: &Value, harness: &str) -> Value {
+    report["identities"]
+        .as_array()
+        .expect("identities")
+        .iter()
+        .find(|identity| identity["harness"] == harness)
+        .unwrap_or_else(|| panic!("no identity for {harness} in {report}"))
+        .clone()
+}
+
+#[test]
+fn usage_reports_headroom_for_a_probed_subscription_identity() {
+    // The claude probe drives one `get_usage` control request over stream-json
+    // and normalizes the reply — the whole feature, end to end, through the real
+    // binary. The mock answers only after reading a request line, so a probe that
+    // stopped sending one would never see this payload.
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "1"),
+            ("MOCK_STDOUT", &claude_usage_response()),
+            ("CLAUDE_CONFIG_DIR", "/home/u/.claude"),
+        ],
+    );
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let report = json_stdout(&output);
+    assert_eq!(report["schema_version"], "0.1");
+    let claude = usage_identity(&report, "claude-code");
+    assert_eq!(claude["auth_mode"], "subscription");
+    assert_eq!(claude["plan"], "max");
+    assert_eq!(
+        claude["selector"],
+        serde_json::json!({
+            "kind": "env_path",
+            "env": "CLAUDE_CONFIG_DIR",
+            "path": "/home/u/.claude"
+        }),
+        "the identity names the directory that selected it, never a credential"
+    );
+
+    let windows = claude["availability"]["windows"]
+        .as_array()
+        .expect("windows");
+    assert_eq!(claude["availability"]["state"], "available");
+    let five_hour = windows
+        .iter()
+        .find(|w| w["id"] == "five_hour")
+        .expect("five_hour");
+    assert_eq!(five_hour["usage"]["used_percent"], 42.0);
+    assert_eq!(five_hour["window_seconds"], 18000);
+    assert_eq!(five_hour["resets_at"], "2026-07-29T18:30:00Z");
+    assert!(
+        !windows.iter().any(|w| w["id"] == "seven_day_opus"),
+        "a null window means not-applicable, never 0% used"
+    );
+    let seven_day = windows
+        .iter()
+        .find(|w| w["id"] == "seven_day")
+        .expect("seven_day");
+    assert_eq!(
+        seven_day["resets_at"], "2026-08-02T13:00:00Z",
+        "a -04:00 reset is normalized to absolute UTC"
+    );
+    assert_eq!(seven_day["is_binding"], true);
+}
+
+#[test]
+fn usage_probes_send_no_prompt_so_no_model_turn_is_spent() {
+    // The zero-turn property is the whole reason this command is usable as a
+    // pre-flight check, and it lives in the argv and the single stdin line. The
+    // mock records both, so a probe that started sending a prompt would fail
+    // here rather than quietly start billing.
+    let argv_file =
+        std::env::temp_dir().join(format!("oneharness-usage-argv-{}", std::process::id()));
+    let _ = std::fs::remove_file(&argv_file);
+
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "1"),
+            ("MOCK_STDOUT", &claude_usage_response()),
+            ("MOCK_ARGV_FILE", argv_file.to_str().unwrap()),
+        ],
+    );
+    assert!(output.status.success());
+
+    let argv: Vec<String> = std::fs::read_to_string(&argv_file)
+        .expect("the mock recorded its argv")
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let _ = std::fs::remove_file(&argv_file);
+
+    assert!(
+        argv.contains(&"-p".to_string()) && argv.contains(&"--tools".to_string()),
+        "the probe runs headless with an empty tool set: {argv:?}"
+    );
+    assert_eq!(
+        argv.iter()
+            .filter(|a| a.as_str() == "--input-format")
+            .count(),
+        1
+    );
+    assert!(
+        argv.iter().all(|a| !a.contains("prompt")),
+        "no prompt flag may appear — a user message would cost a turn: {argv:?}"
+    );
+    // Everything after the flags is a flag value; no bare positional prompt.
+    assert!(
+        !argv
+            .iter()
+            .any(|a| a.contains("hello") || a.contains("usage?")),
+        "no prompt text: {argv:?}"
+    );
+}
+
+#[test]
+fn usage_reports_codex_headroom_from_its_app_server_exchange() {
+    // The codex probe writes three JSON-RPC lines (initialize, initialized, the
+    // read) before an answer arrives; the mock only replies after the third, so
+    // a probe that skipped the handshake would time out instead of passing.
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "codex",
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "3"),
+            ("MOCK_STDOUT", &codex_usage_response()),
+            ("CODEX_HOME", "/home/u/.codex"),
+        ],
+    );
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let codex = usage_identity(&json_stdout(&output), "codex");
+    assert_eq!(codex["plan"], "pro");
+    let window = &codex["availability"]["windows"][0];
+    assert_eq!(window["id"], "codex/primary");
+    assert_eq!(window["usage"]["used_percent"], 31.0);
+    assert_eq!(
+        window["window_seconds_source"], "reported",
+        "codex states its window length rather than having it inferred"
+    );
+}
+
+#[test]
+fn usage_reports_an_api_key_identity_as_unavailable_never_as_zero_used() {
+    let api_key_response = serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": "oneharness-usage-1",
+            "response": {
+                "subscription_type": null,
+                "rate_limits_available": false,
+                "rate_limits": null
+            }
+        }
+    })
+    .to_string();
+
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "1"),
+            ("MOCK_STDOUT", &api_key_response),
+        ],
+    );
+
+    assert!(output.status.success());
+    let claude = usage_identity(&json_stdout(&output), "claude-code");
+    assert_eq!(claude["auth_mode"], "api_key");
+    assert_eq!(claude["availability"]["state"], "unavailable");
+    assert_eq!(claude["availability"]["reason"], "api_key_auth");
+    assert!(
+        claude["availability"]["windows"].is_null(),
+        "an unavailable identity carries no window a renderer could draw as a bar"
+    );
+}
+
+#[test]
+fn usage_degrades_to_unknown_when_the_claude_payload_changes_shape() {
+    // Claude's usage surface is experimental and publishes no schema to diff, so
+    // the guard is the only thing between a renamed field and a confident
+    // "no headroom" for every user at once.
+    let drifted = serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": "oneharness-usage-1",
+            "response": {
+                "subscription_type": "max",
+                "plan_limits_available": true,
+                "plan_limits": {"five_hour": {"pct": 42}}
+            }
+        }
+    })
+    .to_string();
+
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_REPLY_AFTER_LINES", "1"), ("MOCK_STDOUT", &drifted)],
+    );
+
+    assert!(output.status.success());
+    let claude = usage_identity(&json_stdout(&output), "claude-code");
+    assert_eq!(claude["availability"]["state"], "unknown");
+    assert_eq!(claude["availability"]["reason"]["kind"], "probe_failed");
+    let message = claude["availability"]["reason"]["message"]
+        .as_str()
+        .expect("a message");
+    assert!(
+        message.contains("rate_limits_available"),
+        "the message must name what moved: {message}"
+    );
+}
+
+#[test]
+fn usage_reports_a_malformed_payload_and_a_timeout_as_data_not_a_crash() {
+    // A harness that answers with something unparseable.
+    let garbled = run(
+        &[
+            "usage",
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "1"),
+            ("MOCK_STDOUT", "not json at all"),
+        ],
+    );
+    assert!(
+        garbled.status.success(),
+        "a bad payload is data, not an exit code"
+    );
+    let claude = usage_identity(&json_stdout(&garbled), "claude-code");
+    assert_eq!(claude["availability"]["state"], "unknown");
+    assert_eq!(claude["availability"]["reason"]["kind"], "probe_failed");
+
+    // A harness that never answers: the probe must give up on its own deadline
+    // rather than hang the command.
+    let timed_out = run(
+        &[
+            "usage",
+            "--harness",
+            "codex",
+            "--bin",
+            &bin_override("codex"),
+            "--timeout",
+            "1",
+            "--compact",
+        ],
+        &[("MOCK_SLEEP_MS", "30000")],
+    );
+    assert!(
+        timed_out.status.success(),
+        "a timeout is data, not an exit code"
+    );
+    let codex = usage_identity(&json_stdout(&timed_out), "codex");
+    assert_eq!(codex["availability"]["state"], "unknown");
+    let message = codex["availability"]["reason"]["message"]
+        .as_str()
+        .expect("a message");
+    assert!(message.contains("did not answer"), "{message}");
+}
+
+#[test]
+fn usage_reports_a_missing_binary_as_data_rather_than_failing() {
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "codex",
+            "--bin",
+            &missing_bin("codex"),
+            "--compact",
+        ],
+        &[],
+    );
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let codex = usage_identity(&json_stdout(&output), "codex");
+    assert_eq!(codex["availability"]["state"], "unknown");
+    assert_eq!(codex["availability"]["reason"]["kind"], "binary_missing");
+}
+
+#[test]
+fn usage_covers_every_harness_with_the_five_headroomless_ones_saying_so() {
+    // The premise of oneharness is that one command works across every harness.
+    // A `usage` that silently covered three of eight would undermine it, so all
+    // eight appear — and the five that cannot report headroom say which kind of
+    // cannot they are, rather than being omitted or rendered as 0%.
+    let output = run(
+        &[
+            "usage",
+            "--all",
+            "--bin",
+            &missing_bin("claude-code"),
+            "--bin",
+            &missing_bin("codex"),
+            "--bin",
+            &missing_bin("cursor"),
+            "--compact",
+        ],
+        &[],
+    );
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let report = json_stdout(&output);
+    let harnesses: Vec<&str> = report["identities"]
+        .as_array()
+        .expect("identities")
+        .iter()
+        .map(|identity| identity["harness"].as_str().expect("an id"))
+        .collect();
+    assert_eq!(harnesses, ALL_IDS, "every harness is accounted for");
+
+    for (id, reason) in [
+        ("opencode", "no_plan_quota"),
+        ("goose", "no_plan_quota"),
+        ("qwen", "no_headroom_reader"),
+        ("crush", "no_headroom_reader"),
+    ] {
+        let identity = usage_identity(&report, id);
+        assert_eq!(
+            identity["availability"]["state"], "unavailable",
+            "{id} affirmatively has no headroom to report"
+        );
+        assert_eq!(identity["availability"]["reason"], reason, "{id}");
+    }
+
+    // No identity anywhere may carry a zero percentage it did not measure.
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !text.contains("\"used_percent\":0"),
+        "an absent figure must never be published as 0% used: {text}"
+    );
+}
+
+#[test]
+fn usage_attributes_two_identities_of_one_harness_separately() {
+    // Two subscriptions of the same harness, selected by the same variant
+    // machinery `run` uses. Each entry must carry its own credential directory
+    // and its own reading, or per-identity attribution is nominal only.
+    let fixture = ConfigFixture::new(
+        "usage-variants",
+        &format!(
+            "[harness.claude-code]\nbin = {bin:?}\n\
+             [harness.claude-code.variant.work]\nenv = {{ CLAUDE_CONFIG_DIR = \"/home/u/.claude-work\" }}\n\
+             [harness.claude-code.variant.personal]\nenv = {{ CLAUDE_CONFIG_DIR = \"/home/u/.claude-personal\" }}\n",
+            bin = mock_bin().display().to_string()
+        ),
+        "",
+    );
+
+    let output = run_with_config(
+        &[
+            "usage",
+            "--harness",
+            "claude-code:work,claude-code:personal",
+            "--cwd",
+            &fixture.cwd(),
+            "--compact",
+        ],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "1"),
+            ("MOCK_STDOUT", &claude_usage_response()),
+        ],
+        &fixture.user_config(),
+    );
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let identities = json_stdout(&output)["identities"].clone();
+    let identities = identities.as_array().expect("identities");
+    assert_eq!(identities.len(), 2);
+    assert_eq!(identities[0]["variant"], "work");
+    assert_eq!(identities[1]["variant"], "personal");
+    assert_eq!(
+        identities[0]["selector"]["path"], "/home/u/.claude-work",
+        "each identity names the credential directory that selected it"
+    );
+    assert_eq!(
+        identities[1]["selector"]["path"],
+        "/home/u/.claude-personal"
+    );
+    assert_ne!(
+        identities[0]["selector"], identities[1]["selector"],
+        "two subscriptions must not collapse into one entry"
+    );
+}
+
+#[test]
+fn usage_text_view_is_human_readable_and_prints_no_invented_percentage() {
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "claude-code,goose",
+            "--bin",
+            &bin_override("claude-code"),
+            "--format",
+            "text",
+        ],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "1"),
+            ("MOCK_STDOUT", &claude_usage_response()),
+        ],
+    );
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("claude-code"), "{text}");
+    assert!(text.contains("plan max"), "{text}");
+    assert!(text.contains("five_hour: 42% used"), "{text}");
+    assert!(text.contains("← binding"), "{text}");
+    assert!(
+        text.contains("goose") && text.contains("no first-party plan quota"),
+        "a harness with no quota says so in prose too: {text}"
+    );
+    assert!(
+        !text.contains("0% used"),
+        "goose has no percentage to print: {text}"
+    );
+    assert!(
+        serde_json::from_slice::<Value>(&output.stdout).is_err(),
+        "the text view is prose, not the JSON contract"
+    );
+}
+
+#[test]
+fn usage_rejects_an_unknown_harness_and_an_undeclared_variant() {
+    let unknown = run(&["usage", "--harness", "nope", "--compact"], &[]);
+    assert_eq!(unknown.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("unknown harness"));
+
+    let fixture = ConfigFixture::new("usage-bad-variant", "", "");
+    let undeclared = run_with_config(
+        &[
+            "usage",
+            "--harness",
+            "claude-code:ghost",
+            "--cwd",
+            &fixture.cwd(),
+        ],
+        &[],
+        &fixture.user_config(),
+    );
+    assert_eq!(
+        undeclared.status.code(),
+        Some(2),
+        "an identity that was never declared is a usage error, not a silent fallback"
+    );
+    assert!(String::from_utf8_lossy(&undeclared.stderr).contains("unknown harness variant"));
+}
+
+/// A one-shot local HTTP server for the Copilot probe: serves `status` and
+/// `body` to the first request, then stops. Returns its `http://127.0.0.1:port`
+/// base and the join handle, so a test can point the probe at it with no
+/// network and no credential.
+fn one_shot_http_server(
+    status: u16,
+    body: &'static str,
+) -> (String, std::thread::JoinHandle<String>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a local port");
+    let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("one request");
+        // Read just the request head; the probe sends no body.
+        let mut request = Vec::new();
+        let mut byte = [0u8; 1];
+        while !request.ends_with(b"\r\n\r\n") {
+            match std::io::Read::read(&mut stream, &mut byte) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => request.push(byte[0]),
+            }
+        }
+        let response = format!(
+            "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+        let _ = std::io::Write::flush(&mut stream);
+        String::from_utf8_lossy(&request).into_owned()
+    });
+    (base, handle)
+}
+
+/// Run `usage` with every GitHub token variable cleared, so a developer's real
+/// token can never reach a Copilot assertion.
+fn run_copilot_usage(args: &[&str], envs: &[(&str, &str)]) -> Output {
+    let mut cmd = Command::new(oneharness_bin());
+    cmd.env("ONEHARNESS_NO_CONFIG", "1");
+    for var in ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] {
+        cmd.env_remove(var);
+    }
+    cmd.args(args);
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    cmd.output().expect("failed to run oneharness")
+}
+
+fn curl_available() -> bool {
+    which_curl().is_some()
+}
+
+fn which_curl() -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join(format!("curl{}", std::env::consts::EXE_SUFFIX)))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+const COPILOT_BODY: &str = r#"{"copilot_plan":"individual","token_based_billing":true,
+ "quota_reset_date_utc":"2026-08-01T00:00:00.000Z",
+ "quota_snapshots":{
+   "chat":{"unlimited":true,"percent_remaining":100.0,"has_quota":true,"entitlement":0,
+           "remaining":0,"credits_used":0,"overage_permitted":false},
+   "premium_interactions":{"unlimited":false,"percent_remaining":0.0,"has_quota":false,
+           "entitlement":1500,"credits_used":13518,"remaining":-12019,
+           "overage_permitted":false}}}"#;
+
+#[test]
+fn usage_reads_copilot_headroom_out_of_band_from_a_bearer_token() {
+    if !curl_available() {
+        eprintln!("skipping: curl is not installed (the Copilot probe's HTTP client)");
+        return;
+    }
+    let (base, server) = one_shot_http_server(200, COPILOT_BODY);
+
+    let output = run_copilot_usage(
+        &[
+            "usage",
+            "--harness",
+            "copilot",
+            "--bin",
+            // The probe is out of band: it must answer with no Copilot CLI at all.
+            &missing_bin("copilot"),
+            "--compact",
+        ],
+        &[
+            ("ONEHARNESS_COPILOT_API_BASE", &base),
+            ("GH_TOKEN", "ghs_hermetic_token"),
+        ],
+    );
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let copilot = usage_identity(&json_stdout(&output), "copilot");
+    assert_eq!(copilot["plan"], "individual");
+    assert_eq!(
+        copilot["selector"],
+        serde_json::json!({"kind": "env_secret", "env": "GH_TOKEN"}),
+        "the identity names the variable, never the token"
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("ghs_hermetic_token"),
+        "a credential must never reach the report"
+    );
+
+    let windows = copilot["availability"]["windows"]
+        .as_array()
+        .expect("windows");
+    let chat = windows.iter().find(|w| w["id"] == "chat").expect("chat");
+    assert_eq!(
+        chat["usage"]["kind"], "unlimited",
+        "an unlimited quota reports no counters to draw as a full bar"
+    );
+    let premium = windows
+        .iter()
+        .find(|w| w["id"] == "premium_interactions")
+        .expect("premium_interactions");
+    assert_eq!(
+        premium["usage"]["used_percent"], 100.0,
+        "percent_remaining 0.0 is 100% used, not 0%"
+    );
+    assert_eq!(premium["usage"]["counters"]["remaining"], -12019);
+
+    let request = server.join().expect("the server thread");
+    assert!(
+        request.starts_with("GET /copilot_internal/user "),
+        "the probe issues one authenticated GET: {request}"
+    );
+    assert!(
+        request.contains("Authorization: Bearer ghs_hermetic_token"),
+        "the token rides the header, not the URL: {request}"
+    );
+}
+
+#[test]
+fn usage_reports_a_rejected_copilot_token_as_not_logged_in() {
+    if !curl_available() {
+        eprintln!("skipping: curl is not installed (the Copilot probe's HTTP client)");
+        return;
+    }
+    let (base, server) = one_shot_http_server(401, r#"{"message":"Bad credentials"}"#);
+
+    let output = run_copilot_usage(
+        &["usage", "--harness", "copilot", "--compact"],
+        &[
+            ("ONEHARNESS_COPILOT_API_BASE", &base),
+            ("GH_TOKEN", "ghs_expired"),
+        ],
+    );
+
+    assert!(
+        output.status.success(),
+        "an unauthenticated harness is data"
+    );
+    let copilot = usage_identity(&json_stdout(&output), "copilot");
+    assert_eq!(copilot["availability"]["state"], "unavailable");
+    assert_eq!(copilot["availability"]["reason"], "not_logged_in");
+    let _ = server.join();
+}
+
+#[test]
+fn usage_says_which_variable_to_set_when_no_copilot_token_exists() {
+    // With no token there is nothing to authenticate with — and Copilot's own
+    // stored login lives in the OS keyring, which oneharness cannot read. That
+    // is an unknown with an actionable message, not a claim about headroom.
+    let output = run_copilot_usage(&["usage", "--harness", "copilot", "--compact"], &[]);
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let copilot = usage_identity(&json_stdout(&output), "copilot");
+    assert_eq!(copilot["availability"]["state"], "unknown");
+    assert_eq!(copilot["selector"]["kind"], "ambient");
+    let message = copilot["availability"]["reason"]["message"]
+        .as_str()
+        .expect("a message");
+    for var in ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] {
+        assert!(message.contains(var), "{message}");
+    }
+}
+
+#[test]
+fn usage_reports_cursors_plan_tier_and_no_headroom_reader() {
+    let about = serde_json::json!({
+        "cliVersion": "2026.07.23-e383d2b",
+        "model": "Auto",
+        "subscriptionTier": "Team",
+        "userEmail": "someone@example.com"
+    })
+    .to_string();
+
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "cursor",
+            "--bin",
+            &bin_override("cursor"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", &about)],
+    );
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let cursor = usage_identity(&json_stdout(&output), "cursor");
+    assert_eq!(
+        cursor["plan"], "Team",
+        "the tier is a display name, kept verbatim"
+    );
+    assert_eq!(cursor["availability"]["state"], "unavailable");
+    assert_eq!(
+        cursor["availability"]["reason"], "no_headroom_reader",
+        "Cursor's dollar pools reach only its interactive TUI"
+    );
+}
+
+#[test]
+fn usage_reports_cursor_without_a_login_rather_than_authenticating() {
+    // A null tier means no stored token pair. The probe must report that and
+    // stop — resolving it would mean the API-key exchange, which writes to the
+    // shared credential store and has been observed clobbering a real login.
+    let about = serde_json::json!({
+        "cliVersion": "2026.07.23-e383d2b",
+        "subscriptionTier": null,
+        "userEmail": null
+    })
+    .to_string();
+
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "cursor",
+            "--bin",
+            &bin_override("cursor"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_STDOUT", &about),
+            ("CURSOR_API_KEY", "key_do_not_use"),
+        ],
+    );
+
+    assert!(output.status.success());
+    let cursor = usage_identity(&json_stdout(&output), "cursor");
+    assert_eq!(cursor["availability"]["reason"], "not_logged_in");
+    assert!(cursor["plan"].is_null());
+}
+
+#[test]
+fn the_cursor_probe_masks_the_api_key_from_its_child() {
+    // The API-key path is a *login*: it exchanges the key for tokens and
+    // persists them to the shared store. Masking the variable is what makes it
+    // impossible for this probe to authenticate, now or after a CLI release that
+    // starts honoring the key on `about`. The mock echoes what it inherited.
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "cursor",
+            "--bin",
+            &bin_override("cursor"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_ECHO_ENV", "CURSOR_API_KEY"),
+            ("CURSOR_API_KEY", "key_that_would_trigger_a_login"),
+        ],
+    );
+
+    assert!(output.status.success());
+    let cursor = usage_identity(&json_stdout(&output), "cursor");
+    let echoed = cursor["availability"]["reason"]["message"]
+        .as_str()
+        .expect("the child's own output is quoted back");
+    assert!(
+        echoed.contains("CURSOR_API_KEY="),
+        "the mock echoed what it inherited: {echoed}"
+    );
+    assert!(
+        !echoed.contains("key_that_would_trigger_a_login"),
+        "the child must inherit no API key: {echoed}"
+    );
+}

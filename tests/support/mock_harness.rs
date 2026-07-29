@@ -23,6 +23,10 @@
 //!                   received argv and write the contents of the file named by
 //!                   the NEXT argument to stdout, then exit — proving an
 //!                   argv-delivered temp file existed and what it carried.
+//!   MOCK_REPLY_AFTER_LINES  if set to N, read N newline-terminated request
+//!                   lines from stdin, then answer with MOCK_STDOUT and exit —
+//!                   the request/response shape the `usage` probes drive (a
+//!                   control request, or a JSON-RPC exchange).
 //!   MOCK_ECHO_STDIN if set, read ALL of stdin and write it verbatim to stdout,
 //!                   then exit — proving a prompt delivered on the child's stdin
 //!                   (the large-prompt escape hatch) actually arrived, and with
@@ -317,6 +321,40 @@ pub fn run() -> ! {
         let _ = write!(std::io::stdout(), "{contents}");
         let _ = std::io::stdout().flush();
         std::process::exit(0);
+    }
+
+    // Request/response mode: consume N newline-terminated requests from stdin,
+    // then answer with MOCK_STDOUT. This is what makes the usage probes — which
+    // write a control request or a JSON-RPC exchange and wait for a matching
+    // reply — drivable hermetically, with no harness, network, or credential.
+    // An early stdin EOF still answers, so a probe that writes fewer lines than
+    // expected sees a real response rather than a hang.
+    if let Ok(count) = std::env::var("MOCK_REPLY_AFTER_LINES") {
+        let wanted: usize = count.parse().unwrap_or(1);
+        let mut line = String::new();
+        for _ in 0..wanted {
+            line.clear();
+            match std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+        if let Ok(text) = std::env::var("MOCK_STDERR") {
+            let _ = write!(std::io::stderr(), "{text}");
+            let _ = std::io::stderr().flush();
+        }
+        let _ = writeln!(
+            std::io::stdout(),
+            "{}",
+            std::env::var("MOCK_STDOUT").unwrap_or_default()
+        );
+        let _ = std::io::stdout().flush();
+        std::process::exit(
+            std::env::var("MOCK_EXIT")
+                .ok()
+                .and_then(|code| code.parse().ok())
+                .unwrap_or(0),
+        );
     }
 
     if std::env::var_os("MOCK_ECHO_STDIN").is_some() {

@@ -78,6 +78,16 @@ pub struct UsageIdentity {
     // llmlint: ignore[invalid_states_unrepresentable] `RunResult::harness` and `HistoryRunRecord::harness` are the established representation for a registry id on the wire, and matching them is what lets a consumer join a usage identity to a run; a newtype here would make this one contract spell it differently from every sibling.
     /// Canonical harness id, matching a [`crate::domain::harness`] registry id.
     pub harness: String,
+    /// The named variant this identity came from, when it was selected by a
+    /// composed id (`claude-code:work`). Absent for a bare harness id, matching
+    /// [`crate::domain::report::RunResult::variant`] — so a consumer joins a
+    /// usage identity to the runs it describes on the same pair of fields.
+    ///
+    /// Two subscriptions of one harness therefore stay distinguishable even when
+    /// their [`IdentitySelector`]s do not distinguish them (a variant that
+    /// selects an identity by credential rather than by directory).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
     /// How this identity was selected — never the credential itself.
     pub selector: IdentitySelector,
     pub auth_mode: AuthMode,
@@ -95,11 +105,19 @@ impl UsageIdentity {
     pub fn new(harness: &str, selector: IdentitySelector, parsed: ParsedUsage) -> Self {
         Self {
             harness: harness.to_string(),
+            variant: None,
             selector,
             auth_mode: parsed.auth_mode,
             plan: parsed.plan,
             availability: parsed.availability,
         }
+    }
+
+    /// Attribute this identity to the named variant that selected it.
+    #[must_use]
+    pub fn with_variant(mut self, variant: Option<String>) -> Self {
+        self.variant = variant;
+        self
     }
 }
 

@@ -14061,3 +14061,54 @@ fn usage_honors_an_explicit_config_file_and_ignores_it_under_no_config() {
         String::from_utf8_lossy(&ignored.stderr)
     );
 }
+
+#[test]
+fn usage_refuses_an_out_of_range_timeout_rather_than_panicking() {
+    // A probe deadline is `Instant + Duration`, which *panics* on overflow — so
+    // an absurd timeout has to be refused at the boundary. "Never panic on a
+    // harness's behavior" is worth just as little if the CLI panics on its own
+    // input.
+    for value in ["18446744073709551615", "0", "3601"] {
+        let output = run(
+            &[
+                "usage",
+                "--harness",
+                "cursor",
+                "--bin",
+                &bin_override("cursor"),
+                "--timeout",
+                value,
+            ],
+            &[],
+        );
+
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "--timeout {value} must be a usage error"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stderr.contains("panicked"), "{stderr}");
+        assert!(
+            stderr.contains("not in") || stderr.contains("invalid value"),
+            "{stderr}"
+        );
+    }
+
+    // The largest accepted value still runs the probe normally.
+    let ok = run(
+        &[
+            "usage",
+            "--harness",
+            "cursor",
+            "--bin",
+            &bin_override("cursor"),
+            "--timeout",
+            "3600",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"subscriptionTier":"Team"}"#)],
+    );
+    assert!(ok.status.success(), "exit {:?}", ok.status.code());
+    assert_eq!(usage_identity(&json_stdout(&ok), "cursor")["plan"], "Team");
+}

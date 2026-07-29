@@ -80,6 +80,11 @@ const CODEX_RATE_LIMITS_ID: i64 = 2;
 /// How long a child that has already answered gets to exit on its own before its
 /// tree is terminated. Bounded so an idling harness cannot hold the probe.
 const EXIT_GRACE: Duration = Duration::from_millis(500);
+/// The longest deadline a probe will hold, whatever timeout it is handed.
+/// `Instant + Duration` **panics** on overflow, so an unreasonable timeout from
+/// a library caller has to be absorbed here rather than taking the process down
+/// — a probe is never allowed to panic on input.
+const TIMEOUT_CEILING: Duration = Duration::from_secs(3_600);
 
 /// One identity to probe: which probe, which binary, and the exact environment
 /// the child gets — the same variant environment `run` builds, so a usage
@@ -245,7 +250,10 @@ fn converse(
     stdin_lines: &[String],
     mut on_line: impl FnMut(&str) -> Option<ParsedUsage>,
 ) -> ProbeCapture {
-    let deadline = Instant::now() + request.timeout;
+    let now = Instant::now();
+    let deadline = now
+        .checked_add(request.timeout)
+        .unwrap_or_else(|| now + TIMEOUT_CEILING);
     let mut command = Command::new(&argv[0]);
     command
         .args(&argv[1..])

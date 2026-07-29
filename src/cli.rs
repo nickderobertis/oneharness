@@ -189,9 +189,13 @@ pub struct UsageArgs {
     #[arg(long, value_name = "DIR")]
     pub cwd: Option<PathBuf>,
 
-    /// Per-probe timeout in seconds (default 60). A probe that exceeds it is
-    /// reported as unknown, never as headroom.
-    #[arg(long, value_name = "SECS")]
+    /// Per-probe timeout in seconds (default 60, max 3600). A probe that exceeds
+    /// it is reported as unknown, never as headroom.
+    #[arg(
+        long,
+        value_name = "SECS",
+        value_parser = clap::value_parser!(u64).range(1..=3_600)
+    )]
     pub timeout: Option<u64>,
 
     /// Load configuration from this file only (skip user/project discovery).

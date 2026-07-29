@@ -624,21 +624,29 @@ fn absent_optionals_are_omitted_from_the_wire_rather_than_written_as_null() {
     assert_eq!(json["identities"][0]["plan"], "max");
 }
 
-/// Rewrites `tests/fixtures/usage-report-v01.json` from [`golden_report`].
+/// Rewrites `tests/fixtures/usage-report-v01.json` from [`golden_report`], then
+/// asserts the file it left behind is one a consumer can actually read back.
 /// Ignored by default — run with `--ignored` after a deliberate contract change,
-/// then read the diff before committing it.
+/// then read the diff before committing it. Regenerating without checking the
+/// result would let a broken serialization author its own passing golden.
 #[test]
 #[ignore = "regenerates the checked-in golden; run deliberately"]
-fn regenerate_the_golden() {
+fn regenerating_the_golden_leaves_a_readable_contract() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/usage-report-v01.json"
+    );
     let json = serde_json::to_string(&golden_report()).expect("the report serializes");
-    std::fs::write(
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/usage-report-v01.json"
-        ),
-        format!("{json}\n"),
-    )
-    .expect("the fixture is writable");
+    std::fs::write(path, format!("{json}\n")).expect("the fixture is writable");
+
+    let written = std::fs::read_to_string(path).expect("the fixture reads back");
+    let parsed: UsageReport =
+        serde_json::from_str(&written).expect("the regenerated golden deserializes");
+    assert_eq!(parsed, golden_report(), "the golden must round-trip");
+    assert_eq!(
+        parsed.schema_version, SCHEMA_VERSION,
+        "a regenerated golden that no longer matches SCHEMA_VERSION means a bump was missed"
+    );
 }
 
 /// codex's own generated contract for `account/rateLimits/read`, snapshotted

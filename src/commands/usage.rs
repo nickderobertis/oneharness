@@ -42,8 +42,10 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_PARALLEL_PROBES: usize = 4;
 
 pub fn run(args: &UsageArgs) -> Result<i32, OneharnessError> {
-    // Like `detect`, probing defaults to every harness; naming any narrows it.
-    let all = args.all || (args.harness.is_empty() && args.exclude.is_empty());
+    // Probing defaults to every harness; only naming one with `--harness`
+    // narrows the sweep. `--exclude` alone therefore means "everything but
+    // these" rather than an empty selection.
+    let all = args.all || args.harness.is_empty();
     let specs = select_specs(all, &args.harness, &args.exclude)?;
     let selected_ids = dedupe_exact_ids(&args.harness);
 
@@ -241,10 +243,6 @@ fn now_rfc3339() -> String {
         .map_or(0, |elapsed| elapsed.as_secs() as i64);
     oneharness_core::domain::history::format_rfc3339(secs)
 }
-
-// ---------------------------------------------------------------------------
-// Human-readable rendering
-// ---------------------------------------------------------------------------
 
 /// Render the report for a human. The rule the JSON contract encodes carries
 /// over verbatim: an absent figure is *never* drawn as a percentage. An

@@ -186,10 +186,6 @@ fn copilot_token_env(env: &EnvView<'_>) -> Option<(&'static str, String)> {
         .find_map(|name| env.get(name).map(|value| (*name, value)))
 }
 
-// ---------------------------------------------------------------------------
-// The shared spawn/converse loop
-// ---------------------------------------------------------------------------
-
 /// What one probe subprocess produced.
 struct ProbeCapture {
     /// The answer an `on_line` callback recognized, if any.
@@ -334,10 +330,6 @@ fn converse(
     }
 }
 
-// ---------------------------------------------------------------------------
-// claude-code
-// ---------------------------------------------------------------------------
-
 /// The exact zero-turn invocation: `-p` with stream-json in and out, an empty
 /// tool set, and no prompt. The control request rides stdin; no user message is
 /// ever sent, so the session completes zero turns.
@@ -396,10 +388,6 @@ fn probe_claude(request: &UsageProbeRequest) -> ProbedIdentity {
     });
     ProbedIdentity { selector, parsed }
 }
-
-// ---------------------------------------------------------------------------
-// codex
-// ---------------------------------------------------------------------------
 
 fn codex_argv(bin: &str) -> Vec<String> {
     vec![
@@ -465,10 +453,6 @@ fn probe_codex(request: &UsageProbeRequest) -> ProbedIdentity {
     ProbedIdentity { selector, parsed }
 }
 
-// ---------------------------------------------------------------------------
-// cursor
-// ---------------------------------------------------------------------------
-
 fn cursor_argv(bin: &str) -> Vec<String> {
     vec![
         bin.to_string(),
@@ -504,10 +488,6 @@ fn probe_cursor(request: &UsageProbeRequest) -> ProbedIdentity {
         parsed,
     }
 }
-
-// ---------------------------------------------------------------------------
-// copilot
-// ---------------------------------------------------------------------------
 
 fn probe_copilot(request: &UsageProbeRequest) -> ProbedIdentity {
     let env = request.env_view();

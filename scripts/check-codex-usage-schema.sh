@@ -26,8 +26,13 @@ out="$(mktemp -d)"
 trap 'rm -rf "$out"' EXIT
 
 if ! codex app-server generate-json-schema --out "$out" >/dev/null 2>"$out/err"; then
-    echo "check-codex-usage-schema: 'codex app-server generate-json-schema' failed:" >&2
+    echo "check-codex-usage-schema: 'codex app-server generate-json-schema' failed on codex $(codex --version):" >&2
     cat "$out/err" >&2
+    echo "  Run that command yourself to see it in full. If the subcommand was removed or renamed," >&2
+    echo "  the app-server contract is no longer generatable: update this script to the new command," >&2
+    echo "  or drop it and rely on the hermetic field assertions in crates/oneharness-core/tests/usage.rs." >&2
+    echo "  If codex is simply broken here (a partial install, an unwritable temp dir), reinstall it —" >&2
+    echo "  this gate needs a working 'codex app-server'." >&2
     exit 1
 fi
 

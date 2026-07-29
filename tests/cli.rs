@@ -11,6 +11,7 @@ use std::process::{Command, Output, Stdio};
 use oneharness_core::domain::events::{ActionEvent, TimingSource, ToolCallStatus};
 use oneharness_core::domain::history::{HistoryLabels, HistoryLine, HistoryStreamEnvelope};
 use oneharness_core::domain::report::RunStreamEnvelope;
+use oneharness_core::domain::usage::{UsageProbe, UsageSupport};
 use oneharness_core::io::history::HistoryWriter;
 use serde_json::Value;
 
@@ -13050,10 +13051,6 @@ fn fallback_applies_a_schema_to_the_harness_that_runs() {
     assert_eq!(results[1]["structured"]["name"], "Ada");
 }
 
-// ---------------------------------------------------------------------------
-// `oneharness usage` — subscription headroom, probed without spending a turn
-// ---------------------------------------------------------------------------
-
 /// One `control_response` line carrying the observed `get_usage` payload shape:
 /// two live plan windows, a null one, and the flat `limits[]` array.
 fn claude_usage_response() -> String {
@@ -13438,8 +13435,14 @@ fn usage_reports_a_missing_binary_as_data_rather_than_failing() {
 fn usage_covers_every_harness_with_the_five_headroomless_ones_saying_so() {
     // The premise of oneharness is that one command works across every harness.
     // A `usage` that silently covered three of eight would undermine it, so all
-    // eight appear — and the five that cannot report headroom say which kind of
-    // cannot they are, rather than being omitted or rendered as 0%.
+    // eight appear — and each of the five that cannot report headroom says which
+    // kind of cannot it is, rather than being omitted or rendered as 0%.
+    let cursor_about = serde_json::json!({
+        "cliVersion": "2026.07.23-e383d2b",
+        "subscriptionTier": "Team"
+    })
+    .to_string();
+
     let output = run(
         &[
             "usage",
@@ -13449,10 +13452,10 @@ fn usage_covers_every_harness_with_the_five_headroomless_ones_saying_so() {
             "--bin",
             &missing_bin("codex"),
             "--bin",
-            &missing_bin("cursor"),
+            &bin_override("cursor"),
             "--compact",
         ],
-        &[],
+        &[("MOCK_STDOUT", &cursor_about)],
     );
 
     assert!(output.status.success(), "exit {:?}", output.status.code());
@@ -13470,6 +13473,9 @@ fn usage_covers_every_harness_with_the_five_headroomless_ones_saying_so() {
         ("goose", "no_plan_quota"),
         ("qwen", "no_headroom_reader"),
         ("crush", "no_headroom_reader"),
+        // Cursor is the fifth: it *does* answer, with a plan tier and an
+        // affirmative "no non-interactive reader" — not a percentage.
+        ("cursor", "no_headroom_reader"),
     ] {
         let identity = usage_identity(&report, id);
         assert_eq!(
@@ -13477,13 +13483,46 @@ fn usage_covers_every_harness_with_the_five_headroomless_ones_saying_so() {
             "{id} affirmatively has no headroom to report"
         );
         assert_eq!(identity["availability"]["reason"], reason, "{id}");
+        assert!(
+            identity["availability"]["windows"].is_null(),
+            "{id} must expose no window a renderer could draw as a bar"
+        );
     }
+    assert_eq!(usage_identity(&report, "cursor")["plan"], "Team");
 
     // No identity anywhere may carry a zero percentage it did not measure.
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(
         !text.contains("\"used_percent\":0"),
         "an absent figure must never be published as 0% used: {text}"
+    );
+}
+
+#[test]
+fn usage_selection_narrows_with_exclude() {
+    // `usage` defaults to every harness, so `--exclude` is the only way to drop
+    // one from a sweep — a distinct path from naming harnesses explicitly.
+    let output = run(
+        &[
+            "usage",
+            "--exclude",
+            "claude-code,codex,cursor",
+            "--compact",
+        ],
+        &[],
+    );
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let harnesses: Vec<String> = json_stdout(&output)["identities"]
+        .as_array()
+        .expect("identities")
+        .iter()
+        .map(|identity| identity["harness"].as_str().expect("an id").to_string())
+        .collect();
+    assert_eq!(
+        harnesses,
+        vec!["opencode", "goose", "qwen", "crush", "copilot"],
+        "the excluded harnesses are dropped and the rest keep registry order"
     );
 }
 
@@ -13883,5 +13922,125 @@ fn the_cursor_probe_masks_the_api_key_from_its_child() {
     assert!(
         !echoed.contains("key_that_would_trigger_a_login"),
         "the child must inherit no API key: {echoed}"
+    );
+}
+
+/// How each registry tier must be spelled in the README matrix's `usage` column
+/// and under the usage reference's support-tier table. Exhaustive on purpose: a
+/// new probe or tier cannot be added without deciding how it reads to a human.
+fn documented_usage_tier(support: UsageSupport) -> (&'static str, &'static str) {
+    match support {
+        UsageSupport::Probed(UsageProbe::ClaudeGetUsage) => {
+            ("`headroom` (`get_usage`)", "**Headroom**")
+        }
+        UsageSupport::Probed(UsageProbe::CodexAppServer) => {
+            ("`headroom` (app-server)", "**Headroom**")
+        }
+        UsageSupport::Probed(UsageProbe::CopilotUserEndpoint) => {
+            ("`headroom` (GitHub API)", "**Headroom**")
+        }
+        UsageSupport::Probed(UsageProbe::CursorAbout) => ("plan tier only", "**Plan tier only**"),
+        UsageSupport::NoPlanQuota => ("no plan quota", "**No plan quota**"),
+        UsageSupport::NoHeadroomReader => ("no reader", "**No reader**"),
+    }
+}
+
+/// The row for `id` in a markdown table whose first cell is `` `id` ``.
+fn markdown_row<'a>(doc: &'a str, id: &str) -> Option<&'a str> {
+    doc.lines()
+        .find(|line| line.starts_with(&format!("| `{id}` |")))
+}
+
+#[test]
+fn the_documented_usage_tiers_match_the_registry() {
+    // `HarnessSpec.usage` is the source; the README matrix and the usage
+    // reference restate it for readers. Restating a registry value is exactly
+    // how a doc goes quietly stale — someone flips a tier after an upstream
+    // release and the tables keep promising the old answer. This fails instead.
+    let readme = std::fs::read_to_string("README.md").expect("README.md");
+    let reference =
+        std::fs::read_to_string("docs/harness-usage.md").expect("docs/harness-usage.md");
+
+    for spec in oneharness_core::domain::harness::all() {
+        let (readme_cell, tier_heading) = documented_usage_tier(spec.usage);
+        let id = spec.id;
+
+        let row = markdown_row(&readme, id)
+            .unwrap_or_else(|| panic!("README.md has no harness row for `{id}`"));
+        assert!(
+            row.ends_with(&format!("| {readme_cell} |")),
+            "README.md's `usage` column for `{id}` should end with `| {readme_cell} |`, got:\n{row}"
+        );
+
+        assert!(
+            reference.lines().any(|line| line.starts_with("| ")
+                && line.contains(tier_heading)
+                && line.contains(&format!("`{id}`"))),
+            "docs/harness-usage.md lists no {tier_heading} row for `{id}`"
+        );
+    }
+}
+
+#[test]
+fn usage_honors_an_explicit_config_file_and_ignores_it_under_no_config() {
+    // `--config` pins the whole layered configuration to one file, which is how
+    // a usage identity gets its variant. `--no-config` must then ignore the very
+    // same file, so a probe cannot be reshaped by config a caller opted out of.
+    let fixture = ConfigFixture::new(
+        "usage-explicit-config",
+        "",
+        &format!(
+            "[harness.claude-code]\nbin = {bin:?}\n\
+             [harness.claude-code.variant.work]\nenv = {{ CLAUDE_CONFIG_DIR = \"/home/u/.claude-work\" }}\n",
+            bin = mock_bin().display().to_string()
+        ),
+    );
+    let config = fixture.user_config();
+    let config = config.to_str().expect("a utf-8 path");
+
+    let mut cmd = Command::new(oneharness_bin());
+    for var in ENV_OVERRIDE_VARS {
+        cmd.env_remove(var);
+    }
+    let output = cmd
+        .args([
+            "usage",
+            "--harness",
+            "claude-code:work",
+            "--config",
+            config,
+            "--compact",
+        ])
+        .env("MOCK_REPLY_AFTER_LINES", "1")
+        .env("MOCK_STDOUT", claude_usage_response())
+        .output()
+        .expect("failed to run oneharness");
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let claude = usage_identity(&json_stdout(&output), "claude-code");
+    assert_eq!(claude["variant"], "work");
+    assert_eq!(
+        claude["selector"]["path"], "/home/u/.claude-work",
+        "the identity came from the config file named on the CLI"
+    );
+
+    // `--no-config` ignores that same file: with configuration off, the variant
+    // was never declared, so the identity is a loud usage error rather than a
+    // probe silently pointed at the base harness's ambient credentials.
+    let mut cmd = Command::new(oneharness_bin());
+    for var in ENV_OVERRIDE_VARS {
+        cmd.env_remove(var);
+    }
+    let ignored = cmd
+        .args(["usage", "--harness", "claude-code:work", "--no-config"])
+        .env("ONEHARNESS_CONFIG", config)
+        .output()
+        .expect("failed to run oneharness");
+
+    assert_eq!(ignored.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&ignored.stderr).contains("unknown harness variant"),
+        "stderr: {}",
+        String::from_utf8_lossy(&ignored.stderr)
     );
 }

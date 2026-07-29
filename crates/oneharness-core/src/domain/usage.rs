@@ -473,23 +473,24 @@ impl ParsedUsage {
     }
 }
 
-/// How much of a subscription's headroom a harness can report, and by which
-/// probe. Registry data ([`crate::domain::harness::HarnessSpec::usage`]) sourced
-/// from `docs/harness-usage.md`, never guessed.
+/// What `oneharness usage` can learn about a harness. Registry data
+/// ([`crate::domain::harness::HarnessSpec::usage`]) sourced from
+/// `docs/harness-usage.md`, never guessed.
 ///
 /// The two non-probing variants are the point of the enum: five of the eight
 /// harnesses cannot report headroom, and *which kind* of cannot they are is a
 /// real distinction — one has no quota, the other has no reader. Collapsing them
 /// (or omitting those harnesses) would make `oneharness usage` quietly cover
 /// three of eight while claiming to cover the fleet.
+///
+/// *How much* a probed harness reports is a property of the probe
+/// ([`UsageProbe::reports`]), not a separate choice made here: pairing a tier
+/// with a probe would let the registry claim headroom from a probe that reads
+/// only a plan name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsageSupport {
-    /// A probe that reads real remaining-headroom windows: claude-code, codex,
-    /// copilot.
-    Headroom(UsageProbe),
-    /// A probe that reads only the plan tier — the harness publishes no
-    /// non-interactive headroom reader (cursor).
-    PlanTier(UsageProbe),
+    /// Read by a zero-turn probe, which decides how much it can report.
+    Probed(UsageProbe),
     /// No first-party plan quota exists to report ([`UnavailableReason::NoPlanQuota`]).
     NoPlanQuota,
     /// A plan quota exists with no non-interactive reader
@@ -502,7 +503,7 @@ impl UsageSupport {
     #[must_use]
     pub fn probe(&self) -> Option<UsageProbe> {
         match *self {
-            Self::Headroom(probe) | Self::PlanTier(probe) => Some(probe),
+            Self::Probed(probe) => Some(probe),
             Self::NoPlanQuota | Self::NoHeadroomReader => None,
         }
     }
@@ -514,9 +515,21 @@ impl UsageSupport {
         match *self {
             Self::NoPlanQuota => Some(UnavailableReason::NoPlanQuota),
             Self::NoHeadroomReader => Some(UnavailableReason::NoHeadroomReader),
-            Self::Headroom(_) | Self::PlanTier(_) => None,
+            Self::Probed(_) => None,
         }
     }
+}
+
+/// How much a probe can report — a property of what the harness exposes, so it
+/// cannot disagree with the probe that reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageReporting {
+    /// Real remaining-headroom windows.
+    Headroom,
+    /// The plan tier only; the harness publishes no non-interactive headroom
+    /// reader, so a successful read is still an affirmative
+    /// [`UnavailableReason::NoHeadroomReader`].
+    PlanTier,
 }
 
 /// One zero-turn probe. Every variant is chosen because it completes **without
@@ -554,6 +567,19 @@ impl UsageProbe {
     #[must_use]
     pub fn spawns_harness(&self) -> bool {
         !matches!(self, Self::CopilotUserEndpoint)
+    }
+
+    /// How much this probe can report. Cursor's is the lone
+    /// [`UsageReporting::PlanTier`]: its dollar pools reach only the interactive
+    /// TUI, so `about` yields a plan name and nothing more.
+    #[must_use]
+    pub fn reports(&self) -> UsageReporting {
+        match self {
+            Self::ClaudeGetUsage | Self::CodexAppServer | Self::CopilotUserEndpoint => {
+                UsageReporting::Headroom
+            }
+            Self::CursorAbout => UsageReporting::PlanTier,
+        }
     }
 }
 
@@ -2381,17 +2407,31 @@ mod tests {
     #[test]
     fn usage_support_maps_each_tier_to_a_probe_or_an_affirmative_reason() {
         assert_eq!(
-            UsageSupport::Headroom(UsageProbe::ClaudeGetUsage).probe(),
+            UsageSupport::Probed(UsageProbe::ClaudeGetUsage).probe(),
             Some(UsageProbe::ClaudeGetUsage)
         );
         assert_eq!(
-            UsageSupport::Headroom(UsageProbe::ClaudeGetUsage).unprobed_reason(),
+            UsageSupport::Probed(UsageProbe::ClaudeGetUsage).unprobed_reason(),
             None
         );
         assert_eq!(
-            UsageSupport::PlanTier(UsageProbe::CursorAbout).probe(),
+            UsageSupport::Probed(UsageProbe::CursorAbout).probe(),
             Some(UsageProbe::CursorAbout)
         );
+        // How much a probe reports belongs to the probe, so the registry cannot
+        // claim headroom from one that only reads a plan name.
+        assert_eq!(
+            UsageProbe::CursorAbout.reports(),
+            UsageReporting::PlanTier,
+            "`about` yields a plan tier and nothing more"
+        );
+        for probe in [
+            UsageProbe::ClaudeGetUsage,
+            UsageProbe::CodexAppServer,
+            UsageProbe::CopilotUserEndpoint,
+        ] {
+            assert_eq!(probe.reports(), UsageReporting::Headroom);
+        }
 
         assert_eq!(UsageSupport::NoPlanQuota.probe(), None);
         assert_eq!(

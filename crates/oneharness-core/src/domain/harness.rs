@@ -703,7 +703,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // The `get_usage` control request is the only structured plan-headroom
         // source, and it costs nothing: no user message is sent, so the session
         // reports `num_turns: 0` / `total_cost_usd: 0`.
-        usage: UsageSupport::Headroom(UsageProbe::ClaudeGetUsage),
+        usage: UsageSupport::Probed(UsageProbe::ClaudeGetUsage),
         build_argv: argv_claude_code,
     },
     HarnessSpec {
@@ -804,7 +804,7 @@ static REGISTRY: &[HarnessSpec] = &[
         reasoning: Some(ReasoningDelivery::ConfigKv("model_reasoning_effort")),
         // `exec --json` carries no rate-limit metadata at all, so usage needs its
         // own app-server probe rather than piggybacking on a dispatch.
-        usage: UsageSupport::Headroom(UsageProbe::CodexAppServer),
+        usage: UsageSupport::Probed(UsageProbe::CodexAppServer),
         build_argv: argv_codex,
     },
     HarnessSpec {
@@ -1209,7 +1209,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // requirement, so this answers with no Copilot CLI installed and before a
         // run rather than after a turn is spent. The CLI's own JSONL quota events
         // are unreachable as oneharness wires Copilot (text mode).
-        usage: UsageSupport::Headroom(UsageProbe::CopilotUserEndpoint),
+        usage: UsageSupport::Probed(UsageProbe::CopilotUserEndpoint),
         build_argv: argv_copilot,
     },
     HarnessSpec {
@@ -1299,7 +1299,7 @@ static REGISTRY: &[HarnessSpec] = &[
         // whose sole callsite is the interactive TUI — zero non-interactive or
         // run-output callsites — so `about --format json`'s `subscriptionTier` is
         // the whole non-interactive surface.
-        usage: UsageSupport::PlanTier(UsageProbe::CursorAbout),
+        usage: UsageSupport::Probed(UsageProbe::CursorAbout),
         build_argv: argv_cursor,
     },
 ];
@@ -2561,18 +2561,18 @@ mod tests {
             vec![
                 (
                     "claude-code",
-                    UsageSupport::Headroom(UsageProbe::ClaudeGetUsage)
+                    UsageSupport::Probed(UsageProbe::ClaudeGetUsage)
                 ),
-                ("codex", UsageSupport::Headroom(UsageProbe::CodexAppServer)),
+                ("codex", UsageSupport::Probed(UsageProbe::CodexAppServer)),
                 ("opencode", UsageSupport::NoPlanQuota),
                 ("goose", UsageSupport::NoPlanQuota),
                 ("qwen", UsageSupport::NoHeadroomReader),
                 ("crush", UsageSupport::NoHeadroomReader),
                 (
                     "copilot",
-                    UsageSupport::Headroom(UsageProbe::CopilotUserEndpoint)
+                    UsageSupport::Probed(UsageProbe::CopilotUserEndpoint)
                 ),
-                ("cursor", UsageSupport::PlanTier(UsageProbe::CursorAbout)),
+                ("cursor", UsageSupport::Probed(UsageProbe::CursorAbout)),
             ]
         );
     }

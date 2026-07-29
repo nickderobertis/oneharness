@@ -79,8 +79,7 @@ the other four cannot, and the column distinguishes *why*: **no plan quota**
 means the quantity does not exist (OpenCode Zen is pay-as-you-go, Goose has no
 first-party plan), while **no reader** means a real quota exists that the CLI
 exposes no non-interactive way to read (Crush's Hyper credits, Qwen's weekly
-Coding Plan quota). Every probe, tier, and negative is sourced from
-[`docs/harness-usage.md`](docs/harness-usage.md).
+Coding Plan quota).
 
 The `--resume` column shows each harness's headless continuation flag and whether
 it can **fork** (`run --resume <id> --fork`: branch a new session from the resumed
@@ -1393,9 +1392,10 @@ Three things it will not do:
   non-zero.
 - **It never authenticates anything.** Every probe reads existing credentials.
   In particular the Cursor probe reads a plan tier only from a **pre-existing**
-  login and masks `CURSOR_API_KEY` from its child, because Cursor's API-key path
-  is a login that writes to the shared credential store (see the hazard note in
-  [`docs/harness-usage.md`](docs/harness-usage.md)).
+  login and masks `CURSOR_API_KEY` from its child: Cursor's API-key path is not a
+  per-process selector but a *login* that exchanges the key for tokens and writes
+  them to the shared credential store, which has been observed overwriting a real
+  user login. Absence of a login is reported, never resolved by authenticating.
 
 Useful flags: `--all` / `--harness <id,…>` / `--exclude <id,…>` (selection,
 defaulting to every harness), `--format <json|text>`, `--compact`,

@@ -20,12 +20,12 @@ use serde_json::Value;
 /// writes to stdout when a probe sends one `get_usage` control request: the
 /// payload arrives on one line among several, so a consumer must find it.
 const CLAUDE_STREAM: &str = r#"{"type":"system","subtype":"init","apiKeySource":"none","claude_code_version":"2.1.220"}
-{"type":"control_response","response":{"subtype":"success","request_id":"req_1","response":{"session":{"total_cost_usd":0,"total_api_duration_ms":0,"total_duration_ms":607,"total_lines_added":0,"total_lines_removed":0,"model_usage":{}},"subscription_type":"max","rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":42,"resets_at":"2026-07-29T18:30:00.123456+00:00","limit_dollars":null,"used_dollars":null,"remaining_dollars":null},"seven_day":{"utilization":61,"resets_at":"2026-08-02T09:00:00.000000-04:00","limit_dollars":null,"used_dollars":null,"remaining_dollars":null},"seven_day_opus":null,"tangelo":null,"amber_ladder":null,"limits":[{"kind":"session","group":"session","percent":42,"severity":"normal","resets_at":"2026-07-29T18:30:00.123456+00:00","scope":null,"is_active":false},{"kind":"weekly_all","group":"weekly","percent":61,"severity":"normal","resets_at":"2026-08-02T13:00:00.000000+00:00","scope":null,"is_active":true}],"member_dashboard_available":true},"behaviors":null}}}"#;
+{"type":"control_response","response":{"subtype":"success","request_id":"req_1","response":{"session":{"total_cost_usd":0,"total_api_duration_ms":0,"total_duration_ms":607,"total_lines_added":0,"total_lines_removed":0,"model_usage":{}},"subscription_type":"max","rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":42,"resets_at":"2026-07-29T18:30:00.123456+00:00","limit_dollars":null,"used_dollars":null,"remaining_dollars":null},"seven_day":{"utilization":61,"resets_at":"2026-08-02T09:00:00.000000-04:00","limit_dollars":null,"used_dollars":null,"remaining_dollars":null},"seven_day_opus":null,"tangelo":null,"amber_ladder":null,"limits":[{"kind":"session","group":"session","percent":42,"severity":"normal","resets_at":"2026-07-29T18:30:00.123456+00:00","scope":null,"is_active":false},{"kind":"weekly_all","group":"weekly","percent":61,"severity":"normal","resets_at":"2026-08-02T13:00:00.000000+00:00","scope":null,"is_active":true},{"kind":"weekly_scoped","group":"weekly","percent":17,"severity":"normal","resets_at":"2026-08-02T13:00:00.000000+00:00","scope":{"model":{"id":null,"display_name":"Opus 5"},"surface":null},"is_active":false}],"member_dashboard_available":true},"behaviors":null}}}"#;
 
 /// What a probe reads back from `codex app-server --stdio`: the `initialize`
 /// reply first, then the rate-limit reply, so a consumer must match on id.
 const CODEX_EXCHANGE: &str = r#"{"jsonrpc":"2.0","id":1,"result":{"userAgent":"codex-cli/0.145.0"}}
-{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":31,"windowDurationMins":10080,"resetsAt":1785000000},"secondary":null,"credits":{"hasCredits":true,"unlimited":false,"balance":"12.34"},"individualLimit":null,"spendControlReached":false,"planType":"pro","rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":31,"windowDurationMins":10080,"resetsAt":1785000000},"secondary":null,"credits":null,"individualLimit":null,"spendControlReached":null,"planType":"pro","rateLimitReachedType":null}},"rateLimitResetCredits":{"availableCount":0,"credits":[]}}}"#;
+{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":31,"windowDurationMins":10080,"resetsAt":1785000000},"secondary":null,"credits":{"hasCredits":true,"unlimited":false,"balance":"12.34"},"individualLimit":null,"spendControlReached":false,"planType":"pro","rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":31,"windowDurationMins":10080,"resetsAt":1785000000},"secondary":null,"credits":null,"individualLimit":null,"spendControlReached":null,"planType":"pro","rateLimitReachedType":null},"limit_model_x":{"limitId":"limit_model_x","limitName":"GPT-5.3 Codex","primary":{"usedPercent":12,"windowDurationMins":10080,"resetsAt":1785000000},"secondary":null,"credits":null,"individualLimit":null,"spendControlReached":null,"planType":"pro","rateLimitReachedType":null}},"rateLimitResetCredits":{"availableCount":0,"credits":[]}}}"#;
 
 /// The `GET /copilot_internal/user` response body.
 const COPILOT_BODY: &str = r#"{"copilot_plan":"individual","access_type_sku":"monthly_subscriber_quota","quota_reset_date":"2026-08-01","quota_reset_date_utc":"2026-08-01T00:00:00.000Z","token_based_billing":true,"quota_snapshots":{"chat":{"unlimited":true,"percent_remaining":100.0,"has_quota":true,"entitlement":0,"remaining":0,"credits_used":0,"overage_permitted":false,"quota_reset_at":0},"premium_interactions":{"unlimited":false,"percent_remaining":0.0,"has_quota":false,"entitlement":1500,"credits_used":13518,"remaining":-12019,"overage_permitted":false,"quota_reset_at":0}}}"#;
@@ -97,6 +97,21 @@ fn a_consumer_reads_claude_headroom_from_a_captured_stream() {
         .contains(&window.id.as_str())),
         "null windows must not reach a consumer at all"
     );
+
+    // The per-model weekly limit has no named `rate_limits` key of its own, so
+    // the flat `limits[]` array is the only place a consumer can find it.
+    let scoped = parsed
+        .availability
+        .windows()
+        .iter()
+        .find(|window| window.id == "weekly_scoped/Opus 5")
+        .expect("the model-scoped weekly window");
+    assert_eq!(
+        used_percent(&parsed.availability, "weekly_scoped/Opus 5"),
+        17.0
+    );
+    assert_eq!(scoped.scope.as_deref(), Some("Opus 5"));
+    assert_eq!(scoped.duration.seconds(), Some(604_800));
 }
 
 #[test]
@@ -118,10 +133,29 @@ fn a_consumer_reads_codex_headroom_from_a_captured_app_server_exchange() {
         "epoch seconds must arrive as absolute UTC, like every other harness"
     );
     assert_eq!(primary.duration.seconds(), Some(604_800));
+
+    // The exchange carries the main bucket, a per-model bucket, and the
+    // top-level single-bucket mirror of the first. A consumer sees two windows:
+    // one per bucket, with the mirror deduplicated and the null secondaries
+    // omitted rather than reported at 0% used.
     assert_eq!(
-        parsed.availability.windows().len(),
-        1,
-        "the null secondary and the single-bucket mirror must not add windows"
+        parsed
+            .availability
+            .windows()
+            .iter()
+            .map(|window| window.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["codex/primary", "limit_model_x/primary"]
+    );
+    let per_model = &parsed.availability.windows()[1];
+    assert_eq!(
+        per_model.label.as_deref(),
+        Some("GPT-5.3 Codex"),
+        "codex labels its per-model bucket, and that name must reach the consumer"
+    );
+    assert_eq!(
+        used_percent(&parsed.availability, "limit_model_x/primary"),
+        12.0
     );
 }
 

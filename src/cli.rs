@@ -156,9 +156,8 @@ pub enum Command {
     /// as JSON (pass `--format text` for a human-readable view).
     ///
     /// Every probe is free: no harness takes a model turn, so this is a
-    /// pre-flight check you can run before launching long jobs. Three harnesses
-    /// report real headroom (claude-code, codex, copilot), one reports a plan
-    /// tier (cursor), and the rest say plainly that they cannot — a missing
+    /// pre-flight check you can run before launching long jobs. Each harness
+    /// reports the headroom it can, and says plainly when it cannot — a missing
     /// binary, an unauthenticated harness, or a failed probe is reported as
     /// data, never as 0% used.
     Usage(UsageArgs),

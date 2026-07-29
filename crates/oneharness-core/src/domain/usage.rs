@@ -83,7 +83,8 @@ pub struct UsageIdentity {
     pub auth_mode: AuthMode,
     /// The plan as the harness spells it, **verbatim**: Claude's `max` and
     /// codex's `pro` are different vocabularies and are never unified into one
-    /// enum. `None` when the harness reports no plan (an API-key session).
+    /// enum. Absent when the harness reports no plan (an API-key session).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
     pub availability: UsageAvailability,
 }
@@ -260,19 +261,23 @@ pub struct UsageWindow {
     /// two-level buckets are flattened.
     pub id: String,
     /// A human label the harness supplied (codex's `limitName`), when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     pub usage: WindowUsage,
     /// The window's length, paired with where that length came from.
     #[serde(flatten)]
     pub duration: WindowDuration,
     // llmlint: ignore[invalid_states_unrepresentable] The RFC 3339 invariant is enforced at the only boundary that can violate it: every value here comes from `normalize_timestamp`/`format_rfc3339`, which reject an unparseable or offset-less instant into `None` rather than storing it, and the string spelling matches every sibling timestamp contract.
-    /// When the window resets, always absolute RFC 3339 UTC. `None` when the
+    /// When the window resets, always absolute RFC 3339 UTC. Absent when the
     /// harness reported no reset, or one that could not be normalized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_at: Option<String>,
     /// The model display name this window is scoped to, when it is scoped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     /// Whether this is the limit currently binding, when the harness says so
-    /// (Claude's `limits[].is_active`). `None` when it does not.
+    /// (Claude's `limits[].is_active`). Absent when it does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_binding: Option<bool>,
 }
 
@@ -286,7 +291,9 @@ pub enum WindowUsage {
         /// validated at the boundary — see [`UsedPercent`].
         used_percent: UsedPercent,
         /// The raw counters behind the percentage, when the harness reported
-        /// every one of them. Never partially fabricated.
+        /// every one of them. Never partially fabricated, and absent rather than
+        /// null when the payload did not carry the full set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         counters: Option<QuotaCounters>,
     },
     /// The harness reported this quota as unlimited. No counter is read: an

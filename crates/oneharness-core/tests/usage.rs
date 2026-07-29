@@ -11,8 +11,8 @@
 
 use oneharness_core::domain::usage::{
     claude_control_response, normalize_timestamp, parse_claude_get_usage, parse_codex_rate_limits,
-    parse_copilot_user, AuthMode, IdentitySelector, UnavailableReason, UsageAvailability,
-    UsageIdentity, UsageReport, WindowUsage, SCHEMA_VERSION,
+    parse_copilot_user, AuthMode, IdentitySelector, ParsedUsage, UnavailableReason, UnknownReason,
+    UsageAvailability, UsageIdentity, UsageReport, UsedPercent, WindowUsage, SCHEMA_VERSION,
 };
 use serde_json::Value;
 
@@ -394,4 +394,180 @@ fn the_report_json_is_what_a_downstream_consumer_reads() {
     let round_tripped: UsageReport =
         serde_json::from_value(json).expect("the contract deserializes back");
     assert_eq!(round_tripped, report);
+}
+
+/// The bytes a consumer of the v0.1 contract sees.
+const GOLDEN: &str = include_str!("../../../tests/fixtures/usage-report-v01.json");
+
+/// Every shape the v0.1 contract can take, in one report: a plan window whose
+/// length is derived from its key, one whose length the harness stated, one
+/// whose length cannot be established at all, a model-scoped window, an
+/// unlimited quota, a metered quota with counters, an affirmative unavailable,
+/// and an unknown. If a shape is not here, the golden does not pin it.
+fn golden_report() -> UsageReport {
+    let mut claude = claude_payload(CLAUDE_STREAM);
+    // A codename key carrying real data. Every one observed so far was null,
+    // but the key set is open by contract, and this is the forward-compatible
+    // shape a consumer must handle: an opaque window with no derivable
+    // duration, no label, no reset, no scope, and no binding flag — i.e. the
+    // window that exercises every omission at once.
+    claude["rate_limits"]["nimbus_quill"] = serde_json::json!({
+        "utilization": 4,
+        "resets_at": null,
+        "limit_dollars": null, "used_dollars": null, "remaining_dollars": null
+    });
+
+    UsageReport::new(
+        "2026-07-29T12:00:00Z".to_string(),
+        vec![
+            UsageIdentity::new(
+                "claude-code",
+                IdentitySelector::EnvPath {
+                    env: "CLAUDE_CONFIG_DIR".to_string(),
+                    path: "/home/u/.claude".to_string(),
+                },
+                parse_claude_get_usage(&claude),
+            ),
+            UsageIdentity::new(
+                "codex",
+                IdentitySelector::EnvPath {
+                    env: "CODEX_HOME".to_string(),
+                    path: "/home/u/.codex".to_string(),
+                },
+                parse_codex_rate_limits(&codex_response(CODEX_EXCHANGE, 2)),
+            ),
+            UsageIdentity::new(
+                "copilot",
+                IdentitySelector::EnvSecret {
+                    env: "GH_TOKEN".to_string(),
+                },
+                parse_copilot_user(&serde_json::from_str(COPILOT_BODY).expect("a JSON body")),
+            ),
+            UsageIdentity::new(
+                "codex",
+                IdentitySelector::EnvPath {
+                    env: "CODEX_HOME".to_string(),
+                    path: "/home/u/.codex-apikey".to_string(),
+                },
+                parse_codex_rate_limits(&serde_json::json!({
+                    "id": 4,
+                    "error": {
+                        "code": -32600,
+                        "message": "chatgpt authentication required to read rate limits"
+                    }
+                })),
+            ),
+            UsageIdentity::new(
+                "goose",
+                IdentitySelector::Ambient,
+                ParsedUsage::unknown(UnknownReason::Unprobed),
+            ),
+        ],
+    )
+}
+
+#[test]
+fn the_v0_1_report_serializes_to_the_checked_in_golden() {
+    let actual = serde_json::to_string(&golden_report()).expect("the report serializes");
+
+    assert_eq!(
+        actual.as_bytes(),
+        GOLDEN.trim_end().as_bytes(),
+        "the v0.1 usage contract changed; if that is deliberate, bump SCHEMA_VERSION \
+         and update tests/fixtures/usage-report-v01.json in the same change"
+    );
+}
+
+#[test]
+fn the_v0_1_golden_deserializes_and_round_trips_through_the_public_api() {
+    let parsed: UsageReport =
+        serde_json::from_str(GOLDEN).expect("the golden deserializes with the current types");
+
+    assert_eq!(parsed, golden_report());
+    assert_eq!(
+        serde_json::to_string(&parsed).expect("re-serializes"),
+        GOLDEN.trim_end(),
+        "reading the contract and writing it back must be byte-stable"
+    );
+
+    // An absent optional deserializes as absent, not as some default value.
+    let opaque = parsed.identities[0]
+        .availability
+        .windows()
+        .iter()
+        .find(|window| window.id == "nimbus_quill")
+        .expect("the opaque codename window");
+    assert_eq!(opaque.label, None);
+    assert_eq!(opaque.resets_at, None);
+    assert_eq!(opaque.scope, None);
+    assert_eq!(opaque.is_binding, None);
+    assert_eq!(opaque.duration.seconds(), None);
+    assert_eq!(
+        opaque.usage,
+        WindowUsage::Metered {
+            used_percent: UsedPercent::new(4.0).expect("a valid percentage"),
+            counters: None
+        }
+    );
+    assert_eq!(parsed.identities[3].plan, None);
+}
+
+/// The omissions are the point: a consumer distinguishes "the harness did not
+/// report this" from a value, and a JSON `null` is neither.
+#[test]
+fn absent_optionals_are_omitted_from_the_wire_rather_than_written_as_null() {
+    let json: Value = serde_json::from_str(GOLDEN).expect("valid JSON");
+
+    assert!(
+        !GOLDEN.contains(":null"),
+        "no field may reach the wire as null: {GOLDEN}"
+    );
+
+    let opaque = json["identities"][0]["availability"]["windows"]
+        .as_array()
+        .expect("windows")
+        .iter()
+        .find(|window| window["id"] == "nimbus_quill")
+        .expect("the opaque codename window");
+    for absent in [
+        "label",
+        "resets_at",
+        "scope",
+        "is_binding",
+        "window_seconds",
+    ] {
+        assert_eq!(
+            opaque.get(absent),
+            None,
+            "{absent} must be absent, not null, on a window that has none"
+        );
+    }
+    assert_eq!(
+        opaque["window_seconds_source"], "unknown",
+        "the source discriminator stays, so a consumer can tell \
+         'no length reported' from 'length not yet read'"
+    );
+    assert_eq!(
+        opaque["usage"].get("counters"),
+        None,
+        "a window with no counter set omits it rather than writing null"
+    );
+
+    // The shapes that *do* carry these fields still carry them.
+    let scoped = json["identities"][0]["availability"]["windows"]
+        .as_array()
+        .expect("windows")
+        .iter()
+        .find(|window| window["id"] == "weekly_scoped/Opus 5")
+        .expect("the model-scoped window");
+    assert_eq!(scoped["scope"], "Opus 5");
+    assert_eq!(scoped["is_binding"], false);
+    assert_eq!(scoped["label"], "Opus 5");
+
+    assert_eq!(
+        json["identities"][3].get("plan"),
+        None,
+        "an API-key identity has no plan, and says so by omission"
+    );
+    assert_eq!(json["identities"][0]["plan"], "max");
 }

@@ -136,4 +136,16 @@ assert_contains "$tmp/drift.log" "the codex rate-limits contract drifted" \
 assert_contains "$tmp/drift.log" "would otherwise become a silent zero" \
     "the failure must say why the drift matters"
 
+# 6. The diff must survive the way `just lint-workflows` invokes the gate —
+#    stdout suppressed. A drift report whose diff went to /dev/null tells a
+#    reader the schema moved without saying what moved.
+drift_path="$(write_fake_codex drift)"
+set +e
+PATH="$drift_path:/usr/bin:/bin" "$gate" >/dev/null 2>"$tmp/drift-stderr.log"
+status=$?
+set -e
+[ "$status" = "1" ] || fail "drift must still fail with stdout suppressed, got exit $status"
+assert_contains "$tmp/drift-stderr.log" "pctUsed" \
+    "the diff must reach stderr, so 'just lint-workflows' still shows what changed"
+
 echo "check-codex-usage-schema-test: ok"

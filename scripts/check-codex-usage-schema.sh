@@ -45,7 +45,9 @@ if [[ ! -f "$generated" ]]; then
     exit 1
 fi
 
-if ! diff -u "$snapshot" "$generated"; then
+# The diff goes to stderr with the rest of the failure: `just lint-workflows`
+# suppresses stdout, and a drift report without its diff is not a report.
+if ! diff -u "$snapshot" "$generated" >&2; then
     cat >&2 <<EOF
 check-codex-usage-schema: the codex rate-limits contract drifted (codex $(codex --version)).
 

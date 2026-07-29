@@ -14204,23 +14204,27 @@ fn usage_reports_a_failed_stdout_write_instead_of_panicking() {
     // a reader closing the pipe (`oneharness usage | head -1`) is an ordinary
     // event, and `print!`/`println!` panic on it.
     //
-    // The read end is closed immediately after spawn, while the probe is held
+    // The read end is closed immediately after spawn, while the harness is held
     // for MOCK_SLEEP_MS before the report is rendered — so the close precedes
     // the first write by a wide margin rather than racing it.
-    for format in ["text", "json"] {
+    //
+    // `run` is here because both output paths now share one writer: `usage
+    // --format text` is the text half, and `print_json` — which every
+    // JSON-emitting command uses — is the half `run` and `usage --format json`
+    // exercise.
+    let cases: [&[&str]; 3] = [
+        &["usage", "--format", "text"],
+        &["usage", "--format", "json"],
+        &["run", "--prompt", "hi", "--compact"],
+    ];
+    for case in cases {
+        let label = case.join(" ");
         let mut child = Command::new(oneharness_bin())
             .env("ONEHARNESS_NO_CONFIG", "1")
             .env("MOCK_SLEEP_MS", "400")
             .env("MOCK_STDOUT", "{}")
-            .args([
-                "usage",
-                "--harness",
-                "cursor",
-                "--bin",
-                &bin_override("cursor"),
-                "--format",
-                format,
-            ])
+            .args(case)
+            .args(["--harness", "cursor", "--bin", &bin_override("cursor")])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -14233,16 +14237,16 @@ fn usage_reports_a_failed_stdout_write_instead_of_panicking() {
 
         assert!(
             !stderr.contains("panicked"),
-            "--format {format} panicked on a closed stdout:\n{stderr}"
+            "`{label}` panicked on a closed stdout:\n{stderr}"
         );
         assert_eq!(
             output.status.code(),
             Some(2),
-            "--format {format} must report the write failure as an error, stderr:\n{stderr}"
+            "`{label}` must report the write failure as an error, stderr:\n{stderr}"
         );
         assert!(
             stderr.contains("could not write to stdout"),
-            "--format {format} must name what failed, stderr:\n{stderr}"
+            "`{label}` must name what failed, stderr:\n{stderr}"
         );
     }
 }

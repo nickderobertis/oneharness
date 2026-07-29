@@ -1214,9 +1214,18 @@ fn snippet(text: &str) -> String {
 /// overwrites the shared credential store.
 #[must_use]
 pub fn parse_cursor_about(payload: &Value) -> ParsedUsage {
-    let plan = payload
-        .get("subscriptionTier")
-        .and_then(Value::as_str)
+    // `subscriptionTier` absent entirely is drift, not a logged-out account:
+    // the field is always present in this document (null when there is no
+    // stored login), so a rename would otherwise report a confident
+    // "not logged in" for every Cursor user at once — the same silent-answer
+    // failure [`claude_usage_drift`] and the Copilot quota guard prevent.
+    let Some(tier) = payload.get("subscriptionTier") else {
+        return ParsedUsage::unknown(UnknownReason::ProbeFailed {
+            message: "cursor's `about` output carries no `subscriptionTier` field".to_string(),
+        });
+    };
+    let plan = tier
+        .as_str()
         .filter(|tier| !tier.trim().is_empty())
         .map(str::to_string);
     match plan {
@@ -2346,6 +2355,29 @@ mod tests {
             "the dollar pools exist but reach only the interactive TUI"
         );
         assert!(parsed.availability.windows().is_empty());
+    }
+
+    #[test]
+    fn cursor_output_without_the_tier_field_is_drift_not_a_logged_out_account() {
+        // A renamed field must not read as "no stored login": that is an answer
+        // about someone's account, drawn from a document that no longer says it.
+        let renamed = json!({
+            "cliVersion": "2026.07.23-e383d2b",
+            "planName": "Team",
+            "userEmail": "someone@example.com"
+        });
+
+        let parsed = parse_cursor_about(&renamed);
+
+        let UsageAvailability::Unknown {
+            reason: UnknownReason::ProbeFailed { message },
+        } = &parsed.availability
+        else {
+            panic!("got {:?}", parsed.availability);
+        };
+        assert!(message.contains("subscriptionTier"), "{message}");
+        assert_eq!(parsed.auth_mode, AuthMode::Unknown);
+        assert_eq!(parsed.plan, None);
     }
 
     #[test]

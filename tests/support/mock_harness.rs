@@ -330,7 +330,16 @@ pub fn run() -> ! {
     // An early stdin EOF still answers, so a probe that writes fewer lines than
     // expected sees a real response rather than a hang.
     if let Ok(count) = std::env::var("MOCK_REPLY_AFTER_LINES") {
-        let wanted: usize = count.parse().unwrap_or(1);
+        // Loud on a malformed value: silently reading it as 1 would let a
+        // typo'd test drive the wrong exchange and still report success.
+        let Ok(wanted) = count.parse::<usize>() else {
+            let _ = write!(
+                std::io::stderr(),
+                "mock harness: MOCK_REPLY_AFTER_LINES must be a whole number of stdin lines, got `{count}`"
+            );
+            let _ = std::io::stderr().flush();
+            std::process::exit(2);
+        };
         let mut line = String::new();
         for _ in 0..wanted {
             line.clear();

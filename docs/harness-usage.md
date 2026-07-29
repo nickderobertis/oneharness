@@ -35,10 +35,10 @@ harmful to someone deciding whether they have room to start a run.
 
 | Tier | Harness | What `usage` reports | `HarnessSpec.usage` |
 |---|---|---|---|
-| **Headroom** | `claude-code` | Per-window percent used, reset, binding flag, plan | `Headroom(ClaudeGetUsage)` |
-| **Headroom** | `codex` | Per-bucket percent used, reported window length, reset, plan | `Headroom(CodexAppServer)` |
-| **Headroom** | `copilot` | Entitlement/used/remaining in AI credits, unlimited flag, monthly reset, plan | `Headroom(CopilotUserEndpoint)` |
-| **Plan tier only** | `cursor` | `subscriptionTier`, plus an affirmative “no non-interactive reader” | `PlanTier(CursorAbout)` |
+| **Headroom** | `claude-code` | Per-window percent used, reset, binding flag, plan | `Probed(ClaudeGetUsage)` |
+| **Headroom** | `codex` | Per-bucket percent used, reported window length, reset, plan | `Probed(CodexAppServer)` |
+| **Headroom** | `copilot` | Entitlement/used/remaining in AI credits, unlimited flag, monthly reset, plan | `Probed(CopilotUserEndpoint)` |
+| **Plan tier only** | `cursor` | `subscriptionTier`, plus an affirmative “no non-interactive reader” | `Probed(CursorAbout)` |
 | **No plan quota** | `opencode`, `goose` | An affirmative “no first-party plan quota exists” | `NoPlanQuota` |
 | **No reader** | `qwen`, `crush` | An affirmative “a quota exists, but no non-interactive reader does” | `NoHeadroomReader` |
 

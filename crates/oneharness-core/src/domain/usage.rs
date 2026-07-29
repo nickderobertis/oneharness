@@ -1,4 +1,4 @@
-// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] None of the three payload contracts has a source this repo can generate from or diff against today: Claude Code publishes no schema for `get_usage`, Copilot's `/copilot_internal/user` is an undocumented internal endpoint, and codex's error literals appear in no emitted schema. This repo's drift gate for an external CLI contract is a live e2e phase, which needs the `usage` probe landing in the next change on this branch; the one generatable artifact (`codex app-server generate-json-schema` → `v2/GetAccountRateLimitsResponse.json`) is snapshot-and-diff work that needs the same probe plumbing. Every parser is written so drift degrades safely — an unrecognized key becomes an opaque window, an unrecognized error a probe failure — rather than a wrong number.
+// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] Each payload's gate lives with it: codex's schema is snapshotted and diffed (`scripts/check-codex-usage-schema.sh`), Claude's is `claude_usage_drift`, and Copilot's undocumented endpoint degrades to `Unknown`. See `docs/harness-usage.md`.
 //! Normalized subscription **headroom**: the shape of a `oneharness usage`
 //! report and one parser per harness payload. Pure — every parser takes an
 //! already-captured payload and returns normalized values, and the observation
@@ -589,7 +589,7 @@ impl UsageProbe {
 /// derivable duration — so a key absent from this table becomes
 /// [`WindowDuration::Unknown`], never a guessed length. Extend the table only
 /// from a key whose window length is actually known.
-// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] Claude Code publishes no schema for these key names, so there is no source to generate from; the drift gate this repo uses for an external CLI contract is a live e2e phase, which needs the `usage` probe that lands with the next change on this branch — and the table is drift-*safe* by construction: an unknown key degrades to `Unknown` rather than a wrong duration.
+// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] Claude Code publishes no schema for these key names, so there is nothing to generate from; the table is drift-*safe* instead — an unknown key degrades to `Unknown`, never a wrong duration.
 const CLAUDE_WINDOW_SECONDS: &[(&str, u64)] = &[
     ("five_hour", 5 * 3_600),
     ("seven_day", 7 * 86_400),
@@ -713,7 +713,7 @@ pub fn claude_usage_drift(payload: &Value) -> Option<String> {
 /// Every `limits[].kind` the observed payload carries. `weekly_scoped` maps to
 /// no named window key (see [`CLAUDE_LIMIT_KIND_KEYS`]) but is still an expected
 /// member, so the drift guard recognizes it.
-// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] These kinds ARE the drift gate for a contract with no generatable source: Claude Code publishes no schema for `get_usage`, so the guard asserts on the kinds observed from the real payload and degrades to `Unknown` — never to zero — when none of them is present.
+// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] These kinds ARE the drift gate: `get_usage` has no published schema, so the guard asserts on the observed kinds and degrades to `Unknown` — never to zero.
 const CLAUDE_LIMIT_KINDS: &[&str] = &["session", "weekly_all", "weekly_scoped"];
 
 fn is_known_claude_limit_kind(kind: &str) -> bool {
@@ -885,12 +885,12 @@ fn claude_limits(rate_limits: &Value) -> Vec<ClaudeLimit> {
 
 /// codex's API-key branch: ChatGPT auth is required to read rate limits, so an
 /// API-key session affirmatively has no plan headroom.
-// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] These strings are literals in the codex binary and appear in no schema `generate-json-schema` emits, so there is nothing to generate them from; the drift gate is the live e2e phase that lands with the `usage` probe in the next change on this branch. Drift degrades safely: an unrecognized message becomes a probe failure (`Unknown`), never an assumed absence of headroom.
+// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] A literal in the codex binary that appears in no emitted schema, so there is nothing to generate from; drift degrades safely — an unrecognized message becomes a probe failure, never an assumed absence of headroom.
 const CODEX_API_KEY_ERROR: &str = "chatgpt authentication required to read rate limits";
 /// codex's no-stored-credential branch. A genuinely separate code path from
 /// [`CODEX_API_KEY_ERROR`] (both strings exist once each in the codex binary),
 /// so collapsing the two to "error" would throw away a real distinction.
-// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] Same as [`CODEX_API_KEY_ERROR`]: a literal in the codex binary that appears in no schema `generate-json-schema` emits, so there is nothing to generate it from; the drift gate is the live e2e phase landing with the `usage` probe, and drift degrades safely to a probe failure rather than an assumed absence of headroom.
+// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] Same as [`CODEX_API_KEY_ERROR`]: an unschematized binary literal, degrading safely to a probe failure rather than an assumed absence of headroom.
 const CODEX_NOT_LOGGED_IN_ERROR: &str = "codex account authentication required to read rate limits";
 
 /// Parse codex's app-server `account/rateLimits/read` response — the whole

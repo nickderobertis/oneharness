@@ -13928,8 +13928,8 @@ fn the_cursor_probe_masks_the_api_key_from_its_child() {
 /// How each registry tier must be spelled in the README matrix's `usage` column
 /// and under the usage reference's support-tier table. Exhaustive on purpose: a
 /// new probe or tier cannot be added without deciding how it reads to a human.
-fn documented_usage_tier(support: UsageSupport) -> (&'static str, &'static str) {
-    match support {
+fn documented_usage_tier(support: UsageSupport) -> (&'static str, &'static str, String) {
+    let (readme, heading) = match support {
         UsageSupport::Probed(UsageProbe::ClaudeGetUsage) => {
             ("`headroom` (`get_usage`)", "**Headroom**")
         }
@@ -13942,7 +13942,16 @@ fn documented_usage_tier(support: UsageSupport) -> (&'static str, &'static str) 
         UsageSupport::Probed(UsageProbe::CursorAbout) => ("plan tier only", "**Plan tier only**"),
         UsageSupport::NoPlanQuota => ("no plan quota", "**No plan quota**"),
         UsageSupport::NoHeadroomReader => ("no reader", "**No reader**"),
-    }
+    };
+    // The reference also quotes the enum value itself, which is the spelling
+    // most likely to rot: a variant rename leaves prose that still reads as
+    // sensible while naming a type that no longer exists.
+    let spelling = match support {
+        UsageSupport::Probed(probe) => format!("`Probed({probe:?})`"),
+        UsageSupport::NoPlanQuota => "`NoPlanQuota`".to_string(),
+        UsageSupport::NoHeadroomReader => "`NoHeadroomReader`".to_string(),
+    };
+    (readme, heading, spelling)
 }
 
 /// The row for `id` in a markdown table whose first cell is `` `id` ``.
@@ -13962,7 +13971,7 @@ fn the_documented_usage_tiers_match_the_registry() {
         std::fs::read_to_string("docs/harness-usage.md").expect("docs/harness-usage.md");
 
     for spec in oneharness_core::domain::harness::all() {
-        let (readme_cell, tier_heading) = documented_usage_tier(spec.usage);
+        let (readme_cell, tier_heading, spelling) = documented_usage_tier(spec.usage);
         let id = spec.id;
 
         let row = markdown_row(&readme, id)
@@ -13972,11 +13981,19 @@ fn the_documented_usage_tiers_match_the_registry() {
             "README.md's `usage` column for `{id}` should end with `| {readme_cell} |`, got:\n{row}"
         );
 
+        let tier_row = reference
+            .lines()
+            .find(|line| {
+                line.starts_with("| ")
+                    && line.contains(tier_heading)
+                    && line.contains(&format!("`{id}`"))
+            })
+            .unwrap_or_else(|| {
+                panic!("docs/harness-usage.md lists no {tier_heading} row for `{id}`")
+            });
         assert!(
-            reference.lines().any(|line| line.starts_with("| ")
-                && line.contains(tier_heading)
-                && line.contains(&format!("`{id}`"))),
-            "docs/harness-usage.md lists no {tier_heading} row for `{id}`"
+            tier_row.contains(&spelling),
+            "docs/harness-usage.md's {tier_heading} row for `{id}` should quote {spelling}, got:\n{tier_row}"
         );
     }
 }

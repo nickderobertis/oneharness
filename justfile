@@ -74,6 +74,7 @@ lint-workflows: build build-mock-harness
     @bash scripts/check-local-gate.sh >/dev/null
     @bash scripts/check-sdk-install.sh >/dev/null
     @bash scripts/check-build-mock-harness.sh >/dev/null
+    @bash scripts/check-codex-usage-schema.sh >/dev/null
     @bash scripts/e2e-variants-test.sh >/dev/null
     @echo 'lint-workflows: ok'
 

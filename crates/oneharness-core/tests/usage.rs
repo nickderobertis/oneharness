@@ -640,3 +640,78 @@ fn regenerate_the_golden() {
     )
     .expect("the fixture is writable");
 }
+
+/// codex's own generated contract for `account/rateLimits/read`, snapshotted
+/// from the installed CLI. `scripts/check-codex-usage-schema.sh` diffs this
+/// against a fresh generation when codex is installed; the test below is the
+/// hermetic half, and it is the one that fails when a *field the parser reads*
+/// disappears rather than merely when the file changes.
+const CODEX_SCHEMA: &str = include_str!("../../../tests/fixtures/codex-rate-limits.schema.json");
+
+/// Does `schema` define `property` on `definition` (or at the top level when
+/// `definition` is `None`)?
+fn declares(schema: &Value, definition: Option<&str>, property: &str) -> bool {
+    let object = match definition {
+        Some(name) => &schema["definitions"][name],
+        None => schema,
+    };
+    object["properties"].get(property).is_some()
+}
+
+#[test]
+fn codex_schema_snapshot_still_declares_every_field_the_parser_reads() {
+    // The app-server is experimental, so this is the drift alarm for the exact
+    // set of names `parse_codex_rate_limits` walks. A rename upstream would
+    // otherwise turn a real reading into "no windows reported" — a confident
+    // answer built from a shape that no longer exists.
+    let schema: Value = serde_json::from_str(CODEX_SCHEMA).expect("the snapshot is JSON");
+
+    for property in ["rateLimits", "rateLimitsByLimitId"] {
+        assert!(
+            declares(&schema, None, property),
+            "the response no longer declares `{property}`"
+        );
+    }
+    for property in ["limitId", "limitName", "primary", "secondary", "planType"] {
+        assert!(
+            declares(&schema, Some("RateLimitSnapshot"), property),
+            "RateLimitSnapshot no longer declares `{property}`"
+        );
+    }
+    for property in ["usedPercent", "windowDurationMins", "resetsAt"] {
+        assert!(
+            declares(&schema, Some("RateLimitWindow"), property),
+            "RateLimitWindow no longer declares `{property}`"
+        );
+    }
+
+    // `usedPercent` is the one required window field, which is why a window
+    // without a usable percentage is dropped rather than defaulted to zero.
+    assert_eq!(
+        schema["definitions"]["RateLimitWindow"]["required"],
+        serde_json::json!(["usedPercent"])
+    );
+    // The plan vocabulary is kept verbatim rather than mapped onto Claude's, so
+    // the enum only has to remain a string — but it must remain present.
+    assert!(
+        schema["definitions"]["PlanType"]["enum"]
+            .as_array()
+            .is_some_and(|values| values.iter().any(|value| value == "pro")),
+        "PlanType is no longer the enum the `plan` field is read from"
+    );
+}
+
+#[test]
+fn a_payload_shaped_like_the_snapshot_parses_into_headroom() {
+    // Ties the two halves together: the fields asserted above are the ones an
+    // actual reading flows through, so the snapshot cannot drift into being a
+    // check on names nothing consumes.
+    let parsed = parse_codex_rate_limits(&codex_response(CODEX_EXCHANGE, 2));
+
+    assert!(matches!(
+        parsed.availability,
+        UsageAvailability::Available { .. }
+    ));
+    assert_eq!(parsed.plan.as_deref(), Some("pro"));
+    assert_eq!(used_percent(&parsed.availability, "codex/primary"), 31.0);
+}

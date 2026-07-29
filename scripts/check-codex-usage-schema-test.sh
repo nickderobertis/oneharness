@@ -88,8 +88,6 @@ assert_contains() {
     }
 }
 
-# 1. No codex installed: skip cleanly, and say so — a silent exit 0 would be
-#    indistinguishable from a real pass.
 empty="$tmp/empty-bin"
 mkdir -p "$empty"
 status="$(run_gate "$empty" "$tmp/skip.log")"
@@ -99,7 +97,6 @@ assert_contains "$tmp/skip.log" "skipped" \
 assert_contains "$tmp/skip.log" "codex is not installed" \
     "the skip must name why it skipped"
 
-# 2. The installed schema matches the snapshot: the ordinary green path.
 status="$(run_gate "$(write_fake_codex match)" "$tmp/ok.log")"
 [ "$status" = "0" ] || {
     cat "$tmp/ok.log" >&2
@@ -110,7 +107,7 @@ assert_contains "$tmp/ok.log" "check-codex-usage-schema: ok" \
 grep -qF "skipped" "$tmp/ok.log" &&
     fail "a real run must not report itself as skipped"
 
-# 3. The generator itself fails: a loud failure naming the next action.
+# The generator itself fails: a loud failure naming the next action.
 status="$(run_gate "$(write_fake_codex generator-failure)" "$tmp/genfail.log")"
 [ "$status" = "1" ] || fail "a failing generator must fail the gate, got exit $status"
 assert_contains "$tmp/genfail.log" "unrecognized subcommand" \
@@ -118,7 +115,7 @@ assert_contains "$tmp/genfail.log" "unrecognized subcommand" \
 assert_contains "$tmp/genfail.log" "update this script to the new command" \
     "a generator failure must name a concrete next action"
 
-# 4. The generator succeeds but no longer emits the rate-limits response.
+# The generator succeeds but no longer emits the rate-limits response.
 status="$(run_gate "$(write_fake_codex missing-output)" "$tmp/missing.log")"
 [ "$status" = "1" ] || fail "a missing generated file must fail the gate, got exit $status"
 assert_contains "$tmp/missing.log" "no longer emits v2/GetAccountRateLimitsResponse.json" \
@@ -126,7 +123,7 @@ assert_contains "$tmp/missing.log" "no longer emits v2/GetAccountRateLimitsRespo
 assert_contains "$tmp/missing.log" "parse_codex_rate_limits" \
     "the failure must point at the parser that depends on the shape"
 
-# 5. The contract drifted: fail, and show the diff plus how to refresh.
+# The contract drifted: fail, and show the diff plus how to refresh.
 status="$(run_gate "$(write_fake_codex drift)" "$tmp/drift.log")"
 [ "$status" = "1" ] || fail "a drifted schema must fail the gate, got exit $status"
 assert_contains "$tmp/drift.log" "pctUsed" \
@@ -136,9 +133,9 @@ assert_contains "$tmp/drift.log" "the codex rate-limits contract drifted" \
 assert_contains "$tmp/drift.log" "would otherwise become a silent zero" \
     "the failure must say why the drift matters"
 
-# 6. The diff must survive the way `just lint-workflows` invokes the gate —
-#    stdout suppressed. A drift report whose diff went to /dev/null tells a
-#    reader the schema moved without saying what moved.
+# The diff must survive the way `just lint-workflows` invokes the gate — stdout
+# suppressed. A drift report whose diff went to /dev/null tells a reader the
+# schema moved without saying what moved.
 drift_path="$(write_fake_codex drift)"
 set +e
 PATH="$drift_path:/usr/bin:/bin" "$gate" >/dev/null 2>"$tmp/drift-stderr.log"

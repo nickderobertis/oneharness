@@ -190,7 +190,14 @@ Guardrails, both from the payload:
 - **Gate on `unlimited` before reading any counter.** `chat` and `completions`
   report `unlimited: true` alongside `entitlement: 0` / `remaining: 0` /
   `percent_remaining: 100.0` — meaningless as counters, and a false full bar if
-  read.
+  read. Because the gate decides whether any counter means anything, an
+  `unlimited` that is present but *not a boolean* is reported as drift rather
+  than defaulting to `false`: defaulting would publish a snapshot that failed to
+  parse as an affirmative metered reading.
+- **A negative `entitlement` or `credits_used` drops the counter set.** Neither
+  has a meaning below zero, so an unreadable one is treated like a missing one
+  (the percentage still stands) rather than clamped into a plausible figure.
+  `remaining` stays signed — an account past its ceiling reports a real deficit.
 - **`percent_remaining` is the inverse polarity** of the normalized field and is
   converted to percent-used. `remaining` is taken as the server reports it
   rather than recomputed from `entitlement − credits_used`: the observed values
@@ -230,7 +237,9 @@ $ cursor-agent about --format json
 enum like Claude's `max` or codex's `pro` — and, like every other plan, it is
 kept verbatim rather than unified. It is populated only when both an access and
 a refresh token are stored; a `null` tier is therefore reported as
-`not_logged_in`.
+`not_logged_in`. That answer rests on the field being contracted as a string or
+null, so a tier of any other type is drift — reading it as logged-out would
+state a fact about someone's account from a document that no longer says it.
 
 **Dollar headroom exists and is unreachable.** `getCurrentPeriodUsage` returns
 `billing_cycle_start`/`billing_cycle_end` plus plan and spend-limit usage in

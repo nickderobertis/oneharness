@@ -11,7 +11,7 @@
 
 use oneharness_core::domain::usage::{
     claude_control_response, normalize_timestamp, parse_claude_get_usage, parse_codex_rate_limits,
-    parse_copilot_user, parse_cursor_about, AuthMode, IdentitySelector, ParsedUsage,
+    parse_copilot_user, parse_cursor_about, AuthMode, IdentitySelector, ParsedUsage, QuotaAmount,
     UnavailableReason, UnknownReason, UsageAvailability, UsageIdentity, UsageReport, UsedPercent,
     WindowUsage, SCHEMA_VERSION,
 };
@@ -315,6 +315,125 @@ fn a_degraded_probe_reaches_a_consumer_as_unknown_or_unavailable_never_as_headro
             "no percentage may reach the wire for a degraded probe: {json}"
         );
     }
+}
+
+/// A field whose *type* contradicts the contract carries no information about
+/// a subscription, so it can never be read as one of the account states a
+/// consumer acts on. This is the silent-false-headroom failure: a wrong answer
+/// looks exactly like a right one, where drift at least says so.
+#[test]
+fn a_wrong_typed_field_reaches_a_consumer_as_drift_never_as_an_account_state() {
+    // Cursor's tier is contracted as a string or null, and null is what means
+    // "no stored login" — so a value of any other type must not inherit that
+    // answer for every Cursor user at once.
+    for tier in [
+        serde_json::json!(42),
+        serde_json::json!(true),
+        serde_json::json!(["Team"]),
+        serde_json::json!({"name": "Team"}),
+    ] {
+        let parsed = parse_cursor_about(&serde_json::json!({
+            "cliVersion": "2026.07.23-e383d2b",
+            "subscriptionTier": tier,
+            "userEmail": "someone@example.com"
+        }));
+
+        let UsageAvailability::Unknown {
+            reason: UnknownReason::ProbeFailed { message },
+        } = &parsed.availability
+        else {
+            panic!(
+                "a `subscriptionTier` of {tier} is drift, got {:?}",
+                parsed.availability
+            );
+        };
+        assert!(message.contains("subscriptionTier"), "{message}");
+        assert_eq!(parsed.auth_mode, AuthMode::Unknown);
+        assert_eq!(parsed.plan, None);
+    }
+
+    // Copilot's `unlimited` gates whether its counters mean anything at all.
+    // The snapshot below is otherwise a picture of health — 100% remaining, a
+    // full entitlement — which is exactly what must not be published from a
+    // payload that failed to parse.
+    let malformed = parse_copilot_user(&serde_json::json!({
+        "copilot_plan": "individual",
+        "token_based_billing": true,
+        "quota_snapshots": {"premium_interactions": {
+            "unlimited": "false", "percent_remaining": 100.0, "has_quota": true,
+            "entitlement": 1500, "credits_used": 0, "remaining": 1500,
+            "overage_permitted": true
+        }}
+    }));
+
+    let UsageAvailability::Unknown {
+        reason: UnknownReason::ProbeFailed { message },
+    } = &malformed.availability
+    else {
+        panic!("got {:?}", malformed.availability);
+    };
+    assert!(message.contains("unlimited"), "{message}");
+    assert!(
+        malformed.availability.windows().is_empty(),
+        "no percentage may survive a snapshot whose gate could not be read"
+    );
+}
+
+/// The counters' deliberate asymmetry: `remaining` is genuinely negative for an
+/// account past its ceiling and that deficit is the signal, while a negative
+/// entitlement or consumption is a payload nobody could read.
+#[test]
+fn an_over_ceiling_deficit_survives_while_a_negative_entitlement_drops_the_counters() {
+    let body: Value = serde_json::from_str(COPILOT_BODY).expect("a JSON body");
+    let observed = parse_copilot_user(&body);
+    let WindowUsage::Metered {
+        counters: Some(counters),
+        ..
+    } = &premium(&observed).usage
+    else {
+        panic!("the observed capture carries counters");
+    };
+    assert_eq!(
+        counters.remaining, -12019,
+        "spending past the ceiling is a real deficit, reported as reported"
+    );
+    assert_eq!(counters.entitlement.get(), 1500);
+    assert_eq!(counters.used.get(), 13518);
+
+    let mut impossible = body.clone();
+    impossible["quota_snapshots"]["premium_interactions"]["entitlement"] = serde_json::json!(-1500);
+    let parsed = parse_copilot_user(&impossible);
+    let WindowUsage::Metered {
+        used_percent,
+        counters,
+    } = &premium(&parsed).usage
+    else {
+        panic!("the percentage is validated separately and still stands");
+    };
+    assert_eq!(used_percent.get(), 100.0);
+    assert_eq!(
+        *counters, None,
+        "a negative entitlement is unreadable, never a quantity to clamp"
+    );
+
+    // Nor can one be deserialized back out of a stored report.
+    assert!(serde_json::from_str::<QuotaAmount>("-1").is_err());
+    assert_eq!(
+        serde_json::from_str::<QuotaAmount>("0")
+            .expect("zero is a real entitlement")
+            .get(),
+        0
+    );
+}
+
+/// The `premium_interactions` window of a parsed Copilot payload.
+fn premium(parsed: &ParsedUsage) -> &oneharness_core::domain::usage::UsageWindow {
+    parsed
+        .availability
+        .windows()
+        .iter()
+        .find(|window| window.id == "premium_interactions")
+        .expect("the premium quota")
 }
 
 #[test]

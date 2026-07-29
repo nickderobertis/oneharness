@@ -135,6 +135,7 @@ impl Plan {
     /// Probe this identity, or record why no probe ran. Never fails: every
     /// outcome — including a missing binary — is a normalized identity.
     fn probe(&self) -> UsageIdentity {
+        fault_inject_probe_panic(&self.id);
         self.probe_inner().with_variant(self.variant())
     }
 
@@ -193,6 +194,30 @@ impl Plan {
         .with_variant(self.variant())
     }
 }
+
+/// Comma-separated harness ids whose probe must panic outright, read by
+/// [`fault_inject_probe_panic`].
+///
+/// A panicking probe is a *bug*, not an input: no payload, timeout, or missing
+/// binary produces one, so [`probe_all`]'s containment — itself the fix for a
+/// probe that took a whole report down — has nothing that can drive it through
+/// the CLI a consumer runs. This injects one, and is compiled only into the
+/// `mock-harness` test build, exactly like the mock harness fixture binary, so
+/// it cannot exist in a shipped `oneharness`.
+#[cfg(feature = "mock-harness")]
+const PANIC_PROBE_ENV: &str = "MOCK_PANIC_PROBE";
+
+#[cfg(feature = "mock-harness")]
+fn fault_inject_probe_panic(id: &str) {
+    let faulted = std::env::var(PANIC_PROBE_ENV).unwrap_or_default();
+    assert!(
+        !faulted.split(',').any(|name| name == id),
+        "fault-injected probe panic for `{id}`"
+    );
+}
+
+#[cfg(not(feature = "mock-harness"))]
+fn fault_inject_probe_panic(_id: &str) {}
 
 fn unavailable(reason: UnavailableReason) -> oneharness_core::domain::usage::ParsedUsage {
     oneharness_core::domain::usage::ParsedUsage {
@@ -343,7 +368,9 @@ fn render_counters(counters: &QuotaCounters) -> String {
     };
     format!(
         " ({} of {}{unit} used, {} left{blocked})",
-        counters.used, counters.entitlement, counters.remaining
+        counters.used.get(),
+        counters.entitlement.get(),
+        counters.remaining
     )
 }
 
@@ -384,7 +411,9 @@ fn unknown_label(reason: &UnknownReason) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oneharness_core::domain::usage::{IdentitySelector, UsedPercent, WindowDuration, Windows};
+    use oneharness_core::domain::usage::{
+        IdentitySelector, QuotaAmount, UsedPercent, WindowDuration, Windows,
+    };
 
     fn identity(harness: &str, availability: UsageAvailability) -> UsageIdentity {
         UsageIdentity {
@@ -490,8 +519,8 @@ mod tests {
         window.usage = WindowUsage::Metered {
             used_percent: UsedPercent::new(100.0).expect("valid"),
             counters: Some(QuotaCounters {
-                entitlement: 1500,
-                used: 13518,
+                entitlement: QuotaAmount::new(1500).expect("non-negative"),
+                used: QuotaAmount::new(13518).expect("non-negative"),
                 remaining: -12019,
                 has_quota: false,
                 overage_permitted: false,

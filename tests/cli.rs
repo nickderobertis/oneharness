@@ -13274,6 +13274,67 @@ fn usage_reports_codex_headroom_from_its_app_server_exchange() {
 }
 
 #[test]
+fn usage_contains_a_panicking_probe_to_its_own_identity() {
+    // A report is the deliverable, so one misbehaving harness must cost exactly
+    // its own reading — losing seven identities because the eighth crashed is
+    // the defect the per-probe join fixed. Nothing a harness can send produces
+    // a panicking probe (a bad payload, a timeout and a missing binary are all
+    // ordinary data), so the test build injects a real one with
+    // MOCK_PANIC_PROBE and drives the shipped verb end to end.
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "claude-code",
+            "--harness",
+            "codex",
+            "--bin",
+            &bin_override("claude-code"),
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_PANIC_PROBE", "claude-code"),
+            ("MOCK_REPLY_AFTER_LINES", "3"),
+            ("MOCK_STDOUT", &codex_usage_response()),
+            ("CODEX_HOME", "/home/u/.codex"),
+        ],
+    );
+
+    assert!(
+        output.status.success(),
+        "a crashed probe is data, not a failed command: exit {:?}",
+        output.status.code()
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("panicked"),
+        "the probe must genuinely panic, not report a crash it did not have:\n{stderr}"
+    );
+
+    let report = json_stdout(&output);
+    let claude = usage_identity(&report, "claude-code");
+    assert_eq!(claude["availability"]["state"], "unknown");
+    assert_eq!(claude["availability"]["reason"]["kind"], "probe_failed");
+    assert!(
+        claude["availability"].get("windows").is_none(),
+        "nothing was learned, so no percentage may appear: {claude}"
+    );
+
+    let codex = usage_identity(&report, "codex");
+    assert_eq!(
+        codex["availability"]["state"], "available",
+        "the surviving identity keeps its reading: {codex}"
+    );
+    assert_eq!(codex["plan"], "pro");
+    assert_eq!(
+        codex["availability"]["windows"][0]["usage"]["used_percent"], 31.0,
+        "the survivor's figure must be its own, not a placeholder: {codex}"
+    );
+}
+
+#[test]
 fn usage_reports_an_api_key_identity_as_unavailable_never_as_zero_used() {
     let api_key_response = serde_json::json!({
         "type": "control_response",

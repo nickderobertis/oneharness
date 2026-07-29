@@ -27,8 +27,8 @@
 //!   for the codename keys the payload also carries. [`WindowDuration`] keeps
 //!   that asymmetry in the data instead of papering over it with a default.
 //!
-//! Two states are deliberately unrepresentable rather than merely discouraged,
-//! because rendering either as "0% used / plenty of headroom" is the one way
+//! Three states are deliberately unrepresentable rather than merely discouraged,
+//! because rendering any of them as "0% used / plenty of headroom" is the one way
 //! this report can be actively harmful:
 //!
 //! - An **unavailable** identity has no percentage at all: windows live only
@@ -37,6 +37,10 @@
 //!   carries none, so Copilot's `unlimited: true` snapshots (which report
 //!   `entitlement: 0` / `remaining: 0` / `percent_remaining: 100.0`, meaningless
 //!   as counters) can never render as a full bar.
+//! - A **negative** entitlement or consumption: [`QuotaAmount`] rejects one, so
+//!   an unreadable counter drops the whole set rather than being clamped into a
+//!   plausible figure. `remaining` stays signed — a real deficit past the
+//!   ceiling is the one negative that means something.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -374,14 +378,54 @@ impl From<UsedPercent> for f64 {
     }
 }
 
+/// A counter that cannot legitimately be negative. An entitlement is a ceiling
+/// and a consumption is an amount spent; neither has a meaning below zero, so a
+/// negative one is a payload that failed to parse rather than an account state,
+/// and it is rejected at the boundary like [`UsedPercent`].
+///
+/// Deliberately *not* used for [`QuotaCounters::remaining`], which is genuinely
+/// negative for an account past its ceiling — the deficit is the signal there,
+/// so constraining it would discard a real over-consumption reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "i64", into = "u64")]
+pub struct QuotaAmount(u64);
+
+impl QuotaAmount {
+    /// `Some` iff `value` is non-negative.
+    #[must_use]
+    pub fn new(value: i64) -> Option<Self> {
+        u64::try_from(value).ok().map(Self)
+    }
+
+    #[must_use]
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl TryFrom<i64> for QuotaAmount {
+    type Error = &'static str;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        Self::new(value).ok_or("a quota counter must not be negative")
+    }
+}
+
+impl From<QuotaAmount> for u64 {
+    fn from(amount: QuotaAmount) -> Self {
+        amount.0
+    }
+}
+
 /// The raw counters behind a metered window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuotaCounters {
-    pub entitlement: i64,
-    pub used: i64,
+    pub entitlement: QuotaAmount,
+    pub used: QuotaAmount,
     /// The server's own remaining figure, taken as authoritative rather than
     /// recomputed from `entitlement - used`: Copilot's observed values disagree
-    /// by about 1 and the server's figure wins.
+    /// by about 1 and the server's figure wins. Signed, and the one counter here
+    /// that is: an account past its ceiling reports a real deficit.
     pub remaining: i64,
     /// Whether any quota remains on this plan.
     pub has_quota: bool,
@@ -1069,10 +1113,16 @@ pub fn parse_copilot_user(body: &Value) -> ParsedUsage {
             message: "the Copilot quota payload carries no `quota_snapshots` object".to_string(),
         });
     };
-    let windows: Vec<UsageWindow> = snapshots
-        .iter()
-        .filter_map(|(id, snapshot)| copilot_window(id, snapshot, resets_at.clone(), unit))
-        .collect();
+    let mut windows: Vec<UsageWindow> = Vec::new();
+    for (id, snapshot) in snapshots {
+        match copilot_window(id, snapshot, resets_at.clone(), unit) {
+            Ok(Some(window)) => windows.push(window),
+            // Not this shape — aggregated into the whole-payload drift check
+            // below, which distinguishes "one odd entry" from "the shape moved".
+            Ok(None) => {}
+            Err(message) => return ParsedUsage::unknown(UnknownReason::ProbeFailed { message }),
+        }
+    }
     // The same drift rule one level down: entries that are present but carry
     // none of the expected fields mean the snapshot shape moved, not that the
     // account has no quota. An empty `quota_snapshots` is still an answer.
@@ -1093,29 +1143,51 @@ pub fn parse_copilot_user(body: &Value) -> ParsedUsage {
     }
 }
 
+/// One `quota_snapshots` entry. `Ok(None)` is an entry that is simply not this
+/// shape (handled one level up); `Err` is drift the whole payload must degrade
+/// to, because the entry contradicts the contract rather than missing it.
 fn copilot_window(
     id: &str,
     snapshot: &Value,
     resets_at: Option<String>,
     unit: QuotaUnit,
-) -> Option<UsageWindow> {
-    let unlimited = snapshot
-        .get("unlimited")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+) -> Result<Option<UsageWindow>, String> {
+    // `unlimited` decides whether any counter in this entry means anything, so
+    // a value of the wrong type cannot fall back to `false`: that would promote
+    // a snapshot which failed to parse into an affirmative metered reading —
+    // real-looking headroom derived from a payload nobody could read.
+    let unlimited = match snapshot.get("unlimited") {
+        Some(Value::Bool(unlimited)) => *unlimited,
+        // Absent is the pre-existing "maybe not a quota entry" path: without the
+        // gate the entry still needs a `percent_remaining` to say anything.
+        None => false,
+        Some(other) => {
+            return Err(format!(
+                "the Copilot quota snapshot `{id}` carries an `unlimited` that is {} \
+                 rather than a boolean",
+                json_type_name(other)
+            ))
+        }
+    };
     let usage = if unlimited {
         WindowUsage::Unlimited
     } else {
         // percent_remaining is the inverse polarity of the normalized field, so
         // an out-of-range one converts to a negative used percentage and is
         // rejected by the validating constructor rather than rendered.
-        let remaining_percent = snapshot.get("percent_remaining").and_then(Value::as_f64)?;
+        let Some(remaining_percent) = snapshot.get("percent_remaining").and_then(Value::as_f64)
+        else {
+            return Ok(None);
+        };
+        let Some(used_percent) = UsedPercent::new(100.0 - remaining_percent) else {
+            return Ok(None);
+        };
         WindowUsage::Metered {
-            used_percent: UsedPercent::new(100.0 - remaining_percent)?,
+            used_percent,
             counters: copilot_counters(snapshot, unit),
         }
     };
-    Some(UsageWindow {
+    Ok(Some(UsageWindow {
         id: id.to_string(),
         label: None,
         usage,
@@ -1124,15 +1196,36 @@ fn copilot_window(
         resets_at,
         scope: None,
         is_binding: None,
-    })
+    }))
+}
+
+/// What a JSON value *is*, for a drift message that has to say what arrived
+/// where a documented type was expected.
+fn json_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+    }
 }
 
 fn copilot_counters(snapshot: &Value, unit: QuotaUnit) -> Option<QuotaCounters> {
     // All five or none: a partial payload yields the percentage alone rather
-    // than a counter set with fabricated members.
+    // than a counter set with fabricated members. A negative entitlement or
+    // consumption is unreadable in the same way a missing one is, so it drops
+    // the set instead of being clamped into a plausible-looking figure.
     Some(QuotaCounters {
-        entitlement: snapshot.get("entitlement").and_then(Value::as_i64)?,
-        used: snapshot.get("credits_used").and_then(Value::as_i64)?,
+        entitlement: snapshot
+            .get("entitlement")
+            .and_then(Value::as_i64)
+            .and_then(QuotaAmount::new)?,
+        used: snapshot
+            .get("credits_used")
+            .and_then(Value::as_i64)
+            .and_then(QuotaAmount::new)?,
         remaining: snapshot.get("remaining").and_then(Value::as_i64)?,
         has_quota: snapshot.get("has_quota").and_then(Value::as_bool)?,
         overage_permitted: snapshot.get("overage_permitted").and_then(Value::as_bool)?,
@@ -1224,10 +1317,23 @@ pub fn parse_cursor_about(payload: &Value) -> ParsedUsage {
             message: "cursor's `about` output carries no `subscriptionTier` field".to_string(),
         });
     };
-    let plan = tier
-        .as_str()
-        .filter(|tier| !tier.trim().is_empty())
-        .map(str::to_string);
+    // Null is "no stored login" only because the field is contracted to carry a
+    // string or null. A tier of any other type contradicts that contract, and
+    // reading it as logged-out would state a fact about someone's account from
+    // a document that no longer says it.
+    let plan = match tier {
+        Value::Null => None,
+        Value::String(tier) => Some(tier.clone()).filter(|tier| !tier.trim().is_empty()),
+        other => {
+            return ParsedUsage::unknown(UnknownReason::ProbeFailed {
+                message: format!(
+                    "cursor's `about` output carries a `subscriptionTier` that is {} \
+                     rather than a string or null",
+                    json_type_name(other)
+                ),
+            })
+        }
+    };
     match plan {
         Some(plan) => ParsedUsage {
             auth_mode: AuthMode::Subscription,
@@ -1930,8 +2036,8 @@ mod tests {
         else {
             panic!("premium_interactions must carry counters");
         };
-        assert_eq!(counters.entitlement, 1500);
-        assert_eq!(counters.used, 13518);
+        assert_eq!(counters.entitlement.get(), 1500);
+        assert_eq!(counters.used.get(), 13518);
         assert_eq!(
             counters.remaining, -12019,
             "the server's own remaining figure wins over entitlement - used"

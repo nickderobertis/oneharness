@@ -805,6 +805,95 @@ fn the_v0_1_golden_deserializes_and_round_trips_through_the_public_api() {
     assert_eq!(parsed.identities[3].plan, None);
 }
 
+/// The golden with one envelope field replaced, as a consumer's own JSON would
+/// arrive: a report written by a different build, or by hand.
+fn golden_with(field: &str, value: Value) -> String {
+    let mut json: Value = serde_json::from_str(GOLDEN).expect("valid JSON");
+    json[field] = value;
+    json.to_string()
+}
+
+/// A `schema_version` this build does not implement must be refused, not read as
+/// the version it does. `oneharness-core` is published, so a sibling tool linked
+/// against v0.1 will one day be handed a v0.2 report — and reinterpreting it
+/// would hand back a confident headroom figure computed from a shape that no
+/// longer means the same thing, the exact silent-wrong-answer this report exists
+/// to prevent.
+#[test]
+fn a_report_claiming_an_unsupported_schema_version_is_refused() {
+    for version in ["0.2", "1.0", "0.10", "", "0.1-rc1"] {
+        let json = golden_with("schema_version", serde_json::json!(version));
+        let message = match serde_json::from_str::<UsageReport>(&json) {
+            Ok(report) => panic!(
+                "schema_version `{version}` must not deserialize, \
+                 got a report claiming `{}`",
+                report.schema_version
+            ),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            message.contains("schema_version") && message.contains(SCHEMA_VERSION),
+            "the refusal must name the field and the version this build reads: {message}"
+        );
+    }
+
+    let current = serde_json::from_str::<UsageReport>(&golden_with(
+        "schema_version",
+        serde_json::json!(SCHEMA_VERSION),
+    ))
+    .expect("the supported version still deserializes");
+    assert_eq!(current.schema_version, SCHEMA_VERSION);
+}
+
+/// `observed_at` documents an RFC 3339 UTC instant, and every consumer that
+/// renders "usage as of ..." reads it literally. An unparseable one, or one whose
+/// offset is not UTC, is therefore refused rather than stored — a `+05:30`
+/// instant in a field read as UTC is wrong by hours with nothing to signal it.
+#[test]
+fn a_report_whose_observed_at_is_not_rfc3339_utc_is_refused() {
+    for malformed in [
+        "2026-07-29T12:00:00",       // no offset at all: an ambiguous local time
+        "2026-07-29",                // a date, not an instant
+        "2026-07-29T12:00:00.Z",     // an empty sub-second fraction
+        "2026-13-01T00:00:00Z",      // a month that does not exist
+        "2026-07-29T25:00:00Z",      // an hour that does not exist
+        "2026-07-29T08:00:00-04:00", // a real instant, but not UTC
+        "2026-07-29T17:30:00+05:30",
+        "yesterday afternoon",
+        "",
+    ] {
+        let json = golden_with("observed_at", serde_json::json!(malformed));
+        let message = match serde_json::from_str::<UsageReport>(&json) {
+            Ok(report) => panic!(
+                "`{malformed}` must not deserialize, got observed_at `{}`",
+                report.observed_at
+            ),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            message.contains("observed_at"),
+            "the refusal must name the field: {message}"
+        );
+    }
+
+    // An equivalent UTC spelling is the same instant, so it is canonicalized
+    // rather than refused — the field still means exactly what it documents.
+    for equivalent in [
+        "2026-07-29T12:00:00Z",
+        "2026-07-29T12:00:00+00:00",
+        "2026-07-29T12:00:00.500Z",
+        "2026-07-29T12:00:00-0000",
+    ] {
+        let parsed: UsageReport =
+            serde_json::from_str(&golden_with("observed_at", serde_json::json!(equivalent)))
+                .unwrap_or_else(|error| panic!("`{equivalent}` is RFC 3339 UTC: {error}"));
+        assert_eq!(
+            parsed.observed_at, "2026-07-29T12:00:00Z",
+            "`{equivalent}` must arrive as the canonical UTC spelling"
+        );
+    }
+}
+
 /// The omissions are the point: a consumer distinguishes "the harness did not
 /// report this" from a value, and a JSON `null` is neither.
 #[test]

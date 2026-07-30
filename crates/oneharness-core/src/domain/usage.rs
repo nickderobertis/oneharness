@@ -56,11 +56,16 @@ pub const SCHEMA_VERSION: &str = "0.1";
 
 /// One usage report: every probed identity, stamped with a single observation
 /// time supplied by the caller (this module reads no clock).
+///
+/// Deserializing is a consumer boundary — `oneharness-core` is published for
+/// sibling tools — so the envelope is validated on the way in rather than
+/// trusted: see [`UsageReportWire`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "UsageReportWire")]
 pub struct UsageReport {
     /// The report shape version ([`SCHEMA_VERSION`]).
     pub schema_version: String,
-    // llmlint: ignore[invalid_states_unrepresentable] RFC 3339 instants are plain strings across every serialized contract in this crate (`report`, `history`, `session`); a bespoke timestamp type here would diverge from all of them, and the value is minted by `io`'s single clock read rather than parsed from an external payload.
+    // llmlint: ignore[invalid_states_unrepresentable] RFC 3339 instants are plain strings across every serialized contract in this crate (`report`, `history`, `session`); a bespoke timestamp type here would diverge from all of them, and the invariant is enforced at both boundaries that can violate it — `io`'s single clock read mints it through `format_rfc3339`, and `UsageReportWire` canonicalizes or rejects deserialized text.
     /// RFC 3339 UTC instant the identities were observed, minted by the io layer.
     pub observed_at: String,
     pub identities: Vec<UsageIdentity>,
@@ -76,6 +81,69 @@ impl UsageReport {
             identities,
         }
     }
+}
+
+/// The unvalidated wire shape a [`UsageReport`] is deserialized *through*, so a
+/// report inconsistent with the contract never becomes a `UsageReport` at all.
+///
+/// Two envelope fields are external input the rest of this module's boundary
+/// checks would otherwise miss:
+///
+/// - A `schema_version` this build does not implement is refused rather than
+///   reinterpreted as the version it does. Silently reading a future report as
+///   v0.1 is the one failure this whole report exists to avoid: a consumer would
+///   get a confident headroom figure out of a shape that no longer means what it
+///   used to.
+/// - An `observed_at` that is not a complete RFC 3339 **UTC** instant is
+///   refused, and an equivalent UTC spelling (`+00:00`, a sub-second fraction)
+///   is canonicalized — so the field a consumer reads always means what it
+///   documents, exactly as [`UsageWindow::resets_at`] does.
+#[derive(Deserialize)]
+struct UsageReportWire {
+    schema_version: String,
+    observed_at: String,
+    identities: Vec<UsageIdentity>,
+}
+
+impl TryFrom<UsageReportWire> for UsageReport {
+    type Error = String;
+
+    fn try_from(wire: UsageReportWire) -> Result<Self, Self::Error> {
+        if wire.schema_version != SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported usage report schema_version `{}`; this build reads {SCHEMA_VERSION}",
+                without_control_chars(&wire.schema_version)
+            ));
+        }
+        let observed_at = canonical_utc_instant(&wire.observed_at).ok_or_else(|| {
+            format!(
+                "observed_at must be an RFC 3339 UTC instant (`2026-07-29T12:00:00Z`), got `{}`",
+                without_control_chars(&wire.observed_at)
+            )
+        })?;
+        Ok(Self {
+            schema_version: wire.schema_version,
+            observed_at,
+            identities: wire.identities,
+        })
+    }
+}
+
+/// `text` as an absolute RFC 3339 UTC instant in [`format_rfc3339`]'s spelling.
+/// `None` when it is not a complete instant, and when its offset is not UTC — a
+/// `+05:30` instant is a real moment, but storing it in a field documented as UTC
+/// would make every consumer that reads the field literally wrong by hours.
+fn canonical_utc_instant(text: &str) -> Option<String> {
+    let offset = text
+        .get(19..)?
+        .trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
+    if !matches!(
+        offset,
+        "Z" | "z" | "+00:00" | "-00:00" | "+0000" | "-0000" | "+00" | "-00"
+    ) {
+        return None;
+    }
+    normalize_timestamp(text)
 }
 
 /// One harness identity's headroom.

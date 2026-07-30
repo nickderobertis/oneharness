@@ -175,15 +175,14 @@ Use the `just` recipes; do not hand-roll equivalents.
   before writing so `cwd=..` remains discoverable.
   `usage` is the pre-flight verb: subscription headroom per identity, on its own
   output contract. Parsers are pure (`domain::usage`), probes are I/O
-  (`io::usage`), and tiers are registry data (`HarnessSpec.usage`) sourced from a
-  real capture, never guessed. Four constraints, each load-bearing: probes are
-  **zero-turn** (no user message, no completed turn);
-  every harness appears and an absent figure is never rendered as `0%`; identity
-  selection reuses `commands::variant_environment` rather than a parallel
-  selector; and both upstream payloads are experimental, so drift degrades to
-  *unknown*, never to zero. The Cursor probe masks `CURSOR_API_KEY` — that path
-  is a *login* that persists credentials to the shared store, a hazard any future
-  Cursor dispatch also hits.
+  (`io::usage`). A probe must be **zero-turn** — no user message, no completed
+  turn — because a pre-flight check that spends quota defeats itself. The
+  upstream payloads are experimental and mostly decide their verdict from a
+  field's *absence*, so each parser runs its own drift guard and an unrecognized
+  shape degrades to *unknown*; a confident wrong headroom number is silent where
+  a crash is loud. The Cursor path must keep masking `CURSOR_API_KEY` from its
+  child: passing it turns the probe into a *login* that persists credentials to
+  the shared store, a hazard any future Cursor dispatch also hits.
   `gate <id>` is the odd one out: the runtime pre-tool gate an
   installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It
@@ -613,15 +612,11 @@ shape. When you add one:
   stdin-only-prompt path was closed-source, so it was **probe-verified** via
   `scripts/explore-cursor-stdin.sh` + the dispatch-only `explore-cursor-stdin.yml`
   before wiring — the pattern to reuse for the next uncertain CLI).
-- Declare its `usage` (`UsageSupport`). Default to a non-probing tier —
-  `NoPlanQuota` (no first-party plan quota exists) or `NoHeadroomReader` (one
-  exists with no non-interactive reader); the distinction is reported, so pick
-  the true one. Promote to `Headroom`/`PlanTier` only with a **verified
-  zero-turn** probe sourced from a real capture, never guessed: a probe that
-  sends a user message or completes a turn is disqualified. Pin the tier in
-  `every_harness_declares_its_usage_tier`, add the `usage` column entry to the
-  README matrix, and document the probe and its reset semantics in
-  `docs/harness-usage.md` with a drift guard that degrades to *unknown*.
+- Declare its `usage` (`UsageSupport`). Every harness must report an honest tier:
+  one that cannot report headroom says *which kind* of cannot (no plan quota at
+  all, versus a quota with no non-interactive reader), never a `0%` and never an
+  omission. A probing tier requires a zero-turn probe sourced from a real
+  capture; a probe that sends a user message or completes a turn is disqualified.
 - Give the harness its `global_hook` (the user-global hook location, for `sync
   --global` / `install` at `Scope::Global`) and its `gate_deny` (how it expresses
   a pre-tool deny when it runs `oneharness gate <id>`). Both are registry data

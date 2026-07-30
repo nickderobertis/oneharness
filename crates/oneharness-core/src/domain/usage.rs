@@ -1354,6 +1354,17 @@ pub fn parse_codex_rate_limits(response: &Value) -> ParsedUsage {
         .filter(|buckets| !buckets.is_empty());
     let mirror = result.get("rateLimits").filter(|value| value.is_object());
 
+    if let Some((limit_id, _)) =
+        by_limit_id.and_then(|buckets| buckets.iter().find(|(_, bucket)| !bucket.is_object()))
+    {
+        return ParsedUsage::unknown(UnknownReason::ProbeFailed {
+            message: format!(
+                "`rateLimitsByLimitId.{}` is not a rate-limit snapshot object",
+                without_control_chars(limit_id)
+            ),
+        });
+    }
+
     // One of those two keys is the whole rate-limit surface, and the generated
     // schema makes `rateLimits` required — so a result carrying neither is drift
     // (a rename, a stripped payload), never an account with nothing to report.
@@ -2432,6 +2443,30 @@ mod tests {
                 "{result} establishes no auth mode either"
             );
             assert!(parsed.availability.windows().is_empty(), "{result}");
+        }
+    }
+
+    #[test]
+    fn codex_non_object_bucket_is_a_probe_failure() {
+        for malformed in [json!(17), json!(["not", "a", "snapshot"])] {
+            let parsed = parse_codex_rate_limits(&json!({
+                "id": 2,
+                "result": {
+                    "rateLimits": codex_snapshot("codex", Value::Null, 31, Value::Null),
+                    "rateLimitsByLimitId": {"codex": malformed}
+                }
+            }));
+
+            assert_eq!(parsed.auth_mode, AuthMode::Unknown);
+            assert_eq!(
+                parsed.availability,
+                UsageAvailability::Unknown {
+                    reason: UnknownReason::ProbeFailed {
+                        message: "`rateLimitsByLimitId.codex` is not a rate-limit snapshot object"
+                            .to_string()
+                    }
+                }
+            );
         }
     }
 

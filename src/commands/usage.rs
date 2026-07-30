@@ -197,6 +197,14 @@ impl Plan {
     /// learned, which is exactly `unknown` — and saying so keeps the rest of the
     /// report readable.
     fn crashed(&self) -> UsageIdentity {
+        self.probe_failed("the probe stopped unexpectedly")
+    }
+
+    fn worker_start_failed(&self, error: &std::io::Error) -> UsageIdentity {
+        self.probe_failed(&format!("could not start probe worker: {error}"))
+    }
+
+    fn probe_failed(&self, message: &str) -> UsageIdentity {
         UsageIdentity::new(
             self.base,
             usage_io::selector_for(
@@ -204,7 +212,7 @@ impl Plan {
                 &EnvView::new(&self.env, &self.env_remove),
             ),
             oneharness_core::domain::usage::ParsedUsage::unknown(UnknownReason::ProbeFailed {
-                message: "the probe stopped unexpectedly".to_string(),
+                message: message.to_string(),
             }),
         )
         .with_variant(self.variant.clone())
@@ -235,6 +243,20 @@ fn fault_inject_probe_panic(id: &str) {
 #[cfg(not(feature = "mock-harness"))]
 fn fault_inject_probe_panic(_id: &str) {}
 
+#[cfg(feature = "mock-harness")]
+fn fault_inject_thread_failure(id: &str) -> std::io::Result<()> {
+    let faulted = std::env::var("MOCK_FAIL_PROBE_THREAD").unwrap_or_default();
+    if faulted.split(',').any(|name| name == id) {
+        return Err(std::io::Error::other("fault-injected resource exhaustion"));
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "mock-harness"))]
+fn fault_inject_thread_failure(_id: &str) -> std::io::Result<()> {
+    Ok(())
+}
+
 fn unavailable(reason: UnavailableReason) -> oneharness_core::domain::usage::ParsedUsage {
     oneharness_core::domain::usage::ParsedUsage {
         auth_mode: AuthMode::Unknown,
@@ -257,10 +279,16 @@ fn probe_all(plans: &[Plan]) -> Vec<UsageIdentity> {
         std::thread::scope(|scope| {
             let running: Vec<_> = chunk
                 .iter()
-                .map(|plan| scope.spawn(|| plan.probe()))
+                .map(|plan| {
+                    fault_inject_thread_failure(&plan.id)?;
+                    std::thread::Builder::new().spawn_scoped(scope, || plan.probe())
+                })
                 .collect();
-            for (plan, handle) in chunk.iter().zip(running) {
-                identities.push(handle.join().unwrap_or_else(|_| plan.crashed()));
+            for (plan, worker) in chunk.iter().zip(running) {
+                identities.push(match worker {
+                    Ok(handle) => handle.join().unwrap_or_else(|_| plan.crashed()),
+                    Err(error) => plan.worker_start_failed(&error),
+                });
             }
         });
     }

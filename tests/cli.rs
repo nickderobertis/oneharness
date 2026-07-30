@@ -13585,6 +13585,29 @@ fn usage_contains_a_panicking_probe_to_its_own_identity() {
 }
 
 #[test]
+fn usage_reports_a_worker_thread_creation_failure() {
+    let output = run(
+        &["usage", "--harness", "codex", "--compact"],
+        &[("MOCK_FAIL_PROBE_THREAD", "codex")],
+    );
+
+    assert!(
+        output.status.success(),
+        "worker resource failure is report data: exit {:?}",
+        output.status.code()
+    );
+    let codex = usage_identity(&json_stdout(&output), "codex");
+    assert_eq!(codex["availability"]["state"], "unknown");
+    assert_eq!(codex["availability"]["reason"]["kind"], "probe_failed");
+    assert!(
+        codex["availability"]["reason"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("could not start probe worker")),
+        "{codex}"
+    );
+}
+
+#[test]
 fn usage_reports_an_api_key_identity_as_unavailable_never_as_zero_used() {
     let api_key_response = serde_json::json!({
         "type": "control_response",

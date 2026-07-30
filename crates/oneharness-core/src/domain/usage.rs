@@ -277,6 +277,7 @@ pub struct UsageIdentity {
     /// Two subscriptions of one harness therefore stay distinguishable even when
     /// their [`IdentitySelector`]s do not distinguish them (a variant that
     /// selects an identity by credential rather than by directory).
+    // llmlint: ignore[invalid_states_unrepresentable] This is the established public/wire string shape shared with run reports; external values cross the fallible `UsageIdentityWire` conversion through `VariantName`, while in-process producers receive variants from the already-validated config selection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant: Option<String>,
     /// How this identity was selected — never the credential itself.
@@ -292,6 +293,7 @@ pub struct UsageIdentity {
 
 impl UsageIdentity {
     /// Attach a parsed payload to the identity it was probed for.
+    // llmlint: ignore[invalid_states_unrepresentable] This established infallible public constructor is source-compatible for sibling probes; oneharness calls it only with a resolved registry spec id, while untrusted reports enter through `UsageIdentityWire` and are registry-validated before exposure.
     #[must_use]
     pub fn new(harness: &str, selector: IdentitySelector, parsed: ParsedUsage) -> Self {
         Self {
@@ -427,9 +429,11 @@ fn flatten_optional(text: &mut Option<String>) {
 pub enum IdentitySelector {
     /// An environment variable naming a credential *directory* — Claude Code's
     /// `CLAUDE_CONFIG_DIR`, codex's `CODEX_HOME`. The path is not a secret.
+    // llmlint: ignore[invalid_states_unrepresentable] These public enum fields preserve the v0.1 constructor and wire shape; external selectors are checked with the repository's `valid_env_name` at `UsageIdentityWire`, and production constructors use registry-declared environment names.
     EnvPath { env: String, path: String },
     /// An environment variable carrying a credential — Copilot's GitHub token.
     /// The value is deliberately absent.
+    // llmlint: ignore[invalid_states_unrepresentable] Same established selector contract as `EnvPath`: deserialization validates through `valid_env_name`, while in-process probes supply the registry-declared credential variable names.
     EnvSecret { env: String },
     /// The harness's ambient credential store, with nothing overridden.
     Ambient,
@@ -550,6 +554,7 @@ pub enum UnknownReason {
     /// harness may well have headroom; this identity simply has no reader on
     /// this machine. Mirrors a run's `skipped` status: data, never a crash.
     /// Build it with [`UnknownReason::binary_missing`].
+    // llmlint: ignore[invalid_states_unrepresentable] The public enum variant is retained for source compatibility; production construction uses `binary_missing`, and `UsageIdentityWire` flattens this field before any deserialized report is exposed or rendered.
     BinaryMissing { bin: String },
 }
 

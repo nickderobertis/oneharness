@@ -939,7 +939,7 @@ fn a_caller_cannot_construct_a_report_whose_observed_at_is_not_rfc3339_utc() {
         let instant: UtcInstant = equivalent
             .parse()
             .unwrap_or_else(|error| panic!("`{equivalent}` is RFC 3339 UTC: {error}"));
-        let json = serde_json::to_value(UsageReport::new(instant, no_identities()))
+        let json = serde_json::to_value(UsageReport::new(instant, one_unprobed_identity()))
             .expect("the report serializes");
         assert_eq!(
             json["observed_at"], "2026-07-29T12:00:00Z",
@@ -948,8 +948,9 @@ fn a_caller_cannot_construct_a_report_whose_observed_at_is_not_rfc3339_utc() {
     }
 }
 
-/// One identity, so a report built for a boundary test is still a whole report.
-fn no_identities() -> Vec<UsageIdentity> {
+/// The single identity a report built for a boundary test carries, so the report
+/// is still a whole one while the envelope is what is under test.
+fn one_unprobed_identity() -> Vec<UsageIdentity> {
     vec![UsageIdentity::new(
         "goose",
         IdentitySelector::Ambient,

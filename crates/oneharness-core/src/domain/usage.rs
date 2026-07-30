@@ -59,6 +59,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::domain::config::{valid_env_name, VariantName};
+use crate::domain::harness;
 use crate::domain::history::{civil_from_epoch, format_rfc3339};
 
 /// Bumped when the usage report shape changes in a way a consumer must notice.
@@ -262,7 +264,7 @@ impl<'de> Deserialize<'de> for UtcInstant {
 /// identity carries is flattened through [`without_control_chars`] on the way in
 /// — see [`UsageIdentityWire`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(from = "UsageIdentityWire")]
+#[serde(try_from = "UsageIdentityWire")]
 pub struct UsageIdentity {
     // llmlint: ignore[invalid_states_unrepresentable] `RunResult::harness` and `HistoryRunRecord::harness` are the established representation for a registry id on the wire, and matching them is what lets a consumer join a usage identity to a run; a newtype here would make this one contract spell it differently from every sibling.
     /// Canonical harness id, matching a [`crate::domain::harness`] registry id.
@@ -334,8 +336,10 @@ struct UsageIdentityWire {
     availability: UsageAvailability,
 }
 
-impl From<UsageIdentityWire> for UsageIdentity {
-    fn from(wire: UsageIdentityWire) -> Self {
+impl TryFrom<UsageIdentityWire> for UsageIdentity {
+    type Error = String;
+
+    fn try_from(wire: UsageIdentityWire) -> Result<Self, Self::Error> {
         let mut identity = Self {
             harness: wire.harness,
             variant: wire.variant,
@@ -345,7 +349,29 @@ impl From<UsageIdentityWire> for UsageIdentity {
             availability: wire.availability,
         };
         flatten_identity(&mut identity);
-        identity
+        if harness::by_id(&identity.harness).is_none() {
+            return Err(format!(
+                "unknown usage identity harness `{}`",
+                identity.harness
+            ));
+        }
+        if let Some(variant) = &identity.variant {
+            variant
+                .parse::<VariantName>()
+                .map_err(|error| format!("invalid usage identity variant: {error}"))?;
+        }
+        let env = match &identity.selector {
+            IdentitySelector::EnvPath { env, .. } | IdentitySelector::EnvSecret { env } => {
+                Some(env)
+            }
+            IdentitySelector::Ambient => None,
+        };
+        if let Some(env) = env {
+            if !valid_env_name(env) {
+                return Err(format!("invalid usage identity environment name `{env}`"));
+            }
+        }
+        Ok(identity)
     }
 }
 

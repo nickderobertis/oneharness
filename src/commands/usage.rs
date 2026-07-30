@@ -556,8 +556,9 @@ mod tests {
     /// their own strings, and `oneharness-core` is published — so a consumer can
     /// be handed one written by anything. Every string it carries reaches this
     /// text view, which is what a human reads to decide whether they have
-    /// headroom, so an escape sequence in a harness id or a failure message must
-    /// not survive deserialization to move the cursor or recolour the report.
+    /// headroom, so an escape sequence in printable identity details or a failure
+    /// message must not survive deserialization to move the cursor or recolour
+    /// the report. Attribution fields use their stricter semantic validators.
     #[test]
     fn escape_sequences_in_a_deserialized_report_never_reach_the_text_view() {
         let json = serde_json::json!({
@@ -565,11 +566,11 @@ mod tests {
             "observed_at": "2026-07-29T12:00:00Z",
             "identities": [
                 {
-                    "harness": "claude\u{1b}[31m-code",
-                    "variant": "work\u{7}",
+                    "harness": "claude-code",
+                    "variant": "work",
                     "selector": {
                         "kind": "env_path",
-                        "env": "CLAUDE_CONFIG\u{1b}[2J_DIR",
+                        "env": "CLAUDE_CONFIG_DIR",
                         "path": "/home/u/.claude\r/x",
                     },
                     "auth_mode": "subscription",
@@ -593,7 +594,7 @@ mod tests {
                 },
                 {
                     "harness": "codex",
-                    "selector": {"kind": "env_secret", "env": "GH\u{1b}[35m_TOKEN"},
+                    "selector": {"kind": "env_secret", "env": "GH_TOKEN"},
                     "auth_mode": "unknown",
                     "availability": {
                         "state": "unknown",
@@ -631,11 +632,9 @@ mod tests {
         );
         // The readable content survives: sanitizing flattens, never discards.
         for readable in [
-            "claude",
-            "-code",
+            "claude-code",
             ":work",
-            "CLAUDE_CONFIG",
-            "_DIR=/home/u/.claude",
+            "CLAUDE_CONFIG_DIR=/home/u/.claude",
             "plan ma",
             "31mx",
             "five",
@@ -644,8 +643,7 @@ mod tests {
             " hours",
             "42% used",
             "resets 2026-07-29T18:30:00Z",
-            "GH",
-            "_TOKEN=<secret>",
+            "GH_TOKEN=<secret>",
             "the probe failed",
             "and said so",
             "`cru",

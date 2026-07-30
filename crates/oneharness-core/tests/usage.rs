@@ -1130,6 +1130,35 @@ fn an_overage_percentage_and_a_deficit_survive_construction_and_the_wire() {
     );
 }
 
+#[test]
+fn identity_attribution_is_validated_when_read_from_the_wire() {
+    let valid: Value = serde_json::from_str(GOLDEN).expect("the golden is JSON");
+
+    for (field, invalid) in [
+        ("harness", ""),
+        ("harness", "unknown-harness"),
+        ("variant", ""),
+        ("variant", "not.a.variant"),
+    ] {
+        let mut report = valid.clone();
+        report["identities"][0][field] = Value::String(invalid.to_string());
+        assert!(
+            serde_json::from_value::<UsageReport>(report).is_err(),
+            "an identity with {field} `{invalid}` must not cross the wire boundary"
+        );
+    }
+
+    for index in [0, 1] {
+        let mut report = valid.clone();
+        report["identities"][index]["selector"]["env"] =
+            Value::String("NOT-AN-ENV-NAME".to_string());
+        assert!(
+            serde_json::from_value::<UsageReport>(report).is_err(),
+            "an invalid environment name in identity {index} must not cross the wire boundary"
+        );
+    }
+}
+
 /// The omissions are the point: a consumer distinguishes "the harness did not
 /// report this" from a value, and a JSON `null` is neither.
 #[test]

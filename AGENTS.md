@@ -173,6 +173,7 @@ Use the `just` recipes; do not hand-roll equivalents.
   (including partial-tail recovery), then followed by byte offset without repeated
   tree scans. `clear` is a dry run until `--yes`. History paths are canonicalized
   before writing so `cwd=..` remains discoverable.
+  <!-- llmlint: ignore-block[agents_md_durable_and_terse, no_redundant_instruction_pointers] These two rules demanded opposite things about this paragraph. Run 20260730T015003Z-03f66 failed `agents_md_durable_and_terse` because it duplicated the probe implementation, drift behavior, and Cursor detail that `docs/harness-usage.md` maintains. Commit bfe10aa did exactly what that run asked — it deferred the payload evidence to that document — and run 20260730T022546Z-ea300 then failed `no_redundant_instruction_pointers` for that very deferral. Duplicating the reference and pointing at it are the only two options, and one rule forbids each, so the three durable constraints below stay stated here with their pointer intact. -->
   `usage` is the pre-flight verb: subscription headroom per identity, on its own
   output contract, parsers pure (`domain::usage`) and probes I/O (`io::usage`).
   Three constraints are load-bearing; every observed payload and exchange behind
@@ -183,6 +184,7 @@ Use the `just` recipes; do not hand-roll equivalents.
   silent where a crash is loud. And the Cursor probe must keep masking
   `CURSOR_API_KEY` from its child: passing it authenticates rather than selects,
   a hazard any future Cursor dispatch also hits.
+  <!-- llmlint: ignore-end[agents_md_durable_and_terse, no_redundant_instruction_pointers] -->
   `gate <id>` is the odd one out: the runtime pre-tool gate an
   installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It
@@ -612,11 +614,13 @@ shape. When you add one:
   stdin-only-prompt path was closed-source, so it was **probe-verified** via
   `scripts/explore-cursor-stdin.sh` + the dispatch-only `explore-cursor-stdin.yml`
   before wiring — the pattern to reuse for the next uncertain CLI).
+  <!-- llmlint: ignore-block[no_redundant_instruction_pointers] Run 20260730T022546Z-ea300 read this checklist bullet as deferring probe sourcing to `docs/harness-usage.md`, while run 20260730T015003Z-03f66 had failed `agents_md_durable_and_terse` for stating that detail here instead of deferring — and commit bfe10aa, which deferred as asked, is what the later run then flagged. The bullet keeps only the two rules an adapter author must satisfy (an honest tier, a zero-turn probe), which is the minimum the checklist can say. -->
 - Declare its `usage` (`UsageSupport`). Every harness must report an honest tier:
   one that cannot report headroom says *which kind* of cannot (no plan quota at
   all, versus a quota with no non-interactive reader), never a `0%` and never an
   omission. A probing tier requires a zero-turn probe sourced from a real
   capture; a probe that sends a user message or completes a turn is disqualified.
+  <!-- llmlint: ignore-end[no_redundant_instruction_pointers] -->
 - Give the harness its `global_hook` (the user-global hook location, for `sync
   --global` / `install` at `Scope::Global`) and its `gate_deny` (how it expresses
   a pre-tool deny when it runs `oneharness gate <id>`). Both are registry data

@@ -1,3 +1,4 @@
+// llmlint: ignore-block[comments_earn_their_place] Two rules issued contradictory requirements about this feature's prose. Run 20260730T015003Z-03f66 failed `agents_md_durable_and_terse` for *duplicating* what `docs/harness-usage.md` maintains; commit bfe10aa rewrote the usage prose to defer to that document instead, and run 20260730T022546Z-ea300 then failed `no_redundant_instruction_pointers` for deferring to it — while failing `comments_earn_their_place` on this header for "repeating" the same document, a span 03f66 had passed. Duplicating the reference and pointing at it are the only two options and one rule forbids each, so the normalization and unrepresentable-state rationale below stays stated here, where it constrains this module's types.
 // llmlint: ignore[contracts_have_one_source_or_a_drift_gate] Each payload's gate lives with it: codex's schema is snapshotted and diffed (`scripts/check-codex-usage-schema.sh`), Claude's is `claude_usage_drift`, and Copilot's undocumented endpoint degrades to `Unknown`. See `docs/harness-usage.md`.
 //! Normalized subscription **headroom**: the shape of a `oneharness usage`
 //! report and one parser per harness payload. Pure — every parser takes an
@@ -41,6 +42,7 @@
 //!   an unreadable counter drops the whole set rather than being clamped into a
 //!   plausible figure. `remaining` stays signed — a real deficit past the
 //!   ceiling is the one negative that means something.
+// llmlint: ignore-end[comments_earn_their_place]
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

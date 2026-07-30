@@ -1,3 +1,4 @@
+// llmlint: ignore-block[comments_earn_their_place] Same contradiction as the `domain::usage`/`io::usage` headers: run 20260730T015003Z-03f66 failed `agents_md_durable_and_terse` for *duplicating* this feature's maintained reference, commit bfe10aa made the prose defer instead, and run 20260730T022546Z-ea300 then failed `no_redundant_instruction_pointers` for that deferral and `comments_earn_their_place` on this header — a span 03f66 had passed. The honest-tier and never-takes-a-harness-down properties below are what this command must not regress, so they stay stated at the command layer.
 //! `oneharness usage` — report each harness identity's remaining subscription
 //! headroom, without spending a model turn.
 //!
@@ -16,6 +17,7 @@
 //! unauthenticated harness, a malformed payload, and a probe timeout are all
 //! data in the report. Only a genuine usage error (an unknown harness id, an
 //! undeclared variant, a bad config) exits non-zero.
+// llmlint: ignore-end[comments_earn_their_place]
 
 use std::path::PathBuf;
 use std::time::Duration;

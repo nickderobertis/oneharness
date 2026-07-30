@@ -13183,15 +13183,70 @@ fn usage_reports_headroom_for_a_probed_subscription_identity() {
     assert_eq!(seven_day["is_binding"], true);
 }
 
+/// The bytes a probe actually wrote to a harness's stdin, recorded by the mock.
+///
+/// The zero-turn property is a claim about exactly these bytes, and no assertion
+/// on the argv or on "the mock answered" can reach it: `claude -p --input-format
+/// stream-json` takes its user message on **stdin**, so a probe could grow one
+/// without changing a single flag and every argv assertion would stay green while
+/// the probe started spending the quota it exists to measure.
+struct ProbeStdin {
+    path: PathBuf,
+}
+
+impl ProbeStdin {
+    fn new(label: &str) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "oneharness-usage-stdin-{label}-{}.jsonl",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        Self { path }
+    }
+
+    fn env(&self) -> String {
+        self.path.display().to_string()
+    }
+
+    /// Everything the probe wrote, verbatim. Absent means the probe never spoke
+    /// at all, which is a failure rather than an empty exchange.
+    fn text(&self) -> String {
+        std::fs::read_to_string(&self.path).expect("the mock recorded the probe's stdin")
+    }
+
+    /// The requests the probe wrote, in the order it wrote them.
+    fn requests(&self) -> Vec<Value> {
+        self.text()
+            .lines()
+            .map(|line| {
+                serde_json::from_str(line)
+                    .unwrap_or_else(|error| panic!("`{line}` is not a JSON request: {error}"))
+            })
+            .collect()
+    }
+}
+
+impl Drop for ProbeStdin {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Every spelling a user message would arrive under in Claude's stream-json input
+/// mode. A probe that carried one would complete a turn, which is the silent
+/// regression this test exists to catch: quota burn with no failing check.
+const CLAUDE_USER_TURN_MARKERS: &[&str] = &["\"user\"", "\"message\"", "\"content\"", "\"prompt\""];
+
 #[test]
-fn usage_probes_send_no_prompt_so_no_model_turn_is_spent() {
+fn the_claude_usage_probe_sends_one_get_usage_request_and_no_user_message() {
     // The zero-turn property is the whole reason this command is usable as a
-    // pre-flight check, and it lives in the argv and the single stdin line. The
-    // mock records both, so a probe that started sending a prompt would fail
-    // here rather than quietly start billing.
+    // pre-flight check. It lives in the argv *and* in the bytes on stdin, so both
+    // are recorded here and both are asserted: the argv proves no prompt flag and
+    // an empty tool set, the stdin proves the one thing the argv cannot.
     let argv_file =
         std::env::temp_dir().join(format!("oneharness-usage-argv-{}", std::process::id()));
     let _ = std::fs::remove_file(&argv_file);
+    let stdin = ProbeStdin::new("claude");
 
     let output = run(
         &[
@@ -13206,9 +13261,15 @@ fn usage_probes_send_no_prompt_so_no_model_turn_is_spent() {
             ("MOCK_REPLY_AFTER_LINES", "1"),
             ("MOCK_STDOUT", &claude_usage_response()),
             ("MOCK_ARGV_FILE", argv_file.to_str().unwrap()),
+            ("MOCK_REQUEST_FILE", &stdin.env()),
         ],
     );
     assert!(output.status.success());
+    assert_eq!(
+        usage_identity(&json_stdout(&output), "claude-code")["availability"]["state"],
+        "available",
+        "the exchange asserted below is the one that really answered"
+    );
 
     let argv: Vec<String> = std::fs::read_to_string(&argv_file)
         .expect("the mock recorded its argv")
@@ -13238,6 +13299,119 @@ fn usage_probes_send_no_prompt_so_no_model_turn_is_spent() {
             .any(|a| a.contains("hello") || a.contains("usage?")),
         "no prompt text: {argv:?}"
     );
+
+    let requests = stdin.requests();
+    assert_eq!(
+        requests.len(),
+        1,
+        "exactly one line may reach this harness's stdin: {requests:?}"
+    );
+    let request = &requests[0];
+    assert_eq!(
+        request["type"], "control_request",
+        "the only thing written is a control request: {request}"
+    );
+    assert_eq!(request["request"]["subtype"], "get_usage");
+    assert_eq!(
+        request["request"].as_object().map(serde_json::Map::len),
+        Some(1),
+        "the control request carries its subtype and nothing else: {request}"
+    );
+    assert_eq!(
+        request["request_id"], "oneharness-usage-1",
+        "the id is what makes the matching control response unmistakable: {request}"
+    );
+    assert_eq!(
+        request.as_object().map(serde_json::Map::len),
+        Some(3),
+        "type, request_id, request — a fourth field is something new to justify: {request}"
+    );
+
+    let text = stdin.text();
+    for marker in CLAUDE_USER_TURN_MARKERS {
+        assert!(
+            !text.contains(marker),
+            "stdin carried {marker}: a user message is what makes `claude -p` take \
+             a model turn, and this probe must take none.\nstdin was: {text}"
+        );
+    }
+}
+
+#[test]
+fn the_codex_usage_probe_sends_exactly_the_zero_turn_handshake_in_order() {
+    // codex's headroom read is three JSON-RPC lines, and the *bodies* are the
+    // property: an exchange that skipped `initialized`, reordered the handshake,
+    // or replaced the read with a request that starts a turn would still be
+    // answered by any mock that replies after N lines. So the requests are read
+    // back and compared whole.
+    let stdin = ProbeStdin::new("codex");
+
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "codex",
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "3"),
+            ("MOCK_STDOUT", &codex_usage_response()),
+            ("MOCK_REQUEST_FILE", &stdin.env()),
+        ],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    assert_eq!(
+        usage_identity(&json_stdout(&output), "codex")["availability"]["state"],
+        "available",
+        "the exchange asserted below is the one that really answered"
+    );
+
+    let requests = stdin.requests();
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request["method"].as_str().unwrap_or("<no method>"))
+            .collect::<Vec<_>>(),
+        vec!["initialize", "initialized", "account/rateLimits/read"],
+        "these three, in this order, and nothing else: {requests:?}"
+    );
+    for request in &requests {
+        assert_eq!(request["jsonrpc"], "2.0", "{request}");
+    }
+    assert_eq!(requests[0]["id"], 1);
+    assert_eq!(
+        requests[0]["params"]["clientInfo"]["name"], "oneharness",
+        "the app-server is told who is calling: {}",
+        requests[0]
+    );
+    assert!(
+        requests[1].get("id").is_none(),
+        "`initialized` is a notification; an id would make it a request the \
+         server is expected to answer: {}",
+        requests[1]
+    );
+    assert_eq!(
+        requests[2]["id"], 2,
+        "the read's id is what the reply is matched on: {}",
+        requests[2]
+    );
+    assert!(
+        requests[2]["params"].is_null(),
+        "account/rateLimits/read takes params: null (its sibling account/read \
+         instead requires {{}}): {}",
+        requests[2]
+    );
+
+    // Nothing here may carry user content: a request that did would be a turn.
+    let text = stdin.text();
+    for marker in ["\"prompt\"", "\"message\"", "\"input\"", "\"items\""] {
+        assert!(
+            !text.contains(marker),
+            "stdin carried {marker}, so some request sent user content: {text}"
+        );
+    }
 }
 
 #[test]

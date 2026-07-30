@@ -27,6 +27,12 @@
 //!                   lines from stdin, then answer with MOCK_STDOUT and exit —
 //!                   the request/response shape the `usage` probes drive (a
 //!                   control request, or a JSON-RPC exchange).
+//!   MOCK_REQUEST_FILE  with MOCK_REPLY_AFTER_LINES, the requests read from stdin
+//!                   are written here, one per line, and stdin is drained to EOF
+//!                   first so a line the caller should NOT have sent is recorded
+//!                   too. Answering after N lines cannot prove WHICH lines
+//!                   arrived; the `usage` probes' zero-turn property is a claim
+//!                   about exactly that, so a test has to read the bodies back.
 //!   MOCK_ECHO_STDIN if set, read ALL of stdin and write it verbatim to stdout,
 //!                   then exit — proving a prompt delivered on the child's stdin
 //!                   (the large-prompt escape hatch) actually arrived, and with
@@ -340,13 +346,23 @@ pub fn run() -> ! {
             let _ = std::io::stderr().flush();
             std::process::exit(2);
         };
+        // With a request log, read past `wanted` to EOF: the probes close stdin
+        // before reading any reply, so EOF is immediate, and an extra line is
+        // exactly what a test asserting "one request and no user message" has to
+        // be able to see. Without one, stop at `wanted` as before.
+        let record = std::env::var("MOCK_REQUEST_FILE").ok();
+        let stop_after = if record.is_some() { usize::MAX } else { wanted };
+        let mut requests: Vec<String> = Vec::new();
         let mut line = String::new();
-        for _ in 0..wanted {
+        for _ in 0..stop_after {
             line.clear();
             match std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line) {
                 Ok(0) | Err(_) => break,
-                Ok(_) => {}
+                Ok(_) => requests.push(line.trim_end_matches(['\r', '\n']).to_string()),
             }
+        }
+        if let Some(path) = record {
+            let _ = std::fs::write(path, requests.join("\n"));
         }
         if let Ok(text) = std::env::var("MOCK_STDERR") {
             let _ = write!(std::io::stderr(), "{text}");

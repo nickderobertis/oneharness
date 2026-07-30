@@ -13415,6 +13415,70 @@ fn the_codex_usage_probe_sends_exactly_the_zero_turn_handshake_in_order() {
 }
 
 #[test]
+fn usage_runs_each_probe_in_the_requested_working_directory() {
+    // `--cwd` decides which directory a probe's child starts in, which is what
+    // makes a project-relative credential store (a repo-local `CLAUDE_CONFIG_DIR`)
+    // resolve to the right identity. A flag that were silently dropped would probe
+    // the wrong account and report its headroom as this project's.
+    //
+    // The mock reads a *relative* path here, so it can only answer at all from
+    // inside the requested directory — which is the observation.
+    let dir = std::env::temp_dir().join(format!("oneharness-usage-cwd-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("the probe's working directory");
+    std::fs::write(
+        dir.join("payload.jsonl"),
+        format!("{}\n", claude_usage_response()),
+    )
+    .expect("a payload only reachable from that directory");
+
+    let args = |cwd: Option<&str>| -> Vec<String> {
+        let mut args = vec![
+            "usage".to_string(),
+            "--harness".to_string(),
+            "claude-code".to_string(),
+            "--bin".to_string(),
+            bin_override("claude-code"),
+            "--compact".to_string(),
+        ];
+        if let Some(cwd) = cwd {
+            args.push("--cwd".to_string());
+            args.push(cwd.to_string());
+        }
+        args
+    };
+    fn borrowed(args: &[String]) -> Vec<&str> {
+        args.iter().map(String::as_str).collect()
+    }
+    let env = [("MOCK_CAT_FILE", "payload.jsonl")];
+
+    let in_dir = args(Some(dir.to_str().unwrap()));
+    let inside = run(&borrowed(&in_dir), &env);
+    assert!(inside.status.success(), "exit {:?}", inside.status.code());
+    let claude = usage_identity(&json_stdout(&inside), "claude-code");
+    assert_eq!(
+        claude["availability"]["state"], "available",
+        "the probe answered from `payload.jsonl`, so it ran in the requested \
+         directory: {claude}"
+    );
+    assert_eq!(claude["plan"], "max");
+
+    // Without the flag the child starts wherever the command did, where that
+    // relative path resolves to nothing — so the answer above was not a
+    // coincidence of some absolute path.
+    let elsewhere = args(None);
+    let outside = run(&borrowed(&elsewhere), &env);
+    assert!(outside.status.success());
+    let unreached = usage_identity(&json_stdout(&outside), "claude-code");
+    assert_eq!(
+        unreached["availability"]["state"], "unknown",
+        "the same relative payload must be unreachable from anywhere else: {unreached}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn usage_reports_codex_headroom_from_its_app_server_exchange() {
     // The codex probe writes three JSON-RPC lines (initialize, initialized, the
     // read) before an answer arrives; the mock only replies after the third, so

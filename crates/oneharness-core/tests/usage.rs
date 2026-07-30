@@ -9,6 +9,7 @@
 //! reads. Anything a consumer needs that is not `pub`, and any envelope step a
 //! consumer would have to reinvent, fails here.
 
+use oneharness_core::domain::config::VariantName;
 use oneharness_core::domain::usage::{
     claude_control_response, normalize_timestamp, parse_claude_get_usage, parse_codex_rate_limits,
     parse_copilot_user, parse_cursor_about, AuthMode, IdentitySelector, ParsedUsage, QuotaAmount,
@@ -722,7 +723,7 @@ fn golden_report() -> UsageReport {
                         .to_string(),
                 }),
             )
-            .with_variant(Some("work".to_string())),
+            .with_variant(Some("work".parse().expect("a declarable variant name"))),
             // Plan tier only: a real plan name with an affirmative "no reader".
             UsageIdentity::new(
                 "cursor",
@@ -1157,6 +1158,62 @@ fn identity_attribution_is_validated_when_read_from_the_wire() {
             "an invalid environment name in identity {index} must not cross the wire boundary"
         );
     }
+}
+
+/// The construction half of the rule above. A published crate that accepts an
+/// attribution through one door and refuses the same one through the other
+/// hands a sibling tool a report it cannot read back — and the attribution is
+/// the whole point of the field, since it is what tells two subscriptions of one
+/// harness apart.
+///
+/// A variant reaches the field only as a [`VariantName`], so the refusal is the
+/// same validator's, whichever door the value came through.
+#[test]
+fn identity_attribution_is_validated_when_built_in_process() {
+    let valid: Value = serde_json::from_str(GOLDEN).expect("the golden is JSON");
+
+    // "" names no declared variant at all; "not.a.variant" is a name no config
+    // could have declared.
+    for invalid in ["", "not.a.variant"] {
+        let refused = invalid
+            .parse::<VariantName>()
+            .expect_err("the constructor path refuses the name outright")
+            .to_string();
+
+        let mut report = valid.clone();
+        report["identities"][0]["variant"] = Value::String(invalid.to_string());
+        let from_wire = serde_json::from_value::<UsageReport>(report)
+            .expect_err("the wire path refuses it too")
+            .to_string();
+
+        assert!(
+            from_wire.contains(&refused),
+            "both doors must refuse `{invalid}` for the same stated reason, \
+             got `{from_wire}` on the wire and `{refused}` in process"
+        );
+    }
+
+    // And the attribution a caller *can* build is one this crate reads back.
+    let attributed = UsageIdentity::new(
+        "claude-code",
+        IdentitySelector::Ambient,
+        ParsedUsage::unknown(UnknownReason::Unprobed),
+    )
+    .with_variant(Some("work".parse().expect("a declarable variant name")));
+    let report = UsageReport::new(observed_at(), vec![attributed]);
+    let text = serde_json::to_string(&report).expect("the report serializes");
+    let read_back: UsageReport =
+        serde_json::from_str(&text).expect("a constructed report reads back");
+
+    assert_eq!(read_back, report);
+    assert_eq!(
+        read_back.identities[0]
+            .variant
+            .as_ref()
+            .map(VariantName::as_str),
+        Some("work"),
+        "the variant reaches the wire as the plain string a run report carries: {text}"
+    );
 }
 
 /// The omissions are the point: a consumer distinguishes "the harness did not

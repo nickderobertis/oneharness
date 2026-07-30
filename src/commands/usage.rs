@@ -26,6 +26,7 @@ use crate::cli::{UsageArgs, UsageFormat};
 use crate::commands::{
     dedupe_exact_ids, print_json, print_text, select_specs, variant_environment,
 };
+use oneharness_core::domain::config::VariantName;
 use oneharness_core::domain::usage::{
     AuthMode, QuotaCounters, UnavailableReason, UnknownReason, UsageAvailability, UsageIdentity,
     UsageReport, UsageWindow, UtcInstant, WindowUsage,
@@ -82,8 +83,10 @@ pub fn run(args: &UsageArgs) -> Result<i32, OneharnessError> {
             .variant_for(&id)
             .map_or_else(Vec::new, |variant| variant.unset_env.clone());
         let resolved = detect::resolve_named(spec, &id, &overrides);
+        let variant = variant_of(&id)?;
         plans.push(Plan {
             id,
+            variant,
             base: spec.id,
             support: spec.usage,
             bin: resolved.bin,
@@ -110,6 +113,10 @@ struct Plan {
     /// The composed selector (`claude-code:work`), which is how a consumer joins
     /// this entry back to the `run` invocation it describes.
     id: String,
+    /// The variant half of [`Plan::id`], parsed once here so the probe path —
+    /// which must report an outcome for every identity, including a crashed one
+    /// — has no way left to fail. See [`variant_of`].
+    variant: Option<VariantName>,
     /// The registry id, which is what the report's `harness` field carries.
     base: &'static str,
     support: oneharness_core::domain::usage::UsageSupport,
@@ -121,20 +128,33 @@ struct Plan {
     timeout: Duration,
 }
 
-impl Plan {
-    /// The variant half of the composed selector, so two subscriptions of one
-    /// harness stay separately attributed in the report.
-    fn variant(&self) -> Option<String> {
-        self.id
-            .split_once(':')
-            .map(|(_, variant)| variant.to_string())
-    }
+/// The variant half of a composed selector (`claude-code:work`), so two
+/// subscriptions of one harness stay separately attributed in the report.
+///
+/// The name is checked against the declared variants before any plan is built,
+/// so this parse restates that check as the type the report's field holds
+/// rather than performing a second one. It stays fallible so an id that somehow
+/// reached here is refused loudly, rather than attributed to a name the report
+/// could never be read back with.
+fn variant_of(id: &str) -> Result<Option<VariantName>, OneharnessError> {
+    let Some((base, name)) = id.split_once(':') else {
+        return Ok(None);
+    };
+    name.parse::<VariantName>()
+        .map(Some)
+        .map_err(|_| OneharnessError::UnknownHarnessVariant {
+            id: id.to_string(),
+            base: base.to_string(),
+            variant: name.to_string(),
+        })
+}
 
+impl Plan {
     /// Probe this identity, or record why no probe ran. Never fails: every
     /// outcome — including a missing binary — is a normalized identity.
     fn probe(&self) -> UsageIdentity {
         fault_inject_probe_panic(&self.id);
-        self.probe_inner().with_variant(self.variant())
+        self.probe_inner().with_variant(self.variant.clone())
     }
 
     fn probe_inner(&self) -> UsageIdentity {
@@ -187,7 +207,7 @@ impl Plan {
                 message: "the probe stopped unexpectedly".to_string(),
             }),
         )
-        .with_variant(self.variant())
+        .with_variant(self.variant.clone())
     }
 }
 
@@ -297,7 +317,7 @@ fn render_identity(identity: &UsageIdentity) -> String {
         .map_or_else(String::new, |plan| format!(" · plan {plan}"));
     let variant = identity
         .variant
-        .as_deref()
+        .as_ref()
         .map_or_else(String::new, |variant| format!(":{variant}"));
     let mut out = format!(
         "{}{variant} [{}]{plan} · auth {}\n",

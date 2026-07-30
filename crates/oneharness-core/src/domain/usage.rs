@@ -277,9 +277,13 @@ pub struct UsageIdentity {
     /// Two subscriptions of one harness therefore stay distinguishable even when
     /// their [`IdentitySelector`]s do not distinguish them (a variant that
     /// selects an identity by credential rather than by directory).
-    // llmlint: ignore[invalid_states_unrepresentable] This is the established public/wire string shape shared with run reports; external values cross the fallible `UsageIdentityWire` conversion through `VariantName`, while in-process producers receive variants from the already-validated config selection.
+    ///
+    /// A [`VariantName`], so the field cannot be *set* to a name no config could
+    /// have declared — the same enforcement [`UsageReport::observed_at`] gets
+    /// from [`UtcInstant`]. It serializes transparently, so the wire keeps the
+    /// plain string [`crate::domain::report::RunResult::variant`] carries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub variant: Option<String>,
+    pub variant: Option<VariantName>,
     /// How this identity was selected — never the credential itself.
     pub selector: IdentitySelector,
     pub auth_mode: AuthMode,
@@ -307,8 +311,17 @@ impl UsageIdentity {
     }
 
     /// Attribute this identity to the named variant that selected it.
+    ///
+    /// The type of the argument is the enforcement, as it is for
+    /// [`UsageReport::new`]: a caller reaches a variant only through
+    /// [`VariantName`], whose [`FromStr`] is the very validator
+    /// [`UsageIdentityWire`] runs — so an attribution this crate would refuse to
+    /// read back is not one a caller of the published crate can build. It stays
+    /// infallible because the probe path that calls it is: a probe records an
+    /// outcome for every identity, including a crashed one, and has nowhere to
+    /// report a second kind of failure.
     #[must_use]
-    pub fn with_variant(mut self, variant: Option<String>) -> Self {
+    pub fn with_variant(mut self, variant: Option<VariantName>) -> Self {
         self.variant = variant;
         self
     }
@@ -342,9 +355,22 @@ impl TryFrom<UsageIdentityWire> for UsageIdentity {
     type Error = String;
 
     fn try_from(wire: UsageIdentityWire) -> Result<Self, Self::Error> {
+        // The variant is validated *into* its field rather than beside it, so
+        // this path and [`UsageIdentity::with_variant`] cannot come to disagree
+        // about what an attribution may say: both reach the field only through
+        // [`VariantName`]'s one validator. Flattening first keeps the refusal's
+        // quoted-back name free of escapes, like every other string here.
+        let variant = wire
+            .variant
+            .map(|name| {
+                without_control_chars(&name)
+                    .parse::<VariantName>()
+                    .map_err(|error| format!("invalid usage identity variant: {error}"))
+            })
+            .transpose()?;
         let mut identity = Self {
             harness: wire.harness,
-            variant: wire.variant,
+            variant,
             selector: wire.selector,
             auth_mode: wire.auth_mode,
             plan: wire.plan,
@@ -356,11 +382,6 @@ impl TryFrom<UsageIdentityWire> for UsageIdentity {
                 "unknown usage identity harness `{}`",
                 identity.harness
             ));
-        }
-        if let Some(variant) = &identity.variant {
-            variant
-                .parse::<VariantName>()
-                .map_err(|error| format!("invalid usage identity variant: {error}"))?;
         }
         let env = match &identity.selector {
             IdentitySelector::EnvPath { env, .. } | IdentitySelector::EnvSecret { env } => {
@@ -382,7 +403,8 @@ impl TryFrom<UsageIdentityWire> for UsageIdentity {
 /// invariant intact by construction.
 fn flatten_identity(identity: &mut UsageIdentity) {
     flatten(&mut identity.harness);
-    flatten_optional(&mut identity.variant);
+    // `variant` needs no flattening: a [`VariantName`] cannot hold a control
+    // character, and the wire's text is flattened before it becomes one.
     flatten_optional(&mut identity.plan);
     match &mut identity.selector {
         IdentitySelector::EnvPath { env, path } => {

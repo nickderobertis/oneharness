@@ -184,8 +184,15 @@ pub struct UsageArgs {
     #[arg(long, value_delimiter = ',', value_name = "ID")]
     pub harness: Vec<String>,
 
-    /// Harness id(s) to exclude (repeatable, comma-separated).
-    #[arg(long, value_delimiter = ',', value_name = "ID")]
+    /// Harness id(s) to drop from the all-harness sweep (repeatable,
+    /// comma-separated). It narrows the sweep, so it cannot combine with
+    /// --harness, which already states the selection outright.
+    #[arg(
+        long,
+        value_delimiter = ',',
+        value_name = "ID",
+        conflicts_with = "harness"
+    )]
     pub exclude: Vec<String>,
 
     /// Override a harness binary: --bin ID=PATH (repeatable).

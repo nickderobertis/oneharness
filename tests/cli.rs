@@ -13587,12 +13587,49 @@ fn usage_selection_narrows_with_exclude() {
 }
 
 #[test]
+fn usage_refuses_an_exclude_it_could_not_apply() {
+    // `--exclude` drops harnesses from the all-harness sweep. Against an explicit
+    // `--harness` there is no sweep to narrow, so honouring the flag's name would
+    // mean either silently ignoring it — the caller believing an identity was
+    // dropped when it was probed — or a second, subtractive spelling of a
+    // selection the caller already wrote out. It is a usage error instead.
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "goose,crush",
+            "--exclude",
+            "crush",
+            "--compact",
+        ],
+        &[],
+    );
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "stdout {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--exclude") && stderr.contains("--harness"),
+        "the refusal must name both flags: {stderr}"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "no report may be emitted for a selection that was refused"
+    );
+}
+
+#[test]
 fn usage_keeps_each_reading_with_the_identity_that_produced_it() {
     // Every plan is built by pairing the selected ids with the resolved specs
     // positionally, so anything that could shorten or reorder one list without
     // the other would silently file one harness's headroom under another's
-    // name. `--exclude` alongside an explicit `--harness` is that risk: the
-    // report must still read the way it was asked for.
+    // name. A mixed selection — two headroomless harnesses around a variant that
+    // reports — is where that shift would show: the report must read the way it
+    // was asked for.
     let fixture = ConfigFixture::new(
         "usage-attribution",
         &format!(
@@ -13608,8 +13645,6 @@ fn usage_keeps_each_reading_with_the_identity_that_produced_it() {
             "usage",
             "--harness",
             "goose,claude-code:work,crush",
-            "--exclude",
-            "goose",
             "--cwd",
             &fixture.cwd(),
             "--compact",
@@ -13640,8 +13675,7 @@ fn usage_keeps_each_reading_with_the_identity_that_produced_it() {
             ("claude-code", Some("work")),
             ("crush", None)
         ],
-        "an explicit selection is reported in the order it was named, and \
-         `--exclude` does not narrow one: {report}"
+        "an explicit selection is reported in the order it was named: {report}"
     );
 
     // The variant's own reading, not a neighbour's: goose and crush have no

@@ -1398,7 +1398,9 @@ Three things it will not do:
   user login. Absence of a login is reported, never resolved by authenticating.
 
 Useful flags: `--all` / `--harness <id,…>` / `--exclude <id,…>` (selection,
-defaulting to every harness), `--format <json|text>`, `--compact`,
+defaulting to every harness — `--exclude` drops ids from that sweep and is
+refused alongside `--harness`, which already names the selection),
+`--format <json|text>`, `--compact`,
 `--timeout <secs>` (per probe, default 60), plus the usual `--bin`, `--cwd`,
 `--config`, and `--no-config`.
 

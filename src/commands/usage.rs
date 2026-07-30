@@ -40,8 +40,9 @@ const MAX_PARALLEL_PROBES: usize = 4;
 
 pub fn run(args: &UsageArgs) -> Result<i32, OneharnessError> {
     // Probing defaults to every harness; only naming one with `--harness`
-    // narrows the sweep. `--exclude` alone therefore means "everything but
-    // these" rather than an empty selection.
+    // narrows the sweep. `--exclude` therefore means "the sweep, minus these"
+    // rather than an empty selection — and clap refuses it alongside `--harness`,
+    // where it would name ids it could not drop.
     let all = args.all || args.harness.is_empty();
     let specs = select_specs(all, &args.harness, &args.exclude)?;
     let selected_ids = dedupe_exact_ids(&args.harness);

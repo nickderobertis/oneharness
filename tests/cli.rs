@@ -13368,50 +13368,62 @@ fn the_codex_usage_probe_sends_exactly_the_zero_turn_handshake_in_order() {
         "the exchange asserted below is the one that really answered"
     );
 
-    let requests = stdin.requests();
-    assert_eq!(
-        requests
-            .iter()
-            .map(|request| request["method"].as_str().unwrap_or("<no method>"))
-            .collect::<Vec<_>>(),
-        vec!["initialize", "initialized", "account/rateLimits/read"],
-        "these three, in this order, and nothing else: {requests:?}"
-    );
-    for request in &requests {
-        assert_eq!(request["jsonrpc"], "2.0", "{request}");
-    }
-    assert_eq!(requests[0]["id"], 1);
-    assert_eq!(
-        requests[0]["params"]["clientInfo"]["name"], "oneharness",
-        "the app-server is told who is calling: {}",
-        requests[0]
-    );
-    assert!(
-        requests[1].get("id").is_none(),
-        "`initialized` is a notification; an id would make it a request the \
-         server is expected to answer: {}",
-        requests[1]
-    );
-    assert_eq!(
-        requests[2]["id"], 2,
-        "the read's id is what the reply is matched on: {}",
-        requests[2]
-    );
-    assert!(
-        requests[2]["params"].is_null(),
-        "account/rateLimits/read takes params: null (its sibling account/read \
-         instead requires {{}}): {}",
-        requests[2]
-    );
+    // Whole bodies, in order. Comparing the exchange field for field is what
+    // makes "no turn is spent" a real assertion: a request that carried user
+    // content, an extra field, a fourth line, or a changed calling convention all
+    // fail here, rather than only the handful of fields someone thought to check.
+    // Each detail below is load-bearing:
+    //   - `initialized` is a notification, so it has no `id`; giving it one would
+    //     make it a request the server is expected to answer.
+    //   - `account/rateLimits/read` takes `params: null`, where its sibling
+    //     `account/read` instead requires `{}`.
+    //   - the read's `id` is what its reply is matched on, so nothing else can be
+    //     mistaken for the answer.
+    let expected = vec![
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "clientInfo": {
+                    "name": "oneharness",
+                    "title": null,
+                    "version": core_version(),
+                },
+                "capabilities": null,
+            },
+        }),
+        serde_json::json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "account/rateLimits/read",
+            "params": null,
+        }),
+    ];
 
-    // Nothing here may carry user content: a request that did would be a turn.
-    let text = stdin.text();
-    for marker in ["\"prompt\"", "\"message\"", "\"input\"", "\"items\""] {
-        assert!(
-            !text.contains(marker),
-            "stdin carried {marker}, so some request sent user content: {text}"
-        );
-    }
+    assert_eq!(
+        stdin.requests(),
+        expected,
+        "the whole zero-turn handshake, exactly, in this order:\n{}",
+        stdin.text()
+    );
+}
+
+/// The `oneharness-core` version the handshake announces as its client version,
+/// read from that crate's manifest.
+///
+/// Not a literal, because release-plz bumps it every release and this test would
+/// then fail on the release commit. Not `CARGO_PKG_VERSION` either: that is the
+/// *binary* crate's version here, and the two crates version independently.
+fn core_version() -> String {
+    include_str!("../crates/oneharness-core/Cargo.toml")
+        .lines()
+        // Only the `[package]` version sits at column 0; a dependency's is
+        // either inline in a table or indented under one.
+        .find_map(|line| line.strip_prefix("version = "))
+        .map(|value| value.trim().trim_matches('"').to_string())
+        .expect("oneharness-core's manifest states a version")
 }
 
 #[test]

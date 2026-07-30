@@ -452,8 +452,6 @@ oh_cache_assert() {
     fi
 }
 
-# --- pre-flight headroom (the `usage` verb) ----------------------------------
-
 # Live proof that the zero-turn `usage` probe still gets an ANSWER out of the
 # real harness — the drift alarm for the probe's *exchange*, which the hermetic
 # suite can only mock. Call it for every harness whose `usage` support is a probe
@@ -472,12 +470,11 @@ oh_cache_assert() {
 # that way; this can.
 #   $1 harness id
 oh_usage_enforce() {
-    local id="$1" bin report state reason errf
+    local id="$1" bin report state reason detail errf
     bin="$(oh_bin)"
     [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
     errf="$(mktemp)"
-    note "  probing: $bin usage --harness $id (zero-turn, spends no quota)"
     report="$(ONEHARNESS_NO_CONFIG=1 "$bin" usage --harness "$id" \
         --timeout "${OH_TIMEOUT:-120}" --compact 2>"$errf")" || true
     if [ -z "$report" ]; then
@@ -494,11 +491,11 @@ oh_usage_enforce() {
         | if ($r | type) == "object" then ($r.kind // "") else ($r // "") end')"
     case "$state:$reason" in
     available:*)
-        note "PASS: $id answered its usage probe with headroom: $(printf '%s' "$report" | jq -c '.identities[0].availability.windows')"
+        detail="headroom $(printf '%s' "$report" |
+            jq -r '[.identities[0].availability.windows[]
+                    | "\(.id) \(.usage.used_percent // .usage.kind)"] | join(", ")')"
         ;;
-    unavailable:*)
-        note "PASS: $id answered its usage probe: unavailable ($reason)"
-        ;;
+    unavailable:*) detail="unavailable ($reason)" ;;
     unknown:binary_missing)
         skip "$id is not installed (oneharness reported binary_missing); nothing to probe"
         ;;
@@ -507,6 +504,9 @@ oh_usage_enforce() {
         fail "$id: the usage probe got no answer out of the harness (state=$state, reason=$reason). Either the probe's exchange drifted from the live CLI, or the answer was cut off — a reply that arrives asynchronously is lost if the probe closes the harness's stdin before it lands (crates/oneharness-core/src/io/usage.rs, StdinAfterRequests)"
         ;;
     esac
+    # The reading itself is the evidence, and this log is its only record: a live
+    # phase that passed silently is indistinguishable from one that never ran.
+    note "PASS: $id answered its usage probe — $detail"
 }
 
 # --- normalized tool-call / action events ------------------------------------

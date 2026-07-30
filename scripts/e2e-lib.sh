@@ -501,7 +501,20 @@ oh_usage_enforce() {
         ;;
     *)
         note "  report: $report"
-        fail "$id: the usage probe got no answer out of the harness (state=$state, reason=$reason). Either the probe's exchange drifted from the live CLI, or the answer was cut off — a reply that arrives asynchronously is lost if the probe closes the harness's stdin before it lands (crates/oneharness-core/src/io/usage.rs, StdinAfterRequests)"
+        note "  Next, in order:"
+        note "    1. Replay the probe and read the harness's own errors:"
+        note "         ONEHARNESS_NO_CONFIG=1 $bin usage --harness $id --timeout ${OH_TIMEOUT:-120} --format text"
+        note "       An auth or plan error there is the account, not a drift."
+        note "    2. Send $id's recorded request lines (docs/harness-usage.md) to the CLI by"
+        note "       hand twice: once holding stdin open past the last request, once closing"
+        note "       it straight away. Answered only when held open means the probe must wait"
+        note "       for it — give $id StdinAfterRequests::HoldUntilAnswered in"
+        note "       crates/oneharness-core/src/io/usage.rs."
+        note "    3. Answered in an unrecognized shape means the payload moved: update $id's"
+        note "       parser and its drift guard in crates/oneharness-core/src/domain/usage.rs"
+        note "       (record the new payload in docs/harness-usage.md), then re-run:"
+        note "         just live-$id"
+        fail "$id: the usage probe got no answer out of the harness (state=$state, reason=$reason)"
         ;;
     esac
     # The reading itself is the evidence, and this log is its only record: a live

@@ -172,8 +172,12 @@ sdk-generate:
 # add` starts without it. `sdk-check` depends on this so the gate is
 # self-sufficient for the checkout it verifies instead of assuming its caller
 # bootstrapped that checkout first — the pre-push hook runs `just gate` directly.
+# Quiet on success like the other in-gate recipes — this runs on every `just
+# check`, and an already-satisfied install has nothing to report. bun's own
+# `--silent` would also swallow the reason a failure failed, so hold its output
+# and replay it verbatim only when it matters.
 sdk-install:
-    bun install --cwd npm/oneharness-sdk --frozen-lockfile
+    @out=$(bun install --cwd npm/oneharness-sdk --frozen-lockfile 2>&1) || { printf '%s\n' "$out" >&2; echo "Node SDK dependency install failed; the bun output above says why. If npm/oneharness-sdk/package.json changed, refresh the lockfile with 'bun install --cwd npm/oneharness-sdk'; otherwise check network access to the npm registry and rerun 'just sdk-install'." >&2; exit 1; }
 
 # Strict Node SDK gate, including the Rust->TypeScript drift check and real CLI e2e.
 sdk-check: build build-mock-harness sdk-install

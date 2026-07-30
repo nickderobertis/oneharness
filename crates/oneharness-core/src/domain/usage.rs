@@ -1013,7 +1013,22 @@ pub fn parse_codex_rate_limits(response: &Value) -> ParsedUsage {
         .get("rateLimitsByLimitId")
         .and_then(Value::as_object)
         .filter(|buckets| !buckets.is_empty());
-    let mirror = result.get("rateLimits");
+    let mirror = result.get("rateLimits").filter(|value| value.is_object());
+
+    // One of those two keys is the whole rate-limit surface, and the generated
+    // schema makes `rateLimits` required — so a result carrying neither is drift
+    // (a rename, a stripped payload), never an account with nothing to report.
+    // Concluding `Subscription` here would publish an affirmative claim about
+    // someone's plan derived from a payload that never mentioned one; the schema
+    // diff in `scripts/check-codex-usage-schema.sh` guards the *generated*
+    // contract at build time and cannot see what a live app-server actually sent.
+    if by_limit_id.is_none() && mirror.is_none() {
+        return ParsedUsage::unknown(UnknownReason::ProbeFailed {
+            message: "the codex rate-limit result carries neither a `rateLimits` \
+                      object nor a populated `rateLimitsByLimitId`"
+                .to_string(),
+        });
+    }
 
     let mut windows = Vec::new();
     let mut plan = None;
@@ -2032,6 +2047,61 @@ mod tests {
                 "{response} establishes no auth mode either"
             );
         }
+    }
+
+    #[test]
+    fn codex_result_without_a_rate_limit_surface_is_a_probe_failure() {
+        // An empty result, a result whose rate-limit keys were renamed, an empty
+        // bucket map, and a `rateLimits` that is not an object: each answered
+        // successfully while carrying no rate-limit surface, so none of them may
+        // become "subscription, no windows reported".
+        for result in [
+            json!({}),
+            json!({"rate_limits": {"primary": {"used_percent": 31}}}),
+            json!({"rateLimitsByLimitId": {}}),
+            json!({"rateLimits": "unlimited"}),
+            json!({"rateLimits": null, "rateLimitsByLimitId": null}),
+        ] {
+            let parsed = parse_codex_rate_limits(&json!({"id": 2, "result": result}));
+
+            assert!(
+                matches!(
+                    parsed.availability,
+                    UsageAvailability::Unknown {
+                        reason: UnknownReason::ProbeFailed { .. }
+                    }
+                ),
+                "{result} carries no rate-limit surface, so nothing was learned: \
+                 got {:?}",
+                parsed.availability
+            );
+            assert_eq!(
+                parsed.auth_mode,
+                AuthMode::Unknown,
+                "{result} establishes no auth mode either"
+            );
+            assert!(parsed.availability.windows().is_empty(), "{result}");
+        }
+    }
+
+    #[test]
+    fn codex_reports_no_windows_only_from_a_snapshot_that_carries_none() {
+        // The contract-valid empty snapshot is the one shape that *is* an answer:
+        // `rateLimits` is present with no window in it, which the schema permits
+        // (every `RateLimitSnapshot` field is optional).
+        let parsed = parse_codex_rate_limits(&json!({
+            "id": 2,
+            "result": {"rateLimits": {"planType": "plus", "primary": null, "secondary": null}}
+        }));
+
+        assert_eq!(parsed.auth_mode, AuthMode::Subscription);
+        assert_eq!(parsed.plan.as_deref(), Some("plus"));
+        assert_eq!(
+            parsed.availability,
+            UsageAvailability::Unavailable {
+                reason: UnavailableReason::NoWindowsReported
+            }
+        );
     }
 
     /// The observed body: two unlimited snapshots and one exhausted metered one.

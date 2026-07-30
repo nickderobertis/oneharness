@@ -317,6 +317,59 @@ fn a_degraded_probe_reaches_a_consumer_as_unknown_or_unavailable_never_as_headro
     }
 }
 
+/// A successful JSON-RPC reply is not by itself evidence about an account. The
+/// codex app-server answers `account/rateLimits/read` with a result whose whole
+/// rate-limit surface is `rateLimits` (schema-required) plus the optional
+/// `rateLimitsByLimitId`; a result carrying neither says nothing, and "nothing"
+/// must not reach a consumer as the affirmative account state
+/// `subscription` + `no_windows_reported`.
+#[test]
+fn a_codex_result_with_no_rate_limit_surface_is_never_an_account_state() {
+    for result in [
+        // Answered, empty: the shape a stripped or partially-built payload has.
+        serde_json::json!({}),
+        // Answered with the keys renamed — the drift a checked-in schema diff
+        // catches at build time and a live app-server can still hand a consumer.
+        serde_json::json!({
+            "rate_limits": {"limitId": "codex", "primary": {"usedPercent": 31}},
+            "rateLimitResetCredits": {"availableCount": 0}
+        }),
+    ] {
+        let parsed = parse_codex_rate_limits(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "result": result
+        }));
+
+        assert!(
+            matches!(
+                parsed.availability,
+                UsageAvailability::Unknown {
+                    reason: UnknownReason::ProbeFailed { .. }
+                }
+            ),
+            "{result} carries no rate-limit surface, so it is drift rather than \
+             an answer: got {:?}",
+            parsed.availability
+        );
+        assert_ne!(
+            parsed.auth_mode,
+            AuthMode::Subscription,
+            "{result} proves nothing about how this identity authenticates"
+        );
+
+        let json = serde_json::to_string(&UsageIdentity::new(
+            "codex",
+            IdentitySelector::Ambient,
+            parsed,
+        ))
+        .expect("the identity serializes");
+        assert!(
+            !json.contains("no_windows_reported"),
+            "an empty result must not publish an affirmative account state: {json}"
+        );
+        assert!(!json.contains("used_percent"), "{json}");
+    }
+}
+
 /// A field whose *type* contradicts the contract carries no information about
 /// a subscription, so it can never be read as one of the account states a
 /// consumer acts on. This is the silent-false-headroom failure: a wrong answer

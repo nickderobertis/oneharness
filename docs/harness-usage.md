@@ -138,6 +138,11 @@ mirrors the historical payload”* — reading both would double-count. Buckets
 flatten to `<limitId>/primary` and `<limitId>/secondary`; a `null` secondary
 means one window on this plan, not a second at 0%.
 
+Those two keys are also the whole rate-limit surface, and the schema marks
+`rateLimits` required — so a `result` carrying neither (empty, stripped, or
+renamed) is a probe failure. Only a *present* snapshot with no window in it,
+which the schema permits, reports `subscription` / `no_windows_reported`.
+
 Codex is the best-instrumented of the three: `windowDurationMins` means a window
 length is never hardcoded, and `limitId`/`limitName` means new buckets arrive
 self-labelled.

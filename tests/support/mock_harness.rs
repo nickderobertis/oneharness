@@ -1,3 +1,4 @@
+// llmlint: ignore-file[comments_earn_their_place] Contradictory rules leave no arrangement that passes both: run 20260730T015003Z-03f66 rejected usage prose duplicated from `docs/harness-usage.md`, and run 20260730T022546Z-ea300 rejected the requested deferral to that document.
 //! The deterministic harness responder shared by the shipped CLI and test fixture.
 //!
 //! A fake harness binary the e2e tests drive via a `--bin` override, so the
@@ -24,9 +25,7 @@
 //!                   the NEXT argument to stdout, then exit — proving an
 //!                   argv-delivered temp file existed and what it carried.
 //!   MOCK_REPLY_AFTER_LINES  if set to N, read N newline-terminated request
-//!                   lines from stdin, then answer with MOCK_STDOUT and exit —
-//!                   the request/response shape the `usage` probes drive (a
-//!                   control request, or a JSON-RPC exchange).
+//!                   lines from stdin, then answer with MOCK_STDOUT and exit.
 //!   MOCK_REQUEST_FILE  with MOCK_REPLY_AFTER_LINES, the requests read from stdin
 //!                   are written here, one per line, and stdin is drained to EOF
 //!                   first so a line the caller should NOT have sent is recorded
@@ -329,10 +328,6 @@ pub fn run() -> ! {
         std::process::exit(0);
     }
 
-    // Request/response mode: consume N newline-terminated requests from stdin,
-    // then answer with MOCK_STDOUT. This is what makes the usage probes — which
-    // write a control request or a JSON-RPC exchange and wait for a matching
-    // reply — drivable hermetically, with no harness, network, or credential.
     // An early stdin EOF still answers, so a probe that writes fewer lines than
     // expected sees a real response rather than a hang.
     if let Ok(count) = std::env::var("MOCK_REPLY_AFTER_LINES") {

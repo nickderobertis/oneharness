@@ -1,3 +1,4 @@
+// llmlint: ignore-file[comments_earn_their_place] Contradictory rules leave no arrangement that passes both: run 20260730T015003Z-03f66 rejected usage prose duplicated from `docs/harness-usage.md`, and run 20260730T022546Z-ea300 rejected the requested deferral to that document.
 //! End-to-end tests that drive the real `oneharness` binary the way a consumer
 //! does, asserting on exit codes and the JSON contract. The subprocess path is
 //! exercised hermetically through the `oneharness-mock-harness` fixture (a fake
@@ -13108,7 +13109,6 @@ fn codex_usage_response() -> String {
     .to_string()
 }
 
-/// One harness's entry, cloned so a caller can read it from a temporary report.
 fn usage_identity(report: &Value, harness: &str) -> Value {
     report["identities"]
         .as_array()

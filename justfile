@@ -164,18 +164,11 @@ upgrade:
 sdk-generate:
     bun run --cwd npm/oneharness-sdk generate
 
-# Install the Node SDK's dependencies into *this* checkout. Every other
-# `bootstrap` step writes machine-global state a new checkout inherits for free
-# (rustup components, the cargo registry cache, the uv-installed llmlint, and
-# `core.hooksPath` in the shared common git dir); `node_modules` is the lone
-# per-checkout artifact, and it is gitignored, so a fresh clone or `git worktree
-# add` starts without it. `sdk-check` depends on this so the gate is
-# self-sufficient for the checkout it verifies instead of assuming its caller
-# bootstrapped that checkout first — the pre-push hook runs `just gate` directly.
-# Quiet on success like the other in-gate recipes — this runs on every `just
-# check`, and an already-satisfied install has nothing to report. bun's own
-# `--silent` would also swallow the reason a failure failed, so hold its output
-# and replay it verbatim only when it matters.
+# Install the Node SDK's dependencies into *this* checkout — the one per-checkout
+# artifact `bootstrap` creates, and gitignored, so `sdk-check` must depend on it
+# rather than assume a bootstrapped caller. Runs on every gate, so it stays quiet
+# on success; bun's `--silent` would drop failure reasons too, hence the capture.
+# Enforced by scripts/check-sdk-install.sh.
 sdk-install:
     @out=$(bun install --cwd npm/oneharness-sdk --frozen-lockfile 2>&1) || { printf '%s\n' "$out" >&2; echo "Node SDK dependency install failed; the bun output above says why. If npm/oneharness-sdk/package.json changed, refresh the lockfile with 'bun install --cwd npm/oneharness-sdk'; otherwise check network access to the npm registry and rerun 'just sdk-install'." >&2; exit 1; }
 

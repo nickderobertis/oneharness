@@ -19,6 +19,13 @@
 # external package managers are stubbed; the real justfile is what runs.
 set -euo pipefail
 
+case $(uname -s) in
+  MINGW* | MSYS* | CYGWIN*)
+    echo "check-sdk-install: skipped on Windows because this Unix behavioral harness relies on extensionless executable stubs" >&2
+    exit 0
+    ;;
+esac
+
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

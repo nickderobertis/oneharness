@@ -462,12 +462,7 @@ oh_cache_assert() {
 # authenticates with an API key, where the honest reading is `unavailable` with a
 # reason, while a subscription box reports `available` windows. Both are the
 # harness replying. `unknown` is the failure — it means oneharness asked and got
-# nothing back, which is exactly how codex's rate-limit read failed for a whole
-# release: the reply is asynchronous and the app-server drops it on stdin EOF, so
-# a probe that closed the pipe behind its request saw only the synchronous
-# `initialize` result and reported "exited without an answer" against an account
-# whose headroom was readable throughout. A mock that answers inline cannot fail
-# that way; this can.
+# nothing back.
 #   $1 harness id
 oh_usage_enforce() {
     local id="$1" bin report state reason detail errf

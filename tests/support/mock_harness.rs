@@ -40,7 +40,7 @@
 //!                   closes first. This is the codex `app-server` behavior, and
 //!                   the only way a test can tell a caller that holds stdin open
 //!                   for its answer from one that closes the pipe behind it.
-//!                   Accepted range: 0 to 600000 ms.
+//!                   A delay above `MAX_REPLY_DELAY_MS` is refused.
 //!   MOCK_ECHO_STDIN if set, read ALL of stdin and write it verbatim to stdout,
 //!                   then exit — proving a prompt delivered on the child's stdin
 //!                   (the large-prompt escape hatch) actually arrived, and with
@@ -96,9 +96,9 @@ use std::io::Write;
 const EXTRA_REQUEST_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// The largest reply delay `MOCK_REPLY_DELAY_MS` accepts. A scripted delay only
-/// has to outlast a probe's own timeout, so ten minutes is far past any real
-/// use, while any larger value is a typo that would otherwise overflow the
-/// `Instant` deadline the delay becomes.
+/// has to outlast a probe's own timeout, so this cap sits far past any real use,
+/// while any larger value is a typo that would otherwise overflow the `Instant`
+/// deadline the delay becomes.
 const MAX_REPLY_DELAY_MS: u64 = 600_000;
 
 /// Read `wanted` newline-terminated request lines from stdin, then keep

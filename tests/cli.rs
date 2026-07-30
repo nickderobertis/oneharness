@@ -13835,6 +13835,50 @@ fn usage_text_view_is_human_readable_and_prints_no_invented_percentage() {
 }
 
 #[test]
+fn usage_text_view_neutralizes_terminal_escapes_a_harness_wrote_to_its_stderr() {
+    // A failed probe quotes the harness's own diagnostic, and the text view is
+    // the surface someone reads to decide whether to start work. So a harness
+    // that writes ANSI escapes, a carriage return, or a bell to stderr must not
+    // be able to clear the screen, recolour, or overwrite the report it lands in
+    // — while still saying what went wrong.
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--format",
+            "text",
+        ],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "1"),
+            ("MOCK_STDOUT", "not a control response"),
+            (
+                "MOCK_STDERR",
+                "\u{1b}[2J\u{1b}[1;31mclaude-code: credit balance too low\u{7}\r0% used\u{1b}[0m",
+            ),
+        ],
+    );
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("credit balance too low"),
+        "the reader must still learn what the harness said: {text:?}"
+    );
+    let surviving: Vec<char> = text
+        .chars()
+        .filter(|c| c.is_control() && *c != '\n')
+        .collect();
+    assert!(
+        surviving.is_empty(),
+        "no control byte from the harness may reach the rendered report: \
+         {surviving:?} in {text:?}"
+    );
+}
+
+#[test]
 fn usage_rejects_an_unknown_harness_and_an_undeclared_variant() {
     let unknown = run(&["usage", "--harness", "nope", "--compact"], &[]);
     assert_eq!(unknown.status.code(), Some(2));

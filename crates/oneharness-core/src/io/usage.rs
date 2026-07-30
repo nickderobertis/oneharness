@@ -33,8 +33,8 @@ use serde_json::Value;
 
 use crate::domain::usage::{
     claude_control_response, claude_usage_drift, parse_claude_get_usage, parse_codex_rate_limits,
-    parse_copilot_http, parse_cursor_about, IdentitySelector, ParsedUsage, UnknownReason,
-    UsageProbe,
+    parse_copilot_http, parse_cursor_about, without_control_chars, IdentitySelector, ParsedUsage,
+    UnknownReason, UsageProbe,
 };
 use crate::io::process::{Finish, PipeEvent, Process};
 
@@ -253,10 +253,13 @@ impl ProbeCapture {
 const DIAGNOSTIC_CHARS: usize = 300;
 
 fn first_meaningful_line(text: &str) -> Option<String> {
-    let line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let line = text.lines().find_map(|line| {
+        let flat = without_control_chars(line).trim().to_string();
+        (!flat.is_empty()).then_some(flat)
+    })?;
     Some(match line.char_indices().nth(DIAGNOSTIC_CHARS) {
         Some((at, _)) => format!("{}…", &line[..at]),
-        None => line.to_string(),
+        None => line,
     })
 }
 

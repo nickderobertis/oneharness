@@ -1275,14 +1275,24 @@ pub fn parse_copilot_http(status: u16, body: &str) -> ParsedUsage {
     }
 }
 
+/// Flatten every control character to a space, keeping the readable text around
+/// it. Applied wherever an external payload is first bounded for a diagnostic:
+/// those messages are printed verbatim by `usage --format text`, and a harness
+/// that wrote ANSI escapes, a carriage return, or a bell into them could
+/// otherwise move the cursor, recolour, or overwrite part of a report whose
+/// whole purpose is to be trusted at a glance. Sanitizing at the bound means no
+/// render site has to remember to.
+pub(crate) fn without_control_chars(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
 /// A single-line, character-bounded excerpt of an external payload, for a
 /// diagnostic message. Bounded in **characters** so a multi-byte body can never
 /// be split mid-code-point.
 fn snippet(text: &str) -> String {
-    let flat: String = text
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
+    let flat = without_control_chars(text);
     let flat = flat.trim();
     match flat.char_indices().nth(COPILOT_ERROR_BODY_CHARS) {
         Some((at, _)) => format!("{}…", &flat[..at]),

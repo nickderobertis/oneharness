@@ -141,11 +141,13 @@ pub enum IdentitySelector {
 }
 
 impl IdentitySelector {
-    /// A stable, human-readable key for this identity, safe to print.
+    /// A stable, human-readable key for this identity, safe to print. The path
+    /// is an environment value, so control characters are flattened here — the
+    /// one place every caller goes through — rather than by each renderer.
     #[must_use]
     pub fn key(&self) -> String {
         match self {
-            Self::EnvPath { env, path } => format!("{env}={path}"),
+            Self::EnvPath { env, path } => without_control_chars(&format!("{env}={path}")),
             Self::EnvSecret { env } => format!("{env}=<secret>"),
             Self::Ambient => "ambient".to_string(),
         }
@@ -782,7 +784,7 @@ pub fn parse_claude_get_usage(payload: &Value) -> ParsedUsage {
     let plan = payload
         .get("subscription_type")
         .and_then(Value::as_str)
-        .map(str::to_string);
+        .map(without_control_chars);
     // Documented by the CLI's own schema text: null for API-key / third-party
     // provider sessions, non-null for a Claude.ai subscription.
     let auth_mode = if plan.is_some() {
@@ -846,7 +848,7 @@ fn claude_windows(rate_limits: &Value) -> Vec<UsageWindow> {
             .and_then(|limit| limit.is_active);
 
         windows.push(UsageWindow {
-            id: key.clone(),
+            id: without_control_chars(key),
             label: None,
             usage: WindowUsage::Metered {
                 used_percent,
@@ -918,7 +920,7 @@ fn claude_limits(rate_limits: &Value) -> Vec<ClaudeLimit> {
                         scope: entry
                             .pointer("/scope/model/display_name")
                             .and_then(Value::as_str)
-                            .map(str::to_string),
+                            .map(without_control_chars),
                         is_active: entry.get("is_active").and_then(Value::as_bool),
                     })
                 })
@@ -1029,14 +1031,14 @@ fn codex_plan(bucket: &Value) -> Option<String> {
     bucket
         .get("planType")
         .and_then(Value::as_str)
-        .map(str::to_string)
+        .map(without_control_chars)
 }
 
 fn codex_bucket_windows(limit_id: Option<&str>, bucket: &Value) -> Vec<UsageWindow> {
     let label = bucket
         .get("limitName")
         .and_then(Value::as_str)
-        .map(str::to_string);
+        .map(without_control_chars);
     ["primary", "secondary"]
         .into_iter()
         .filter_map(|slot| {
@@ -1049,7 +1051,7 @@ fn codex_bucket_windows(limit_id: Option<&str>, bucket: &Value) -> Vec<UsageWind
                 .and_then(UsedPercent::new)?;
             Some(UsageWindow {
                 id: match limit_id {
-                    Some(limit_id) => format!("{limit_id}/{slot}"),
+                    Some(limit_id) => format!("{}/{slot}", without_control_chars(limit_id)),
                     None => slot.to_string(),
                 },
                 label: label.clone(),
@@ -1090,7 +1092,7 @@ pub fn parse_copilot_user(body: &Value) -> ParsedUsage {
     let plan = body
         .get("copilot_plan")
         .and_then(Value::as_str)
-        .map(str::to_string);
+        .map(without_control_chars);
     let resets_at = body
         .get("quota_reset_date_utc")
         .and_then(Value::as_str)
@@ -1191,7 +1193,7 @@ fn copilot_window(
         }
     };
     Ok(Some(UsageWindow {
-        id: id.to_string(),
+        id: without_control_chars(id),
         label: None,
         usage,
         // A calendar month is not a fixed number of seconds.
@@ -1336,7 +1338,9 @@ pub fn parse_cursor_about(payload: &Value) -> ParsedUsage {
     // a document that no longer says it.
     let plan = match tier {
         Value::Null => None,
-        Value::String(tier) => Some(tier.clone()).filter(|tier| !tier.trim().is_empty()),
+        Value::String(tier) => {
+            Some(without_control_chars(tier)).filter(|tier| !tier.trim().is_empty())
+        }
         other => {
             return ParsedUsage::unknown(UnknownReason::ProbeFailed {
                 message: format!(

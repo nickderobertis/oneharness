@@ -13924,6 +13924,72 @@ fn usage_text_view_neutralizes_terminal_escapes_a_harness_reported_in_its_payloa
 }
 
 #[test]
+fn usage_text_view_neutralizes_terminal_escapes_in_every_display_string_it_prints() {
+    // A *successful* read prints external strings too — the plan name, a window
+    // id, a scoped model name, and the identity path read from the environment.
+    // Each reaches the reader by the same route a failure diagnostic does, so
+    // each is neutralized where it is first read rather than at the renderer.
+    let payload = serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": "oneharness-usage-1",
+            "response": {
+                "session": {"total_cost_usd": 0, "model_usage": {}},
+                "subscription_type": "max\u{1b}[31m",
+                "rate_limits_available": true,
+                "rate_limits": {
+                    "five_hour\u{7}": {"utilization": 42},
+                    "limits": [
+                        {
+                            "kind": "weekly_scoped",
+                            "percent": 10,
+                            "scope": {"model": {"display_name": "Opus\r4.8"}}
+                        }
+                    ]
+                }
+            }
+        }
+    })
+    .to_string();
+
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--format",
+            "text",
+        ],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "1"),
+            ("MOCK_STDOUT", &payload),
+            ("CLAUDE_CONFIG_DIR", "/home/u/\u{1b}[2J.claude"),
+        ],
+    );
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let text = String::from_utf8_lossy(&output.stdout);
+    let surviving: Vec<char> = text
+        .chars()
+        .filter(|c| c.is_control() && *c != '\n')
+        .collect();
+    assert!(
+        surviving.is_empty(),
+        "no control byte from a payload or the environment may reach the \
+         rendered report: {surviving:?} in {text:?}"
+    );
+    for readable in ["max", "five_hour", "Opus 4.8", ".claude"] {
+        assert!(
+            text.contains(readable),
+            "{readable:?} must survive sanitization: {text:?}"
+        );
+    }
+}
+
+#[test]
 fn usage_rejects_an_unknown_harness_and_an_undeclared_variant() {
     let unknown = run(&["usage", "--harness", "nope", "--compact"], &[]);
     assert_eq!(unknown.status.code(), Some(2));

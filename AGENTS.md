@@ -173,6 +173,18 @@ Use the `just` recipes; do not hand-roll equivalents.
   (including partial-tail recovery), then followed by byte offset without repeated
   tree scans. `clear` is a dry run until `--yes`. History paths are canonicalized
   before writing so `cwd=..` remains discoverable.
+  <!-- llmlint: ignore-block[agents_md_durable_and_terse, no_redundant_instruction_pointers, comments_earn_their_place] Stating these load-bearing constraints here and deferring them to `docs/harness-usage.md` are the only two arrangements, and one rule in this list forbids each; they stay stated, with the pointer intact. `comments_earn_their_place` is listed because the span covers these directive lines too. -->
+  `usage` is the pre-flight verb: subscription headroom per identity, on its own
+  output contract, parsers pure (`domain::usage`) and probes I/O (`io::usage`).
+  Three constraints are load-bearing; every observed payload and exchange behind
+  them lives in `docs/harness-usage.md`. A probe must be **zero-turn** — no user
+  message, no completed turn — because a pre-flight check that spends quota
+  defeats itself. Each parser carries its own drift guard and degrades an
+  unrecognized shape to *unknown*, because a confident wrong headroom number is
+  silent where a crash is loud. And the Cursor probe must keep masking
+  `CURSOR_API_KEY` from its child: passing it authenticates rather than selects,
+  a hazard any future Cursor dispatch also hits.
+  <!-- llmlint: ignore-end[agents_md_durable_and_terse, no_redundant_instruction_pointers, comments_earn_their_place] -->
   `gate <id>` is the odd one out: the runtime pre-tool gate an
   installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It
@@ -602,6 +614,13 @@ shape. When you add one:
   stdin-only-prompt path was closed-source, so it was **probe-verified** via
   `scripts/explore-cursor-stdin.sh` + the dispatch-only `explore-cursor-stdin.yml`
   before wiring — the pattern to reuse for the next uncertain CLI).
+  <!-- llmlint: ignore-block[no_redundant_instruction_pointers, agents_md_durable_and_terse, comments_earn_their_place] This bullet can state the two rules an adapter author must satisfy or defer them to `docs/harness-usage.md`, and one rule in this list forbids each; it keeps the minimum, with the pointer intact. `comments_earn_their_place` is listed because the span covers these directive lines too. -->
+- Declare its `usage` (`UsageSupport`). Every harness must report an honest tier:
+  one that cannot report headroom says *which kind* of cannot (no plan quota at
+  all, versus a quota with no non-interactive reader), never a `0%` and never an
+  omission. A probing tier requires a zero-turn probe sourced from a real
+  capture; a probe that sends a user message or completes a turn is disqualified.
+  <!-- llmlint: ignore-end[no_redundant_instruction_pointers, agents_md_durable_and_terse, comments_earn_their_place] -->
 - Give the harness its `global_hook` (the user-global hook location, for `sync
   --global` / `install` at `Scope::Global`) and its `gate_deny` (how it expresses
   a pre-tool deny when it runs `oneharness gate <id>`). Both are registry data

@@ -4,9 +4,8 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use crate::cli::RunArgs;
-use crate::commands::{print_json, select_specs};
+use crate::commands::{print_json, select_specs, variant_environment};
 use oneharness_core::domain::batch::{self, BatchStrategy};
-use oneharness_core::domain::config::valid_env_name;
 use oneharness_core::domain::fallback::{self, RunMode};
 use oneharness_core::domain::harness::{self, BuildCtx, HarnessSpec};
 use oneharness_core::domain::mock::{self, MockDelivery};
@@ -41,102 +40,6 @@ const EXIT_FAILURE: i32 = 1;
 /// argv and only genuinely-large prompts switch delivery. See `LargeInput` and
 /// issue #1115.
 const LARGE_INPUT_THRESHOLD: usize = 64 * 1024;
-
-// llmlint: ignore[invalid_states_unrepresentable] This private spawn-boundary helper only receives selectors after config validation and select_specs resolution; introducing a second identity type here would duplicate VariantName while its real subprocess tests pin masking, sourcing, and isolation.
-fn variant_environment(
-    cfg: &oneharness_core::domain::config::FileConfig,
-    composed: &str,
-    project_start: &std::path::Path,
-) -> Result<Vec<(String, String)>, OneharnessError> {
-    let (base, _) = cfg.split_harness_id(composed);
-    let mut env: Vec<(String, String)> = cfg
-        .env
-        .iter()
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect();
-    if let Some(harness) = cfg.harness.get(base) {
-        env.extend(
-            harness
-                .env
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone())),
-        );
-    }
-    let Some(variant) = cfg.variant_for(composed) else {
-        return Ok(env);
-    };
-    if let Some(file) = &variant.env_file {
-        let path = {
-            let path = std::path::PathBuf::from(file);
-            if path.is_absolute() {
-                path
-            } else {
-                project_start.join(path)
-            }
-        };
-        let metadata =
-            std::fs::metadata(&path).map_err(|source| OneharnessError::VariantEnvFile {
-                path: path.display().to_string(),
-                source,
-            })?;
-        #[cfg(unix)]
-        let private = {
-            use std::os::unix::fs::PermissionsExt;
-            metadata.is_file() && metadata.permissions().mode() & 0o077 == 0
-        };
-        #[cfg(not(unix))]
-        let private = metadata.is_file();
-        if !private {
-            return Err(OneharnessError::VariantEnvFilePermissions {
-                path: path.display().to_string(),
-            });
-        }
-        let text =
-            std::fs::read_to_string(&path).map_err(|source| OneharnessError::VariantEnvFile {
-                path: path.display().to_string(),
-                source,
-            })?;
-        for (index, line) in text.lines().enumerate() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let Some((key, value)) = line.split_once('=') else {
-                return Err(OneharnessError::VariantEnvFileLine {
-                    path: path.display().to_string(),
-                    line: index + 1,
-                });
-            };
-            if !valid_env_name(key) {
-                return Err(OneharnessError::VariantEnvFileLine {
-                    path: path.display().to_string(),
-                    line: index + 1,
-                });
-            }
-            if value.contains('\0') {
-                return Err(OneharnessError::VariantEnvFileLine {
-                    path: path.display().to_string(),
-                    line: index + 1,
-                });
-            }
-            env.push((key.to_string(), value.to_string()));
-        }
-    }
-    env.extend(
-        variant
-            .env
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone())),
-    );
-    for (target, source) in &variant.env_from {
-        let value =
-            std::env::var(source).map_err(|_| OneharnessError::VariantEnvSourceMissing {
-                name: source.clone(),
-            })?;
-        env.push((target.clone(), value));
-    }
-    Ok(env)
-}
 
 /// Temp files holding off-argv prompt/system text for the duration of a run,
 /// removed on drop — so every early return (stream path, an I/O error, normal
@@ -3241,6 +3144,7 @@ mod tests {
             large_input: oneharness_core::domain::harness::LargeInput::NONE,
             modes: &[],
             reasoning: None,
+            usage: oneharness_core::domain::usage::UsageSupport::NoPlanQuota,
             build_argv: noop_argv,
         }
     }

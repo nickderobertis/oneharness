@@ -15,6 +15,7 @@ use crate::domain::mock::{MockDelivery, RewriteShape};
 use crate::domain::mode::{ModeHeadless, PermissionMode};
 use crate::domain::report::OutputFormat;
 use crate::domain::structured::NativeSchema;
+use crate::domain::usage::{UsageProbe, UsageSupport};
 
 /// Everything `build_argv` needs, with no I/O: the resolved binary, the prompt,
 /// the optional model, whether to request the harness's "don't prompt" mode, and
@@ -305,6 +306,13 @@ pub struct HarnessSpec {
     /// plain harnesses have no knob at all). Sourced from each CLI's docs, never
     /// guessed. Introspectable via `oneharness list`.
     pub reasoning: Option<ReasoningDelivery>,
+    /// How much subscription **headroom** this harness can report to
+    /// `oneharness usage`, and by which zero-turn probe. Pure capability data:
+    /// the command layer dispatches on it, and a harness that cannot report
+    /// headroom says so affirmatively (with which kind of "cannot") rather than
+    /// being omitted or rendered as 0% used. Sourced from `docs/harness-usage.md`
+    /// — every probe and every negative there is an observation, never a guess.
+    pub usage: UsageSupport,
     /// Builds the full argv (argv[0] is the binary). Pure.
     pub build_argv: fn(&BuildCtx) -> Vec<String>,
 }
@@ -692,6 +700,12 @@ static REGISTRY: &[HarnessSpec] = &[
         // `--effort <level>` sets adaptive reasoning headlessly (low/medium/high/
         // max/auto; also `CLAUDE_CODE_EFFORT_LEVEL`). Value forwarded verbatim.
         reasoning: Some(ReasoningDelivery::Flag("--effort")),
+        // llmlint: ignore-block[comments_earn_their_place] Why this harness reports the tier it does has to be checkable where the tier is declared; replacing it with a pointer to `docs/harness-usage.md` is what `no_redundant_instruction_pointers` forbids.
+        // The `get_usage` control request is the only structured plan-headroom
+        // source, and it costs nothing: no user message is sent, so the session
+        // reports `num_turns: 0` / `total_cost_usd: 0`.
+        // llmlint: ignore-end[comments_earn_their_place]
+        usage: UsageSupport::Probed(UsageProbe::ClaudeGetUsage),
         build_argv: argv_claude_code,
     },
     HarnessSpec {
@@ -790,6 +804,11 @@ static REGISTRY: &[HarnessSpec] = &[
         // exercised live by the codex mock phase (`-c features.hooks=true`); the
         // value is forwarded verbatim (Codex parses it, falling back to a string).
         reasoning: Some(ReasoningDelivery::ConfigKv("model_reasoning_effort")),
+        // llmlint: ignore-block[comments_earn_their_place] Why this harness reports the tier it does has to be checkable where the tier is declared; replacing it with a pointer to `docs/harness-usage.md` is what `no_redundant_instruction_pointers` forbids.
+        // `exec --json` carries no rate-limit metadata at all, so usage needs its
+        // own app-server probe rather than piggybacking on a dispatch.
+        // llmlint: ignore-end[comments_earn_their_place]
+        usage: UsageSupport::Probed(UsageProbe::CodexAppServer),
         build_argv: argv_codex,
     },
     HarnessSpec {
@@ -872,6 +891,13 @@ static REGISTRY: &[HarnessSpec] = &[
         // file (`reasoningEffort` / `thinking.budgetTokens`), not a `run` flag —
         // the `sync`-path follow-up, not an argv delivery.
         reasoning: None,
+        // llmlint: ignore-block[comments_earn_their_place] Why this harness reports the tier it does has to be checkable where the tier is declared; replacing it with a pointer to `docs/harness-usage.md` is what `no_redundant_instruction_pointers` forbids.
+        // OpenCode Zen is pay-as-you-go: you are charged per request and top up a
+        // balance. Nothing resets, so "remaining usage against a reset interval"
+        // is not a defined quantity here — `opencode stats` is spend-to-date, a
+        // different measurement that answers nothing about headroom.
+        // llmlint: ignore-end[comments_earn_their_place]
+        usage: UsageSupport::NoPlanQuota,
         build_argv: argv_opencode,
     },
     HarnessSpec {
@@ -953,6 +979,13 @@ static REGISTRY: &[HarnessSpec] = &[
         // Goose carries reasoning effort in provider config (`goose configure` /
         // config.yaml), with no per-run headless flag — no argv delivery.
         reasoning: None,
+        // llmlint: ignore-block[comments_earn_their_place] Why this harness reports the tier it does has to be checkable where the tier is declared; replacing it with a pointer to `docs/harness-usage.md` is what `no_redundant_instruction_pointers` forbids.
+        // Goose is an open-source agent with no first-party inference plan — it
+        // routes to whichever provider `GOOSE_PROVIDER` selects, so there is no
+        // Goose quota to have headroom in. (Its Copilot passthrough shares the
+        // GitHub token, so that headroom is readable under `copilot` instead.)
+        // llmlint: ignore-end[comments_earn_their_place]
+        usage: UsageSupport::NoPlanQuota,
         build_argv: argv_goose,
     },
     HarnessSpec {
@@ -1037,6 +1070,14 @@ static REGISTRY: &[HarnessSpec] = &[
         // (`reasoning_effort` / `thinking.budget_tokens`), not a CLI flag — the
         // `sync`-path follow-up, not an argv delivery.
         reasoning: None,
+        // llmlint: ignore-block[comments_earn_their_place] Why this harness reports the tier it does has to be checkable where the tier is declared; replacing it with a pointer to `docs/harness-usage.md` is what `no_redundant_instruction_pointers` forbids.
+        // The Alibaba Cloud Coding Plan carries a documented **weekly** quota,
+        // but neither its size nor a reader is published: `qwen auth` was removed
+        // ("Configure authentication (removed)"), no usage/stats/quota subcommand
+        // exists, and the bundle carries a provider binding with no quota
+        // accessor. Nothing is readable here — not even the active auth mode.
+        // llmlint: ignore-end[comments_earn_their_place]
+        usage: UsageSupport::NoHeadroomReader,
         build_argv: argv_qwen,
     },
     HarnessSpec {
@@ -1098,6 +1139,13 @@ static REGISTRY: &[HarnessSpec] = &[
         // (`reasoning_effort` / `think`), not a CLI flag — the `sync`-path
         // follow-up, not an argv delivery.
         reasoning: None,
+        // llmlint: ignore-block[comments_earn_their_place] Why this harness reports the tier it does has to be checkable where the tier is declared; replacing it with a pointer to `docs/harness-usage.md` is what `no_redundant_instruction_pointers` forbids.
+        // Charm Hyper's credits do refresh monthly, so a quota exists — but no
+        // balance command or API is documented, and the stripped Go binary
+        // carries zero `quota`/`entitlement`/`credits remaining` strings. `crush
+        // stats` is local SQLite spend-to-date, not headroom.
+        // llmlint: ignore-end[comments_earn_their_place]
+        usage: UsageSupport::NoHeadroomReader,
         build_argv: argv_crush,
     },
     HarnessSpec {
@@ -1169,6 +1217,13 @@ static REGISTRY: &[HarnessSpec] = &[
         // alarm is the honoring proof this one especially wants. The full flag
         // name is used (not the `--effort` alias) to stay unambiguous on the argv.
         reasoning: Some(ReasoningDelivery::Flag("--reasoning-effort")),
+        // llmlint: ignore-block[comments_earn_their_place] Why this harness reports the tier it does has to be checkable where the tier is declared; replacing it with a pointer to `docs/harness-usage.md` is what `no_redundant_instruction_pointers` forbids.
+        // Read out of band: a GitHub bearer token is the entire credential
+        // requirement, so this answers with no Copilot CLI installed and before a
+        // run rather than after a turn is spent. The CLI's own JSONL quota events
+        // are unreachable as oneharness wires Copilot (text mode).
+        // llmlint: ignore-end[comments_earn_their_place]
+        usage: UsageSupport::Probed(UsageProbe::CopilotUserEndpoint),
         build_argv: argv_copilot,
     },
     HarnessSpec {
@@ -1254,6 +1309,13 @@ static REGISTRY: &[HarnessSpec] = &[
         // into the name). Requires a model to attach to; the live
         // `oh_reasoning_enforce cursor` phase is the honoring proof + drift alarm.
         reasoning: Some(ReasoningDelivery::ModelSuffix),
+        // llmlint: ignore-block[comments_earn_their_place] Why this harness reports the tier it does has to be checkable where the tier is declared; replacing it with a pointer to `docs/harness-usage.md` is what `no_redundant_instruction_pointers` forbids.
+        // Plan tier only. Cursor's dollar pools live behind `getCurrentPeriodUsage`,
+        // whose sole callsite is the interactive TUI — zero non-interactive or
+        // run-output callsites — so `about --format json`'s `subscriptionTier` is
+        // the whole non-interactive surface.
+        // llmlint: ignore-end[comments_earn_their_place]
+        usage: UsageSupport::Probed(UsageProbe::CursorAbout),
         build_argv: argv_cursor,
     },
 ];
@@ -2495,6 +2557,39 @@ mod tests {
         assert!(
             argv.windows(2).any(|w| w == ["--resume", "sess-123"]),
             "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn every_harness_declares_its_usage_tier() {
+        // `oneharness usage` covers the whole fleet or it undermines the premise
+        // that one command works across every harness. Three report real
+        // headroom, one reports a plan tier, and four affirmatively report that
+        // they cannot — split by *which* cannot, because "no quota exists" and
+        // "a quota exists with no reader" are different answers. Each mapping is
+        // sourced from docs/harness-usage.md; changing one means an observation
+        // changed, so this pins all eight at once.
+        let tiers: Vec<(&str, UsageSupport)> =
+            all().iter().map(|spec| (spec.id, spec.usage)).collect();
+
+        assert_eq!(
+            tiers,
+            vec![
+                (
+                    "claude-code",
+                    UsageSupport::Probed(UsageProbe::ClaudeGetUsage)
+                ),
+                ("codex", UsageSupport::Probed(UsageProbe::CodexAppServer)),
+                ("opencode", UsageSupport::NoPlanQuota),
+                ("goose", UsageSupport::NoPlanQuota),
+                ("qwen", UsageSupport::NoHeadroomReader),
+                ("crush", UsageSupport::NoHeadroomReader),
+                (
+                    "copilot",
+                    UsageSupport::Probed(UsageProbe::CopilotUserEndpoint)
+                ),
+                ("cursor", UsageSupport::Probed(UsageProbe::CursorAbout)),
+            ]
         );
     }
 

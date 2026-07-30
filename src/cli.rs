@@ -152,6 +152,103 @@ pub enum Command {
     /// The `list`/`show` views print JSON to stdout by default (the programmatic
     /// contract); pass `--format text` for a human-readable view.
     History(HistoryArgs),
+    /// Report how much subscription headroom each harness identity has left,
+    /// as JSON (pass `--format text` for a human-readable view).
+    ///
+    /// Every probe is free: no harness takes a model turn, so this is a
+    /// pre-flight check you can run before launching long jobs. Each harness
+    /// reports the headroom it can, and says plainly when it cannot — a missing
+    /// binary, an unauthenticated harness, or a failed probe is reported as
+    /// data, never as 0% used.
+    Usage(UsageArgs),
+}
+
+/// Per-probe timeout when `--timeout` is not given. Generous next to the
+/// single-digit seconds a probe's session startup takes, because the cost of
+/// being too tight is a spurious "unknown" for a user who does have headroom.
+///
+/// Clap applies and renders it, so the value, the `--help` text, and the
+/// documented default all read from here.
+pub const USAGE_DEFAULT_TIMEOUT_SECS: u64 = 60;
+
+#[derive(Args, Debug)]
+pub struct UsageArgs {
+    /// Probe every supported harness (the default when none are named).
+    #[arg(long, conflicts_with = "harness")]
+    pub all: bool,
+
+    /// Harness id(s) to probe, `<id>` or `<id>:<variant>` (repeatable,
+    /// comma-separated). A variant selects a *distinct identity* — the same
+    /// per-process credential directory `run` would use — so two subscriptions
+    /// of one harness are reported as separately attributed entries.
+    #[arg(long, value_delimiter = ',', value_name = "ID")]
+    pub harness: Vec<String>,
+
+    /// Harness id(s) to drop from the all-harness sweep (repeatable,
+    /// comma-separated). It narrows the sweep, so it cannot combine with
+    /// --harness, which already states the selection outright.
+    #[arg(
+        long,
+        value_delimiter = ',',
+        value_name = "ID",
+        conflicts_with = "harness"
+    )]
+    pub exclude: Vec<String>,
+
+    /// Override a harness binary: --bin ID=PATH (repeatable).
+    #[arg(long = "bin", value_name = "ID=PATH")]
+    pub bin: Vec<String>,
+
+    /// Working directory for the probes (also where config discovery starts).
+    #[arg(long, value_name = "DIR")]
+    pub cwd: Option<PathBuf>,
+
+    /// Per-probe timeout in seconds. A probe that exceeds it is reported as
+    /// unknown, never as headroom.
+    ///
+    /// Clap renders the default from [`USAGE_DEFAULT_TIMEOUT_SECS`] and rejects
+    /// anything past the engine's own ceiling
+    /// ([`oneharness_core::io::usage::MAX_TIMEOUT_SECS`], named in the rejection),
+    /// so neither bound is restated here to drift from.
+    #[arg(
+        long,
+        value_name = "SECS",
+        default_value_t = USAGE_DEFAULT_TIMEOUT_SECS,
+        value_parser = clap::value_parser!(u64)
+            .range(1..=oneharness_core::io::usage::MAX_TIMEOUT_SECS)
+    )]
+    pub timeout: u64,
+
+    /// Load configuration from this file only (skip user/project discovery).
+    #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
+    pub config: Option<PathBuf>,
+
+    /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
+    #[arg(long)]
+    pub no_config: bool,
+
+    /// Output format: `json` (default, the programmatic contract) or `text`
+    /// (human-readable).
+    #[arg(long, value_parser = usage_format_parser(), default_value = "json")]
+    pub format: UsageFormat,
+
+    /// Emit compact single-line JSON instead of pretty-printed.
+    #[arg(long)]
+    pub compact: bool,
+}
+
+/// How `usage` renders its report. JSON is the contract; text is for humans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageFormat {
+    Json,
+    Text,
+}
+
+fn usage_format_parser() -> impl TypedValueParser<Value = UsageFormat> {
+    PossibleValuesParser::new(["json", "text"]).map(|s| match s.as_str() {
+        "text" => UsageFormat::Text,
+        _ => UsageFormat::Json,
+    })
 }
 
 #[derive(Args, Debug)]

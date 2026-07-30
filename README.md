@@ -61,16 +61,25 @@ The table doubles as the **config support matrix**: each column after the
 binary is a unified setting (CLI flag and/or `oneharness.toml` field) and shows
 how — or whether — it reaches that harness.
 
-| id | CLI | default binary | auth identity axis | `model` | `system` | `reasoning` | bypass mode requested | synced config file | allow / deny | hooks | output format | `--resume` (continue / fork) |
-|----|-----|----------------|--------------------|:-------:|----------|-------------|-----------------------|--------------------|:------------:|:-----:|:-------------:|:---------:|
-| `claude-code` | Claude Code | `claude` | `CLAUDE_CONFIG_DIR`, `ANTHROPIC_API_KEY` (live-proven) | ✓ | native flag | `--effort` | `--permission-mode bypassPermissions` | `.claude/settings.json` | ✓ / ✓ | ✓ | ✓ | `--resume` + `--fork-session` |
-| `codex` | OpenAI Codex CLI | `codex` | `CODEX_HOME`, `CODEX_API_KEY` (live-proven) | ✓ | prepended | `model_reasoning_effort` | `--dangerously-bypass-approvals-and-sandbox` | — | — | — | ✓ | `exec resume <id>` (linear) |
-| `opencode` | OpenCode | `opencode` | `ANTHROPIC_API_KEY` (live-proven); stored auth (mapped, unproven) | ✓ | prepended | config only | `--dangerously-skip-permissions` | `opencode.json` | via `settings` | — | ✓ | `--session` + `--fork` |
-| `goose` | Goose | `goose` | `GOOSE_PROVIDER` + `OPENAI_API_KEY` (live-proven); stored auth (mapped, unproven) | — | native flag | — | (runs unattended) | — | — | — | — | `--resume --name` (linear)¹ |
-| `qwen` | Qwen Code | `qwen` | `OPENAI_API_KEY` + base URL (live-proven); OAuth/Coding Plan (mapped, unproven) | ✓ | prepended | config only | `--yolo` | `.qwen/settings.json` | ✓ / ✓ (interactive) | — | ✓ | `--resume` (linear) |
-| `crush` | Crush | `crush` | `ANTHROPIC_API_KEY` (live-proven); stored login (mapped, unproven) | ✓ | prepended | config only | `run -q` (non-interactive) | `crush.json` | ✓ / ✓ | — | — | `--session` (linear) |
-| `copilot` | GitHub Copilot CLI | `copilot` | token/BYOK/stored login (mapped, unproven; no usable host quota) | ✓ | prepended | `--reasoning-effort` | `--allow-all-tools --allow-all-paths --no-ask-user` | — | — | — | — | `--resume` (linear)¹ |
-| `cursor` | Cursor CLI | `cursor-agent` | API key/browser login (mapped, unproven; credentials absent) | ✓ | prepended | `--model 'M-<effort>'` | `--force` (`--trust` under `--no-bypass`) | `.cursor/cli.json` | ✓ / ✓ | — | ✓ | `--resume` (linear) |
+| id | CLI | default binary | auth identity axis | `model` | `system` | `reasoning` | bypass mode requested | synced config file | allow / deny | hooks | output format | `--resume` (continue / fork) | `usage` headroom |
+|----|-----|----------------|--------------------|:-------:|----------|-------------|-----------------------|--------------------|:------------:|:-----:|:-------------:|:---------:|-------------|
+| `claude-code` | Claude Code | `claude` | `CLAUDE_CONFIG_DIR`, `ANTHROPIC_API_KEY` (live-proven) | ✓ | native flag | `--effort` | `--permission-mode bypassPermissions` | `.claude/settings.json` | ✓ / ✓ | ✓ | ✓ | `--resume` + `--fork-session` | `headroom` (`get_usage`) |
+| `codex` | OpenAI Codex CLI | `codex` | `CODEX_HOME`, `CODEX_API_KEY` (live-proven) | ✓ | prepended | `model_reasoning_effort` | `--dangerously-bypass-approvals-and-sandbox` | — | — | — | ✓ | `exec resume <id>` (linear) | `headroom` (app-server) |
+| `opencode` | OpenCode | `opencode` | `ANTHROPIC_API_KEY` (live-proven); stored auth (mapped, unproven) | ✓ | prepended | config only | `--dangerously-skip-permissions` | `opencode.json` | via `settings` | — | ✓ | `--session` + `--fork` | no plan quota |
+| `goose` | Goose | `goose` | `GOOSE_PROVIDER` + `OPENAI_API_KEY` (live-proven); stored auth (mapped, unproven) | — | native flag | — | (runs unattended) | — | — | — | — | `--resume --name` (linear)¹ | no plan quota |
+| `qwen` | Qwen Code | `qwen` | `OPENAI_API_KEY` + base URL (live-proven); OAuth/Coding Plan (mapped, unproven) | ✓ | prepended | config only | `--yolo` | `.qwen/settings.json` | ✓ / ✓ (interactive) | — | ✓ | `--resume` (linear) | no reader |
+| `crush` | Crush | `crush` | `ANTHROPIC_API_KEY` (live-proven); stored login (mapped, unproven) | ✓ | prepended | config only | `run -q` (non-interactive) | `crush.json` | ✓ / ✓ | — | — | `--session` (linear) | no reader |
+| `copilot` | GitHub Copilot CLI | `copilot` | token/BYOK/stored login (mapped, unproven; no usable host quota) | ✓ | prepended | `--reasoning-effort` | `--allow-all-tools --allow-all-paths --no-ask-user` | — | — | — | — | `--resume` (linear)¹ | `headroom` (GitHub API) |
+| `cursor` | Cursor CLI | `cursor-agent` | API key/browser login (mapped, unproven; credentials absent) | ✓ | prepended | `--model 'M-<effort>'` | `--force` (`--trust` under `--no-bypass`) | `.cursor/cli.json` | ✓ / ✓ | — | ✓ | `--resume` (linear) | plan tier only |
+
+The `usage` column shows how much subscription headroom
+[`oneharness usage`](#subscription-headroom-oneharness-usage) can report for that
+harness. Three expose real remaining-quota windows and one exposes a plan tier;
+the other four cannot, and the column distinguishes *why*: **no plan quota**
+means the quantity does not exist (OpenCode Zen is pay-as-you-go, Goose has no
+first-party plan), while **no reader** means a real quota exists that the CLI
+exposes no non-interactive way to read (Crush's Hyper credits, Qwen's weekly
+Coding Plan quota).
 
 The `--resume` column shows each harness's headless continuation flag and whether
 it can **fork** (`run --resume <id> --fork`: branch a new session from the resumed
@@ -289,9 +298,10 @@ of silently degrading installs to the checksum fallback.
 
 ## Usage
 
-`list`/`detect`/`config`/`sync`/`run` emit JSON to **stdout** (diagnostics go to
-**stderr**), `gate` speaks a harness's hook protocol on stdin/stdout, and `init`
-scaffolds a starter config with a plain confirmation line.
+`list`/`detect`/`config`/`sync`/`run`/`usage` emit JSON to **stdout**
+(diagnostics go to **stderr**), `gate` speaks a harness's hook protocol on
+stdin/stdout, and `init` scaffolds a starter config with a plain confirmation
+line.
 
 ```console
 oneharness init                                   # scaffold a starter oneharness.toml (refuses to overwrite; --force to replace)
@@ -307,6 +317,8 @@ oneharness run --harness claude-code --system "$(cat ctx.md)" \
   --prompt "Q1" --prompt "Q2" --prompt "Q3" --batch-strategy min-tokens  # batch: one harness, N prompts, shared cache prefix
 oneharness run --all --print-command --prompt "…" # dry run: show commands, run nothing
 oneharness gate claude-code --deny-if-contains X  # the pre-tool gate an installed hook invokes (reads stdin)
+oneharness usage                                  # how much subscription headroom is left (costs no model turn)
+oneharness usage --format text                    # …the same, for humans
 ```
 
 Useful `run` flags:
@@ -1339,6 +1351,83 @@ emitted `history_id` with `--after` resumes without duplication; repeated
 `--label` filters are ANDed. `clear` reports
 what it *would* remove and deletes nothing until `--yes`, so it is safe to run
 non-interactively first.
+
+### Subscription headroom (`oneharness usage`)
+
+`oneharness usage` reports how much plan quota each harness identity has left,
+**without any harness taking a model turn** — so it is the pre-flight check to
+run *before* launching a long job, rather than the thing you learn after one
+fails on quota.
+
+```console
+$ oneharness usage --harness claude-code,copilot,goose --format text
+usage as of 2026-07-29T16:41:13Z
+
+claude-code [CLAUDE_CONFIG_DIR=/home/u/.claude] · plan max · auth subscription
+  five_hour: 42% used · resets 2026-07-29T18:30:00Z
+  seven_day: 61% used · resets 2026-08-02T13:00:00Z ← binding
+  weekly_scoped/Opus 5: 17% used · resets 2026-08-02T13:00:00Z
+
+copilot [GH_TOKEN=<secret>] · plan individual · auth subscription
+  chat: unlimited · resets 2026-08-01T00:00:00Z
+  premium_interactions: 100% used (13518 of 1500 AI credits used, -12019 left · exhausted and blocked) · resets 2026-08-01T00:00:00Z
+
+goose [ambient] · auth unknown
+  no headroom to report: no first-party plan quota exists to report
+```
+
+JSON on stdout is the contract (`--format text` is the view above); it carries
+its own `schema_version`, independent of the run report's.
+
+Three things it will not do:
+
+- **It never invents a number.** An identity with no readable headroom carries
+  no percentage *at all* — the JSON has no field to hold one — so nothing can
+  render as “0% used / plenty of room”. An unlimited quota reports `unlimited`
+  rather than a full bar, and a window the harness reported as `null` (“not
+  applicable to this plan”) is omitted rather than zero-filled.
+- **It never takes a harness down.** A missing binary, an unauthenticated
+  harness, a malformed payload, and a probe timeout are all reported as data;
+  only a genuine usage error (an unknown id, an undeclared variant) exits
+  non-zero.
+- **It never authenticates anything.** Every probe reads existing credentials.
+  In particular the Cursor probe reads a plan tier only from a **pre-existing**
+  login and masks `CURSOR_API_KEY` from its child: Cursor's API-key path is not a
+  per-process selector but a *login* that exchanges the key for tokens and writes
+  them to the shared credential store, which has been observed overwriting a real
+  user login. Absence of a login is reported, never resolved by authenticating.
+
+Useful flags: `--all` / `--harness <id,…>` / `--exclude <id,…>` (selection,
+defaulting to every harness — `--exclude` drops ids from that sweep and is
+refused alongside `--harness`, which already names the selection),
+`--format <json|text>`, `--compact`,
+`--timeout <secs>` (per probe, default 60), plus the usual `--bin`, `--cwd`,
+`--config`, and `--no-config`.
+
+**Per-identity attribution.** A composed id selects a *distinct identity* using
+the same variant machinery `run` uses, so two subscriptions of one harness are
+reported separately — each entry carrying its variant name and the credential
+directory that selected it (never the credential):
+
+```console
+$ oneharness usage --harness claude-code:work,claude-code:personal --compact
+```
+
+**Copilot needs a GitHub token, and nothing else.** It is read out of band from
+GitHub's API, so it answers even where the Copilot CLI is not installed. The
+token comes from `COPILOT_GITHUB_TOKEN`, then `GH_TOKEN`, then `GITHUB_TOKEN`
+(Copilot's own documented precedence); with none of them set, the result is
+`unknown` naming the variables rather than a claim about headroom. The probe
+shells out to `curl` (the token rides its stdin config, never the argv), and
+`ONEHARNESS_COPILOT_API_BASE` points it at a GitHub Enterprise host — an HTTPS
+one, since the request carries the token: a plaintext `http://` base is refused
+as a named probe failure unless it names a loopback host.
+
+**Both upstream payloads are experimental**, so the drift guards are explicit:
+codex's contract is snapshotted from `codex app-server generate-json-schema` and
+diffed in `just check`, while Claude — which publishes no schema — is guarded by
+asserting on `rate_limits_available` and the expected `limits[].kind` values, so
+a shape change degrades to `unknown` instead of to zero.
 
 ### Safety note: bypass by default
 

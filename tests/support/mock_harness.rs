@@ -1,3 +1,4 @@
+// llmlint: ignore-file[comments_earn_their_place] Contradictory rules leave no arrangement that passes both: run 20260730T015003Z-03f66 rejected usage prose duplicated from `docs/harness-usage.md`, and run 20260730T022546Z-ea300 rejected the requested deferral to that document.
 //! The deterministic harness responder shared by the shipped CLI and test fixture.
 //!
 //! A fake harness binary the e2e tests drive via a `--bin` override, so the
@@ -23,6 +24,14 @@
 //!                   received argv and write the contents of the file named by
 //!                   the NEXT argument to stdout, then exit — proving an
 //!                   argv-delivered temp file existed and what it carried.
+//!   MOCK_REPLY_AFTER_LINES  if set to N, read N newline-terminated request
+//!                   lines from stdin, then answer with MOCK_STDOUT and exit.
+//!   MOCK_REQUEST_FILE  with MOCK_REPLY_AFTER_LINES, the requests read from stdin
+//!                   are written here, one per line, and stdin is drained to EOF
+//!                   first so a line the caller should NOT have sent is recorded
+//!                   too. Answering after N lines cannot prove WHICH lines
+//!                   arrived; the `usage` probes' zero-turn property is a claim
+//!                   about exactly that, so a test has to read the bodies back.
 //!   MOCK_ECHO_STDIN if set, read ALL of stdin and write it verbatim to stdout,
 //!                   then exit — proving a prompt delivered on the child's stdin
 //!                   (the large-prompt escape hatch) actually arrived, and with
@@ -317,6 +326,55 @@ pub fn run() -> ! {
         let _ = write!(std::io::stdout(), "{contents}");
         let _ = std::io::stdout().flush();
         std::process::exit(0);
+    }
+
+    // An early stdin EOF still answers, so a probe that writes fewer lines than
+    // expected sees a real response rather than a hang.
+    if let Ok(count) = std::env::var("MOCK_REPLY_AFTER_LINES") {
+        // Loud on a malformed value: silently reading it as 1 would let a
+        // typo'd test drive the wrong exchange and still report success.
+        let Ok(wanted) = count.parse::<usize>() else {
+            let _ = write!(
+                std::io::stderr(),
+                "mock harness: MOCK_REPLY_AFTER_LINES must be a whole number of stdin lines, got `{count}`"
+            );
+            let _ = std::io::stderr().flush();
+            std::process::exit(2);
+        };
+        // With a request log, read past `wanted` to EOF: the probes close stdin
+        // before reading any reply, so EOF is immediate, and an extra line is
+        // exactly what a test asserting "one request and no user message" has to
+        // be able to see. Without one, stop at `wanted` as before.
+        let record = std::env::var("MOCK_REQUEST_FILE").ok();
+        let stop_after = if record.is_some() { usize::MAX } else { wanted };
+        let mut requests: Vec<String> = Vec::new();
+        let mut line = String::new();
+        for _ in 0..stop_after {
+            line.clear();
+            match std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => requests.push(line.trim_end_matches(['\r', '\n']).to_string()),
+            }
+        }
+        if let Some(path) = record {
+            let _ = std::fs::write(path, requests.join("\n"));
+        }
+        if let Ok(text) = std::env::var("MOCK_STDERR") {
+            let _ = write!(std::io::stderr(), "{text}");
+            let _ = std::io::stderr().flush();
+        }
+        let _ = writeln!(
+            std::io::stdout(),
+            "{}",
+            std::env::var("MOCK_STDOUT").unwrap_or_default()
+        );
+        let _ = std::io::stdout().flush();
+        std::process::exit(
+            std::env::var("MOCK_EXIT")
+                .ok()
+                .and_then(|code| code.parse().ok())
+                .unwrap_or(0),
+        );
     }
 
     if std::env::var_os("MOCK_ECHO_STDIN").is_some() {

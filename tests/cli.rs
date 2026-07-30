@@ -13879,6 +13879,51 @@ fn usage_text_view_neutralizes_terminal_escapes_a_harness_wrote_to_its_stderr() 
 }
 
 #[test]
+fn usage_text_view_neutralizes_terminal_escapes_a_harness_reported_in_its_payload() {
+    // The sibling case: codex reports its failure inside a JSON-RPC `error`
+    // rather than on stderr, and a JSON string can carry an escaped ESC that
+    // decodes to a real one. That message reaches the same text view, so the
+    // same rule holds — bounded and flattened where it is first read out of the
+    // payload, not at the render site.
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "codex",
+            "--bin",
+            &bin_override("codex"),
+            "--format",
+            "text",
+        ],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "3"),
+            (
+                "MOCK_STDOUT",
+                "{\"id\":2,\"error\":{\"code\":-32603,\
+                 \"message\":\"\\u001b[2Jcodex: rate limit backend unreachable\\u0007\\r100% free\"}}",
+            ),
+            ("CODEX_HOME", "/home/u/.codex"),
+        ],
+    );
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("rate limit backend unreachable"),
+        "the reader must still learn what codex reported: {text:?}"
+    );
+    let surviving: Vec<char> = text
+        .chars()
+        .filter(|c| c.is_control() && *c != '\n')
+        .collect();
+    assert!(
+        surviving.is_empty(),
+        "no control byte from the payload may reach the rendered report: \
+         {surviving:?} in {text:?}"
+    );
+}
+
+#[test]
 fn usage_rejects_an_unknown_harness_and_an_undeclared_variant() {
     let unknown = run(&["usage", "--harness", "nope", "--compact"], &[]);
     assert_eq!(unknown.status.code(), Some(2));

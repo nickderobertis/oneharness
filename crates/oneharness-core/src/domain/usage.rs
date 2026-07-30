@@ -1009,9 +1009,12 @@ fn codex_error(message: &str) -> ParsedUsage {
         CODEX_API_KEY_ERROR => (AuthMode::ApiKey, UnavailableReason::ApiKeyAuth),
         CODEX_NOT_LOGGED_IN_ERROR => (AuthMode::Unknown, UnavailableReason::NotLoggedIn),
         // Any other failure is genuinely unknown — never an assumed absence.
+        // The two arms above match codex's exact wording, so this text is
+        // arbitrary upstream output: bound and flatten it like every other
+        // external diagnostic, since `usage --format text` prints it verbatim.
         other => {
             return ParsedUsage::unknown(UnknownReason::ProbeFailed {
-                message: other.to_string(),
+                message: snippet(other),
             })
         }
     };
@@ -1233,10 +1236,10 @@ fn copilot_counters(snapshot: &Value, unit: QuotaUnit) -> Option<QuotaCounters> 
     })
 }
 
-/// How much of a failing HTTP body is quoted back in a probe-failure message.
-/// The endpoint returns a server error document (never a credential), but an
-/// unbounded body would swamp the report.
-const COPILOT_ERROR_BODY_CHARS: usize = 200;
+/// How much of an external error payload is quoted back in a probe-failure
+/// message. Such a payload is a server error document or a harness's own
+/// diagnostic (never a credential), but an unbounded one would swamp the report.
+const ERROR_BODY_CHARS: usize = 200;
 
 /// Turn one `/copilot_internal/user` HTTP response into a parsed identity.
 ///
@@ -1294,7 +1297,7 @@ pub(crate) fn without_control_chars(text: &str) -> String {
 fn snippet(text: &str) -> String {
     let flat = without_control_chars(text);
     let flat = flat.trim();
-    match flat.char_indices().nth(COPILOT_ERROR_BODY_CHARS) {
+    match flat.char_indices().nth(ERROR_BODY_CHARS) {
         Some((at, _)) => format!("{}…", &flat[..at]),
         None => flat.to_string(),
     }
@@ -2642,7 +2645,7 @@ mod tests {
         assert!(!message.contains('\n'), "a report line stays one line");
         assert!(message.ends_with('…'), "and is bounded: {message}");
         assert!(
-            message.chars().count() < COPILOT_ERROR_BODY_CHARS + 100,
+            message.chars().count() < ERROR_BODY_CHARS + 100,
             "an unbounded body would swamp the report"
         );
     }

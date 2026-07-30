@@ -14442,6 +14442,53 @@ fn usage_reports_a_rejected_copilot_token_as_not_logged_in() {
     let _ = server.join();
 }
 
+/// The Copilot probe borrows `curl` rather than carrying a TLS stack, so a
+/// machine without it has a token and no way to use it. That must read as
+/// "nothing was learned", with the missing program named — not as an absence of
+/// headroom, and not as a crash that costs the other seven identities their
+/// readings.
+///
+/// Unix-only: on Windows `CreateProcess` searches the system directory, where
+/// `curl.exe` ships, so emptying `PATH` cannot hide it there.
+#[cfg(unix)]
+#[test]
+fn usage_reports_an_absent_curl_as_a_probe_failure_naming_it() {
+    let empty = std::env::temp_dir().join(format!("oneharness-no-curl-{}", std::process::id()));
+    std::fs::create_dir_all(&empty).expect("an empty PATH directory");
+
+    let output = run_copilot_usage(
+        &["usage", "--harness", "copilot", "--compact"],
+        &[
+            ("PATH", empty.to_str().unwrap()),
+            ("GH_TOKEN", "ghs_canary"),
+            // Unreachable on purpose: if `curl` were somehow resolved anyway,
+            // this test must still not reach the real GitHub API.
+            ("ONEHARNESS_COPILOT_API_BASE", "http://127.0.0.1:1"),
+        ],
+    );
+    let _ = std::fs::remove_dir_all(&empty);
+
+    assert!(
+        output.status.success(),
+        "a missing HTTP client is data, not an exit code: {:?}",
+        output.status.code()
+    );
+    let copilot = usage_identity(&json_stdout(&output), "copilot");
+    assert_eq!(copilot["availability"]["state"], "unknown");
+    assert_eq!(copilot["availability"]["reason"]["kind"], "probe_failed");
+    let message = copilot["availability"]["reason"]["message"]
+        .as_str()
+        .expect("a message");
+    assert!(
+        message.contains("curl"),
+        "the message must name the program that is missing: {message}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("ghs_canary"),
+        "a failed probe must not spill the token it would have used"
+    );
+}
+
 #[test]
 fn usage_says_which_variable_to_set_when_no_copilot_token_exists() {
     // With no token there is nothing to authenticate with — and Copilot's own

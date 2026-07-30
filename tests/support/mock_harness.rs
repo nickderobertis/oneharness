@@ -27,11 +27,19 @@
 //!   MOCK_REPLY_AFTER_LINES  if set to N, read N newline-terminated request
 //!                   lines from stdin, then answer with MOCK_STDOUT and exit.
 //!   MOCK_REQUEST_FILE  with MOCK_REPLY_AFTER_LINES, the requests read from stdin
-//!                   are written here, one per line, and stdin is drained to EOF
-//!                   first so a line the caller should NOT have sent is recorded
-//!                   too. Answering after N lines cannot prove WHICH lines
-//!                   arrived; the `usage` probes' zero-turn property is a claim
-//!                   about exactly that, so a test has to read the bodies back.
+//!                   are written here, one per line, and reading continues for a
+//!                   short grace past the Nth so a line the caller should NOT
+//!                   have sent is recorded too. Answering after N lines cannot
+//!                   prove WHICH lines arrived; the `usage` probes' zero-turn
+//!                   property is a claim about exactly that, so a test has to
+//!                   read the bodies back.
+//!   MOCK_REPLY_DELAY_MS  with MOCK_REPLY_AFTER_LINES, act like a server whose
+//!                   reply is asynchronous: answer this many ms after the last
+//!                   request, and — because such a server shuts down on EOF with
+//!                   that reply still in flight — exit WITHOUT answering if stdin
+//!                   closes first. This is the codex `app-server` behavior, and
+//!                   the only way a test can tell a caller that holds stdin open
+//!                   for its answer from one that closes the pipe behind it.
 //!   MOCK_ECHO_STDIN if set, read ALL of stdin and write it verbatim to stdout,
 //!                   then exit — proving a prompt delivered on the child's stdin
 //!                   (the large-prompt escape hatch) actually arrived, and with
@@ -79,6 +87,72 @@
 //!                   reproduces the process-tree timeout boundary of npm shims.
 
 use std::io::Write;
+
+/// How long the request reader keeps listening for a line the caller should not
+/// have sent, when a request log is being written and no reply delay sets its
+/// own window. A caller writes its whole exchange up front, so an extra line is
+/// already in the pipe; this only has to outlast the scheduling of one read.
+const EXTRA_REQUEST_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Read `wanted` newline-terminated request lines from stdin, then keep
+/// listening for a window, and report whether stdin reached EOF.
+///
+/// Reading on a thread is what makes both of those observable at once: a caller
+/// may hold stdin open for as long as it waits for an answer, so a blocking read
+/// past the last request would never return, and yet the *absence* of an extra
+/// line and the arrival of EOF are each something a test has to be able to see.
+/// The window is `delay` when a reply delay was asked for (the caller's EOF has
+/// to be noticed inside it) and otherwise a short grace when the requests are
+/// being logged.
+fn read_requests(wanted: usize, delay: u64, recording: bool) -> (Vec<String>, bool) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let stdin = std::io::stdin();
+        loop {
+            let mut line = String::new();
+            match std::io::BufRead::read_line(&mut stdin.lock(), &mut line) {
+                Ok(0) | Err(_) => return,
+                Ok(_) => {
+                    if sender
+                        .send(line.trim_end_matches(['\r', '\n']).to_string())
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+        }
+    });
+
+    let mut requests = Vec::new();
+    let mut saw_eof = false;
+    while requests.len() < wanted && !saw_eof {
+        match receiver.recv() {
+            Ok(line) => requests.push(line),
+            Err(_) => saw_eof = true,
+        }
+    }
+
+    let window = if delay > 0 {
+        std::time::Duration::from_millis(delay)
+    } else if recording {
+        EXTRA_REQUEST_GRACE
+    } else {
+        std::time::Duration::ZERO
+    };
+    let deadline = std::time::Instant::now() + window;
+    while !saw_eof {
+        let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+            break;
+        };
+        match receiver.recv_timeout(remaining) {
+            Ok(line) => requests.push(line),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => saw_eof = true,
+        }
+    }
+    (requests, saw_eof)
+}
 
 /// Return the value immediately following `flag`, matching the simple
 /// flag/value shapes emitted by every adapter that selects an output format.
@@ -341,23 +415,28 @@ pub fn run() -> ! {
             let _ = std::io::stderr().flush();
             std::process::exit(2);
         };
-        // With a request log, read past `wanted` to EOF: the probes close stdin
-        // before reading any reply, so EOF is immediate, and an extra line is
-        // exactly what a test asserting "one request and no user message" has to
-        // be able to see. Without one, stop at `wanted` as before.
+        let Ok(delay) = std::env::var("MOCK_REPLY_DELAY_MS")
+            .unwrap_or_else(|_| "0".to_string())
+            .parse::<u64>()
+        else {
+            let _ = write!(
+                std::io::stderr(),
+                "mock harness: MOCK_REPLY_DELAY_MS must be a whole number of milliseconds"
+            );
+            let _ = std::io::stderr().flush();
+            std::process::exit(2);
+        };
         let record = std::env::var("MOCK_REQUEST_FILE").ok();
-        let stop_after = if record.is_some() { usize::MAX } else { wanted };
-        let mut requests: Vec<String> = Vec::new();
-        let mut line = String::new();
-        for _ in 0..stop_after {
-            line.clear();
-            match std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => requests.push(line.trim_end_matches(['\r', '\n']).to_string()),
-            }
-        }
+        let (requests, saw_eof) = read_requests(wanted, delay, record.is_some());
         if let Some(path) = record {
             let _ = std::fs::write(path, requests.join("\n"));
+        }
+        // A delayed answer models a server whose reply is asynchronous, and such
+        // a server shuts down on EOF with that reply still in flight. Exiting
+        // unanswered is the whole point of the mode: a caller that closed stdin
+        // behind its request gets silence, exactly as the real one gives it.
+        if delay > 0 && saw_eof {
+            std::process::exit(0);
         }
         if let Ok(text) = std::env::var("MOCK_STDERR") {
             let _ = write!(std::io::stderr(), "{text}");

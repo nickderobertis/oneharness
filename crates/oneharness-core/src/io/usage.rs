@@ -262,15 +262,34 @@ fn first_meaningful_line(text: &str) -> Option<String> {
     })
 }
 
-/// Spawn `argv`, write `stdin_lines` (each newline-terminated) and close stdin,
-/// then read stdout line by line until `on_line` recognizes an answer, the child
-/// exits, or the deadline passes. The process tree is always terminated on the
-/// way out, so a harness that would idle waiting for more input cannot outlive
-/// the probe.
+/// When a probe closes the child's stdin, which decides whether an answer that
+/// is still in flight ever arrives.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StdinAfterRequests {
+    /// Close it as soon as the requests are written: the child treats EOF as
+    /// "that was the whole input" and does not start work until it sees one
+    /// (`curl --config -`), so holding it open would hang the probe.
+    Close,
+    /// Hold it open until the answer arrives or the deadline passes, then close.
+    /// A long-lived server shuts *down* on EOF, dropping whatever it had not
+    /// answered yet: `codex app-server` replies to `initialize` synchronously
+    /// but reads rate limits asynchronously, so closing stdin behind the three
+    /// requests loses the one answer the probe came for, on an account whose
+    /// headroom was readable the whole time.
+    HoldUntilAnswered,
+}
+
+/// Spawn `argv`, write `stdin_lines` (each newline-terminated), then read stdout
+/// line by line until `on_line` recognizes an answer, the child exits, or the
+/// deadline passes. `stdin_after` decides when the child's stdin is closed; it
+/// is closed either way before the child is given its moment to exit. The
+/// process tree is always terminated on the way out, so a harness that would
+/// idle waiting for more input cannot outlive the probe.
 fn converse(
     request: &UsageProbeRequest,
     argv: &[String],
     stdin_lines: &[String],
+    stdin_after: StdinAfterRequests,
     mut on_line: impl FnMut(&str) -> Option<ParsedUsage>,
 ) -> ProbeCapture {
     // Clamped at the boundary, so this addition cannot overflow whatever a
@@ -307,15 +326,18 @@ fn converse(
 
     // Written inline rather than on a helper thread: the payload is a handful of
     // short lines built here, orders of magnitude below any pipe buffer, so this
-    // write cannot block. Dropping the handle closes the pipe, which is the EOF
-    // both drivers this was sourced from relied on to let the child finish.
-    if let Some(mut stdin) = process.take_stdin() {
+    // write cannot block.
+    let mut stdin = process.take_stdin();
+    if let Some(handle) = stdin.as_mut() {
         for line in stdin_lines {
-            if stdin.write_all(line.as_bytes()).is_err() || stdin.write_all(b"\n").is_err() {
+            if handle.write_all(line.as_bytes()).is_err() || handle.write_all(b"\n").is_err() {
                 break;
             }
         }
-        let _ = stdin.flush();
+        let _ = handle.flush();
+    }
+    if stdin_after == StdinAfterRequests::Close {
+        drop(stdin.take());
     }
 
     let mut answer = None;
@@ -337,7 +359,12 @@ fn converse(
         }
     }
 
-    // The probe has what it came for and the child's stdin is already closed, so
+    // The answer is in hand (or the deadline is up), so close stdin now if it was
+    // held open: EOF is how a server-shaped harness is told to shut down, and it
+    // has to precede the grace below for that shutdown to be what happens there.
+    drop(stdin.take());
+
+    // The probe has what it came for and the child's stdin is now closed, so
     // a well-behaved harness is on its way out: give it a bounded moment to exit
     // by itself rather than signalling a process that is mid-shutdown (which
     // costs it whatever it flushes at exit). A harness that idles anyway — or one
@@ -392,6 +419,11 @@ fn probe_claude(request: &UsageProbeRequest) -> ProbedIdentity {
         request,
         &claude_argv(&request.bin),
         &[claude_request_line()],
+        // `claude -p` answers the queued control request on its way out of the
+        // input stream, so EOF is what completes this exchange rather than what
+        // cuts it short — verified against the real CLI, which reports headroom
+        // under exactly this close.
+        StdinAfterRequests::Close,
         |line| {
             let value: Value = serde_json::from_str(line).ok()?;
             if value
@@ -460,6 +492,7 @@ fn probe_codex(request: &UsageProbeRequest) -> ProbedIdentity {
         request,
         &codex_argv(&request.bin),
         &codex_request_lines(),
+        StdinAfterRequests::HoldUntilAnswered,
         {
             |line| {
                 let value: Value = serde_json::from_str(line).ok()?;
@@ -504,7 +537,13 @@ fn probe_cursor(request: &UsageProbeRequest) -> ProbedIdentity {
             .collect(),
         timeout: request.timeout,
     };
-    let capture = converse(&guarded, &cursor_argv(&request.bin), &[], |_| None);
+    let capture = converse(
+        &guarded,
+        &cursor_argv(&request.bin),
+        &[],
+        StdinAfterRequests::Close,
+        |_| None,
+    );
     let parsed = match serde_json::from_str::<Value>(capture.stdout.trim()) {
         Ok(value) if value.is_object() => parse_cursor_about(&value),
         _ => capture.failure(
@@ -615,7 +654,11 @@ fn copilot_fetch(request: &UsageProbeRequest, config: String) -> ParsedUsage {
         "--config".to_string(),
         "-".to_string(),
     ];
-    let capture = converse(request, &argv, &[config], |_| None);
+    // curl reads its config to EOF before it makes the request, so this close is
+    // what starts the exchange rather than what ends it.
+    let capture = converse(request, &argv, &[config], StdinAfterRequests::Close, |_| {
+        None
+    });
     match split_copilot_response(&capture.stdout) {
         Some((status, body)) => parse_copilot_http(status, &body),
         None => capture.failure(

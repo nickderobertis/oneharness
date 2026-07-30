@@ -128,9 +128,27 @@ for every user at once.
        "secondary":null,"planType":"<PLAN:enum>", ...}, …}}}
 ```
 
+**The reply is asynchronous, and the server shuts down on stdin EOF.**
+`initialize` is answered inline, so a probe that writes all three lines and
+closes the pipe still sees an id-1 result and exits 0 — with the rate-limit
+answer never sent. Observed on `codex-cli` 0.145.0: identical input, answered in
+about a second when stdin was held open, silently unanswered when it was not.
+The probe therefore keeps stdin open until its answer arrives or its deadline
+passes, then closes (`StdinAfterRequests::HoldUntilAnswered`), and the EOF it
+sends afterwards is what lets the server exit on its own. Reproduce either half
+by piping `initialize`/`initialized`/the read into `codex app-server` directly,
+with and without a trailing `sleep`.
+
 Calling-convention detail worth preserving: `account/rateLimits/read` takes
 `params: null`, while its sibling `account/read` *requires* `params: {}` and
-returns `-32600 "Invalid request: missing field \`params\`"` for `null`.
+returns `-32600 "Invalid request: missing field \`params\`"` for `null`. The
+generated `ClientRequest` schema states exactly that asymmetry — `params:
+{"type": "null"}` on the read, `params` *required* and `$ref`-ing
+`GetAccountParams` on `account/read` — so the rejection is the contract rather
+than a deviation from it. Nothing here depends on that: oneharness never sends
+`account/read`, and the only generated schema it pins is the **response**
+(`GetAccountRateLimitsResponse`, snapshotted below); no request schema is
+consumed.
 
 `rateLimitsByLimitId` is preferred over the top-level `rateLimits`, which the
 generated schema documents as a *“Backward-compatible single-bucket view;

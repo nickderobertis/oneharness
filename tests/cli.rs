@@ -13524,6 +13524,87 @@ fn usage_reports_codex_headroom_from_its_app_server_exchange() {
 }
 
 #[test]
+fn usage_waits_for_an_answer_a_harness_only_sends_while_its_stdin_is_open() {
+    // `codex app-server` answers `initialize` synchronously but reads rate limits
+    // asynchronously, and it shuts down on stdin EOF — so a probe that wrote its
+    // three requests and closed the pipe was reported as "exited without an
+    // answer" on an account whose 45%-used weekly window was readable the whole
+    // time. The mock reproduces exactly that race: it answers only after a delay,
+    // and exits unanswered if EOF arrives first. The delay is what the fix has to
+    // wait through; the EOF-shutdown is what makes the old close fail here.
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "codex",
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "3"),
+            ("MOCK_REPLY_DELAY_MS", "750"),
+            ("MOCK_STDOUT", &codex_usage_response()),
+        ],
+    );
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let codex = usage_identity(&json_stdout(&output), "codex");
+    assert_eq!(
+        codex["availability"]["state"], "available",
+        "the headroom arrived late, which is not the same as never: {codex}"
+    );
+    assert_eq!(codex["plan"], "pro");
+    assert_eq!(
+        codex["availability"]["windows"][0]["usage"]["used_percent"],
+        31.0
+    );
+}
+
+#[test]
+fn usage_gives_up_on_a_harness_that_never_answers_without_waiting_for_its_exit() {
+    // Holding stdin open for a late answer must not become a probe that hangs on
+    // a harness which has none: the deadline still ends the wait, the child's
+    // tree is still torn down, and the reading is still honest data rather than a
+    // fabricated 0%. The mock is asked for an answer ten times past the timeout.
+    let started = std::time::Instant::now();
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "codex",
+            "--bin",
+            &bin_override("codex"),
+            "--timeout",
+            "1",
+            "--compact",
+        ],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "3"),
+            ("MOCK_REPLY_DELAY_MS", "10000"),
+            ("MOCK_STDOUT", &codex_usage_response()),
+        ],
+    );
+    let elapsed = started.elapsed();
+
+    assert!(
+        output.status.success(),
+        "a probe that never answers is data, not an exit code: {:?}",
+        output.status.code()
+    );
+    let codex = usage_identity(&json_stdout(&output), "codex");
+    assert_eq!(codex["availability"]["state"], "unknown");
+    let message = codex["availability"]["reason"]["message"]
+        .as_str()
+        .expect("a message");
+    assert!(message.contains("did not answer"), "{message}");
+    assert!(
+        elapsed < std::time::Duration::from_secs(9),
+        "the probe returned on its own deadline rather than the harness's: {elapsed:?}"
+    );
+}
+
+#[test]
 fn usage_contains_a_panicking_probe_to_its_own_identity() {
     // A report is the deliverable, so one misbehaving harness must cost exactly
     // its own reading — losing seven identities because the eighth crashed is

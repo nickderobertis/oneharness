@@ -452,6 +452,63 @@ oh_cache_assert() {
     fi
 }
 
+# --- pre-flight headroom (the `usage` verb) ----------------------------------
+
+# Live proof that the zero-turn `usage` probe still gets an ANSWER out of the
+# real harness — the drift alarm for the probe's *exchange*, which the hermetic
+# suite can only mock. Call it for every harness whose `usage` support is a probe
+# (see the README support matrix); a harness that reports no headroom at all has
+# nothing to drift.
+#
+# What is asserted is that the harness answered, not what it answered: CI
+# authenticates with an API key, where the honest reading is `unavailable` with a
+# reason, while a subscription box reports `available` windows. Both are the
+# harness replying. `unknown` is the failure — it means oneharness asked and got
+# nothing back, which is exactly how codex's rate-limit read failed for a whole
+# release: the reply is asynchronous and the app-server drops it on stdin EOF, so
+# a probe that closed the pipe behind its request saw only the synchronous
+# `initialize` result and reported "exited without an answer" against an account
+# whose headroom was readable throughout. A mock that answers inline cannot fail
+# that way; this can.
+#   $1 harness id
+oh_usage_enforce() {
+    local id="$1" bin report state reason errf
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    errf="$(mktemp)"
+    note "  probing: $bin usage --harness $id (zero-turn, spends no quota)"
+    report="$(ONEHARNESS_NO_CONFIG=1 "$bin" usage --harness "$id" \
+        --timeout "${OH_TIMEOUT:-120}" --compact 2>"$errf")" || true
+    if [ -z "$report" ]; then
+        note "  oneharness emitted no JSON on stdout. Its stderr:"
+        sed 's/^/    /' "$errf" >&2 || true
+        rm -f "$errf"
+        fail "$id: 'oneharness usage' produced no report"
+    fi
+    rm -f "$errf"
+
+    state="$(printf '%s' "$report" | jq -r '.identities[0].availability.state')"
+    reason="$(printf '%s' "$report" | jq -r '
+        .identities[0].availability.reason as $r
+        | if ($r | type) == "object" then ($r.kind // "") else ($r // "") end')"
+    case "$state:$reason" in
+    available:*)
+        note "PASS: $id answered its usage probe with headroom: $(printf '%s' "$report" | jq -c '.identities[0].availability.windows')"
+        ;;
+    unavailable:*)
+        note "PASS: $id answered its usage probe: unavailable ($reason)"
+        ;;
+    unknown:binary_missing)
+        skip "$id is not installed (oneharness reported binary_missing); nothing to probe"
+        ;;
+    *)
+        note "  report: $report"
+        fail "$id: the usage probe got no answer out of the harness (state=$state, reason=$reason). Either the probe's exchange drifted from the live CLI, or the answer was cut off — a reply that arrives asynchronously is lost if the probe closes the harness's stdin before it lands (crates/oneharness-core/src/io/usage.rs, StdinAfterRequests)"
+        ;;
+    esac
+}
+
 # --- normalized tool-call / action events ------------------------------------
 
 # Live proof that oneharness surfaces normalized tool-call events in the

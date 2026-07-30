@@ -176,12 +176,17 @@ Use the `just` recipes; do not hand-roll equivalents.
   <!-- llmlint: ignore-block[agents_md_durable_and_terse, no_redundant_instruction_pointers, comments_earn_their_place] Stating these load-bearing constraints here and deferring them to `docs/harness-usage.md` are the only two arrangements, and one rule in this list forbids each; they stay stated, with the pointer intact. `comments_earn_their_place` is listed because the span covers these directive lines too. -->
   `usage` is the pre-flight verb: subscription headroom per identity, on its own
   output contract, parsers pure (`domain::usage`) and probes I/O (`io::usage`).
-  Three constraints are load-bearing; every observed payload and exchange behind
+  Four constraints are load-bearing; every observed payload and exchange behind
   them lives in `docs/harness-usage.md`. A probe must be **zero-turn** — no user
   message, no completed turn — because a pre-flight check that spends quota
   defeats itself. Each parser carries its own drift guard and degrades an
   unrecognized shape to *unknown*, because a confident wrong headroom number is
-  silent where a crash is loud. And the Cursor probe must keep masking
+  silent where a crash is loud. A probe whose answer is **asynchronous** must
+  hold the child's stdin open until that answer lands (`StdinAfterRequests`):
+  codex's app-server drops an in-flight reply on EOF, which reported a readable
+  45%-used window as unreadable for a whole release, and only the live
+  `oh_usage_enforce` phase can catch it — a mock that answers inline cannot.
+  And the Cursor probe must keep masking
   `CURSOR_API_KEY` from its child: passing it authenticates rather than selects,
   a hazard any future Cursor dispatch also hits.
   <!-- llmlint: ignore-end[agents_md_durable_and_terse, no_redundant_instruction_pointers, comments_earn_their_place] -->

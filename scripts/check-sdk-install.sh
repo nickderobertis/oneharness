@@ -43,10 +43,14 @@ git -C "$fixture" init -q
 
 bin="$tmp/bin"
 mkdir -p "$bin"
+# Chatty on success, like the real tools: `bun install` prints a package list
+# every time. That is exactly the noise the quiet-on-success assertion below
+# would catch leaking into every `just check`.
 for tool in bun cargo rustup uv; do
     cat >"$bin/$tool" <<'STUB'
 #!/usr/bin/env bash
 printf '%s %s\n' "$(basename "$0")" "$*" >> "$CALL_LOG"
+echo "$(basename "$0"): 26 packages installed [127.00ms]"
 STUB
     chmod +x "$bin/$tool"
 done
@@ -88,5 +92,51 @@ consumed_at="$(first_call "$sdk_log" "$consume_line")"
 bootstrap_log="$(run_recipe bootstrap)"
 [[ -n $(first_call "$bootstrap_log" "$install_line") ]] ||
     fail "bootstrap no longer reaches '$install_line'; a clean clone would be left without it"
+
+# Now that it runs on every `just check`, sdk-install owes the gate both halves
+# of the recipe contract: a silent success, and a failure that keeps bun's own
+# reason instead of replacing it with a generic message.
+run_install() {
+    local extra_path="$1" name="$2"
+    set +e
+    CALL_LOG="$tmp/$name.calls" PATH="$extra_path:/usr/bin:/bin" HOME="$tmp/home" \
+        just --justfile "$fixture/justfile" --working-directory "$fixture" sdk-install \
+        >"$tmp/$name.out" 2>"$tmp/$name.err"
+    local status=$?
+    set -e
+    printf '%s' "$status"
+}
+
+status="$(run_install "$bin" quiet)"
+[[ $status -eq 0 ]] || {
+    cat "$tmp/quiet.err" >&2
+    fail "sdk-install failed against a succeeding stub (exit $status)"
+}
+if [[ -s $tmp/quiet.out || -s $tmp/quiet.err ]]; then
+    echo "--- what it printed ---" >&2
+    cat "$tmp/quiet.out" "$tmp/quiet.err" >&2
+    fail "sdk-install printed on success; every gate run would carry that noise"
+fi
+
+# A bun that fails the way a stale lockfile really does.
+failing_bin="$tmp/failing-bin"
+mkdir -p "$failing_bin"
+cat >"$failing_bin/bun" <<'STUB'
+#!/usr/bin/env bash
+echo 'error: lockfile had changes, but lockfile is frozen' >&2
+exit 1
+STUB
+chmod +x "$failing_bin/bun"
+ln -s "$(command -v just)" "$failing_bin/just"
+
+status="$(run_install "$failing_bin" loud)"
+[[ $status -ne 0 ]] ||
+    fail "a failing 'bun install' left sdk-install green; the gate would run on absent dependencies"
+grep -qF 'error: lockfile had changes, but lockfile is frozen' "$tmp/loud.err" || {
+    cat "$tmp/loud.err" >&2
+    fail "sdk-install swallowed bun's own failure output; the reason must survive to the reader"
+}
+grep -qF "just sdk-install" "$tmp/loud.err" ||
+    fail "sdk-install's failure named no next action"
 
 echo "check-sdk-install: ok"

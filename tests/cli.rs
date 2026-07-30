@@ -13809,6 +13809,40 @@ fn usage_covers_every_harness_with_the_five_headroomless_ones_saying_so() {
 }
 
 #[test]
+fn usage_without_any_selection_sweeps_every_harness_like_all() {
+    // The shape a pre-flight check is actually typed as: bare `oneharness usage`,
+    // no `--all` and no `--harness`. The default has to mean the whole sweep, or
+    // a caller reads "I have headroom" off a subset they never chose. The
+    // probing harnesses are pointed at missing binaries so this stays hermetic.
+    let output = run(
+        &[
+            "usage",
+            "--bin",
+            &missing_bin("claude-code"),
+            "--bin",
+            &missing_bin("codex"),
+            "--bin",
+            &missing_bin("cursor"),
+            "--compact",
+        ],
+        &[],
+    );
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let report = json_stdout(&output);
+    let harnesses: Vec<&str> = report["identities"]
+        .as_array()
+        .expect("identities")
+        .iter()
+        .map(|identity| identity["harness"].as_str().expect("an id"))
+        .collect();
+    assert_eq!(
+        harnesses, ALL_IDS,
+        "the bare default covers every harness, exactly as `--all` does"
+    );
+}
+
+#[test]
 fn usage_selection_narrows_with_exclude() {
     // `usage` defaults to every harness, so `--exclude` is the only way to drop
     // one from a sweep — a distinct path from naming harnesses explicitly.

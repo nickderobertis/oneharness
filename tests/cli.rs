@@ -14665,6 +14665,82 @@ fn usage_refuses_a_copilot_api_base_that_could_be_injected() {
 }
 
 #[test]
+fn usage_refuses_a_copilot_token_carrying_config_syntax_without_leaking_it() {
+    // The token is interpolated into curl's own config grammar, so one carrying
+    // a quote or a newline is refused before any fetch. The refusal is only half
+    // the property: the value is a live credential, so *nothing* of it may reach
+    // the report a caller prints or the diagnostics a CI job archives — which is
+    // why this drives the shipped binary rather than the branch in isolation.
+    //
+    // No curl gate: validation happens before the HTTP client is spawned, so this
+    // path is reachable with no client installed at all.
+    const CANARY: &str = "ghs_canary7Zq4Xr9Lm2";
+    let injectable = format!("{CANARY}\"\nheader = \"X-Injected: y");
+
+    for format in ["json", "text"] {
+        let output = run_copilot_usage(
+            &[
+                "usage",
+                "--harness",
+                "copilot",
+                "--format",
+                format,
+                "--compact",
+            ],
+            &[("GH_TOKEN", &injectable)],
+        );
+
+        assert!(
+            output.status.success(),
+            "a refused credential is data, not an exit code: {:?}",
+            output.status.code()
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
+        if format == "json" {
+            let copilot = usage_identity(&json_stdout(&output), "copilot");
+            assert_eq!(
+                copilot["availability"]["state"], "unknown",
+                "a token that cannot be forwarded teaches nothing about headroom: {copilot}"
+            );
+            assert_eq!(copilot["availability"]["reason"]["kind"], "probe_failed");
+            assert_eq!(
+                copilot["selector"],
+                serde_json::json!({"kind": "env_secret", "env": "GH_TOKEN"}),
+                "the identity names the variable, never the token"
+            );
+            let message = copilot["availability"]["reason"]["message"]
+                .as_str()
+                .expect("a message");
+            assert!(
+                message.contains("GitHub token"),
+                "the message must say what to fix: {message}"
+            );
+        }
+
+        // Every run of the credential, not just the whole string: a partial echo
+        // (a truncated log line, a quoted prefix) leaks a token just as well.
+        for length in 4..=CANARY.len() {
+            for fragment in CANARY
+                .as_bytes()
+                .windows(length)
+                .map(|window| String::from_utf8_lossy(window).into_owned())
+            {
+                assert!(
+                    !stdout.contains(&fragment),
+                    "`--format {format}` leaked `{fragment}` into the report:\n{stdout}"
+                );
+                assert!(
+                    !stderr.contains(&fragment),
+                    "`--format {format}` leaked `{fragment}` into its diagnostics:\n{stderr}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn usage_reports_a_failed_stdout_write_instead_of_panicking() {
     // A command whose output *is* its deliverable must not die mid-sentence:
     // a reader closing the pipe (`oneharness usage | head -1`) is an ordinary

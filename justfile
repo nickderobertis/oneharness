@@ -24,7 +24,7 @@ default:
 bootstrap:
     rustup component add rustfmt clippy llvm-tools-preview
     cargo fetch --locked
-    bun install --cwd npm/oneharness-sdk --frozen-lockfile
+    @just sdk-install
     ./scripts/setup-llmlint.sh
     git config core.hooksPath .githooks
 
@@ -72,6 +72,7 @@ lint-workflows: build build-mock-harness
     @bash scripts/check-publish-crates.sh >/dev/null
     @bash scripts/check-publish-npm.sh >/dev/null
     @bash scripts/check-local-gate.sh >/dev/null
+    @bash scripts/check-sdk-install.sh >/dev/null
     @bash scripts/check-build-mock-harness.sh >/dev/null
     @bash scripts/e2e-variants-test.sh >/dev/null
     @echo 'lint-workflows: ok'
@@ -163,8 +164,19 @@ upgrade:
 sdk-generate:
     bun run --cwd npm/oneharness-sdk generate
 
+# Install the Node SDK's dependencies into *this* checkout. Every other
+# `bootstrap` step writes machine-global state a new checkout inherits for free
+# (rustup components, the cargo registry cache, the uv-installed llmlint, and
+# `core.hooksPath` in the shared common git dir); `node_modules` is the lone
+# per-checkout artifact, and it is gitignored, so a fresh clone or `git worktree
+# add` starts without it. `sdk-check` depends on this so the gate is
+# self-sufficient for the checkout it verifies instead of assuming its caller
+# bootstrapped that checkout first — the pre-push hook runs `just gate` directly.
+sdk-install:
+    bun install --cwd npm/oneharness-sdk --frozen-lockfile
+
 # Strict Node SDK gate, including the Rust->TypeScript drift check and real CLI e2e.
-sdk-check: build build-mock-harness
+sdk-check: build build-mock-harness sdk-install
     bun run --cwd npm/oneharness-sdk generate:check
     bun run --cwd npm/oneharness-sdk format:check
     bun run --cwd npm/oneharness-sdk lint

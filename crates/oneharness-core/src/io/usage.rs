@@ -32,9 +32,9 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::domain::usage::{
-    claude_control_response, claude_usage_drift, parse_claude_get_usage, parse_codex_rate_limits,
-    parse_copilot_http, parse_cursor_about, without_control_chars, IdentitySelector, ParsedUsage,
-    UnknownReason, UsageProbe,
+    claude_control_response, parse_claude_get_usage, parse_codex_rate_limits, parse_copilot_http,
+    parse_cursor_about, without_control_chars, IdentitySelector, ParsedUsage, UnknownReason,
+    UsageProbe,
 };
 use crate::io::process::{Finish, PipeEvent, Process};
 
@@ -402,16 +402,7 @@ fn probe_claude(request: &UsageProbeRequest) -> ProbedIdentity {
             {
                 return None;
             }
-            let payload = claude_control_response(&value)?;
-            // The drift guard runs before the parser: with no schema to diff
-            // against, a renamed field would otherwise take the parser's
-            // absence-means-false branch and publish "no headroom" as fact.
-            Some(match claude_usage_drift(payload) {
-                Some(reason) => ParsedUsage::unknown(UnknownReason::ProbeFailed {
-                    message: format!("claude-code's `get_usage` payload changed shape: {reason}"),
-                }),
-                None => parse_claude_get_usage(payload),
-            })
+            Some(parse_claude_get_usage(claude_control_response(&value)?))
         },
     );
     let parsed = capture.answer.take().unwrap_or_else(|| {

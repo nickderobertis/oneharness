@@ -686,17 +686,21 @@ pub fn claude_control_response(line: &Value) -> Option<&Value> {
 
 /// The contract-drift guard for Claude's `get_usage` payload: `Some(reason)`
 /// when the payload no longer looks like the shape [`parse_claude_get_usage`]
-/// was written against, so a caller can degrade to
-/// [`UsageAvailability::Unknown`] instead of publishing a confident answer.
+/// was written against. Private on purpose — [`parse_claude_get_usage`] runs it
+/// itself, so no caller can obtain a confident answer without it.
 ///
 /// This exists because Claude's structured usage surface is explicitly
 /// experimental — the SDK method is literally named
 /// `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()` — and, unlike
 /// codex's app-server, it publishes no schema to snapshot and diff. The failure
-/// mode to prevent is a renamed field silently becoming "0% used / plenty of
-/// headroom", so every check here targets a branch whose *absent* input would
-/// otherwise read as a confident negative:
+/// mode to prevent is a renamed field silently becoming a confident verdict, so
+/// every check here targets a branch whose *absent* input would otherwise read
+/// as an affirmative negative:
 ///
+/// - `subscription_type` is the auth-mode discriminator, and the parser reads
+///   its absence as API-key auth — i.e. affirmatively "no plan headroom". A
+///   rename or a wrong type must not inherit that answer, so the key must be
+///   present and be either the plan string or null.
 /// - `rate_limits_available` is the branch the parser takes on absence
 ///   (`unwrap_or(false)`), so its disappearance would read as "no headroom
 ///   reported" for every user at once.
@@ -707,8 +711,18 @@ pub fn claude_control_response(line: &Value) -> Option<&Value> {
 ///
 /// A *new* key or a new `kind` alongside a recognized one is not drift: the key
 /// set is open by contract and unknown keys already degrade to an opaque window.
-#[must_use]
-pub fn claude_usage_drift(payload: &Value) -> Option<String> {
+fn claude_usage_drift(payload: &Value) -> Option<String> {
+    match payload.get("subscription_type") {
+        None => return Some("the payload carries no `subscription_type` field".to_string()),
+        Some(plan) if !(plan.is_string() || plan.is_null()) => {
+            return Some(
+                "`subscription_type` is neither a plan string nor null (the API-key value)"
+                    .to_string(),
+            )
+        }
+        Some(_) => {}
+    }
+
     let Some(available) = payload.get("rate_limits_available") else {
         return Some("the payload carries no `rate_limits_available` field".to_string());
     };
@@ -779,8 +793,19 @@ fn is_known_claude_limit_kind(kind: &str) -> bool {
 /// `limits[].is_active` attached to the window each entry describes and each
 /// `weekly_scoped` entry emitted as its own model-scoped window (it has no named
 /// key of its own).
+///
+/// Every affirmative state below rests on a field's absence, so the payload is
+/// checked for contract drift first ([`claude_usage_drift`]) and a drifted one
+/// degrades to [`UsageAvailability::Unknown`]. That check is not a step a caller
+/// can skip: there is no unguarded way in.
 #[must_use]
 pub fn parse_claude_get_usage(payload: &Value) -> ParsedUsage {
+    if let Some(reason) = claude_usage_drift(payload) {
+        return ParsedUsage::unknown(UnknownReason::ProbeFailed {
+            message: format!("claude-code's `get_usage` payload changed shape: {reason}"),
+        });
+    }
+
     let plan = payload
         .get("subscription_type")
         .and_then(Value::as_str)
@@ -2415,12 +2440,12 @@ mod tests {
 
         let drift = claude_usage_drift(&payload).expect("a moved window surface is drift");
         assert!(drift.contains("session"), "{drift}");
-        assert_eq!(
-            parse_claude_get_usage(&payload).availability,
-            UsageAvailability::Unavailable {
-                reason: UnavailableReason::NoWindowsReported
-            },
-            "which is exactly the confident answer the guard exists to suppress"
+        assert!(
+            matches!(
+                parse_claude_get_usage(&payload).availability,
+                UsageAvailability::Unknown { .. }
+            ),
+            "and the parser reports the drift instead of `no windows reported`"
         );
     }
 
@@ -2439,6 +2464,7 @@ mod tests {
         // A recognized window key alone also suffices — the `limits[]` array is
         // not the only surface.
         let no_limits = json!({
+            "subscription_type": "max",
             "rate_limits_available": true,
             "rate_limits": {"five_hour": {"utilization": 12}}
         });
@@ -2447,9 +2473,43 @@ mod tests {
 
     #[test]
     fn claude_drift_guard_catches_rate_limits_that_stopped_being_an_object() {
-        let payload = json!({"rate_limits_available": true, "rate_limits": []});
+        let payload = json!({
+            "subscription_type": "max",
+            "rate_limits_available": true,
+            "rate_limits": []
+        });
 
-        assert!(claude_usage_drift(&payload).is_some());
+        let drift = claude_usage_drift(&payload).expect("a non-object surface is drift");
+        assert!(drift.contains("rate_limits"), "{drift}");
+    }
+
+    #[test]
+    fn claude_drift_guard_catches_a_renamed_or_wrong_typed_auth_discriminator() {
+        // `subscription_type` decides API-key versus subscription by its
+        // *absence*, and API-key auth is an affirmative "no plan headroom", so a
+        // rename would hand every subscriber that verdict as fact.
+        let mut renamed = claude_subscription_payload();
+        let fields = renamed.as_object_mut().expect("an object");
+        fields.remove("subscription_type");
+        fields.insert("plan_type".to_string(), json!("max"));
+
+        let drift = claude_usage_drift(&renamed).expect("a renamed discriminator is drift");
+        assert!(drift.contains("subscription_type"), "{drift}");
+
+        // Contracted as the plan string or null; anything else was not read.
+        for wrong_typed in [json!(7), json!(true), json!({"name": "max"})] {
+            let mut payload = claude_subscription_payload();
+            payload["subscription_type"] = wrong_typed.clone();
+
+            let drift =
+                claude_usage_drift(&payload).unwrap_or_else(|| panic!("{wrong_typed} is drift"));
+            assert!(drift.contains("subscription_type"), "{drift}");
+        }
+
+        // A null discriminator is the contracted API-key value, not drift.
+        let mut api_key = claude_subscription_payload();
+        api_key["subscription_type"] = Value::Null;
+        assert_eq!(claude_usage_drift(&api_key), None);
     }
 
     #[test]

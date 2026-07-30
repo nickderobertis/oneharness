@@ -379,6 +379,73 @@ fn a_wrong_typed_field_reaches_a_consumer_as_drift_never_as_an_account_state() {
     );
 }
 
+/// Claude's payload is explicitly experimental with no schema to diff, and every
+/// affirmative state its parser publishes rests on a field's *absence*: a missing
+/// `subscription_type` means API key, a missing `rate_limits_available` means no
+/// headroom. So the drift guard cannot be a separate step a caller has to
+/// remember — `parse_claude_get_usage` is public, and a sibling tool reaching it
+/// directly must not be able to obtain a confident account state from a payload
+/// whose shape moved.
+#[test]
+fn claudes_public_parser_never_reads_a_drifted_payload_as_an_account_state() {
+    let observed = claude_payload(CLAUDE_STREAM);
+
+    // The auth-mode discriminator, renamed. Its absence reads as API-key auth,
+    // which is affirmatively "this identity has no plan headroom" — the exact
+    // confident wrong answer a planner would act on.
+    let mut renamed = observed.clone();
+    let fields = renamed.as_object_mut().expect("an object");
+    fields.remove("subscription_type");
+    fields.insert("plan_type".to_string(), serde_json::json!("max"));
+    renamed["rate_limits_available"] = serde_json::json!(false);
+    renamed["rate_limits"] = Value::Null;
+
+    // The same discriminator, wrong-typed: contracted as a plan string or null.
+    let mut wrong_typed = observed.clone();
+    wrong_typed["subscription_type"] = serde_json::json!(7);
+
+    // The window surface moved wholesale under an affirmative availability flag,
+    // so the parser finds nothing and would report "no windows reported".
+    let mut moved_windows = observed.clone();
+    moved_windows["rate_limits"] = serde_json::json!({
+        "renamed_five_hour": {"pct_used": 42},
+        "limits": [{"kind": "brand_new_kind", "percent": 42}]
+    });
+
+    // The availability flag itself, vanished: read with an absence-means-false
+    // default, so a rename turns every subscriber into "no headroom" at once.
+    let mut vanished_flag = observed.clone();
+    vanished_flag
+        .as_object_mut()
+        .expect("an object")
+        .remove("rate_limits_available");
+
+    for drifted in [renamed, wrong_typed, moved_windows, vanished_flag] {
+        let parsed = parse_claude_get_usage(&drifted);
+
+        assert!(
+            matches!(
+                parsed.availability,
+                UsageAvailability::Unknown {
+                    reason: UnknownReason::ProbeFailed { .. }
+                }
+            ),
+            "a drifted payload must say so, not answer: got {:?} from {drifted}",
+            parsed.availability
+        );
+        assert_eq!(
+            parsed.auth_mode,
+            AuthMode::Unknown,
+            "a payload that could not be read says nothing about auth mode"
+        );
+        assert_eq!(parsed.plan, None);
+        assert!(
+            parsed.availability.windows().is_empty(),
+            "no percentage may survive a payload whose shape was not recognized"
+        );
+    }
+}
+
 /// The counters' deliberate asymmetry: `remaining` is genuinely negative for an
 /// account past its ceiling and that deficit is the signal, while a negative
 /// entitlement or consumption is a payload nobody could read.

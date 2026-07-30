@@ -100,12 +100,16 @@ instead, because it needs `rate_limits_available` as well.
 **Contract status: explicitly experimental.** The SDK surface is literally named
 `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()`, and no schema is
 published to diff against. The guard is therefore assertion-based
-(`claude_usage_drift`): a payload that no longer carries `rate_limits_available`,
-or that carries it as `true` with no recognizable window surface (none of the
-expected `limits[].kind` values `session`/`weekly_all`/`weekly_scoped`, and no
-window key with a numeric `utilization`), degrades to **unknown**. That branch
-matters because the parser reads the flag with an absence-means-false default,
-so a rename would otherwise publish “no headroom” as fact for every user at once.
+(`claude_usage_drift`) and runs **inside** `parse_claude_get_usage`, so there is
+no unguarded way to parse the payload. It degrades to **unknown** when the
+payload omits `subscription_type` or carries it as neither a plan string nor
+null, when it no longer carries `rate_limits_available`, or when it carries that
+flag as `true` with no recognizable window surface (none of the expected
+`limits[].kind` values `session`/`weekly_all`/`weekly_scoped`, and no window key
+with a numeric `utilization`). Each of those is a branch the parser decides by a
+field's *absence* — an absent discriminator means API-key auth, an absent flag
+means no headroom — so a rename would otherwise publish “no headroom” as fact
+for every user at once.
 
 ### `codex` — the app-server `account/rateLimits/read`
 

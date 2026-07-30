@@ -851,7 +851,19 @@ fn a_report_claiming_an_unsupported_schema_version_is_refused() {
         serde_json::json!(SCHEMA_VERSION),
     ))
     .expect("the supported version still deserializes");
-    assert_eq!(current.schema_version, SCHEMA_VERSION);
+    assert_eq!(current.schema_version.as_str(), SCHEMA_VERSION);
+
+    // The construction half: a caller of the published crate cannot claim another
+    // version either, because the field's type has exactly one value. Which is
+    // why the refusal above is the only way a wrong version can be *observed*.
+    let built = UsageReport::new(observed_at(), one_unprobed_identity());
+    assert_eq!(built.schema_version.as_str(), SCHEMA_VERSION);
+    assert_eq!(built.schema_version.to_string(), SCHEMA_VERSION);
+    assert_eq!(
+        serde_json::to_value(&built).expect("the report serializes")["schema_version"],
+        serde_json::json!(SCHEMA_VERSION),
+        "and it reaches the wire as the version string a consumer branches on"
+    );
 }
 
 /// Text that is not an RFC 3339 UTC instant. Shared by every boundary test
@@ -1198,7 +1210,8 @@ fn regenerating_the_golden_leaves_a_readable_contract() {
         serde_json::from_str(&written).expect("the regenerated golden deserializes");
     assert_eq!(parsed, golden_report(), "the golden must round-trip");
     assert_eq!(
-        parsed.schema_version, SCHEMA_VERSION,
+        parsed.schema_version.as_str(),
+        SCHEMA_VERSION,
         "a regenerated golden that no longer matches SCHEMA_VERSION means a bump was missed"
     );
 }

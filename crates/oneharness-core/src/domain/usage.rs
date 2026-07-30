@@ -55,7 +55,7 @@ use std::fmt;
 use std::num::NonZeroU64;
 use std::str::FromStr;
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -75,8 +75,8 @@ pub const SCHEMA_VERSION: &str = "0.1";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "UsageReportWire")]
 pub struct UsageReport {
-    /// The report shape version ([`SCHEMA_VERSION`]).
-    pub schema_version: String,
+    /// The shape version, as a type with one value — see [`SchemaVersion`].
+    pub schema_version: SchemaVersion,
     /// The instant the identities were observed, minted by the io layer's single
     /// clock read. A [`UtcInstant`], so the field cannot be *set* to something
     /// that is not one — see [`UsageReport::new`].
@@ -91,10 +91,41 @@ impl UsageReport {
     #[must_use]
     pub fn new(observed_at: UtcInstant, identities: Vec<UsageIdentity>) -> Self {
         Self {
-            schema_version: SCHEMA_VERSION.to_string(),
+            schema_version: SchemaVersion,
             observed_at,
             identities,
         }
+    }
+}
+
+/// The report's shape version, as a type: [`SCHEMA_VERSION`] is the only value it
+/// has. A report claiming a version this build does not implement is therefore
+/// not something a caller can build — and one arriving on the wire is refused
+/// rather than stored (see [`UsageReportWire`]), so the two boundaries agree.
+/// Serializes as the version string a consumer reads.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SchemaVersion;
+
+impl SchemaVersion {
+    /// The version text, always [`SCHEMA_VERSION`].
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        SCHEMA_VERSION
+    }
+}
+
+impl fmt::Display for SchemaVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(SCHEMA_VERSION)
+    }
+}
+
+impl Serialize for SchemaVersion {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(SCHEMA_VERSION)
     }
 }
 
@@ -138,7 +169,7 @@ impl TryFrom<UsageReportWire> for UsageReport {
             .parse::<UtcInstant>()
             .map_err(|error| format!("observed_at {error}"))?;
         Ok(Self {
-            schema_version: wire.schema_version,
+            schema_version: SchemaVersion,
             observed_at,
             identities: wire.identities,
         })
@@ -2641,7 +2672,7 @@ mod tests {
         let parsed: UsageReport = serde_json::from_str(&text).unwrap();
 
         assert_eq!(parsed, report);
-        assert_eq!(parsed.schema_version, SCHEMA_VERSION);
+        assert_eq!(parsed.schema_version.as_str(), SCHEMA_VERSION);
         assert!(text.contains(r#""window_seconds_source":"inferred_from_id""#));
         assert!(text.contains(r#""window_seconds_source":"reported""#));
         assert!(text.contains(r#""window_seconds_source":"unknown""#));

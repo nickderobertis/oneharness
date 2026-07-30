@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.11](https://github.com/nickderobertis/oneharness/compare/v0.5.10...v0.5.11) - 2026-07-30
+
+### Fixed
+
+- *(gate)* install the Node SDK deps into the checkout `check` verifies ([#1199](https://github.com/nickderobertis/oneharness/pull/1199))
+
 ## [0.5.10](https://github.com/nickderobertis/oneharness/compare/v0.5.9...v0.5.10) - 2026-07-26
 
 ### Added

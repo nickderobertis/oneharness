@@ -1,4 +1,4 @@
-// llmlint: ignore-block[comments_earn_their_place] Contradictory rules on this exact header: run 20260730T015003Z-03f66 failed it for re-listing `docs/harness-usage.md`, commit bfe10aa cut it to a pointer at that document, and run 20260730T022546Z-ea300 failed it again for repeating what it now only points at.
+// llmlint: ignore-block[comments_earn_their_place] The zero-turn property is a property of the invocations below, so the header states what changing one has to re-establish; cutting it to a pointer at `docs/harness-usage.md` is what `no_redundant_instruction_pointers` forbids.
 //! The zero-turn subscription-headroom probes.
 //!
 //! Every probe here reads a harness's plan headroom **without the harness taking

@@ -1,4 +1,4 @@
-// llmlint: ignore-block[comments_earn_their_place] Same contradiction as the `domain::usage`/`io::usage` headers: run 20260730T015003Z-03f66 failed this feature's prose for duplicating `docs/harness-usage.md`, commit bfe10aa deferred to it, and run 20260730T022546Z-ea300 failed both that deferral and this header.
+// llmlint: ignore-block[comments_earn_their_place] The two properties stated here — honest fleet coverage, and no probe failure taking the command down — are what every function below preserves; deferring them to `docs/harness-usage.md` is what `no_redundant_instruction_pointers` forbids.
 //! `oneharness usage` — report each harness identity's remaining subscription
 //! headroom, without spending a model turn.
 //!

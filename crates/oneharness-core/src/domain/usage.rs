@@ -1,4 +1,4 @@
-// llmlint: ignore-block[comments_earn_their_place] Contradictory rules, so no wording passes both: run 20260730T015003Z-03f66 failed this feature's prose for duplicating `docs/harness-usage.md`, commit bfe10aa deferred to that document as the run asked, and run 20260730T022546Z-ea300 then failed both the deferral and this header for repeating it.
+// llmlint: ignore-block[comments_earn_their_place] The normalizations and unrepresentable states below are constraints on this module's own types, so the header states them; deferring them to `docs/harness-usage.md` and pointing at it is what `no_redundant_instruction_pointers` forbids.
 // llmlint: ignore[contracts_have_one_source_or_a_drift_gate] Each payload's gate lives with it: codex's schema is snapshotted and diffed (`scripts/check-codex-usage-schema.sh`), Claude's is `claude_usage_drift`, and Copilot's undocumented endpoint degrades to `Unknown`. See `docs/harness-usage.md`.
 //! Normalized subscription **headroom**: the shape of a `oneharness usage`
 //! report and one parser per harness payload. Pure — every parser takes an

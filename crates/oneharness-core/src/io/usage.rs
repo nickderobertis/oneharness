@@ -53,9 +53,17 @@ pub const CURSOR_LOGIN_ENVS: &[&str] = &["CURSOR_API_KEY"];
 
 /// The GitHub API base for the Copilot probe. Overridable with
 /// `ONEHARNESS_COPILOT_API_BASE` for a GitHub Enterprise host (and for the
-/// hermetic tests, which point it at a local server).
+/// hermetic tests, which point it at a local server). Must be HTTPS unless it
+/// names a loopback host — see [`COPILOT_PLAINTEXT_HOSTS`].
 pub const COPILOT_API_BASE_ENV: &str = "ONEHARNESS_COPILOT_API_BASE";
 const COPILOT_API_BASE_DEFAULT: &str = "https://api.github.com";
+/// The only hosts a plaintext `http://` base may name. The request carries the
+/// GitHub token in an `Authorization` header, so any other plaintext host would
+/// put a live credential on the wire in the clear — a misconfigured base is a
+/// refused probe, never a leaked token. Loopback stays permitted because that
+/// traffic never leaves the machine, which is what the hermetic tests point the
+/// probe at.
+const COPILOT_PLAINTEXT_HOSTS: &[&str] = &["127.0.0.1", "localhost", "[::1]"];
 /// The program that performs the Copilot HTTP GET. curl is used rather than an
 /// in-process TLS stack so the engine keeps its lean dependency tree; when it is
 /// absent the probe reports that as data, like any other probe failure.
@@ -548,10 +556,11 @@ fn probe_copilot(request: &UsageProbeRequest) -> ProbedIdentity {
 /// curl's own config grammar.
 fn copilot_config(base: &str, token: &str) -> Result<String, String> {
     let base = base.trim_end_matches('/');
-    if !(base.starts_with("https://") || base.starts_with("http://")) || !is_config_safe(base) {
+    if !carries_the_token_safely(base) || !is_config_safe(base) {
         return Err(format!(
-            "{COPILOT_API_BASE_ENV} must be an http(s) URL with no quotes, backslashes, \
-             whitespace, or control characters (got `{base}`)"
+            "{COPILOT_API_BASE_ENV} must be an HTTPS URL (plaintext http:// only for a \
+             loopback host) with no quotes, backslashes, whitespace, or control \
+             characters (got `{base}`)"
         ));
     }
     if !is_config_safe(token) {
@@ -572,6 +581,25 @@ fn copilot_config(base: &str, token: &str) -> Result<String, String> {
          write-out = \"\\n{COPILOT_STATUS_MARKER}%{{http_code}}\\n\"\n",
         env!("CARGO_PKG_VERSION")
     ))
+}
+
+/// Whether this base may carry the bearer token: HTTPS anywhere, plaintext only
+/// to a loopback host ([`COPILOT_PLAINTEXT_HOSTS`]). The host is the authority
+/// up to the first `/`, minus a numeric port — so `http://127.0.0.1@elsewhere`
+/// is the host `elsewhere` names it as, not loopback.
+fn carries_the_token_safely(base: &str) -> bool {
+    if base.starts_with("https://") {
+        return true;
+    }
+    let Some(authority) = base.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = authority.split('/').next().unwrap_or_default();
+    let host = authority
+        .rsplit_once(':')
+        .filter(|(_, port)| !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()))
+        .map_or(authority, |(host, _)| host);
+    COPILOT_PLAINTEXT_HOSTS.contains(&host)
 }
 
 fn is_config_safe(value: &str) -> bool {
@@ -875,6 +903,39 @@ mod tests {
 
         assert!(copilot_config("ftp://elsewhere", "ghs_abc").is_err());
         assert!(copilot_config("https://a b", "ghs_abc").is_err());
+    }
+
+    /// The token rides an `Authorization` header, so plaintext reaches only a
+    /// host the packets never leave the machine to get to.
+    #[test]
+    fn only_https_or_a_loopback_base_may_carry_the_bearer_token() {
+        for permitted in [
+            "https://api.github.com",
+            "https://ghe.internal.example",
+            "http://127.0.0.1:8080",
+            "http://localhost:1/x",
+            "http://[::1]:4321",
+            "http://[::1]",
+        ] {
+            assert!(
+                copilot_config(permitted, "ghs_abc").is_ok(),
+                "`{permitted}` keeps the token off the clear wire"
+            );
+        }
+        for refused in [
+            "http://api.github.com",
+            "http://ghe.internal.example:8080",
+            "http://127.0.0.1@evil.example",
+            "http://localhost.evil.example",
+            "http://127.0.0.1:notaport",
+        ] {
+            let error =
+                copilot_config(refused, "ghs_abc").expect_err("`{refused}` must not be probed");
+            assert!(
+                error.contains("HTTPS"),
+                "the refusal must say what is required: {error}"
+            );
+        }
     }
 
     #[test]

@@ -1419,7 +1419,9 @@ token comes from `COPILOT_GITHUB_TOKEN`, then `GH_TOKEN`, then `GITHUB_TOKEN`
 (Copilot's own documented precedence); with none of them set, the result is
 `unknown` naming the variables rather than a claim about headroom. The probe
 shells out to `curl` (the token rides its stdin config, never the argv), and
-`ONEHARNESS_COPILOT_API_BASE` points it at a GitHub Enterprise host.
+`ONEHARNESS_COPILOT_API_BASE` points it at a GitHub Enterprise host — an HTTPS
+one, since the request carries the token: a plaintext `http://` base is refused
+as a named probe failure unless it names a loopback host.
 
 **Both upstream payloads are experimental**, so the drift guards are explicit:
 codex's contract is snapshotted from `codex app-server generate-json-schema` and

@@ -14665,6 +14665,49 @@ fn usage_refuses_a_copilot_api_base_that_could_be_injected() {
 }
 
 #[test]
+fn usage_refuses_a_plaintext_copilot_api_base_that_would_expose_the_token() {
+    // The probe sends the GitHub token as a bearer header, so a plaintext base
+    // would put a live credential on the wire for anything between here and the
+    // host. A misconfigured (or attacker-suggested) base is refused before the
+    // fetch and reported as a named probe failure — never a quiet plaintext GET.
+    //
+    // No curl gate: the refusal happens before the HTTP client is spawned.
+    for base in [
+        "http://api.github.com",
+        "http://ghe.internal.example:8080",
+        // Loopback is the only plaintext exception, and userinfo does not make a
+        // remote host into one.
+        "http://127.0.0.1@evil.example",
+    ] {
+        let output = run_copilot_usage(
+            &["usage", "--harness", "copilot", "--compact"],
+            &[
+                ("ONEHARNESS_COPILOT_API_BASE", base),
+                ("GH_TOKEN", "ghs_hermetic_token"),
+            ],
+        );
+
+        assert!(output.status.success(), "exit {:?}", output.status.code());
+        let copilot = usage_identity(&json_stdout(&output), "copilot");
+        assert_eq!(
+            copilot["availability"]["state"], "unknown",
+            "`{base}` must not be probed"
+        );
+        let message = copilot["availability"]["reason"]["message"]
+            .as_str()
+            .expect("a message");
+        assert!(
+            message.contains("ONEHARNESS_COPILOT_API_BASE") && message.contains("HTTPS"),
+            "the message must name the variable and what it requires: {message}"
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains("ghs_hermetic_token"),
+            "a credential must never reach the report"
+        );
+    }
+}
+
+#[test]
 fn usage_refuses_a_copilot_token_carrying_config_syntax_without_leaking_it() {
     // The token is interpolated into curl's own config grammar, so one carrying
     // a quote or a newline is refused before any fetch. The refusal is only half

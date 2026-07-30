@@ -1,4 +1,4 @@
-// llmlint: ignore-block[comments_earn_their_place] This exact header is the span the two rules contradicted each other over. Run 20260730T015003Z-03f66 failed `comments_earn_their_place` because it re-listed every probe's observed exchange from `docs/harness-usage.md`; commit bfe10aa cut it down to the local constraint plus a pointer to that document, and run 20260730T022546Z-ea300 then failed the same rule for "repeating" the document it now merely points at — while `no_redundant_instruction_pointers` failed the pointer itself. Neither restating nor deferring passes, so the zero-turn property that constrains every invocation below stays stated here.
+// llmlint: ignore-block[comments_earn_their_place] Contradictory rules on this exact header: run 20260730T015003Z-03f66 failed it for re-listing `docs/harness-usage.md`, commit bfe10aa cut it to a pointer at that document, and run 20260730T022546Z-ea300 failed it again for repeating what it now only points at.
 //! The zero-turn subscription-headroom probes.
 //!
 //! Every probe here reads a harness's plan headroom **without the harness taking

@@ -13605,6 +13605,38 @@ fn usage_gives_up_on_a_harness_that_never_answers_without_waiting_for_its_exit()
 }
 
 #[test]
+fn mock_harness_refuses_a_reply_delay_it_could_never_wait_out() {
+    // The scripted delay becomes an `Instant` deadline, so a value near u64::MAX
+    // is both a wait no run outlasts and a sum that can leave the platform
+    // clock's range, where `Instant + Duration` panics. Either way it is a typo,
+    // and it reaches a shipped subcommand through the environment: the range
+    // belongs where the value is read, in a message that names it.
+    let output = run(
+        &["mock-harness"],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "1"),
+            ("MOCK_REPLY_DELAY_MS", "18446744073709551615"),
+        ],
+    );
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "an out-of-range delay is a usage error, not a crash: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("MOCK_REPLY_DELAY_MS") && stderr.contains("from 0 to 600000"),
+        "the refusal has to name the accepted range: {stderr}"
+    );
+    assert!(
+        stderr.contains("18446744073709551615"),
+        "the refusal has to name the value it rejected: {stderr}"
+    );
+}
+
+#[test]
 fn usage_contains_a_panicking_probe_to_its_own_identity() {
     // A report is the deliverable, so one misbehaving harness must cost exactly
     // its own reading — losing seven identities because the eighth crashed is

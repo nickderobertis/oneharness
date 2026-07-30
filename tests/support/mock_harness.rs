@@ -40,6 +40,7 @@
 //!                   closes first. This is the codex `app-server` behavior, and
 //!                   the only way a test can tell a caller that holds stdin open
 //!                   for its answer from one that closes the pipe behind it.
+//!                   Accepted range: 0 to 600000 ms.
 //!   MOCK_ECHO_STDIN if set, read ALL of stdin and write it verbatim to stdout,
 //!                   then exit — proving a prompt delivered on the child's stdin
 //!                   (the large-prompt escape hatch) actually arrived, and with
@@ -93,6 +94,12 @@ use std::io::Write;
 /// own window. A caller writes its whole exchange up front, so an extra line is
 /// already in the pipe; this only has to outlast the scheduling of one read.
 const EXTRA_REQUEST_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The largest reply delay `MOCK_REPLY_DELAY_MS` accepts. A scripted delay only
+/// has to outlast a probe's own timeout, so ten minutes is far past any real
+/// use, while any larger value is a typo that would otherwise overflow the
+/// `Instant` deadline the delay becomes.
+const MAX_REPLY_DELAY_MS: u64 = 600_000;
 
 /// Read `wanted` newline-terminated request lines from stdin, then keep
 /// listening for a window, and report whether stdin reached EOF.
@@ -415,16 +422,24 @@ pub fn run() -> ! {
             let _ = std::io::stderr().flush();
             std::process::exit(2);
         };
-        let Ok(delay) = std::env::var("MOCK_REPLY_DELAY_MS")
-            .unwrap_or_else(|_| "0".to_string())
-            .parse::<u64>()
-        else {
-            let _ = write!(
-                std::io::stderr(),
-                "mock harness: MOCK_REPLY_DELAY_MS must be a whole number of milliseconds"
-            );
-            let _ = std::io::stderr().flush();
-            std::process::exit(2);
+        // Bounded, not merely numeric: the delay becomes an `Instant` deadline
+        // further down, and `Instant + Duration` panics rather than saturates
+        // once the sum leaves the platform clock's range. Refusing the value
+        // here makes a mistyped knob one legible message on every platform,
+        // instead of a crash on some and a wait no run outlasts on the rest.
+        let raw_delay = std::env::var("MOCK_REPLY_DELAY_MS").unwrap_or_else(|_| "0".to_string());
+        let delay = match raw_delay.parse::<u64>() {
+            Ok(delay) if delay <= MAX_REPLY_DELAY_MS => delay,
+            _ => {
+                let _ = write!(
+                    std::io::stderr(),
+                    "mock harness: MOCK_REPLY_DELAY_MS must be a whole number of milliseconds \
+                     from 0 to {MAX_REPLY_DELAY_MS} ({} minutes), got `{raw_delay}`",
+                    MAX_REPLY_DELAY_MS / 60_000
+                );
+                let _ = std::io::stderr().flush();
+                std::process::exit(2);
+            }
         };
         let record = std::env::var("MOCK_REQUEST_FILE").ok();
         let (requests, saw_eof) = read_requests(wanted, delay, record.is_some());

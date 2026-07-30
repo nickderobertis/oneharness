@@ -24,7 +24,7 @@ default:
 bootstrap:
     rustup component add rustfmt clippy llvm-tools-preview
     cargo fetch --locked
-    bun install --cwd npm/oneharness-sdk --frozen-lockfile
+    @just sdk-install
     ./scripts/setup-llmlint.sh
     git config core.hooksPath .githooks
 
@@ -72,6 +72,7 @@ lint-workflows: build build-mock-harness
     @bash scripts/check-publish-crates.sh >/dev/null
     @bash scripts/check-publish-npm.sh >/dev/null
     @bash scripts/check-local-gate.sh >/dev/null
+    @bash scripts/check-sdk-install.sh >/dev/null
     @bash scripts/check-build-mock-harness.sh >/dev/null
     @bash scripts/e2e-variants-test.sh >/dev/null
     @echo 'lint-workflows: ok'
@@ -163,8 +164,16 @@ upgrade:
 sdk-generate:
     bun run --cwd npm/oneharness-sdk generate
 
+# Install the Node SDK's dependencies into *this* checkout — the one per-checkout
+# artifact `bootstrap` creates, and gitignored, so `sdk-check` must depend on it
+# rather than assume a bootstrapped caller. Runs on every gate, so it stays quiet
+# on success; bun's `--silent` would drop failure reasons too, hence the capture.
+# Enforced by scripts/check-sdk-install.sh.
+sdk-install:
+    @out=$(bun install --cwd npm/oneharness-sdk --frozen-lockfile 2>&1) || { printf '%s\n' "$out" >&2; echo "Node SDK dependency install failed; the bun output above says why. If npm/oneharness-sdk/package.json changed, refresh the lockfile with 'bun install --cwd npm/oneharness-sdk'; otherwise check network access to the npm registry and rerun 'just sdk-install'." >&2; exit 1; }
+
 # Strict Node SDK gate, including the Rust->TypeScript drift check and real CLI e2e.
-sdk-check: build build-mock-harness
+sdk-check: build build-mock-harness sdk-install
     bun run --cwd npm/oneharness-sdk generate:check
     bun run --cwd npm/oneharness-sdk format:check
     bun run --cwd npm/oneharness-sdk lint

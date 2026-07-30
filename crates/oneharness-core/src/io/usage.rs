@@ -643,6 +643,39 @@ mod tests {
         }
     }
 
+    /// Both docs spell Copilot's token precedence out in prose, which is the
+    /// only place a reader learns which variable wins. Adding or reordering one
+    /// in [`COPILOT_TOKEN_ENVS`] would leave that prose confidently wrong, so
+    /// the ordered list is generated from the constant and searched for.
+    #[test]
+    fn documented_copilot_token_precedence_tracks_the_constant() {
+        // Prose wraps across lines, so compare on collapsed whitespace.
+        fn collapsed(text: &str) -> String {
+            text.split_whitespace().collect::<Vec<_>>().join(" ")
+        }
+        fn joined(separator: &str) -> String {
+            COPILOT_TOKEN_ENVS
+                .iter()
+                .map(|env| format!("`{env}`"))
+                .collect::<Vec<_>>()
+                .join(separator)
+        }
+
+        let reference = collapsed(include_str!("../../../../docs/harness-usage.md"));
+        let precedence = joined(" > ");
+        assert!(
+            reference.contains(&precedence),
+            "docs/harness-usage.md must state the precedence as `{precedence}`"
+        );
+
+        let readme = collapsed(include_str!("../../../../README.md"));
+        let prose = joined(", then ");
+        assert!(
+            readme.contains(&prose),
+            "README.md must state the precedence as `{prose}`"
+        );
+    }
+
     #[test]
     fn a_library_caller_gets_the_documented_timeout_ceiling_too() {
         // `probe` is public API, so the ceiling has to be enforced here rather

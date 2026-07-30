@@ -33,11 +33,6 @@ use oneharness_core::io::config as config_io;
 use oneharness_core::io::detect::{self, BinOverrides};
 use oneharness_core::io::usage::{self as usage_io, EnvView, UsageProbeRequest};
 
-/// Per-probe timeout when none is given. Generous next to the single-digit
-/// seconds a probe's session startup takes, because the cost of being too tight
-/// is a spurious "unknown" for a user who does have headroom.
-const DEFAULT_TIMEOUT_SECS: u64 = 60;
-
 /// Probes run concurrently: identity selection is per-process for every harness
 /// here, so nothing is shared between them. Bounded so a `--all` sweep on a
 /// small machine does not start eight subprocesses at once.
@@ -69,7 +64,7 @@ pub fn run(args: &UsageArgs) -> Result<i32, OneharnessError> {
         }
     }
     let overrides = BinOverrides::parse(&args.bin)?.with_config_bins(config_bins(&loaded.config));
-    let timeout = Duration::from_secs(args.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS));
+    let timeout = Duration::from_secs(args.timeout);
 
     // One plan per selected identity, built before any probe runs so a config
     // fault fails loudly up front rather than half way through a sweep.
@@ -160,9 +155,7 @@ impl Plan {
                 self.base,
                 usage_io::selector_for(Some(probe), &env),
                 oneharness_core::domain::usage::ParsedUsage::unknown(
-                    UnknownReason::BinaryMissing {
-                        bin: self.bin.clone(),
-                    },
+                    UnknownReason::binary_missing(&self.bin),
                 ),
             );
         }

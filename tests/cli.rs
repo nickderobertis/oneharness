@@ -13990,6 +13990,65 @@ fn usage_text_view_neutralizes_terminal_escapes_in_every_display_string_it_print
 }
 
 #[test]
+fn usage_text_view_neutralizes_terminal_escapes_in_a_missing_binary_name() {
+    // The one display string that comes from the *caller* rather than a payload:
+    // an absent `--bin` is echoed back in the "not installed" line, so a name
+    // out of a config file carries the same hazard a harness's own output does.
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "claude-code",
+            "--bin",
+            "claude-code=/nonexistent/cl\u{1b}[2Jaude\u{7}",
+            "--format",
+            "text",
+        ],
+        &[],
+    );
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let text = String::from_utf8_lossy(&output.stdout);
+    let surviving: Vec<char> = text
+        .chars()
+        .filter(|c| c.is_control() && *c != '\n')
+        .collect();
+    assert!(
+        surviving.is_empty(),
+        "no control byte from a binary override may reach the rendered report: \
+         {surviving:?} in {text:?}"
+    );
+    assert!(
+        text.contains("is not installed"),
+        "the readable reason must survive: {text:?}"
+    );
+}
+
+/// The README documents the per-probe default in prose, which is where a reader
+/// learns it — clap renders the same number from
+/// [`oneharness::cli::USAGE_DEFAULT_TIMEOUT_SECS`], so tie the two together
+/// rather than letting a changed default leave the docs confidently wrong.
+#[test]
+fn documented_usage_timeout_default_tracks_the_flag_constant() {
+    let documented = format!(
+        "(per probe, default {})",
+        oneharness::cli::USAGE_DEFAULT_TIMEOUT_SECS
+    );
+    assert!(
+        include_str!("../README.md").contains(&documented),
+        "README.md must state the per-probe timeout as `{documented}`"
+    );
+
+    let help = run(&["usage", "--help"], &[]);
+    let text = String::from_utf8_lossy(&help.stdout);
+    let rendered = format!("[default: {}]", oneharness::cli::USAGE_DEFAULT_TIMEOUT_SECS);
+    assert!(
+        text.contains(&rendered),
+        "`--help` must render the same default: {text}"
+    );
+}
+
+#[test]
 fn usage_rejects_an_unknown_harness_and_an_undeclared_variant() {
     let unknown = run(&["usage", "--harness", "nope", "--compact"], &[]);
     assert_eq!(unknown.status.code(), Some(2));

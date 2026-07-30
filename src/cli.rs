@@ -163,6 +163,14 @@ pub enum Command {
     Usage(UsageArgs),
 }
 
+/// Per-probe timeout when `--timeout` is not given. Generous next to the
+/// single-digit seconds a probe's session startup takes, because the cost of
+/// being too tight is a spurious "unknown" for a user who does have headroom.
+///
+/// Clap applies and renders it, so the value, the `--help` text, and the
+/// documented default all read from here.
+pub const USAGE_DEFAULT_TIMEOUT_SECS: u64 = 60;
+
 #[derive(Args, Debug)]
 pub struct UsageArgs {
     /// Probe every supported harness (the default when none are named).
@@ -188,19 +196,21 @@ pub struct UsageArgs {
     #[arg(long, value_name = "DIR")]
     pub cwd: Option<PathBuf>,
 
-    /// Per-probe timeout in seconds (default 60, max 3600). A probe that exceeds
-    /// it is reported as unknown, never as headroom.
+    /// Per-probe timeout in seconds. A probe that exceeds it is reported as
+    /// unknown, never as headroom.
     ///
-    /// The maximum is the engine's own ceiling, so the flag rejects what the
-    /// probe would clamp rather than silently accepting a value it will not
-    /// honor.
+    /// Clap renders the default from [`USAGE_DEFAULT_TIMEOUT_SECS`] and rejects
+    /// anything past the engine's own ceiling
+    /// ([`oneharness_core::io::usage::MAX_TIMEOUT_SECS`], named in the rejection),
+    /// so neither bound is restated here to drift from.
     #[arg(
         long,
         value_name = "SECS",
+        default_value_t = USAGE_DEFAULT_TIMEOUT_SECS,
         value_parser = clap::value_parser!(u64)
             .range(1..=oneharness_core::io::usage::MAX_TIMEOUT_SECS)
     )]
-    pub timeout: Option<u64>,
+    pub timeout: u64,
 
     /// Load configuration from this file only (skip user/project discovery).
     #[arg(long, value_name = "PATH", conflicts_with = "no_config")]

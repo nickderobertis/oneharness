@@ -254,7 +254,24 @@ pub enum UnknownReason {
     /// The harness's binary is not installed, so its probe could not run. The
     /// harness may well have headroom; this identity simply has no reader on
     /// this machine. Mirrors a run's `skipped` status: data, never a crash.
+    /// Build it with [`UnknownReason::binary_missing`].
     BinaryMissing { bin: String },
+}
+
+impl UnknownReason {
+    /// The reason for an identity whose harness binary is absent, from the
+    /// resolved binary name.
+    ///
+    /// The name comes from `--bin` or a config file, and `usage --format text`
+    /// prints it verbatim, so it is flattened here — at the one point it becomes
+    /// a display string — for the same reason every other external string this
+    /// module bounds is (see [`without_control_chars`]).
+    #[must_use]
+    pub fn binary_missing(bin: &str) -> Self {
+        Self::BinaryMissing {
+            bin: without_control_chars(bin),
+        }
+    }
 }
 
 /// A non-empty list of windows. The non-emptiness is the invariant that keeps

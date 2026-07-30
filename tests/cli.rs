@@ -13873,6 +13873,66 @@ fn usage_refuses_an_exclude_it_could_not_apply() {
 }
 
 #[test]
+fn usage_refuses_all_together_with_an_explicit_harness() {
+    // `usage` already sweeps every harness when none is named, so `--all` beside
+    // `--harness` states two selections at once. Honouring either silently would
+    // report headroom for a fleet the caller did not ask about, or drop identities
+    // they did — and the report is an attribution contract, so it is refused.
+    let output = run(&["usage", "--all", "--harness", "goose", "--compact"], &[]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "stdout {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--all") && stderr.contains("--harness"),
+        "the refusal must name both flags: {stderr}"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "no report may be emitted for a selection that was refused"
+    );
+}
+
+#[test]
+fn usage_refuses_a_config_path_together_with_no_config() {
+    // One flag names the only file to read and the other says to read none, so a
+    // winner picked either way leaves the caller unable to tell which layering
+    // produced the identities they are looking at.
+    let fx = ConfigFixture::new("usage-config-conflict", "", "");
+    let config = fx.user_config();
+    let output = run(
+        &[
+            "usage",
+            "--config",
+            &config.display().to_string(),
+            "--no-config",
+            "--compact",
+        ],
+        &[],
+    );
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "stdout {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--config") && stderr.contains("--no-config"),
+        "the refusal must name both flags: {stderr}"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "no report may be emitted for a configuration that was refused"
+    );
+}
+
+#[test]
 fn usage_keeps_each_reading_with_the_identity_that_produced_it() {
     // Every plan is built by pairing the selected ids with the resolved specs
     // positionally, so anything that could shorten or reorder one list without

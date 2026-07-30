@@ -538,4 +538,106 @@ mod tests {
         assert!(text.contains("13518 of 1500 AI credits used"), "{text}");
         assert!(text.contains("exhausted and blocked"), "{text}");
     }
+
+    /// A report read back from JSON never passed the probe parsers that flatten
+    /// their own strings, and `oneharness-core` is published — so a consumer can
+    /// be handed one written by anything. Every string it carries reaches this
+    /// text view, which is what a human reads to decide whether they have
+    /// headroom, so an escape sequence in a harness id or a failure message must
+    /// not survive deserialization to move the cursor or recolour the report.
+    #[test]
+    fn escape_sequences_in_a_deserialized_report_never_reach_the_text_view() {
+        let json = serde_json::json!({
+            "schema_version": "0.1",
+            "observed_at": "2026-07-29T12:00:00Z",
+            "identities": [
+                {
+                    "harness": "claude\u{1b}[31m-code",
+                    "variant": "work\u{7}",
+                    "selector": {
+                        "kind": "env_path",
+                        "env": "CLAUDE_CONFIG\u{1b}[2J_DIR",
+                        "path": "/home/u/.claude\r/x",
+                    },
+                    "auth_mode": "subscription",
+                    "plan": "ma\u{9b}31mx",
+                    "availability": {
+                        "state": "available",
+                        "windows": [{
+                            "id": "five\u{1b}[A_hour",
+                            "label": "5\u{1b}[1m hours",
+                            "usage": {"kind": "metered", "used_percent": 42.0},
+                            "window_seconds_source": "inferred_from_id",
+                            "window_seconds": 18000,
+                            "resets_at": "2026-07-29T18:30:00Z\u{1b}[2K",
+                            "scope": "Opus\u{1b}[0m 5",
+                        }],
+                    },
+                },
+                {
+                    "harness": "codex",
+                    "selector": {"kind": "env_secret", "env": "GH\u{1b}[35m_TOKEN"},
+                    "auth_mode": "unknown",
+                    "availability": {
+                        "state": "unknown",
+                        "reason": {
+                            "kind": "probe_failed",
+                            "message": "the probe failed\u{1b}[1;31m and said so\u{8}",
+                        },
+                    },
+                },
+                {
+                    "harness": "crush",
+                    "selector": {"kind": "ambient"},
+                    "auth_mode": "unknown",
+                    "availability": {
+                        "state": "unknown",
+                        "reason": {"kind": "binary_missing", "bin": "cru\u{1b}[7msh"},
+                    },
+                },
+            ],
+        })
+        .to_string();
+        let report: UsageReport =
+            serde_json::from_str(&json).expect("the report deserializes with the current types");
+
+        let text = render_text(&report);
+
+        // Newlines are the renderer's own; nothing else may be a control byte.
+        let smuggled: Vec<char> = text
+            .chars()
+            .filter(|c| c.is_control() && *c != '\n')
+            .collect();
+        assert!(
+            smuggled.is_empty(),
+            "a deserialized report smuggled {smuggled:?} into the text view:\n{text:?}"
+        );
+        // The readable content survives: sanitizing flattens, never discards.
+        for readable in [
+            "claude",
+            "-code",
+            ":work",
+            "CLAUDE_CONFIG",
+            "_DIR=/home/u/.claude",
+            "plan ma",
+            "31mx",
+            "five",
+            "_hour",
+            "5",
+            " hours",
+            "42% used",
+            "resets 2026-07-29T18:30:00Z",
+            "GH",
+            "_TOKEN=<secret>",
+            "the probe failed",
+            "and said so",
+            "`cru",
+            "sh` is not installed",
+        ] {
+            assert!(
+                text.contains(readable),
+                "`{readable}` must survive sanitization:\n{text}"
+            );
+        }
+    }
 }

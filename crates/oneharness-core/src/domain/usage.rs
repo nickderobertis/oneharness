@@ -147,7 +147,12 @@ fn canonical_utc_instant(text: &str) -> Option<String> {
 }
 
 /// One harness identity's headroom.
+///
+/// Deserializing is a consumer boundary like the envelope's, so every string an
+/// identity carries is flattened through [`without_control_chars`] on the way in
+/// — see [`UsageIdentityWire`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "UsageIdentityWire")]
 pub struct UsageIdentity {
     // llmlint: ignore[invalid_states_unrepresentable] `RunResult::harness` and `HistoryRunRecord::harness` are the established representation for a registry id on the wire, and matching them is what lets a consumer join a usage identity to a run; a newtype here would make this one contract spell it differently from every sibling.
     /// Canonical harness id, matching a [`crate::domain::harness`] registry id.
@@ -192,6 +197,88 @@ impl UsageIdentity {
     pub fn with_variant(mut self, variant: Option<String>) -> Self {
         self.variant = variant;
         self
+    }
+}
+
+/// The unsanitized wire shape a [`UsageIdentity`] is deserialized *through*.
+///
+/// A probe's own strings are flattened where they are first bounded (see
+/// [`without_control_chars`]), but a report arriving as JSON never passed those
+/// parsers: `oneharness-core` is published, so a sibling tool reads reports it
+/// did not produce. Flattening here — the one point an identity can enter from
+/// outside — keeps the two paths from drifting, so `usage --format text` cannot
+/// be made to move the cursor or recolour its output by a report that carries
+/// terminal escapes in a harness id, a plan name, or a failure message.
+///
+/// The readable text is kept: each control character becomes a space, so a
+/// reader still sees what the report said.
+#[derive(Deserialize)]
+struct UsageIdentityWire {
+    harness: String,
+    #[serde(default)]
+    variant: Option<String>,
+    selector: IdentitySelector,
+    auth_mode: AuthMode,
+    #[serde(default)]
+    plan: Option<String>,
+    availability: UsageAvailability,
+}
+
+impl From<UsageIdentityWire> for UsageIdentity {
+    fn from(wire: UsageIdentityWire) -> Self {
+        let mut identity = Self {
+            harness: wire.harness,
+            variant: wire.variant,
+            selector: wire.selector,
+            auth_mode: wire.auth_mode,
+            plan: wire.plan,
+            availability: wire.availability,
+        };
+        flatten_identity(&mut identity);
+        identity
+    }
+}
+
+/// Flatten the control characters out of every string an identity carries,
+/// in place — mutating rather than rebuilding keeps [`Windows`]'s non-emptiness
+/// invariant intact by construction.
+fn flatten_identity(identity: &mut UsageIdentity) {
+    flatten(&mut identity.harness);
+    flatten_optional(&mut identity.variant);
+    flatten_optional(&mut identity.plan);
+    match &mut identity.selector {
+        IdentitySelector::EnvPath { env, path } => {
+            flatten(env);
+            flatten(path);
+        }
+        IdentitySelector::EnvSecret { env } => flatten(env),
+        IdentitySelector::Ambient => {}
+    }
+    match &mut identity.availability {
+        UsageAvailability::Available { windows } => {
+            for window in &mut windows.0 {
+                flatten(&mut window.id);
+                flatten_optional(&mut window.label);
+                flatten_optional(&mut window.resets_at);
+                flatten_optional(&mut window.scope);
+            }
+        }
+        UsageAvailability::Unavailable { .. } => {}
+        UsageAvailability::Unknown { reason } => match reason {
+            UnknownReason::ProbeFailed { message } => flatten(message),
+            UnknownReason::BinaryMissing { bin } => flatten(bin),
+            UnknownReason::Unprobed => {}
+        },
+    }
+}
+
+fn flatten(text: &mut String) {
+    *text = without_control_chars(text);
+}
+
+fn flatten_optional(text: &mut Option<String>) {
+    if let Some(text) = text {
+        flatten(text);
     }
 }
 

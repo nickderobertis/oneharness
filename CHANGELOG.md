@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/nickderobertis/oneharness/compare/v0.5.11...v0.6.0) - 2026-07-30
+
+### Added
+
+- [**breaking**] omit absent usage fields from the wire and pin the v0.1 golden;… ([#1198](https://github.com/nickderobertis/oneharness/pull/1198))
+
 ## [0.5.11](https://github.com/nickderobertis/oneharness/compare/v0.5.10...v0.5.11) - 2026-07-30
 
 ### Fixed

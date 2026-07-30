@@ -69,7 +69,8 @@ FAKE
     printf '%s' "$bin"
 }
 
-# Run the gate with `$1` as the only PATH entry ahead of a minimal system PATH.
+# Trimmed to `$1` plus the system essentials so the scripted `codex` is the only
+# one the gate can resolve, and returns the gate's status instead of aborting.
 run_gate() {
     local extra_path="$1" out="$2"
     set +e

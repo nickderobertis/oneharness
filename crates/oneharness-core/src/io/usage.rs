@@ -4,20 +4,10 @@
 //! a model turn** — no user message is written and no turn is completed. That is
 //! the property that makes `oneharness usage` usable as a pre-flight check
 //! rather than a thing that costs what it measures, and it is a property of the
-//! *invocations below*, so any change to one has to preserve it:
-//!
-//! - **claude-code** — driven in stream-json input/output mode with an empty
-//!   tool set, sent exactly one `get_usage` control request, read for the
-//!   matching control response, then terminated. Observed to report
-//!   `num_turns: 0` / `total_cost_usd: 0` because no user message is ever sent.
-//! - **codex** — `codex app-server --stdio`, driven `initialize` →
-//!   `initialized` → `account/rateLimits/read`. Its two distinct authentication
-//!   error strings are discriminated by [`crate::domain::usage`].
-//! - **copilot** — an out-of-band authenticated `GET /copilot_internal/user`,
-//!   which needs no Copilot binary at all: a GitHub bearer token is the entire
-//!   credential requirement.
-//! - **cursor** — `about --format json`, read for the plan tier only, and only
-//!   from a **pre-existing** login (see [`CURSOR_LOGIN_ENVS`]).
+//! *invocations below*: changing one means re-establishing it. Each probe's
+//! observed exchange, and the evidence that it takes no turn, is
+//! `docs/harness-usage.md` — including the Cursor credential hazard
+//! [`CURSOR_LOGIN_ENVS`] guards against.
 //!
 //! Parsing is pure and lives in [`crate::domain::usage`]; this module only
 //! spawns, writes, reads, and hands bytes over. Every failure — a missing
@@ -212,7 +202,6 @@ fn copilot_token_env(env: &EnvView<'_>) -> Option<(&'static str, String)> {
         .find_map(|name| env.get(name).map(|value| (*name, value)))
 }
 
-/// What one probe subprocess produced.
 struct ProbeCapture {
     /// The answer an `on_line` callback recognized, if any.
     answer: Option<ParsedUsage>,

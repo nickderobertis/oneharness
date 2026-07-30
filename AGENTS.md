@@ -174,15 +174,15 @@ Use the `just` recipes; do not hand-roll equivalents.
   tree scans. `clear` is a dry run until `--yes`. History paths are canonicalized
   before writing so `cwd=..` remains discoverable.
   `usage` is the pre-flight verb: subscription headroom per identity, on its own
-  output contract. Parsers are pure (`domain::usage`), probes are I/O
-  (`io::usage`). A probe must be **zero-turn** — no user message, no completed
-  turn — because a pre-flight check that spends quota defeats itself. The
-  upstream payloads are experimental and mostly decide their verdict from a
-  field's *absence*, so each parser runs its own drift guard and an unrecognized
-  shape degrades to *unknown*; a confident wrong headroom number is silent where
-  a crash is loud. The Cursor path must keep masking `CURSOR_API_KEY` from its
-  child: passing it turns the probe into a *login* that persists credentials to
-  the shared store, a hazard any future Cursor dispatch also hits.
+  output contract, parsers pure (`domain::usage`) and probes I/O (`io::usage`).
+  Three constraints are load-bearing; every observed payload and exchange behind
+  them lives in `docs/harness-usage.md`. A probe must be **zero-turn** — no user
+  message, no completed turn — because a pre-flight check that spends quota
+  defeats itself. Each parser carries its own drift guard and degrades an
+  unrecognized shape to *unknown*, because a confident wrong headroom number is
+  silent where a crash is loud. And the Cursor probe must keep masking
+  `CURSOR_API_KEY` from its child: passing it authenticates rather than selects,
+  a hazard any future Cursor dispatch also hits.
   `gate <id>` is the odd one out: the runtime pre-tool gate an
   installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It

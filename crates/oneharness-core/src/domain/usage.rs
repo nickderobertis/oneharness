@@ -42,10 +42,22 @@
 //!   an unreadable counter drops the whole set rather than being clamped into a
 //!   plausible figure. `remaining` stays signed — a real deficit past the
 //!   ceiling is the one negative that means something.
+//!
+//! Two more are unrepresentable because a report claiming them while carrying
+//! something else hands a consumer a confidently wrong answer: a timestamp field
+//! is a [`UtcInstant`], so it cannot hold text that is not an RFC 3339 UTC
+//! instant, and a stated window length is a [`NonZeroU64`], so a window can
+//! never claim to be zero seconds long. Both hold at *every* boundary —
+//! construction, parsing, and deserialization.
 // llmlint: ignore-end[comments_earn_their_place]
 
-use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::num::NonZeroU64;
+use std::str::FromStr;
+
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+use thiserror::Error;
 
 use crate::domain::history::{civil_from_epoch, format_rfc3339};
 
@@ -65,16 +77,19 @@ pub const SCHEMA_VERSION: &str = "0.1";
 pub struct UsageReport {
     /// The report shape version ([`SCHEMA_VERSION`]).
     pub schema_version: String,
-    // llmlint: ignore[invalid_states_unrepresentable] RFC 3339 instants are plain strings across every serialized contract in this crate (`report`, `history`, `session`); a bespoke timestamp type here would diverge from all of them, and the invariant is enforced at both boundaries that can violate it — `io`'s single clock read mints it through `format_rfc3339`, and `UsageReportWire` canonicalizes or rejects deserialized text.
-    /// RFC 3339 UTC instant the identities were observed, minted by the io layer.
-    pub observed_at: String,
+    /// The instant the identities were observed, minted by the io layer's single
+    /// clock read. A [`UtcInstant`], so the field cannot be *set* to something
+    /// that is not one — see [`UsageReport::new`].
+    pub observed_at: UtcInstant,
     pub identities: Vec<UsageIdentity>,
 }
 
 impl UsageReport {
-    /// Assemble a report at `observed_at` (RFC 3339 UTC, supplied by the caller).
+    /// Assemble a report at `observed_at`. The type of the argument is the
+    /// enforcement: a caller of the published crate reaches an instant only
+    /// through [`UtcInstant`], which no non-UTC or unparseable text survives.
     #[must_use]
-    pub fn new(observed_at: String, identities: Vec<UsageIdentity>) -> Self {
+    pub fn new(observed_at: UtcInstant, identities: Vec<UsageIdentity>) -> Self {
         Self {
             schema_version: SCHEMA_VERSION.to_string(),
             observed_at,
@@ -115,12 +130,13 @@ impl TryFrom<UsageReportWire> for UsageReport {
                 without_control_chars(&wire.schema_version)
             ));
         }
-        let observed_at = canonical_utc_instant(&wire.observed_at).ok_or_else(|| {
-            format!(
-                "observed_at must be an RFC 3339 UTC instant (`2026-07-29T12:00:00Z`), got `{}`",
-                without_control_chars(&wire.observed_at)
-            )
-        })?;
+        // The same validator public construction goes through, so a deserialized
+        // report and a built one cannot disagree about what the field means. Only
+        // the field's *name* is added here, which serde cannot supply itself.
+        let observed_at = wire
+            .observed_at
+            .parse::<UtcInstant>()
+            .map_err(|error| format!("observed_at {error}"))?;
         Ok(Self {
             schema_version: wire.schema_version,
             observed_at,
@@ -129,21 +145,84 @@ impl TryFrom<UsageReportWire> for UsageReport {
     }
 }
 
-/// `text` as an absolute RFC 3339 UTC instant in [`format_rfc3339`]'s spelling.
-/// `None` when it is not a complete instant, and when its offset is not UTC — a
-/// `+05:30` instant is a real moment, but storing it in a field documented as UTC
-/// would make every consumer that reads the field literally wrong by hours.
-fn canonical_utc_instant(text: &str) -> Option<String> {
-    let offset = text
-        .get(19..)?
-        .trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
-    if !matches!(
-        offset,
-        "Z" | "z" | "+00:00" | "-00:00" | "+0000" | "-0000" | "+00" | "-00"
-    ) {
-        return None;
+/// The error returned when text is not a [`UtcInstant`]. Carries the offending
+/// text, flattened like every other external string this module quotes back
+/// ([`without_control_chars`]), so a bad value cannot smuggle escapes into
+/// whatever prints the refusal.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("must be an RFC 3339 UTC instant (`2026-07-29T12:00:00Z`), got `{0}`")]
+pub struct UtcInstantError(String);
+
+/// An absolute RFC 3339 **UTC** instant, in [`format_rfc3339`]'s spelling.
+///
+/// Every timestamp this report carries is one, and the type is what makes the
+/// documented meaning true at all three boundaries a plain `String` left open:
+/// deserializing a consumer's JSON, parsing a harness payload, and *constructing*
+/// a report — `oneharness-core` is published, so a sibling tool builds reports
+/// this crate never parsed. A field that promises UTC while holding
+/// `2026-07-29T08:00:00-04:00` is wrong by hours with nothing to signal it.
+///
+/// Two ways in, both canonicalizing:
+///
+/// - [`UtcInstant::from_epoch`] for an instant already computed as epoch seconds
+///   (the io layer's clock read, codex's numeric `resetsAt`) — canonical by
+///   construction.
+/// - [`FromStr`] for text that must *already* be UTC, which is the rule for a
+///   field documented as UTC: an equivalent spelling (`+00:00`, a sub-second
+///   fraction) is accepted and normalized, any other offset is refused. A harness
+///   payload legitimately arrives in another offset, and
+///   [`normalize_timestamp`] is the converting entry point for exactly that.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct UtcInstant(String);
+
+impl UtcInstant {
+    /// The instant `secs` seconds after the UNIX epoch.
+    #[must_use]
+    pub fn from_epoch(secs: i64) -> Self {
+        Self(format_rfc3339(secs))
     }
-    normalize_timestamp(text)
+
+    /// The canonical RFC 3339 UTC text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for UtcInstant {
+    type Err = UtcInstantError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let offset = text
+            .get(19..)
+            .unwrap_or_default()
+            .trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
+        if !matches!(
+            offset,
+            "Z" | "z" | "+00:00" | "-00:00" | "+0000" | "-0000" | "+00" | "-00"
+        ) {
+            return Err(UtcInstantError(without_control_chars(text)));
+        }
+        normalize_timestamp(text).ok_or_else(|| UtcInstantError(without_control_chars(text)))
+    }
+}
+
+impl fmt::Display for UtcInstant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<'de> Deserialize<'de> for UtcInstant {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 /// One harness identity's headroom.
@@ -259,7 +338,9 @@ fn flatten_identity(identity: &mut UsageIdentity) {
             for window in &mut windows.0 {
                 flatten(&mut window.id);
                 flatten_optional(&mut window.label);
-                flatten_optional(&mut window.resets_at);
+                // `resets_at` needs no flattening: a [`UtcInstant`] cannot hold a
+                // control character in the first place, so it is refused at the
+                // boundary rather than sanitized after the fact.
                 flatten_optional(&mut window.scope);
             }
         }
@@ -481,11 +562,11 @@ pub struct UsageWindow {
     /// The window's length, paired with where that length came from.
     #[serde(flatten)]
     pub duration: WindowDuration,
-    // llmlint: ignore[invalid_states_unrepresentable] The RFC 3339 invariant is enforced at the only boundary that can violate it: every value here comes from `normalize_timestamp`/`format_rfc3339`, which reject an unparseable or offset-less instant into `None` rather than storing it, and the string spelling matches every sibling timestamp contract.
-    /// When the window resets, always absolute RFC 3339 UTC. Absent when the
-    /// harness reported no reset, or one that could not be normalized.
+    /// When the window resets, always absolute RFC 3339 UTC — a [`UtcInstant`],
+    /// so no other text is representable here. Absent when the harness reported
+    /// no reset, or one that could not be normalized.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resets_at: Option<String>,
+    pub resets_at: Option<UtcInstant>,
     /// The model display name this window is scoped to, when it is scoped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
@@ -637,24 +718,47 @@ pub enum QuotaUnit {
 /// *inferred* from the key name, and for Claude's codename keys it simply
 /// cannot be derived. Serializes flat as `window_seconds_source` plus (except
 /// when unknown) `window_seconds`.
+///
+/// A stated length is a [`NonZeroU64`]: a window zero seconds long is not a
+/// window, so "no length" is [`Self::Unknown`] — the state a consumer already
+/// handles — rather than a `window_seconds` of 0 that a renderer would divide by
+/// or display as an instantaneous quota.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "window_seconds_source", rename_all = "snake_case")]
 pub enum WindowDuration {
     /// The harness stated the length (codex's `windowDurationMins`).
-    Reported { window_seconds: u64 },
+    Reported { window_seconds: NonZeroU64 },
     /// Derived from the harness's own window key (Claude's `five_hour`).
-    InferredFromId { window_seconds: u64 },
+    InferredFromId { window_seconds: NonZeroU64 },
     /// Not derivable — an opaque key, or a calendar window with no fixed length.
     Unknown,
 }
 
 impl WindowDuration {
+    /// A length the harness stated, in seconds. `Unknown` for a non-positive
+    /// one, which is not a length.
+    #[must_use]
+    pub fn reported(window_seconds: u64) -> Self {
+        NonZeroU64::new(window_seconds).map_or(Self::Unknown, |window_seconds| Self::Reported {
+            window_seconds,
+        })
+    }
+
+    /// A length derived from the harness's own window key, in seconds. `Unknown`
+    /// for a non-positive one, exactly as [`Self::reported`].
+    #[must_use]
+    pub fn inferred_from_id(window_seconds: u64) -> Self {
+        NonZeroU64::new(window_seconds).map_or(Self::Unknown, |window_seconds| {
+            Self::InferredFromId { window_seconds }
+        })
+    }
+
     /// The length in seconds, or `None` when it could not be established.
     #[must_use]
     pub fn seconds(&self) -> Option<u64> {
         match *self {
             Self::Reported { window_seconds } | Self::InferredFromId { window_seconds } => {
-                Some(window_seconds)
+                Some(window_seconds.get())
             }
             Self::Unknown => None,
         }
@@ -664,9 +768,7 @@ impl WindowDuration {
     /// negative value stays [`WindowDuration::Unknown`] rather than becoming 0.
     fn from_reported_minutes(minutes: Option<i64>) -> Self {
         match minutes {
-            Some(minutes) if minutes > 0 => Self::Reported {
-                window_seconds: (minutes as u64).saturating_mul(60),
-            },
+            Some(minutes) if minutes > 0 => Self::reported((minutes as u64).saturating_mul(60)),
             _ => Self::Unknown,
         }
     }
@@ -1036,9 +1138,7 @@ fn claude_windows(rate_limits: &Value) -> Vec<UsageWindow> {
             .iter()
             .find(|(name, _)| *name == key)
             .map_or(WindowDuration::Unknown, |(_, seconds)| {
-                WindowDuration::InferredFromId {
-                    window_seconds: *seconds,
-                }
+                WindowDuration::inferred_from_id(*seconds)
             });
         let is_binding = CLAUDE_LIMIT_KIND_KEYS
             .iter()
@@ -1080,9 +1180,7 @@ fn claude_windows(rate_limits: &Value) -> Vec<UsageWindow> {
                 used_percent,
                 counters: None,
             },
-            duration: WindowDuration::InferredFromId {
-                window_seconds: CLAUDE_WEEKLY_SECONDS,
-            },
+            duration: WindowDuration::inferred_from_id(CLAUDE_WEEKLY_SECONDS),
             resets_at: limit.resets_at.as_deref().and_then(normalize_timestamp),
             scope: limit.scope.clone(),
             is_binding: limit.is_active,
@@ -1279,7 +1377,7 @@ fn codex_bucket_windows(limit_id: Option<&str>, bucket: &Value) -> Vec<UsageWind
                 resets_at: window
                     .get("resetsAt")
                     .and_then(Value::as_i64)
-                    .map(format_rfc3339),
+                    .map(UtcInstant::from_epoch),
                 scope: None,
                 is_binding: None,
             })
@@ -1368,7 +1466,7 @@ pub fn parse_copilot_user(body: &Value) -> ParsedUsage {
 fn copilot_window(
     id: &str,
     snapshot: &Value,
-    resets_at: Option<String>,
+    resets_at: Option<UtcInstant>,
     unit: QuotaUnit,
 ) -> Result<Option<UsageWindow>, String> {
     // `unlimited` decides whether any counter in this entry means anything, so
@@ -1587,9 +1685,15 @@ pub fn parse_cursor_about(payload: &Value) -> ParsedUsage {
 /// whatever offset and sub-second precision it arrived with. `None` when the
 /// text is not a complete instant, including when it carries no offset at all —
 /// a local-time string is ambiguous, and guessing a zone would be fabrication.
+///
+/// This is the entry point for a **harness payload**, which legitimately reports
+/// a reset in its own offset and is converted. Text that must *already* be UTC —
+/// a field of this contract read back from JSON, or one a caller supplies —
+/// parses through [`UtcInstant`]'s [`FromStr`] instead, which refuses a
+/// non-UTC offset rather than shifting it.
 #[must_use]
-pub fn normalize_timestamp(text: &str) -> Option<String> {
-    epoch_from_rfc3339(text).map(format_rfc3339)
+pub fn normalize_timestamp(text: &str) -> Option<UtcInstant> {
+    epoch_from_rfc3339(text).map(UtcInstant::from_epoch)
 }
 
 /// Seconds since the UNIX epoch for an RFC 3339 instant. Sub-second precision is
@@ -1712,6 +1816,14 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A canonical observation instant for a report under test. The type is the
+    /// invariant, so a test cannot stamp a report with anything else.
+    fn observed_at() -> UtcInstant {
+        "2026-07-29T12:00:00Z"
+            .parse()
+            .expect("a canonical RFC 3339 UTC instant")
+    }
+
     fn used_percent(window: &UsageWindow) -> f64 {
         match window.usage {
             WindowUsage::Metered { used_percent, .. } => used_percent.get(),
@@ -1810,16 +1922,17 @@ mod tests {
         assert_eq!(parsed.plan.as_deref(), Some("max"));
         let five_hour = window(&parsed, "five_hour");
         assert_eq!(used_percent(five_hour), 42.0);
+        assert_eq!(five_hour.duration, WindowDuration::inferred_from_id(18_000));
         assert_eq!(
-            five_hour.duration,
-            WindowDuration::InferredFromId {
-                window_seconds: 18_000
-            }
+            five_hour.resets_at.as_ref().map(UtcInstant::as_str),
+            Some("2026-07-29T18:30:00Z")
         );
-        assert_eq!(five_hour.resets_at.as_deref(), Some("2026-07-29T18:30:00Z"));
         // A -04:00 offset must land four hours later in UTC.
         assert_eq!(
-            window(&parsed, "seven_day").resets_at.as_deref(),
+            window(&parsed, "seven_day")
+                .resets_at
+                .as_ref()
+                .map(UtcInstant::as_str),
             Some("2026-08-02T13:00:00Z")
         );
     }
@@ -1860,7 +1973,10 @@ mod tests {
             "a codename key implies no duration and must never have one guessed"
         );
         assert_eq!(tangelo.duration.seconds(), None);
-        assert_eq!(tangelo.resets_at.as_deref(), Some("2026-07-30T00:00:00Z"));
+        assert_eq!(
+            tangelo.resets_at.as_ref().map(UtcInstant::as_str),
+            Some("2026-07-30T00:00:00Z")
+        );
         assert_eq!(
             window(&parsed, "five_hour").duration.seconds(),
             Some(18_000),
@@ -1888,12 +2004,7 @@ mod tests {
         let scoped = window(&parsed, "weekly_scoped/Opus 5");
         assert_eq!(used_percent(scoped), 17.0);
         assert_eq!(scoped.scope.as_deref(), Some("Opus 5"));
-        assert_eq!(
-            scoped.duration,
-            WindowDuration::InferredFromId {
-                window_seconds: 604_800
-            }
-        );
+        assert_eq!(scoped.duration, WindowDuration::inferred_from_id(604_800));
     }
 
     #[test]
@@ -2041,9 +2152,7 @@ mod tests {
         assert_eq!(used_percent(primary), 31.0);
         assert_eq!(
             primary.duration,
-            WindowDuration::Reported {
-                window_seconds: 604_800
-            },
+            WindowDuration::reported(604_800),
             "codex states its window length; it is never inferred"
         );
         assert_eq!(
@@ -2085,7 +2194,10 @@ mod tests {
         let parsed = parse_codex_rate_limits(&codex_result());
 
         assert_eq!(
-            window(&parsed, "codex/primary").resets_at.as_deref(),
+            window(&parsed, "codex/primary")
+                .resets_at
+                .as_ref()
+                .map(UtcInstant::as_str),
             Some("2026-07-25T17:20:00Z")
         );
     }
@@ -2124,9 +2236,7 @@ mod tests {
         assert_eq!(parsed.plan.as_deref(), Some("plus"));
         assert_eq!(
             window(&parsed, "primary").duration,
-            WindowDuration::Reported {
-                window_seconds: 18_000
-            }
+            WindowDuration::reported(18_000)
         );
     }
 
@@ -2363,7 +2473,10 @@ mod tests {
         let parsed = parse_copilot_user(&copilot_body());
 
         let chat = window(&parsed, "chat");
-        assert_eq!(chat.resets_at.as_deref(), Some("2026-08-01T00:00:00Z"));
+        assert_eq!(
+            chat.resets_at.as_ref().map(UtcInstant::as_str),
+            Some("2026-08-01T00:00:00Z")
+        );
         assert_eq!(
             chat.duration,
             WindowDuration::Unknown,
@@ -2466,11 +2579,7 @@ mod tests {
             parsed,
         );
 
-        let text = serde_json::to_string(&UsageReport::new(
-            "2026-07-29T12:00:00Z".to_string(),
-            vec![identity],
-        ))
-        .unwrap();
+        let text = serde_json::to_string(&UsageReport::new(observed_at(), vec![identity])).unwrap();
 
         assert!(text.contains(r#""state":"unavailable""#));
         assert!(text.contains(r#""reason":"api_key_auth""#));
@@ -2526,7 +2635,7 @@ mod tests {
                 ParsedUsage::unknown(UnknownReason::Unprobed),
             ),
         ];
-        let report = UsageReport::new("2026-07-29T12:00:00Z".to_string(), identities);
+        let report = UsageReport::new(observed_at(), identities);
 
         let text = serde_json::to_string(&report).unwrap();
         let parsed: UsageReport = serde_json::from_str(&text).unwrap();
@@ -2565,29 +2674,41 @@ mod tests {
     #[test]
     fn timestamps_normalize_to_absolute_utc() {
         assert_eq!(
-            normalize_timestamp("2026-08-01T00:00:00.000Z").as_deref(),
+            normalize_timestamp("2026-08-01T00:00:00.000Z")
+                .as_ref()
+                .map(UtcInstant::as_str),
             Some("2026-08-01T00:00:00Z")
         );
         assert_eq!(
-            normalize_timestamp("2026-08-02T09:00:00.000000-04:00").as_deref(),
+            normalize_timestamp("2026-08-02T09:00:00.000000-04:00")
+                .as_ref()
+                .map(UtcInstant::as_str),
             Some("2026-08-02T13:00:00Z")
         );
         assert_eq!(
-            normalize_timestamp("2026-08-02T09:00:00+0530").as_deref(),
+            normalize_timestamp("2026-08-02T09:00:00+0530")
+                .as_ref()
+                .map(UtcInstant::as_str),
             Some("2026-08-02T03:30:00Z")
         );
         assert_eq!(
-            normalize_timestamp("2026-08-02T09:00:00-07").as_deref(),
+            normalize_timestamp("2026-08-02T09:00:00-07")
+                .as_ref()
+                .map(UtcInstant::as_str),
             Some("2026-08-02T16:00:00Z"),
             "an hours-only offset is a valid RFC 3339 shape"
         );
         assert_eq!(
-            normalize_timestamp("2028-02-29T23:59:59Z").as_deref(),
+            normalize_timestamp("2028-02-29T23:59:59Z")
+                .as_ref()
+                .map(UtcInstant::as_str),
             Some("2028-02-29T23:59:59Z"),
             "a real leap day must survive"
         );
         assert_eq!(
-            normalize_timestamp("1970-01-01T00:00:00Z").as_deref(),
+            normalize_timestamp("1970-01-01T00:00:00Z")
+                .as_ref()
+                .map(UtcInstant::as_str),
             Some("1970-01-01T00:00:00Z")
         );
     }

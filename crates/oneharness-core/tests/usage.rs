@@ -12,8 +12,8 @@
 use oneharness_core::domain::usage::{
     claude_control_response, normalize_timestamp, parse_claude_get_usage, parse_codex_rate_limits,
     parse_copilot_user, parse_cursor_about, AuthMode, IdentitySelector, ParsedUsage, QuotaAmount,
-    UnavailableReason, UnknownReason, UsageAvailability, UsageIdentity, UsageReport, UsedPercent,
-    WindowUsage, SCHEMA_VERSION,
+    QuotaCounters, QuotaUnit, UnavailableReason, UnknownReason, UsageAvailability, UsageIdentity,
+    UsageReport, UsageWindow, UsedPercent, UtcInstant, WindowDuration, WindowUsage, SCHEMA_VERSION,
 };
 use serde_json::Value;
 
@@ -30,6 +30,15 @@ const CODEX_EXCHANGE: &str = r#"{"jsonrpc":"2.0","id":1,"result":{"userAgent":"c
 
 /// The `GET /copilot_internal/user` response body.
 const COPILOT_BODY: &str = r#"{"copilot_plan":"individual","access_type_sku":"monthly_subscriber_quota","quota_reset_date":"2026-08-01","quota_reset_date_utc":"2026-08-01T00:00:00.000Z","token_based_billing":true,"quota_snapshots":{"chat":{"unlimited":true,"percent_remaining":100.0,"has_quota":true,"entitlement":0,"remaining":0,"credits_used":0,"overage_permitted":false,"quota_reset_at":0},"premium_interactions":{"unlimited":false,"percent_remaining":0.0,"has_quota":false,"entitlement":1500,"credits_used":13518,"remaining":-12019,"overage_permitted":false,"quota_reset_at":0}}}"#;
+
+/// The canonical observation instant every report in this suite is stamped with.
+/// A consumer reaches one only through [`UtcInstant`], so a test cannot build a
+/// report whose `observed_at` claims something the contract does not allow.
+fn observed_at() -> UtcInstant {
+    "2026-07-29T12:00:00Z"
+        .parse()
+        .expect("a canonical RFC 3339 UTC instant")
+}
 
 fn lines(stream: &str) -> Vec<Value> {
     stream
@@ -82,7 +91,7 @@ fn a_consumer_reads_claude_headroom_from_a_captured_stream() {
         .find(|window| window.id == "seven_day")
         .expect("the weekly window");
     assert_eq!(
-        seven_day.resets_at.as_deref(),
+        seven_day.resets_at.as_ref().map(UtcInstant::as_str),
         Some("2026-08-02T13:00:00Z"),
         "the -04:00 offset the harness sent must arrive as absolute UTC"
     );
@@ -129,7 +138,7 @@ fn a_consumer_reads_codex_headroom_from_a_captured_app_server_exchange() {
 
     let primary = &parsed.availability.windows()[0];
     assert_eq!(
-        primary.resets_at.as_deref(),
+        primary.resets_at.as_ref().map(UtcInstant::as_str),
         Some("2026-07-25T17:20:00Z"),
         "epoch seconds must arrive as absolute UTC, like every other harness"
     );
@@ -559,7 +568,7 @@ fn premium(parsed: &ParsedUsage) -> &oneharness_core::domain::usage::UsageWindow
 #[test]
 fn the_report_json_is_what_a_downstream_consumer_reads() {
     let report = UsageReport::new(
-        "2026-07-29T12:00:00Z".to_string(),
+        observed_at(),
         vec![
             UsageIdentity::new(
                 "claude-code",
@@ -660,7 +669,7 @@ fn golden_report() -> UsageReport {
     });
 
     UsageReport::new(
-        "2026-07-29T12:00:00Z".to_string(),
+        observed_at(),
         vec![
             UsageIdentity::new(
                 "claude-code",
@@ -845,23 +854,38 @@ fn a_report_claiming_an_unsupported_schema_version_is_refused() {
     assert_eq!(current.schema_version, SCHEMA_VERSION);
 }
 
+/// Text that is not an RFC 3339 UTC instant. Shared by every boundary test
+/// below, because a timestamp field is validated at three of them — deserializing
+/// a consumer's JSON, parsing a harness payload, and public construction — and one
+/// list is what keeps those three from drifting apart on what they accept.
+const NOT_UTC_INSTANTS: &[&str] = &[
+    "2026-07-29T12:00:00",       // no offset at all: an ambiguous local time
+    "2026-07-29",                // a date, not an instant
+    "2026-07-29T12:00:00.Z",     // an empty sub-second fraction
+    "2026-13-01T00:00:00Z",      // a month that does not exist
+    "2026-07-29T25:00:00Z",      // an hour that does not exist
+    "2026-07-29T08:00:00-04:00", // a real instant, but not UTC
+    "2026-07-29T17:30:00+05:30",
+    "yesterday afternoon",
+    "",
+];
+
+/// Every spelling of the golden's own observation instant that means exactly the
+/// same moment in UTC, so each is canonicalized rather than refused.
+const EQUIVALENT_UTC_SPELLINGS: &[&str] = &[
+    "2026-07-29T12:00:00Z",
+    "2026-07-29T12:00:00+00:00",
+    "2026-07-29T12:00:00.500Z",
+    "2026-07-29T12:00:00-0000",
+];
+
 /// `observed_at` documents an RFC 3339 UTC instant, and every consumer that
 /// renders "usage as of ..." reads it literally. An unparseable one, or one whose
 /// offset is not UTC, is therefore refused rather than stored — a `+05:30`
 /// instant in a field read as UTC is wrong by hours with nothing to signal it.
 #[test]
 fn a_report_whose_observed_at_is_not_rfc3339_utc_is_refused() {
-    for malformed in [
-        "2026-07-29T12:00:00",       // no offset at all: an ambiguous local time
-        "2026-07-29",                // a date, not an instant
-        "2026-07-29T12:00:00.Z",     // an empty sub-second fraction
-        "2026-13-01T00:00:00Z",      // a month that does not exist
-        "2026-07-29T25:00:00Z",      // an hour that does not exist
-        "2026-07-29T08:00:00-04:00", // a real instant, but not UTC
-        "2026-07-29T17:30:00+05:30",
-        "yesterday afternoon",
-        "",
-    ] {
+    for malformed in NOT_UTC_INSTANTS {
         let json = golden_with("observed_at", serde_json::json!(malformed));
         let message = match serde_json::from_str::<UsageReport>(&json) {
             Ok(report) => panic!(
@@ -878,20 +902,219 @@ fn a_report_whose_observed_at_is_not_rfc3339_utc_is_refused() {
 
     // An equivalent UTC spelling is the same instant, so it is canonicalized
     // rather than refused — the field still means exactly what it documents.
-    for equivalent in [
-        "2026-07-29T12:00:00Z",
-        "2026-07-29T12:00:00+00:00",
-        "2026-07-29T12:00:00.500Z",
-        "2026-07-29T12:00:00-0000",
-    ] {
+    for equivalent in EQUIVALENT_UTC_SPELLINGS {
         let parsed: UsageReport =
             serde_json::from_str(&golden_with("observed_at", serde_json::json!(equivalent)))
                 .unwrap_or_else(|error| panic!("`{equivalent}` is RFC 3339 UTC: {error}"));
         assert_eq!(
-            parsed.observed_at, "2026-07-29T12:00:00Z",
+            parsed.observed_at.as_str(),
+            "2026-07-29T12:00:00Z",
             "`{equivalent}` must arrive as the canonical UTC spelling"
         );
     }
+}
+
+/// The boundary the test above cannot reach: a sibling tool linked against this
+/// published crate *builds* reports rather than reading them. While `observed_at`
+/// was a plain `String`, such a caller could stamp one with `"yesterday
+/// afternoon"` or a `+05:30` instant and publish a report whose own documentation
+/// was false — the same confidently-wrong answer the deserialize check exists to
+/// stop, arriving from the other side. [`UtcInstant`] is the only door in, so this
+/// is what it must refuse and what it must accept.
+#[test]
+fn a_caller_cannot_construct_a_report_whose_observed_at_is_not_rfc3339_utc() {
+    for malformed in NOT_UTC_INSTANTS {
+        let error = malformed
+            .parse::<UtcInstant>()
+            .expect_err("`{malformed}` is not an RFC 3339 UTC instant");
+        assert!(
+            error.to_string().contains("RFC 3339 UTC instant"),
+            "the refusal must say what is required, got: {error}"
+        );
+    }
+
+    // An equivalent spelling is accepted and canonicalized on the way in, so the
+    // built report reads back byte-identically to a deserialized one.
+    for equivalent in EQUIVALENT_UTC_SPELLINGS {
+        let instant: UtcInstant = equivalent
+            .parse()
+            .unwrap_or_else(|error| panic!("`{equivalent}` is RFC 3339 UTC: {error}"));
+        let json = serde_json::to_value(UsageReport::new(instant, no_identities()))
+            .expect("the report serializes");
+        assert_eq!(
+            json["observed_at"], "2026-07-29T12:00:00Z",
+            "`{equivalent}` must reach the wire as the canonical UTC spelling"
+        );
+    }
+}
+
+/// One identity, so a report built for a boundary test is still a whole report.
+fn no_identities() -> Vec<UsageIdentity> {
+    vec![UsageIdentity::new(
+        "goose",
+        IdentitySelector::Ambient,
+        ParsedUsage::unknown(UnknownReason::Unprobed),
+    )]
+}
+
+/// The golden with one field replaced on its first window — the shape a consumer's
+/// own JSON takes when it carries a reset or a window length this build must judge.
+fn golden_window_with(fields: &[(&str, Value)]) -> String {
+    let mut json: Value = serde_json::from_str(GOLDEN).expect("valid JSON");
+    let window = &mut json["identities"][0]["availability"]["windows"][0];
+    for (field, value) in fields {
+        window[*field] = value.clone();
+    }
+    json.to_string()
+}
+
+/// A window's `resets_at` is read exactly as literally as `observed_at`: a
+/// planner deciding whether to wait for a reset reads it as an absolute UTC
+/// instant. So the same rule holds at the same three boundaries — and a
+/// harness's own non-UTC offset is *converted* on the way in rather than
+/// refused, which is the one asymmetry [`normalize_timestamp`] exists for.
+#[test]
+fn a_window_reset_is_a_utc_instant_or_absent_never_arbitrary_text() {
+    for refused in NOT_UTC_INSTANTS
+        .iter()
+        .copied()
+        // Also refused: text that is instant-shaped but carries a terminal escape.
+        // It cannot be flattened into something safe, because a flattened
+        // timestamp is no longer a timestamp.
+        .chain(["2026-07-29T18:30:00Z\u{1b}[2K", "never"])
+    {
+        let json = golden_window_with(&[("resets_at", serde_json::json!(refused))]);
+        let message = match serde_json::from_str::<UsageReport>(&json) {
+            Ok(report) => panic!(
+                "a window reset of `{refused:?}` must not deserialize, got `{:?}`",
+                report.identities[0].availability.windows()[0].resets_at
+            ),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            message.contains("RFC 3339 UTC instant"),
+            "the refusal must say what is required: {message}"
+        );
+        assert!(
+            !message.chars().any(char::is_control),
+            "the refusal quotes the value back, so it must not smuggle an escape: {message:?}"
+        );
+        assert!(
+            refused.parse::<UtcInstant>().is_err(),
+            "public construction must refuse `{refused:?}` too, not just the wire"
+        );
+    }
+
+    // The converting entry point, for the offsets a harness really reports.
+    assert_eq!(
+        normalize_timestamp("2026-08-02T09:00:00-04:00")
+            .as_ref()
+            .map(UtcInstant::as_str),
+        Some("2026-08-02T13:00:00Z"),
+        "a harness's own offset is converted, which is what makes the field UTC"
+    );
+}
+
+/// A window zero seconds long is not a window. The parsers already degraded a
+/// non-positive `windowDurationMins` to [`WindowDuration::Unknown`], but the
+/// variants exposed a raw integer — so a caller of the published crate, or a
+/// report written by one, could still claim `window_seconds: 0`. A consumer
+/// dividing a remaining quota by that window's length would divide by zero;
+/// `Unknown` is the state it already handles.
+#[test]
+fn a_window_length_of_zero_seconds_is_not_representable() {
+    for source in ["reported", "inferred_from_id"] {
+        let json = golden_window_with(&[
+            ("window_seconds_source", serde_json::json!(source)),
+            ("window_seconds", serde_json::json!(0)),
+        ]);
+        assert!(
+            serde_json::from_str::<UsageReport>(&json).is_err(),
+            "a `{source}` window of 0 seconds must not deserialize"
+        );
+    }
+
+    for zero in [
+        WindowDuration::reported(0),
+        WindowDuration::inferred_from_id(0),
+    ] {
+        assert_eq!(
+            zero,
+            WindowDuration::Unknown,
+            "a caller constructing a zero length gets the honest 'not established'"
+        );
+        assert_eq!(zero.seconds(), None);
+    }
+
+    // A real length is untouched by any of that.
+    assert_eq!(WindowDuration::reported(600).seconds(), Some(600));
+    assert_eq!(
+        WindowDuration::inferred_from_id(18_000).seconds(),
+        Some(18_000)
+    );
+}
+
+/// The two figures that look like errors and are not, kept representable while
+/// their neighbours were tightened: consumption *past* a harness ceiling is
+/// exactly when a consumer needs the real percentage, and an over-ceiling
+/// account's `remaining` is a genuine deficit. Both are built the way a sibling
+/// tool would and read back the way a consumer would.
+#[test]
+fn an_overage_percentage_and_a_deficit_survive_construction_and_the_wire() {
+    let window = UsageWindow {
+        id: "premium_interactions".to_string(),
+        label: None,
+        usage: WindowUsage::Metered {
+            used_percent: UsedPercent::new(140.0).expect("an overage is a real reading"),
+            counters: Some(QuotaCounters {
+                entitlement: QuotaAmount::new(1_500).expect("non-negative"),
+                used: QuotaAmount::new(2_100).expect("non-negative"),
+                remaining: -600,
+                has_quota: false,
+                overage_permitted: false,
+                unit: QuotaUnit::AiCredits,
+            }),
+        },
+        duration: WindowDuration::reported(600),
+        resets_at: Some("2026-08-01T00:00:00Z".parse().expect("a canonical instant")),
+        scope: None,
+        is_binding: Some(true),
+    };
+    let report = UsageReport::new(
+        observed_at(),
+        vec![UsageIdentity::new(
+            "copilot",
+            IdentitySelector::EnvSecret {
+                env: "GH_TOKEN".to_string(),
+            },
+            ParsedUsage {
+                auth_mode: AuthMode::Subscription,
+                plan: Some("individual".to_string()),
+                availability: UsageAvailability::from_windows(vec![window]),
+            },
+        )],
+    );
+
+    let text = serde_json::to_string(&report).expect("the report serializes");
+    let read_back: UsageReport = serde_json::from_str(&text).expect("a consumer reads it back");
+
+    assert_eq!(read_back, report);
+    let WindowUsage::Metered {
+        used_percent,
+        counters: Some(counters),
+    } = &read_back.identities[0].availability.windows()[0].usage
+    else {
+        panic!("the metered window survives the round trip: {text}");
+    };
+    assert_eq!(
+        used_percent.get(),
+        140.0,
+        "an overage must not be clamped to 100: {text}"
+    );
+    assert_eq!(
+        counters.remaining, -600,
+        "a deficit past the ceiling is the signal, not an error to zero out: {text}"
+    );
 }
 
 /// The omissions are the point: a consumer distinguishes "the harness did not

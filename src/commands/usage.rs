@@ -28,7 +28,7 @@ use crate::commands::{
 };
 use oneharness_core::domain::usage::{
     AuthMode, QuotaCounters, UnavailableReason, UnknownReason, UsageAvailability, UsageIdentity,
-    UsageReport, UsageWindow, WindowUsage,
+    UsageReport, UsageWindow, UtcInstant, WindowUsage,
 };
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::config as config_io;
@@ -96,7 +96,7 @@ pub fn run(args: &UsageArgs) -> Result<i32, OneharnessError> {
     }
 
     let identities = probe_all(&plans);
-    let report = UsageReport::new(now_rfc3339(), identities);
+    let report = UsageReport::new(now_utc(), identities);
 
     match args.format {
         UsageFormat::Json => print_json(&report, args.compact)?,
@@ -268,11 +268,13 @@ fn config_bins(
 
 /// The single clock read for the whole report — the io layer's job, so the
 /// domain stays pure and every identity is stamped with one observation time.
-fn now_rfc3339() -> String {
+/// Minted as a [`UtcInstant`], which is canonical by construction from epoch
+/// seconds, so the report's documented UTC contract holds without a re-parse.
+fn now_utc() -> UtcInstant {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs() as i64);
-    oneharness_core::domain::history::format_rfc3339(secs)
+    UtcInstant::from_epoch(secs)
 }
 
 /// Render the report for a human. The rule the JSON contract encodes carries
@@ -334,7 +336,7 @@ fn render_window(window: &UsageWindow) -> String {
     };
     let resets = window
         .resets_at
-        .as_deref()
+        .as_ref()
         .map_or_else(String::new, |at| format!(" · resets {at}"));
     let usage = match &window.usage {
         // Rounded for reading, never for deciding: the JSON carries the exact
@@ -411,6 +413,13 @@ mod tests {
         IdentitySelector, QuotaAmount, UsedPercent, WindowDuration, Windows,
     };
 
+    /// The single observation instant the reports below are stamped with.
+    fn observed_at() -> UtcInstant {
+        "2026-07-29T12:00:00Z"
+            .parse()
+            .expect("a canonical RFC 3339 UTC instant")
+    }
+
     fn identity(harness: &str, availability: UsageAvailability) -> UsageIdentity {
         UsageIdentity {
             harness: harness.to_string(),
@@ -440,7 +449,7 @@ mod tests {
     #[test]
     fn the_text_view_never_renders_an_absent_figure_as_a_percentage() {
         let report = UsageReport::new(
-            "2026-07-29T12:00:00Z".to_string(),
+            observed_at(),
             vec![
                 identity(
                     "opencode",
@@ -483,13 +492,17 @@ mod tests {
     fn the_text_view_marks_the_binding_window_and_an_unlimited_quota() {
         let mut binding = metered("seven_day", 61.4);
         binding.is_binding = Some(true);
-        binding.resets_at = Some("2026-08-02T13:00:00Z".to_string());
+        binding.resets_at = Some(
+            "2026-08-02T13:00:00Z"
+                .parse()
+                .expect("a canonical RFC 3339 UTC instant"),
+        );
         let unlimited = UsageWindow {
             usage: WindowUsage::Unlimited,
             ..metered("chat", 0.0)
         };
         let report = UsageReport::new(
-            "2026-07-29T12:00:00Z".to_string(),
+            observed_at(),
             vec![identity(
                 "claude-code",
                 UsageAvailability::Available {
@@ -524,7 +537,7 @@ mod tests {
             }),
         };
         let report = UsageReport::new(
-            "2026-07-29T12:00:00Z".to_string(),
+            observed_at(),
             vec![identity(
                 "copilot",
                 UsageAvailability::Available {
@@ -569,7 +582,11 @@ mod tests {
                             "usage": {"kind": "metered", "used_percent": 42.0},
                             "window_seconds_source": "inferred_from_id",
                             "window_seconds": 18000,
-                            "resets_at": "2026-07-29T18:30:00Z\u{1b}[2K",
+                            // The one string here that carries no escape,
+                            // because it cannot: `resets_at` is a `UtcInstant`,
+                            // so text with a control character in it is refused
+                            // at the boundary rather than flattened after it.
+                            "resets_at": "2026-07-29T18:30:00Z",
                             "scope": "Opus\u{1b}[0m 5",
                         }],
                     },

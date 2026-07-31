@@ -6,6 +6,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- *(fallback)* fall through when Claude Code rejects a run at its subscription usage limit
+
 ## [0.6.1](https://github.com/nickderobertis/oneharness/compare/v0.6.0...v0.6.1) - 2026-07-31
 
 ### Fixed

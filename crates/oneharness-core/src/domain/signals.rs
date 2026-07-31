@@ -111,6 +111,13 @@ pub struct FailureReading {
     pub source: String,
 }
 
+/// Adapter-specific failure vocabulary understood by the signal classifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureDialect {
+    Generic,
+    ClaudeCode,
+}
+
 /// A deferred-tool dead-end detected in a harness's output: the harness ended a
 /// turn by *deferring* a builtin tool call instead of executing it, so the run
 /// exits cleanly (status `ok`) with an empty result. This is Claude Code's
@@ -291,6 +298,31 @@ pub fn classify_failure(stdout: &str, stderr: &str) -> Option<FailureReading> {
     None
 }
 
+/// Harness-aware failure classification for adapter-specific text surfaces.
+///
+/// Claude Code's subscription exhaustion does not carry the generic `quota`
+/// vocabulary: headless runs report a session/weekly limit message instead.
+/// Keep those phrases scoped to that adapter so another harness mentioning a
+/// "session limit" in an unrelated error is not silently treated as exhausted.
+pub fn classify_harness_failure(
+    dialect: FailureDialect,
+    stdout: &str,
+    stderr: &str,
+) -> Option<FailureReading> {
+    classify_failure(stdout, stderr).or_else(|| {
+        (dialect == FailureDialect::ClaudeCode).then_some(())?;
+        for (source, text) in [("stderr", stderr), ("stdout", stdout)] {
+            if claude_subscription_limit(text) {
+                return Some(FailureReading {
+                    kind: FailureKind::Quota,
+                    source: source.to_string(),
+                });
+            }
+        }
+        None
+    })
+}
+
 /// Classify a provider-declared failed result even when its CLI exits zero.
 ///
 /// Some harnesses, including Claude Code on Windows, report an API rejection in
@@ -298,15 +330,46 @@ pub fn classify_failure(stdout: &str, stderr: &str) -> Option<FailureReading> {
 /// Restricting this check to those explicit error records avoids treating
 /// incidental warning text in an otherwise successful transcript as failure.
 pub fn detect_provider_failure(stdout: &str) -> Option<FailureReading> {
+    detect_harness_provider_failure(FailureDialect::Generic, stdout)
+}
+
+/// Provider-declared failure classification with adapter-specific quota
+/// surfaces. The terminal `is_error` record is the machine signal; matching its
+/// result text is deliberately preferred over scanning unstructured output.
+pub fn detect_harness_provider_failure(
+    dialect: FailureDialect,
+    stdout: &str,
+) -> Option<FailureReading> {
     json_candidates(stdout).into_iter().rev().find_map(|value| {
         if value.get("is_error").and_then(Value::as_bool) != Some(true) {
             return None;
         }
-        match_failure(&value.to_string()).map(|kind| FailureReading {
+        let serialized = value.to_string();
+        let kind = match_failure(&serialized).or_else(|| {
+            (dialect == FailureDialect::ClaudeCode && claude_subscription_limit(&serialized))
+                .then_some(FailureKind::Quota)
+        })?;
+        Some(FailureReading {
             kind,
             source: "stdout".to_string(),
         })
     })
+}
+
+fn claude_subscription_limit(text: &str) -> bool {
+    let text = text.to_lowercase();
+    [
+        "you've hit your session limit",
+        "you’ve hit your session limit",
+        "you have hit your session limit",
+        "you've hit your limit",
+        "you’ve hit your limit",
+        "you have hit your limit",
+        "weekly limit reached",
+        "usage limit reached",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
 }
 
 /// Match the first known failure signal in `text` (case-insensitive). Ordered
@@ -650,6 +713,40 @@ mod tests {
     #[test]
     fn classify_none_when_no_signal() {
         assert!(classify_failure("just some output", "a normal error").is_none());
+    }
+
+    #[test]
+    fn claude_subscription_limit_fixtures_classify_as_quota() {
+        let session_json = include_str!("../../../../tests/fixtures/claude-session-limit.json");
+        let weekly_json = include_str!("../../../../tests/fixtures/claude-weekly-limit.json");
+        let session_text = include_str!("../../../../tests/fixtures/claude-session-limit.txt");
+
+        for captured in [session_json, weekly_json] {
+            let got =
+                detect_harness_provider_failure(FailureDialect::ClaudeCode, captured).unwrap();
+            assert_eq!(got.kind, FailureKind::Quota);
+            assert_eq!(got.source, "stdout");
+        }
+        let got = classify_harness_failure(FailureDialect::ClaudeCode, "", session_text).unwrap();
+        assert_eq!(got.kind, FailureKind::Quota);
+        assert_eq!(got.source, "stderr");
+    }
+
+    #[test]
+    fn claude_limit_language_is_adapter_scoped_and_requires_a_failure_surface() {
+        let captured = include_str!("../../../../tests/fixtures/claude-session-limit.json");
+        assert!(detect_harness_provider_failure(FailureDialect::Generic, captured).is_none());
+        assert!(classify_harness_failure(
+            FailureDialect::Generic,
+            "",
+            "tool crashed while calculating a session limit"
+        )
+        .is_none());
+        assert!(detect_harness_provider_failure(
+            FailureDialect::ClaudeCode,
+            r#"{"type":"result","is_error":false,"result":"You've hit your session limit"}"#
+        )
+        .is_none());
     }
 
     #[test]

@@ -12869,6 +12869,76 @@ fn fallback_falls_through_a_clean_exit_provider_quota_error() {
 }
 
 #[test]
+fn fallback_falls_through_claude_subscription_limit_captures() {
+    let mock = mock_bin().display().to_string();
+    let captures = [
+        (
+            "session-json",
+            "MOCK_STDOUT",
+            include_str!("fixtures/claude-session-limit.json"),
+            "1",
+        ),
+        (
+            "weekly-json",
+            "MOCK_STDOUT",
+            include_str!("fixtures/claude-weekly-limit.json"),
+            "0",
+        ),
+        (
+            "session-text",
+            "MOCK_STDERR",
+            include_str!("fixtures/claude-session-limit.txt"),
+            "1",
+        ),
+        (
+            "session-text-stdout",
+            "MOCK_STDOUT",
+            include_str!("fixtures/claude-session-limit.txt"),
+            "1",
+        ),
+    ];
+
+    for (tag, stream, capture, exit) in captures {
+        let capture = serde_json::to_string(capture.trim()).unwrap();
+        let project = format!(
+            r#"
+            harnesses = ["claude-code", "codex"]
+            run_mode = "fallback"
+
+            [harness.claude-code]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "{exit}", {stream} = {capture} }}
+
+            [harness.codex]
+            bin = '{mock}'
+            "#
+        );
+        let fx = ConfigFixture::new(&format!("fallback-claude-limit-{tag}"), &project, "");
+        let output = run_with_config(
+            &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+            &[],
+            &fx.user_config(),
+        );
+        assert!(
+            output.status.success(),
+            "{tag}: exit {:?}, stderr {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value = json_stdout(&output);
+        assert_eq!(value["fallback"]["ran"], "codex", "{tag}");
+        assert_eq!(
+            value["fallback"]["fell_through"][0]["reason"], "quota",
+            "{tag}"
+        );
+        let expected_status = if exit == "0" { "ok" } else { "nonzero" };
+        assert_eq!(value["results"][0]["status"], expected_status, "{tag}");
+        assert_eq!(value["results"][0]["failure_kind"], "quota", "{tag}");
+        assert_eq!(value["results"][1]["status"], "ok", "{tag}");
+    }
+}
+
+#[test]
 fn fallback_with_no_runnable_harness_is_a_failure() {
     // Every candidate is a startup failure (none installed): nothing ran, so the
     // run is a hard failure (exit 1) and `ran` is null.

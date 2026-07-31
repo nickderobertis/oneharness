@@ -1993,6 +1993,13 @@ fn skipped_result(
     }
 }
 
+fn failure_dialect(spec: &HarnessSpec) -> signals::FailureDialect {
+    match spec.id {
+        "claude-code" => signals::FailureDialect::ClaudeCode,
+        _ => signals::FailureDialect::Generic,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn executed_result(
     spec: &HarnessSpec,
@@ -2119,7 +2126,9 @@ fn executed_result(
     // a oneharness-generated `error`, and `status` explains them. A detected
     // deferral is more specific and actionable, so it wins over a coarse match.
     let provider_failure = match capture.status {
-        Status::Ok | Status::Nonzero => signals::detect_provider_failure(&capture.stdout),
+        Status::Ok | Status::Nonzero => {
+            signals::detect_harness_provider_failure(failure_dialect(spec), &capture.stdout)
+        }
         _ => None,
     };
     let failure = match (&deferred, provider_failure, capture.status) {
@@ -2128,9 +2137,11 @@ fn executed_result(
             source: "stdout".to_string(),
         }),
         (None, Some(failure), _) => Some(failure),
-        (None, None, Status::Nonzero) => {
-            signals::classify_failure(&capture.stdout, &capture.stderr)
-        }
+        (None, None, Status::Nonzero) => signals::classify_harness_failure(
+            failure_dialect(spec),
+            &capture.stdout,
+            &capture.stderr,
+        ),
         (None, None, _) => None,
     };
     let (failure_kind, failure_kind_source) = match failure {

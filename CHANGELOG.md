@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/nickderobertis/oneharness/compare/v0.6.0...v0.6.1) - 2026-07-31
+
+### Fixed
+
+- *(usage)* wait for codex's rate-limit answer instead of closing its stdin ([#1202](https://github.com/nickderobertis/oneharness/pull/1202))
+
 ## [0.6.0](https://github.com/nickderobertis/oneharness/compare/v0.5.11...v0.6.0) - 2026-07-30
 
 ### Added

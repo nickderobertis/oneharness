@@ -12890,6 +12890,12 @@ fn fallback_falls_through_claude_subscription_limit_captures() {
             include_str!("fixtures/claude-session-limit.txt"),
             "1",
         ),
+        (
+            "session-text-stdout",
+            "MOCK_STDOUT",
+            include_str!("fixtures/claude-session-limit.txt"),
+            "1",
+        ),
     ];
 
     for (tag, stream, capture, exit) in captures {

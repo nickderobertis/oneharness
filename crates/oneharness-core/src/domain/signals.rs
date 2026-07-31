@@ -335,7 +335,8 @@ pub fn detect_provider_failure(stdout: &str) -> Option<FailureReading> {
 
 /// Provider-declared failure classification with adapter-specific quota
 /// surfaces. The terminal `is_error` record is the machine signal; matching its
-/// result text is deliberately preferred over scanning unstructured output.
+/// complete JSON record captures provider metadata as well as result text while
+/// avoiding unstructured output outside that explicit failure record.
 pub fn detect_harness_provider_failure(
     dialect: FailureDialect,
     stdout: &str,

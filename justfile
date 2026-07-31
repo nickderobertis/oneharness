@@ -6,6 +6,10 @@
 
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
+# Keep shebang recipes executable when the environment's default tempdir is noexec.
+# llmlint: ignore[changed_behavior_has_e2e] `python-sdk-check` is itself a shebang recipe in the required `check`/`gate` path, so every gate exercises this boundary through Just's real script execution.
+set tempdir := "target/just-tmp"
+
 # Feature that builds the test-only mock harness fixture the e2e tests drive.
 FEATURES := "mock-harness"
 

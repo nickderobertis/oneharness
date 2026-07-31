@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.3](https://github.com/nickderobertis/oneharness/compare/v0.6.2...v0.6.3) - 2026-07-31
+
+### Fixed
+
+- *(fallback)* classify codex usage limits as quota ([#1208](https://github.com/nickderobertis/oneharness/pull/1208))
+
 ### Fixed
 
 - *(fallback)* fall through when Codex rejects a run at its usage limit

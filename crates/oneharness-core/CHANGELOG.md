@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.6.2...oneharness-core-v0.6.3) - 2026-07-31
+
+### Fixed
+
+- *(fallback)* classify codex usage limits as quota ([#1208](https://github.com/nickderobertis/oneharness/pull/1208))
+
 ## [0.6.2](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.6.1...oneharness-core-v0.6.2) - 2026-07-31
 
 ### Fixed

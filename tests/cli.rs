@@ -13426,6 +13426,82 @@ fn core_version() -> String {
         .expect("oneharness-core's manifest states a version")
 }
 
+/// Stage the mock harness on `PATH` under `name`, exactly the way an installer
+/// puts a harness there: an extensionless executable on Unix, and on Windows a
+/// `.cmd` shim beside the real program — the npm shape, which `CreateProcess`
+/// cannot run from a bare name because it only ever appends `.exe`.
+///
+/// Returns the `PATH` value with `dir` first.
+fn stage_harness_on_path(dir: &std::path::Path, name: &str) -> std::ffi::OsString {
+    std::fs::create_dir_all(dir).expect("the staging directory");
+    #[cfg(windows)]
+    {
+        let program = dir.join("mock-harness.exe");
+        std::fs::copy(mock_bin(), &program).expect("stage the mock program");
+        std::fs::write(
+            dir.join(format!("{name}.cmd")),
+            "@\"%~dp0mock-harness.exe\" %*\r\n",
+        )
+        .expect("stage the shim");
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::copy(mock_bin(), dir.join(name)).expect("stage the mock program");
+    }
+    let ambient = std::env::var_os("PATH").unwrap_or_default();
+    std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&ambient)))
+        .expect("a PATH with the staged directory first")
+}
+
+#[test]
+fn usage_probes_a_harness_installed_under_a_bare_name_on_path() {
+    // A harness reaches the probe as the bare name the registry declares
+    // (`codex`), not as a path — so the probe has to resolve that name the same
+    // way `run` does. It did not: `run` resolves through `which` (PATHEXT-aware)
+    // precisely because `CreateProcess` only appends `.exe` and never finds the
+    // `codex.cmd` npm installs, and the probe spawned the bare name directly. On
+    // Windows that reported `probe_failed: program not found` for a harness every
+    // other verb drove fine — headroom that was readable the whole time, filed as
+    // unknown. The staged install below is that exact shape.
+    let dir = std::env::temp_dir().join(format!(
+        "oneharness-usage-path-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = stage_harness_on_path(&dir, "oneharness-staged-codex");
+
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "codex",
+            "--bin",
+            "codex=oneharness-staged-codex",
+            "--compact",
+        ],
+        &[
+            ("PATH", path.to_str().expect("a UTF-8 PATH")),
+            ("MOCK_REPLY_AFTER_LINES", "3"),
+            ("MOCK_STDOUT", &codex_usage_response()),
+        ],
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let codex = usage_identity(&json_stdout(&output), "codex");
+    assert_eq!(
+        codex["availability"]["state"],
+        "available",
+        "the probe must spawn a PATH-installed harness, not report it missing: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        codex["availability"]["windows"][0]["usage"]["used_percent"], 31.0,
+        "and read the headroom back off it"
+    );
+}
+
 #[test]
 fn usage_runs_each_probe_in_the_requested_working_directory() {
     // `--cwd` decides which directory a probe's child starts in, which is what

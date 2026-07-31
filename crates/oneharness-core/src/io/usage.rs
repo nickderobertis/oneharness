@@ -28,7 +28,7 @@ use crate::domain::usage::{
     parse_cursor_about, without_control_chars, IdentitySelector, ParsedUsage, UnknownReason,
     UsageProbe,
 };
-use crate::io::process::{Finish, PipeEvent, Process};
+use crate::io::process::{resolve_program, Finish, PipeEvent, Process};
 
 /// The environment variable selecting a Claude Code identity. Per-process, and
 /// observed returning different reset days and different credit histories for
@@ -295,7 +295,11 @@ fn converse(
     // Clamped at the boundary, so this addition cannot overflow whatever a
     // caller asked for.
     let deadline = Instant::now() + request.effective_timeout();
-    let mut command = Command::new(&argv[0]);
+    // Resolved exactly as the runner resolves a harness binary: a probe reads the
+    // same bare registry name (`codex`), and on Windows that name is an npm
+    // `.cmd` shim `CreateProcess` cannot find. Skipping this reported a harness
+    // every other command could spawn as `program not found`.
+    let mut command = Command::new(resolve_program(&argv[0]));
     command
         .args(&argv[1..])
         .stdin(Stdio::piped())

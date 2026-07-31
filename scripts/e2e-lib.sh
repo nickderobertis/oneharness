@@ -465,17 +465,31 @@ oh_cache_assert() {
 # nothing back.
 #   $1 harness id
 oh_usage_enforce() {
-    local id="$1" bin report state reason detail errf
+    local id="$1" bin report state reason detail errf rc
     bin="$(oh_bin)"
     [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
     errf="$(mktemp)"
     report="$(ONEHARNESS_NO_CONFIG=1 "$bin" usage --harness "$id" \
-        --timeout "${OH_TIMEOUT:-120}" --compact 2>"$errf")" || true
+        --timeout "${OH_TIMEOUT:-120}" --compact 2>"$errf")" && rc=0 || rc=$?
     if [ -z "$report" ]; then
-        note "  oneharness emitted no JSON on stdout. Its stderr:"
+        note "  oneharness exited $rc and emitted no JSON on stdout. Its stderr:"
         sed 's/^/    /' "$errf" >&2 || true
         rm -f "$errf"
+        note "  Next, in order:"
+        note "    1. Exit 2 is a usage/config error in the call above, not a harness fault:"
+        note "       read the stderr line, then fix the flags in oh_usage_enforce"
+        note "       (scripts/e2e-lib.sh) and re-run:"
+        note "         just live-$id"
+        note "    2. Any other non-zero exit is oneharness aborting mid-probe, which its"
+        note "       contract forbids — a missing binary, an unauthenticated harness, and a"
+        note "       timeout are all meant to come back as an identity. File it against the"
+        note "       probe (crates/oneharness-core/src/io/usage.rs) and its containment"
+        note "       (probe_all in src/commands/usage.rs)."
+        note "    3. Exit 0 with empty stdout means the report stopped reaching stdout —"
+        note "       diagnostics belong on stderr and the report on stdout. Check print_json"
+        note "       in src/commands/usage.rs, then rebuild and re-run:"
+        note "         just build-release && just live-$id"
         fail "$id: 'oneharness usage' produced no report"
     fi
     rm -f "$errf"

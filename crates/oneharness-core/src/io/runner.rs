@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::domain::report::{Capture, OutputObservation, Status};
-use crate::io::process::{Finish, PipeEvent, Process};
+use crate::io::process::{resolve_program, Finish, PipeEvent, Process};
 
 /// A fully-specified subprocess to run.
 #[derive(Clone)]
@@ -121,30 +121,6 @@ where
         attempts += 1;
     }
     Outcome { capture, attempts }
-}
-
-/// Resolve a program name to the binary actually spawned.
-///
-/// On Windows this is load-bearing: `CreateProcess` only auto-appends `.exe`, so
-/// a bare name like `claude` never finds the `claude.cmd` shim that npm (and many
-/// other installers) drop on `PATH`. Resolving via `which` is PATHEXT-aware, so it
-/// locates the `.cmd`/`.bat` shim — and `std::process::Command`, given a path that
-/// ends in `.cmd`/`.bat`, runs it through the command interpreter with the safe
-/// argument escaping added in Rust 1.77 (CVE-2024-24576). Detection already uses
-/// `which`, so a harness can be reported `available` yet still fail to spawn from a
-/// bare name; this closes that gap. If resolution fails, fall back to the original
-/// name so the spawn error stays accurate.
-///
-/// On non-Windows the name is returned unchanged: PATH lookup already handles
-/// extensionless binaries, and we must not alter the established spawn behavior.
-fn resolve_program(program: &str) -> std::ffi::OsString {
-    #[cfg(windows)]
-    {
-        if let Ok(path) = which::which(program) {
-            return path.into_os_string();
-        }
-    }
-    program.into()
 }
 
 /// Decide the program and argument list to actually spawn for `argv`.
@@ -799,14 +775,6 @@ mod tests {
         assert!(cap.error.as_deref().unwrap_or_default().contains("spawn"));
     }
 
-    #[test]
-    fn resolve_program_falls_back_to_the_name_when_unresolvable() {
-        // A name that PATH lookup cannot resolve must come back unchanged on every
-        // platform, so the spawn attempt — and its error message — stay accurate.
-        let name = "oneharness-no-such-binary-zzz";
-        assert_eq!(resolve_program(name), std::ffi::OsString::from(name));
-    }
-
     #[cfg(windows)]
     #[test]
     fn windows_shim_plan_rewrites_a_cmd_only_for_multiline_args() {
@@ -856,20 +824,5 @@ mod tests {
         let exe = resolve_program("where");
         let multiline = vec!["x\ny".to_string()];
         assert!(windows_shim_plan(std::path::Path::new(&exe), &multiline).is_none());
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn resolve_program_finds_a_cmd_shim_on_windows() {
-        // `where` is a stock Windows console command living at a real path; the
-        // bare name must resolve to an absolute, existing file (the gap that left
-        // npm `.cmd` shims unspawnable from a bare name).
-        let resolved = resolve_program("where");
-        let path = std::path::Path::new(&resolved);
-        assert!(
-            path.is_absolute(),
-            "expected an absolute path, got {resolved:?}"
-        );
-        assert!(path.exists(), "resolved path should exist: {resolved:?}");
     }
 }

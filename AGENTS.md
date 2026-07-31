@@ -92,7 +92,11 @@ Use the `just` recipes; do not hand-roll equivalents.
   tree (Unix process group; Windows kill-on-close Job Object assigned while the
   child is suspended), applies a brief TERM→KILL grace on Unix, reaps, and bounds
   pipe drain; both buffered and streaming runner paths must go through it so an
-  npm wrapper's native child cannot survive or hold inherited pipes open. Timeout
+  npm wrapper's native child cannot survive or hold inherited pipes open. It also
+  owns `resolve_program`, so every spawn — runner and `usage` probe alike — takes
+  a bare registry name through the PATHEXT-aware lookup that finds Windows's
+  `codex.cmd`; a site that skips it reports an installed harness as
+  `program not found`. Timeout
   status is authoritative, but `commands::run::executed_result` still normalizes
   any complete captured records into text/usage/session/events (skipping a
   truncated JSONL tail), which history then preserves. A **same-prefix batch** is

@@ -6,6 +6,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/nickderobertis/oneharness/compare/v0.6.1...v0.6.2) - 2026-07-31
+
+### Fixed
+
+- unbreak release-plz package update after tempdir change ([#1206](https://github.com/nickderobertis/oneharness/pull/1206))
+- *(fallback)* classify Claude subscription limits as quota ([#1204](https://github.com/nickderobertis/oneharness/pull/1204))
+
 ### Fixed
 
 - *(fallback)* fall through when Claude Code rejects a run at its subscription usage limit

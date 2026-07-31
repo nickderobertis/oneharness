@@ -6,6 +6,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- *(fallback)* fall through when Codex rejects a run at its usage limit
+
 ## [0.6.2](https://github.com/nickderobertis/oneharness/compare/v0.6.1...v0.6.2) - 2026-07-31
 
 ### Fixed

@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"019fb9a1-4d18-7b02-8e55-6c0b3ad9f214"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"type":"command_execution","command":"cargo test","exit_code":101}}
+{"type":"error","message":"the task could not be completed: `cargo test` exited with status 101"}
+{"type":"turn.failed","error":{"message":"the task could not be completed: `cargo test` exited with status 101"}}

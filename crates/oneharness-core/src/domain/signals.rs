@@ -116,6 +116,7 @@ pub struct FailureReading {
 pub enum FailureDialect {
     Generic,
     ClaudeCode,
+    Codex,
 }
 
 /// A deferred-tool dead-end detected in a harness's output: the harness ended a
@@ -304,6 +305,10 @@ pub fn classify_failure(stdout: &str, stderr: &str) -> Option<FailureReading> {
 /// vocabulary: headless runs report a session/weekly limit message instead.
 /// Keep those phrases scoped to that adapter so another harness mentioning a
 /// "session limit" in an unrelated error is not silently treated as exhausted.
+/// Codex is deliberately absent: it declares its usage limit in a structured
+/// `turn.failed` event (see [`detect_harness_provider_failure`]), so scanning its
+/// whole transcript would risk reading an agent's own mention of a usage limit
+/// as exhaustion and silently re-running the task on another account.
 pub fn classify_harness_failure(
     dialect: FailureDialect,
     stdout: &str,
@@ -336,25 +341,60 @@ pub fn detect_provider_failure(stdout: &str) -> Option<FailureReading> {
 /// Provider-declared failure classification with adapter-specific quota
 /// surfaces. The terminal `is_error` record is the machine signal; matching its
 /// complete JSON record captures provider metadata as well as result text while
-/// avoiding unstructured output outside that explicit failure record.
+/// avoiding unstructured output outside that explicit failure record. Codex
+/// declares its failure differently, so it gets its own record shape below.
 pub fn detect_harness_provider_failure(
     dialect: FailureDialect,
     stdout: &str,
 ) -> Option<FailureReading> {
     json_candidates(stdout).into_iter().rev().find_map(|value| {
-        if value.get("is_error").and_then(Value::as_bool) != Some(true) {
-            return None;
-        }
-        let serialized = value.to_string();
-        let kind = match_failure(&serialized).or_else(|| {
-            (dialect == FailureDialect::ClaudeCode && claude_subscription_limit(&serialized))
-                .then_some(FailureKind::Quota)
-        })?;
+        let kind = error_record_failure(dialect, &value)
+            .or_else(|| codex_turn_failure(dialect, &value))?;
         Some(FailureReading {
             kind,
             source: "stdout".to_string(),
         })
     })
+}
+
+fn error_record_failure(dialect: FailureDialect, value: &Value) -> Option<FailureKind> {
+    if value.get("is_error").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let serialized = value.to_string();
+    match_failure(&serialized).or_else(|| {
+        (dialect == FailureDialect::ClaudeCode && claude_subscription_limit(&serialized))
+            .then_some(FailureKind::Quota)
+    })
+}
+
+/// Codex reports an exhausted account as a `turn.failed` event inside its stdout
+/// event stream — after `turn.started`, never on stderr — and the process can
+/// still exit zero. Only a message carrying the usage-limit signature is a quota
+/// rejection: an ordinary `turn.failed` is a real task failure, and classifying
+/// it here would let a fallback chain silently re-run the task on another
+/// account. The turn started, but no work was done, so the rejection is a
+/// provisioning failure like `auth` — the event ordering is a reporting detail
+/// of the Codex CLI.
+fn codex_turn_failure(dialect: FailureDialect, value: &Value) -> Option<FailureKind> {
+    (dialect == FailureDialect::Codex).then_some(())?;
+    (value.get("type").and_then(Value::as_str) == Some("turn.failed")).then_some(())?;
+    let message = value.get("error")?.get("message").and_then(Value::as_str)?;
+    codex_usage_limit(message).then_some(FailureKind::Quota)
+}
+
+/// Codex's usage-limit signature, matched on the stable phrasing only: the reset
+/// date and the purchase URL in the real message both vary.
+fn codex_usage_limit(text: &str) -> bool {
+    let text = text.to_lowercase();
+    [
+        "hit your usage limit",
+        "reached your usage limit",
+        "usage limit reached",
+        "usage limit exceeded",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
 }
 
 fn claude_subscription_limit(text: &str) -> bool {
@@ -746,6 +786,45 @@ mod tests {
         assert!(detect_harness_provider_failure(
             FailureDialect::ClaudeCode,
             r#"{"type":"result","is_error":false,"result":"You've hit your session limit"}"#
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn codex_usage_limit_capture_classifies_as_quota() {
+        // The real capture: the limit arrives as a `turn.failed` event on stdout,
+        // after `turn.started` — never on stderr — so the event stream is the
+        // only surface carrying it.
+        let captured = include_str!("../../../../tests/fixtures/codex-usage-limit.jsonl");
+        let got = detect_harness_provider_failure(FailureDialect::Codex, captured).unwrap();
+        assert_eq!(got.kind, FailureKind::Quota);
+        assert_eq!(got.source, "stdout");
+        // The reset date and the purchase URL vary, so neither is part of the
+        // signature: the phrasing alone still reads as exhausted.
+        let other_reset = r#"{"type":"turn.failed","error":{"message":"You’ve hit your usage limit. Try again at Dec 31st, 2027 6:00 AM."}}"#;
+        assert_eq!(
+            detect_harness_provider_failure(FailureDialect::Codex, other_reset)
+                .unwrap()
+                .kind,
+            FailureKind::Quota
+        );
+    }
+
+    #[test]
+    fn codex_ordinary_turn_failure_is_never_a_quota_rejection() {
+        // A real task failure must stay unclassified: treating it as quota would
+        // silently re-run the task on another account under `--run-mode fallback`.
+        let captured = include_str!("../../../../tests/fixtures/codex-turn-failed.jsonl");
+        assert!(detect_harness_provider_failure(FailureDialect::Codex, captured).is_none());
+        assert!(classify_harness_failure(FailureDialect::Codex, captured, "").is_none());
+        // Codex's limit phrasing is adapter-scoped, and only its own failure
+        // event counts: an agent message quoting the limit is not a rejection.
+        let limit = include_str!("../../../../tests/fixtures/codex-usage-limit.jsonl");
+        assert!(detect_harness_provider_failure(FailureDialect::Generic, limit).is_none());
+        assert!(classify_harness_failure(FailureDialect::Codex, limit, "").is_none());
+        assert!(detect_harness_provider_failure(
+            FailureDialect::Codex,
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"You've hit your usage limit"}}"#
         )
         .is_none());
     }

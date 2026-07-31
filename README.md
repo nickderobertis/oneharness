@@ -1058,6 +1058,12 @@ a per-model rejection means "try the next model", so `model_not_found` (fall
 through — `model-not-found`) and `rate_limit` (fall through — `rate-limit`) *do*
 fall through. With a single model both still stop the chain, as above.
 
+A **subscription/usage-limit** rejection classifies as `quota` and falls through
+whichever way its CLI reports it: Claude Code's session or weekly limit, and
+Codex's usage limit — the latter arriving as a `turn.failed` event on stdout
+after the turn started, so it falls through on a clean exit too. Only the limit
+message does; an ordinary failed turn is a real run and stops the chain.
+
 The report gains a `fallback` block, `{ "ran", "fell_through": [{ "harness",
 "reason" }] }`: `ran` is the harness that executed (or `null` when every
 candidate failed to start), and `results` holds only the harnesses **attempted**

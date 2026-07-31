@@ -1996,6 +1996,7 @@ fn skipped_result(
 fn failure_dialect(spec: &HarnessSpec) -> signals::FailureDialect {
     match spec.id {
         "claude-code" => signals::FailureDialect::ClaudeCode,
+        "codex" => signals::FailureDialect::Codex,
         _ => signals::FailureDialect::Generic,
     }
 }

@@ -12938,6 +12938,155 @@ fn fallback_falls_through_claude_subscription_limit_captures() {
     }
 }
 
+/// The `codex` → `codex:alternate` chain the second-account setup exists for: an
+/// exhausted account must hand the task to the alternate identity. Codex reports
+/// the limit as a `turn.failed` event on stdout after the turn started, so the
+/// exit code it pairs that with is not load-bearing — both are exercised.
+#[test]
+fn fallback_falls_through_a_codex_usage_limit_to_the_alternate_account() {
+    let mock = mock_bin().display().to_string();
+    let capture =
+        serde_json::to_string(include_str!("fixtures/codex-usage-limit.jsonl").trim()).unwrap();
+    let alternate =
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"served-by-alternate"}}"#;
+
+    for exit in ["0", "1"] {
+        let project = format!(
+            r#"
+            harnesses = ["codex", "codex:alternate"]
+            run_mode = "fallback"
+
+            [harness.codex]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "{exit}", MOCK_STDOUT = {capture}, MOCK_STDERR = "Reading additional input from stdin...\n" }}
+
+            [harness.codex.variant.alternate]
+            bin = '{mock}'
+
+            [harness.codex.variant.alternate.env]
+            MOCK_EXIT = "0"
+            MOCK_STDOUT = '{alternate}'
+            "#
+        );
+        let fx = ConfigFixture::new(&format!("fallback-codex-usage-limit-{exit}"), &project, "");
+        let output = run_with_config(
+            &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+            &[],
+            &fx.user_config(),
+        );
+        assert!(
+            output.status.success(),
+            "exit {exit}: status {:?}, stderr {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value = json_stdout(&output);
+        assert_eq!(value["fallback"]["ran"], "codex:alternate", "exit {exit}");
+        assert_eq!(
+            value["fallback"]["fell_through"][0]["harness"], "codex",
+            "exit {exit}"
+        );
+        assert_eq!(
+            value["fallback"]["fell_through"][0]["reason"], "quota",
+            "exit {exit}"
+        );
+        let expected_status = if exit == "0" { "ok" } else { "nonzero" };
+        assert_eq!(
+            value["results"][0]["status"], expected_status,
+            "exit {exit}"
+        );
+        assert_eq!(value["results"][0]["failure_kind"], "quota", "exit {exit}");
+        assert_eq!(
+            value["results"][0]["failure_kind_source"], "stdout",
+            "exit {exit}"
+        );
+        assert_eq!(
+            value["results"][1]["harness_id"], "codex:alternate",
+            "exit {exit}"
+        );
+        assert_eq!(value["results"][1]["status"], "ok", "exit {exit}");
+        assert_eq!(value["results"][1]["text"], "served-by-alternate");
+    }
+}
+
+#[test]
+fn fallback_stops_at_a_codex_turn_failure_and_does_not_fall_through() {
+    // The regression guard for the fall-through above: an ordinary `turn.failed`
+    // is a real task failure, so the chain must stop rather than silently re-run
+    // the task on the alternate account.
+    let mock = mock_bin().display().to_string();
+    let capture =
+        serde_json::to_string(include_str!("fixtures/codex-turn-failed.jsonl").trim()).unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["codex", "codex:alternate"]
+        run_mode = "fallback"
+
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {capture} }}
+
+        [harness.codex.variant.alternate]
+        bin = '{mock}'
+        "#
+    );
+    let fx = ConfigFixture::new("fallback-codex-turn-failed", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let value = json_stdout(&output);
+    assert_eq!(value["fallback"]["ran"], "codex");
+    assert!(value["fallback"]["fell_through"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let results = value["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["status"], "nonzero");
+    assert!(results[0]["failure_kind"].is_null());
+}
+
+#[test]
+fn fallback_stops_at_a_codex_timeout_and_does_not_fall_through() {
+    // A slow Codex run that timed out is a genuine run, not a rejected one: the
+    // alternate account must not be tried, even though the same chain falls
+    // through a usage limit.
+    let mock = mock_bin().display().to_string();
+    let project = format!(
+        r#"
+        harnesses = ["codex", "codex:alternate"]
+        run_mode = "fallback"
+        timeout = 1
+
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_SLEEP_MS = "4000" }}
+
+        [harness.codex.variant.alternate]
+        bin = '{mock}'
+        "#
+    );
+    let fx = ConfigFixture::new("fallback-codex-timeout", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let value = json_stdout(&output);
+    assert_eq!(value["fallback"]["ran"], "codex");
+    assert!(value["fallback"]["fell_through"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let results = value["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["status"], "timeout");
+}
+
 #[test]
 fn fallback_with_no_runnable_harness_is_a_failure() {
     // Every candidate is a startup failure (none installed): nothing ran, so the

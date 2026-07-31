@@ -452,6 +452,85 @@ oh_cache_assert() {
     fi
 }
 
+# Live proof that the zero-turn `usage` probe still gets an ANSWER out of the
+# real harness — the drift alarm for the probe's *exchange*, which the hermetic
+# suite can only mock. Call it for every harness whose `usage` support is a probe
+# (see the README support matrix); a harness that reports no headroom at all has
+# nothing to drift.
+#
+# What is asserted is that the harness answered, not what it answered: CI
+# authenticates with an API key, where the honest reading is `unavailable` with a
+# reason, while a subscription box reports `available` windows. Both are the
+# harness replying. `unknown` is the failure — it means oneharness asked and got
+# nothing back.
+#   $1 harness id
+oh_usage_enforce() {
+    local id="$1" bin report state reason detail errf rc
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    errf="$(mktemp)"
+    report="$(ONEHARNESS_NO_CONFIG=1 "$bin" usage --harness "$id" \
+        --timeout "${OH_TIMEOUT:-120}" --compact 2>"$errf")" && rc=0 || rc=$?
+    if [ -z "$report" ]; then
+        note "  oneharness exited $rc and emitted no JSON on stdout. Its stderr:"
+        sed 's/^/    /' "$errf" >&2 || true
+        rm -f "$errf"
+        note "  Next, in order:"
+        note "    1. Exit 2 is a usage/config error in the call above, not a harness fault:"
+        note "       read the stderr line, then fix the flags in oh_usage_enforce"
+        note "       (scripts/e2e-lib.sh) and re-run:"
+        note "         just live-$id"
+        note "    2. Any other non-zero exit is oneharness aborting mid-probe, which its"
+        note "       contract forbids — a missing binary, an unauthenticated harness, and a"
+        note "       timeout are all meant to come back as an identity. File it against the"
+        note "       probe (crates/oneharness-core/src/io/usage.rs) and its containment"
+        note "       (probe_all in src/commands/usage.rs)."
+        note "    3. Exit 0 with empty stdout means the report stopped reaching stdout —"
+        note "       diagnostics belong on stderr and the report on stdout. Check print_json"
+        note "       in src/commands/usage.rs, then rebuild and re-run:"
+        note "         just build-release && just live-$id"
+        fail "$id: 'oneharness usage' produced no report"
+    fi
+    rm -f "$errf"
+
+    state="$(printf '%s' "$report" | jq -r '.identities[0].availability.state')"
+    reason="$(printf '%s' "$report" | jq -r '
+        .identities[0].availability.reason as $r
+        | if ($r | type) == "object" then ($r.kind // "") else ($r // "") end')"
+    case "$state:$reason" in
+    available:*)
+        detail="headroom $(printf '%s' "$report" |
+            jq -r '[.identities[0].availability.windows[]
+                    | "\(.id) \(.usage.used_percent // .usage.kind)"] | join(", ")')"
+        ;;
+    unavailable:*) detail="unavailable ($reason)" ;;
+    unknown:binary_missing)
+        skip "$id is not installed (oneharness reported binary_missing); nothing to probe"
+        ;;
+    *)
+        note "  report: $report"
+        note "  Next, in order:"
+        note "    1. Replay the probe and read the harness's own errors:"
+        note "         ONEHARNESS_NO_CONFIG=1 $bin usage --harness $id --timeout ${OH_TIMEOUT:-120} --format text"
+        note "       An auth or plan error there is the account, not a drift."
+        note "    2. Send $id's recorded request lines (docs/harness-usage.md) to the CLI by"
+        note "       hand twice: once holding stdin open past the last request, once closing"
+        note "       it straight away. Answered only when held open means the probe must wait"
+        note "       for it — give $id StdinAfterRequests::HoldUntilAnswered in"
+        note "       crates/oneharness-core/src/io/usage.rs."
+        note "    3. Answered in an unrecognized shape means the payload moved: update $id's"
+        note "       parser and its drift guard in crates/oneharness-core/src/domain/usage.rs"
+        note "       (record the new payload in docs/harness-usage.md), then re-run:"
+        note "         just live-$id"
+        fail "$id: the usage probe got no answer out of the harness (state=$state, reason=$reason)"
+        ;;
+    esac
+    # The reading itself is the evidence, and this log is its only record: a live
+    # phase that passed silently is indistinguishable from one that never ran.
+    note "PASS: $id answered its usage probe — $detail"
+}
+
 # --- normalized tool-call / action events ------------------------------------
 
 # Live proof that oneharness surfaces normalized tool-call events in the

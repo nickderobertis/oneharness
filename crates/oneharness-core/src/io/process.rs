@@ -41,6 +41,36 @@ pub(crate) enum Finish {
     Terminate,
 }
 
+/// Resolve a program name to the binary actually spawned.
+///
+/// On Windows this is load-bearing: `CreateProcess` only auto-appends `.exe`, so
+/// a bare name like `claude` never finds the `claude.cmd` shim that npm (and many
+/// other installers) drop on `PATH`. Resolving via `which` is PATHEXT-aware, so it
+/// locates the `.cmd`/`.bat` shim — and `std::process::Command`, given a path that
+/// ends in `.cmd`/`.bat`, runs it through the command interpreter with the safe
+/// argument escaping added in Rust 1.77 (CVE-2024-24576). Detection already uses
+/// `which`, so a harness can be reported `available` yet still fail to spawn from a
+/// bare name; this closes that gap. If resolution fails, fall back to the original
+/// name so the spawn error stays accurate.
+///
+/// It lives beside [`Process::spawn`] because it is a property of spawning, not
+/// of any one caller: the runner and the `usage` probes both take a bare harness
+/// name from the registry, and a resolution only the runner performed left the
+/// probes reporting `program not found` for an npm-installed harness that every
+/// other command could run.
+///
+/// On non-Windows the name is returned unchanged: PATH lookup already handles
+/// extensionless binaries, and we must not alter the established spawn behavior.
+pub(crate) fn resolve_program(program: &str) -> std::ffi::OsString {
+    #[cfg(windows)]
+    {
+        if let Ok(path) = which::which(program) {
+            return path.into_os_string();
+        }
+    }
+    program.into()
+}
+
 /// One direct child, all of its descendants, and both output drains.
 pub(crate) struct Process {
     child: Option<Child>,
@@ -282,6 +312,29 @@ mod tests {
         assert_eq!(observations.len(), 3);
         assert_eq!(observations[0].1, b"one\n");
         assert_eq!(observations[2].1, b"three\n");
+    }
+
+    #[test]
+    fn resolve_program_falls_back_to_the_name_when_unresolvable() {
+        // A name that PATH lookup cannot resolve must come back unchanged on every
+        // platform, so the spawn attempt — and its error message — stay accurate.
+        let name = "oneharness-no-such-binary-zzz";
+        assert_eq!(resolve_program(name), std::ffi::OsString::from(name));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_program_finds_a_cmd_shim_on_windows() {
+        // `where` is a stock Windows console command living at a real path; the
+        // bare name must resolve to an absolute, existing file (the gap that left
+        // npm `.cmd` shims unspawnable from a bare name).
+        let resolved = resolve_program("where");
+        let path = std::path::Path::new(&resolved);
+        assert!(
+            path.is_absolute(),
+            "expected an absolute path, got {resolved:?}"
+        );
+        assert!(path.exists(), "resolved path should exist: {resolved:?}");
     }
 }
 

@@ -13426,6 +13426,82 @@ fn core_version() -> String {
         .expect("oneharness-core's manifest states a version")
 }
 
+/// Stage the mock harness on `PATH` under `name`, exactly the way an installer
+/// puts a harness there: an extensionless executable on Unix, and on Windows a
+/// `.cmd` shim beside the real program — the npm shape, which `CreateProcess`
+/// cannot run from a bare name because it only ever appends `.exe`.
+///
+/// Returns the `PATH` value with `dir` first.
+fn stage_harness_on_path(dir: &std::path::Path, name: &str) -> std::ffi::OsString {
+    std::fs::create_dir_all(dir).expect("the staging directory");
+    #[cfg(windows)]
+    {
+        let program = dir.join("mock-harness.exe");
+        std::fs::copy(mock_bin(), &program).expect("stage the mock program");
+        std::fs::write(
+            dir.join(format!("{name}.cmd")),
+            "@\"%~dp0mock-harness.exe\" %*\r\n",
+        )
+        .expect("stage the shim");
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::copy(mock_bin(), dir.join(name)).expect("stage the mock program");
+    }
+    let ambient = std::env::var_os("PATH").unwrap_or_default();
+    std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&ambient)))
+        .expect("a PATH with the staged directory first")
+}
+
+#[test]
+fn usage_probes_a_harness_installed_under_a_bare_name_on_path() {
+    // A harness reaches the probe as the bare name the registry declares
+    // (`codex`), not as a path — so the probe has to resolve that name the same
+    // way `run` does. It did not: `run` resolves through `which` (PATHEXT-aware)
+    // precisely because `CreateProcess` only appends `.exe` and never finds the
+    // `codex.cmd` npm installs, and the probe spawned the bare name directly. On
+    // Windows that reported `probe_failed: program not found` for a harness every
+    // other verb drove fine — headroom that was readable the whole time, filed as
+    // unknown. The staged install below is that exact shape.
+    let dir = std::env::temp_dir().join(format!(
+        "oneharness-usage-path-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = stage_harness_on_path(&dir, "oneharness-staged-codex");
+
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "codex",
+            "--bin",
+            "codex=oneharness-staged-codex",
+            "--compact",
+        ],
+        &[
+            ("PATH", path.to_str().expect("a UTF-8 PATH")),
+            ("MOCK_REPLY_AFTER_LINES", "3"),
+            ("MOCK_STDOUT", &codex_usage_response()),
+        ],
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let codex = usage_identity(&json_stdout(&output), "codex");
+    assert_eq!(
+        codex["availability"]["state"],
+        "available",
+        "the probe must spawn a PATH-installed harness, not report it missing: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        codex["availability"]["windows"][0]["usage"]["used_percent"], 31.0,
+        "and read the headroom back off it"
+    );
+}
+
 #[test]
 fn usage_runs_each_probe_in_the_requested_working_directory() {
     // `--cwd` decides which directory a probe's child starts in, which is what
@@ -13520,6 +13596,119 @@ fn usage_reports_codex_headroom_from_its_app_server_exchange() {
     assert_eq!(
         window["window_seconds_source"], "reported",
         "codex states its window length rather than having it inferred"
+    );
+}
+
+#[test]
+fn usage_waits_for_an_answer_a_harness_only_sends_while_its_stdin_is_open() {
+    // `codex app-server` answers `initialize` synchronously but reads rate limits
+    // asynchronously, and it shuts down on stdin EOF — so a probe that wrote its
+    // three requests and closed the pipe was reported as "exited without an
+    // answer" on an account whose 45%-used weekly window was readable the whole
+    // time. The mock reproduces exactly that race: it answers only after a delay,
+    // and exits unanswered if EOF arrives first. The delay is what the fix has to
+    // wait through; the EOF-shutdown is what makes the old close fail here.
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "codex",
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "3"),
+            ("MOCK_REPLY_DELAY_MS", "750"),
+            ("MOCK_STDOUT", &codex_usage_response()),
+        ],
+    );
+
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let codex = usage_identity(&json_stdout(&output), "codex");
+    assert_eq!(
+        codex["availability"]["state"], "available",
+        "the headroom arrived late, which is not the same as never: {codex}"
+    );
+    assert_eq!(codex["plan"], "pro");
+    assert_eq!(
+        codex["availability"]["windows"][0]["usage"]["used_percent"],
+        31.0
+    );
+}
+
+#[test]
+fn usage_gives_up_on_a_harness_that_never_answers_without_waiting_for_its_exit() {
+    // Holding stdin open for a late answer must not become a probe that hangs on
+    // a harness which has none: the deadline still ends the wait, the child's
+    // tree is still torn down, and the reading is still honest data rather than a
+    // fabricated 0%. The mock is asked for an answer ten times past the timeout.
+    let started = std::time::Instant::now();
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "codex",
+            "--bin",
+            &bin_override("codex"),
+            "--timeout",
+            "1",
+            "--compact",
+        ],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "3"),
+            ("MOCK_REPLY_DELAY_MS", "10000"),
+            ("MOCK_STDOUT", &codex_usage_response()),
+        ],
+    );
+    let elapsed = started.elapsed();
+
+    assert!(
+        output.status.success(),
+        "a probe that never answers is data, not an exit code: {:?}",
+        output.status.code()
+    );
+    let codex = usage_identity(&json_stdout(&output), "codex");
+    assert_eq!(codex["availability"]["state"], "unknown");
+    let message = codex["availability"]["reason"]["message"]
+        .as_str()
+        .expect("a message");
+    assert!(message.contains("did not answer"), "{message}");
+    assert!(
+        elapsed < std::time::Duration::from_secs(9),
+        "the probe returned on its own deadline rather than the harness's: {elapsed:?}"
+    );
+}
+
+#[test]
+fn mock_harness_refuses_a_reply_delay_it_could_never_wait_out() {
+    // The scripted delay becomes an `Instant` deadline, so a value near u64::MAX
+    // is both a wait no run outlasts and a sum that can leave the platform
+    // clock's range, where `Instant + Duration` panics. Either way it is a typo,
+    // and it reaches a shipped subcommand through the environment: the range
+    // belongs where the value is read, in a message that names it.
+    let output = run(
+        &["mock-harness"],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "1"),
+            ("MOCK_REPLY_DELAY_MS", "18446744073709551615"),
+        ],
+    );
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "an out-of-range delay is a usage error, not a crash: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("MOCK_REPLY_DELAY_MS") && stderr.contains("from 0 to 600000"),
+        "the refusal has to name the accepted range: {stderr}"
+    );
+    assert!(
+        stderr.contains("18446744073709551615"),
+        "the refusal has to name the value it rejected: {stderr}"
     );
 }
 

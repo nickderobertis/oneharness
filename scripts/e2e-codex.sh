@@ -49,6 +49,14 @@ oh_events_assert codex "json:codex-items" --events
 note "» stream: events must arrive incrementally, then a terminal result line"
 oh_stream_assert codex --events
 
+# Usage enforcement: the app-server answers `account/rateLimits/read`
+# asynchronously and shuts down on stdin EOF, so the probe holds stdin open until
+# its answer lands. Whatever that answer is — headroom on a ChatGPT login, an
+# auth error under this suite's API key — it must be an answer.
+# llmlint: ignore[tool_output_is_signal] Every phase in this script announces itself on one line before it runs, and that header is what attributes a later failure (or a hang) to a phase in the CI log; dropping it here alone would make this one phase the unlabelled one.
+note "» usage: the zero-turn probe must get an answer out of the real app-server"
+oh_usage_enforce codex
+
 # Reasoning enforcement: `--reasoning high` maps to Codex's
 # `-c model_reasoning_effort=high` and must round-trip; a bogus effort should be
 # rejected (honoring evidence).

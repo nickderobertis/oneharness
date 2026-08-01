@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.4](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.6.3...oneharness-core-v0.6.4) - 2026-08-01
+
+### Fixed
+
+- *(fallback)* fall through a zero-work session-limit rejection ([#1211](https://github.com/nickderobertis/oneharness/pull/1211))
+
 ## [0.6.3](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.6.2...oneharness-core-v0.6.3) - 2026-07-31
 
 ### Fixed

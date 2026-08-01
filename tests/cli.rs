@@ -12999,32 +12999,55 @@ fn fallback_falls_through_a_claude_session_limit_reported_as_an_api_error() {
     assert_eq!(value["results"][1]["text"], "served-by-codex");
 }
 
-/// `terminal_reason: "api_error"` **alone** — no `api_error_status`, no
-/// `is_error` — is a complete failure declaration, and the envelope predicate is
-/// dialect agnostic, so a non-Claude harness reaches the same classification
-/// through the generic vocabulary. The Claude-specific *phrasing* stays scoped to
-/// the Claude dialect: the same words from another harness are not exhaustion.
+/// Each of the record's failure declarations is sufficient **on its own** —
+/// `terminal_reason: "api_error"` with no status, and a numeric
+/// `api_error_status` with no `terminal_reason`, neither carrying `is_error`.
+/// The predicate is dialect agnostic, so a non-Claude harness reaches the same
+/// classification through the generic vocabulary. The Claude-specific *phrasing*
+/// stays scoped to the Claude dialect: the same words from another harness are
+/// not exhaustion.
 ///
 /// Every case exits **zero** on purpose. A clean exit is what isolates the
 /// envelope predicate: the non-zero text classifier never runs, so the record is
-/// classified only if the harness's own `terminal_reason` declaration is read.
+/// classified only if the harness's own declaration is read off the record.
 #[test]
-fn fallback_reads_a_terminal_reason_only_api_error_across_dialects() {
+fn fallback_reads_an_api_error_envelope_across_declarations_and_dialects() {
     let mock = mock_bin().display().to_string();
     let served =
         r#"{"type":"item.completed","item":{"type":"agent_message","text":"served-by-next"}}"#;
-    // (tag, harness whose dialect is exercised, result text, expected outcome)
+    const LIMIT: &str = "You've hit your session limit · resets 1pm (America/Mexico_City)";
+    const CREDIT: &str = "insufficient_quota: credit balance exhausted";
+    // (tag, harness whose dialect is exercised, the record's sole failure
+    //  declaration, result text, expected outcome)
     let cases = [
         (
-            "claude-adapter-phrasing",
+            "claude-terminal-reason",
             "claude-code",
-            "You've hit your session limit · resets 1pm (America/Mexico_City)",
+            serde_json::json!({"terminal_reason": "api_error"}),
+            LIMIT,
+            Some("quota"),
+        ),
+        // `api_error_status` alone, with the 429 the limit message has to
+        // out-rank: neither `is_error` nor `terminal_reason` is present.
+        (
+            "claude-status-only",
+            "claude-code",
+            serde_json::json!({"api_error_status": 429}),
+            LIMIT,
             Some("quota"),
         ),
         (
-            "generic-vocabulary",
+            "generic-terminal-reason",
             "opencode",
-            "insufficient_quota: credit balance exhausted",
+            serde_json::json!({"terminal_reason": "api_error"}),
+            CREDIT,
+            Some("quota"),
+        ),
+        (
+            "generic-status-only",
+            "opencode",
+            serde_json::json!({"api_error_status": 402}),
+            CREDIT,
             Some("quota"),
         ),
         // The scoping guarantee, at the integration level: OpenCode is the
@@ -13033,19 +13056,22 @@ fn fallback_reads_a_terminal_reason_only_api_error_across_dialects() {
         (
             "generic-ignores-claude-phrasing",
             "opencode",
-            "You've hit your session limit · resets 1pm (America/Mexico_City)",
+            serde_json::json!({"terminal_reason": "api_error"}),
+            LIMIT,
             None,
         ),
     ];
 
-    for (tag, first, result_text, expected) in cases {
-        let record = serde_json::to_string(&serde_json::json!({
+    for (tag, first, declaration, result_text, expected) in cases {
+        let mut record = serde_json::json!({
             "type": "result",
             "subtype": "success",
-            "terminal_reason": "api_error",
             "result": result_text,
-        }))
-        .unwrap();
+        });
+        for (key, value) in declaration.as_object().unwrap() {
+            record[key] = value.clone();
+        }
+        let record = serde_json::to_string(&record).unwrap();
         let record = serde_json::to_string(&record).unwrap();
         let project = format!(
             r#"
@@ -13061,7 +13087,7 @@ fn fallback_reads_a_terminal_reason_only_api_error_across_dialects() {
             env = {{ MOCK_EXIT = "0", MOCK_STDOUT = '{served}' }}
             "#
         );
-        let fx = ConfigFixture::new(&format!("fallback-terminal-reason-{tag}"), &project, "");
+        let fx = ConfigFixture::new(&format!("fallback-api-error-envelope-{tag}"), &project, "");
         let output = run_with_config(
             &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
             &[],

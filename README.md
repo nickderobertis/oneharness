@@ -1070,8 +1070,24 @@ session limit in a terminal record that may say `subtype: "success"` with no
 `api_error_status` of `429` instead — and the limit message still wins over that
 embedded `429`, so the rejection reads as `quota` (fall through) rather than the
 transient `rate_limit` (stop). A `429` *without* a limit message is still a plain
-`rate_limit` and still stops the chain, and a record reporting real token usage
-is a run that happened, whatever error ended it.
+`rate_limit` and still stops the chain.
+
+**A Claude limit only falls through when the run did no work.** `quota` means the
+candidate could not run the task *at all*, so the discriminator is the harness's
+own accounting, not the error text: a record reporting any non-zero token count,
+any non-zero cost, or a non-empty `modelUsage` map describes a run that got
+somewhere, and falling through it would burn the next candidate's quota
+re-running work already paid for. So the same limit message with tokens spent is
+an ordinary run — with the embedded `429` it lands as `rate_limit`, without one it
+stays unclassified, and either way the chain stops. A limit with **no** accounting
+at all (a bare `You've hit your session limit` line on stderr) still falls
+through: absent accounting is not evidence of work.
+
+> **Behavior change.** A Claude session/weekly limit that arrived *mid-run* used
+> to fall through as `quota`. It now stops the chain. Only zero-work rejections
+> fall through. This affects the limit signature specifically — the generic
+> `insufficient_quota` / `credit balance` vocabulary means the account is out of
+> money rather than out of session, and is unchanged.
 
 The report gains a `fallback` block, `{ "ran", "fell_through": [{ "harness",
 "reason" }] }`: `ran` is the harness that executed (or `null` when every

@@ -317,8 +317,12 @@ pub fn classify_harness_failure(
     stdout: &str,
     stderr: &str,
 ) -> Option<FailureReading> {
+    // The harness's own accounting for the whole run: a limit message printed on
+    // stderr says nothing about whether the run got anywhere, so the work
+    // evidence has to come from the transcript, not from the matched text.
+    let worked = stdout_reports_work(stdout);
     for (source, text) in [("stderr", stderr), ("stdout", stdout)] {
-        if let Some(kind) = harness_quota_failure(dialect, text) {
+        if let Some(kind) = harness_quota_failure(dialect, text, worked) {
             return Some(FailureReading {
                 kind,
                 source: source.to_string(),
@@ -328,21 +332,82 @@ pub fn classify_harness_failure(
     classify_failure(stdout, stderr)
 }
 
-/// The adapter-specific quota signature in `text`, or `None` when this dialect
-/// has none (or the text does not carry it).
+/// The adapter-specific subscription-limit signature in `text` — a [`FailureKind::Quota`]
+/// rejection — or `None` when this dialect has none, the text does not carry it,
+/// or the harness **did work** before the limit landed.
 ///
-/// Every caller must consult this **before** [`match_failure`]. The order is not
-/// cosmetic: a Claude Code session-limit rejection embeds the HTTP status of the
-/// rejection (`"api_error_status":429`) in the same record that carries the limit
-/// message, and the generic vocabulary reads any `429` as the coarse
+/// Two rules are encoded here, and both are load-bearing.
+///
+/// **Order.** Every caller must consult this *before* [`match_failure`]. A Claude
+/// Code session-limit rejection embeds the HTTP status of the rejection
+/// (`"api_error_status":429`) in the same record that carries the limit message,
+/// and the generic vocabulary reads any `429` as the coarse
 /// [`FailureKind::RateLimit`] — a deliberately *non*-fall-through kind, since a
 /// rate limit is a transient hiccup of a working harness. Scanning generic-first
 /// therefore classified an exhausted subscription as a transient blip and stranded
 /// a configured fallback chain with authenticated candidates untried (issue #1211).
 /// The adapter signal is the more specific reading of the same bytes, so it wins.
-fn harness_quota_failure(dialect: FailureDialect, text: &str) -> Option<FailureKind> {
-    (dialect == FailureDialect::ClaudeCode && claude_subscription_limit(text))
-        .then_some(FailureKind::Quota)
+///
+/// **Work done, not error text.** `quota` is the fall-through kind: it means the
+/// candidate *could not run the task at all*, so the next one should try. That is
+/// only true of a rejection that did no work. A limit that lands mid-run leaves
+/// real tokens spent and possibly a partial answer, and falling through it burns
+/// the next candidate's quota re-running work that already happened. So the same
+/// message with `did_work` reads as an ordinary run: the generic vocabulary still
+/// gets its turn (a mid-run `429` lands as `rate_limit`, which stops the chain),
+/// and a limit with no generic signal at all stays unclassified — also a stop.
+///
+/// Scope: this gate covers the *adapter* limit signature only. The generic
+/// `insufficient_quota` / `credit balance` vocabulary in [`match_failure`] means
+/// the account is out of money rather than out of session, and is left as it was.
+/// Codex's [`codex_turn_failure`] needs no gate: its `turn.failed` event carries
+/// no accounting to read, and inventing a shape for one would be a guess.
+fn harness_quota_failure(
+    dialect: FailureDialect,
+    text: &str,
+    did_work: bool,
+) -> Option<FailureKind> {
+    (dialect == FailureDialect::ClaudeCode).then_some(())?;
+    claude_subscription_limit(text).then_some(())?;
+    (!did_work).then_some(FailureKind::Quota)
+}
+
+/// Whether any record in `stdout` reports work — the run-level view of
+/// [`record_reports_work`].
+fn stdout_reports_work(stdout: &str) -> bool {
+    json_candidates(stdout).iter().any(record_reports_work)
+}
+
+/// Whether this record's own accounting says the harness **did work** before it
+/// failed: any non-zero token count, a non-zero dollar cost, or a non-empty
+/// per-model usage map (Claude Code's `modelUsage`, which is `{}` when no model
+/// was ever reached).
+///
+/// Absent accounting is deliberately **not** work. A bare `You've hit your
+/// session limit` line on stderr carries no usage block at all, and it is still
+/// a zero-work rejection; requiring positive proof of zero would strand exactly
+/// the callers this rule exists to serve. Only a harness that says it spent
+/// something counts as having run.
+fn record_reports_work(value: &Value) -> bool {
+    let spent = single_object_usage(value)
+        .map(|reading| reading.usage)
+        .is_some_and(|usage| {
+            [
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.cache_read_tokens,
+                usage.cache_write_tokens,
+            ]
+            .into_iter()
+            .flatten()
+            .any(|tokens| tokens > 0)
+                || usage.cost_usd.is_some_and(|cost| cost > 0.0)
+        });
+    spent
+        || value
+            .get("modelUsage")
+            .and_then(Value::as_object)
+            .is_some_and(|models| !models.is_empty())
 }
 
 /// Classify a provider-declared failed result even when its CLI exits zero.
@@ -379,8 +444,11 @@ pub fn detect_harness_provider_failure(
 fn error_record_failure(dialect: FailureDialect, value: &Value) -> Option<FailureKind> {
     is_provider_failure_envelope(value).then_some(())?;
     let serialized = value.to_string();
-    // Adapter signal first: see `harness_quota_failure` for why.
-    harness_quota_failure(dialect, &serialized).or_else(|| match_failure(&serialized))
+    // Adapter signal first, and only when this record did no work: see
+    // `harness_quota_failure` for both rules. Claude's terminal record carries
+    // whole-run totals, so its own accounting is the run's accounting.
+    harness_quota_failure(dialect, &serialized, record_reports_work(value))
+        .or_else(|| match_failure(&serialized))
 }
 
 /// Whether this terminal record is one the harness itself declares an **API
@@ -797,20 +865,81 @@ mod tests {
     }
 
     #[test]
-    fn claude_subscription_limit_fixtures_classify_as_quota() {
+    fn claude_subscription_limit_fixtures_classify_as_quota_when_no_work_was_done() {
+        // Both zero-work captures: all-zero token counts (the JSON), and a bare
+        // limit line with no accounting at all (the stderr text). Absent
+        // accounting is not evidence of work, so both stay fall-through.
         let session_json = include_str!("../../../../tests/fixtures/claude-session-limit.json");
-        let weekly_json = include_str!("../../../../tests/fixtures/claude-weekly-limit.json");
-        let session_text = include_str!("../../../../tests/fixtures/claude-session-limit.txt");
+        let got =
+            detect_harness_provider_failure(FailureDialect::ClaudeCode, session_json).unwrap();
+        assert_eq!(got.kind, FailureKind::Quota);
+        assert_eq!(got.source, "stdout");
 
-        for captured in [session_json, weekly_json] {
-            let got =
-                detect_harness_provider_failure(FailureDialect::ClaudeCode, captured).unwrap();
-            assert_eq!(got.kind, FailureKind::Quota);
-            assert_eq!(got.source, "stdout");
-        }
+        let session_text = include_str!("../../../../tests/fixtures/claude-session-limit.txt");
         let got = classify_harness_failure(FailureDialect::ClaudeCode, "", session_text).unwrap();
         assert_eq!(got.kind, FailureKind::Quota);
         assert_eq!(got.source, "stderr");
+    }
+
+    /// The weekly-limit capture is the counter-case, and it is a **deliberate
+    /// change** from when that fixture was first pinned: it reports 17 input +
+    /// 800 output tokens, 78k cached prompt tokens, $0.147, and ten turns over 26
+    /// seconds. The limit landed mid-run, so the harness ran — `quota` would hand
+    /// that task to the next candidate and pay for the same work twice. It stays
+    /// unclassified, which stops the chain.
+    #[test]
+    fn a_claude_limit_that_landed_after_real_work_is_not_a_quota_rejection() {
+        let weekly_json = include_str!("../../../../tests/fixtures/claude-weekly-limit.json");
+        assert!(detect_harness_provider_failure(FailureDialect::ClaudeCode, weekly_json).is_none());
+        assert!(classify_harness_failure(FailureDialect::ClaudeCode, weekly_json, "").is_none());
+
+        // Same limit message, same spent tokens, but the record also carries the
+        // rejection's 429: the generic vocabulary gets its turn and reads it as
+        // the transient `rate_limit` — which also stops the chain.
+        let mid_run = r#"{"type":"result","is_error":true,"api_error_status":429,"result":"You've hit your session limit · resets 1pm","usage":{"input_tokens":4102,"output_tokens":311}}"#;
+        assert_eq!(
+            detect_harness_provider_failure(FailureDialect::ClaudeCode, mid_run)
+                .unwrap()
+                .kind,
+            FailureKind::RateLimit
+        );
+        assert_eq!(
+            classify_harness_failure(FailureDialect::ClaudeCode, mid_run, "")
+                .unwrap()
+                .kind,
+            FailureKind::RateLimit
+        );
+    }
+
+    #[test]
+    fn work_is_any_spend_the_harness_reports_and_never_an_absent_reading() {
+        // Each accounting field on its own is proof the harness got somewhere,
+        // including a per-model map with no token totals beside it.
+        for spent in [
+            r#""usage":{"input_tokens":12,"output_tokens":0}"#,
+            r#""usage":{"output_tokens":7}"#,
+            r#""usage":{"cache_read_input_tokens":9001}"#,
+            r#""usage":{"cache_creation_input_tokens":64}"#,
+            r#""total_cost_usd":0.0004"#,
+            r#""modelUsage":{"claude-opus-4-6":{"inputTokens":31}}"#,
+        ] {
+            let record = format!(
+                r#"{{"type":"result","is_error":true,{spent},"result":"You've hit your session limit"}}"#
+            );
+            assert!(
+                detect_harness_provider_failure(FailureDialect::ClaudeCode, &record).is_none(),
+                "{spent} is work, so the limit must not read as quota"
+            );
+        }
+        // The zero-work counterparts of the same fields, plus the empty
+        // `modelUsage` map the real capture carries.
+        let idle = r#"{"type":"result","is_error":true,"total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"modelUsage":{},"result":"You've hit your session limit"}"#;
+        assert_eq!(
+            detect_harness_provider_failure(FailureDialect::ClaudeCode, idle)
+                .unwrap()
+                .kind,
+            FailureKind::Quota
+        );
     }
 
     #[test]

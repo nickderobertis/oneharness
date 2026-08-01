@@ -12869,7 +12869,7 @@ fn fallback_falls_through_a_clean_exit_provider_quota_error() {
 }
 
 #[test]
-fn fallback_falls_through_claude_subscription_limit_captures() {
+fn fallback_falls_through_zero_work_claude_subscription_limit_captures() {
     let mock = mock_bin().display().to_string();
     let captures = [
         (
@@ -12877,12 +12877,6 @@ fn fallback_falls_through_claude_subscription_limit_captures() {
             "MOCK_STDOUT",
             include_str!("fixtures/claude-session-limit.json"),
             "1",
-        ),
-        (
-            "weekly-json",
-            "MOCK_STDOUT",
-            include_str!("fixtures/claude-weekly-limit.json"),
-            "0",
         ),
         (
             "session-text",
@@ -12936,6 +12930,372 @@ fn fallback_falls_through_claude_subscription_limit_captures() {
         assert_eq!(value["results"][0]["failure_kind"], "quota", "{tag}");
         assert_eq!(value["results"][1]["status"], "ok", "{tag}");
     }
+}
+
+/// The captured record from issue #1211: a Claude session limit that did no work
+/// at all (zero tokens, empty `modelUsage`, sub-second) and reports itself
+/// through `terminal_reason: "api_error"` + `api_error_status: 429` while
+/// `subtype` still reads `"success"` and `is_error` is absent entirely.
+///
+/// Two things made this dead-end a run-killer with two authenticated codex
+/// identities sitting idle: the embedded `429` was read by the generic
+/// vocabulary as the deliberately non-fall-through `rate_limit`, and the
+/// `is_error`-only envelope gate never let the record reach the Claude-specific
+/// reading at all.
+#[test]
+fn fallback_falls_through_a_claude_session_limit_reported_as_an_api_error() {
+    let mock = mock_bin().display().to_string();
+    let capture =
+        serde_json::to_string(include_str!("fixtures/claude-session-limit-api-error.json").trim())
+            .unwrap();
+    let alternate =
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"served-by-codex"}}"#;
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "codex"]
+        run_mode = "fallback"
+
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {capture} }}
+
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "0", MOCK_STDOUT = '{alternate}' }}
+        "#
+    );
+    let fx = ConfigFixture::new("fallback-claude-session-limit-api-error", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}, stderr {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["fallback"]["ran"], "codex");
+    assert_eq!(
+        value["fallback"]["fell_through"][0]["harness"],
+        "claude-code"
+    );
+    assert_eq!(value["fallback"]["fell_through"][0]["reason"], "quota");
+    assert_eq!(value["results"][0]["status"], "nonzero");
+    assert_eq!(
+        value["results"][0]["failure_kind"], "quota",
+        "the embedded 429 must not out-rank the session-limit message"
+    );
+    assert_eq!(value["results"][0]["failure_kind_source"], "stdout");
+    assert_eq!(value["results"][1]["status"], "ok");
+    assert_eq!(value["results"][1]["text"], "served-by-codex");
+}
+
+/// Each of the record's failure declarations is sufficient **on its own** —
+/// `terminal_reason: "api_error"` with no status, and a numeric
+/// `api_error_status` with no `terminal_reason`, neither carrying `is_error`.
+/// The predicate is dialect agnostic, so a non-Claude harness reaches the same
+/// classification through the generic vocabulary. The Claude-specific *phrasing*
+/// stays scoped to the Claude dialect: the same words from another harness are
+/// not exhaustion.
+///
+/// Every case exits **zero** on purpose. A clean exit is what isolates the
+/// envelope predicate: the non-zero text classifier never runs, so the record is
+/// classified only if the harness's own declaration is read off the record.
+#[test]
+fn fallback_reads_an_api_error_envelope_across_declarations_and_dialects() {
+    let mock = mock_bin().display().to_string();
+    let served =
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"served-by-next"}}"#;
+    const LIMIT: &str = "You've hit your session limit · resets 1pm (America/Mexico_City)";
+    const CREDIT: &str = "insufficient_quota: credit balance exhausted";
+    // (tag, harness whose dialect is exercised, the record's sole failure
+    //  declaration, result text, expected outcome)
+    let cases = [
+        (
+            "claude-terminal-reason",
+            "claude-code",
+            serde_json::json!({"terminal_reason": "api_error"}),
+            LIMIT,
+            Some("quota"),
+        ),
+        // `api_error_status` alone, with the 429 the limit message has to
+        // out-rank: neither `is_error` nor `terminal_reason` is present.
+        (
+            "claude-status-only",
+            "claude-code",
+            serde_json::json!({"api_error_status": 429}),
+            LIMIT,
+            Some("quota"),
+        ),
+        (
+            "generic-terminal-reason",
+            "opencode",
+            serde_json::json!({"terminal_reason": "api_error"}),
+            CREDIT,
+            Some("quota"),
+        ),
+        (
+            "generic-status-only",
+            "opencode",
+            serde_json::json!({"api_error_status": 402}),
+            CREDIT,
+            Some("quota"),
+        ),
+        // The scoping guarantee, at the integration level: OpenCode is the
+        // Generic dialect, so Claude's wording is not a quota rejection — the
+        // chain stops at a harness that ran rather than burning the next one.
+        (
+            "generic-ignores-claude-phrasing",
+            "opencode",
+            serde_json::json!({"terminal_reason": "api_error"}),
+            LIMIT,
+            None,
+        ),
+    ];
+
+    for (tag, first, declaration, result_text, expected) in cases {
+        let mut record = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "result": result_text,
+        });
+        for (key, value) in declaration.as_object().unwrap() {
+            record[key] = value.clone();
+        }
+        let record = serde_json::to_string(&record).unwrap();
+        let record = serde_json::to_string(&record).unwrap();
+        let project = format!(
+            r#"
+            harnesses = ["{first}", "codex"]
+            run_mode = "fallback"
+
+            [harness.{first}]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {record} }}
+
+            [harness.codex]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "0", MOCK_STDOUT = '{served}' }}
+            "#
+        );
+        let fx = ConfigFixture::new(&format!("fallback-api-error-envelope-{tag}"), &project, "");
+        let output = run_with_config(
+            &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+            &[],
+            &fx.user_config(),
+        );
+        assert!(
+            output.status.success(),
+            "{tag}: exit {:?}, stderr {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value = json_stdout(&output);
+        assert_eq!(value["results"][0]["status"], "ok", "{tag}");
+        match expected {
+            Some(kind) => {
+                assert_eq!(value["fallback"]["ran"], "codex", "{tag}");
+                assert_eq!(
+                    value["fallback"]["fell_through"][0]["reason"], kind,
+                    "{tag}"
+                );
+                assert_eq!(value["results"][0]["failure_kind"], kind, "{tag}");
+                assert_eq!(value["results"][1]["text"], "served-by-next", "{tag}");
+            }
+            None => {
+                assert_eq!(value["fallback"]["ran"], first, "{tag}");
+                assert!(
+                    value["fallback"]["fell_through"]
+                        .as_array()
+                        .unwrap()
+                        .is_empty(),
+                    "{tag}"
+                );
+                assert_eq!(value["results"].as_array().unwrap().len(), 1, "{tag}");
+                assert!(value["results"][0]["failure_kind"].is_null(), "{tag}");
+            }
+        }
+    }
+}
+
+/// The discriminator, driven through the CLI on the **exact** shape the fix
+/// accepts: a record carrying the session-limit signature, the `api_error`
+/// envelope, and real spent tokens. Same words as the fall-through capture, same
+/// declarations — the only difference is that this harness got somewhere, and
+/// that alone has to keep the chain from handing the task to the next candidate
+/// and paying for the work twice.
+///
+/// The 429 case is the sharper one: with the limit signal disqualified, the
+/// generic vocabulary reads the embedded status as the transient `rate_limit`,
+/// which is a stop. Without a 429 there is nothing left to read and the run stays
+/// unclassified — also a stop. Both exit codes, since neither is load-bearing.
+#[test]
+fn fallback_stops_at_a_session_limit_that_landed_after_real_work() {
+    let mock = mock_bin().display().to_string();
+    let spent = r#""duration_ms":92610,"usage":{"input_tokens":17,"cache_creation_input_tokens":19624,"cache_read_input_tokens":58446,"output_tokens":800},"modelUsage":{"claude-opus-4-6":{"inputTokens":17}}"#;
+    let limit = "You've hit your session limit · resets 1pm (America/Mexico_City)";
+    let cases = [
+        // (tag, the record's failure declaration, expected failure_kind)
+        (
+            "mid-run-429",
+            r#""terminal_reason":"api_error","api_error_status":429"#,
+            Some("rate_limit"),
+        ),
+        (
+            "mid-run-no-status",
+            r#""terminal_reason":"api_error""#,
+            None,
+        ),
+        // The real weekly-limit capture, whose expectation this change reverses:
+        // ten turns and 78k prompt tokens in, `is_error` set, exit 0. It used to
+        // fall through; a harness that did that much work has run.
+        ("weekly-capture", r#""is_error":true"#, None),
+    ];
+
+    for (tag, declaration, expected_kind) in cases {
+        // Escaped as a TOML basic string: the limit message has an apostrophe,
+        // which a literal '…' value cannot carry.
+        let worked = serde_json::to_string(&format!(
+            r#"{{"type":"result","subtype":"success",{declaration},{spent},"result":"{limit}"}}"#
+        ))
+        .unwrap();
+        for exit in ["0", "1"] {
+            let project = format!(
+                r#"
+                harnesses = ["claude-code", "codex"]
+                run_mode = "fallback"
+
+                [harness.claude-code]
+                bin = '{mock}'
+                env = {{ MOCK_EXIT = "{exit}", MOCK_STDOUT = {worked} }}
+
+                [harness.codex]
+                bin = '{mock}'
+                "#
+            );
+            let fx = ConfigFixture::new(
+                &format!("fallback-limit-after-work-{tag}-{exit}"),
+                &project,
+                "",
+            );
+            let output = run_with_config(
+                &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+                &[],
+                &fx.user_config(),
+            );
+            let value = json_stdout(&output);
+            let at = format!("{tag}/exit {exit}");
+            assert_eq!(value["fallback"]["ran"], "claude-code", "{at}");
+            assert!(
+                value["fallback"]["fell_through"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty(),
+                "{at}: a harness that did work must never be fallen through"
+            );
+            let results = value["results"].as_array().unwrap();
+            assert_eq!(results.len(), 1, "{at}: codex must never be attempted");
+            let expected_status = if exit == "0" { "ok" } else { "nonzero" };
+            assert_eq!(results[0]["status"], expected_status, "{at}");
+            match expected_kind {
+                Some(kind) => assert_eq!(results[0]["failure_kind"], kind, "{at}"),
+                None => assert!(results[0]["failure_kind"].is_null(), "{at}"),
+            }
+            // The work it did is still reported, which is what makes it a real run.
+            assert_eq!(results[0]["usage"]["output_tokens"], 800, "{at}");
+        }
+    }
+}
+
+/// The same guard for an API error carrying no limit wording at all — the
+/// widened envelope must not turn a plain mid-run server error into a
+/// fall-through either.
+#[test]
+fn fallback_stops_at_an_api_error_after_real_work_and_does_not_fall_through() {
+    let mock = mock_bin().display().to_string();
+    let worked = r#"{"type":"result","subtype":"success","terminal_reason":"api_error","api_error_status":500,"duration_ms":92610,"usage":{"input_tokens":17,"output_tokens":800},"modelUsage":{"claude-opus-4-6":{"inputTokens":17}},"result":"API Error: Internal server error"}"#;
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "codex"]
+        run_mode = "fallback"
+
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = '{worked}' }}
+
+        [harness.codex]
+        bin = '{mock}'
+        "#
+    );
+    let fx = ConfigFixture::new("fallback-api-error-after-work", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let value = json_stdout(&output);
+    assert_eq!(value["fallback"]["ran"], "claude-code");
+    assert!(value["fallback"]["fell_through"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let results = value["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1, "codex must never be attempted");
+    assert_eq!(results[0]["status"], "nonzero");
+    assert!(results[0]["failure_kind"].is_null());
+    assert_eq!(results[0]["usage"]["output_tokens"], 800);
+}
+
+/// A timeout stays a real run even when the bytes captured before the deadline
+/// carry the exhaustion signature: a slow harness must never be re-classified as
+/// one that was rejected, or a long task would silently restart on the next
+/// candidate. The mock streams the limit record, then hangs past the deadline.
+#[test]
+fn fallback_stops_at_a_timeout_carrying_a_session_limit_record() {
+    let mock = mock_bin().display().to_string();
+    let streamed = format!(
+        "{}\n{{\"type\":\"result\",\"result\":\"never delivered\"}}",
+        include_str!("fixtures/claude-session-limit-api-error.json").trim()
+    );
+    let streamed = serde_json::to_string(&streamed).unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "codex"]
+        run_mode = "fallback"
+        timeout = 1
+
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_STDOUT = {streamed}, MOCK_STREAM_DELAY_MS = "6000" }}
+
+        [harness.codex]
+        bin = '{mock}'
+        "#
+    );
+    let fx = ConfigFixture::new("fallback-timeout-with-limit-record", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let value = json_stdout(&output);
+    assert_eq!(value["fallback"]["ran"], "claude-code");
+    assert!(value["fallback"]["fell_through"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let results = value["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1, "codex must never be attempted");
+    assert_eq!(results[0]["status"], "timeout");
+    assert!(
+        results[0]["failure_kind"].is_null(),
+        "a timeout is never a rejection, whatever it managed to print"
+    );
 }
 
 /// The `codex` → `codex:alternate` chain the second-account setup exists for: an

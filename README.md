@@ -1064,6 +1064,15 @@ Codex's usage limit — the latter arriving as a `turn.failed` event on stdout
 after the turn started, so it falls through on a clean exit too. Only the limit
 message does; an ordinary failed turn is a real run and stops the chain.
 
+That holds however the harness dresses the rejection up. Claude Code reports a
+session limit in a terminal record that may say `subtype: "success"` with no
+`is_error`, declaring the failure through `terminal_reason: "api_error"` and an
+`api_error_status` of `429` instead — and the limit message still wins over that
+embedded `429`, so the rejection reads as `quota` (fall through) rather than the
+transient `rate_limit` (stop). A `429` *without* a limit message is still a plain
+`rate_limit` and still stops the chain, and a record reporting real token usage
+is a run that happened, whatever error ended it.
+
 The report gains a `fallback` block, `{ "ran", "fell_through": [{ "harness",
 "reason" }] }`: `ran` is the harness that executed (or `null` when every
 candidate failed to start), and `results` holds only the harnesses **attempted**

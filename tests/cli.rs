@@ -12938,6 +12938,273 @@ fn fallback_falls_through_claude_subscription_limit_captures() {
     }
 }
 
+/// The captured record from issue #1211: a Claude session limit that did no work
+/// at all (zero tokens, empty `modelUsage`, sub-second) and reports itself
+/// through `terminal_reason: "api_error"` + `api_error_status: 429` while
+/// `subtype` still reads `"success"` and `is_error` is absent entirely.
+///
+/// Two things made this dead-end a run-killer with two authenticated codex
+/// identities sitting idle: the embedded `429` was read by the generic
+/// vocabulary as the deliberately non-fall-through `rate_limit`, and the
+/// `is_error`-only envelope gate never let the record reach the Claude-specific
+/// reading at all.
+#[test]
+fn fallback_falls_through_a_claude_session_limit_reported_as_an_api_error() {
+    let mock = mock_bin().display().to_string();
+    let capture =
+        serde_json::to_string(include_str!("fixtures/claude-session-limit-api-error.json").trim())
+            .unwrap();
+    let alternate =
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"served-by-codex"}}"#;
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "codex"]
+        run_mode = "fallback"
+
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {capture} }}
+
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "0", MOCK_STDOUT = '{alternate}' }}
+        "#
+    );
+    let fx = ConfigFixture::new("fallback-claude-session-limit-api-error", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}, stderr {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["fallback"]["ran"], "codex");
+    assert_eq!(
+        value["fallback"]["fell_through"][0]["harness"],
+        "claude-code"
+    );
+    assert_eq!(value["fallback"]["fell_through"][0]["reason"], "quota");
+    assert_eq!(value["results"][0]["status"], "nonzero");
+    assert_eq!(
+        value["results"][0]["failure_kind"], "quota",
+        "the embedded 429 must not out-rank the session-limit message"
+    );
+    assert_eq!(value["results"][0]["failure_kind_source"], "stdout");
+    assert_eq!(value["results"][1]["status"], "ok");
+    assert_eq!(value["results"][1]["text"], "served-by-codex");
+}
+
+/// `terminal_reason: "api_error"` **alone** — no `api_error_status`, no
+/// `is_error` — is a complete failure declaration, and the envelope predicate is
+/// dialect agnostic, so a non-Claude harness reaches the same classification
+/// through the generic vocabulary. The Claude-specific *phrasing* stays scoped to
+/// the Claude dialect: the same words from another harness are not exhaustion.
+///
+/// Every case exits **zero** on purpose. A clean exit is what isolates the
+/// envelope predicate: the non-zero text classifier never runs, so the record is
+/// classified only if the harness's own `terminal_reason` declaration is read.
+#[test]
+fn fallback_reads_a_terminal_reason_only_api_error_across_dialects() {
+    let mock = mock_bin().display().to_string();
+    let served =
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"served-by-next"}}"#;
+    // (tag, harness whose dialect is exercised, result text, expected outcome)
+    let cases = [
+        (
+            "claude-adapter-phrasing",
+            "claude-code",
+            "You've hit your session limit · resets 1pm (America/Mexico_City)",
+            Some("quota"),
+        ),
+        (
+            "generic-vocabulary",
+            "opencode",
+            "insufficient_quota: credit balance exhausted",
+            Some("quota"),
+        ),
+        // The scoping guarantee, at the integration level: OpenCode is the
+        // Generic dialect, so Claude's wording is not a quota rejection — the
+        // chain stops at a harness that ran rather than burning the next one.
+        (
+            "generic-ignores-claude-phrasing",
+            "opencode",
+            "You've hit your session limit · resets 1pm (America/Mexico_City)",
+            None,
+        ),
+    ];
+
+    for (tag, first, result_text, expected) in cases {
+        let record = serde_json::to_string(&serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "terminal_reason": "api_error",
+            "result": result_text,
+        }))
+        .unwrap();
+        let record = serde_json::to_string(&record).unwrap();
+        let project = format!(
+            r#"
+            harnesses = ["{first}", "codex"]
+            run_mode = "fallback"
+
+            [harness.{first}]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {record} }}
+
+            [harness.codex]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "0", MOCK_STDOUT = '{served}' }}
+            "#
+        );
+        let fx = ConfigFixture::new(&format!("fallback-terminal-reason-{tag}"), &project, "");
+        let output = run_with_config(
+            &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+            &[],
+            &fx.user_config(),
+        );
+        assert!(
+            output.status.success(),
+            "{tag}: exit {:?}, stderr {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value = json_stdout(&output);
+        assert_eq!(value["results"][0]["status"], "ok", "{tag}");
+        match expected {
+            Some(kind) => {
+                assert_eq!(value["fallback"]["ran"], "codex", "{tag}");
+                assert_eq!(
+                    value["fallback"]["fell_through"][0]["reason"], kind,
+                    "{tag}"
+                );
+                assert_eq!(value["results"][0]["failure_kind"], kind, "{tag}");
+                assert_eq!(value["results"][1]["text"], "served-by-next", "{tag}");
+            }
+            None => {
+                assert_eq!(value["fallback"]["ran"], first, "{tag}");
+                assert!(
+                    value["fallback"]["fell_through"]
+                        .as_array()
+                        .unwrap()
+                        .is_empty(),
+                    "{tag}"
+                );
+                assert_eq!(value["results"].as_array().unwrap().len(), 1, "{tag}");
+                assert!(value["results"][0]["failure_kind"].is_null(), "{tag}");
+            }
+        }
+    }
+}
+
+/// The regression the widened envelope risks: a harness that **did the work** and
+/// then hit an API error is a real run. Zero tokens is what distinguishes a
+/// rejection from a failure, so a record with real usage and no exhaustion
+/// signature must stop the chain rather than re-running the task elsewhere —
+/// whichever exit code the harness pairs it with.
+#[test]
+fn fallback_stops_at_an_api_error_after_real_work_and_does_not_fall_through() {
+    let mock = mock_bin().display().to_string();
+    let worked = r#"{"type":"result","subtype":"success","terminal_reason":"api_error","api_error_status":500,"duration_ms":92610,"usage":{"input_tokens":17,"cache_creation_input_tokens":19624,"cache_read_input_tokens":58446,"output_tokens":800},"modelUsage":{"claude-opus-4-6":{"inputTokens":17}},"result":"API Error: Internal server error"}"#;
+    for exit in ["0", "1"] {
+        let project = format!(
+            r#"
+            harnesses = ["claude-code", "codex"]
+            run_mode = "fallback"
+
+            [harness.claude-code]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "{exit}", MOCK_STDOUT = '{worked}' }}
+
+            [harness.codex]
+            bin = '{mock}'
+            "#
+        );
+        let fx = ConfigFixture::new(
+            &format!("fallback-api-error-after-work-{exit}"),
+            &project,
+            "",
+        );
+        let output = run_with_config(
+            &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+            &[],
+            &fx.user_config(),
+        );
+        let value = json_stdout(&output);
+        assert_eq!(value["fallback"]["ran"], "claude-code", "exit {exit}");
+        assert!(
+            value["fallback"]["fell_through"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "exit {exit}"
+        );
+        let results = value["results"].as_array().unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "exit {exit}: codex must never be attempted"
+        );
+        let expected_status = if exit == "0" { "ok" } else { "nonzero" };
+        assert_eq!(results[0]["status"], expected_status, "exit {exit}");
+        assert!(results[0]["failure_kind"].is_null(), "exit {exit}");
+        // The work it did is still reported, which is what makes it a real run.
+        assert_eq!(results[0]["usage"]["output_tokens"], 800, "exit {exit}");
+    }
+}
+
+/// A timeout stays a real run even when the bytes captured before the deadline
+/// carry the exhaustion signature: a slow harness must never be re-classified as
+/// one that was rejected, or a long task would silently restart on the next
+/// candidate. The mock streams the limit record, then hangs past the deadline.
+#[test]
+fn fallback_stops_at_a_timeout_carrying_a_session_limit_record() {
+    let mock = mock_bin().display().to_string();
+    let streamed = format!(
+        "{}\n{{\"type\":\"result\",\"result\":\"never delivered\"}}",
+        include_str!("fixtures/claude-session-limit-api-error.json").trim()
+    );
+    let streamed = serde_json::to_string(&streamed).unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "codex"]
+        run_mode = "fallback"
+        timeout = 1
+
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_STDOUT = {streamed}, MOCK_STREAM_DELAY_MS = "6000" }}
+
+        [harness.codex]
+        bin = '{mock}'
+        "#
+    );
+    let fx = ConfigFixture::new("fallback-timeout-with-limit-record", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let value = json_stdout(&output);
+    assert_eq!(value["fallback"]["ran"], "claude-code");
+    assert!(value["fallback"]["fell_through"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let results = value["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1, "codex must never be attempted");
+    assert_eq!(results[0]["status"], "timeout");
+    assert!(
+        results[0]["failure_kind"].is_null(),
+        "a timeout is never a rejection, whatever it managed to print"
+    );
+}
+
 /// The `codex` → `codex:alternate` chain the second-account setup exists for: an
 /// exhausted account must hand the task to the alternate identity. Codex reports
 /// the limit as a `turn.failed` event on stdout after the turn started, so the

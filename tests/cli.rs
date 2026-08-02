@@ -13795,9 +13795,10 @@ fn streamed_and_buffered_fallback_select_the_same_candidate() {
     // candidates were attempted, and the exit code.
     //
     // The scenarios span every rule the chain has: a zero-work rejection and a
-    // missing binary fall through; a candidate that DID the work (tool calls +
-    // billed tokens) does not, however its terminal record is classified; and a
-    // real task failure or a timeout never falls through.
+    // missing binary fall through; a candidate that DID the work does not,
+    // however its terminal record is classified — for each witness the evidence
+    // has (a tool call, ordinary tokens, either prompt-cache count, a bare dollar
+    // cost); and a real task failure or a timeout never falls through.
     let mock = mock_bin().display().to_string();
     let rejection =
         serde_json::to_string(include_str!("fixtures/claude-session-limit-api-error.json").trim())
@@ -13809,6 +13810,25 @@ fn streamed_and_buffered_fallback_select_the_same_candidate() {
         r#"{"type":"result","subtype":"success","result":"partial","usage":{"input_tokens":812,"output_tokens":96}}"#,
     ))
     .unwrap();
+    // Accounting-only records that differ in exactly ONE decisive field, so each
+    // pins its own arm of the evidence: a prompt-cache read, a prompt-cache
+    // write, a dollar cost with no token block at all — and the all-zero control
+    // they are each measured against.
+    let accounting = |usage: &str| {
+        serde_json::to_string(&format!(
+            r#"{{"type":"result","subtype":"success","result":"partial",{usage}}}"#
+        ))
+        .unwrap()
+    };
+    let zeros = r#""usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}"#;
+    let unbilled = accounting(zeros);
+    let cache_read = accounting(
+        r#""usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":1240,"cache_creation_input_tokens":0}"#,
+    );
+    let cache_write = accounting(
+        r#""usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":889}"#,
+    );
+    let cost_only = accounting(r#""total_cost_usd":0.0042"#);
 
     struct Case {
         tag: &'static str,
@@ -13874,6 +13894,60 @@ fn streamed_and_buffered_fallback_select_the_same_candidate() {
             tag: "billed-then-rejected",
             first_env: String::from(
                 r#"{ MOCK_EXIT = "1", MOCK_STDOUT = "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"partial\",\"usage\":{\"input_tokens\":812,\"output_tokens\":96}}", MOCK_STDERR = "Error: 401 unauthorized" }"#,
+            ),
+            extra: vec![],
+            expected_ran: "claude-code",
+            expected_fell: vec![],
+            expected_exit: 1,
+            expected_kind: Some("auth"),
+        },
+        Case {
+            // The control for the four accounting cases below: the same 401, the
+            // same terminal record shape, but every count zero. Absent spending is
+            // not work, so this one — and only this one — falls through.
+            tag: "zero-work-auth",
+            first_env: format!(
+                r#"{{ MOCK_EXIT = "1", MOCK_STDOUT = {unbilled}, MOCK_STDERR = "Error: 401 unauthorized" }}"#
+            ),
+            extra: vec![],
+            expected_ran: "qwen",
+            expected_fell: vec![("claude-code", "auth")],
+            expected_exit: 0,
+            expected_kind: Some("auth"),
+        },
+        Case {
+            // Prompt-cache reads are spending like any other token: a run served
+            // entirely from the cache did the work, so the 401 that moves the
+            // chain on above stops it here.
+            tag: "cache-read-then-rejected",
+            first_env: format!(
+                r#"{{ MOCK_EXIT = "1", MOCK_STDOUT = {cache_read}, MOCK_STDERR = "Error: 401 unauthorized" }}"#
+            ),
+            extra: vec![],
+            expected_ran: "claude-code",
+            expected_fell: vec![],
+            expected_exit: 1,
+            expected_kind: Some("auth"),
+        },
+        Case {
+            // The other prompt-cache count: writing the prefix is billed work
+            // even before a single ordinary token is charged.
+            tag: "cache-write-then-rejected",
+            first_env: format!(
+                r#"{{ MOCK_EXIT = "1", MOCK_STDOUT = {cache_write}, MOCK_STDERR = "Error: 401 unauthorized" }}"#
+            ),
+            extra: vec![],
+            expected_ran: "claude-code",
+            expected_fell: vec![],
+            expected_exit: 1,
+            expected_kind: Some("auth"),
+        },
+        Case {
+            // A harness that reports only a dollar cost and no token block at all
+            // still says it spent something, which is the whole test for work.
+            tag: "cost-only-then-rejected",
+            first_env: format!(
+                r#"{{ MOCK_EXIT = "1", MOCK_STDOUT = {cost_only}, MOCK_STDERR = "Error: 401 unauthorized" }}"#
             ),
             extra: vec![],
             expected_ran: "claude-code",

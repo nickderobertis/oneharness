@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.5](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.6.4...oneharness-core-v0.6.5) - 2026-08-02
+
+### Added
+
+- stream a fallback chain instead of refusing it ([#1213](https://github.com/nickderobertis/oneharness/pull/1213))
+
 ## [0.6.4](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.6.3...oneharness-core-v0.6.4) - 2026-08-01
 
 ### Fixed

@@ -882,8 +882,11 @@ truncated final JSONL record is ignored rather than invalidating earlier ones):
   consumer can **short-circuit** the moment it sees a disallowed action by
   closing the stream — oneharness's next write fails (broken pipe) and it tears
   the harness down, so a bad turn is cut off instead of paid for in full. Stream
-  runs a single harness (no batch, no `--schema`); `--stream` implies the
-  `--events` format selection.
+  runs one harness at a time (no batch, no `--schema`); `--stream` implies the
+  `--events` format selection. In the default `parallel` mode that means exactly
+  one selected harness — several would interleave their streams on one stdout —
+  but a whole [`--run-mode fallback`](#fallback-mode-first-that-runs-wins) chain
+  is allowed, because only the candidate that runs ever publishes events.
 - `failure_kind` / `failure_kind_source` — on a non-zero run, a coarse reason
   (`auth`, `rate_limit`, `model_not_found`, `quota`) so a caller can tell a
   retryable condition from a broken request. This is **distinct from `status`**,
@@ -910,7 +913,10 @@ parse `stdout` themselves.
 
 The CLI already emits the normalized events incrementally with `run --stream`,
 using the Rust-owned `RunStreamEnvelope` contract described above. Non-streaming
-runs still return the same events at the end in `RunReport.results[].events`.
+runs still return the same events at the end in `RunReport.results[].events`. It
+composes with [`--run-mode fallback`](#fallback-mode-first-that-runs-wins), so a
+consumer that needs a chain surviving a subscription limit does not have to give
+up watching the turn.
 
 The Node and Python SDKs expose this contract as `runStream` / `run_stream` async
 iterators. A behavioral consumer such as `skilltest` can **short-circuit the
@@ -1043,10 +1049,11 @@ chain, so a long, genuine run can never be mistaken for "try the next one".
 
 | Outcome | Fallback? |
 | --- | --- |
+| Did the task's work (a tool call, or billed tokens/cost) | ⛔ stop — it ran, whatever its record says |
 | Not installed (`skipped`) | ✅ fall through — `not-installed` |
 | Resolved but unspawnable (`spawn-error`) | ✅ fall through — `spawn-error` |
-| Ran, exited non-zero, classified `auth` | ✅ fall through — `auth` |
-| Ran, exited non-zero, classified `quota` (no credit) | ✅ fall through — `quota` |
+| Ran, exited non-zero, classified `auth`, no work done | ✅ fall through — `auth` |
+| Ran, exited non-zero, classified `quota` (no credit), no work done | ✅ fall through — `quota` |
 | Ran and succeeded (`ok`) | ⛔ stop — this is the answer |
 | Ran and failed the task (`nonzero`, incl. `rate_limit` / `model_not_found`) | ⛔ stop¹ |
 | Timed out (`timeout`) — a slow but genuine run | ⛔ stop |
@@ -1089,6 +1096,14 @@ through: absent accounting is not evidence of work.
 > `insufficient_quota` / `credit balance` vocabulary means the account is out of
 > money rather than out of session, and is unchanged.
 
+> **Behavior change.** That zero-work discriminator is now applied to *every*
+> fall-through reason, not just the Claude limit signature: any candidate whose
+> result shows a tool call or billed usage stops the chain. A generic `auth`
+> classification scanned out of a transcript, or a Codex `turn.failed` usage
+> limit, no longer falls through once the candidate has done work. Rejections
+> that did no work — the overwhelming majority, and the ones a fallback chain
+> exists for — are unaffected.
+
 The report gains a `fallback` block, `{ "ran", "fell_through": [{ "harness",
 "reason" }] }`: `ran` is the harness that executed (or `null` when every
 candidate failed to start), and `results` holds only the harnesses **attempted**
@@ -1105,12 +1120,42 @@ reached. This keeps people and agents writing commands that work for every
 harness the fallback config supports, not just the one that happens to run.
 
 Fallback is single-outcome by nature, so it refuses a [batch](#batch-runs-same-prefix-prompt-caching)
-run, the low-level `--resume` / `--fork` continuations (each pins one specific
-harness's native id), and `--stream` as loud usage errors. The higher-level
+run and the low-level `--resume` / `--fork` continuations (each pins one specific
+harness's native id) as loud usage errors. The higher-level
 [`--session`](#session-handle) handle **is** allowed: it binds to the anchor (the
 first session-capable harness in the chain), so a named conversation degrades
 gracefully across the same priority set. Exit code: `0` when the harness that ran
 succeeded, `1` when it ran but failed **or** when no candidate could run at all.
+
+**Work evidence decides, so streaming changes nothing.** Before any of the
+reasons above are consulted, a candidate whose result carries **evidence it did
+the task's work** — a recorded tool call, or usage accounting with a non-zero
+token count or dollar cost — is treated as having run, whatever its terminal
+record then said. This is the "work done, not error text" rule the Claude
+session-limit classifier already applied, lifted to the whole verdict so it also
+covers the surfaces with no accounting of their own (a generic `401` scanned out
+of a transcript, Codex's `turn.failed` usage limit). Falling through a candidate
+that worked would burn the next one's quota re-running what already happened. A
+rejection that did *no* work — the zero-token 429, bad credentials, a missing
+binary — still falls through exactly as before.
+
+**Streaming a fallback chain.** [`--stream`](#streaming-events) is allowed — over
+harnesses and over [models](#multiple-models-fan-out-over-the-model-axis) alike —
+and is how a supervising process watches a long turn while keeping the chain that
+survives a 429. The candidates run one at a time, so nothing interleaves, and the
+verdict comes from the same rule over the same normalized result — **a streamed
+chain and a buffered chain always select the same candidate**, which the suite
+pins end to end across zero-work rejections, a missing binary, a candidate that
+worked before being rejected, a real task failure, and a timeout. Publishing is
+safe under that rule because a candidate that publishes an event has a tool event
+in its result, which is work evidence, so it cannot then be discarded; a candidate
+that *does* fall through has published nothing a consumer could act on. Its whole
+transcript is still in `results` — withheld from the live stream, not discarded.
+
+```console
+# Watch the turn while keeping the fallback chain:
+oneharness run --run-mode fallback --harness claude-code,codex --prompt "Fix the failing test" --stream
+```
 
 ### Multiple models (fan out over the model axis)
 
@@ -1152,7 +1197,10 @@ which is the signal a consumer keys on to read each result's `model`. The top-le
 behaves like a single `--model`). Because a fan-out multiplies the run into several
 units, more than one model is a loud usage error with a [batch](#batch-runs-same-prefix-prompt-caching)
 (its cache prefix is per harness/model) and with the single-unit continuations
-`--resume` / `--fork` / `--session` / `--stream`.
+`--resume` / `--fork` / `--session`. [`--stream`](#streaming-events) is refused
+only in `parallel` mode, where the fan-out really is several concurrent results
+whose event streams would interleave; under `--run-mode fallback` the pairs are a
+priority chain with one outcome, so the chain streams like a harness chain does.
 
 ### Batch runs (same-prefix prompt caching)
 

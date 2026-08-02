@@ -697,9 +697,23 @@ shape. When you add one:
   (`run --stream`, `io::runner::run_job_streaming` + `events::events_from_value`)
   emits events incrementally so a consumer can short-circuit on bad behavior;
   its lines are the typed Rust `RunStreamEnvelope` contract and
-  `oh_stream_assert` is its live proof. `sdk_schema::bundle` is the single Rust
+  `oh_stream_assert` is its live proof. It is single-unit only in `parallel` —
+  one harness, one model (interleaving); a **fallback chain streams** over both
+  axes, since its (harness, model) candidates run in turn. So the streamed
+  history attribution is per plan entry, not per selected harness (a model
+  fan-out repeats a harness). The constraint is narrower than "one harness":
+  stdout must never be committed
+  to a candidate the chain then discards. So a fall-through is decided by
+  `fallback::RunWork` first — a candidate whose result carries a tool call or
+  billed usage (`signals::Usage::reports_billed_work`, the one definition
+  `record_reports_work` also classifies a raw record with) ran the task and never
+  falls through, whatever its terminal record then says.
+  Both drivers read that evidence from the same normalized result, so **streamed
+  and buffered chains always select the same candidate**; there is no
+  streaming-only rule, and a published line is never retracted (a consumer acts
+  on what it reads). `sdk_schema::bundle` is the single Rust
   generation source for that envelope, `HistoryStreamEnvelope`, and the shared
-  SDK contracts. See the README *events* matrix.
+  SDK contracts.
 
 ## Scripts and output are context
 

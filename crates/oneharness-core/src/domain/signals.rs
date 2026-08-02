@@ -54,6 +54,27 @@ impl Usage {
             && self.cache_write_tokens.is_none()
             && self.cost_usd.is_none()
     }
+
+    /// Whether this accounting says the provider **billed real work**: any
+    /// non-zero token count (prompt-cache counts included) or a non-zero dollar
+    /// cost. Absent accounting is deliberately not work — see
+    /// [`record_reports_work`], which reads this off a raw harness record, and
+    /// [`crate::domain::fallback::RunWork`], which reads it off a normalized
+    /// result. Both share this one definition so the quota classifier and a
+    /// fallback chain's stop/fall-through verdict can never disagree about what
+    /// counts as billed.
+    pub fn reports_billed_work(&self) -> bool {
+        [
+            self.input_tokens,
+            self.output_tokens,
+            self.cache_read_tokens,
+            self.cache_write_tokens,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|tokens| tokens > 0)
+            || self.cost_usd.is_some_and(|cost| cost > 0.0)
+    }
 }
 
 /// A usage reading plus the method that produced it (e.g. `json`).
@@ -379,9 +400,10 @@ fn stdout_reports_work(stdout: &str) -> bool {
 }
 
 /// Whether this record's own accounting says the harness **did work** before it
-/// failed: any non-zero token count, a non-zero dollar cost, or a non-empty
-/// per-model usage map (Claude Code's `modelUsage`, which is `{}` when no model
-/// was ever reached).
+/// failed: billed usage ([`Usage::reports_billed_work`], the shared definition),
+/// or a non-empty per-model usage map (Claude Code's `modelUsage`, which is `{}`
+/// when no model was ever reached — a raw-record witness with no counterpart in
+/// the normalized [`Usage`]).
 ///
 /// Absent accounting is deliberately **not** work. A bare `You've hit your
 /// session limit` line on stderr carries no usage block at all, and it is still
@@ -389,21 +411,7 @@ fn stdout_reports_work(stdout: &str) -> bool {
 /// the callers this rule exists to serve. Only a harness that says it spent
 /// something counts as having run.
 fn record_reports_work(value: &Value) -> bool {
-    let spent = single_object_usage(value)
-        .map(|reading| reading.usage)
-        .is_some_and(|usage| {
-            [
-                usage.input_tokens,
-                usage.output_tokens,
-                usage.cache_read_tokens,
-                usage.cache_write_tokens,
-            ]
-            .into_iter()
-            .flatten()
-            .any(|tokens| tokens > 0)
-                || usage.cost_usd.is_some_and(|cost| cost > 0.0)
-        });
-    spent
+    single_object_usage(value).is_some_and(|reading| reading.usage.reports_billed_work())
         || value
             .get("modelUsage")
             .and_then(Value::as_object)

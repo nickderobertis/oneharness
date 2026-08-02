@@ -238,7 +238,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // errors). It is *compatible* with fallback: the model list is exactly the
     // fallback chain there.
     if multi_model {
-        validate_multi_model(batch_run, args)?;
+        validate_multi_model(batch_run, fallback_mode, args)?;
     }
     // Selection already preserves explicit caller/config order (and uses registry
     // order for `--all`). Fallback treats that sequence as its priority chain;
@@ -275,10 +275,13 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // selects the anchor harness's preferred session-bearing format.
     let explicit_format = args.output_format.or(cfg.output_format);
     validate_session_output_format(session_anchor, explicit_format)?;
-    // `--stream` emits events incrementally for a *single* harness/prompt; the
-    // validate/retry loop and the batch fan-out both need the whole output at
-    // once, so they are mutually exclusive. Refused loudly before spawning.
-    validate_stream(args.stream, &specs, batch_run, schema.is_some())?;
+    validate_stream(
+        args.stream,
+        &specs,
+        batch_run,
+        schema.is_some(),
+        fallback_mode,
+    )?;
     // Resolve the approval mode (CLI --mode > --bypass/--no-bypass > config
     // `mode` > config `bypass` > the built-in default, which is `default`). A
     // mode a selected harness *cannot express* is refused here (a command can't
@@ -612,17 +615,109 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         }
     }
 
-    // Streaming path: a single harness, emitting normalized events to stdout as
-    // they arrive, then a final report line — so a consumer can short-circuit the
-    // moment it sees a disallowed action. `--print-command` still just prints the
-    // planned command (nothing executes), so it falls through to the normal path.
-    if args.stream && !args.print_command {
-        let streamed_run_id = history_writer.as_ref().map(HistoryWriter::begin_run);
-        let (mut result, persisted_event_indexes) =
-            match plan.into_iter().next().expect("stream: one unit") {
-                // The harness was unavailable/skipped — nothing to stream; emit only
-                // the terminal report line so the shape is still complete.
-                Plan::Ready(result) => (*result, BTreeSet::new()),
+    // Schedule and run the jobs. `--print-command` never executes, so it always
+    // takes the last branch, which emits the planned rows.
+    let stream_run = args.stream && !args.print_command;
+    let mut forked = false;
+    // Empty off the streaming path, where history is written once at the end.
+    let mut streamed_history: Vec<StreamedHistory> = Vec::new();
+    let (mut results, mut fallback_report): (Vec<RunResult>, Option<FallbackReport>) = if stream_run
+    {
+        // One id per plan entry, not per selected harness: a model fan-out
+        // repeats a harness once per model, so `selected_ids` is the wrong axis
+        // to attribute a streamed event to.
+        let unit_ids: Vec<&str> = units.iter().map(|(_, id, _, _)| id.as_str()).collect();
+        let streamed = stream_plan(
+            plan,
+            &jobs,
+            fallback_mode,
+            multi_model,
+            history_writer.as_ref(),
+            &unit_ids,
+        );
+        streamed_history = streamed.history;
+        (streamed.results, streamed.fallback)
+    } else if fallback_mode && !args.print_command {
+        // Sequential fallback: run the priority chain until one harness runs.
+        // The workspace-restoring mock finish happens below, after every spawn
+        // this branch does is complete.
+        let (results, fb) = run_fallback(
+            plan,
+            &jobs,
+            &job_plans,
+            schema.as_ref(),
+            max_retries,
+            multi_model,
+        );
+        (results, Some(fb))
+    } else {
+        let max_parallel = args
+            .max_parallel
+            .or(cfg.max_parallel)
+            .unwrap_or(jobs.len().max(1));
+        // Fork-based `min-tokens`: when a batch's single harness can fork, the
+        // warm-up (prompt[0]) establishes a session and the fan-out branches
+        // forks of it, so each reuses the warmed cached prefix — the realizable
+        // token saving on these CLIs (a static --system is re-created per
+        // process, so plain warm-then-fan saves nothing). It needs the warm-up's
+        // *runtime* session id, so it cannot run under --print-command.
+        let fork_batch = batch_run
+            && batch_strategy == BatchStrategy::MinTokens
+            && specs[0].fork_reuses_cache
+            && !args.print_command
+            && !jobs.is_empty();
+        // `min-tokens` reduces tokens only when the harness has a *cache-reusing*
+        // fork (the warm-up writes the shared prefix, the forked fan-out reads
+        // it). When it does not — no fork at all, or a fork that re-sends the
+        // prefix cold, like OpenCode — `min-tokens` can only order the calls; say
+        // so rather than imply a saving the harness can't deliver.
+        if batch_run
+            && batch_strategy == BatchStrategy::MinTokens
+            && !specs[0].fork_reuses_cache
+            && !args.print_command
+        {
+            eprintln!(
+                    "oneharness: warning: `--batch-strategy min-tokens` cannot reduce tokens on `{}` \
+                     (no cache-reusing fork available); it only orders the calls. Token savings need a \
+                     harness whose fork reuses the prompt cache (see `fork_reuses_cache` in \
+                     `oneharness list`).",
+                    specs[0].id
+                );
+        }
+        let outcomes = if fork_batch {
+            let o = run_fork_batch(
+                &mut jobs,
+                &mut job_plans,
+                schema.as_ref(),
+                max_retries,
+                max_parallel,
+            );
+            // The fan-out actually forked iff the warm-up exposed a session to
+            // branch (run_fork_batch sets the fan-out plans' `resume` only then).
+            forked = job_plans.len() > 1 && job_plans[1].resume.is_some();
+            o
+        } else {
+            let waves = if batch_run {
+                batch::waves(batch_strategy, jobs.len())
+            } else if jobs.is_empty() {
+                Vec::new()
+            } else {
+                vec![(0..jobs.len()).collect()]
+            };
+            run_in_waves(
+                &jobs,
+                &job_plans,
+                schema.as_ref(),
+                max_retries,
+                max_parallel,
+                &waves,
+            )
+        };
+
+        let results: Vec<RunResult> = plan
+            .into_iter()
+            .map(|entry| match entry {
+                Plan::Ready(result) => *result,
                 Plan::Pending {
                     spec,
                     bin,
@@ -630,187 +725,27 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                     job_index,
                     prompt,
                     model,
-                } => stream_one_harness(
-                    &jobs[job_index],
-                    spec,
-                    &bin,
-                    output_format,
-                    prompt,
-                    model,
-                    history_writer
-                        .as_ref()
-                        .zip(streamed_run_id)
-                        .map(|(writer, run_id)| (writer, run_id, selected_ids[0].as_str())),
-                ),
-            };
-        apply_result_identity(&mut result, &selected_ids[0]);
-        if let (Some(writer), Some(run_id)) = (&history_writer, streamed_run_id) {
-            if let Err(err) = writer.append_streamed(
-                run_id,
-                mode,
-                result.model.as_deref(),
-                &prompts[0],
-                &result,
-                &persisted_event_indexes,
-            ) {
-                eprintln!(
-                    "oneharness: warning: could not write history record for `{}`: {err}",
-                    result.harness
-                );
-            }
-        }
-        // The run is over: put the workspace back before anything else can fail.
-        let mock_report = mock_wiring.map(MockWiring::finish);
-        // Persist the captured session token (if `--session` was in play) and
-        // build its report block, before `result` is moved into the report.
-        let session_report = finalize_session(
-            session_wiring,
-            std::slice::from_ref(&result),
-            args.print_command,
-        );
-        if let Some(dir) = &args.output_dir {
-            write_output_dir(dir, std::slice::from_ref(&result))?;
-        }
-        let exit = exit_code(std::slice::from_ref(&result), require_available);
-        let report = build_report(
-            vec![result],
-            &prompts,
-            model,
-            report_models.clone(),
-            args,
-            mode,
-            schema.as_ref(),
-            max_retries,
-            None,
-            None,
-            loaded.files.clone(),
-            mock_report,
-            history_file,
-            session_report,
-        );
-        // The event lines were already written during the run; the report is the
-        // terminal `{"type":"result", ...}` line of the same NDJSON stream.
-        emit_stream_result(&report)?;
-        return Ok(exit);
-    }
-
-    // Schedule and run the jobs. Parallel mode runs every job at once (an
-    // ordinary run and a batch under `speed`), or a batch's warm-then-fan waves
-    // under `min-tokens`. Fallback mode instead drives the harnesses one at a
-    // time in priority order, stopping at the first that actually runs — so it
-    // never uses the wave scheduler. `--print-command` never executes, so it
-    // always takes the parallel branch (which emits the planned rows).
-    let mut forked = false;
-    let (mut results, mut fallback_report): (Vec<RunResult>, Option<FallbackReport>) =
-        if fallback_mode && !args.print_command {
-            // Sequential fallback: run the priority chain until one harness runs.
-            // The workspace-restoring mock finish happens below, after every spawn
-            // this branch does is complete.
-            let (results, fb) = run_fallback(
-                plan,
-                &jobs,
-                &job_plans,
-                schema.as_ref(),
-                max_retries,
-                multi_model,
-            );
-            (results, Some(fb))
-        } else {
-            let max_parallel = args
-                .max_parallel
-                .or(cfg.max_parallel)
-                .unwrap_or(jobs.len().max(1));
-            // Fork-based `min-tokens`: when a batch's single harness can fork, the
-            // warm-up (prompt[0]) establishes a session and the fan-out branches
-            // forks of it, so each reuses the warmed cached prefix — the realizable
-            // token saving on these CLIs (a static --system is re-created per
-            // process, so plain warm-then-fan saves nothing). It needs the warm-up's
-            // *runtime* session id, so it cannot run under --print-command.
-            let fork_batch = batch_run
-                && batch_strategy == BatchStrategy::MinTokens
-                && specs[0].fork_reuses_cache
-                && !args.print_command
-                && !jobs.is_empty();
-            // `min-tokens` reduces tokens only when the harness has a *cache-reusing*
-            // fork (the warm-up writes the shared prefix, the forked fan-out reads
-            // it). When it does not — no fork at all, or a fork that re-sends the
-            // prefix cold, like OpenCode — `min-tokens` can only order the calls; say
-            // so rather than imply a saving the harness can't deliver.
-            if batch_run
-                && batch_strategy == BatchStrategy::MinTokens
-                && !specs[0].fork_reuses_cache
-                && !args.print_command
-            {
-                eprintln!(
-                    "oneharness: warning: `--batch-strategy min-tokens` cannot reduce tokens on `{}` \
-                     (no cache-reusing fork available); it only orders the calls. Token savings need a \
-                     harness whose fork reuses the prompt cache (see `fork_reuses_cache` in \
-                     `oneharness list`).",
-                    specs[0].id
-                );
-            }
-            let outcomes = if fork_batch {
-                let o = run_fork_batch(
-                    &mut jobs,
-                    &mut job_plans,
-                    schema.as_ref(),
-                    max_retries,
-                    max_parallel,
-                );
-                // The fan-out actually forked iff the warm-up exposed a session to
-                // branch (run_fork_batch sets the fan-out plans' `resume` only then).
-                forked = job_plans.len() > 1 && job_plans[1].resume.is_some();
-                o
-            } else {
-                let waves = if batch_run {
-                    batch::waves(batch_strategy, jobs.len())
-                } else if jobs.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![(0..jobs.len()).collect()]
-                };
-                run_in_waves(
-                    &jobs,
-                    &job_plans,
-                    schema.as_ref(),
-                    max_retries,
-                    max_parallel,
-                    &waves,
-                )
-            };
-
-            let results: Vec<RunResult> = plan
-                .into_iter()
-                .map(|entry| match entry {
-                    Plan::Ready(result) => *result,
-                    Plan::Pending {
+                } => {
+                    let outcome = &outcomes[job_index];
+                    // The argv actually run (fork-batch rewrites the fan-out jobs
+                    // to resume+fork the warmed session, so read it back).
+                    let command = jobs[job_index].argv.clone();
+                    executed_result(
                         spec,
                         bin,
+                        command,
                         output_format,
-                        job_index,
+                        &outcome.capture,
+                        schema.as_ref(),
+                        outcome.attempts,
                         prompt,
                         model,
-                    } => {
-                        let outcome = &outcomes[job_index];
-                        // The argv actually run (fork-batch rewrites the fan-out jobs
-                        // to resume+fork the warmed session, so read it back).
-                        let command = jobs[job_index].argv.clone();
-                        executed_result(
-                            spec,
-                            bin,
-                            command,
-                            output_format,
-                            &outcome.capture,
-                            schema.as_ref(),
-                            outcome.attempts,
-                            prompt,
-                            model,
-                        )
-                    }
-                })
-                .collect();
-            (results, None)
-        };
+                    )
+                }
+            })
+            .collect();
+        (results, None)
+    };
     for (result, (_, selected_id, _, _)) in results.iter_mut().zip(&units) {
         apply_result_identity(result, selected_id);
     }
@@ -828,7 +763,17 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // can fail, so a later I/O error never leaves the ephemeral hook behind.
     let mock_report = mock_wiring.map(MockWiring::finish);
 
-    record_history(&history_writer, mode, &prompts[0], &results);
+    if stream_run {
+        record_streamed_history(
+            &history_writer,
+            mode,
+            &prompts[0],
+            &results,
+            &streamed_history,
+        );
+    } else {
+        record_history(&history_writer, mode, &prompts[0], &results);
+    }
     // Persist the captured session token (if `--session` was in play) and build
     // its report block. A session run is single-harness, so `results` holds one.
     let session_report = finalize_session(session_wiring, &results, args.print_command);
@@ -866,7 +811,11 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         history_file,
         session_report,
     );
-    print_json(&report, args.compact)?;
+    if stream_run {
+        emit_stream_result(&report)?;
+    } else {
+        print_json(&report, args.compact)?;
+    }
 
     if exit != EXIT_OK {
         match &report.fallback {
@@ -1470,6 +1419,127 @@ fn record_history(
     }
 }
 
+/// A streamed result's already-written history: `run_id` is `None` when history
+/// is off, and the indexes are the events the closing record must not write again.
+struct StreamedHistory {
+    run_id: Option<oneharness_core::domain::history::HistoryId>,
+    persisted_event_indexes: BTreeSet<usize>,
+}
+
+/// Close each streamed result's history record under the run id its events were
+/// already appended to. Best-effort per record, exactly like [`record_history`].
+fn record_streamed_history(
+    writer: &Option<HistoryWriter>,
+    mode: PermissionMode,
+    run_prompt: &str,
+    results: &[RunResult],
+    streamed: &[StreamedHistory],
+) {
+    let Some(writer) = writer else { return };
+    for (result, streamed) in results.iter().zip(streamed) {
+        let Some(run_id) = streamed.run_id else {
+            continue;
+        };
+        if let Err(err) = writer.append_streamed(
+            run_id,
+            mode,
+            result.model.as_deref(),
+            run_prompt,
+            result,
+            &streamed.persisted_event_indexes,
+        ) {
+            eprintln!(
+                "oneharness: warning: could not write history record for `{}`: {err}",
+                result.harness
+            );
+        }
+    }
+}
+
+/// What [`stream_plan`] produced; `fallback` is `Some` only in fallback mode.
+struct StreamedPlan {
+    results: Vec<RunResult>,
+    fallback: Option<FallbackReport>,
+    history: Vec<StreamedHistory>,
+}
+
+/// Drive the plan under `--stream`, publishing each candidate's normalized
+/// events to stdout as they arrive. In fallback mode a candidate is one plan
+/// entry — a harness, or a (harness, model) pair when a model list is the chain.
+///
+/// Publishing a candidate before the chain has settled is safe: one that
+/// published an event has, by construction, a tool event in its result (the
+/// streamed line and the reported array come from the same recognizer over the
+/// same stdout), which is [`fallback::RunWork::Done`] — so it cannot then fall
+/// through, and a candidate that does fall through published nothing.
+fn stream_plan(
+    plan: Vec<Plan>,
+    jobs: &[Job],
+    fallback_mode: bool,
+    multi_model: bool,
+    history_writer: Option<&HistoryWriter>,
+    unit_ids: &[&str],
+) -> StreamedPlan {
+    let mut results: Vec<RunResult> = Vec::new();
+    let mut history: Vec<StreamedHistory> = Vec::new();
+    let mut fell_through: Vec<FallThrough> = Vec::new();
+    let mut ran: Option<String> = None;
+    for (index, entry) in plan.into_iter().enumerate() {
+        let run_id = history_writer.map(HistoryWriter::begin_run);
+        let streamed = match entry {
+            // Unavailable/skipped — nothing to stream, but it still takes its
+            // place in the chain below.
+            Plan::Ready(result) => StreamedHarness {
+                result: *result,
+                persisted_event_indexes: BTreeSet::new(),
+            },
+            Plan::Pending {
+                spec,
+                bin,
+                output_format,
+                job_index,
+                prompt,
+                model,
+            } => stream_one_harness(
+                &jobs[job_index],
+                spec,
+                &bin,
+                output_format,
+                prompt,
+                model,
+                history_writer
+                    .zip(run_id)
+                    .map(|(writer, run_id)| (writer, run_id, unit_ids[index])),
+            ),
+        };
+        let StreamedHarness {
+            result,
+            persisted_event_indexes,
+        } = streamed;
+        let keep_going = fallback_step(&result, multi_model, &mut fell_through, &mut ran);
+        results.push(result);
+        history.push(StreamedHistory {
+            run_id,
+            persisted_event_indexes,
+        });
+        if !fallback_mode || !keep_going {
+            break;
+        }
+    }
+    StreamedPlan {
+        results,
+        fallback: fallback_mode.then_some(FallbackReport { ran, fell_through }),
+        history,
+    }
+}
+
+/// One harness's finished streaming run. The events *outside*
+/// `persisted_event_indexes` are still owed to history by the closing record.
+struct StreamedHarness {
+    result: RunResult,
+    persisted_event_indexes: BTreeSet<usize>,
+}
+
 /// Run one harness with streaming: feed each stdout line through the event
 /// extractor as it arrives and write any new normalized events to stdout as
 /// NDJSON (`{"type":"event","event":{…}}`), then return the same [`RunResult`] a
@@ -1489,7 +1559,7 @@ fn stream_one_harness(
         oneharness_core::domain::history::HistoryId,
         &str,
     )>,
-) -> (RunResult, BTreeSet<usize>) {
+) -> StreamedHarness {
     use oneharness_core::domain::report::RunStreamEnvelope;
     use oneharness_core::io::runner::StreamStep;
     use serde_json::Value;
@@ -1554,7 +1624,10 @@ fn stream_one_harness(
         prompt,
         model,
     );
-    (result, persisted_event_indexes)
+    StreamedHarness {
+        result,
+        persisted_event_indexes,
+    }
 }
 
 /// Write the terminal `{"type":"result","report":<RunReport>}` line that closes a
@@ -1573,23 +1646,30 @@ fn emit_stream_result(report: &RunReport) -> Result<(), OneharnessError> {
     Ok(())
 }
 
-/// Refuse `--stream` combined with anything it cannot serve: more than one
-/// harness, a batch (multi-prompt) run, or structured output — each needs the
-/// whole output at once, which streaming does not provide. A loud usage error
-/// before anything spawns.
+/// Refuse `--stream` combined with anything it cannot serve: a batch
+/// (multi-prompt) run or structured output — each needs the whole output at
+/// once, which streaming does not provide — and, in the default `parallel` mode,
+/// more than one harness. A loud usage error before anything spawns.
+///
+/// A **fallback** chain may list several candidates — harnesses, and each
+/// harness's models (the multi-model half is refused in [`validate_multi_model`],
+/// which allows it here for the same reason): only the candidate that runs ever
+/// publishes (see [`stream_plan`]), so there is nothing to interleave.
 fn validate_stream(
     stream: bool,
     specs: &[&'static HarnessSpec],
     batch_run: bool,
     has_schema: bool,
+    fallback_mode: bool,
 ) -> Result<(), OneharnessError> {
     if !stream {
         return Ok(());
     }
-    if specs.len() > 1 {
+    if specs.len() > 1 && !fallback_mode {
         return Err(OneharnessError::StreamInvalid(
-            "--stream runs a single harness; select exactly one with --harness <id> (a \
-             multi-harness stream would interleave unrelated event streams on one stdout)"
+            "--stream runs a single harness; select exactly one with --harness <id>, or use \
+             --run-mode fallback to stream the first candidate that runs (a multi-harness \
+             parallel stream would interleave unrelated event streams on one stdout)"
                 .to_string(),
         ));
     }
@@ -1711,9 +1791,10 @@ fn run_fork_batch(
 
 /// Refuse the run shapes fallback mode cannot express, before anything spawns.
 /// Fallback drives several harnesses in priority order for one prompt, stopping
-/// at the first that runs — so a multi-prompt batch, the explicit `--resume` /
-/// `--fork` continuations (each pins one *specific* harness's native id), and
-/// `--stream` are loud usage errors here. `--session` is *not* refused: the
+/// at the first that runs — so a multi-prompt batch and the explicit `--resume` /
+/// `--fork` continuations (each pins one *specific* harness's native id) are loud
+/// usage errors here. `--stream` is *not* refused (see [`stream_plan`]).
+/// `--session` is *not* refused either: the
 /// higher-level named handle binds to the anchor (the first session-capable
 /// harness in the chain), which fallback settles on under stable availability —
 /// see [`setup_session`], which does the capability check for it. The *capability*
@@ -1735,12 +1816,6 @@ fn validate_fallback(batch_run: bool, args: &RunArgs) -> Result<(), OneharnessEr
             "a resumed session belongs to one specific harness, so it cannot fall through to another (use --session, which binds to the fallback anchor)",
         );
     }
-    if args.stream {
-        return conflict(
-            "--stream",
-            "streaming drives a single harness incrementally; a fallback chain may run several in turn",
-        );
-    }
     Ok(())
 }
 
@@ -1748,10 +1823,20 @@ fn validate_fallback(batch_run: bool, args: &RunArgs) -> Result<(), OneharnessEr
 /// Fanning over models multiplies the run into several (harness, model) units, so
 /// every single-unit shape is a loud usage error: a batch (its shared cache prefix
 /// is per harness/model, so it cannot also vary the model), and each single-harness
-/// continuation — `--resume` / `--fork` / `--session` (bound to one model context)
-/// and `--stream` (one incremental output). `--run-mode fallback` is deliberately
-/// *not* refused: the model list is exactly the fallback chain there.
-fn validate_multi_model(batch_run: bool, args: &RunArgs) -> Result<(), OneharnessError> {
+/// continuation — `--resume` / `--fork` / `--session` (bound to one model context).
+/// `--run-mode fallback` is deliberately *not* refused: the model list is exactly
+/// the fallback chain there.
+///
+/// `--stream` follows from that. In `parallel` the fan-out really is several
+/// concurrent results whose event streams would interleave on one stdout, so it
+/// stays refused; in `fallback` the (harness, model) pairs are a priority chain
+/// run one at a time with a single outcome — the same shape a multi-harness
+/// chain streams in (see [`stream_plan`] and [`validate_stream`]).
+fn validate_multi_model(
+    batch_run: bool,
+    fallback_mode: bool,
+    args: &RunArgs,
+) -> Result<(), OneharnessError> {
     let conflict = |with, why| Err(OneharnessError::MultiModelConflict { with, why });
     if batch_run {
         return conflict(
@@ -1771,10 +1856,10 @@ fn validate_multi_model(batch_run: bool, args: &RunArgs) -> Result<(), Oneharnes
             "a named session is tied to one model, so it cannot fan out over several",
         );
     }
-    if args.stream {
+    if args.stream && !fallback_mode {
         return conflict(
             "--stream",
-            "streaming emits one incremental output; a model fan-out produces several results",
+            "streaming emits one incremental output; a parallel model fan-out produces several results at once. Use --run-mode fallback to stream the first (harness, model) pair that runs",
         );
     }
     Ok(())
@@ -1846,24 +1931,46 @@ fn run_fallback(
                 )
             }
         };
-        match fallback::startup_failure_reason(result.status, result.failure_kind, multi_model) {
-            // Could not run — record why and try the next candidate.
-            Some(reason) => {
-                fell_through.push(FallThrough {
-                    harness: result.harness.clone(),
-                    reason: reason.to_string(),
-                });
-                results.push(result);
-            }
-            // Actually ran (well or badly) — this is the answer; stop here.
-            None => {
-                ran = Some(result.harness.clone());
-                results.push(result);
-                break;
-            }
+        let keep_going = fallback_step(&result, multi_model, &mut fell_through, &mut ran);
+        results.push(result);
+        if !keep_going {
+            break;
         }
     }
     (results, FallbackReport { ran, fell_through })
+}
+
+/// Apply the fallback verdict to one finished candidate: record why it fell
+/// through, or name it as the harness that ran. Returns whether the chain should
+/// try the next candidate.
+///
+/// Both drivers call this — the buffered [`run_fallback`] and the streaming
+/// [`stream_plan`] — on the same normalized [`RunResult`], so a streamed chain
+/// and a buffered chain cannot select different candidates.
+fn fallback_step(
+    result: &RunResult,
+    multi_model: bool,
+    fell_through: &mut Vec<FallThrough>,
+    ran: &mut Option<String>,
+) -> bool {
+    match fallback::startup_failure_reason(
+        result.status,
+        result.failure_kind,
+        multi_model,
+        fallback::RunWork::from_result(result),
+    ) {
+        Some(reason) => {
+            fell_through.push(FallThrough {
+                harness: result.harness.clone(),
+                reason: reason.to_string(),
+            });
+            true
+        }
+        None => {
+            *ran = Some(result.harness.clone());
+            false
+        }
+    }
 }
 
 /// Exit code for a fallback run: a hard failure when no candidate could run at

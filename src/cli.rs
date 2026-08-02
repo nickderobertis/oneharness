@@ -507,7 +507,9 @@ pub struct RunArgs {
     /// model-minor) and a per-model rejection (unknown model / rate limit) falls
     /// through to the next model. A CLI value overrides config `model`/`models`.
     /// More than one model is incompatible with a batch (multi-prompt) run and
-    /// with --resume / --fork / --session / --stream.
+    /// with --resume / --fork / --session; it is incompatible with --stream only
+    /// in `parallel` mode, since under --run-mode fallback the pairs are tried
+    /// one at a time and only the one that runs streams.
     #[arg(long)]
     pub model: Vec<String>,
 
@@ -598,11 +600,16 @@ pub struct RunArgs {
     #[arg(long)]
     pub events: bool,
 
-    /// Stream normalized events to stdout as they occur (single harness), then a
-    /// final result line — instead of one report at the end. Implies --events'
-    /// format selection. Lets a consumer short-circuit (close stdin / signal) the
-    /// moment it observes a disallowed action. Mutually exclusive with a
-    /// multi-harness selection, --schema, and batch prompts.
+    /// Stream normalized events to stdout as they occur (one harness at a time),
+    /// then a final result line — instead of one report at the end. Implies
+    /// --events' format selection. Lets a consumer short-circuit (close stdin /
+    /// signal) the moment it observes a disallowed action. Mutually exclusive with
+    /// --schema and batch prompts, and — in the default `parallel` mode — with a
+    /// multi-harness selection or a model fan-out (their streams would
+    /// interleave). Under --run-mode fallback a whole candidate chain IS allowed,
+    /// over harnesses and over models alike: candidates run one at a time, only
+    /// the one that runs publishes, and the chain selects the same candidate a
+    /// buffered run would.
     #[arg(long)]
     pub stream: bool,
 
@@ -715,8 +722,11 @@ pub struct RunArgs {
     /// actually runs the task, falling through only harnesses that cannot run at
     /// all — not installed, unspawnable, or rejected before doing any work (auth /
     /// no-credit quota). A real task failure or a timeout does NOT fall through
-    /// (it would mask a real failure). Incompatible with a batch run and with
-    /// --resume / --fork / --session / --stream. Every listed harness is validated
+    /// (it would mask a real failure), and neither does a candidate whose result
+    /// shows work done (a tool call, or billed tokens/cost) whatever its terminal
+    /// record says. Incompatible with a batch run and with
+    /// --resume / --fork (each pins one harness's native id); --session and
+    /// --stream are supported. Every listed harness is validated
     /// up front, so a flag unsupported by ANY candidate is a usage error even if
     /// that harness is never reached — keeping the command valid for the whole set.
     #[arg(long, value_parser = run_mode_parser(), value_name = "MODE")]

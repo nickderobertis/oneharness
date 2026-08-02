@@ -698,20 +698,16 @@ shape. When you add one:
   emits events incrementally so a consumer can short-circuit on bad behavior;
   its lines are the typed Rust `RunStreamEnvelope` contract and
   `oh_stream_assert` is its live proof. It is single-harness only in `parallel`
-  (interleaving); a **fallback chain streams**, because the candidates run in
-  turn — the constraint is narrower than "one harness": stdout must not be
-  committed to a candidate the chain then discards. What makes that safe is
-  `fallback::RunWork`, consulted *before* every fall-through reason in
-  `startup_failure_reason`: a candidate whose result shows a tool call or billed
-  usage ran the task and never falls through. That is #1211's "work done, not
-  error text" rule lifted from the Claude limit classifier to the whole verdict,
-  so it also covers the surfaces with no accounting to gate on (a scanned `401`,
-  Codex's `turn.failed`). Both drivers take the decision from one
-  `fallback_step` over the same normalized result, so **streamed and buffered
-  chains select the same candidate** — pinned end-to-end by
-  `streamed_and_buffered_fallback_select_the_same_candidate`; there is no
-  streaming-only rule, and never publish first and retract (a consumer acts on
-  what it reads). `sdk_schema::bundle` is the single Rust
+  (interleaving); a **fallback chain streams**, since its candidates run in turn.
+  The constraint is narrower than "one harness": stdout must never be committed
+  to a candidate the chain then discards. So a fall-through is decided by
+  `fallback::RunWork` first — a candidate whose result carries a tool call or
+  billed usage (any non-zero token count, cache tokens included, or dollar cost)
+  ran the task and never falls through, whatever its terminal record then says.
+  Both drivers read that evidence from the same normalized result, so **streamed
+  and buffered chains always select the same candidate**; there is no
+  streaming-only rule, and a published line is never retracted (a consumer acts
+  on what it reads). `sdk_schema::bundle` is the single Rust
   generation source for that envelope, `HistoryStreamEnvelope`, and the shared
   SDK contracts.
 

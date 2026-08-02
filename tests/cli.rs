@@ -13232,6 +13232,87 @@ fn fallback_falls_through_a_claude_weekly_limit_reported_as_an_api_error() {
     assert_eq!(value["results"][2]["text"], "served-by-codex");
 }
 
+/// The structural rule end to end, on prose no phrase list anticipates — which
+/// is the whole point of having it. A candidate that reports a `429` and no
+/// accounting is routed around whatever it says and whichever harness said it:
+/// the wording that stranded the chain twice is exactly what stops being
+/// load-bearing here, and the reading is dialect-agnostic because
+/// `api_error_status` states what the *provider* did.
+///
+/// Each case also exits **zero**, which isolates the record reading: the
+/// non-zero text classifier never runs, so the fall-through can only come from
+/// the harness's own declaration.
+#[test]
+fn fallback_falls_through_a_zero_work_429_with_no_recognized_limit_wording() {
+    let mock = mock_bin().display().to_string();
+    let served =
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"served-by-next"}}"#;
+    // (tag, the harness whose dialect is exercised, the rejection's prose)
+    let cases = [
+        (
+            "claude-rephrased",
+            "claude-code",
+            "Your plan's usage cap for this period has been used up",
+        ),
+        ("claude-bare-429", "claude-code", "Rate limit exceeded"),
+        ("generic-dialect", "opencode", "Too many requests"),
+    ];
+
+    for (tag, first, prose) in cases {
+        let rejection = serde_json::to_string(
+            &serde_json::json!({
+                "type": "result",
+                "subtype": "success",
+                "api_error_status": 429,
+                "num_turns": 1,
+                "usage": {"input_tokens": 0, "output_tokens": 0},
+                "modelUsage": {},
+                "result": prose,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let project = format!(
+            r#"
+            harnesses = ["{first}", "codex"]
+            run_mode = "fallback"
+
+            [harness.{first}]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {rejection} }}
+
+            [harness.codex]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "0", MOCK_STDOUT = '{served}' }}
+            "#
+        );
+        let fx = ConfigFixture::new(&format!("fallback-unworded-429-{tag}"), &project, "");
+        let output = run_with_config(
+            &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+            &[],
+            &fx.user_config(),
+        );
+        assert!(
+            output.status.success(),
+            "{tag}: exit {:?}, stderr {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value = json_stdout(&output);
+        assert_eq!(value["fallback"]["ran"], "codex", "{tag}");
+        assert_eq!(
+            value["fallback"]["fell_through"][0]["harness"], first,
+            "{tag}"
+        );
+        assert_eq!(
+            value["fallback"]["fell_through"][0]["reason"], "quota",
+            "{tag}: a zero-work 429 is routed around regardless of its wording"
+        );
+        assert_eq!(value["results"][0]["failure_kind"], "quota", "{tag}");
+        assert_eq!(value["results"][1]["text"], "served-by-next", "{tag}");
+    }
+}
+
 /// The other edge of the same record: a weekly limit that landed **after** the
 /// harness spent real tokens is a run, so the chain stops there rather than
 /// handing the task to the next candidate and paying for it twice. The only

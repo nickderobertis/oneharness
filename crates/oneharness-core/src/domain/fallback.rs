@@ -67,10 +67,11 @@ impl RunMode {
 /// Two independent witnesses, either of which is decisive:
 ///
 /// - **Tool events.** A recorded tool call is the harness acting on the task.
-/// - **Usage accounting.** Any non-zero token count or dollar cost means the
-///   provider billed real work. Absent accounting is deliberately *not* work
-///   (a bare `You've hit your session limit` line carries none and is still a
-///   zero-work rejection), mirroring `signals::record_reports_work`.
+/// - **Usage accounting.** [`Usage::reports_billed_work`][billed] — the same definition
+///   `signals::record_reports_work` classifies a raw harness record with, so the
+///   two readings of "billed" are one contract with one implementation.
+///
+/// [billed]: crate::domain::signals::Usage::reports_billed_work
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunWork {
     /// The candidate ran the task, whatever its terminal record then said.
@@ -84,18 +85,7 @@ impl RunWork {
     /// signal by contract, so its evidence is always [`RunWork::None`].
     pub fn from_result(result: &RunResult) -> Self {
         let used_tools = result.events.as_ref().is_some_and(|e| !e.is_empty());
-        let usage = &result.usage;
-        let billed = [
-            usage.input_tokens,
-            usage.output_tokens,
-            usage.cache_read_tokens,
-            usage.cache_write_tokens,
-        ]
-        .into_iter()
-        .flatten()
-        .any(|tokens| tokens > 0)
-            || usage.cost_usd.is_some_and(|cost| cost > 0.0);
-        if used_tools || billed {
+        if used_tools || result.usage.reports_billed_work() {
             RunWork::Done
         } else {
             RunWork::None
@@ -414,7 +404,7 @@ mod tests {
         let mut result = zero_work_result();
         assert_eq!(RunWork::from_result(&result), RunWork::None);
         // ...and so is a result with no accounting at all (a bare limit line on
-        // stderr carries none), mirroring `signals::record_reports_work`.
+        // stderr carries none), the shared `Usage::reports_billed_work` rule.
         result.usage = Usage::default();
         assert_eq!(RunWork::from_result(&result), RunWork::None);
         result.events = Some(Vec::new());

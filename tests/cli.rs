@@ -14095,6 +14095,150 @@ fn streamed_and_buffered_fallback_select_the_same_candidate() {
     }
 }
 
+/// Drive one `claude-code` → `qwen` fallback chain both ways over the same
+/// config — buffered and streamed — and hand back the two reports plus the exit
+/// code, after asserting the deliveries agreed on the selection and the exit.
+/// The first candidate's `env` is the whole variable; the second is always a
+/// clean mock run it must never reach.
+fn fallback_reports_both_ways(tag: &str, first_env: &str) -> (Value, Value, Option<i32>) {
+    let mock = mock_bin().display().to_string();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "qwen"]
+        run_mode = "fallback"
+
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {first_env}
+
+        [harness.qwen]
+        bin = '{mock}'
+        "#
+    );
+    let fx = ConfigFixture::new(tag, &project, "");
+    let buffered = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    let buffered_report = json_stdout(&buffered);
+    let streamed = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--stream"],
+        &[],
+        &fx.user_config(),
+    );
+    let terminal = stream_envelopes(&streamed)
+        .pop()
+        .expect("a terminal report line");
+    assert_eq!(terminal["type"], "result", "{tag}");
+    let streamed_report = terminal["report"].clone();
+    assert_eq!(
+        fallback_selection(&buffered_report),
+        fallback_selection(&streamed_report),
+        "{tag}: streamed and buffered fallback disagreed"
+    );
+    assert_eq!(
+        buffered.status.code(),
+        streamed.status.code(),
+        "{tag}: exit codes disagreed: {}",
+        String::from_utf8_lossy(&streamed.stderr)
+    );
+    (buffered_report, streamed_report, buffered.status.code())
+}
+
+/// The tool-call witness on its own. `RunWork` reads two independent witnesses,
+/// and every other end-to-end candidate that stops after a tool call also bills
+/// tokens — so its spending explains the stop just as well. This record is the
+/// `zero-work-auth` control of the parity table above with a tool call added:
+/// the same `401`, the same all-zero accounting, so nothing it spent can be why
+/// the chain stopped.
+#[test]
+fn fallback_stops_at_a_tool_call_that_billed_nothing() {
+    let transcript = serde_json::to_string(&format!(
+        "{}\n{}\n{}\n",
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo hi"}}]}}"#,
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"hi"}]}}"#,
+        r#"{"type":"result","subtype":"success","result":"partial","usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}"#,
+    ))
+    .unwrap();
+    let (buffered, streamed, exit) = fallback_reports_both_ways(
+        "fallback-tool-call-without-billing",
+        &format!(
+            r#"{{ MOCK_EXIT = "1", MOCK_STDOUT = {transcript}, MOCK_STDERR = "Error: 401 unauthorized" }}"#
+        ),
+    );
+    assert_eq!(exit, Some(1));
+    for (path, report) in [("buffered", &buffered), ("streamed", &streamed)] {
+        assert_eq!(report["fallback"]["ran"], "claude-code", "{path}");
+        assert!(
+            report["fallback"]["fell_through"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "{path}: a candidate that used a tool must never be fallen through"
+        );
+        let results = report["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1, "{path}: qwen must never be attempted");
+        let first = &results[0];
+        // The rejection that moves the chain on when the tool call is absent.
+        assert_eq!(first["failure_kind"], "auth", "{path}");
+        // ...and the accounting that cannot be what held it here.
+        for count in [
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+        ] {
+            assert_eq!(first["usage"][count], 0, "{path}: {count}");
+        }
+        assert!(first["usage"]["cost_usd"].is_null(), "{path}");
+        assert_eq!(first["events"].as_array().unwrap().len(), 2, "{path}");
+    }
+}
+
+/// The work-evidence short circuit on a **successful** record. A provider
+/// rejection a harness reports while still exiting zero falls through when it
+/// did no work — `fallback_falls_through_a_clean_exit_provider_quota_error` is
+/// that shape exactly — so work has to reverse the verdict on the same
+/// `Status::Ok`. Only a zero exit shows it: every other end-to-end work case
+/// pairs the classification with a non-zero exit, where the status is already
+/// the one the fall-through reasons are written against.
+#[test]
+fn fallback_stops_at_a_clean_exit_rejection_that_landed_after_work() {
+    let transcript = serde_json::to_string(&format!(
+        "{}\n{}\n",
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo hi"}}]}}"#,
+        r#"{"type":"result","subtype":"success","is_error":true,"api_error_status":400,"result":"insufficient_quota: credit balance exhausted","usage":{"input_tokens":812,"output_tokens":96}}"#,
+    ))
+    .unwrap();
+    let (buffered, streamed, exit) = fallback_reports_both_ways(
+        "fallback-clean-exit-quota-after-work",
+        &format!(r#"{{ MOCK_STDOUT = {transcript} }}"#),
+    );
+    // The declared rejection is still a failed run to report — what makes this
+    // the `Status::Ok` arm is the harness's own zero exit, asserted below.
+    assert_eq!(exit, Some(1));
+    for (path, report) in [("buffered", &buffered), ("streamed", &streamed)] {
+        assert_eq!(report["fallback"]["ran"], "claude-code", "{path}");
+        assert!(
+            report["fallback"]["fell_through"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "{path}: a candidate that did work must never be fallen through"
+        );
+        let results = report["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1, "{path}: qwen must never be attempted");
+        let first = &results[0];
+        // The exit that makes this the `Status::Ok` arm of the short circuit...
+        assert_eq!(first["status"], "ok", "{path}");
+        assert_eq!(first["exit_code"], 0, "{path}");
+        // ...still carrying the classification that would otherwise fall through.
+        assert_eq!(first["failure_kind"], "quota", "{path}");
+        assert_eq!(first["usage"]["output_tokens"], 96, "{path}");
+    }
+}
+
 #[test]
 fn stream_under_fallback_publishes_nothing_when_no_candidate_can_run() {
     // Every candidate fails to start: the stream carries only the terminal report

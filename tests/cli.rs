@@ -13059,6 +13059,22 @@ fn fallback_falls_through_zero_work_claude_subscription_limit_captures() {
             include_str!("fixtures/claude-session-limit.txt"),
             "1",
         ),
+        // The same rejection with a different qualifier, printed as bare text.
+        // There is no record to read structurally here — the line is all the
+        // harness gives — so this is the surface the phrase match exists for,
+        // and the surface the enumerated list was one wording short on.
+        (
+            "weekly-text",
+            "MOCK_STDERR",
+            include_str!("fixtures/claude-weekly-limit.txt"),
+            "1",
+        ),
+        (
+            "weekly-text-stdout",
+            "MOCK_STDOUT",
+            include_str!("fixtures/claude-weekly-limit.txt"),
+            "1",
+        ),
     ];
 
     for (tag, stream, capture, exit) in captures {

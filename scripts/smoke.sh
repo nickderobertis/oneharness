@@ -35,21 +35,6 @@ cd "$repo_root"
 # is smoked in step 3b with explicitly planted files.
 export ONEHARNESS_NO_CONFIG=1
 
-# `ONEHARNESS_NO_CONFIG` also disables the `ONEHARNESS_<FIELD>` overrides — but
-# step 3b suspends it on purpose to exercise the config layer, and that reopens
-# the door to whatever the developer's shell exports. On a host that runs
-# oneharness for real (an orchestrator exporting `ONEHARNESS_HARNESSES`, say) the
-# gate then fails on the machine's environment instead of on the repo. Clear the
-# inherited ones once, here, so hermetic means hermetic in every step. Kept:
-# `ONEHARNESS_NO_CONFIG` above, and `ONEHARNESS_BIN`, which is this script's own
-# caller knob for which binary to smoke.
-for var in $(compgen -v ONEHARNESS_ || true); do
-  case "$var" in
-    ONEHARNESS_NO_CONFIG | ONEHARNESS_BIN) ;;
-    *) unset "$var" ;;
-  esac
-done
-
 PROMPT="oneharness smoke: reply with the single word pong"
 LAST_CMD=""
 

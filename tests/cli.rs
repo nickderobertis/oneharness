@@ -3070,6 +3070,9 @@ fn stream_short_circuit_tears_down_the_child_when_the_consumer_closes() {
 
 #[test]
 fn stream_with_multiple_harnesses_is_a_usage_error() {
+    // In the default `parallel` mode the two harnesses would run at once and
+    // interleave their event streams on one stdout, so it is refused — and the
+    // message points at the mode that *can* stream a candidate set.
     let output = run(
         &[
             "run",
@@ -3089,6 +3092,7 @@ fn stream_with_multiple_harnesses_is_a_usage_error() {
         stderr.contains("--stream runs a single harness"),
         "{stderr}"
     );
+    assert!(stderr.contains("--run-mode fallback"), "{stderr}");
 }
 
 #[test]
@@ -13511,16 +13515,248 @@ fn fallback_runs_harnesses_in_the_caller_priority_order() {
     assert_eq!(results[1]["harness"], "claude-code");
 }
 
+/// Read a streaming run's NDJSON stdout as envelopes, failing loudly with the
+/// raw text (and stderr) when a line is not one.
+fn stream_envelopes(output: &Output) -> Vec<Value> {
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            serde_json::from_str(line).unwrap_or_else(|err| {
+                panic!(
+                    "stream line was not JSON: {err}\n--- stdout ---\n{text}\n--- stderr ---\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                )
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn stream_under_fallback_publishes_only_the_candidate_that_runs() {
+    // `--stream` under `--run-mode fallback`: the chain still falls through a
+    // candidate that could not run at all, and the consumer sees NOTHING from it
+    // — the first line on stdout is the winner's first tool call, numbered from
+    // zero. The fallen-through candidate here is the real zero-work Claude
+    // session-limit rejection (issue #1211), the shape a fallback chain exists to
+    // route around. Its committed counterpart — a candidate that DID publish
+    // events never falls through — is
+    // `stream_under_fallback_commits_a_candidate_once_it_has_published_events`;
+    // together the two make "a fallen-through candidate published nothing" total.
+    let mock = mock_bin().display().to_string();
+    let rejection =
+        serde_json::to_string(include_str!("fixtures/claude-session-limit-api-error.json").trim())
+            .unwrap();
+    let transcript = serde_json::to_string(&format!(
+        "{}\n{}\n{}\n",
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo hi"}}]}}"#,
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"hi"}]}}"#,
+        r#"{"type":"result","subtype":"success","result":"done"}"#,
+    ))
+    .unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "qwen"]
+        run_mode = "fallback"
+
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {rejection} }}
+
+        [harness.qwen]
+        bin = '{mock}'
+        env = {{ MOCK_STDOUT = {transcript} }}
+        "#
+    );
+    let fx = ConfigFixture::new("stream-fallback-chain", &project, "");
+    let history = hist_dir("stream-fallback-chain");
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--stream",
+            "--history",
+            "--history-dir",
+            &history.display().to_string(),
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelopes = stream_envelopes(&output);
+    // Two event lines (both the winner's) and the terminal report — the
+    // fell-through candidate contributed no line a consumer could act on.
+    assert_eq!(envelopes.len(), 3, "{envelopes:#?}");
+    assert_eq!(envelopes[0]["type"], "event");
+    assert_eq!(envelopes[0]["event"]["kind"], "tool_call");
+    assert_eq!(envelopes[0]["event"]["name"], "Bash");
+    assert_eq!(envelopes[0]["event"]["index"], 0);
+    assert_eq!(envelopes[1]["event"]["kind"], "tool_result");
+    assert_eq!(envelopes[1]["event"]["index"], 1);
+    assert_eq!(envelopes[2]["type"], "result");
+
+    // Selection is unchanged: the zero-work rejection fell through, qwen ran.
+    let report = &envelopes[2]["report"];
+    assert_eq!(report["fallback"]["ran"], "qwen");
+    let fell = report["fallback"]["fell_through"].as_array().unwrap();
+    assert_eq!(fell.len(), 1);
+    assert_eq!(fell[0]["harness"], "claude-code");
+    assert_eq!(fell[0]["reason"], "quota");
+    let results = report["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["failure_kind"], "quota");
+    // The loser's transcript is still reported — it was withheld from the live
+    // stream, not discarded.
+    assert!(results[0]["stdout"]
+        .as_str()
+        .unwrap()
+        .contains("session limit"));
+    assert!(results[0]["events"].is_null());
+    assert_eq!(results[1]["status"], "ok");
+    assert_eq!(results[1]["events"].as_array().unwrap().len(), 2);
+
+    // History records both attempts, and the winner's events were persisted live
+    // under the same run as its terminal record.
+    let history_file = report["history_file"].as_str().unwrap();
+    let lines: Vec<Value> = std::fs::read_to_string(history_file)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let runs: Vec<&Value> = lines.iter().filter(|l| l["type"] != "event").collect();
+    assert_eq!(runs.len(), 2, "both attempts recorded: {lines:#?}");
+    let events: Vec<&Value> = lines.iter().filter(|l| l["type"] == "event").collect();
+    assert_eq!(events.len(), 2);
+    assert!(events.iter().all(|e| e["harness"] == "qwen"));
+    let _ = std::fs::remove_dir_all(&history);
+}
+
+#[test]
+fn stream_under_fallback_commits_a_candidate_once_it_has_published_events() {
+    // The commit rule. A candidate that published tool calls demonstrably RAN the
+    // task, so the chain stops there even when its terminal record alone reads as
+    // a provisioning rejection — the alternative is a second harness's events
+    // arriving on the same stdout after the consumer already acted on the first's.
+    // The identical run WITHOUT `--stream` still falls through, which is the proof
+    // that ordinary fallback classification is untouched.
+    let mock = mock_bin().display().to_string();
+    let transcript = serde_json::to_string(&format!(
+        "{}\n",
+        r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"deploy"},"output":"ok"}}}"#,
+    ))
+    .unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["opencode", "codex"]
+        run_mode = "fallback"
+
+        [harness.opencode]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {transcript}, MOCK_STDERR = "Error: 401 unauthorized" }}
+
+        [harness.codex]
+        bin = '{mock}'
+        "#
+    );
+    let fx = ConfigFixture::new("stream-fallback-commit", &project, "");
+
+    // Without --stream: nothing was published, so the auth rejection falls
+    // through to codex exactly as it always has.
+    let buffered = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(buffered.status.success());
+    let v = json_stdout(&buffered);
+    assert_eq!(v["fallback"]["ran"], "codex");
+    assert_eq!(v["fallback"]["fell_through"][0]["reason"], "auth");
+    assert_eq!(v["results"].as_array().unwrap().len(), 2);
+
+    // With --stream: the event reached the consumer first, so opencode is
+    // committed — codex is never spawned and no second event stream follows.
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--stream"],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(1), "the committed run failed");
+    let envelopes = stream_envelopes(&output);
+    assert_eq!(envelopes.len(), 2, "{envelopes:#?}");
+    assert_eq!(envelopes[0]["event"]["name"], "bash");
+    let report = &envelopes[1]["report"];
+    assert_eq!(report["fallback"]["ran"], "opencode");
+    assert_eq!(
+        report["fallback"]["fell_through"].as_array().unwrap().len(),
+        0
+    );
+    let results = report["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1, "codex must never be spawned");
+    // The rejection is still reported honestly, it just did not fall through.
+    assert_eq!(results[0]["failure_kind"], "auth");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("streamed events") && stderr.contains("auth"),
+        "the override must be loud: {stderr}"
+    );
+}
+
+#[test]
+fn stream_under_fallback_publishes_nothing_when_no_candidate_can_run() {
+    // Every candidate fails to start: the stream carries only the terminal report
+    // (no events at all) and the run fails, exactly as the buffered path does.
+    let output = run(
+        &[
+            "run",
+            "--run-mode",
+            "fallback",
+            "--harness",
+            "claude-code,codex",
+            "--prompt",
+            "hi",
+            "--stream",
+            "--bin",
+            &missing_bin("claude-code"),
+            "--bin",
+            &missing_bin("codex"),
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let envelopes = stream_envelopes(&output);
+    assert_eq!(envelopes.len(), 1, "{envelopes:#?}");
+    assert_eq!(envelopes[0]["type"], "result");
+    let report = &envelopes[0]["report"];
+    assert!(report["fallback"]["ran"].is_null());
+    let fell = report["fallback"]["fell_through"].as_array().unwrap();
+    assert_eq!(fell.len(), 2);
+    assert!(fell.iter().all(|f| f["reason"] == "not-installed"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no selected harness could be run"),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn fallback_refuses_incompatible_run_shapes() {
-    // Fallback is single-outcome, so a batch, the low-level `--resume` continuation,
-    // and `--stream` are loud usage errors (exit 2), each naming why. (The
+    // Fallback is single-outcome, so a batch and the low-level `--resume`
+    // continuation are loud usage errors (exit 2), each naming why. (The
     // higher-level `--session` handle is instead *allowed* — it binds to the
-    // anchor; see `session_in_fallback_mode_anchors_to_the_first_session_capable_harness`.)
+    // anchor; see `session_in_fallback_mode_anchors_to_the_first_session_capable_harness`
+    // — and so is `--stream`, which publishes only the candidate that runs; see
+    // `stream_under_fallback_publishes_only_the_candidate_that_runs`.)
     let cases: &[(&[&str], &str)] = &[
         (&["--prompt", "a", "--prompt", "b"], "batch"),
         (&["--prompt", "a", "--resume", "sid"], "--resume"),
-        (&["--prompt", "a", "--stream"], "--stream"),
     ];
     for (extra, needle) in cases {
         let mut args = vec!["run", "--run-mode", "fallback", "--harness", "claude-code"];

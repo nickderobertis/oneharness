@@ -598,11 +598,16 @@ pub struct RunArgs {
     #[arg(long)]
     pub events: bool,
 
-    /// Stream normalized events to stdout as they occur (single harness), then a
-    /// final result line — instead of one report at the end. Implies --events'
-    /// format selection. Lets a consumer short-circuit (close stdin / signal) the
-    /// moment it observes a disallowed action. Mutually exclusive with a
-    /// multi-harness selection, --schema, and batch prompts.
+    /// Stream normalized events to stdout as they occur (one harness at a time),
+    /// then a final result line — instead of one report at the end. Implies
+    /// --events' format selection. Lets a consumer short-circuit (close stdin /
+    /// signal) the moment it observes a disallowed action. Mutually exclusive with
+    /// --schema and batch prompts, and with a multi-harness selection in the
+    /// default `parallel` mode (their streams would interleave). Under
+    /// --run-mode fallback a whole candidate chain IS allowed: the chain runs one
+    /// at a time and only the candidate that runs publishes events — a candidate
+    /// that falls through publishes nothing, and one that has published is
+    /// committed (it demonstrably ran, so the chain stops there).
     #[arg(long)]
     pub stream: bool,
 
@@ -716,7 +721,8 @@ pub struct RunArgs {
     /// all — not installed, unspawnable, or rejected before doing any work (auth /
     /// no-credit quota). A real task failure or a timeout does NOT fall through
     /// (it would mask a real failure). Incompatible with a batch run and with
-    /// --resume / --fork / --session / --stream. Every listed harness is validated
+    /// --resume / --fork (each pins one harness's native id); --session and
+    /// --stream are supported. Every listed harness is validated
     /// up front, so a flag unsupported by ANY candidate is a usage error even if
     /// that harness is never reached — keeping the command valid for the whole set.
     #[arg(long, value_parser = run_mode_parser(), value_name = "MODE")]

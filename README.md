@@ -882,8 +882,11 @@ truncated final JSONL record is ignored rather than invalidating earlier ones):
   consumer can **short-circuit** the moment it sees a disallowed action by
   closing the stream — oneharness's next write fails (broken pipe) and it tears
   the harness down, so a bad turn is cut off instead of paid for in full. Stream
-  runs a single harness (no batch, no `--schema`); `--stream` implies the
-  `--events` format selection.
+  runs one harness at a time (no batch, no `--schema`); `--stream` implies the
+  `--events` format selection. In the default `parallel` mode that means exactly
+  one selected harness — several would interleave their streams on one stdout —
+  but a whole [`--run-mode fallback`](#fallback-mode-first-that-runs-wins) chain
+  is allowed, because only the candidate that runs ever publishes events.
 - `failure_kind` / `failure_kind_source` — on a non-zero run, a coarse reason
   (`auth`, `rate_limit`, `model_not_found`, `quota`) so a caller can tell a
   retryable condition from a broken request. This is **distinct from `status`**,
@@ -910,7 +913,10 @@ parse `stdout` themselves.
 
 The CLI already emits the normalized events incrementally with `run --stream`,
 using the Rust-owned `RunStreamEnvelope` contract described above. Non-streaming
-runs still return the same events at the end in `RunReport.results[].events`.
+runs still return the same events at the end in `RunReport.results[].events`. It
+composes with [`--run-mode fallback`](#fallback-mode-first-that-runs-wins), so a
+consumer that needs a chain surviving a subscription limit does not have to give
+up watching the turn.
 
 The Node and Python SDKs expose this contract as `runStream` / `run_stream` async
 iterators. A behavioral consumer such as `skilltest` can **short-circuit the
@@ -1105,12 +1111,34 @@ reached. This keeps people and agents writing commands that work for every
 harness the fallback config supports, not just the one that happens to run.
 
 Fallback is single-outcome by nature, so it refuses a [batch](#batch-runs-same-prefix-prompt-caching)
-run, the low-level `--resume` / `--fork` continuations (each pins one specific
-harness's native id), and `--stream` as loud usage errors. The higher-level
+run and the low-level `--resume` / `--fork` continuations (each pins one specific
+harness's native id) as loud usage errors. The higher-level
 [`--session`](#session-handle) handle **is** allowed: it binds to the anchor (the
 first session-capable harness in the chain), so a named conversation degrades
 gracefully across the same priority set. Exit code: `0` when the harness that ran
 succeeded, `1` when it ran but failed **or** when no candidate could run at all.
+
+**Streaming a fallback chain.** [`--stream`](#streaming-events)
+is allowed too, and is how a supervising process watches a long turn while keeping
+the chain that survives a 429. The candidates run one at a time, so there is no
+interleaving; what needs care is that stdout must not be committed to a candidate
+the chain then discards. The rule: **a published event commits the candidate.** An
+event is a tool call, so publishing one is direct evidence the harness *ran the
+task* — exactly fallback's stop condition. Everything that falls through does so
+without running (not installed, unspawnable, or rejected before doing any work),
+publishes nothing, and is still fallen through with the same reason as before; the
+run that publishes is the one whose result the report names in `fallback.ran`. The
+residue is a candidate that made tool calls and *then* hit a rejection whose
+terminal record alone reads as a startup failure (a provider surface with no work
+accounting to gate on): observing the run beats re-reading its final record, so the
+chain stops there, a warning says so on stderr, and the result keeps its honest
+`failure_kind`. Each fallen-through candidate's whole transcript is still in
+`results` — it was withheld from the live stream, not discarded.
+
+```console
+# Watch the turn while keeping the fallback chain:
+oneharness run --run-mode fallback --harness claude-code,codex --prompt "Fix the failing test" --stream
+```
 
 ### Multiple models (fan out over the model axis)
 

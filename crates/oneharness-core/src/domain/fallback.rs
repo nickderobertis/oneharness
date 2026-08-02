@@ -122,6 +122,61 @@ pub fn is_startup_failure(
     startup_failure_reason(status, failure_kind, model_fallback).is_some()
 }
 
+/// What a fallback chain does with a candidate that was driven under `--stream`.
+///
+/// The extra input over [`startup_failure_reason`] is `streamed`: whether this
+/// candidate already wrote a normalized event to the consumer's stdout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamVerdict {
+    /// The candidate could not run the task at all and streamed nothing, so the
+    /// chain moves on. The reason token is [`startup_failure_reason`]'s.
+    FallThrough(&'static str),
+    /// The candidate ran the task (well or badly): the chain stops here.
+    Ran,
+    /// The candidate streamed events — proof it ran — so the chain stops here
+    /// even though its terminal classification alone (the carried reason token)
+    /// would have fallen through. See [`stream_verdict`].
+    Committed(&'static str),
+}
+
+/// The fallback verdict for one candidate driven under `--stream`.
+///
+/// A streaming run publishes each normalized event to the consumer the instant
+/// it is observed, and a consumer acts on what it reads. The chain must
+/// therefore never emit events from a candidate it goes on to discard: the
+/// consumer would act on a harness whose output is not the answer, then see a
+/// second harness's events arrive on the same stdout.
+///
+/// The reconciling rule is **an emitted event commits the candidate**. Events
+/// are tool calls and their observations, so writing one is direct evidence
+/// that the harness *ran the task* — which is exactly the condition under which
+/// fallback stops. Everything that falls through does so *without* running: not
+/// installed and never spawned, unspawnable, or rejected by the provider before
+/// doing any work (`auth`, and a `quota` rejection that the classifier already
+/// gates on zero work done). None of those produce a tool event, so
+/// [`StreamVerdict::Committed`] cannot fire for them and a fallen-through
+/// candidate is guaranteed to have published nothing.
+///
+/// [`StreamVerdict::Committed`] is the residue: a candidate that made tool calls
+/// and *then* hit a classification the terminal record alone reads as a startup
+/// failure (a provider surface with no work accounting to gate on, such as
+/// Codex's `turn.failed` usage limit). Observing the run beats re-reading its
+/// final record — the harness demonstrably ran — so the chain stops there, and
+/// the command layer says so on stderr. The result keeps its honest
+/// `failure_kind`, so the caller still sees why the run failed.
+pub fn stream_verdict(
+    streamed: bool,
+    status: Status,
+    failure_kind: Option<FailureKind>,
+    model_fallback: bool,
+) -> StreamVerdict {
+    match startup_failure_reason(status, failure_kind, model_fallback) {
+        Some(reason) if streamed => StreamVerdict::Committed(reason),
+        Some(reason) => StreamVerdict::FallThrough(reason),
+        None => StreamVerdict::Ran,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,6 +264,69 @@ mod tests {
             );
             assert!(!is_startup_failure(Status::Nonzero, Some(kind), false));
         }
+    }
+
+    #[test]
+    fn a_candidate_that_streamed_nothing_keeps_the_plain_verdict() {
+        // With no event published, the streaming verdict is exactly the
+        // classification — the chain behaves as it always has.
+        assert_eq!(
+            stream_verdict(false, Status::Skipped, None, false),
+            StreamVerdict::FallThrough("not-installed")
+        );
+        assert_eq!(
+            stream_verdict(false, Status::Nonzero, Some(FailureKind::Quota), false),
+            StreamVerdict::FallThrough("quota")
+        );
+        assert_eq!(
+            stream_verdict(false, Status::Nonzero, Some(FailureKind::Auth), false),
+            StreamVerdict::FallThrough("auth")
+        );
+        assert_eq!(
+            stream_verdict(false, Status::Ok, None, false),
+            StreamVerdict::Ran
+        );
+        assert_eq!(
+            stream_verdict(false, Status::Timeout, None, false),
+            StreamVerdict::Ran
+        );
+        assert_eq!(
+            stream_verdict(false, Status::Nonzero, None, false),
+            StreamVerdict::Ran
+        );
+    }
+
+    #[test]
+    fn a_streamed_candidate_is_committed_and_never_falls_through() {
+        // Publishing an event is evidence the harness ran the task, so the chain
+        // stops there — a fallen-through candidate can never have published one.
+        for (status, kind) in [
+            (Status::Nonzero, Some(FailureKind::Auth)),
+            (Status::Nonzero, Some(FailureKind::Quota)),
+            (Status::Ok, Some(FailureKind::Quota)),
+        ] {
+            let reason = startup_failure_reason(status, kind, false).expect("a startup failure");
+            assert_eq!(
+                stream_verdict(true, status, kind, false),
+                StreamVerdict::Committed(reason)
+            );
+        }
+        // A candidate that never spawned cannot have streamed, so the combination
+        // is unreachable; the rule still reports it as committed rather than
+        // silently discarding published events.
+        assert_eq!(
+            stream_verdict(true, Status::SpawnError, None, false),
+            StreamVerdict::Committed("spawn-error")
+        );
+        // A real run is `Ran` whether or not it published events.
+        assert_eq!(
+            stream_verdict(true, Status::Ok, None, false),
+            StreamVerdict::Ran
+        );
+        assert_eq!(
+            stream_verdict(true, Status::Nonzero, Some(FailureKind::RateLimit), false),
+            StreamVerdict::Ran
+        );
     }
 
     #[test]

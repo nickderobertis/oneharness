@@ -157,7 +157,6 @@ pub fn startup_failure_reason(
     model_fallback: bool,
     work: RunWork,
 ) -> Option<&'static str> {
-    // Evidence beats classification: a harness that worked ran the task.
     if work == RunWork::Done {
         return None;
     }

@@ -1978,7 +1978,6 @@ fn fallback_step(
         multi_model,
         fallback::RunWork::from_result(result),
     ) {
-        // Could not run — record why and try the next candidate.
         Some(reason) => {
             fell_through.push(FallThrough {
                 harness: result.harness.clone(),
@@ -1986,7 +1985,6 @@ fn fallback_step(
             });
             true
         }
-        // Actually ran (well or badly) — this is the answer; stop here.
         None => {
             *ran = Some(result.harness.clone());
             false

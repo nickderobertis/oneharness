@@ -99,7 +99,8 @@ pub enum FailureKind {
     /// invalid credentials).
     Auth,
     /// Rate limited (429, too many requests) — a transient condition of an
-    /// otherwise working, authenticated harness.
+    /// otherwise working, authenticated harness. A `429` that shows no sign of
+    /// having done work is `quota` instead, whatever wording it carries.
     RateLimit,
     /// The requested model was not found / is invalid — a configuration mistake.
     ModelNotFound,
@@ -378,9 +379,13 @@ pub fn classify_harness_failure(
 /// gets its turn (a mid-run `429` lands as `rate_limit`, which stops the chain),
 /// and a limit with no generic signal at all stays unclassified — also a stop.
 ///
-/// Scope: this gate covers the *adapter* limit signature only. The generic
-/// `insufficient_quota` / `credit balance` vocabulary in [`match_failure`] means
-/// the account is out of money rather than out of session, and is left as it was.
+/// Scope: this gate covers the *adapter* limit signature only — a text match, so
+/// it is the only reading available on a surface with no record to inspect. A
+/// rejection that does arrive as a JSON record is also read structurally by
+/// [`zero_work_rate_limit_rejection`], which is what keeps a rephrased message
+/// from stopping a chain. The generic `insufficient_quota` / `credit balance`
+/// vocabulary in [`match_failure`] means the account is out of money rather than
+/// out of session, and is left as it was.
 /// Codex's [`codex_turn_failure`] needs no gate: its `turn.failed` event carries
 /// no accounting to read, and inventing a shape for one would be a guess.
 fn harness_quota_failure(
@@ -455,8 +460,48 @@ fn error_record_failure(dialect: FailureDialect, value: &Value) -> Option<Failur
     // Adapter signal first, and only when this record did no work: see
     // `harness_quota_failure` for both rules. Claude's terminal record carries
     // whole-run totals, so its own accounting is the run's accounting.
-    harness_quota_failure(dialect, &serialized, record_reports_work(value))
+    let did_work = record_reports_work(value);
+    harness_quota_failure(dialect, &serialized, did_work)
+        .or_else(|| zero_work_rate_limit_rejection(value, did_work))
         .or_else(|| match_failure(&serialized))
+}
+
+/// The **structural** quota rule: a provider rejection whose record declares
+/// `api_error_status: 429` and whose own accounting says it did nothing is a
+/// [`FailureKind::Quota`] rejection, whatever prose it carries.
+///
+/// This exists because the phrase list in [`claude_subscription_limit`] has been
+/// one wording short twice — `session limit` (issue #1211), then the `weekly
+/// limit` capture below — and each miss stopped a fallback chain outright while
+/// authenticated candidates sat unused. The two failure modes are not
+/// symmetric: an unrecognized phrase kills the run, while a rule that reads a
+/// transient 429 as quota merely hands the task to the next candidate, which is
+/// what a fallback chain is configured to do. So the structural reading is the
+/// rule and the phrase list is a fast path over the surfaces that have no
+/// structure to read (a bare limit line on stderr, or a limit reported without a
+/// status code).
+///
+/// Both halves are load-bearing.
+///
+/// **`429` specifically**, not any rejection: it is the status a provider
+/// returns when *this identity may not run right now*, which is exactly the
+/// condition another identity can serve. A zero-work `500` is a provider fault
+/// the next candidate would hit too, and a zero-work `401`/`403` already has its
+/// own [`FailureKind::Auth`] fall-through.
+///
+/// **Zero work**, on the same [`record_reports_work`] reading the adapter path
+/// uses, so the two can never disagree: a 429 that landed after real tokens were
+/// spent describes a run that got somewhere, and falling through it burns the
+/// next candidate re-running work already paid for. That record keeps its
+/// generic [`FailureKind::RateLimit`] reading, which stops the chain.
+///
+/// Dialect-agnostic like [`is_provider_failure_envelope`], and for the same
+/// reason: `api_error_status` states what the provider did, which is true of
+/// whichever harness emits the field. What stays dialect-scoped is the *prose*.
+fn zero_work_rate_limit_rejection(value: &Value, did_work: bool) -> Option<FailureKind> {
+    (!did_work).then_some(())?;
+    (value.get("api_error_status").and_then(Value::as_u64) == Some(429))
+        .then_some(FailureKind::Quota)
 }
 
 /// Whether this terminal record is one the harness itself declares an **API
@@ -513,20 +558,44 @@ fn codex_usage_limit(text: &str) -> bool {
     .any(|needle| text.contains(needle))
 }
 
+/// Claude's subscription-limit phrasing — the fast path over the text surfaces
+/// [`zero_work_rate_limit_rejection`] cannot read (a bare limit line on stderr, a
+/// limit reported without a status code). Two families:
+///
+/// - `hit your <qualifier> limit`, with the qualifier matched as a **slot**
+///   rather than enumerated. That word is the one that keeps moving — the list
+///   was one wording short for `session limit` (#1211) and again for `weekly
+///   limit` — and matching the frame instead of every fill costs nothing
+///   and survives the next rename. The apostrophe variants fall out for free:
+///   `you've`/`you’ve`/`you have` all end at the same two words.
+/// - the completed-sentence `… limit reached` forms, still enumerated on
+///   purpose: widening the word before `limit` here would swallow `rate limit
+///   reached`, a different and deliberately non-fall-through condition.
 fn claude_subscription_limit(text: &str) -> bool {
     let text = text.to_lowercase();
-    [
-        "you've hit your session limit",
-        "you’ve hit your session limit",
-        "you have hit your session limit",
-        "you've hit your limit",
-        "you’ve hit your limit",
-        "you have hit your limit",
-        "weekly limit reached",
-        "usage limit reached",
-    ]
-    .iter()
-    .any(|needle| text.contains(needle))
+    hit_your_limit(&text)
+        || ["weekly limit reached", "usage limit reached"]
+            .iter()
+            .any(|needle| text.contains(needle))
+}
+
+/// Whether `text` (already lowercased) says a limit was *hit*, allowing at most
+/// one qualifier word between `hit your` and `limit` — so `hit your limit` and
+/// `hit your weekly limit` match while an unrelated sentence that merely mentions
+/// both cannot match across the gap.
+///
+/// Words are split on **non-alphanumeric runs**, not whitespace, because callers
+/// pass a serialized JSON record as often as a printed line: there the message
+/// ends `limit","total_cost_usd":0` with no space after it, and whitespace
+/// splitting would fuse the qualifier to the rest of the document.
+fn hit_your_limit(text: &str) -> bool {
+    text.match_indices("hit your").any(|(at, needle)| {
+        text[at + needle.len()..]
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .take(2)
+            .any(|word| word == "limit")
+    })
 }
 
 /// Match the first known failure signal in `text` (case-insensitive). Ordered
@@ -987,6 +1056,115 @@ mod tests {
         assert_eq!(got.source, "stdout");
     }
 
+    /// The captured weekly-limit record: the same zero-work shape as the
+    /// session-limit capture, one word different (`weekly`), and that word alone
+    /// used to be the difference between a fallback chain routing around an
+    /// exhausted subscription and dying on it.
+    ///
+    /// Both readings of the same bytes have to agree, because which one runs
+    /// depends only on whether the harness happened to exit non-zero: the record
+    /// is read structurally (a zero-work `429`), and the text is read by the
+    /// qualifier-slot phrase match.
+    #[test]
+    fn claude_weekly_limit_reported_as_an_api_error_is_quota_not_rate_limit() {
+        let captured =
+            include_str!("../../../../tests/fixtures/claude-weekly-limit-api-error.json");
+        let got = detect_harness_provider_failure(FailureDialect::ClaudeCode, captured).unwrap();
+        assert_eq!(got.kind, FailureKind::Quota);
+        assert_eq!(got.source, "stdout");
+        let got = classify_harness_failure(FailureDialect::ClaudeCode, captured, "").unwrap();
+        assert_eq!(got.kind, FailureKind::Quota);
+        assert_eq!(got.source, "stdout");
+    }
+
+    /// The structural rule, on prose no phrase list could have anticipated: a
+    /// rejection is classified from *what the provider did* (`429`) and *whether
+    /// the candidate got anywhere*, so a rewording cannot strand a chain again.
+    #[test]
+    fn a_zero_work_429_is_quota_whatever_its_prose_says() {
+        for prose in [
+            "You've hit your monthly limit · resets Sep 1",
+            "Usage limit for this plan has been reached",
+            "",
+        ] {
+            let record = serde_json::json!({
+                "type": "result",
+                "subtype": "success",
+                "api_error_status": 429,
+                "usage": {"input_tokens": 0, "output_tokens": 0},
+                "result": prose,
+            })
+            .to_string();
+            assert_eq!(
+                detect_harness_provider_failure(FailureDialect::ClaudeCode, &record)
+                    .unwrap()
+                    .kind,
+                FailureKind::Quota,
+                "{prose:?} did no work, so the chain must try the next candidate"
+            );
+        }
+    }
+
+    /// The discriminator that keeps the structural rule safe, and its two edges.
+    /// A `429` that spent tokens is a run, so it keeps the non-fall-through
+    /// `rate_limit`; a zero-work rejection that is *not* a `429` is not routed
+    /// around either, because another identity cannot serve a provider fault.
+    #[test]
+    fn the_structural_rule_needs_both_a_429_and_no_work() {
+        let worked = r#"{"type":"result","is_error":true,"api_error_status":429,"usage":{"input_tokens":4102,"output_tokens":311},"result":"Something went wrong"}"#;
+        assert_eq!(
+            detect_harness_provider_failure(FailureDialect::ClaudeCode, worked)
+                .unwrap()
+                .kind,
+            FailureKind::RateLimit
+        );
+        let server_fault = r#"{"type":"result","is_error":true,"api_error_status":500,"usage":{"input_tokens":0,"output_tokens":0},"result":"Internal server error"}"#;
+        assert!(
+            detect_harness_provider_failure(FailureDialect::ClaudeCode, server_fault).is_none(),
+            "a zero-work 500 is a provider fault the next candidate would hit too"
+        );
+        // A generic rate limit with no status code of its own is unchanged: the
+        // structural rule reads the record's declaration, not its wording.
+        let text_only =
+            r#"{"type":"result","is_error":true,"result":"429 rate limit, please retry"}"#;
+        assert_eq!(
+            detect_harness_provider_failure(FailureDialect::ClaudeCode, text_only)
+                .unwrap()
+                .kind,
+            FailureKind::RateLimit
+        );
+    }
+
+    /// The qualifier slot, on the text surface that has no record to read: any
+    /// one word between `hit your` and `limit` is the same rejection, and the
+    /// window is narrow enough that a sentence merely containing both words is
+    /// not one.
+    #[test]
+    fn the_limit_phrase_matches_the_frame_not_the_qualifier() {
+        for line in [
+            "You've hit your weekly limit · resets Aug 6, 7am",
+            "You’ve hit your monthly limit",
+            "You have hit your limit.",
+        ] {
+            assert_eq!(
+                classify_harness_failure(FailureDialect::ClaudeCode, "", line)
+                    .unwrap()
+                    .kind,
+                FailureKind::Quota,
+                "{line:?}"
+            );
+        }
+        assert!(
+            classify_harness_failure(
+                FailureDialect::ClaudeCode,
+                "",
+                "the tests you hit your target on exceeded the configured limit"
+            )
+            .is_none(),
+            "the qualifier slot is one word wide, not a whole sentence"
+        );
+    }
+
     #[test]
     fn adapter_quota_signal_outranks_an_embedded_rate_limit_status() {
         // Same precedence, in the `is_error` envelope the earlier fixtures use:
@@ -998,13 +1176,18 @@ mod tests {
                 .kind,
             FailureKind::Quota
         );
-        // A 429 with no limit message stays the transient, non-fall-through kind.
+        // A 429 with no limit message reads as `quota` too, and this expectation
+        // is a **deliberate reversal**: it used to stay the transient,
+        // non-fall-through `rate_limit`. Nothing in this record says the harness
+        // got anywhere, and the phrase list that was supposed to catch the ones
+        // that did was one wording short twice. See
+        // `zero_work_rate_limit_rejection` for why the safe reading wins.
         let plain = r#"{"type":"result","is_error":true,"api_error_status":429,"result":"Rate limit exceeded"}"#;
         assert_eq!(
             detect_harness_provider_failure(FailureDialect::ClaudeCode, plain)
                 .unwrap()
                 .kind,
-            FailureKind::RateLimit
+            FailureKind::Quota
         );
         // And stderr keeps beating stdout when only the generic signal matches.
         let got = classify_harness_failure(

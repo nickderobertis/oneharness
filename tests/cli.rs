@@ -12279,38 +12279,56 @@ fn fallback_falls_through_a_bad_model_to_the_next_model() {
 
 #[test]
 fn fallback_does_not_try_the_next_model_after_the_first_did_work() {
-    // The work-evidence rule reaches the model axis too. A per-model rejection
-    // falls through only when that model did nothing: here the first model was
-    // billed for a real turn before the 429 landed, so the chain STOPS rather
-    // than paying for the same work again on the next model.
-    let mock = mock_bin().display().to_string();
-    let project = format!(
-        r#"
-        harnesses = ["claude-code"]
-        run_mode = "fallback"
-        models = ["opus", "sonnet"]
+    // The exact counterpart of `fallback_falls_through_a_bad_model_to_the_next_model`:
+    // the same two per-model rejections, on a model that was billed for a real
+    // turn before the rejection landed. Work evidence is consulted first, so each
+    // one STOPS the chain here instead of paying for the same work again on the
+    // next model. (Buffered only: a model fan-out is already refused under
+    // `--stream`, so the model axis has no streamed delivery to compare with.)
+    for (fail_stderr, kind) in [
+        ("error: model not found: opus", "model_not_found"),
+        (
+            "Error 429: rate limit exceeded, too many requests",
+            "rate_limit",
+        ),
+    ] {
+        let mock = mock_bin().display().to_string();
+        let project = format!(
+            r#"
+            harnesses = ["claude-code"]
+            run_mode = "fallback"
+            models = ["opus", "sonnet"]
 
-        [harness.claude-code]
-        bin = '{mock}'
-        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = "{{\"type\":\"result\",\"result\":\"partial\",\"usage\":{{\"input_tokens\":812,\"output_tokens\":96}}}}", MOCK_STDERR = "Error 429: rate limit exceeded, too many requests" }}
-        "#
-    );
-    let fx = ConfigFixture::new("fallback-model-work", &project, "");
-    let output = run_with_config(
-        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
-        &[],
-        &fx.user_config(),
-    );
-    assert_eq!(output.status.code(), Some(1));
-    let v = json_stdout(&output);
-    assert_eq!(v["fallback"]["ran"], "claude-code");
-    assert_eq!(v["fallback"]["fell_through"].as_array().unwrap().len(), 0);
-    let results = v["results"].as_array().unwrap();
-    assert_eq!(results.len(), 1, "the second model must never be spawned");
-    assert_eq!(results[0]["model"], "opus");
-    // The rejection is still classified honestly; it just did not fall through.
-    assert_eq!(results[0]["failure_kind"], "rate_limit");
-    assert_eq!(results[0]["usage"]["input_tokens"], 812);
+            [harness.claude-code]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "1", MOCK_STDOUT = "{{\"type\":\"result\",\"result\":\"partial\",\"usage\":{{\"input_tokens\":812,\"output_tokens\":96}}}}", MOCK_STDERR = "{fail_stderr}" }}
+            "#
+        );
+        let fx = ConfigFixture::new(&format!("fallback-model-work-{kind}"), &project, "");
+        let output = run_with_config(
+            &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+            &[],
+            &fx.user_config(),
+        );
+        assert_eq!(output.status.code(), Some(1), "{kind}");
+        let v = json_stdout(&output);
+        assert_eq!(v["fallback"]["ran"], "claude-code", "{kind}");
+        assert_eq!(
+            v["fallback"]["fell_through"].as_array().unwrap().len(),
+            0,
+            "{kind}"
+        );
+        let results = v["results"].as_array().unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "{kind}: the second model must never be spawned"
+        );
+        assert_eq!(results[0]["model"], "opus", "{kind}");
+        // The rejection is still classified honestly; it just did not fall through.
+        assert_eq!(results[0]["failure_kind"], kind, "{kind}");
+        assert_eq!(results[0]["usage"]["input_tokens"], 812, "{kind}");
+    }
 }
 
 #[test]

@@ -122,10 +122,20 @@ pub fn is_startup_failure(
     startup_failure_reason(status, failure_kind, model_fallback).is_some()
 }
 
+/// Whether a `--stream` candidate has already written a normalized event line to
+/// the consumer's stdout — the one input [`stream_verdict`] adds over
+/// [`startup_failure_reason`]. Named rather than a `bool` because it sits beside
+/// `model_fallback` in that signature, where two booleans could be transposed
+/// with no compiler complaint and an inverted commit rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamPublication {
+    /// At least one event line reached the consumer.
+    Published,
+    /// Nothing has been written for this candidate.
+    Silent,
+}
+
 /// What a fallback chain does with a candidate that was driven under `--stream`.
-///
-/// The extra input over [`startup_failure_reason`] is `streamed`: whether this
-/// candidate already wrote a normalized event to the consumer's stdout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamVerdict {
     /// The candidate could not run the task at all and streamed nothing, so the
@@ -165,14 +175,16 @@ pub enum StreamVerdict {
 /// the command layer says so on stderr. The result keeps its honest
 /// `failure_kind`, so the caller still sees why the run failed.
 pub fn stream_verdict(
-    streamed: bool,
+    publication: StreamPublication,
     status: Status,
     failure_kind: Option<FailureKind>,
     model_fallback: bool,
 ) -> StreamVerdict {
     match startup_failure_reason(status, failure_kind, model_fallback) {
-        Some(reason) if streamed => StreamVerdict::Committed(reason),
-        Some(reason) => StreamVerdict::FallThrough(reason),
+        Some(reason) => match publication {
+            StreamPublication::Published => StreamVerdict::Committed(reason),
+            StreamPublication::Silent => StreamVerdict::FallThrough(reason),
+        },
         None => StreamVerdict::Ran,
     }
 }
@@ -271,27 +283,37 @@ mod tests {
         // With no event published, the streaming verdict is exactly the
         // classification — the chain behaves as it always has.
         assert_eq!(
-            stream_verdict(false, Status::Skipped, None, false),
+            stream_verdict(StreamPublication::Silent, Status::Skipped, None, false),
             StreamVerdict::FallThrough("not-installed")
         );
         assert_eq!(
-            stream_verdict(false, Status::Nonzero, Some(FailureKind::Quota), false),
+            stream_verdict(
+                StreamPublication::Silent,
+                Status::Nonzero,
+                Some(FailureKind::Quota),
+                false
+            ),
             StreamVerdict::FallThrough("quota")
         );
         assert_eq!(
-            stream_verdict(false, Status::Nonzero, Some(FailureKind::Auth), false),
+            stream_verdict(
+                StreamPublication::Silent,
+                Status::Nonzero,
+                Some(FailureKind::Auth),
+                false
+            ),
             StreamVerdict::FallThrough("auth")
         );
         assert_eq!(
-            stream_verdict(false, Status::Ok, None, false),
+            stream_verdict(StreamPublication::Silent, Status::Ok, None, false),
             StreamVerdict::Ran
         );
         assert_eq!(
-            stream_verdict(false, Status::Timeout, None, false),
+            stream_verdict(StreamPublication::Silent, Status::Timeout, None, false),
             StreamVerdict::Ran
         );
         assert_eq!(
-            stream_verdict(false, Status::Nonzero, None, false),
+            stream_verdict(StreamPublication::Silent, Status::Nonzero, None, false),
             StreamVerdict::Ran
         );
     }
@@ -307,7 +329,7 @@ mod tests {
         ] {
             let reason = startup_failure_reason(status, kind, false).expect("a startup failure");
             assert_eq!(
-                stream_verdict(true, status, kind, false),
+                stream_verdict(StreamPublication::Published, status, kind, false),
                 StreamVerdict::Committed(reason)
             );
         }
@@ -315,16 +337,26 @@ mod tests {
         // is unreachable; the rule still reports it as committed rather than
         // silently discarding published events.
         assert_eq!(
-            stream_verdict(true, Status::SpawnError, None, false),
+            stream_verdict(
+                StreamPublication::Published,
+                Status::SpawnError,
+                None,
+                false
+            ),
             StreamVerdict::Committed("spawn-error")
         );
         // A real run is `Ran` whether or not it published events.
         assert_eq!(
-            stream_verdict(true, Status::Ok, None, false),
+            stream_verdict(StreamPublication::Published, Status::Ok, None, false),
             StreamVerdict::Ran
         );
         assert_eq!(
-            stream_verdict(true, Status::Nonzero, Some(FailureKind::RateLimit), false),
+            stream_verdict(
+                StreamPublication::Published,
+                Status::Nonzero,
+                Some(FailureKind::RateLimit),
+                false
+            ),
             StreamVerdict::Ran
         );
     }

@@ -6,7 +6,7 @@ use std::time::Duration;
 use crate::cli::RunArgs;
 use crate::commands::{print_json, select_specs, variant_environment};
 use oneharness_core::domain::batch::{self, BatchStrategy};
-use oneharness_core::domain::fallback::{self, RunMode};
+use oneharness_core::domain::fallback::{self, RunMode, StreamPublication};
 use oneharness_core::domain::harness::{self, BuildCtx, HarnessSpec};
 use oneharness_core::domain::mock::{self, MockDelivery};
 use oneharness_core::domain::mode::{ModeHeadless, PermissionMode};
@@ -1512,7 +1512,7 @@ fn stream_plan(
             Plan::Ready(result) => StreamedHarness {
                 result: *result,
                 persisted_event_indexes: BTreeSet::new(),
-                published: false,
+                publication: StreamPublication::Silent,
             },
             Plan::Pending {
                 spec,
@@ -1536,10 +1536,10 @@ fn stream_plan(
         let StreamedHarness {
             result,
             persisted_event_indexes,
-            published,
+            publication,
         } = streamed;
         let verdict =
-            fallback::stream_verdict(published, result.status, result.failure_kind, multi_model);
+            fallback::stream_verdict(publication, result.status, result.failure_kind, multi_model);
         let harness = result.harness.clone();
         results.push(result);
         history.push(StreamedHistory {
@@ -1584,7 +1584,7 @@ fn stream_plan(
 struct StreamedHarness {
     result: RunResult,
     persisted_event_indexes: BTreeSet<usize>,
-    published: bool,
+    publication: StreamPublication,
 }
 
 /// Run one harness with streaming: feed each stdout line through the event
@@ -1614,9 +1614,9 @@ fn stream_one_harness(
 
     let mut next_index = 0usize;
     let mut persisted_event_indexes = BTreeSet::new();
-    // Set the moment an event line reaches the consumer's stdout — the fallback
-    // commit signal, so it counts a *published* event, not an extracted one.
-    let mut published = false;
+    // The fallback commit signal: it counts a *published* event, not an extracted
+    // one, so it flips only where the event line is written to stdout below.
+    let mut publication = StreamPublication::Silent;
     let capture = runner::run_job_streaming(job, |line| {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             return StreamStep::Continue;
@@ -1648,16 +1648,16 @@ fn stream_one_harness(
                 }
             }
             let envelope = RunStreamEnvelope::Event { event: ev.clone() };
-            // A broken pipe (consumer closed the stream) is the short-circuit
-            // signal: stop reading and tear the child down.
-            if serde_json::to_string(&envelope)
+            match serde_json::to_string(&envelope)
                 .map_err(|_| ())
                 .and_then(|s| writeln!(out, "{s}").map_err(|_| ()))
-                .is_err()
             {
-                return StreamStep::Stop;
+                // The line is out: this candidate is now committed for fallback.
+                Ok(()) => publication = StreamPublication::Published,
+                // A broken pipe (consumer closed the stream) is the short-circuit
+                // signal: stop reading and tear the child down.
+                Err(()) => return StreamStep::Stop,
             }
-            published = true;
         }
         if out.flush().is_err() {
             return StreamStep::Stop;
@@ -1678,7 +1678,7 @@ fn stream_one_harness(
     StreamedHarness {
         result,
         persisted_event_indexes,
-        published,
+        publication,
     }
 }
 

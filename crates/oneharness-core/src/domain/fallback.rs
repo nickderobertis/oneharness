@@ -431,7 +431,6 @@ mod tests {
         // stderr carries none), mirroring `signals::record_reports_work`.
         result.usage = Usage::default();
         assert_eq!(RunWork::from_result(&result), RunWork::None);
-        // An empty (but present) event list is not work either.
         result.events = Some(Vec::new());
         assert_eq!(RunWork::from_result(&result), RunWork::None);
 

@@ -2007,6 +2007,67 @@ fn session_works_with_streaming() {
     let _ = std::fs::remove_dir_all(&cwd);
 }
 
+#[test]
+fn session_works_with_streaming_in_fallback_mode() {
+    // The two single-outcome handles compose now that a fallback chain can
+    // stream: the named session still binds to the anchor (codex, since goose is
+    // not session-capable *and* not installed) and its token is captured from the
+    // streaming candidate that ran.
+    let store = session_store_dir("stream-fallback-session");
+    let cwd = session_store_dir("stream-fallback-session-cwd");
+    let output = run(
+        &[
+            "run",
+            "--run-mode",
+            "fallback",
+            "--harness",
+            "goose,codex",
+            "--session",
+            "triage",
+            "--session-dir",
+            &store.display().to_string(),
+            "--cwd",
+            &cwd.display().to_string(),
+            "--prompt",
+            "hi",
+            "--bin",
+            &missing_bin("goose"),
+            "--bin",
+            &bin_override("codex"),
+            "--stream",
+        ],
+        &[(
+            "MOCK_STDOUT",
+            concat!(
+                r#"{"type":"thread.started","thread_id":"th-stream"}"#,
+                "\n",
+                r#"{"type":"item.completed","item":{"type":"command_execution","command":"echo hi","aggregated_output":"hi"}}"#,
+                "\n",
+            ),
+        )],
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelopes = stream_envelopes(&output);
+    assert_eq!(envelopes[0]["type"], "event", "{envelopes:#?}");
+    let report = &envelopes.last().unwrap()["report"];
+    assert_eq!(report["fallback"]["ran"], "codex");
+    assert_eq!(report["session"]["phase"], "create");
+    assert_eq!(report["session"]["token"], "th-stream");
+    let record: Value = serde_json::from_str(
+        &std::fs::read_to_string(report["session"]["store_file"].as_str().unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["harness"], "codex");
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
 /// Build a `--print-command` argv for one harness with the given extra args, and
 /// return its `results[0].command` as a Vec<String>.
 fn print_command_for(extra: &[&str]) -> Vec<String> {

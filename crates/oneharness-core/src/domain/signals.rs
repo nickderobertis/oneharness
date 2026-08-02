@@ -579,22 +579,35 @@ fn claude_subscription_limit(text: &str) -> bool {
             .any(|needle| text.contains(needle))
 }
 
-/// Whether `text` (already lowercased) says a limit was *hit*, allowing at most
-/// one qualifier word between `hit your` and `limit` — so `hit your limit` and
-/// `hit your weekly limit` match while an unrelated sentence that merely mentions
-/// both cannot match across the gap.
+/// Whether `text` (already lowercased) contains `hit your` as whole words with
+/// `limit` at most one qualifier word later — so `hit your limit` and `hit your
+/// weekly limit` match while an unrelated sentence that merely mentions both
+/// cannot match across the gap.
 ///
-/// Words are split on **non-alphanumeric runs**, not whitespace, because callers
-/// pass a serialized JSON record as often as a printed line: there the message
-/// ends `limit","total_cost_usd":0` with no space after it, and whitespace
-/// splitting would fuse the qualifier to the rest of the document.
+/// **Both edges of the needle need a word boundary**, or a longer word spelling
+/// it would match: `prohibit your limit` on the left, `hit yourself a limit` on
+/// the right. A false positive here reads a genuine task failure as a quota
+/// rejection, which silently re-runs the task on another account — the hazard
+/// [`codex_turn_failure`] guards against too.
+///
+/// A boundary is any **non-alphanumeric** character, the same definition the
+/// qualifier split uses, because callers pass a serialized JSON record as often
+/// as a printed line: there the message ends `limit","total_cost_usd":0` with no
+/// space after it, and whitespace splitting would fuse the qualifier to the rest
+/// of the document.
 fn hit_your_limit(text: &str) -> bool {
     text.match_indices("hit your").any(|(at, needle)| {
-        text[at + needle.len()..]
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|word| !word.is_empty())
-            .take(2)
-            .any(|word| word == "limit")
+        let rest = &text[at + needle.len()..];
+        !text[..at]
+            .chars()
+            .next_back()
+            .is_some_and(char::is_alphanumeric)
+            && !rest.chars().next().is_some_and(char::is_alphanumeric)
+            && rest
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|word| !word.is_empty())
+                .take(2)
+                .any(|word| word == "limit")
     })
 }
 
@@ -1163,6 +1176,43 @@ mod tests {
             .is_none(),
             "the qualifier slot is one word wide, not a whole sentence"
         );
+    }
+
+    /// The frame is matched as *words*: a longer word that merely spells `hit`
+    /// or `your` is not the phrase. Getting this wrong is not cosmetic — it
+    /// reads an ordinary task failure as a quota rejection, and a fallback chain
+    /// then re-runs the task on another identity for nothing.
+    #[test]
+    fn the_limit_phrase_requires_a_word_boundary_around_the_frame() {
+        for line in [
+            // `hit` as the tail of a longer word, on the left.
+            "the license prohibit your limit clause",
+            "not a whit your limit changed",
+            // `your` as the head of a longer word, on the right: the qualifier
+            // slot must not start mid-word.
+            "you hit yourself: limit reached",
+        ] {
+            assert!(
+                classify_harness_failure(FailureDialect::ClaudeCode, "", line).is_none(),
+                "{line:?} does not say a limit was hit"
+            );
+        }
+        // The true-positive path is unchanged, including the serialized-JSON
+        // surface where the message ends with no trailing space.
+        for text in [
+            "You've hit your limit.",
+            "You've hit your weekly limit · resets Aug 6, 7am",
+            r#"{"type":"result","result":"You've hit your limit","total_cost_usd":0}"#,
+            r#"{"type":"result","result":"You've hit your weekly limit","total_cost_usd":0}"#,
+        ] {
+            assert_eq!(
+                classify_harness_failure(FailureDialect::ClaudeCode, "", text)
+                    .unwrap()
+                    .kind,
+                FailureKind::Quota,
+                "{text:?}"
+            );
+        }
     }
 
     #[test]

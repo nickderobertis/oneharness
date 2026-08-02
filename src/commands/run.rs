@@ -637,7 +637,8 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         // Streaming: emit normalized events to stdout as they arrive, so a
         // consumer can short-circuit the moment it sees a disallowed action.
         // In fallback mode this walks the priority chain, publishing only the
-        // candidate that runs (see `fallback::stream_verdict`).
+        // candidate that runs (see `stream_plan`, which selects with the same
+        // `fallback_step` the buffered chain uses).
         let streamed = stream_plan(
             plan,
             &jobs,
@@ -1676,9 +1677,8 @@ fn emit_stream_result(report: &RunReport) -> Result<(), OneharnessError> {
 /// more than one harness. A loud usage error before anything spawns.
 ///
 /// A **fallback** chain may list several harnesses: they run one at a time and
-/// only one of them ever publishes events (see
-/// [`oneharness_core::domain::fallback::stream_verdict`]), so there is no
-/// interleaving to refuse.
+/// only the candidate that runs ever publishes events (see [`stream_plan`]), so
+/// there is no interleaving to refuse.
 fn validate_stream(
     stream: bool,
     specs: &[&'static HarnessSpec],
@@ -1817,9 +1817,10 @@ fn run_fork_batch(
 /// Fallback drives several harnesses in priority order for one prompt, stopping
 /// at the first that runs — so a multi-prompt batch and the explicit `--resume` /
 /// `--fork` continuations (each pins one *specific* harness's native id) are loud
-/// usage errors here. `--stream` is *not* refused: only one candidate ever
-/// publishes events, and a candidate that falls through publishes none (see
-/// [`fallback::stream_verdict`]). `--session` is *not* refused either: the
+/// usage errors here. `--stream` is *not* refused: the candidates run one at a
+/// time, selection is the same [`fallback_step`] a buffered run takes, and a
+/// candidate that falls through publishes nothing. `--session` is *not* refused
+/// either: the
 /// higher-level named handle binds to the anchor (the first session-capable
 /// harness in the chain), which fallback settles on under stable availability —
 /// see [`setup_session`], which does the capability check for it. The *capability*

@@ -12251,6 +12251,42 @@ fn fallback_falls_through_a_bad_model_to_the_next_model() {
 }
 
 #[test]
+fn fallback_does_not_try_the_next_model_after_the_first_did_work() {
+    // The work-evidence rule reaches the model axis too. A per-model rejection
+    // falls through only when that model did nothing: here the first model was
+    // billed for a real turn before the 429 landed, so the chain STOPS rather
+    // than paying for the same work again on the next model.
+    let mock = mock_bin().display().to_string();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code"]
+        run_mode = "fallback"
+        models = ["opus", "sonnet"]
+
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = "{{\"type\":\"result\",\"result\":\"partial\",\"usage\":{{\"input_tokens\":812,\"output_tokens\":96}}}}", MOCK_STDERR = "Error 429: rate limit exceeded, too many requests" }}
+        "#
+    );
+    let fx = ConfigFixture::new("fallback-model-work", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let v = json_stdout(&output);
+    assert_eq!(v["fallback"]["ran"], "claude-code");
+    assert_eq!(v["fallback"]["fell_through"].as_array().unwrap().len(), 0);
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1, "the second model must never be spawned");
+    assert_eq!(results[0]["model"], "opus");
+    // The rejection is still classified honestly; it just did not fall through.
+    assert_eq!(results[0]["failure_kind"], "rate_limit");
+    assert_eq!(results[0]["usage"]["input_tokens"], 812);
+}
+
+#[test]
 fn fallback_tries_every_model_of_a_harness_before_the_next_harness() {
     // The chain is harness-major, model-minor: with the `opus` model doomed on
     // every harness, claude-code's SECOND model (`sonnet`) is tried before codex
@@ -13777,6 +13813,18 @@ fn streamed_and_buffered_fallback_select_the_same_candidate() {
             tag: "worked-then-rejected",
             first_env: format!(
                 r#"{{ MOCK_EXIT = "1", MOCK_STDOUT = {worked}, MOCK_STDERR = "Error: 401 unauthorized" }}"#
+            ),
+            extra: vec![],
+            expected_ran: "claude-code",
+            expected_fell: vec![],
+            expected_exit: 1,
+        },
+        Case {
+            // Billed tokens with NO tool call, then an auth rejection: usage
+            // accounting alone is work evidence, so the chain still stops.
+            tag: "billed-then-rejected",
+            first_env: String::from(
+                r#"{ MOCK_EXIT = "1", MOCK_STDOUT = "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"partial\",\"usage\":{\"input_tokens\":812,\"output_tokens\":96}}", MOCK_STDERR = "Error: 401 unauthorized" }"#,
             ),
             extra: vec![],
             expected_ran: "claude-code",

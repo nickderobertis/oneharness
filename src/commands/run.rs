@@ -275,7 +275,6 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // selects the anchor harness's preferred session-bearing format.
     let explicit_format = args.output_format.or(cfg.output_format);
     validate_session_output_format(session_anchor, explicit_format)?;
-    // Loudly, before anything spawns.
     validate_stream(
         args.stream,
         &specs,

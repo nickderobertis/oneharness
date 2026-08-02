@@ -470,59 +470,42 @@ fn error_record_failure(dialect: FailureDialect, value: &Value) -> Option<Failur
 /// `api_error_status: 429` and whose own accounting says it did nothing is a
 /// [`FailureKind::Quota`] rejection, whatever prose it carries.
 ///
-/// This exists because the phrase list in [`claude_subscription_limit`] has been
-/// one wording short twice — `session limit` (issue #1211), then the `weekly
-/// limit` capture below — and each miss stopped a fallback chain outright while
-/// authenticated candidates sat unused. The two failure modes are not
-/// symmetric: an unrecognized phrase kills the run, while a rule that reads a
-/// transient 429 as quota merely hands the task to the next candidate, which is
-/// what a fallback chain is configured to do. So the structural reading is the
-/// rule and the phrase list is a fast path over the surfaces that have no
-/// structure to read (a bare limit line on stderr, or a limit reported without a
-/// status code).
+/// The structure is the rule and [`claude_subscription_limit`] is a fast path
+/// over surfaces with no record to read, because the errors are asymmetric: an
+/// unrecognized wording strands the whole chain (it has been one short twice —
+/// issue #1211), while over-reading a transient 429 merely hands the task on,
+/// which is what a fallback chain is for.
 ///
-/// Both halves are load-bearing.
+/// Both halves are load-bearing. **`429` specifically**, not any rejection: it
+/// says *this identity may not run right now*, the one condition another
+/// identity can serve — a zero-work `500` is a provider fault the next candidate
+/// hits too, and `401`/`403` already fall through as [`FailureKind::Auth`].
+/// **Zero work**, on the [`record_reports_work`] reading the adapter path uses
+/// so the two can never disagree: a 429 that landed after real tokens describes
+/// a run, and falling through it pays the next candidate to redo it, so that
+/// record keeps its chain-stopping [`FailureKind::RateLimit`].
 ///
-/// **`429` specifically**, not any rejection: it is the status a provider
-/// returns when *this identity may not run right now*, which is exactly the
-/// condition another identity can serve. A zero-work `500` is a provider fault
-/// the next candidate would hit too, and a zero-work `401`/`403` already has its
-/// own [`FailureKind::Auth`] fall-through.
-///
-/// **Zero work**, on the same [`record_reports_work`] reading the adapter path
-/// uses, so the two can never disagree: a 429 that landed after real tokens were
-/// spent describes a run that got somewhere, and falling through it burns the
-/// next candidate re-running work already paid for. That record keeps its
-/// generic [`FailureKind::RateLimit`] reading, which stops the chain.
-///
-/// Dialect-agnostic like [`is_provider_failure_envelope`], and for the same
-/// reason: `api_error_status` states what the provider did, which is true of
-/// whichever harness emits the field. What stays dialect-scoped is the *prose*.
+/// Dialect-agnostic like [`is_provider_failure_envelope`]: `api_error_status`
+/// states what the provider did, whichever harness emits it. The *prose* is what
+/// stays dialect-scoped.
 fn zero_work_rate_limit_rejection(value: &Value, did_work: bool) -> Option<FailureKind> {
     (!did_work).then_some(())?;
     (value.get("api_error_status").and_then(Value::as_u64) == Some(429))
         .then_some(FailureKind::Quota)
 }
 
-/// Whether this terminal record is one the harness itself declares an **API
-/// failure** — the gate that separates a provider rejection from incidental
-/// wording in a healthy transcript. Three equivalent declarations, each read
-/// from a real capture rather than guessed:
+/// Whether the harness itself declares this terminal record an **API failure** —
+/// the gate that separates a provider rejection from incidental wording in a
+/// healthy transcript. Three equivalent declarations, each read from a real
+/// capture rather than guessed: `is_error: true`, `terminal_reason:
+/// "api_error"`, or a numeric `api_error_status`.
 ///
-/// - `is_error: true` — the long-standing shape (Claude Code on Windows pairs it
-///   with exit 0).
-/// - `terminal_reason: "api_error"` — the turn ended because the API rejected it.
-/// - a numeric `api_error_status` — the HTTP status of that rejection.
-///
-/// `is_error` alone is **not** a sufficient gate. A Claude Code session-limit
-/// rejection that did no work at all omits `is_error` entirely and reports
-/// `subtype: "success"` beside `terminal_reason: "api_error"` and
-/// `api_error_status: 429`, so an `is_error`-only gate skipped the exact record a
-/// fallback chain exists to route around (issue #1211). The predicate is dialect
-/// agnostic like `is_error`: these fields say "the provider rejected this", which
-/// is true of whichever harness emits them. What is *read out* of the record
-/// still is dialect-scoped — only the Claude dialect recognizes Claude's
-/// subscription phrasing.
+/// `is_error` alone is **not** a sufficient gate: a Claude Code session-limit
+/// rejection that did no work omits it entirely and reports `subtype: "success"`
+/// beside the other two, so an `is_error`-only gate skipped the exact record a
+/// fallback chain exists to route around (issue #1211). Dialect-agnostic — these
+/// fields say the provider rejected the turn, whichever harness emits them —
+/// while what is *read out* of the record stays dialect-scoped.
 fn is_provider_failure_envelope(value: &Value) -> bool {
     value.get("is_error").and_then(Value::as_bool) == Some(true)
         || value.get("terminal_reason").and_then(Value::as_str) == Some("api_error")

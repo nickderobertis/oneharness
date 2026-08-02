@@ -699,20 +699,19 @@ shape. When you add one:
   its lines are the typed Rust `RunStreamEnvelope` contract and
   `oh_stream_assert` is its live proof. It is single-harness only in `parallel`
   (interleaving); a **fallback chain streams**, because the candidates run in
-  turn and the constraint is narrower than "one harness" — stdout must not be
-  committed to a candidate the chain then discards.
-  `domain::fallback::stream_verdict` is that rule: a *published* event commits
-  the candidate (an
-  event is a tool call, so it is evidence the harness ran — fallback's own stop
+  turn — the constraint is narrower than "one harness": stdout must not be
+  committed to a candidate the chain then discards. `fallback::stream_verdict`
+  is that rule — a *published* event commits the candidate (an event is a tool
+  call, so it is evidence the harness ran, which is fallback's own stop
   condition), and everything that falls through does so without running, so it
-  publishes nothing. The one divergence from the buffered path is
-  `StreamVerdict::Committed` — a candidate that published and *then* hit a
+  publishes nothing. Its one divergence from the buffered path is
+  `StreamVerdict::Committed`: a candidate that published and *then* hit a
   rejection whose terminal record reads as a startup failure (a provider surface
   with no work accounting, unlike Claude's zero-work-gated quota) stops the chain
-  instead of falling through, loudly on stderr. Never publish first and retract:
+  instead of falling through, loudly on stderr. Never publish first and retract —
   a consumer acts on what it reads. `sdk_schema::bundle` is the single Rust
   generation source for that envelope, `HistoryStreamEnvelope`, and the shared
-  SDK contracts. See the README *events* matrix.
+  SDK contracts.
 
 ## Scripts and output are context
 

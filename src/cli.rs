@@ -605,9 +605,9 @@ pub struct RunArgs {
     /// --schema and batch prompts, and with a multi-harness selection in the
     /// default `parallel` mode (their streams would interleave). Under
     /// --run-mode fallback a whole candidate chain IS allowed: the chain runs one
-    /// at a time and only the candidate that runs publishes events — a candidate
-    /// that falls through publishes nothing, and one that has published is
-    /// committed (it demonstrably ran, so the chain stops there).
+    /// candidate at a time, selects by the same rule a buffered run does (so it
+    /// picks the same harness), and a candidate that falls through publishes
+    /// nothing.
     #[arg(long)]
     pub stream: bool,
 
@@ -720,7 +720,9 @@ pub struct RunArgs {
     /// actually runs the task, falling through only harnesses that cannot run at
     /// all — not installed, unspawnable, or rejected before doing any work (auth /
     /// no-credit quota). A real task failure or a timeout does NOT fall through
-    /// (it would mask a real failure). Incompatible with a batch run and with
+    /// (it would mask a real failure), and neither does a candidate whose result
+    /// shows work done (a tool call, or billed tokens/cost) whatever its terminal
+    /// record says. Incompatible with a batch run and with
     /// --resume / --fork (each pins one harness's native id); --session and
     /// --stream are supported. Every listed harness is validated
     /// up front, so a flag unsupported by ANY candidate is a usage error even if

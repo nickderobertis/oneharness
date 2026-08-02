@@ -11,10 +11,15 @@
 //! failure* (fall through) versus a *real run* (stop here). The command layer
 //! owns the sequential spawning; keeping the order and the stop/continue verdict
 //! here makes both unit-testable against the mock harness.
+//!
+//! The verdict is a function of the finished [`RunResult`] alone — status,
+//! classified `failure_kind`, and [`RunWork`] evidence — so it is the same
+//! whether the chain was driven buffered or under `run --stream`. There is no
+//! streaming-specific rule.
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::report::Status;
+use crate::domain::report::{RunResult, Status};
 use crate::domain::signals::FailureKind;
 
 /// How the selected harnesses are run. Accepted as a CLI value (`--run-mode`,
@@ -56,10 +61,70 @@ impl RunMode {
     }
 }
 
+/// Whether a candidate's normalized result carries **evidence it did the task's
+/// work** — the first thing [`startup_failure_reason`] consults, and the reason
+/// a streamed fallback chain and a buffered one always choose the same candidate
+/// (both read it from the same [`RunResult`]).
+///
+/// Two independent witnesses, either of which is decisive:
+///
+/// - **Tool events.** A recorded tool call is the harness acting on the task.
+/// - **Usage accounting.** Any non-zero token count or dollar cost means the
+///   provider billed real work. Absent accounting is deliberately *not* work
+///   (a bare `You've hit your session limit` line carries none and is still a
+///   zero-work rejection), mirroring `signals::record_reports_work`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunWork {
+    /// The candidate ran the task, whatever its terminal record then said.
+    Done,
+    /// Nothing says the candidate got as far as doing work.
+    None,
+}
+
+impl RunWork {
+    /// Read the evidence off a finished result. Pure: it looks only at the
+    /// normalized `events` and `usage` both run paths fill identically from the
+    /// same capture (a `spawn_error` nulls every signal by contract, so its
+    /// evidence is `None` on either path).
+    pub fn from_result(result: &RunResult) -> Self {
+        let used_tools = result.events.as_ref().is_some_and(|e| !e.is_empty());
+        let usage = &result.usage;
+        let billed = [
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_read_tokens,
+            usage.cache_write_tokens,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|tokens| tokens > 0)
+            || usage.cost_usd.is_some_and(|cost| cost > 0.0);
+        if used_tools || billed {
+            RunWork::Done
+        } else {
+            RunWork::None
+        }
+    }
+}
+
 /// Why a harness **could not run the task at all** — the conditions that make a
 /// fallback run fall through to the next candidate. Returns a short reason token
 /// when the outcome is a startup failure, or `None` when the harness *did* run
-/// (so a fallback run stops there):
+/// (so a fallback run stops there).
+///
+/// [`RunWork::Done`] short-circuits every reason below: a candidate that made a
+/// tool call or was billed for tokens **ran the task**, so its terminal record
+/// cannot demote it to a setup failure. This is the same "work done, not error
+/// text" rule the Claude session-limit classifier already applies (issue #1211),
+/// lifted to the whole verdict so it covers every surface — including the ones
+/// with no accounting of their own to gate on (a generic `401` scanned out of a
+/// transcript, Codex's `turn.failed` usage limit). Falling through a candidate
+/// that worked burns the next one's quota re-running what already happened, and
+/// under `--stream` it would also mean discarding actions a consumer has already
+/// read. Because the evidence is read from the result, a streamed run and a
+/// buffered run of the same capture always reach the same verdict.
+///
+/// With no work evidence the reasons are:
 ///
 /// - [`Status::Skipped`] → `"not-installed"` (the binary was not on PATH).
 /// - [`Status::SpawnError`] → `"spawn-error"` (resolved but could not execute).
@@ -90,7 +155,12 @@ pub fn startup_failure_reason(
     status: Status,
     failure_kind: Option<FailureKind>,
     model_fallback: bool,
+    work: RunWork,
 ) -> Option<&'static str> {
+    // Evidence beats classification: a harness that worked ran the task.
+    if work == RunWork::Done {
+        return None;
+    }
     match (status, failure_kind) {
         (_, Some(FailureKind::Auth)) if matches!(status, Status::Ok | Status::Nonzero) => {
             Some("auth")
@@ -118,80 +188,15 @@ pub fn is_startup_failure(
     status: Status,
     failure_kind: Option<FailureKind>,
     model_fallback: bool,
+    work: RunWork,
 ) -> bool {
-    startup_failure_reason(status, failure_kind, model_fallback).is_some()
-}
-
-/// Whether a `--stream` candidate has already written a normalized event line to
-/// the consumer's stdout — the one input [`stream_verdict`] adds over
-/// [`startup_failure_reason`]. Named rather than a `bool` because it sits beside
-/// `model_fallback` in that signature, where two booleans could be transposed
-/// with no compiler complaint and an inverted commit rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamPublication {
-    /// At least one event line reached the consumer.
-    Published,
-    /// Nothing has been written for this candidate.
-    Silent,
-}
-
-/// What a fallback chain does with a candidate that was driven under `--stream`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamVerdict {
-    /// The candidate could not run the task at all and streamed nothing, so the
-    /// chain moves on. The reason token is [`startup_failure_reason`]'s.
-    FallThrough(&'static str),
-    /// The candidate ran the task (well or badly): the chain stops here.
-    Ran,
-    /// The candidate streamed events — proof it ran — so the chain stops here
-    /// even though its terminal classification alone (the carried reason token)
-    /// would have fallen through. See [`stream_verdict`].
-    Committed(&'static str),
-}
-
-/// The fallback verdict for one candidate driven under `--stream`.
-///
-/// A streaming run publishes each normalized event to the consumer the instant
-/// it is observed, and a consumer acts on what it reads. The chain must
-/// therefore never emit events from a candidate it goes on to discard: the
-/// consumer would act on a harness whose output is not the answer, then see a
-/// second harness's events arrive on the same stdout.
-///
-/// The reconciling rule is **an emitted event commits the candidate**. Events
-/// are tool calls and their observations, so writing one is direct evidence
-/// that the harness *ran the task* — which is exactly the condition under which
-/// fallback stops. Everything that falls through does so *without* running: not
-/// installed and never spawned, unspawnable, or rejected by the provider before
-/// doing any work (`auth`, and a `quota` rejection that the classifier already
-/// gates on zero work done). None of those produce a tool event, so
-/// [`StreamVerdict::Committed`] cannot fire for them and a fallen-through
-/// candidate is guaranteed to have published nothing.
-///
-/// [`StreamVerdict::Committed`] is the residue: a candidate that made tool calls
-/// and *then* hit a classification the terminal record alone reads as a startup
-/// failure (a provider surface with no work accounting to gate on, such as
-/// Codex's `turn.failed` usage limit). Observing the run beats re-reading its
-/// final record — the harness demonstrably ran — so the chain stops there, and
-/// the command layer says so on stderr. The result keeps its honest
-/// `failure_kind`, so the caller still sees why the run failed.
-pub fn stream_verdict(
-    publication: StreamPublication,
-    status: Status,
-    failure_kind: Option<FailureKind>,
-    model_fallback: bool,
-) -> StreamVerdict {
-    match startup_failure_reason(status, failure_kind, model_fallback) {
-        Some(reason) => match publication {
-            StreamPublication::Published => StreamVerdict::Committed(reason),
-            StreamPublication::Silent => StreamVerdict::FallThrough(reason),
-        },
-        None => StreamVerdict::Ran,
-    }
+    startup_failure_reason(status, failure_kind, model_fallback, work).is_some()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::signals::Usage;
 
     #[test]
     fn mode_token_round_trips_for_every_variant() {
@@ -214,52 +219,86 @@ mod tests {
     fn startup_failures_fall_through() {
         // Structural "could not run": not installed, or resolved-but-unspawnable.
         assert_eq!(
-            startup_failure_reason(Status::Skipped, None, false),
+            startup_failure_reason(Status::Skipped, None, false, RunWork::None),
             Some("not-installed")
         );
         assert_eq!(
-            startup_failure_reason(Status::SpawnError, None, false),
+            startup_failure_reason(Status::SpawnError, None, false, RunWork::None),
             Some("spawn-error")
         );
         // Provisioning "could not run": rejected before any work.
         assert_eq!(
-            startup_failure_reason(Status::Nonzero, Some(FailureKind::Auth), false),
+            startup_failure_reason(
+                Status::Nonzero,
+                Some(FailureKind::Auth),
+                false,
+                RunWork::None
+            ),
             Some("auth")
         );
         assert_eq!(
-            startup_failure_reason(Status::Nonzero, Some(FailureKind::Quota), false),
+            startup_failure_reason(
+                Status::Nonzero,
+                Some(FailureKind::Quota),
+                false,
+                RunWork::None
+            ),
             Some("quota")
         );
         for status in [Status::Skipped, Status::SpawnError] {
-            assert!(is_startup_failure(status, None, false));
+            assert!(is_startup_failure(status, None, false, RunWork::None));
         }
         assert!(is_startup_failure(
             Status::Nonzero,
             Some(FailureKind::Auth),
-            false
+            false,
+            RunWork::None
         ));
         assert!(is_startup_failure(
             Status::Nonzero,
             Some(FailureKind::Quota),
-            false
+            false,
+            RunWork::None
         ));
     }
 
     #[test]
     fn a_real_run_does_not_fall_through() {
         // A clean run, a slow run that timed out, and a dry-run row all stay.
-        assert_eq!(startup_failure_reason(Status::Ok, None, false), None);
-        assert_eq!(startup_failure_reason(Status::Timeout, None, false), None);
-        assert_eq!(startup_failure_reason(Status::Planned, None, false), None);
-        assert!(!is_startup_failure(Status::Ok, None, false));
-        assert!(!is_startup_failure(Status::Timeout, None, false));
+        assert_eq!(
+            startup_failure_reason(Status::Ok, None, false, RunWork::None),
+            None
+        );
+        assert_eq!(
+            startup_failure_reason(Status::Timeout, None, false, RunWork::None),
+            None
+        );
+        assert_eq!(
+            startup_failure_reason(Status::Planned, None, false, RunWork::None),
+            None
+        );
+        assert!(!is_startup_failure(Status::Ok, None, false, RunWork::None));
+        assert!(!is_startup_failure(
+            Status::Timeout,
+            None,
+            false,
+            RunWork::None
+        ));
     }
 
     #[test]
     fn a_real_failure_does_not_fall_through() {
         // A plain non-zero task failure (no classified reason) is a real run.
-        assert_eq!(startup_failure_reason(Status::Nonzero, None, false), None);
-        assert!(!is_startup_failure(Status::Nonzero, None, false));
+        assert_eq!(
+            startup_failure_reason(Status::Nonzero, None, false, RunWork::None),
+            None
+        );
+        assert!(!is_startup_failure(
+            Status::Nonzero,
+            None,
+            false,
+            RunWork::None
+        ));
         // Transient / configuration / did-run reasons are NOT setup failures for a
         // single-model run: falling through a 429 would mask a working harness's
         // real hiccup, an unknown model is a config mistake the user sees, and a
@@ -270,95 +309,17 @@ mod tests {
             FailureKind::ToolDeferred,
         ] {
             assert_eq!(
-                startup_failure_reason(Status::Nonzero, Some(kind), false),
+                startup_failure_reason(Status::Nonzero, Some(kind), false, RunWork::None),
                 None,
                 "failure_kind {kind:?} must not fall through without a model list"
             );
-            assert!(!is_startup_failure(Status::Nonzero, Some(kind), false));
+            assert!(!is_startup_failure(
+                Status::Nonzero,
+                Some(kind),
+                false,
+                RunWork::None
+            ));
         }
-    }
-
-    #[test]
-    fn a_candidate_that_streamed_nothing_keeps_the_plain_verdict() {
-        // With no event published, the streaming verdict is exactly the
-        // classification — the chain behaves as it always has.
-        assert_eq!(
-            stream_verdict(StreamPublication::Silent, Status::Skipped, None, false),
-            StreamVerdict::FallThrough("not-installed")
-        );
-        assert_eq!(
-            stream_verdict(
-                StreamPublication::Silent,
-                Status::Nonzero,
-                Some(FailureKind::Quota),
-                false
-            ),
-            StreamVerdict::FallThrough("quota")
-        );
-        assert_eq!(
-            stream_verdict(
-                StreamPublication::Silent,
-                Status::Nonzero,
-                Some(FailureKind::Auth),
-                false
-            ),
-            StreamVerdict::FallThrough("auth")
-        );
-        assert_eq!(
-            stream_verdict(StreamPublication::Silent, Status::Ok, None, false),
-            StreamVerdict::Ran
-        );
-        assert_eq!(
-            stream_verdict(StreamPublication::Silent, Status::Timeout, None, false),
-            StreamVerdict::Ran
-        );
-        assert_eq!(
-            stream_verdict(StreamPublication::Silent, Status::Nonzero, None, false),
-            StreamVerdict::Ran
-        );
-    }
-
-    #[test]
-    fn a_streamed_candidate_is_committed_and_never_falls_through() {
-        // Publishing an event is evidence the harness ran the task, so the chain
-        // stops there — a fallen-through candidate can never have published one.
-        for (status, kind) in [
-            (Status::Nonzero, Some(FailureKind::Auth)),
-            (Status::Nonzero, Some(FailureKind::Quota)),
-            (Status::Ok, Some(FailureKind::Quota)),
-        ] {
-            let reason = startup_failure_reason(status, kind, false).expect("a startup failure");
-            assert_eq!(
-                stream_verdict(StreamPublication::Published, status, kind, false),
-                StreamVerdict::Committed(reason)
-            );
-        }
-        // A candidate that never spawned cannot have streamed, so the combination
-        // is unreachable; the rule still reports it as committed rather than
-        // silently discarding published events.
-        assert_eq!(
-            stream_verdict(
-                StreamPublication::Published,
-                Status::SpawnError,
-                None,
-                false
-            ),
-            StreamVerdict::Committed("spawn-error")
-        );
-        // A real run is `Ran` whether or not it published events.
-        assert_eq!(
-            stream_verdict(StreamPublication::Published, Status::Ok, None, false),
-            StreamVerdict::Ran
-        );
-        assert_eq!(
-            stream_verdict(
-                StreamPublication::Published,
-                Status::Nonzero,
-                Some(FailureKind::RateLimit),
-                false
-            ),
-            StreamVerdict::Ran
-        );
     }
 
     #[test]
@@ -366,39 +327,205 @@ mod tests {
         // Trying several models in order: an unusable or over-limit model is
         // "try the next model", so both fall through with their own reason.
         assert_eq!(
-            startup_failure_reason(Status::Nonzero, Some(FailureKind::ModelNotFound), true),
+            startup_failure_reason(
+                Status::Nonzero,
+                Some(FailureKind::ModelNotFound),
+                true,
+                RunWork::None
+            ),
             Some("model-not-found")
         );
         assert_eq!(
-            startup_failure_reason(Status::Nonzero, Some(FailureKind::RateLimit), true),
+            startup_failure_reason(
+                Status::Nonzero,
+                Some(FailureKind::RateLimit),
+                true,
+                RunWork::None
+            ),
             Some("rate-limit")
         );
         assert!(is_startup_failure(
             Status::Nonzero,
             Some(FailureKind::ModelNotFound),
-            true
+            true,
+            RunWork::None
         ));
         assert!(is_startup_failure(
             Status::Nonzero,
             Some(FailureKind::RateLimit),
-            true
+            true,
+            RunWork::None
         ));
         // A plain task failure still stops the chain even with a model list — it
         // is a real run, not a per-model provisioning problem. A deferred-tool
         // dead-end likewise ran, so it stops the chain too.
-        assert_eq!(startup_failure_reason(Status::Nonzero, None, true), None);
         assert_eq!(
-            startup_failure_reason(Status::Nonzero, Some(FailureKind::ToolDeferred), true),
+            startup_failure_reason(Status::Nonzero, None, true, RunWork::None),
+            None
+        );
+        assert_eq!(
+            startup_failure_reason(
+                Status::Nonzero,
+                Some(FailureKind::ToolDeferred),
+                true,
+                RunWork::None
+            ),
             None
         );
         // The structural/provisioning reasons are unchanged by the model flag.
         assert_eq!(
-            startup_failure_reason(Status::Skipped, None, true),
+            startup_failure_reason(Status::Skipped, None, true, RunWork::None),
             Some("not-installed")
         );
         assert_eq!(
-            startup_failure_reason(Status::Nonzero, Some(FailureKind::Auth), true),
+            startup_failure_reason(
+                Status::Nonzero,
+                Some(FailureKind::Auth),
+                true,
+                RunWork::None
+            ),
             Some("auth")
         );
+    }
+
+    #[test]
+    fn a_candidate_that_did_work_never_falls_through() {
+        // Work evidence beats every classification: whatever the terminal record
+        // says, a harness that made a tool call or was billed tokens RAN the task.
+        // This is the rule that keeps a streamed chain and a buffered chain
+        // choosing the same candidate — neither can demote a working harness.
+        for (status, kind, model_fallback) in [
+            (Status::Nonzero, Some(FailureKind::Auth), false),
+            (Status::Nonzero, Some(FailureKind::Quota), false),
+            (Status::Ok, Some(FailureKind::Quota), false),
+            (Status::Nonzero, Some(FailureKind::RateLimit), true),
+            (Status::Nonzero, Some(FailureKind::ModelNotFound), true),
+            (Status::Skipped, None, false),
+            (Status::SpawnError, None, false),
+        ] {
+            assert!(
+                startup_failure_reason(status, kind, model_fallback, RunWork::None).is_some(),
+                "{status:?}/{kind:?} must fall through with no work evidence"
+            );
+            assert_eq!(
+                startup_failure_reason(status, kind, model_fallback, RunWork::Done),
+                None,
+                "{status:?}/{kind:?} did work, so it must not fall through"
+            );
+            assert!(!is_startup_failure(
+                status,
+                kind,
+                model_fallback,
+                RunWork::Done
+            ));
+        }
+    }
+
+    #[test]
+    fn work_evidence_reads_tool_events_and_billed_usage() {
+        // A zero-work rejection: the real Claude session-limit record's shape —
+        // every count present and zero, no cost, no tool events.
+        let mut result = zero_work_result();
+        assert_eq!(RunWork::from_result(&result), RunWork::None);
+        // ...and so is a result with no accounting at all (a bare limit line on
+        // stderr carries none), mirroring `signals::record_reports_work`.
+        result.usage = Usage::default();
+        assert_eq!(RunWork::from_result(&result), RunWork::None);
+        // An empty (but present) event list is not work either.
+        result.events = Some(Vec::new());
+        assert_eq!(RunWork::from_result(&result), RunWork::None);
+
+        // Any single billed count is decisive.
+        for billed in [
+            Usage {
+                input_tokens: Some(1),
+                ..Usage::default()
+            },
+            Usage {
+                output_tokens: Some(1),
+                ..Usage::default()
+            },
+            Usage {
+                cache_read_tokens: Some(1),
+                ..Usage::default()
+            },
+            Usage {
+                cache_write_tokens: Some(1),
+                ..Usage::default()
+            },
+            Usage {
+                cost_usd: Some(0.01),
+                ..Usage::default()
+            },
+        ] {
+            let mut worked = zero_work_result();
+            worked.usage = billed;
+            assert_eq!(RunWork::from_result(&worked), RunWork::Done);
+        }
+
+        // A tool call alone is decisive too, with no usage reported at all — this
+        // is what a streamed candidate has already shown its consumer, so the
+        // event it published is the same evidence the verdict reads.
+        let mut used_tools = zero_work_result();
+        used_tools.events = Some(vec![tool_call()]);
+        assert_eq!(RunWork::from_result(&used_tools), RunWork::Done);
+    }
+
+    /// A result shaped like the real zero-work Claude session-limit rejection:
+    /// all counts present and zero, no cost, no events.
+    fn zero_work_result() -> RunResult {
+        RunResult {
+            harness: "claude-code".to_string(),
+            variant: None,
+            harness_id: "claude-code".to_string(),
+            bin: "claude".to_string(),
+            available: true,
+            status: Status::Nonzero,
+            prompt: None,
+            model: None,
+            exit_code: Some(1),
+            duration_ms: Some(401),
+            telemetry: None,
+            command: vec!["claude".to_string()],
+            output_format: crate::domain::report::OutputFormat::Json,
+            text: Some("You've hit your session limit".to_string()),
+            text_source: Some("json:result".to_string()),
+            usage: Usage {
+                input_tokens: Some(0),
+                output_tokens: Some(0),
+                cache_read_tokens: Some(0),
+                cache_write_tokens: Some(0),
+                cost_usd: Some(0.0),
+            },
+            usage_source: Some("json".to_string()),
+            session_id: None,
+            events: None,
+            events_source: None,
+            structured: None,
+            schema_valid: None,
+            schema_attempts: None,
+            schema_error: None,
+            failure_kind: Some(FailureKind::Quota),
+            failure_kind_source: Some("stdout".to_string()),
+            stdout: String::new(),
+            stderr: String::new(),
+            error: None,
+        }
+    }
+
+    fn tool_call() -> crate::domain::events::ActionEvent {
+        crate::domain::events::ActionEvent {
+            kind: "tool_call".to_string(),
+            name: Some("Bash".to_string()),
+            input: None,
+            output: None,
+            index: 0,
+            tool_call_id: None,
+            started_at: None,
+            finished_at: None,
+            duration_ms: None,
+            status: None,
+            timing_source: None,
+        }
     }
 }

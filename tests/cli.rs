@@ -13600,10 +13600,10 @@ fn stream_under_fallback_publishes_only_the_candidate_that_runs() {
     // — the first line on stdout is the winner's first tool call, numbered from
     // zero. The fallen-through candidate here is the real zero-work Claude
     // session-limit rejection (issue #1211), the shape a fallback chain exists to
-    // route around. Its committed counterpart — a candidate that DID publish
-    // events never falls through — is
-    // `stream_under_fallback_commits_a_candidate_once_it_has_published_events`;
-    // together the two make "a fallen-through candidate published nothing" total.
+    // route around. Its counterpart — a candidate that DID the work never falls
+    // through, on either path — is
+    // `streamed_and_buffered_fallback_select_the_same_candidate`; together the two
+    // make "a fallen-through candidate published nothing" total.
     let mock = mock_bin().display().to_string();
     let rejection =
         serde_json::to_string(include_str!("fixtures/claude-session-limit-api-error.json").trim())
@@ -13700,74 +13700,203 @@ fn stream_under_fallback_publishes_only_the_candidate_that_runs() {
     let _ = std::fs::remove_dir_all(&history);
 }
 
+/// The fallback block reduced to what "which candidate did the chain choose?"
+/// means: the harness that ran, every fallen-through candidate with its reason,
+/// and how many candidates were attempted at all.
+fn fallback_selection(report: &Value) -> (Value, Vec<(String, String)>, usize) {
+    let fell = report["fallback"]["fell_through"]
+        .as_array()
+        .expect("a fallback block")
+        .iter()
+        .map(|f| {
+            (
+                f["harness"].as_str().unwrap().to_string(),
+                f["reason"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    (
+        report["fallback"]["ran"].clone(),
+        fell,
+        report["results"].as_array().unwrap().len(),
+    )
+}
+
 #[test]
-fn stream_under_fallback_commits_a_candidate_once_it_has_published_events() {
-    // The commit rule. A candidate that published tool calls demonstrably RAN the
-    // task, so the chain stops there even when its terminal record alone reads as
-    // a provisioning rejection — the alternative is a second harness's events
-    // arriving on the same stdout after the consumer already acted on the first's.
-    // The identical run WITHOUT `--stream` still falls through, which is the proof
-    // that ordinary fallback classification is untouched.
+fn streamed_and_buffered_fallback_select_the_same_candidate() {
+    // The parity contract: `--stream` changes how a run is *delivered*, never
+    // which candidate a fallback chain picks. Both paths take the verdict from
+    // `fallback::startup_failure_reason` over the same normalized result, so each
+    // scenario below is run twice — buffered and streamed — and must agree on the
+    // harness that ran, the fallen-through candidates and their reasons, how many
+    // candidates were attempted, and the exit code.
+    //
+    // The scenarios span every rule the chain has: a zero-work rejection and a
+    // missing binary fall through; a candidate that DID the work (tool calls +
+    // billed tokens) does not, however its terminal record is classified; and a
+    // real task failure or a timeout never falls through.
     let mock = mock_bin().display().to_string();
-    let transcript = serde_json::to_string(&format!(
-        "{}\n",
-        r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"deploy"},"output":"ok"}}}"#,
+    let rejection =
+        serde_json::to_string(include_str!("fixtures/claude-session-limit-api-error.json").trim())
+            .unwrap();
+    // A transcript that did real work: a tool call, then a result billing tokens.
+    let worked = serde_json::to_string(&format!(
+        "{}\n{}\n",
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo hi"}}]}}"#,
+        r#"{"type":"result","subtype":"success","result":"partial","usage":{"input_tokens":812,"output_tokens":96}}"#,
     ))
     .unwrap();
-    let project = format!(
-        r#"
-        harnesses = ["opencode", "codex"]
-        run_mode = "fallback"
 
-        [harness.opencode]
-        bin = '{mock}'
-        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {transcript}, MOCK_STDERR = "Error: 401 unauthorized" }}
+    struct Case {
+        tag: &'static str,
+        /// Config env for the FIRST candidate (claude-code); the second (qwen) is
+        /// always a clean mock run.
+        first_env: String,
+        /// `--bin` overrides and any extra run args the case needs.
+        extra: Vec<String>,
+        expected_ran: &'static str,
+        expected_fell: Vec<(&'static str, &'static str)>,
+        expected_exit: i32,
+    }
 
-        [harness.codex]
-        bin = '{mock}'
-        "#
-    );
-    let fx = ConfigFixture::new("stream-fallback-commit", &project, "");
+    let cases = vec![
+        Case {
+            // The real zero-work Claude 429 (issue #1211): rejected before doing
+            // anything, so the chain moves on.
+            tag: "zero-work-quota",
+            first_env: format!(r#"{{ MOCK_EXIT = "1", MOCK_STDOUT = {rejection} }}"#),
+            extra: vec![],
+            expected_ran: "qwen",
+            expected_fell: vec![("claude-code", "quota")],
+            expected_exit: 0,
+        },
+        Case {
+            // Did tool work and was billed, THEN hit an auth rejection. Work
+            // evidence outranks the classification in both paths: the chain stops
+            // rather than re-running the work on the next candidate's quota.
+            tag: "worked-then-rejected",
+            first_env: format!(
+                r#"{{ MOCK_EXIT = "1", MOCK_STDOUT = {worked}, MOCK_STDERR = "Error: 401 unauthorized" }}"#
+            ),
+            extra: vec![],
+            expected_ran: "claude-code",
+            expected_fell: vec![],
+            expected_exit: 1,
+        },
+        Case {
+            // Never spawned at all.
+            tag: "not-installed",
+            first_env: String::from("{ }"),
+            extra: vec!["--bin".into(), missing_bin("claude-code")],
+            expected_ran: "qwen",
+            expected_fell: vec![("claude-code", "not-installed")],
+            expected_exit: 0,
+        },
+        Case {
+            // A plain non-zero task failure is a real run: never a fall-through.
+            tag: "real-failure",
+            first_env: String::from(
+                r#"{ MOCK_EXIT = "1", MOCK_STDERR = "the task did not work" }"#,
+            ),
+            extra: vec![],
+            expected_ran: "claude-code",
+            expected_fell: vec![],
+            expected_exit: 1,
+        },
+        Case {
+            // A slow real run that timed out is a run, not a setup problem.
+            tag: "timeout",
+            first_env: String::from(r#"{ MOCK_SLEEP_MS = "4000" }"#),
+            extra: vec!["--timeout".into(), "1".into()],
+            expected_ran: "claude-code",
+            expected_fell: vec![],
+            expected_exit: 1,
+        },
+    ];
 
-    // Without --stream: nothing was published, so the auth rejection falls
-    // through to codex exactly as it always has.
-    let buffered = run_with_config(
-        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
-        &[],
-        &fx.user_config(),
-    );
-    assert!(buffered.status.success());
-    let v = json_stdout(&buffered);
-    assert_eq!(v["fallback"]["ran"], "codex");
-    assert_eq!(v["fallback"]["fell_through"][0]["reason"], "auth");
-    assert_eq!(v["results"].as_array().unwrap().len(), 2);
+    for case in cases {
+        let project = format!(
+            r#"
+            harnesses = ["claude-code", "qwen"]
+            run_mode = "fallback"
 
-    // With --stream: the event reached the consumer first, so opencode is
-    // committed — codex is never spawned and no second event stream follows.
-    let output = run_with_config(
-        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--stream"],
-        &[],
-        &fx.user_config(),
-    );
-    assert_eq!(output.status.code(), Some(1), "the committed run failed");
-    let envelopes = stream_envelopes(&output);
-    assert_eq!(envelopes.len(), 2, "{envelopes:#?}");
-    assert_eq!(envelopes[0]["event"]["name"], "bash");
-    let report = &envelopes[1]["report"];
-    assert_eq!(report["fallback"]["ran"], "opencode");
-    assert_eq!(
-        report["fallback"]["fell_through"].as_array().unwrap().len(),
-        0
-    );
-    let results = report["results"].as_array().unwrap();
-    assert_eq!(results.len(), 1, "codex must never be spawned");
-    // The rejection is still reported honestly, it just did not fall through.
-    assert_eq!(results[0]["failure_kind"], "auth");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("streamed events") && stderr.contains("auth"),
-        "the override must be loud: {stderr}"
-    );
+            [harness.claude-code]
+            bin = '{mock}'
+            env = {}
+
+            [harness.qwen]
+            bin = '{mock}'
+            "#,
+            case.first_env
+        );
+        let fx = ConfigFixture::new(&format!("fallback-parity-{}", case.tag), &project, "");
+        let mut args: Vec<String> = ["run", "--prompt", "hi", "--cwd", &fx.cwd()]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        args.extend(case.extra.iter().cloned());
+
+        let mut buffered_args: Vec<&str> = args.iter().map(String::as_str).collect();
+        buffered_args.push("--compact");
+        let buffered = run_with_config(&buffered_args, &[], &fx.user_config());
+        let buffered_report = json_stdout(&buffered);
+
+        let mut streamed_args: Vec<&str> = args.iter().map(String::as_str).collect();
+        streamed_args.push("--stream");
+        let streamed = run_with_config(&streamed_args, &[], &fx.user_config());
+        let envelopes = stream_envelopes(&streamed);
+        let terminal = envelopes.last().expect("a terminal report line");
+        assert_eq!(terminal["type"], "result", "{}", case.tag);
+        let streamed_report = &terminal["report"];
+
+        // Parity: same selection, same attempt count, same exit code.
+        assert_eq!(
+            fallback_selection(&buffered_report),
+            fallback_selection(streamed_report),
+            "{}: streamed and buffered fallback disagreed",
+            case.tag
+        );
+        assert_eq!(
+            buffered.status.code(),
+            streamed.status.code(),
+            "{}: exit codes disagreed",
+            case.tag
+        );
+
+        // ...and that shared selection is the expected one.
+        let (ran, fell, attempted) = fallback_selection(&buffered_report);
+        assert_eq!(ran, case.expected_ran, "{}", case.tag);
+        let expected_fell: Vec<(String, String)> = case
+            .expected_fell
+            .iter()
+            .map(|(h, r)| (h.to_string(), r.to_string()))
+            .collect();
+        assert_eq!(fell, expected_fell, "{}", case.tag);
+        assert_eq!(attempted, expected_fell.len() + 1, "{}", case.tag);
+        assert_eq!(
+            buffered.status.code(),
+            Some(case.expected_exit),
+            "{}: {}",
+            case.tag,
+            String::from_utf8_lossy(&buffered.stderr)
+        );
+
+        // No fallen-through candidate published an event a consumer could act on:
+        // every published line belongs to the harness that ran.
+        let published = envelopes.iter().filter(|e| e["type"] == "event").count();
+        let winner = streamed_report["results"]
+            .as_array()
+            .unwrap()
+            .last()
+            .expect("the harness that ran is the last result");
+        assert_eq!(winner["harness"], case.expected_ran, "{}", case.tag);
+        let winner_events = winner["events"].as_array().map_or(0, Vec::len);
+        assert_eq!(
+            published, winner_events,
+            "{}: published events must all be the winner's",
+            case.tag
+        );
+    }
 }
 
 #[test]

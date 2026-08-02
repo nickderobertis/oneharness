@@ -6,7 +6,7 @@ use std::time::Duration;
 use crate::cli::RunArgs;
 use crate::commands::{print_json, select_specs, variant_environment};
 use oneharness_core::domain::batch::{self, BatchStrategy};
-use oneharness_core::domain::fallback::{self, RunMode, StreamPublication};
+use oneharness_core::domain::fallback::{self, RunMode};
 use oneharness_core::domain::harness::{self, BuildCtx, HarnessSpec};
 use oneharness_core::domain::mock::{self, MockDelivery};
 use oneharness_core::domain::mode::{ModeHeadless, PermissionMode};
@@ -1487,11 +1487,15 @@ struct StreamedPlan {
 ///
 /// In `parallel` mode this is the single selected harness (more than one is a
 /// usage error — they would interleave). In `fallback` mode it walks the
-/// priority chain one candidate at a time, exactly as [`run_fallback`] does, with
-/// one addition: a candidate that has already published an event is **committed**
-/// and ends the chain, so a candidate that falls through is guaranteed to have
-/// published nothing a consumer could act on. [`fallback::stream_verdict`] owns
-/// that rule and explains why an event is proof the candidate ran.
+/// priority chain one candidate at a time, taking the stop/continue decision from
+/// the same [`fallback_step`] the buffered [`run_fallback`] uses, on the same
+/// finished [`RunResult`] — so the two paths always select the same candidate.
+///
+/// Publishing is safe under that shared rule because a candidate that publishes
+/// an event has, by construction, a tool event in its result (the streamed line
+/// and the reported array come from the same recognizer over the same stdout),
+/// which is [`fallback::RunWork::Done`] — so it does not fall through. A
+/// candidate that *does* fall through published nothing a consumer could act on.
 fn stream_plan(
     plan: Vec<Plan>,
     jobs: &[Job],
@@ -1512,7 +1516,6 @@ fn stream_plan(
             Plan::Ready(result) => StreamedHarness {
                 result: *result,
                 persisted_event_indexes: BTreeSet::new(),
-                publication: StreamPublication::Silent,
             },
             Plan::Pending {
                 spec,
@@ -1536,39 +1539,15 @@ fn stream_plan(
         let StreamedHarness {
             result,
             persisted_event_indexes,
-            publication,
         } = streamed;
-        let verdict =
-            fallback::stream_verdict(publication, result.status, result.failure_kind, multi_model);
-        let harness = result.harness.clone();
+        let keep_going = fallback_step(&result, multi_model, &mut fell_through, &mut ran);
         results.push(result);
         history.push(StreamedHistory {
             run_id,
             persisted_event_indexes,
         });
-        if !fallback_mode {
+        if !fallback_mode || !keep_going {
             break;
-        }
-        match verdict {
-            fallback::StreamVerdict::FallThrough(reason) => fell_through.push(FallThrough {
-                harness,
-                reason: reason.to_string(),
-            }),
-            fallback::StreamVerdict::Ran => {
-                ran = Some(harness);
-                break;
-            }
-            // Already published: the harness demonstrably ran the task, so the
-            // chain stops rather than discarding events the consumer has read.
-            fallback::StreamVerdict::Committed(reason) => {
-                eprintln!(
-                    "oneharness: warning: `{harness}` streamed events, so it ran the task; its \
-                     `{reason}` classification does not fall through under --stream (the consumer \
-                     already observed its actions). See results[].failure_kind for the rejection."
-                );
-                ran = Some(harness);
-                break;
-            }
         }
     }
     StreamedPlan {
@@ -1578,13 +1557,11 @@ fn stream_plan(
     }
 }
 
-/// One harness's finished streaming run: the result, which of its events were
-/// persisted to history live, and whether any event was **published** to the
-/// consumer's stdout (the fallback commit signal — see [`stream_plan`]).
+/// One harness's finished streaming run: the result plus which of its events
+/// were persisted to history live (the rest are written with the closing record).
 struct StreamedHarness {
     result: RunResult,
     persisted_event_indexes: BTreeSet<usize>,
-    publication: StreamPublication,
 }
 
 /// Run one harness with streaming: feed each stdout line through the event
@@ -1614,9 +1591,6 @@ fn stream_one_harness(
 
     let mut next_index = 0usize;
     let mut persisted_event_indexes = BTreeSet::new();
-    // The fallback commit signal: it counts a *published* event, not an extracted
-    // one, so it flips only where the event line is written to stdout below.
-    let mut publication = StreamPublication::Silent;
     let capture = runner::run_job_streaming(job, |line| {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             return StreamStep::Continue;
@@ -1648,15 +1622,14 @@ fn stream_one_harness(
                 }
             }
             let envelope = RunStreamEnvelope::Event { event: ev.clone() };
-            match serde_json::to_string(&envelope)
+            // A broken pipe (consumer closed the stream) is the short-circuit
+            // signal: stop reading and tear the child down.
+            if serde_json::to_string(&envelope)
                 .map_err(|_| ())
                 .and_then(|s| writeln!(out, "{s}").map_err(|_| ()))
+                .is_err()
             {
-                // The line is out: this candidate is now committed for fallback.
-                Ok(()) => publication = StreamPublication::Published,
-                // A broken pipe (consumer closed the stream) is the short-circuit
-                // signal: stop reading and tear the child down.
-                Err(()) => return StreamStep::Stop,
+                return StreamStep::Stop;
             }
         }
         if out.flush().is_err() {
@@ -1678,7 +1651,6 @@ fn stream_one_harness(
     StreamedHarness {
         result,
         persisted_event_indexes,
-        publication,
     }
 }
 
@@ -1974,24 +1946,51 @@ fn run_fallback(
                 )
             }
         };
-        match fallback::startup_failure_reason(result.status, result.failure_kind, multi_model) {
-            // Could not run — record why and try the next candidate.
-            Some(reason) => {
-                fell_through.push(FallThrough {
-                    harness: result.harness.clone(),
-                    reason: reason.to_string(),
-                });
-                results.push(result);
-            }
-            // Actually ran (well or badly) — this is the answer; stop here.
-            None => {
-                ran = Some(result.harness.clone());
-                results.push(result);
-                break;
-            }
+        let keep_going = fallback_step(&result, multi_model, &mut fell_through, &mut ran);
+        results.push(result);
+        if !keep_going {
+            break;
         }
     }
     (results, FallbackReport { ran, fell_through })
+}
+
+/// Apply the fallback verdict to one finished candidate: record why it fell
+/// through, or name it as the harness that ran. Returns whether the chain should
+/// try the next candidate.
+///
+/// Both drivers call this — the buffered [`run_fallback`] and the streaming
+/// [`stream_plan`] — on the same normalized [`RunResult`], so a streamed chain and
+/// a buffered chain cannot select different candidates. The decision itself is
+/// pure policy in [`fallback::startup_failure_reason`], including the
+/// [`fallback::RunWork`] evidence that keeps a candidate which actually ran the
+/// task (tool events, or billed tokens) from ever falling through.
+fn fallback_step(
+    result: &RunResult,
+    multi_model: bool,
+    fell_through: &mut Vec<FallThrough>,
+    ran: &mut Option<String>,
+) -> bool {
+    match fallback::startup_failure_reason(
+        result.status,
+        result.failure_kind,
+        multi_model,
+        fallback::RunWork::from_result(result),
+    ) {
+        // Could not run — record why and try the next candidate.
+        Some(reason) => {
+            fell_through.push(FallThrough {
+                harness: result.harness.clone(),
+                reason: reason.to_string(),
+            });
+            true
+        }
+        // Actually ran (well or badly) — this is the answer; stop here.
+        None => {
+            *ran = Some(result.harness.clone());
+            false
+        }
+    }
 }
 
 /// Exit code for a fallback run: a hard failure when no candidate could run at

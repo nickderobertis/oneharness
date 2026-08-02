@@ -1049,10 +1049,11 @@ chain, so a long, genuine run can never be mistaken for "try the next one".
 
 | Outcome | Fallback? |
 | --- | --- |
+| Did the task's work (a tool call, or billed tokens/cost) | ⛔ stop — it ran, whatever its record says |
 | Not installed (`skipped`) | ✅ fall through — `not-installed` |
 | Resolved but unspawnable (`spawn-error`) | ✅ fall through — `spawn-error` |
-| Ran, exited non-zero, classified `auth` | ✅ fall through — `auth` |
-| Ran, exited non-zero, classified `quota` (no credit) | ✅ fall through — `quota` |
+| Ran, exited non-zero, classified `auth`, no work done | ✅ fall through — `auth` |
+| Ran, exited non-zero, classified `quota` (no credit), no work done | ✅ fall through — `quota` |
 | Ran and succeeded (`ok`) | ⛔ stop — this is the answer |
 | Ran and failed the task (`nonzero`, incl. `rate_limit` / `model_not_found`) | ⛔ stop¹ |
 | Timed out (`timeout`) — a slow but genuine run | ⛔ stop |
@@ -1095,6 +1096,14 @@ through: absent accounting is not evidence of work.
 > `insufficient_quota` / `credit balance` vocabulary means the account is out of
 > money rather than out of session, and is unchanged.
 
+> **Behavior change.** That zero-work discriminator is now applied to *every*
+> fall-through reason, not just the Claude limit signature: any candidate whose
+> result shows a tool call or billed usage stops the chain. A generic `auth`
+> classification scanned out of a transcript, or a Codex `turn.failed` usage
+> limit, no longer falls through once the candidate has done work. Rejections
+> that did no work — the overwhelming majority, and the ones a fallback chain
+> exists for — are unaffected.
+
 The report gains a `fallback` block, `{ "ran", "fell_through": [{ "harness",
 "reason" }] }`: `ran` is the harness that executed (or `null` when every
 candidate failed to start), and `results` holds only the harnesses **attempted**
@@ -1118,22 +1127,29 @@ first session-capable harness in the chain), so a named conversation degrades
 gracefully across the same priority set. Exit code: `0` when the harness that ran
 succeeded, `1` when it ran but failed **or** when no candidate could run at all.
 
-**Streaming a fallback chain.** [`--stream`](#streaming-events)
-is allowed too, and is how a supervising process watches a long turn while keeping
-the chain that survives a 429. The candidates run one at a time, so there is no
-interleaving; what needs care is that stdout must not be committed to a candidate
-the chain then discards. The rule: **a published event commits the candidate.** An
-event is a tool call, so publishing one is direct evidence the harness *ran the
-task* — exactly fallback's stop condition. Everything that falls through does so
-without running (not installed, unspawnable, or rejected before doing any work),
-publishes nothing, and is still fallen through with the same reason as before; the
-run that publishes is the one whose result the report names in `fallback.ran`. The
-residue is a candidate that made tool calls and *then* hit a rejection whose
-terminal record alone reads as a startup failure (a provider surface with no work
-accounting to gate on): observing the run beats re-reading its final record, so the
-chain stops there, a warning says so on stderr, and the result keeps its honest
-`failure_kind`. Each fallen-through candidate's whole transcript is still in
-`results` — it was withheld from the live stream, not discarded.
+**Work evidence decides, so streaming changes nothing.** Before any of the
+reasons above are consulted, a candidate whose result carries **evidence it did
+the task's work** — a recorded tool call, or usage accounting with a non-zero
+token count or dollar cost — is treated as having run, whatever its terminal
+record then said. This is the "work done, not error text" rule the Claude
+session-limit classifier already applied, lifted to the whole verdict so it also
+covers the surfaces with no accounting of their own (a generic `401` scanned out
+of a transcript, Codex's `turn.failed` usage limit). Falling through a candidate
+that worked would burn the next one's quota re-running what already happened. A
+rejection that did *no* work — the zero-token 429, bad credentials, a missing
+binary — still falls through exactly as before.
+
+**Streaming a fallback chain.** [`--stream`](#streaming-events) is allowed, and is
+how a supervising process watches a long turn while keeping the chain that
+survives a 429. The candidates run one at a time, so nothing interleaves, and the
+verdict comes from the same rule over the same normalized result — **a streamed
+chain and a buffered chain always select the same candidate**, which the suite
+pins end to end across zero-work rejections, a missing binary, a candidate that
+worked before being rejected, a real task failure, and a timeout. Publishing is
+safe under that rule because a candidate that publishes an event has a tool event
+in its result, which is work evidence, so it cannot then be discarded; a candidate
+that *does* fall through has published nothing a consumer could act on. Its whole
+transcript is still in `results` — withheld from the live stream, not discarded.
 
 ```console
 # Watch the turn while keeping the fallback chain:

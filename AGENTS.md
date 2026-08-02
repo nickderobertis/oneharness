@@ -700,16 +700,18 @@ shape. When you add one:
   `oh_stream_assert` is its live proof. It is single-harness only in `parallel`
   (interleaving); a **fallback chain streams**, because the candidates run in
   turn — the constraint is narrower than "one harness": stdout must not be
-  committed to a candidate the chain then discards. `fallback::stream_verdict`
-  is that rule — a *published* event commits the candidate (an event is a tool
-  call, so it is evidence the harness ran, which is fallback's own stop
-  condition), and everything that falls through does so without running, so it
-  publishes nothing. Its one divergence from the buffered path is
-  `StreamVerdict::Committed`: a candidate that published and *then* hit a
-  rejection whose terminal record reads as a startup failure (a provider surface
-  with no work accounting, unlike Claude's zero-work-gated quota) stops the chain
-  instead of falling through, loudly on stderr. Never publish first and retract —
-  a consumer acts on what it reads. `sdk_schema::bundle` is the single Rust
+  committed to a candidate the chain then discards. What makes that safe is
+  `fallback::RunWork`, consulted *before* every fall-through reason in
+  `startup_failure_reason`: a candidate whose result shows a tool call or billed
+  usage ran the task and never falls through. That is #1211's "work done, not
+  error text" rule lifted from the Claude limit classifier to the whole verdict,
+  so it also covers the surfaces with no accounting to gate on (a scanned `401`,
+  Codex's `turn.failed`). Both drivers take the decision from one
+  `fallback_step` over the same normalized result, so **streamed and buffered
+  chains select the same candidate** — pinned end-to-end by
+  `streamed_and_buffered_fallback_select_the_same_candidate`; there is no
+  streaming-only rule, and never publish first and retract (a consumer acts on
+  what it reads). `sdk_schema::bundle` is the single Rust
   generation source for that envelope, `HistoryStreamEnvelope`, and the shared
   SDK contracts.
 

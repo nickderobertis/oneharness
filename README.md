@@ -1139,8 +1139,9 @@ that worked would burn the next one's quota re-running what already happened. A
 rejection that did *no* work — the zero-token 429, bad credentials, a missing
 binary — still falls through exactly as before.
 
-**Streaming a fallback chain.** [`--stream`](#streaming-events) is allowed, and is
-how a supervising process watches a long turn while keeping the chain that
+**Streaming a fallback chain.** [`--stream`](#streaming-events) is allowed — over
+harnesses and over [models](#multiple-models-fan-out-over-the-model-axis) alike —
+and is how a supervising process watches a long turn while keeping the chain that
 survives a 429. The candidates run one at a time, so nothing interleaves, and the
 verdict comes from the same rule over the same normalized result — **a streamed
 chain and a buffered chain always select the same candidate**, which the suite
@@ -1196,7 +1197,10 @@ which is the signal a consumer keys on to read each result's `model`. The top-le
 behaves like a single `--model`). Because a fan-out multiplies the run into several
 units, more than one model is a loud usage error with a [batch](#batch-runs-same-prefix-prompt-caching)
 (its cache prefix is per harness/model) and with the single-unit continuations
-`--resume` / `--fork` / `--session` / `--stream`.
+`--resume` / `--fork` / `--session`. [`--stream`](#streaming-events) is refused
+only in `parallel` mode, where the fan-out really is several concurrent results
+whose event streams would interleave; under `--run-mode fallback` the pairs are a
+priority chain with one outcome, so the chain streams like a harness chain does.
 
 ### Batch runs (same-prefix prompt caching)
 

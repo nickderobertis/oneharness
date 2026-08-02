@@ -238,7 +238,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // errors). It is *compatible* with fallback: the model list is exactly the
     // fallback chain there.
     if multi_model {
-        validate_multi_model(batch_run, args)?;
+        validate_multi_model(batch_run, fallback_mode, args)?;
     }
     // Selection already preserves explicit caller/config order (and uses registry
     // order for `--all`). Fallback treats that sequence as its priority chain;
@@ -623,13 +623,17 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let mut streamed_history: Vec<StreamedHistory> = Vec::new();
     let (mut results, mut fallback_report): (Vec<RunResult>, Option<FallbackReport>) = if stream_run
     {
+        // One id per plan entry, not per selected harness: a model fan-out
+        // repeats a harness once per model, so `selected_ids` is the wrong axis
+        // to attribute a streamed event to.
+        let unit_ids: Vec<&str> = units.iter().map(|(_, id, _, _)| id.as_str()).collect();
         let streamed = stream_plan(
             plan,
             &jobs,
             fallback_mode,
             multi_model,
             history_writer.as_ref(),
-            &selected_ids,
+            &unit_ids,
         );
         streamed_history = streamed.history;
         (streamed.results, streamed.fallback)
@@ -1459,8 +1463,9 @@ struct StreamedPlan {
     history: Vec<StreamedHistory>,
 }
 
-/// Drive the plan under `--stream`, publishing each harness's normalized events
-/// to stdout as they arrive.
+/// Drive the plan under `--stream`, publishing each candidate's normalized
+/// events to stdout as they arrive. In fallback mode a candidate is one plan
+/// entry — a harness, or a (harness, model) pair when a model list is the chain.
 ///
 /// Publishing a candidate before the chain has settled is safe: one that
 /// published an event has, by construction, a tool event in its result (the
@@ -1473,7 +1478,7 @@ fn stream_plan(
     fallback_mode: bool,
     multi_model: bool,
     history_writer: Option<&HistoryWriter>,
-    selected_ids: &[String],
+    unit_ids: &[&str],
 ) -> StreamedPlan {
     let mut results: Vec<RunResult> = Vec::new();
     let mut history: Vec<StreamedHistory> = Vec::new();
@@ -1504,7 +1509,7 @@ fn stream_plan(
                 model,
                 history_writer
                     .zip(run_id)
-                    .map(|(writer, run_id)| (writer, run_id, selected_ids[index].as_str())),
+                    .map(|(writer, run_id)| (writer, run_id, unit_ids[index])),
             ),
         };
         let StreamedHarness {
@@ -1646,8 +1651,10 @@ fn emit_stream_result(report: &RunReport) -> Result<(), OneharnessError> {
 /// once, which streaming does not provide — and, in the default `parallel` mode,
 /// more than one harness. A loud usage error before anything spawns.
 ///
-/// A **fallback** chain may list several harnesses: only the candidate that runs
-/// ever publishes (see [`stream_plan`]), so there is nothing to interleave.
+/// A **fallback** chain may list several candidates — harnesses, and each
+/// harness's models (the multi-model half is refused in [`validate_multi_model`],
+/// which allows it here for the same reason): only the candidate that runs ever
+/// publishes (see [`stream_plan`]), so there is nothing to interleave.
 fn validate_stream(
     stream: bool,
     specs: &[&'static HarnessSpec],
@@ -1816,10 +1823,20 @@ fn validate_fallback(batch_run: bool, args: &RunArgs) -> Result<(), OneharnessEr
 /// Fanning over models multiplies the run into several (harness, model) units, so
 /// every single-unit shape is a loud usage error: a batch (its shared cache prefix
 /// is per harness/model, so it cannot also vary the model), and each single-harness
-/// continuation — `--resume` / `--fork` / `--session` (bound to one model context)
-/// and `--stream` (one incremental output). `--run-mode fallback` is deliberately
-/// *not* refused: the model list is exactly the fallback chain there.
-fn validate_multi_model(batch_run: bool, args: &RunArgs) -> Result<(), OneharnessError> {
+/// continuation — `--resume` / `--fork` / `--session` (bound to one model context).
+/// `--run-mode fallback` is deliberately *not* refused: the model list is exactly
+/// the fallback chain there.
+///
+/// `--stream` follows from that. In `parallel` the fan-out really is several
+/// concurrent results whose event streams would interleave on one stdout, so it
+/// stays refused; in `fallback` the (harness, model) pairs are a priority chain
+/// run one at a time with a single outcome — the same shape a multi-harness
+/// chain streams in (see [`stream_plan`] and [`validate_stream`]).
+fn validate_multi_model(
+    batch_run: bool,
+    fallback_mode: bool,
+    args: &RunArgs,
+) -> Result<(), OneharnessError> {
     let conflict = |with, why| Err(OneharnessError::MultiModelConflict { with, why });
     if batch_run {
         return conflict(
@@ -1839,10 +1856,10 @@ fn validate_multi_model(batch_run: bool, args: &RunArgs) -> Result<(), Oneharnes
             "a named session is tied to one model, so it cannot fan out over several",
         );
     }
-    if args.stream {
+    if args.stream && !fallback_mode {
         return conflict(
             "--stream",
-            "streaming emits one incremental output; a model fan-out produces several results",
+            "streaming emits one incremental output; a parallel model fan-out produces several results at once. Use --run-mode fallback to stream the first (harness, model) pair that runs",
         );
     }
     Ok(())

@@ -12280,8 +12280,8 @@ fn fallback_does_not_try_the_next_model_after_the_first_did_work() {
     // the same two per-model rejections, on a model that was billed for a real
     // turn before the rejection landed. Work evidence is consulted first, so each
     // one STOPS the chain here instead of paying for the same work again on the
-    // next model. (Buffered only: a model fan-out is already refused under
-    // `--stream`, so the model axis has no streamed delivery to compare with.)
+    // next model. Asserted on both deliveries: the model axis streams under
+    // fallback, and the two must agree on the model they settle on.
     for (fail_stderr, kind) in [
         ("error: model not found: opus", "model_not_found"),
         (
@@ -12302,29 +12302,52 @@ fn fallback_does_not_try_the_next_model_after_the_first_did_work() {
             "#
         );
         let fx = ConfigFixture::new(&format!("fallback-model-work-{kind}"), &project, "");
-        let output = run_with_config(
+        let buffered = run_with_config(
             &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
             &[],
             &fx.user_config(),
         );
-        assert_eq!(output.status.code(), Some(1), "{kind}");
-        let v = json_stdout(&output);
-        assert_eq!(v["fallback"]["ran"], "claude-code", "{kind}");
-        assert_eq!(
-            v["fallback"]["fell_through"].as_array().unwrap().len(),
-            0,
-            "{kind}"
+        let streamed = run_with_config(
+            &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--stream"],
+            &[],
+            &fx.user_config(),
         );
-        let results = v["results"].as_array().unwrap();
+        let envelopes = stream_envelopes(&streamed);
+        let terminal = envelopes.last().expect("a terminal report line");
+        assert_eq!(terminal["type"], "result", "{kind}");
+        assert_eq!(buffered.status.code(), Some(1), "{kind}");
         assert_eq!(
-            results.len(),
-            1,
-            "{kind}: the second model must never be spawned"
+            buffered.status.code(),
+            streamed.status.code(),
+            "{kind}: exit codes disagreed"
         );
-        assert_eq!(results[0]["model"], "opus", "{kind}");
-        // The rejection is still classified honestly; it just did not fall through.
-        assert_eq!(results[0]["failure_kind"], kind, "{kind}");
-        assert_eq!(results[0]["usage"]["input_tokens"], 812, "{kind}");
+        let buffered_report = json_stdout(&buffered);
+        assert_eq!(
+            fallback_selection(&buffered_report),
+            fallback_selection(&terminal["report"]),
+            "{kind}: streamed and buffered fallback disagreed"
+        );
+        for (path, v) in [
+            ("buffered", &buffered_report),
+            ("streamed", &terminal["report"]),
+        ] {
+            assert_eq!(v["fallback"]["ran"], "claude-code", "{kind}/{path}");
+            assert_eq!(
+                v["fallback"]["fell_through"].as_array().unwrap().len(),
+                0,
+                "{kind}/{path}"
+            );
+            let results = v["results"].as_array().unwrap();
+            assert_eq!(
+                results.len(),
+                1,
+                "{kind}/{path}: the second model must never be spawned"
+            );
+            assert_eq!(results[0]["model"], "opus", "{kind}/{path}");
+            // The rejection is still classified honestly; it just did not fall through.
+            assert_eq!(results[0]["failure_kind"], kind, "{kind}/{path}");
+            assert_eq!(results[0]["usage"]["input_tokens"], 812, "{kind}/{path}");
+        }
     }
 }
 
@@ -12605,7 +12628,10 @@ fn multiple_models_output_dir_disambiguates_the_same_harness() {
 #[test]
 fn a_multi_model_run_refuses_single_unit_shapes() {
     // A model fan-out multiplies the run into several units, so every single-unit
-    // shape is a loud usage error before anything spawns.
+    // shape is a loud usage error before anything spawns. `--stream` is refused
+    // for the concurrency, not the count, so it is refused only in this default
+    // `parallel` mode — under fallback the pairs are a priority chain that
+    // streams (`stream_under_fallback_publishes_only_the_model_that_runs`).
     let base = [
         "run",
         "--harness",
@@ -13769,6 +13795,96 @@ fn stream_under_fallback_publishes_only_the_candidate_that_runs() {
     let events: Vec<&Value> = lines.iter().filter(|l| l["type"] == "event").collect();
     assert_eq!(events.len(), 2);
     assert!(events.iter().all(|e| e["harness"] == "qwen"));
+    let _ = std::fs::remove_dir_all(&history);
+}
+
+#[test]
+fn stream_under_fallback_publishes_only_the_model_that_runs() {
+    // The model axis of the same chain: with a model list, `--run-mode fallback`
+    // tries the (harness, model) pairs in priority order, so `--stream` serves it
+    // exactly as it serves a harness chain (in `parallel` the fan-out is several
+    // concurrent results and stays refused — see
+    // `a_multi_model_run_refuses_single_unit_shapes`). `opus` is rejected before
+    // doing any work and publishes NOTHING a consumer could act on; `sonnet` then
+    // runs and its events reach the consumer live, ahead of the terminal report.
+    let transcript = format!(
+        "{}\n{}\n{}\n",
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo hi"}}]}}"#,
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"hi"}]}}"#,
+        r#"{"type":"result","subtype":"success","result":"done"}"#,
+    );
+    let history = hist_dir("stream-fallback-models");
+    let output = run(
+        &[
+            "run",
+            "--run-mode",
+            "fallback",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--model",
+            "opus",
+            "--model",
+            "sonnet",
+            "--stream",
+            "--bin",
+            &bin_override("claude-code"),
+            "--history",
+            "--history-dir",
+            &history.display().to_string(),
+        ],
+        &[
+            ("MOCK_FAIL_IF_MODEL", "opus"),
+            ("MOCK_FAIL_STDERR", "error: model not found: opus"),
+            ("MOCK_STDOUT", &transcript),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelopes = stream_envelopes(&output);
+    // Two event lines (both `sonnet`'s) and the terminal report.
+    assert_eq!(envelopes.len(), 3, "{envelopes:#?}");
+    assert_eq!(envelopes[0]["type"], "event");
+    assert_eq!(envelopes[0]["event"]["kind"], "tool_call");
+    assert_eq!(envelopes[0]["event"]["name"], "Bash");
+    assert_eq!(envelopes[1]["event"]["kind"], "tool_result");
+    assert_eq!(envelopes[2]["type"], "result");
+
+    let report = &envelopes[2]["report"];
+    assert_eq!(report["fallback"]["ran"], "claude-code");
+    let fell = report["fallback"]["fell_through"].as_array().unwrap();
+    assert_eq!(fell.len(), 1);
+    assert_eq!(fell[0]["reason"], "model-not-found");
+    let results = report["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["model"], "opus");
+    assert_eq!(results[0]["failure_kind"], "model_not_found");
+    assert!(
+        results[0]["events"].is_null(),
+        "the rejected model published nothing"
+    );
+    assert_eq!(results[1]["model"], "sonnet");
+    assert_eq!(results[1]["status"], "ok");
+    assert_eq!(results[1]["events"].as_array().unwrap().len(), 2);
+
+    // History attributes the streamed events per plan entry, not per selected
+    // harness — a model fan-out repeats one harness, so there are more entries
+    // than there are selected ids.
+    let lines: Vec<Value> = std::fs::read_to_string(report["history_file"].as_str().unwrap())
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let runs: Vec<&Value> = lines.iter().filter(|l| l["type"] != "event").collect();
+    assert_eq!(runs.len(), 2, "both models recorded: {lines:#?}");
+    let events: Vec<&Value> = lines.iter().filter(|l| l["type"] == "event").collect();
+    assert_eq!(events.len(), 2);
+    assert!(events.iter().all(|e| e["harness"] == "claude-code"));
     let _ = std::fs::remove_dir_all(&history);
 }
 

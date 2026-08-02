@@ -507,7 +507,9 @@ pub struct RunArgs {
     /// model-minor) and a per-model rejection (unknown model / rate limit) falls
     /// through to the next model. A CLI value overrides config `model`/`models`.
     /// More than one model is incompatible with a batch (multi-prompt) run and
-    /// with --resume / --fork / --session / --stream.
+    /// with --resume / --fork / --session; it is incompatible with --stream only
+    /// in `parallel` mode, since under --run-mode fallback the pairs are tried
+    /// one at a time and only the one that runs streams.
     #[arg(long)]
     pub model: Vec<String>,
 
@@ -602,11 +604,12 @@ pub struct RunArgs {
     /// then a final result line — instead of one report at the end. Implies
     /// --events' format selection. Lets a consumer short-circuit (close stdin /
     /// signal) the moment it observes a disallowed action. Mutually exclusive with
-    /// --schema and batch prompts, and with a multi-harness selection in the
-    /// default `parallel` mode (their streams would interleave). Under
-    /// --run-mode fallback a whole candidate chain IS allowed: candidates run one
-    /// at a time, only the one that runs publishes, and the chain selects the
-    /// same harness a buffered run would.
+    /// --schema and batch prompts, and — in the default `parallel` mode — with a
+    /// multi-harness selection or a model fan-out (their streams would
+    /// interleave). Under --run-mode fallback a whole candidate chain IS allowed,
+    /// over harnesses and over models alike: candidates run one at a time, only
+    /// the one that runs publishes, and the chain selects the same candidate a
+    /// buffered run would.
     #[arg(long)]
     pub stream: bool,
 

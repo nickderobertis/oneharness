@@ -3131,9 +3131,6 @@ fn stream_short_circuit_tears_down_the_child_when_the_consumer_closes() {
 
 #[test]
 fn stream_with_multiple_harnesses_is_a_usage_error() {
-    // In the default `parallel` mode the two harnesses would run at once and
-    // interleave their event streams on one stdout, so it is refused — and the
-    // message points at the mode that *can* stream a candidate set.
     let output = run(
         &[
             "run",
@@ -13677,14 +13674,9 @@ fn stream_envelopes(output: &Output) -> Vec<Value> {
 #[test]
 fn stream_under_fallback_publishes_only_the_candidate_that_runs() {
     // `--stream` under `--run-mode fallback`: the chain still falls through a
-    // candidate that could not run at all, and the consumer sees NOTHING from it
-    // — the first line on stdout is the winner's first tool call, numbered from
-    // zero. The fallen-through candidate here is the real zero-work Claude
-    // session-limit rejection (issue #1211), the shape a fallback chain exists to
-    // route around. Its counterpart — a candidate that DID the work never falls
-    // through, on either path — is
-    // `streamed_and_buffered_fallback_select_the_same_candidate`; together the two
-    // make "a fallen-through candidate published nothing" total.
+    // candidate that could not run at all, and the consumer sees NOTHING from it.
+    // The fallen-through candidate here is the real zero-work Claude session-limit
+    // rejection (issue #1211), the shape a fallback chain exists to route around.
     let mock = mock_bin().display().to_string();
     let rejection =
         serde_json::to_string(include_str!("fixtures/claude-session-limit-api-error.json").trim())
@@ -13745,7 +13737,6 @@ fn stream_under_fallback_publishes_only_the_candidate_that_runs() {
     assert_eq!(envelopes[1]["event"]["index"], 1);
     assert_eq!(envelopes[2]["type"], "result");
 
-    // Selection is unchanged: the zero-work rejection fell through, qwen ran.
     let report = &envelopes[2]["report"];
     assert_eq!(report["fallback"]["ran"], "qwen");
     let fell = report["fallback"]["fell_through"].as_array().unwrap();
@@ -13765,8 +13756,8 @@ fn stream_under_fallback_publishes_only_the_candidate_that_runs() {
     assert_eq!(results[1]["status"], "ok");
     assert_eq!(results[1]["events"].as_array().unwrap().len(), 2);
 
-    // History records both attempts, and the winner's events were persisted live
-    // under the same run as its terminal record.
+    // The winner's events were persisted live, under the same run as its
+    // terminal record — not re-written when the chain closed.
     let history_file = report["history_file"].as_str().unwrap();
     let lines: Vec<Value> = std::fs::read_to_string(history_file)
         .unwrap()
@@ -13781,9 +13772,8 @@ fn stream_under_fallback_publishes_only_the_candidate_that_runs() {
     let _ = std::fs::remove_dir_all(&history);
 }
 
-/// The fallback block reduced to what "which candidate did the chain choose?"
-/// means: the harness that ran, every fallen-through candidate with its reason,
-/// and how many candidates were attempted at all.
+/// The fallback block reduced to a value two runs of the same chain can be
+/// compared on.
 fn fallback_selection(report: &Value) -> (Value, Vec<(String, String)>, usize) {
     let fell = report["fallback"]["fell_through"]
         .as_array()
@@ -13811,12 +13801,6 @@ fn streamed_and_buffered_fallback_select_the_same_candidate() {
     // scenario below is run twice — buffered and streamed — and must agree on the
     // harness that ran, the fallen-through candidates and their reasons, how many
     // candidates were attempted, and the exit code.
-    //
-    // The scenarios span every rule the chain has: a zero-work rejection and a
-    // missing binary fall through; a candidate that DID the work does not,
-    // however its terminal record is classified — for each witness the evidence
-    // has (a tool call, ordinary tokens, either prompt-cache count, a bare dollar
-    // cost); and a real task failure or a timeout never falls through.
     let mock = mock_bin().display().to_string();
     let rejection =
         serde_json::to_string(include_str!("fixtures/claude-session-limit-api-error.json").trim())
@@ -13893,9 +13877,7 @@ fn streamed_and_buffered_fallback_select_the_same_candidate() {
             expected_kind: Some("quota"),
         },
         Case {
-            // Did tool work and was billed, THEN hit an auth rejection. Work
-            // evidence outranks the classification in both paths: the chain stops
-            // rather than re-running the work on the next candidate's quota.
+            // The same, on the other provisioning reason.
             tag: "worked-then-rejected",
             first_env: format!(
                 r#"{{ MOCK_EXIT = "1", MOCK_STDOUT = {worked}, MOCK_STDERR = "Error: 401 unauthorized" }}"#
@@ -13907,8 +13889,7 @@ fn streamed_and_buffered_fallback_select_the_same_candidate() {
             expected_kind: Some("auth"),
         },
         Case {
-            // Billed tokens with NO tool call, then an auth rejection: usage
-            // accounting alone is work evidence, so the chain still stops.
+            // Billed tokens with NO tool call: usage accounting alone is enough.
             tag: "billed-then-rejected",
             first_env: String::from(
                 r#"{ MOCK_EXIT = "1", MOCK_STDOUT = "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"partial\",\"usage\":{\"input_tokens\":812,\"output_tokens\":96}}", MOCK_STDERR = "Error: 401 unauthorized" }"#,
@@ -13935,8 +13916,7 @@ fn streamed_and_buffered_fallback_select_the_same_candidate() {
         },
         Case {
             // Prompt-cache reads are spending like any other token: a run served
-            // entirely from the cache did the work, so the 401 that moves the
-            // chain on above stops it here.
+            // entirely from the cache still did the work.
             tag: "cache-read-then-rejected",
             first_env: format!(
                 r#"{{ MOCK_EXIT = "1", MOCK_STDOUT = {cache_read}, MOCK_STDERR = "Error: 401 unauthorized" }}"#
@@ -13961,8 +13941,7 @@ fn streamed_and_buffered_fallback_select_the_same_candidate() {
             expected_kind: Some("auth"),
         },
         Case {
-            // A harness that reports only a dollar cost and no token block at all
-            // still says it spent something, which is the whole test for work.
+            // A harness that reports only a dollar cost and no token block at all.
             tag: "cost-only-then-rejected",
             first_env: format!(
                 r#"{{ MOCK_EXIT = "1", MOCK_STDOUT = {cost_only}, MOCK_STDERR = "Error: 401 unauthorized" }}"#

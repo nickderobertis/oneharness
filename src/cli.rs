@@ -604,10 +604,9 @@ pub struct RunArgs {
     /// signal) the moment it observes a disallowed action. Mutually exclusive with
     /// --schema and batch prompts, and with a multi-harness selection in the
     /// default `parallel` mode (their streams would interleave). Under
-    /// --run-mode fallback a whole candidate chain IS allowed: the chain runs one
-    /// candidate at a time, selects by the same rule a buffered run does (so it
-    /// picks the same harness), and a candidate that falls through publishes
-    /// nothing.
+    /// --run-mode fallback a whole candidate chain IS allowed: candidates run one
+    /// at a time, only the one that runs publishes, and the chain selects the
+    /// same harness a buffered run would.
     #[arg(long)]
     pub stream: bool,
 

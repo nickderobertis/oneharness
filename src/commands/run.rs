@@ -275,11 +275,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // selects the anchor harness's preferred session-bearing format.
     let explicit_format = args.output_format.or(cfg.output_format);
     validate_session_output_format(session_anchor, explicit_format)?;
-    // `--stream` emits events incrementally for one harness/prompt at a time; the
-    // validate/retry loop and the batch fan-out both need the whole output at
-    // once, so they are mutually exclusive. A parallel multi-harness selection is
-    // refused too (a fallback chain is not — only one candidate ever publishes).
-    // All refused loudly before spawning.
+    // Loudly, before anything spawns.
     validate_stream(
         args.stream,
         &specs,
@@ -620,25 +616,14 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         }
     }
 
-    // Schedule and run the jobs. The streaming path drives them one at a time,
-    // publishing events as they arrive. Otherwise parallel mode runs every job at
-    // once (an ordinary run and a batch under `speed`), or a batch's warm-then-fan
-    // waves under `min-tokens`; fallback mode instead drives the harnesses one at a
-    // time in priority order, stopping at the first that actually runs — so it
-    // never uses the wave scheduler. `--print-command` never executes, so it
-    // always takes the parallel branch (which emits the planned rows).
+    // Schedule and run the jobs. `--print-command` never executes, so it always
+    // takes the last branch, which emits the planned rows.
     let stream_run = args.stream && !args.print_command;
     let mut forked = false;
-    // Per result, the history handle its live events were written under; empty
-    // off the streaming path (where history is written once at the end instead).
+    // Empty off the streaming path, where history is written once at the end.
     let mut streamed_history: Vec<StreamedHistory> = Vec::new();
     let (mut results, mut fallback_report): (Vec<RunResult>, Option<FallbackReport>) = if stream_run
     {
-        // Streaming: emit normalized events to stdout as they arrive, so a
-        // consumer can short-circuit the moment it sees a disallowed action.
-        // In fallback mode this walks the priority chain, publishing only the
-        // candidate that runs (see `stream_plan`, which selects with the same
-        // `fallback_step` the buffered chain uses).
         let streamed = stream_plan(
             plan,
             &jobs,
@@ -775,8 +760,6 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // can fail, so a later I/O error never leaves the ephemeral hook behind.
     let mock_report = mock_wiring.map(MockWiring::finish);
 
-    // A streaming run already persisted each event as it arrived, so it closes
-    // those same records instead of writing them from scratch.
     if stream_run {
         record_streamed_history(
             &history_writer,
@@ -825,9 +808,6 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         history_file,
         session_report,
     );
-    // On the streaming path the event lines were already written during the run,
-    // so the report is the terminal `{"type":"result", …}` line of the same NDJSON
-    // stream rather than the whole of stdout.
     if stream_run {
         emit_stream_result(&report)?;
     } else {
@@ -1436,17 +1416,15 @@ fn record_history(
     }
 }
 
-/// The history handle one streamed result's live events were written under, so
-/// the terminal record can close the same run instead of re-writing its events.
-/// `run_id` is `None` when history is off.
+/// A streamed result's already-written history: `run_id` is `None` when history
+/// is off, and the indexes are the events the closing record must not write again.
 struct StreamedHistory {
     run_id: Option<oneharness_core::domain::history::HistoryId>,
     persisted_event_indexes: BTreeSet<usize>,
 }
 
-/// Close each streamed result's history record: the events were already
-/// appended live, so only the terminal line is written, under the same run id.
-/// Best-effort per record, exactly like [`record_history`].
+/// Close each streamed result's history record under the run id its events were
+/// already appended to. Best-effort per record, exactly like [`record_history`].
 fn record_streamed_history(
     writer: &Option<HistoryWriter>,
     mode: PermissionMode,
@@ -1475,8 +1453,7 @@ fn record_streamed_history(
     }
 }
 
-/// What [`stream_plan`] produced: the attempted results, the fallback report
-/// (fallback mode only), and each result's live-history handle.
+/// What [`stream_plan`] produced; `fallback` is `Some` only in fallback mode.
 struct StreamedPlan {
     results: Vec<RunResult>,
     fallback: Option<FallbackReport>,
@@ -1486,17 +1463,11 @@ struct StreamedPlan {
 /// Drive the plan under `--stream`, publishing each harness's normalized events
 /// to stdout as they arrive.
 ///
-/// In `parallel` mode this is the single selected harness (more than one is a
-/// usage error — they would interleave). In `fallback` mode it walks the
-/// priority chain one candidate at a time, taking the stop/continue decision from
-/// the same [`fallback_step`] the buffered [`run_fallback`] uses, on the same
-/// finished [`RunResult`] — so the two paths always select the same candidate.
-///
-/// Publishing is safe under that shared rule because a candidate that publishes
-/// an event has, by construction, a tool event in its result (the streamed line
-/// and the reported array come from the same recognizer over the same stdout),
-/// which is [`fallback::RunWork::Done`] — so it does not fall through. A
-/// candidate that *does* fall through published nothing a consumer could act on.
+/// Publishing a candidate before the chain has settled is safe: one that
+/// published an event has, by construction, a tool event in its result (the
+/// streamed line and the reported array come from the same recognizer over the
+/// same stdout), which is [`fallback::RunWork::Done`] — so it cannot then fall
+/// through, and a candidate that does fall through published nothing.
 fn stream_plan(
     plan: Vec<Plan>,
     jobs: &[Job],
@@ -1512,8 +1483,8 @@ fn stream_plan(
     for (index, entry) in plan.into_iter().enumerate() {
         let run_id = history_writer.map(HistoryWriter::begin_run);
         let streamed = match entry {
-            // The harness was unavailable/skipped — nothing to stream; it still
-            // takes its place in `results` (and in the fallback chain below).
+            // Unavailable/skipped — nothing to stream, but it still takes its
+            // place in the chain below.
             Plan::Ready(result) => StreamedHarness {
                 result: *result,
                 persisted_event_indexes: BTreeSet::new(),
@@ -1558,8 +1529,8 @@ fn stream_plan(
     }
 }
 
-/// One harness's finished streaming run: the result plus which of its events
-/// were persisted to history live (the rest are written with the closing record).
+/// One harness's finished streaming run. The events *outside*
+/// `persisted_event_indexes` are still owed to history by the closing record.
 struct StreamedHarness {
     result: RunResult,
     persisted_event_indexes: BTreeSet<usize>,
@@ -1676,9 +1647,8 @@ fn emit_stream_result(report: &RunReport) -> Result<(), OneharnessError> {
 /// once, which streaming does not provide — and, in the default `parallel` mode,
 /// more than one harness. A loud usage error before anything spawns.
 ///
-/// A **fallback** chain may list several harnesses: they run one at a time and
-/// only the candidate that runs ever publishes events (see [`stream_plan`]), so
-/// there is no interleaving to refuse.
+/// A **fallback** chain may list several harnesses: only the candidate that runs
+/// ever publishes (see [`stream_plan`]), so there is nothing to interleave.
 fn validate_stream(
     stream: bool,
     specs: &[&'static HarnessSpec],
@@ -1817,10 +1787,8 @@ fn run_fork_batch(
 /// Fallback drives several harnesses in priority order for one prompt, stopping
 /// at the first that runs — so a multi-prompt batch and the explicit `--resume` /
 /// `--fork` continuations (each pins one *specific* harness's native id) are loud
-/// usage errors here. `--stream` is *not* refused: the candidates run one at a
-/// time, selection is the same [`fallback_step`] a buffered run takes, and a
-/// candidate that falls through publishes nothing. `--session` is *not* refused
-/// either: the
+/// usage errors here. `--stream` is *not* refused (see [`stream_plan`]).
+/// `--session` is *not* refused either: the
 /// higher-level named handle binds to the anchor (the first session-capable
 /// harness in the chain), which fallback settles on under stable availability —
 /// see [`setup_session`], which does the capability check for it. The *capability*
@@ -1961,11 +1929,8 @@ fn run_fallback(
 /// try the next candidate.
 ///
 /// Both drivers call this — the buffered [`run_fallback`] and the streaming
-/// [`stream_plan`] — on the same normalized [`RunResult`], so a streamed chain and
-/// a buffered chain cannot select different candidates. The decision itself is
-/// pure policy in [`fallback::startup_failure_reason`], including the
-/// [`fallback::RunWork`] evidence that keeps a candidate which actually ran the
-/// task (tool events, or billed tokens) from ever falling through.
+/// [`stream_plan`] — on the same normalized [`RunResult`], so a streamed chain
+/// and a buffered chain cannot select different candidates.
 fn fallback_step(
     result: &RunResult,
     multi_model: bool,

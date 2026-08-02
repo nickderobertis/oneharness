@@ -62,9 +62,7 @@ impl RunMode {
 }
 
 /// Whether a candidate's normalized result carries **evidence it did the task's
-/// work** — the first thing [`startup_failure_reason`] consults, and the reason
-/// a streamed fallback chain and a buffered one always choose the same candidate
-/// (both read it from the same [`RunResult`]).
+/// work** — the first thing [`startup_failure_reason`] consults.
 ///
 /// Two independent witnesses, either of which is decisive:
 ///
@@ -82,10 +80,8 @@ pub enum RunWork {
 }
 
 impl RunWork {
-    /// Read the evidence off a finished result. Pure: it looks only at the
-    /// normalized `events` and `usage` both run paths fill identically from the
-    /// same capture (a `spawn_error` nulls every signal by contract, so its
-    /// evidence is `None` on either path).
+    /// Read the evidence off a finished result. A `spawn_error` nulls every
+    /// signal by contract, so its evidence is always [`RunWork::None`].
     pub fn from_result(result: &RunResult) -> Self {
         let used_tools = result.events.as_ref().is_some_and(|e| !e.is_empty());
         let usage = &result.usage;
@@ -112,17 +108,12 @@ impl RunWork {
 /// when the outcome is a startup failure, or `None` when the harness *did* run
 /// (so a fallback run stops there).
 ///
-/// [`RunWork::Done`] short-circuits every reason below: a candidate that made a
-/// tool call or was billed for tokens **ran the task**, so its terminal record
-/// cannot demote it to a setup failure. This is the same "work done, not error
-/// text" rule the Claude session-limit classifier already applies (issue #1211),
-/// lifted to the whole verdict so it covers every surface — including the ones
-/// with no accounting of their own to gate on (a generic `401` scanned out of a
-/// transcript, Codex's `turn.failed` usage limit). Falling through a candidate
-/// that worked burns the next one's quota re-running what already happened, and
-/// under `--stream` it would also mean discarding actions a consumer has already
-/// read. Because the evidence is read from the result, a streamed run and a
-/// buffered run of the same capture always reach the same verdict.
+/// [`RunWork::Done`] short-circuits every reason below: falling through a
+/// candidate that already worked burns the next one's quota re-running what
+/// happened. This is the "work done, not error text" rule the Claude
+/// session-limit classifier applies (issue #1211), lifted to the whole verdict so
+/// it also covers the surfaces with no accounting of their own to gate on (a
+/// generic `401` scanned out of a transcript, Codex's `turn.failed` usage limit).
 ///
 /// With no work evidence the reasons are:
 ///
@@ -389,10 +380,8 @@ mod tests {
 
     #[test]
     fn a_candidate_that_did_work_never_falls_through() {
-        // Work evidence beats every classification: whatever the terminal record
-        // says, a harness that made a tool call or was billed tokens RAN the task.
-        // This is the rule that keeps a streamed chain and a buffered chain
-        // choosing the same candidate — neither can demote a working harness.
+        // Every pair below falls through without work evidence, so each one shows
+        // the short circuit overriding a reason that would otherwise apply.
         for (status, kind, model_fallback) in [
             (Status::Nonzero, Some(FailureKind::Auth), false),
             (Status::Nonzero, Some(FailureKind::Quota), false),
@@ -422,8 +411,6 @@ mod tests {
 
     #[test]
     fn work_evidence_reads_tool_events_and_billed_usage() {
-        // A zero-work rejection: the real Claude session-limit record's shape —
-        // every count present and zero, no cost, no tool events.
         let mut result = zero_work_result();
         assert_eq!(RunWork::from_result(&result), RunWork::None);
         // ...and so is a result with no accounting at all (a bare limit line on
@@ -461,16 +448,13 @@ mod tests {
             assert_eq!(RunWork::from_result(&worked), RunWork::Done);
         }
 
-        // A tool call alone is decisive too, with no usage reported at all — this
-        // is what a streamed candidate has already shown its consumer, so the
-        // event it published is the same evidence the verdict reads.
+        // A tool call alone is decisive too, with no usage reported at all.
         let mut used_tools = zero_work_result();
         used_tools.events = Some(vec![tool_call()]);
         assert_eq!(RunWork::from_result(&used_tools), RunWork::Done);
     }
 
-    /// A result shaped like the real zero-work Claude session-limit rejection:
-    /// all counts present and zero, no cost, no events.
+    /// A result shaped like the real zero-work Claude session-limit rejection.
     fn zero_work_result() -> RunResult {
         RunResult {
             harness: "claude-code".to_string(),

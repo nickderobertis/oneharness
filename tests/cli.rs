@@ -11964,6 +11964,33 @@ fn missing_bin(id: &str) -> String {
     format!("{id}={}", path.display())
 }
 
+/// A `--bin` override that `which` resolves — so the candidate is *available*
+/// and gets as far as a spawn attempt — but that the OS then refuses to execute,
+/// which is what separates `spawn-error` from `not-installed`. Unix: an
+/// executable file naming an interpreter that does not exist. Windows: a
+/// zero-byte `.exe`, which `CreateProcess` rejects as a bad image format.
+fn unspawnable_bin(id: &str) -> String {
+    let dir = std::env::temp_dir().join(format!("oneharness-unspawnable-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("the staging directory");
+    #[cfg(windows)]
+    let path = {
+        let path = dir.join(format!("{id}.exe"));
+        std::fs::write(&path, b"").expect("stage the unspawnable program");
+        path
+    };
+    #[cfg(not(windows))]
+    let path = {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(id);
+        std::fs::write(&path, "#!/oneharness/no-such-interpreter\n")
+            .expect("stage the unspawnable program");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("mark it executable so `which` resolves it");
+        path
+    };
+    format!("{id}={}", path.display())
+}
+
 #[test]
 fn multiple_models_run_the_harness_by_model_cross_product() {
     // Repeated --model fans out over the model axis: in parallel mode every
@@ -13793,6 +13820,10 @@ fn streamed_and_buffered_fallback_select_the_same_candidate() {
         expected_ran: &'static str,
         expected_fell: Vec<(&'static str, &'static str)>,
         expected_exit: i32,
+        /// The first candidate's `failure_kind`, asserted where the case turns on
+        /// it: a work-evidence case only proves its point if the record really
+        /// carries the classification that would otherwise fall through.
+        expected_kind: Option<&'static str>,
     }
 
     let cases = vec![
@@ -13805,6 +13836,23 @@ fn streamed_and_buffered_fallback_select_the_same_candidate() {
             expected_ran: "qwen",
             expected_fell: vec![("claude-code", "quota")],
             expected_exit: 0,
+            expected_kind: Some("quota"),
+        },
+        Case {
+            // The same `quota` classification as the case above, but this
+            // candidate did the work first. Work evidence is consulted before
+            // every fall-through reason, so the identical rejection that moves
+            // the chain on above stops it here — the pair is what shows the
+            // verdict turns on the work, not on the classification.
+            tag: "worked-then-quota",
+            first_env: format!(
+                r#"{{ MOCK_EXIT = "1", MOCK_STDOUT = {worked}, MOCK_STDERR = "Error: insufficient_quota — your credit balance is too low" }}"#
+            ),
+            extra: vec![],
+            expected_ran: "claude-code",
+            expected_fell: vec![],
+            expected_exit: 1,
+            expected_kind: Some("quota"),
         },
         Case {
             // Did tool work and was billed, THEN hit an auth rejection. Work
@@ -13818,6 +13866,7 @@ fn streamed_and_buffered_fallback_select_the_same_candidate() {
             expected_ran: "claude-code",
             expected_fell: vec![],
             expected_exit: 1,
+            expected_kind: Some("auth"),
         },
         Case {
             // Billed tokens with NO tool call, then an auth rejection: usage
@@ -13830,6 +13879,7 @@ fn streamed_and_buffered_fallback_select_the_same_candidate() {
             expected_ran: "claude-code",
             expected_fell: vec![],
             expected_exit: 1,
+            expected_kind: Some("auth"),
         },
         Case {
             // Never spawned at all.
@@ -13839,6 +13889,19 @@ fn streamed_and_buffered_fallback_select_the_same_candidate() {
             expected_ran: "qwen",
             expected_fell: vec![("claude-code", "not-installed")],
             expected_exit: 0,
+            expected_kind: None,
+        },
+        Case {
+            // Resolved, so the chain tried to launch it, but the OS refused —
+            // the other "cannot run at all" arm, and the one where the candidate
+            // has no signals at all to reason about.
+            tag: "spawn-error",
+            first_env: String::from("{ }"),
+            extra: vec!["--bin".into(), unspawnable_bin("claude-code")],
+            expected_ran: "qwen",
+            expected_fell: vec![("claude-code", "spawn-error")],
+            expected_exit: 0,
+            expected_kind: None,
         },
         Case {
             // A plain non-zero task failure is a real run: never a fall-through.
@@ -13850,6 +13913,7 @@ fn streamed_and_buffered_fallback_select_the_same_candidate() {
             expected_ran: "claude-code",
             expected_fell: vec![],
             expected_exit: 1,
+            expected_kind: None,
         },
         Case {
             // A slow real run that timed out is a run, not a setup problem.
@@ -13859,6 +13923,7 @@ fn streamed_and_buffered_fallback_select_the_same_candidate() {
             expected_ran: "claude-code",
             expected_fell: vec![],
             expected_exit: 1,
+            expected_kind: None,
         },
     ];
 
@@ -13928,6 +13993,18 @@ fn streamed_and_buffered_fallback_select_the_same_candidate() {
             case.tag,
             String::from_utf8_lossy(&buffered.stderr)
         );
+        if let Some(kind) = case.expected_kind {
+            for (path, report) in [
+                ("buffered", &buffered_report),
+                ("streamed", streamed_report),
+            ] {
+                assert_eq!(
+                    report["results"][0]["failure_kind"], kind,
+                    "{}: {path} misclassified the first candidate",
+                    case.tag
+                );
+            }
+        }
 
         // No fallen-through candidate published an event a consumer could act on:
         // every published line belongs to the harness that ran.

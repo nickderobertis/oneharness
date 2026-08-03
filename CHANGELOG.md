@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.6](https://github.com/nickderobertis/oneharness/compare/v0.6.5...v0.6.6) - 2026-08-03
+
+### Fixed
+
+- classify a zero-work 429 as quota so a chain falls through ([#1215](https://github.com/nickderobertis/oneharness/pull/1215))
+
 ## [0.6.5](https://github.com/nickderobertis/oneharness/compare/v0.6.4...v0.6.5) - 2026-08-02
 
 ### Added

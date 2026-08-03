@@ -1076,14 +1076,32 @@ session limit in a terminal record that may say `subtype: "success"` with no
 `is_error`, declaring the failure through `terminal_reason: "api_error"` and an
 `api_error_status` of `429` instead — and the limit message still wins over that
 embedded `429`, so the rejection reads as `quota` (fall through) rather than the
-transient `rate_limit` (stop). A `429` *without* a limit message is still a plain
-`rate_limit` and still stops the chain.
+transient `rate_limit` (stop).
 
-**A Claude limit only falls through when the run did no work.** `quota` means the
-candidate could not run the task *at all*, so the discriminator is the harness's
-own accounting, not the error text: a record reporting any non-zero token count,
-any non-zero cost, or a non-empty `modelUsage` map describes a run that got
-somewhere, and falling through it would burn the next candidate's quota
+It also holds however the harness **words** the rejection, because the wording is
+not what the classification rests on. A record declaring `api_error_status: 429`
+whose own accounting shows it did nothing reads as `quota` whatever prose it
+carries: a `429` is the provider saying *this identity may not run right now*,
+which is exactly the condition the next candidate can serve, and a rejection that
+did no work has nothing to lose by trying it. The limit phrases (`hit your
+<session|weekly|…> limit`, `usage limit reached`) remain a fast path for the
+surfaces with no record to read — a bare limit line on stderr, or a limit
+reported without a status code. Only `429` gets this treatment: a zero-work `500`
+is a provider fault the next candidate would hit too, and `401`/`403` already
+have their own `auth` fall-through.
+
+> **Behavior change.** A zero-work `429` *without* a recognized limit message
+> used to stay a plain `rate_limit` and stop the chain. It now reads as `quota`
+> and falls through. The two failure modes are not symmetric: an unrecognized
+> phrase kills the run outright, while reading a transient `429` as quota merely
+> hands the task to the next candidate — which is what the chain is configured
+> for. A `429` that spent tokens is unaffected and still stops (below).
+
+**A limit — or a `429` — only falls through when the run did no work.** `quota`
+means the candidate could not run the task *at all*, so the discriminator is the
+harness's own accounting, not the error text: a record reporting any non-zero
+token count, any non-zero cost, or a non-empty `modelUsage` map describes a run
+that got somewhere, and falling through it would burn the next candidate's quota
 re-running work already paid for. So the same limit message with tokens spent is
 an ordinary run — with the embedded `429` it lands as `rate_limit`, without one it
 stays unclassified, and either way the chain stops. A limit with **no** accounting

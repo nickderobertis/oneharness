@@ -298,7 +298,7 @@
             "const": "auth"
           },
           {
-            "description": "Rate limited (429, too many requests) — a transient condition of an\notherwise working, authenticated harness.",
+            "description": "Rate limited (429, too many requests) — a transient condition of an\notherwise working, authenticated harness. A `429` that shows no sign of\nhaving done work is `quota` instead, whatever wording it carries.",
             "type": "string",
             "const": "rate_limit"
           },
@@ -980,7 +980,7 @@
             "const": "auth"
           },
           {
-            "description": "Rate limited (429, too many requests) — a transient condition of an\notherwise working, authenticated harness.",
+            "description": "Rate limited (429, too many requests) — a transient condition of an\notherwise working, authenticated harness. A `429` that shows no sign of\nhaving done work is `quota` instead, whatever wording it carries.",
             "type": "string",
             "const": "rate_limit"
           },
@@ -2782,7 +2782,7 @@
             "const": "auth"
           },
           {
-            "description": "Rate limited (429, too many requests) — a transient condition of an\notherwise working, authenticated harness.",
+            "description": "Rate limited (429, too many requests) — a transient condition of an\notherwise working, authenticated harness. A `429` that shows no sign of\nhaving done work is `quota` instead, whatever wording it carries.",
             "type": "string",
             "const": "rate_limit"
           },
@@ -5159,7 +5159,7 @@
             "const": "auth"
           },
           {
-            "description": "Rate limited (429, too many requests) — a transient condition of an\notherwise working, authenticated harness.",
+            "description": "Rate limited (429, too many requests) — a transient condition of an\notherwise working, authenticated harness. A `429` that shows no sign of\nhaving done work is `quota` instead, whatever wording it carries.",
             "type": "string",
             "const": "rate_limit"
           },
@@ -5498,7 +5498,7 @@
             "const": "auth"
           },
           {
-            "description": "Rate limited (429, too many requests) — a transient condition of an\notherwise working, authenticated harness.",
+            "description": "Rate limited (429, too many requests) — a transient condition of an\notherwise working, authenticated harness. A `429` that shows no sign of\nhaving done work is `quota` instead, whatever wording it carries.",
             "type": "string",
             "const": "rate_limit"
           },
@@ -7986,7 +7986,7 @@
             "const": "auth"
           },
           {
-            "description": "Rate limited (429, too many requests) — a transient condition of an\notherwise working, authenticated harness.",
+            "description": "Rate limited (429, too many requests) — a transient condition of an\notherwise working, authenticated harness. A `429` that shows no sign of\nhaving done work is `quota` instead, whatever wording it carries.",
             "type": "string",
             "const": "rate_limit"
           },

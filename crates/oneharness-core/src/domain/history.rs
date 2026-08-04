@@ -202,7 +202,9 @@ impl HistoryRunRecord {
                     && (!matches!(self.status, Status::Ok | Status::Nonzero)
                         || finished_at.is_some())
             }
-            _ => false,
+            // Measurement cut short mid-turn. Only a run that failed before the
+            // provider answered can honestly carry it (see [`failed_before_output`]).
+            _ => failed_before_output(self.status, self.text.as_deref()),
         }
     }
 
@@ -724,50 +726,64 @@ impl HistoryRecord {
     }
 
     pub(crate) fn complete(&self) -> bool {
-        let timing_unavailable = matches!(self.timing_state(), Ok(HistoryTiming::Unavailable))
-            && crate::domain::harness::all()
-                .iter()
-                .find(|spec| spec.id == self.harness)
-                .is_some_and(|spec| spec.telemetry.is_none());
-        self.valid_v03()
-            && self.versioned_timing_valid()
-            && (!matches!(self.timing_state(), Ok(HistoryTiming::Unavailable))
-                || timing_unavailable)
-    }
-
-    fn valid_v03(&self) -> bool {
-        // A harness without a provider/tool boundary trace cannot derive timing.
-        // Absence is the honest v1.0 representation; partial telemetry remains
-        // invalid so a trace-capable harness cannot silently write corrupt data.
-        let timing = match self.timing_state() {
-            Ok(HistoryTiming::Unavailable) => {
-                if self.observed_tool_ms.is_some() {
-                    return true;
-                }
-                return self.events.as_ref().is_none_or(|events| {
-                    events.iter().all(|event| {
-                        event.started_at.is_none()
-                            && event.finished_at.is_none()
-                            && event.duration_ms.is_none()
-                            && event.status.is_none()
-                    })
-                });
-            }
+        if !self.versioned_timing_valid() {
+            return false;
+        }
+        match self.timing_state() {
+            // Measured telemetry is held to the same bar for every run: a
+            // trace-capable harness must never write numbers that disagree with
+            // the run's own wall clock or tool trace.
             Ok(HistoryTiming::Measured {
                 started_at,
                 finished_at,
                 model_ms,
                 tool_ms,
-            }) => (started_at, finished_at, model_ms, tool_ms),
-            Err(()) => return false,
-        };
+            }) => self.measured_trace_valid(started_at, finished_at, model_ms, tool_ms),
+            // Absence is the honest v1.0 representation twice over: for a
+            // harness whose spec declares no provider/tool boundary trace, and
+            // for a run that failed before the provider answered.
+            Ok(HistoryTiming::Unavailable) => {
+                self.failed_before_output()
+                    || (self.harness_lacks_trace() && self.untimed_trace_valid())
+            }
+            // Partial telemetry means measurement was cut short, which is what a
+            // failure looks like; for a run that worked it is corrupt data.
+            Err(()) => self.failed_before_output(),
+        }
+    }
+
+    /// Whether this record's run failed before the provider produced an answer,
+    /// so its telemetry is absent or partial *because* the run failed — at
+    /// launch, or part-way through a turn. Recording it anyway is the point: a
+    /// history that can only hold successes hides exactly the runs an operator
+    /// has to see (quota-killed sessions vanishing from every worker's history).
+    fn failed_before_output(&self) -> bool {
+        failed_before_output(self.status, self.text.as_deref())
+    }
+
+    /// Whether the harness this record names declares no provider/tool boundary
+    /// trace, so it could not have derived timing however the run went.
+    fn harness_lacks_trace(&self) -> bool {
+        crate::domain::harness::all()
+            .iter()
+            .find(|spec| spec.id == self.harness)
+            .is_some_and(|spec| spec.telemetry.is_none())
+    }
+
+    fn measured_trace_valid(
+        &self,
+        started_at: &str,
+        finished_at: Option<&str>,
+        model_ms: u128,
+        tool_ms: u128,
+    ) -> bool {
         let Some(duration) = self.duration_ms else {
             return false;
         };
-        if timing.0.is_empty() || timing.2.saturating_add(timing.3) > duration {
+        if started_at.is_empty() || model_ms.saturating_add(tool_ms) > duration {
             return false;
         }
-        if matches!(self.status, Status::Ok | Status::Nonzero) && timing.1.is_none() {
+        if matches!(self.status, Status::Ok | Status::Nonzero) && finished_at.is_none() {
             return false;
         }
         self.events.as_ref().is_none_or(|events| {
@@ -789,6 +805,22 @@ impl HistoryRecord {
                         None => false,
                     }
                 })
+        })
+    }
+
+    /// With no run-level timing, no event may claim any — otherwise a
+    /// trace-capable harness silently writes half-measured data.
+    fn untimed_trace_valid(&self) -> bool {
+        if self.observed_tool_ms.is_some() {
+            return true;
+        }
+        self.events.as_ref().is_none_or(|events| {
+            events.iter().all(|event| {
+                event.started_at.is_none()
+                    && event.finished_at.is_none()
+                    && event.duration_ms.is_none()
+                    && event.status.is_none()
+            })
         })
     }
 
@@ -942,6 +974,20 @@ enum HistoryTiming<'a> {
         model_ms: u128,
         tool_ms: u128,
     },
+}
+
+/// Whether a run failed before the provider produced an answer. Such a run has
+/// absent or partial timing *because* it failed — it never reached the boundary
+/// the trace is measured between — so incomplete telemetry is its honest v1.0
+/// representation, exactly as absence is for a harness that declares no trace at
+/// all. A run that produced an answer keeps the full strictness, so a
+/// trace-capable harness still cannot silently write corrupt data for work that
+/// actually happened.
+fn failed_before_output(status: Status, text: Option<&str>) -> bool {
+    matches!(
+        status,
+        Status::Nonzero | Status::Timeout | Status::SpawnError | Status::Skipped
+    ) && text.is_none_or(|text| text.trim().is_empty())
 }
 
 impl<'de> Deserialize<'de> for HistoryRecord {
@@ -1577,6 +1623,100 @@ mod tests {
         .unwrap();
         unsupported["schema_version"] = Value::String("9.9".to_string());
         assert!(serde_json::from_value::<HistoryRecord>(unsupported).is_err());
+    }
+
+    /// A codex run — a harness that *does* declare a provider trace, so timing is
+    /// normally mandatory — killed before it produced any answer.
+    fn failed_traced_result() -> RunResult {
+        RunResult {
+            harness: "codex".to_string(),
+            harness_id: "codex".to_string(),
+            bin: "codex".to_string(),
+            status: Status::Nonzero,
+            exit_code: Some(1),
+            telemetry: None,
+            text: None,
+            text_source: None,
+            session_id: None,
+            stdout: String::new(),
+            stderr: "Error: insufficient_quota".to_string(),
+            failure_kind: Some(FailureKind::Quota),
+            ..result()
+        }
+    }
+
+    fn record_of(r: &RunResult) -> HistoryRecord {
+        HistoryRecord::from_result(
+            HistoryId::legacy(b"failure"),
+            "session",
+            "name",
+            &HistoryLabels::default(),
+            "/project",
+            "2026-01-01T00:00:00Z".to_string(),
+            PermissionMode::Default,
+            None,
+            "prompt",
+            r,
+        )
+    }
+
+    #[test]
+    fn a_failed_run_records_with_whatever_telemetry_its_failure_left() {
+        let failed = record_of(&failed_traced_result());
+        // Absent timing: the run never reached the boundary a trace is measured
+        // between, so absence is the honest reading — not a reason to drop it.
+        assert!(failed.complete());
+        assert_eq!(failed.failure_kind, Some(FailureKind::Quota));
+
+        // Partial timing — invocation bounds without a model/tool split — is the
+        // other shape a cut-short measurement leaves, and reads back the same way.
+        let mut partial = serde_json::to_value(&failed).unwrap();
+        partial["started_at"] = Value::String("2026-01-01T00:00:00Z".to_string());
+        let parsed = serde_json::from_value::<HistoryRecord>(partial.clone()).unwrap();
+        assert_eq!(parsed.started_at.as_deref(), Some("2026-01-01T00:00:00Z"));
+        assert!(parsed.model_ms.is_none());
+        // The written run line and the materialized record read the same rule, so
+        // a partial-timing failure survives the round trip through the JSONL file.
+        let mut line =
+            serde_json::to_value(HistoryLine::Run(HistoryRunRecord::from_record(&failed))).unwrap();
+        line["started_at"] = Value::String("2026-01-01T00:00:00Z".to_string());
+        assert!(serde_json::from_value::<HistoryLine>(line.clone()).is_ok());
+        line["status"] = Value::String("ok".to_string());
+        line["text"] = Value::String("the answer is 42".to_string());
+        assert!(serde_json::from_value::<HistoryLine>(line).is_err());
+
+        // Events the failure interrupted keep their observed boundaries; the
+        // "no run timing means no event timing" rule is a success-run rule.
+        let mut interrupted = serde_json::to_value(&failed).unwrap();
+        interrupted["events"] = serde_json::json!([{
+            "kind": "tool_call", "name": "shell", "input": {}, "output": null, "index": 0,
+            "tool_call_id": "call-1", "started_at": "2026-01-01T00:00:00Z",
+            "finished_at": null, "duration_ms": null, "status": "interrupted"
+        }]);
+        assert!(serde_json::from_value::<HistoryRecord>(interrupted).is_ok());
+    }
+
+    #[test]
+    fn a_run_that_answered_still_needs_complete_telemetry() {
+        // Same partial timing, but the provider produced an answer: measurement
+        // was possible, so half of it is corrupt data, not an honest failure.
+        let worked = record_of(&RunResult {
+            text: Some("the answer is 42".to_string()),
+            ..failed_traced_result()
+        });
+        assert!(!worked.complete());
+        let mut partial = serde_json::to_value(&worked).unwrap();
+        partial["started_at"] = Value::String("2026-01-01T00:00:00Z".to_string());
+        assert!(serde_json::from_value::<HistoryRecord>(partial).is_err());
+
+        // A clean exit with no answer is not a failure either — the carve-out is
+        // keyed on the run having failed, not merely on the text being absent.
+        let empty_success = record_of(&RunResult {
+            status: Status::Ok,
+            exit_code: Some(0),
+            ..failed_traced_result()
+        });
+        assert!(!empty_success.complete());
     }
 
     #[test]

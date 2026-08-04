@@ -9095,6 +9095,179 @@ fn incomplete_history_telemetry_warns_but_preserves_a_successful_run() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A run that fails before the provider produces an answer has no measured
+/// telemetry *because* it failed — killed at launch, or cut short mid-turn. It
+/// must still be recorded. An overnight orchestration whose codex workers were
+/// all quota-killed left no history at all: every failed run was refused as
+/// lacking complete v1.0 telemetry, so the only runs history could hold were the
+/// ones an operator never needs to see.
+#[test]
+fn history_records_a_failure_whose_telemetry_could_not_be_measured() {
+    for (tag, stdout, interrupted_tool) in [
+        // Refused at launch: the provider never emitted a byte.
+        ("launch", "", false),
+        // Cut short mid-turn: a request boundary and a started tool call, but no
+        // provider finish and no answer, so no timing can be derived.
+        (
+            "mid-turn",
+            concat!(
+                "{\"type\":\"turn.started\"}\n",
+                "{\"type\":\"item.started\",\"item\":{\"id\":\"cmd1\",\"type\":\"command_execution\",\"command\":\"echo hi\",\"aggregated_output\":\"\",\"exit_code\":null,\"status\":\"in_progress\"}}\n",
+            ),
+            true,
+        ),
+    ] {
+        let dir = hist_dir(&format!("failed-{tag}"));
+        let ds = dir.display().to_string();
+        let output = run(
+            &[
+                "run",
+                "--harness",
+                "codex",
+                "--prompt",
+                "quota killed",
+                "--bin",
+                &bin_override("codex"),
+                "--history",
+                "--history-dir",
+                &ds,
+                "--bypass",
+                "--compact",
+            ],
+            &[
+                ("MOCK_STDOUT", stdout),
+                ("MOCK_EXIT", "1"),
+                (
+                    "MOCK_STDERR",
+                    "Error: insufficient_quota — your credit balance is too low",
+                ),
+            ],
+        );
+        // The run failed, so oneharness exits 1 — but history is not collateral.
+        assert_eq!(output.status.code(), Some(1), "{tag}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stderr.contains("could not write history record"),
+            "{tag}: the failure must be recorded, not refused: {stderr}"
+        );
+        let report = json_stdout(&output);
+        let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
+        // Exactly what an operator diagnosing the incident needs.
+        assert_eq!(record["status"], "nonzero", "{tag}");
+        assert_eq!(record["exit_code"], 1, "{tag}");
+        assert_eq!(record["failure_kind"], "quota", "{tag}");
+        assert!(record["duration_ms"].is_u64(), "{tag}");
+        assert_eq!(record["prompt"], "quota killed", "{tag}");
+        // Timing the run never reached is absent, never fabricated.
+        assert!(record.get("started_at").is_none(), "{tag}");
+        assert!(record.get("model_ms").is_none(), "{tag}");
+        assert!(record["text"].is_null(), "{tag}");
+        if interrupted_tool {
+            // Whatever partial telemetry the failure left is kept.
+            assert_eq!(record["events"][0]["kind"], "tool_call", "{tag}");
+            assert_eq!(record["events"][0]["status"], "interrupted", "{tag}");
+        } else {
+            assert!(record["events"].is_null(), "{tag}");
+        }
+        // `history show` serves the failed run like any other record.
+        let shown = json_stdout(&run(
+            &[
+                "history",
+                "show",
+                "--last",
+                "--all-projects",
+                "--history-dir",
+                &ds,
+                "--compact",
+            ],
+            &[],
+        ));
+        assert_eq!(shown[0]["history_id"], record["history_id"], "{tag}");
+        assert_eq!(shown[0]["failure_kind"], "quota", "{tag}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The carve-out is keyed on the run having failed, not on how it failed. A hang
+/// the timeout killed, a binary the OS refuses to execute, and a harness that is
+/// not installed each produce no provider output at all, and each must still
+/// leave a record naming what happened rather than vanishing from history.
+#[test]
+fn history_records_every_shape_of_run_that_never_produced_output() {
+    for (tag, bin, extra, envs, status, exit) in [
+        (
+            "timeout",
+            bin_override("codex"),
+            vec!["--timeout", "1"],
+            vec![("MOCK_SLEEP_MS", "5000")],
+            "timeout",
+            Some(1),
+        ),
+        (
+            "spawn-error",
+            unspawnable_bin("codex"),
+            vec![],
+            vec![],
+            "spawn-error",
+            Some(1),
+        ),
+        // Not installed: no run at all, so `oneharness` itself still exits 0.
+        (
+            "not-installed",
+            missing_bin("codex"),
+            vec![],
+            vec![],
+            "skipped",
+            Some(0),
+        ),
+    ] {
+        let dir = hist_dir(&format!("no-output-{tag}"));
+        let ds = dir.display().to_string();
+        let mut args = vec![
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "never answered",
+            "--bin",
+            &bin,
+            "--history",
+            "--history-dir",
+            &ds,
+            "--bypass",
+            "--compact",
+        ];
+        args.extend(extra);
+        let output = run(&args, &envs);
+        assert_eq!(output.status.code(), exit, "{tag}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stderr.contains("could not write history record"),
+            "{tag}: the failure must be recorded, not refused: {stderr}"
+        );
+        let report = json_stdout(&output);
+        let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
+        assert_eq!(record["status"], status, "{tag}");
+        assert!(record["text"].is_null(), "{tag}");
+        assert!(record.get("model_ms").is_none(), "{tag}");
+        // `history show` serves it like any other record.
+        let shown = json_stdout(&run(
+            &[
+                "history",
+                "show",
+                "--last",
+                "--all-projects",
+                "--history-dir",
+                &ds,
+                "--compact",
+            ],
+            &[],
+        ));
+        assert_eq!(shown[0]["status"], status, "{tag}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 #[test]
 fn history_accepts_each_advertised_provider_trace_shape() {
     let cases = [
@@ -9214,6 +9387,12 @@ fn history_preserves_format_contracts_and_composes_with_resume() {
     assert_eq!(report["results"][0]["text"], "x");
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
     assert_eq!(record["schema_version"], "1.1");
+    // A run that worked still records complete telemetry — the failure carve-out
+    // never relaxes what a successful resumed run must carry.
+    assert!(record["started_at"].is_string());
+    assert!(record["finished_at"].is_string());
+    assert!(record["model_ms"].is_u64());
+    assert!(record["tool_ms"].is_u64());
 
     let _ = std::fs::remove_file(schema);
     let _ = std::fs::remove_dir_all(explicit_dir);

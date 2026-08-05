@@ -2038,6 +2038,68 @@
       {
         "allOf": [
           {
+            "allOf": [
+              {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "error": {
+                        "type": "null"
+                      }
+                    }
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "error": {
+                            "type": "string"
+                          },
+                          "schema_version": {
+                            "type": "string",
+                            "const": "1.3"
+                          }
+                        },
+                        "required": [
+                          "error"
+                        ]
+                      },
+                      {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "nonzero",
+                                  "timeout",
+                                  "spawn-error",
+                                  "skipped"
+                                ]
+                              }
+                            }
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "failure_kind": {
+                                "const": "tool_deferred"
+                              }
+                            },
+                            "required": [
+                              "failure_kind"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
             "oneOf": [
               {
                 "allOf": [
@@ -3361,6 +3423,68 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "HistoryRecord",
     "description": "One harness run, normalized and frozen for the history log. Serialized as one\nJSONL line per harness run, appended as the run finalizes. Carries only the\nnormalized cross-harness signals — no raw stdout/stderr.",
+    "allOf": [
+      {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "error": {
+                "type": "null"
+              }
+            }
+          },
+          {
+            "allOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "error": {
+                    "type": "string"
+                  },
+                  "schema_version": {
+                    "type": "string",
+                    "const": "1.3"
+                  }
+                },
+                "required": [
+                  "error"
+                ]
+              },
+              {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "nonzero",
+                          "timeout",
+                          "spawn-error",
+                          "skipped"
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "failure_kind": {
+                        "const": "tool_deferred"
+                      }
+                    },
+                    "required": [
+                      "failure_kind"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ],
     "oneOf": [
       {
         "type": "object",
@@ -6084,6 +6208,68 @@
       },
       "HistoryRecord": {
         "description": "One harness run, normalized and frozen for the history log. Serialized as one\nJSONL line per harness run, appended as the run finalizes. Carries only the\nnormalized cross-harness signals — no raw stdout/stderr.",
+        "allOf": [
+          {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "error": {
+                    "type": "null"
+                  }
+                }
+              },
+              {
+                "allOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "error": {
+                        "type": "string"
+                      },
+                      "schema_version": {
+                        "type": "string",
+                        "const": "1.3"
+                      }
+                    },
+                    "required": [
+                      "error"
+                    ]
+                  },
+                  {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "nonzero",
+                              "timeout",
+                              "spawn-error",
+                              "skipped"
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "failure_kind": {
+                            "const": "tool_deferred"
+                          }
+                        },
+                        "required": [
+                          "failure_kind"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ],
         "oneOf": [
           {
             "type": "object",
@@ -8521,6 +8707,68 @@
       },
       "HistoryRecord": {
         "description": "One harness run, normalized and frozen for the history log. Serialized as one\nJSONL line per harness run, appended as the run finalizes. Carries only the\nnormalized cross-harness signals — no raw stdout/stderr.",
+        "allOf": [
+          {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "error": {
+                    "type": "null"
+                  }
+                }
+              },
+              {
+                "allOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "error": {
+                        "type": "string"
+                      },
+                      "schema_version": {
+                        "type": "string",
+                        "const": "1.3"
+                      }
+                    },
+                    "required": [
+                      "error"
+                    ]
+                  },
+                  {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "nonzero",
+                              "timeout",
+                              "spawn-error",
+                              "skipped"
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "failure_kind": {
+                            "const": "tool_deferred"
+                          }
+                        },
+                        "required": [
+                          "failure_kind"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ],
         "oneOf": [
           {
             "type": "object",

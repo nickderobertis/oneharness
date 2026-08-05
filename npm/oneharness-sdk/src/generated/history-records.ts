@@ -1,10 +1,5 @@
 /* Generated from oneharness-core. Do not edit. */
 
-/**
- * One harness run, normalized and frozen for the history log. Serialized as one
- * JSONL line per harness run, appended as the run finalizes. Carries only the
- * normalized cross-harness signals — no raw stdout/stderr.
- */
 export type HistoryRecord =
   | {
       duration_ms: number;
@@ -995,7 +990,27 @@ export type FailureKind = "auth" | "rate_limit" | "model_not_found" | "quota" | 
  * The outcome of attempting to run one harness.
  */
 export type Status = "ok" | "nonzero" | "timeout" | "spawn-error" | "skipped" | "planned";
-export type HistoryRecords = HistoryRecord[];
+export type HistoryRecords = ((
+  | {
+      error?: null | undefined;
+      [k: string]: unknown;
+    }
+  | ({
+      error: string;
+      schema_version?: "1.3" | undefined;
+      [k: string]: unknown;
+    } & (
+      | {
+          status?: "nonzero" | "timeout" | "spawn-error" | "skipped" | undefined;
+          [k: string]: unknown;
+        }
+      | {
+          failure_kind: "tool_deferred";
+          [k: string]: unknown;
+        }
+    ))
+) &
+  HistoryRecord)[];
 
 /**
  * One normalized action a harness took, harness-agnostic so a single consumer

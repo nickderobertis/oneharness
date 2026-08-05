@@ -7,7 +7,32 @@
  */
 export type HistoryStreamEnvelope =
   | {
-      record: HistoryRecord;
+      /**
+       * One harness run, normalized and frozen for the history log. Serialized as one
+       * JSONL line per harness run, appended as the run finalizes. Carries only the
+       * normalized cross-harness signals — no raw stdout/stderr.
+       */
+      record: (
+        | {
+            error?: null | undefined;
+            [k: string]: unknown;
+          }
+        | ({
+            error: string;
+            schema_version?: "1.3" | undefined;
+            [k: string]: unknown;
+          } & (
+            | {
+                status?: "nonzero" | "timeout" | "spawn-error" | "skipped" | undefined;
+                [k: string]: unknown;
+              }
+            | {
+                failure_kind: "tool_deferred";
+                [k: string]: unknown;
+              }
+          ))
+      ) &
+        HistoryRecord;
       type: "record";
       [k: string]: unknown;
     }
@@ -16,11 +41,6 @@ export type HistoryStreamEnvelope =
       type: "event";
       [k: string]: unknown;
     };
-/**
- * One harness run, normalized and frozen for the history log. Serialized as one
- * JSONL line per harness run, appended as the run finalizes. Carries only the
- * normalized cross-harness signals — no raw stdout/stderr.
- */
 export type HistoryRecord =
   | {
       duration_ms: number;

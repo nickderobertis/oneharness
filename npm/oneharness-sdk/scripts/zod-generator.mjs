@@ -332,6 +332,24 @@ function objectExpression(schema, path) {
 	return `z.looseObject(${shape})`;
 }
 
+/**
+ * Intersect an expression with each member of an `allOf`, which may be absent.
+ *
+ * @param {string} expression
+ * @param {JsonSchemaNode[] | undefined} members
+ * @param {string} path
+ * @param {number} [offset] index of the first member, for error paths
+ * @returns {string}
+ */
+function intersect(expression, members, path, offset = 0) {
+	if (members === undefined) return expression;
+	return members.reduce(
+		(left, member, index) =>
+			`z.intersection(${left}, ${schemaExpression(member, `${path}.allOf.${index + offset}`)})`,
+		expression,
+	);
+}
+
 /** @param {JsonSchemaNode} schema @param {string} path @returns {string} */
 function schemaExpression(schema, path) {
 	if (schema === true) return "z.unknown()";
@@ -353,26 +371,25 @@ function schemaExpression(schema, path) {
 	}
 	if (schema.oneOf !== undefined || schema.anyOf !== undefined) {
 		const keyword = schema.oneOf ? "oneOf" : "anyOf";
-		assertSupported(schema, new Set([keyword]), path);
+		// A sibling `allOf` is ANDed with the branch list by JSON Schema, and is
+		// how a rule that cuts across every branch — one field's dependency on
+		// another — is stated once instead of restated inside each branch. Without
+		// it the only way to express such a rule is to split every branch by it,
+		// which multiplies a large generated contract rather than adding to it.
+		assertSupported(schema, new Set([keyword, "allOf"]), path);
 		const members = schema.oneOf ?? schema.anyOf ?? [];
-		return union(
+		const branches = union(
 			members.map((member, index) =>
 				schemaExpression(member, `${path}.${keyword}.${index}`),
 			),
 		);
+		return intersect(branches, schema.allOf, path);
 	}
 	if (schema.allOf !== undefined) {
 		assertSupported(schema, new Set(["allOf"]), path);
-		const expressions = schema.allOf.map((member, index) =>
-			schemaExpression(member, `${path}.allOf.${index}`),
-		);
-		if (expressions.length === 0) return "z.unknown()";
-		return expressions
-			.slice(1)
-			.reduce(
-				(left, right) => `z.intersection(${left}, ${right})`,
-				expressions[0] ?? "z.unknown()",
-			);
+		const [first, ...rest] = schema.allOf;
+		if (first === undefined) return "z.unknown()";
+		return intersect(schemaExpression(first, `${path}.allOf.0`), rest, path, 1);
 	}
 	if (Array.isArray(schema.type)) {
 		/** @type {Record<string, Set<string>>} */

@@ -257,10 +257,10 @@ impl HistoryRunRecord {
                     && (!matches!(self.status, Status::Ok | Status::Nonzero)
                         || finished_at.is_some())
             }
-            // Invocation bounds with no split derived from them: what a run cut
-            // short leaves, legible only on a run that was cut short and only to
-            // a reader that knows the shape.
-            (Some(started_at), _, None, None, time_to_first_token_ms) => {
+            // Invocation bounds with no split derived from them, and no provider
+            // finish either: what a run cut short leaves, legible only on a run
+            // that was cut short and only to a reader that knows the shape.
+            (Some(started_at), None, None, None, time_to_first_token_ms) => {
                 run_failed(self.status)
                     && version_at_least(&self.schema_version, FIRST_PARTIAL_TIMING_SCHEMA_VERSION)
                     && partial_trace_valid(started_at, time_to_first_token_ms, self.duration_ms)
@@ -968,11 +968,13 @@ impl HistoryRecord {
                     tool_ms,
                 })
             }
-            // A measurement that stopped at the invocation bounds. Every other
-            // combination is incoherent rather than partial — a finish with no
-            // start, a model total with no tool total, a first-token offset with
-            // nothing to measure it from — and stays refused.
-            (Some(started_at), _, None, None, time_to_first_token_ms) => {
+            // A measurement that stopped at the invocation bounds — including
+            // before any provider finish, which is dropped with the split it
+            // belongs to. Every other combination is incoherent rather than
+            // partial — a finish with no start or no split, a model total with no
+            // tool total, a first-token offset with nothing to measure it from —
+            // and stays refused.
+            (Some(started_at), None, None, None, time_to_first_token_ms) => {
                 Ok(HistoryTiming::Partial {
                     started_at,
                     time_to_first_token_ms,
@@ -1258,17 +1260,21 @@ fn failure_text(status: Status, error: Option<&str>, stderr: &str) -> Option<Fai
     }
 }
 
-/// Whether the run this record describes reported a failure at all — by its own
-/// exit status, or by a classified [`FailureKind`] on an otherwise clean exit.
-/// The second half is not hypothetical: a deferred-tool dead-end exits 0 having
-/// done no work, and oneharness's own message about it is exactly the failure
-/// text a record should carry.
+/// Whether the run this record describes reported a failure *in words* — by its
+/// own exit status, or as the one clean exit that still has something to say.
+///
+/// That exception is [`FailureKind::ToolDeferred`]: a deferred-tool dead-end
+/// exits 0 having done no work, and oneharness's own message about it is exactly
+/// the failure text a record should carry. It is the only clean exit that gets
+/// one — a provider failure classified off a clean run's own output leaves the
+/// harness's words in its transcript, not in a diagnostic — so no other kind
+/// justifies failure text on a `status: ok` record.
 ///
 /// Deliberately broader than [`run_failed`], which gates *timing* and must stay
 /// keyed on the status alone: a clean exit claims the run worked, so its
 /// telemetry is still held to the full bar.
 fn reported_failure(status: Status, failure_kind: Option<FailureKind>) -> bool {
-    run_failed(status) || failure_kind.is_some()
+    run_failed(status) || failure_kind == Some(FailureKind::ToolDeferred)
 }
 
 /// Whether a record's failure text agrees with the rest of the record: the field
@@ -2252,6 +2258,23 @@ mod tests {
             Some("claude-code deferred a builtin tool call")
         );
         assert!(deferred.complete());
+
+        // ...and it is the *only* clean exit that gets one. A provider failure
+        // classified off a clean run's own output left the harness's words in its
+        // transcript, not in a diagnostic, so no other kind justifies the field.
+        for other in [
+            FailureKind::Auth,
+            FailureKind::Quota,
+            FailureKind::RateLimit,
+            FailureKind::ModelNotFound,
+        ] {
+            let mut mismatched = clean_exit.clone();
+            mismatched["failure_kind"] = serde_json::to_value(other).unwrap();
+            assert!(
+                serde_json::from_value::<HistoryRecord>(mismatched).is_err(),
+                "{other:?} on a clean exit"
+            );
+        }
     }
 
     #[test]

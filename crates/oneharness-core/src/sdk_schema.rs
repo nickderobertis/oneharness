@@ -9,15 +9,16 @@ use serde::Serialize;
 
 use crate::domain::history::run_failed;
 use crate::domain::history::{
-    HistoryLine, HistoryRecord, HistoryStreamEnvelope, FIRST_EVENT_SCHEMA_VERSION,
-    FIRST_PARTIAL_TIMING_SCHEMA_VERSION, OBSERVED_TIMING_SCHEMA_VERSION,
-    PREVIOUS_CURRENT_SCHEMA_VERSION, PRE_LIFECYCLE_RECORD_VERSIONS,
+    HistoryLine, HistoryRecord, HistoryStreamEnvelope, FIRST_ERROR_SCHEMA_VERSION,
+    FIRST_EVENT_SCHEMA_VERSION, FIRST_PARTIAL_TIMING_SCHEMA_VERSION,
+    OBSERVED_TIMING_SCHEMA_VERSION, PREVIOUS_CURRENT_SCHEMA_VERSION, PRE_LIFECYCLE_RECORD_VERSIONS,
     SCHEMA_VERSION as HISTORY_SCHEMA_VERSION,
 };
 use crate::domain::report::{RunReport, RunStreamEnvelope, Status};
 use crate::domain::sdk::{
     schema_for_serialize, HistoryListOptions, HistoryLookup, HistoryWatchOptions, RunOptions,
 };
+use crate::domain::signals::FailureKind;
 use crate::io::history::SessionSummary;
 
 /// All core schemas shared by oneharness SDKs.
@@ -236,6 +237,10 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                         {"allOf": [unavailable]}
                     ]),
                 );
+                object.insert(
+                    "allOf".to_string(),
+                    serde_json::json!([error_placement_gate()]),
+                );
                 return;
             }
             object.values_mut().for_each(add_history_line_conditions);
@@ -335,6 +340,52 @@ fn partial_branch(untimed: &serde_json::Value, statuses: &serde_json::Value) -> 
         }
     }
     partial
+}
+
+/// The failure `error` text is legible only to a reader at or after the version
+/// that introduced it, and only on a record whose run reported a failure — by
+/// status, or by a classified `failure_kind` on an otherwise clean exit (the
+/// deferred-tool dead-end). Both are cross-field rules the runtime check applies,
+/// and both are stated here so a generated SDK validator accepts exactly what the
+/// CLI's own reader does.
+///
+/// Returned as a standalone `oneOf` so a caller can hang it beside a branch list
+/// rather than inside it: JSON Schema ANDs keywords at one level, so one gate
+/// covers every timing branch instead of being restated in each.
+fn error_placement_gate() -> serde_json::Value {
+    let (failed_statuses, _) = status_partition();
+    // llmlint: ignore[no_panics_on_recoverable_errors] Schema generation is a build-time codegen boundary like every sibling transformation here; a `FailureKind` that no longer serializes to its wire token is a generator invariant, and emitting a gate that accepts any kind would ship an SDK looser than the reader it describes.
+    let deferred_dead_end = serde_json::to_value(FailureKind::ToolDeferred)
+        .expect("FailureKind serializes to its wire token");
+    serde_json::json!({
+        "oneOf": [
+            // Nothing to report: the field is absent, or present but empty of a value.
+            {"type": "object", "properties": {"error": {"type": "null"}}},
+            // Reported: only at the version that reads it, and only where there
+            // was a failure to report.
+            {"allOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "schema_version": {
+                            "const": FIRST_ERROR_SCHEMA_VERSION,
+                            "type": "string"
+                        },
+                        "error": {"type": "string"}
+                    },
+                    "required": ["error"]
+                },
+                {"anyOf": [
+                    {"type": "object", "properties": {"status": failed_statuses}},
+                    {
+                        "type": "object",
+                        "properties": {"failure_kind": {"const": deferred_dead_end}},
+                        "required": ["failure_kind"]
+                    }
+                ]}
+            ]}
+        ]
+    })
 }
 
 fn set_history_identity_version(
@@ -587,6 +638,10 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                         pre_provenance_unavailable,
                         legacy
                     ]),
+                );
+                object.insert(
+                    "allOf".to_string(),
+                    serde_json::json!([error_placement_gate()]),
                 );
                 return;
             }

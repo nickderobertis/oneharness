@@ -1,6 +1,127 @@
 {
   "cases": [
     {
+      "name": "history record rejects invocation bounds carrying a provider finish but no split",
+      "root": "history_record",
+      "accepted": false,
+      "value": {
+        "schema_version": "1.3", "history_id": "0198f0d0-7b31-7000-8000-000000000015",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-07-19T00:00:01Z", "harness": "codex",
+        "harness_id": "codex", "model": null, "prompt": "test",
+        "permission_mode": "default", "status": "nonzero", "exit_code": 1, "duration_ms": 1000,
+        "started_at": "2026-07-19T00:00:00Z", "finished_at": "2026-07-19T00:00:01Z",
+        "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "events": null,
+        "failure_kind": "quota", "error": "stream error: exceeded quota"
+      }
+    },
+    {
+      "name": "history record rejects failure text on a clean exit whose kind is not the deferred dead-end",
+      "root": "history_record",
+      "accepted": false,
+      "value": {
+        "schema_version": "1.3", "history_id": "0198f0d0-7b31-7000-8000-000000000016",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-07-19T00:00:01Z", "harness": "claude-code",
+        "harness_id": "claude-code", "model": null, "prompt": "test",
+        "permission_mode": "default", "status": "ok", "exit_code": 0, "duration_ms": 1000,
+        "started_at": "2026-07-19T00:00:00Z", "finished_at": "2026-07-19T00:00:01Z",
+        "model_ms": 600, "tool_ms": 400,
+        "text": "done", "text_source": "json",
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "events": null,
+        "failure_kind": "quota", "error": "Error: insufficient_quota"
+      }
+    },
+    {
+      "name": "history record v1.2 rejects the failure error text that arrived in v1.3",
+      "root": "history_record",
+      "accepted": false,
+      "value": {
+        "schema_version": "1.2", "history_id": "0198f0d0-7b31-7000-8000-000000000003",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-07-19T00:00:01Z", "harness": "codex",
+        "harness_id": "codex", "model": null, "prompt": "test",
+        "permission_mode": "default", "status": "nonzero", "exit_code": 1, "duration_ms": 1000,
+        "finished_at": null, "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "events": null,
+        "failure_kind": "quota", "error": "stream error: exceeded quota"
+      }
+    },
+    {
+      "name": "history record v1.3 rejects failure text on a run that reported no failure",
+      "root": "history_record",
+      "accepted": false,
+      "value": {
+        "schema_version": "1.3", "history_id": "0198f0d0-7b31-7000-8000-00000000000b",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-07-19T00:00:01Z", "harness": "claude-code",
+        "harness_id": "claude-code", "model": null, "prompt": "test",
+        "permission_mode": "default", "status": "ok", "exit_code": 0, "duration_ms": 1000,
+        "started_at": "2026-07-19T00:00:00Z", "finished_at": "2026-07-19T00:00:01Z",
+        "model_ms": 600, "tool_ms": 400,
+        "text": "done", "text_source": "json",
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "events": null,
+        "failure_kind": null, "error": "warning: using a deprecated flag"
+      }
+    },
+    {
+      "name": "history line run rejects the v1.3 error text at v1.1",
+      "root": "history_line",
+      "accepted": false,
+      "value": {
+        "type": "run", "schema_version": "1.1",
+        "history_id": "0198f0d0-7b31-7000-8000-000000000008",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-07-19T00:00:01Z", "harness": "codex", "harness_id": "codex",
+        "model": null, "prompt": "test", "permission_mode": "default",
+        "status": "nonzero", "exit_code": 1, "duration_ms": 1000, "finished_at": null,
+        "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "failure_kind": "quota",
+        "error": "stream error: exceeded quota"
+      }
+    },
+    {
+      "name": "history line run rejects failure text on a run that reported no failure",
+      "root": "history_line",
+      "accepted": false,
+      "value": {
+        "type": "run", "schema_version": "1.3",
+        "history_id": "0198f0d0-7b31-7000-8000-000000000014",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-07-19T00:00:01Z", "harness": "codex", "harness_id": "codex",
+        "model": null, "prompt": "test", "permission_mode": "default",
+        "status": "ok", "exit_code": 0, "duration_ms": 1000,
+        "started_at": "2026-07-19T00:00:00Z", "finished_at": "2026-07-19T00:00:01Z",
+        "model_ms": 600, "tool_ms": 400,
+        "text": "done", "text_source": "json",
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "failure_kind": null,
+        "error": "warning: using a deprecated flag"
+      }
+    },
+    {
+      "name": "history record v1.3 rejects empty failure error text",
+      "root": "history_record",
+      "accepted": false,
+      "value": {
+        "schema_version": "1.3", "history_id": "0198f0d0-7b31-7000-8000-000000000004",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-07-19T00:00:01Z", "harness": "codex",
+        "harness_id": "codex", "model": null, "prompt": "test",
+        "permission_mode": "default", "status": "nonzero", "exit_code": 1, "duration_ms": 1000,
+        "finished_at": null, "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "events": null,
+        "failure_kind": "quota", "error": ""
+      }
+    },
+    {
       "name": "history record v1.2 rejects invocation-bounds-only timing, which arrived in v1.3",
       "root": "history_record",
       "accepted": false,

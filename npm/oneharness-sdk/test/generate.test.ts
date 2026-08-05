@@ -357,6 +357,24 @@ test("Zod generation validates every supported schema boundary", () => {
 		render({ allOf: [{ type: "string" }, { enum: ["value"] }] }),
 	).toContain('z.intersection(z.string(), z.literal("value"))');
 	expect(render({ allOf: [] })).toContain("z.unknown()");
+	// A rule that cuts across every branch is stated beside the branch list, not
+	// restated inside each: JSON Schema ANDs keywords at one level, so the union
+	// and its sibling constraints have to intersect rather than one winning.
+	expect(
+		render({
+			oneOf: [{ type: "string" }, { type: "number" }],
+			allOf: [{ enum: ["value", 1] }],
+		}),
+	).toContain(
+		'z.intersection(z.union([z.string(), z.number()]), z.union([z.literal("value"), z.literal(1)]))',
+	);
+	expect(
+		render({ anyOf: [{ type: "string" }], allOf: [{ enum: ["value"] }] }),
+	).toContain('z.intersection(z.string(), z.literal("value"))');
+	reject(
+		{ oneOf: [{ type: "string" }], minItems: 1 },
+		"unsupported JSON Schema keyword boundary.minItems",
+	);
 	reject({ type: "date" }, "unsupported JSON Schema type date");
 	expect(() =>
 		generateZodModule({}, [

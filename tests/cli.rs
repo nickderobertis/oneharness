@@ -9103,9 +9103,9 @@ fn incomplete_history_telemetry_warns_but_preserves_a_successful_run() {
 /// ones an operator never needs to see.
 #[test]
 fn history_records_a_failure_whose_telemetry_could_not_be_measured() {
-    for (tag, stdout, interrupted_tool) in [
+    for (tag, stdout, interrupted_tool, partial_answer) in [
         // Refused at launch: the provider never emitted a byte.
-        ("launch", "", false),
+        ("launch", "", false, None),
         // Cut short mid-turn: a request boundary and a started tool call, but no
         // provider finish and no answer, so no timing can be derived.
         (
@@ -9115,6 +9115,20 @@ fn history_records_a_failure_whose_telemetry_could_not_be_measured() {
                 "{\"type\":\"item.started\",\"item\":{\"id\":\"cmd1\",\"type\":\"command_execution\",\"command\":\"echo hi\",\"aggregated_output\":\"\",\"exit_code\":null,\"status\":\"in_progress\"}}\n",
             ),
             true,
+            None,
+        ),
+        // Cut short *after* the model had begun answering: the transcript yields
+        // partial assistant text but never a completed turn. The run's own
+        // verdict is what says it failed — reading the salvaged text as success
+        // would refuse exactly the record an operator needs.
+        (
+            "partial-answer",
+            concat!(
+                "{\"type\":\"turn.started\"}\n",
+                "{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"I was still thinking when\"}}\n",
+            ),
+            false,
+            Some("I was still thinking when"),
         ),
     ] {
         let dir = hist_dir(&format!("failed-{tag}"));
@@ -9158,10 +9172,25 @@ fn history_records_a_failure_whose_telemetry_could_not_be_measured() {
         assert_eq!(record["failure_kind"], "quota", "{tag}");
         assert!(record["duration_ms"].is_u64(), "{tag}");
         assert_eq!(record["prompt"], "quota killed", "{tag}");
+        // The harness's own account of the failure, taken from the stderr
+        // oneharness captured — the field a classified `failure_kind` alone
+        // could never carry, and the reason the record declares v1.3.
+        assert_eq!(
+            record["error"],
+            "Error: insufficient_quota — your credit balance is too low",
+            "{tag}"
+        );
+        assert_eq!(record["schema_version"], "1.3", "{tag}");
         // Timing the run never reached is absent, never fabricated.
         assert!(record.get("started_at").is_none(), "{tag}");
         assert!(record.get("model_ms").is_none(), "{tag}");
-        assert!(record["text"].is_null(), "{tag}");
+        // Salvaged provider text is reported as-is; absent stays null, never
+        // filled in from the error text.
+        assert_eq!(
+            record["text"],
+            partial_answer.map_or(Value::Null, |text| Value::String(text.to_string())),
+            "{tag}"
+        );
         if interrupted_tool {
             // Whatever partial telemetry the failure left is kept.
             assert_eq!(record["events"][0]["kind"], "tool_call", "{tag}");
@@ -9184,8 +9213,212 @@ fn history_records_a_failure_whose_telemetry_could_not_be_measured() {
         ));
         assert_eq!(shown[0]["history_id"], record["history_id"], "{tag}");
         assert_eq!(shown[0]["failure_kind"], "quota", "{tag}");
+        assert_eq!(shown[0]["error"], record["error"], "{tag}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// A deferred-tool dead-end exits 0 having done no work (issue #1114), so its
+/// history record is the one case where a *clean* exit still carries failure
+/// text: oneharness's own actionable message, alongside the `tool_deferred` kind.
+/// Refusing it here would hide the dead-end from the operator exactly as a
+/// refused quota failure did.
+#[test]
+fn history_records_the_failure_text_of_a_clean_exit_dead_end() {
+    let dir = hist_dir("deferred-dead-end");
+    let ds = dir.display().to_string();
+    // A real Claude Code bridge deployment's shape: exit 0, empty result, and a
+    // deferred builtin tool instead of an executed one.
+    let stdout = r#"{"type":"result","num_turns":1,"stop_reason":"tool_deferred",
+        "terminal_reason":"tool_deferred","result":"","permission_denials":[],
+        "deferred_tool_use":{"name":"Read","input":{"file_path":"/x/usage.rs"}}}"#;
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "read the file",
+            "--bin",
+            &bin_override("claude-code"),
+            "--history",
+            "--history-dir",
+            &ds,
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("could not write history record"),
+        "the dead-end must be recorded: {stderr}"
+    );
+    let report = json_stdout(&output);
+    let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
+    // The process exited 0, so `status` says so; the failure is the typed signal.
+    assert_eq!(record["status"], "ok");
+    assert_eq!(record["failure_kind"], "tool_deferred");
+    let error = record["error"]
+        .as_str()
+        .expect("a dead-end records its actionable failure text");
+    assert!(
+        error.contains("`Read`") && error.contains("deferred"),
+        "the recorded text names the deferred tool: {error}"
+    );
+    assert_eq!(record["schema_version"], "1.3");
+    let shown = json_stdout(&run(
+        &[
+            "history",
+            "show",
+            "--last",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--compact",
+        ],
+        &[],
+    ));
+    assert_eq!(shown[0]["error"], record["error"]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A harness that floods stderr must not flood history with it. The bound is a
+/// property of the persisted record, so assert it there — on the file a consumer
+/// reads — rather than only on the pure helper that applies it.
+#[test]
+fn a_flooding_failure_is_recorded_within_the_documented_bound() {
+    let dir = hist_dir("bounded-failure-text");
+    let bound = oneharness_core::domain::history::ERROR_MAX;
+    // Leading whitespace to trim, then far more than the bound allows.
+    let flood = format!("\n\n{}\n", "e".repeat(bound * 3));
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "flooded",
+            "--bin",
+            &bin_override("codex"),
+            "--history",
+            "--history-dir",
+            &dir.display().to_string(),
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_EXIT", "1"), ("MOCK_STDERR", &flood)],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let report = json_stdout(&output);
+    let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
+    let error = record["error"]
+        .as_str()
+        .expect("the failure text is recorded");
+    assert_eq!(
+        error.chars().count(),
+        bound,
+        "the recorded failure text is bounded in characters"
+    );
+    assert!(
+        error.starts_with('e') && error.ends_with('\u{2026}'),
+        "surrounding whitespace is trimmed and the cut is marked: {:?}",
+        &error[..8]
+    );
+    // Bounded or not, the record still reads back through the public contract.
+    let shown = json_stdout(&run(
+        &[
+            "history",
+            "show",
+            "--last",
+            "--all-projects",
+            "--history-dir",
+            &dir.display().to_string(),
+            "--compact",
+        ],
+        &[],
+    ));
+    assert_eq!(shown[0]["error"], record["error"]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The README states the failure text's bound and the version that introduced it
+/// in prose, which is where a reader learns them — the same numbers the record
+/// contract enforces. Tie the two together rather than letting a changed constant
+/// leave the docs confidently wrong (the pattern
+/// [`documented_usage_timeout_default_tracks_the_flag_constant`] uses).
+#[test]
+fn documented_history_failure_text_tracks_the_record_contract() {
+    let readme = include_str!("../README.md");
+    let bound = format!(
+        "bounded to {} characters",
+        oneharness_core::domain::history::ERROR_MAX
+    );
+    assert!(
+        readme.contains(&bound),
+        "README.md must state the failure-text bound as `{bound}`"
+    );
+    let introduced = format!(
+        "arrived in history schema **v{}**",
+        oneharness_core::domain::history::FIRST_ERROR_SCHEMA_VERSION
+    );
+    assert!(
+        readme.contains(&introduced),
+        "README.md must state where the failure text arrived as `{introduced}`"
+    );
+    let unchanged = format!(
+        "a provider-measured success still declares `{}`",
+        oneharness_core::domain::history::PREVIOUS_CURRENT_SCHEMA_VERSION
+    );
+    assert!(
+        readme.contains(&unchanged),
+        "README.md must state the unchanged provider-measured version as `{unchanged}`"
+    );
+}
+
+/// The failure text is a *failure* signal: a run that succeeded never gets one,
+/// so the field is absent from its record rather than present and empty, and its
+/// record keeps the older version that carries no such field.
+#[test]
+fn a_successful_run_records_no_failure_text() {
+    let dir = hist_dir("no-failure-text");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "worked",
+            "--bin",
+            &bin_override("codex"),
+            "--history",
+            "--history-dir",
+            &dir.display().to_string(),
+            "--bypass",
+            "--compact",
+        ],
+        &[
+            ("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY),
+            // Harnesses chatter on stderr even when they work; none of it is a
+            // failure, so none of it reaches history.
+            ("MOCK_STDERR", "warning: using a deprecated flag"),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
+    assert_eq!(record["status"], "ok");
+    assert!(
+        record.get("error").is_none(),
+        "an absent failure text is omitted, not written as null or empty: {record}"
+    );
+    assert_eq!(record["schema_version"], "1.1");
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// The carve-out is keyed on the run having failed, not on how it failed. A hang
@@ -9194,7 +9427,10 @@ fn history_records_a_failure_whose_telemetry_could_not_be_measured() {
 /// leave a record naming what happened rather than vanishing from history.
 #[test]
 fn history_records_every_shape_of_run_that_never_produced_output() {
-    for (tag, bin, extra, envs, status, exit) in [
+    // Each case's `error` comes from oneharness's own diagnostic rather than the
+    // child's stderr — the harness never got far enough to write one, so this is
+    // the only account of what happened.
+    for (tag, bin, extra, envs, status, exit, error_needle) in [
         (
             "timeout",
             bin_override("codex"),
@@ -9202,6 +9438,7 @@ fn history_records_every_shape_of_run_that_never_produced_output() {
             vec![("MOCK_SLEEP_MS", "5000")],
             "timeout",
             Some(1),
+            "timeout",
         ),
         (
             "spawn-error",
@@ -9210,6 +9447,7 @@ fn history_records_every_shape_of_run_that_never_produced_output() {
             vec![],
             "spawn-error",
             Some(1),
+            "failed to spawn",
         ),
         // Not installed: no run at all, so `oneharness` itself still exits 0.
         (
@@ -9219,6 +9457,7 @@ fn history_records_every_shape_of_run_that_never_produced_output() {
             vec![],
             "skipped",
             Some(0),
+            "not found on PATH",
         ),
     ] {
         let dir = hist_dir(&format!("no-output-{tag}"));
@@ -9250,6 +9489,13 @@ fn history_records_every_shape_of_run_that_never_produced_output() {
         assert_eq!(record["status"], status, "{tag}");
         assert!(record["text"].is_null(), "{tag}");
         assert!(record.get("model_ms").is_none(), "{tag}");
+        let error = record["error"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{tag}: the failure text must be recorded: {record}"));
+        assert!(
+            error.contains(error_needle),
+            "{tag}: expected oneharness's own diagnostic to mention `{error_needle}`: {error}"
+        );
         // `history show` serves it like any other record.
         let shown = json_stdout(&run(
             &[
@@ -11075,7 +11321,7 @@ fn history_watch_event_mode_observes_event_before_stream_finishes() {
 }
 
 #[test]
-fn history_watch_streams_stdout_observed_event_as_v1_2() {
+fn history_watch_streams_stdout_observed_event_at_the_current_version() {
     let dir = hist_dir("watch-observed-event-version");
     let project = std::env::current_dir().unwrap();
     let writer =
@@ -11118,7 +11364,10 @@ fn history_watch_streams_stdout_observed_event_as_v1_2() {
     reader.read_line(&mut line).unwrap();
     let envelope: Value = serde_json::from_str(&line).unwrap();
     assert_eq!(envelope["type"], "event");
-    assert_eq!(envelope["line"]["schema_version"], "1.2");
+    // Event lines are written by the current writer and read live, so they
+    // always declare the current version (unlike a run record, whose version is
+    // the oldest reader that can understand the fields it carries).
+    assert_eq!(envelope["line"]["schema_version"], "1.3");
     assert_eq!(
         envelope["line"]["event"]["timing_source"],
         "stdout_observed"

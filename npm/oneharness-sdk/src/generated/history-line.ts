@@ -10,7 +10,7 @@ export type HistoryLine =
           harness: string;
           harness_id?: string | null | undefined;
           run_id: string;
-          schema_version: "1.2";
+          schema_version: "1.2" | "1.3";
           type: "event";
           variant?: string | null | undefined;
           [k: string]: unknown;
@@ -29,9 +29,14 @@ export type HistoryLine =
           [k: string]: unknown;
         }
     )
-  | (
+  | ((
       | {
           duration_ms: number;
+          /**
+           * Normalized failure text for a run that did not succeed (see
+           * [`HistoryRecord::error`]). Omitted on the wire when absent.
+           */
+          error?: string | null | undefined;
           exit_code: number | null;
           failure_kind: FailureKind | null;
           finished_at: string;
@@ -46,7 +51,7 @@ export type HistoryLine =
           permission_mode: PermissionMode;
           project: string;
           prompt: string;
-          schema_version: "1.0" | "1.1" | "1.2";
+          schema_version: "1.0" | "1.1" | "1.2" | "1.3";
           session: string;
           session_id: string | null;
           started_at: string;
@@ -63,6 +68,11 @@ export type HistoryLine =
         }
       | {
           duration_ms: number;
+          /**
+           * Normalized failure text for a run that did not succeed (see
+           * [`HistoryRecord::error`]). Omitted on the wire when absent.
+           */
+          error?: string | null | undefined;
           exit_code: number | null;
           failure_kind: FailureKind | null;
           finished_at: string | null;
@@ -77,7 +87,7 @@ export type HistoryLine =
           permission_mode: PermissionMode;
           project: string;
           prompt: string;
-          schema_version: "1.0" | "1.1" | "1.2";
+          schema_version: "1.0" | "1.1" | "1.2" | "1.3";
           session: string;
           session_id: string | null;
           started_at: string;
@@ -94,6 +104,11 @@ export type HistoryLine =
         }
       | {
           duration_ms: number;
+          /**
+           * Normalized failure text for a run that did not succeed (see
+           * [`HistoryRecord::error`]). Omitted on the wire when absent.
+           */
+          error?: string | null | undefined;
           exit_code: number | null;
           failure_kind: FailureKind | null;
           finished_at: null;
@@ -108,7 +123,7 @@ export type HistoryLine =
           permission_mode: PermissionMode;
           project: string;
           prompt: string;
-          schema_version: "1.2";
+          schema_version: "1.2" | "1.3";
           session: string;
           session_id: string | null;
           started_at?: never | undefined;
@@ -125,6 +140,11 @@ export type HistoryLine =
         }
       | {
           duration_ms: number | null;
+          /**
+           * Normalized failure text for a run that did not succeed (see
+           * [`HistoryRecord::error`]). Omitted on the wire when absent.
+           */
+          error?: string | null | undefined;
           exit_code: number | null;
           failure_kind: FailureKind | null;
           finished_at: null;
@@ -139,11 +159,11 @@ export type HistoryLine =
           permission_mode: PermissionMode;
           project: string;
           prompt: string;
-          schema_version: "1.0" | "1.1" | "1.2";
+          schema_version: "1.0" | "1.1" | "1.2" | "1.3";
           session: string;
           session_id: string | null;
           started_at?: never | undefined;
-          status: Status;
+          status: "nonzero" | "timeout" | "spawn-error" | "skipped";
           text: string | null;
           text_source: string | null;
           time_to_first_token_ms?: never | undefined;
@@ -154,7 +174,69 @@ export type HistoryLine =
           variant?: string | null | undefined;
           [k: string]: unknown;
         }
-    );
+      | {
+          duration_ms: number | null;
+          /**
+           * Normalized failure text for a run that did not succeed (see
+           * [`HistoryRecord::error`]). Omitted on the wire when absent.
+           */
+          error?: string | null | undefined;
+          exit_code: number | null;
+          failure_kind: FailureKind | null;
+          finished_at: null;
+          harness: string;
+          harness_id?: string | null | undefined;
+          history_id: string;
+          labels?: HistoryLabels | undefined;
+          model: string | null;
+          model_ms?: never | undefined;
+          name: string;
+          observed_tool_ms?: never | undefined;
+          permission_mode: PermissionMode;
+          project: string;
+          prompt: string;
+          schema_version: "1.0" | "1.1" | "1.2" | "1.3";
+          session: string;
+          session_id: string | null;
+          started_at?: never | undefined;
+          status: "ok" | "planned";
+          text: string | null;
+          text_source: string | null;
+          time_to_first_token_ms?: never | undefined;
+          timestamp: string;
+          tool_ms?: never | undefined;
+          type: "run";
+          usage: Usage;
+          variant?: string | null | undefined;
+          [k: string]: unknown;
+        }
+    ) &
+      (
+        | {
+            error?: null | undefined;
+            schema_version?: "0.1" | "0.2" | "1.0" | "1.1" | "1.2" | undefined;
+            [k: string]: unknown;
+          }
+        | {
+            error?: null | undefined;
+            schema_version?: "1.3" | undefined;
+            [k: string]: unknown;
+          }
+        | ({
+            error: string;
+            schema_version?: "1.3" | undefined;
+            [k: string]: unknown;
+          } & (
+            | {
+                status?: "nonzero" | "timeout" | "spawn-error" | "skipped" | undefined;
+                [k: string]: unknown;
+              }
+            | {
+                failure_kind: string;
+                [k: string]: unknown;
+              }
+          ))
+      ));
 export type ToolCallStatus = "completed" | "failed" | "timeout" | "interrupted";
 /**
  * How a normalized tool interval was obtained.

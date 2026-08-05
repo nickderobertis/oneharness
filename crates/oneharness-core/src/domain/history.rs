@@ -30,14 +30,58 @@ use crate::domain::signals::{FailureKind, Usage};
 /// Bumped when the history record shape changes in a way a consumer must notice.
 /// Independent of [`crate::domain::report::SCHEMA_VERSION`] — the history file and
 /// the run report are separate contracts and version on their own cadence.
-pub const SCHEMA_VERSION: &str = "1.2";
-pub(crate) const PREVIOUS_CURRENT_SCHEMA_VERSION: &str = "1.1";
+///
+/// A record's `schema_version` is the **oldest reader that can understand it**,
+/// not the version of the writer that produced it: a provider-measured run still
+/// declares [`PREVIOUS_CURRENT_SCHEMA_VERSION`] because nothing in it needs a
+/// newer reader. That is what lets an additive field ship without rewriting the
+/// shape of every record — and what makes each version constant below the exact
+/// gate for the one field it introduced.
+pub const SCHEMA_VERSION: &str = "1.3";
+/// v1.3 introduced the normalized failure `error` text.
+pub const FIRST_ERROR_SCHEMA_VERSION: &str = SCHEMA_VERSION;
+/// v1.2 introduced stdout-observed tool timing (`observed_tool_ms`) and the
+/// `timing_source` provenance it puts on events.
+pub const OBSERVED_TIMING_SCHEMA_VERSION: &str = "1.2";
+pub const PREVIOUS_CURRENT_SCHEMA_VERSION: &str = "1.1";
 pub(crate) const FIRST_EVENT_SCHEMA_VERSION: &str = "1.0";
+
+/// Every event-sourced history version this build reads, oldest first. Order is
+/// the contract: a field introduced in version N is legible to N and everything
+/// after it, which is what [`version_at_least`] answers.
+pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 4] = [
+    FIRST_EVENT_SCHEMA_VERSION,
+    PREVIOUS_CURRENT_SCHEMA_VERSION,
+    OBSERVED_TIMING_SCHEMA_VERSION,
+    SCHEMA_VERSION,
+];
+
+fn version_rank(version: &str) -> Option<usize> {
+    READABLE_SCHEMA_VERSIONS
+        .iter()
+        .position(|known| *known == version)
+}
+
+/// Whether `version` is a readable version at or after `minimum`. An unreadable
+/// version answers `false` rather than guessing an ordering for it.
+fn version_at_least(version: &str, minimum: &str) -> bool {
+    match (version_rank(version), version_rank(minimum)) {
+        (Some(actual), Some(minimum)) => actual >= minimum,
+        _ => false,
+    }
+}
 
 /// The legacy record contract accepted by the migration reader.
 pub const LEGACY_SCHEMA_VERSION: &str = "0.1";
 const PREVIOUS_SCHEMA_VERSION: &str = "0.2";
 const LEGACY_RECORD_SCHEMA_VERSION: &str = "0.3";
+
+/// The whole-record versions whose events ended at `index`, before
+/// [`LEGACY_RECORD_SCHEMA_VERSION`] (v0.3) added the lifecycle fields — see
+/// [`LegacyActionEvent`]. Exported so the generated SDK schemas describe that
+/// one legacy shape from this source rather than restating its versions.
+pub const PRE_LIFECYCLE_RECORD_VERSIONS: [&str; 2] =
+    [LEGACY_SCHEMA_VERSION, PREVIOUS_SCHEMA_VERSION];
 
 /// One event-sourced history JSONL line.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
@@ -103,10 +147,9 @@ pub struct HistoryEventLine {
 
 impl HistoryEventLine {
     pub(crate) fn valid(&self) -> bool {
-        matches!(
-            self.schema_version.as_str(),
-            SCHEMA_VERSION | PREVIOUS_CURRENT_SCHEMA_VERSION | FIRST_EVENT_SCHEMA_VERSION
-        ) && (self.event.timing_source.is_none() || self.schema_version == SCHEMA_VERSION)
+        version_rank(&self.schema_version).is_some()
+            && (self.event.timing_source.is_none()
+                || version_at_least(&self.schema_version, OBSERVED_TIMING_SCHEMA_VERSION))
             && identity_fields_valid(
                 &self.harness,
                 self.variant.as_deref(),
@@ -160,14 +203,15 @@ pub struct HistoryRunRecord {
     pub usage: Usage,
     pub session_id: Option<String>,
     pub failure_kind: Option<FailureKind>,
+    /// Normalized failure text for a run that did not succeed (see
+    /// [`HistoryRecord::error`]). Omitted on the wire when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<FailureText>,
 }
 
 impl HistoryRunRecord {
     pub(crate) fn valid(&self) -> bool {
-        if !matches!(
-            self.schema_version.as_str(),
-            SCHEMA_VERSION | PREVIOUS_CURRENT_SCHEMA_VERSION | FIRST_EVENT_SCHEMA_VERSION
-        ) {
+        if version_rank(&self.schema_version).is_none() {
             return false;
         }
         if !identity_fields_valid(
@@ -177,8 +221,16 @@ impl HistoryRunRecord {
         ) {
             return false;
         }
+        if !error_text_valid(
+            &self.schema_version,
+            self.error.as_ref(),
+            self.status,
+            self.failure_kind,
+        ) {
+            return false;
+        }
         if self.observed_tool_ms.is_some() {
-            return self.schema_version == SCHEMA_VERSION
+            return version_at_least(&self.schema_version, OBSERVED_TIMING_SCHEMA_VERSION)
                 && self.duration_ms.is_some()
                 && self.started_at.is_none()
                 && self.finished_at.is_none()
@@ -202,9 +254,7 @@ impl HistoryRunRecord {
                     && (!matches!(self.status, Status::Ok | Status::Nonzero)
                         || finished_at.is_some())
             }
-            // Measurement cut short mid-turn. Only a run that failed before the
-            // provider answered can honestly carry it (see [`failed_before_output`]).
-            _ => failed_before_output(self.status, self.text.as_deref()),
+            _ => false,
         }
     }
 
@@ -238,6 +288,7 @@ impl HistoryRunRecord {
             usage: record.usage.clone(),
             session_id: record.session_id.clone(),
             failure_kind: record.failure_kind,
+            error: record.error.clone(),
         }
     }
 
@@ -276,6 +327,7 @@ impl HistoryRunRecord {
             session_id: self.session_id,
             events: (!events.is_empty()).then_some(events),
             failure_kind: self.failure_kind,
+            error: self.error,
         }
     }
 }
@@ -610,6 +662,19 @@ pub struct HistoryRecord {
     /// Best-effort classified failure reason (see [`FailureKind`]); `null` when
     /// unclassified.
     pub failure_kind: Option<FailureKind>,
+    /// Best-effort normalized failure text for a run that did not succeed: the
+    /// harness's own diagnostic as oneharness captured it on stderr, or
+    /// oneharness's own message when it generated one (a spawn failure, a
+    /// timeout, a binary that is not installed). This is the *only* place a
+    /// record quotes the process's own bytes, and it is deliberately narrow —
+    /// trimmed, bounded to [`ERROR_MAX`] characters, and written only for a run
+    /// that failed. `failure_kind` says what class of failure it was; this says
+    /// what the harness actually reported, which is what an operator reads when
+    /// the class is unclassified. Never derived from stdout, so it can never
+    /// stand in for provider output the run did not produce. Omitted on the wire
+    /// when absent, and gated to [`FIRST_ERROR_SCHEMA_VERSION`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<FailureText>,
 }
 
 impl HistoryRecord {
@@ -650,6 +715,10 @@ impl HistoryRecord {
     /// (an I/O read, kept out of this pure function); `model` is the run's
     /// effective top-level model. `run_prompt` is the fallback prompt for an
     /// ordinary run — a batch result carries its own `prompt`, which wins.
+    // Every argument is a distinct caller-owned value, and the two that would
+    // group naturally — the session id and name — are already threaded through
+    // the I/O writer that owns them; a parameter struct here would only move the
+    // same list one call up.
     #[allow(clippy::too_many_arguments)]
     pub fn from_result(
         history_id: HistoryId,
@@ -680,12 +749,17 @@ impl HistoryRecord {
             )),
             crate::domain::report::ExecutionTelemetry::StdoutObserved { .. } => None,
         });
+        let error = failure_text(r.status, r.error.as_deref(), &r.stderr);
         HistoryRecord {
-            schema_version: if matches!(
+            // The oldest reader that can understand this record: only the field
+            // a record actually carries forces its version forward.
+            schema_version: if error.is_some() {
+                FIRST_ERROR_SCHEMA_VERSION
+            } else if matches!(
                 telemetry,
                 Some(crate::domain::report::ExecutionTelemetry::StdoutObserved { .. })
             ) {
-                SCHEMA_VERSION
+                OBSERVED_TIMING_SCHEMA_VERSION
             } else {
                 PREVIOUS_CURRENT_SCHEMA_VERSION
             }
@@ -722,11 +796,19 @@ impl HistoryRecord {
             session_id: r.session_id.clone(),
             events: r.events.clone(),
             failure_kind: r.failure_kind,
+            error,
         }
     }
 
     pub(crate) fn complete(&self) -> bool {
-        if !self.versioned_timing_valid() {
+        if !self.versioned_timing_valid()
+            || !error_text_valid(
+                &self.schema_version,
+                self.error.as_ref(),
+                self.status,
+                self.failure_kind,
+            )
+        {
             return false;
         }
         match self.timing_state() {
@@ -739,26 +821,18 @@ impl HistoryRecord {
                 model_ms,
                 tool_ms,
             }) => self.measured_trace_valid(started_at, finished_at, model_ms, tool_ms),
-            // Absence is the honest v1.0 representation twice over: for a
-            // harness whose spec declares no provider/tool boundary trace, and
-            // for a run that failed before the provider answered.
+            // Absence is the honest representation twice over: for a harness
+            // whose spec declares no provider/tool boundary trace, and for a run
+            // that failed, which has no timing *because* it failed.
             Ok(HistoryTiming::Unavailable) => {
-                self.failed_before_output()
+                run_failed(self.status)
                     || (self.harness_lacks_trace() && self.untimed_trace_valid())
             }
-            // Partial telemetry means measurement was cut short, which is what a
-            // failure looks like; for a run that worked it is corrupt data.
-            Err(()) => self.failed_before_output(),
+            // Timing that is neither wholly present nor wholly absent is corrupt
+            // whatever the run did, and no writer produces it — a failure records
+            // its telemetry as absent, not as half a measurement.
+            Err(()) => false,
         }
-    }
-
-    /// Whether this record's run failed before the provider produced an answer,
-    /// so its telemetry is absent or partial *because* the run failed — at
-    /// launch, or part-way through a turn. Recording it anyway is the point: a
-    /// history that can only hold successes hides exactly the runs an operator
-    /// has to see (quota-killed sessions vanishing from every worker's history).
-    fn failed_before_output(&self) -> bool {
-        failed_before_output(self.status, self.text.as_deref())
     }
 
     /// Whether the harness this record names declares no provider/tool boundary
@@ -825,7 +899,9 @@ impl HistoryRecord {
     }
 
     fn versioned_timing_valid(&self) -> bool {
-        if self.schema_version != SCHEMA_VERSION
+        let reads_observed_timing =
+            version_at_least(&self.schema_version, OBSERVED_TIMING_SCHEMA_VERSION);
+        if !reads_observed_timing
             && self
                 .events
                 .as_ref()
@@ -836,7 +912,7 @@ impl HistoryRecord {
         match self.observed_tool_ms {
             None => true,
             Some(_) => {
-                self.schema_version == SCHEMA_VERSION
+                reads_observed_timing
                     && self.duration_ms.is_some()
                     && matches!(self.timing_state(), Ok(HistoryTiming::Unavailable))
             }
@@ -867,10 +943,7 @@ impl HistoryRecord {
     /// Deserialize the materialized view of a current event-sourced run.
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
         let wire: HistoryRecordWire = serde_json::from_value(value)?;
-        if !matches!(
-            wire.schema_version.as_str(),
-            SCHEMA_VERSION | PREVIOUS_CURRENT_SCHEMA_VERSION | FIRST_EVENT_SCHEMA_VERSION
-        ) {
+        if version_rank(&wire.schema_version).is_none() {
             return Err(serde_json::Error::io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
@@ -937,6 +1010,7 @@ impl HistoryRecord {
                     .collect()
             }),
             failure_kind: wire.failure_kind,
+            error: wire.error,
         }
     }
 }
@@ -976,18 +1050,175 @@ enum HistoryTiming<'a> {
     },
 }
 
-/// Whether a run failed before the provider produced an answer. Such a run has
-/// absent or partial timing *because* it failed — it never reached the boundary
-/// the trace is measured between — so incomplete telemetry is its honest v1.0
-/// representation, exactly as absence is for a harness that declares no trace at
-/// all. A run that produced an answer keeps the full strictness, so a
-/// trace-capable harness still cannot silently write corrupt data for work that
-/// actually happened.
-fn failed_before_output(status: Status, text: Option<&str>) -> bool {
+/// Whether the run this record describes did not succeed. Such a run may have no
+/// timing *because* it failed — it never reached the boundary a provider trace is
+/// measured between — so absent telemetry is its honest representation, exactly
+/// as it is for a harness that declares no trace at all. A run that succeeded
+/// keeps the full strictness, so a trace-capable harness still cannot silently
+/// write corrupt data for work that actually happened.
+///
+/// The test is the status alone. Extracted `text` is deliberately NOT consulted:
+/// a failed run's transcript can still yield partial assistant text (a reasoning
+/// line, a half-finished answer), and reading that as "the provider succeeded"
+/// would refuse the record for the very runs — cut short mid-turn — this exists
+/// to keep. `status` is the run's own verdict on whether it worked.
+///
+/// Public because the generated SDK schemas split their status branches by this
+/// same predicate: one rule, applied to the enum's own serialized variants,
+/// rather than two hand-kept lists.
+pub fn run_failed(status: Status) -> bool {
     matches!(
         status,
         Status::Nonzero | Status::Timeout | Status::SpawnError | Status::Skipped
-    ) && text.is_none_or(|text| text.trim().is_empty())
+    )
+}
+
+/// The longest normalized failure text a record carries, in *characters* — the
+/// unit [`crate::domain::history`] bounds every string in, because it is the one
+/// unit `maxLength` expresses and therefore the one every generated SDK
+/// validator can agree on. A CLI's error message is a line or two; the bound is
+/// what keeps a runaway stderr dump out of a history line, and the marker is
+/// what tells a reader the text was cut.
+pub const ERROR_MAX: usize = 2048;
+const ERROR_TRUNCATION_MARKER: char = '\u{2026}';
+
+/// The error returned when text cannot be a [`FailureText`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("must be non-empty and at most {ERROR_MAX} characters")]
+pub struct FailureTextError;
+
+/// A record's failure message: non-empty, and bounded to [`ERROR_MAX`]
+/// characters. That pair is the whole invariant — exactly what the generated
+/// schema states, so reading a record can never widen what writing one promises.
+/// Wrapping it is what keeps an empty or runaway value out of a record entirely,
+/// the same way [`HistoryId`] and [`HistoryLabels`] keep their own invariants
+/// unrepresentable rather than re-checked at each use.
+///
+/// Trimming and the truncation marker belong to [`Self::normalized`], the
+/// constructor writers use — not to the type. A record read back from disk
+/// preserves the text it was written with rather than being quietly rewritten.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct FailureText(String);
+
+impl FailureText {
+    /// Trim `text` and bound it to [`ERROR_MAX`] characters, marking the cut so
+    /// a reader can tell truncated output from a message that simply ended.
+    /// `None` when nothing is left to report.
+    #[must_use]
+    pub fn normalized(text: &str) -> Option<Self> {
+        let source = text.trim();
+        if source.is_empty() {
+            return None;
+        }
+        let mut bounded: String = source.chars().take(ERROR_MAX).collect();
+        if source.chars().nth(ERROR_MAX).is_some() {
+            bounded.truncate(
+                bounded
+                    .char_indices()
+                    .nth(ERROR_MAX - 1)
+                    .map_or(bounded.len(), |(offset, _)| offset),
+            );
+            bounded.push(ERROR_TRUNCATION_MARKER);
+        }
+        Some(Self(bounded))
+    }
+
+    /// The message text — non-empty and within [`ERROR_MAX`] by construction, so
+    /// a caller renders or stores it without re-checking either.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for FailureText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl FromStr for FailureText {
+    type Err = FailureTextError;
+
+    /// Accept exactly what the schema promises a reader, and nothing more.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.is_empty() || value.chars().count() > ERROR_MAX {
+            return Err(FailureTextError);
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+
+impl<'de> Deserialize<'de> for FailureText {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for FailureText {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("FailureText")
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "minLength": 1,
+            "maxLength": ERROR_MAX,
+        })
+    }
+}
+
+/// The failure text for one run, normalized by [`FailureText::normalized`]:
+/// oneharness's own diagnostic when it generated one (a spawn failure, a
+/// timeout, a binary that is not installed), else the harness's captured stderr
+/// — but only for a run that failed, so a successful run's stderr chatter never
+/// lands in history.
+fn failure_text(status: Status, error: Option<&str>, stderr: &str) -> Option<FailureText> {
+    match error.map(str::trim) {
+        Some(error) if !error.is_empty() => FailureText::normalized(error),
+        _ if run_failed(status) => FailureText::normalized(stderr),
+        _ => None,
+    }
+}
+
+/// Whether the run this record describes reported a failure at all — by its own
+/// exit status, or by a classified [`FailureKind`] on an otherwise clean exit.
+/// The second half is not hypothetical: a deferred-tool dead-end exits 0 having
+/// done no work, and oneharness's own message about it is exactly the failure
+/// text a record should carry.
+///
+/// Deliberately broader than [`run_failed`], which gates *timing* and must stay
+/// keyed on the status alone: a clean exit claims the run worked, so its
+/// telemetry is still held to the full bar.
+fn reported_failure(status: Status, failure_kind: Option<FailureKind>) -> bool {
+    run_failed(status) || failure_kind.is_some()
+}
+
+/// Whether a record's failure text agrees with the rest of the record: the field
+/// arrived in [`FIRST_ERROR_SCHEMA_VERSION`], so an older record carrying it was
+/// not written by any oneharness, and it is a *failure* signal, so a run that
+/// reported no failure has nothing to put in it. (Emptiness and length are not
+/// checked here — [`FailureText`] makes those unrepresentable.)
+fn error_text_valid(
+    schema_version: &str,
+    error: Option<&FailureText>,
+    status: Status,
+    failure_kind: Option<FailureKind>,
+) -> bool {
+    error.is_none()
+        || (version_at_least(schema_version, FIRST_ERROR_SCHEMA_VERSION)
+            && reported_failure(status, failure_kind))
 }
 
 impl<'de> Deserialize<'de> for HistoryRecord {
@@ -1041,6 +1272,8 @@ struct HistoryRecordWire {
     session_id: Option<String>,
     events: Option<Vec<LegacyActionEvent>>,
     failure_kind: Option<FailureKind>,
+    #[serde(default)]
+    error: Option<FailureText>,
 }
 
 /// Superset reader for action events across the legacy contracts. Versions 0.1
@@ -1522,6 +1755,19 @@ mod tests {
         assert_eq!(id["pattern"], UUID_PATTERN);
         assert_eq!(id["minLength"], UUID_LEN);
         assert_eq!(id["maxLength"], UUID_LEN);
+
+        let failure = schemars::schema_for!(FailureText);
+        let failure = failure.as_value();
+        assert_eq!(failure["minLength"], 1);
+        assert_eq!(failure["maxLength"], ERROR_MAX);
+        // The bound is a character count in both places: an astral-heavy message
+        // at the limit must read back, or an SDK would refuse what the CLI wrote.
+        let astral = "\u{1F600}".repeat(ERROR_MAX);
+        assert_eq!(
+            FailureText::normalized(&astral).map(|text| text.as_str().chars().count()),
+            Some(ERROR_MAX)
+        );
+        assert!(astral.parse::<FailureText>().is_ok());
     }
 
     #[test]
@@ -1667,23 +1913,13 @@ mod tests {
         // between, so absence is the honest reading — not a reason to drop it.
         assert!(failed.complete());
         assert_eq!(failed.failure_kind, Some(FailureKind::Quota));
-
-        // Partial timing — invocation bounds without a model/tool split — is the
-        // other shape a cut-short measurement leaves, and reads back the same way.
-        let mut partial = serde_json::to_value(&failed).unwrap();
-        partial["started_at"] = Value::String("2026-01-01T00:00:00Z".to_string());
-        let parsed = serde_json::from_value::<HistoryRecord>(partial.clone()).unwrap();
-        assert_eq!(parsed.started_at.as_deref(), Some("2026-01-01T00:00:00Z"));
-        assert!(parsed.model_ms.is_none());
-        // The written run line and the materialized record read the same rule, so
-        // a partial-timing failure survives the round trip through the JSONL file.
-        let mut line =
-            serde_json::to_value(HistoryLine::Run(HistoryRunRecord::from_record(&failed))).unwrap();
-        line["started_at"] = Value::String("2026-01-01T00:00:00Z".to_string());
-        assert!(serde_json::from_value::<HistoryLine>(line.clone()).is_ok());
-        line["status"] = Value::String("ok".to_string());
-        line["text"] = Value::String("the answer is 42".to_string());
-        assert!(serde_json::from_value::<HistoryLine>(line).is_err());
+        // The harness's own stderr is what an operator reads when the classified
+        // kind is not enough, so it rides along — and forces v1.3.
+        assert_eq!(
+            failed.error.as_ref().map(FailureText::as_str),
+            Some("Error: insufficient_quota")
+        );
+        assert_eq!(failed.schema_version, SCHEMA_VERSION);
 
         // Events the failure interrupted keep their observed boundaries; the
         // "no run timing means no event timing" rule is a success-run rule.
@@ -1694,29 +1930,188 @@ mod tests {
             "finished_at": null, "duration_ms": null, "status": "interrupted"
         }]);
         assert!(serde_json::from_value::<HistoryRecord>(interrupted).is_ok());
+
+        // The run line written to the JSONL file reads back by the same rule.
+        let line =
+            serde_json::to_value(HistoryLine::Run(HistoryRunRecord::from_record(&failed))).unwrap();
+        assert_eq!(
+            line["error"],
+            Value::String("Error: insufficient_quota".to_string())
+        );
+        assert!(serde_json::from_value::<HistoryLine>(line).is_ok());
+    }
+
+    /// The carve-out reads the run's own verdict, never its extracted text. A
+    /// turn cut short can still leave partial assistant text behind, and treating
+    /// that as "the provider succeeded" would refuse exactly the records this
+    /// exists to keep.
+    #[test]
+    fn a_failure_that_left_partial_text_is_still_recordable() {
+        let partial_answer = record_of(&RunResult {
+            text: Some("I was still thinking when".to_string()),
+            text_source: Some("json:codex-agent-message".to_string()),
+            ..failed_traced_result()
+        });
+        assert!(partial_answer.complete());
+        assert_eq!(
+            partial_answer.text.as_deref(),
+            Some("I was still thinking when")
+        );
     }
 
     #[test]
-    fn a_run_that_answered_still_needs_complete_telemetry() {
-        // Same partial timing, but the provider produced an answer: measurement
-        // was possible, so half of it is corrupt data, not an honest failure.
+    fn a_run_that_succeeded_still_needs_complete_telemetry() {
+        // A clean exit is the run's own claim that it worked, so a trace-capable
+        // harness that reported no timing for it is drift, not an honest failure.
         let worked = record_of(&RunResult {
+            status: Status::Ok,
+            exit_code: Some(0),
+            stderr: String::new(),
+            failure_kind: None,
             text: Some("the answer is 42".to_string()),
             ..failed_traced_result()
         });
         assert!(!worked.complete());
-        let mut partial = serde_json::to_value(&worked).unwrap();
-        partial["started_at"] = Value::String("2026-01-01T00:00:00Z".to_string());
-        assert!(serde_json::from_value::<HistoryRecord>(partial).is_err());
-
-        // A clean exit with no answer is not a failure either — the carve-out is
-        // keyed on the run having failed, not merely on the text being absent.
-        let empty_success = record_of(&RunResult {
+        assert!(worked.error.is_none());
+        // ... and one whose answer was never extracted is no different.
+        let silent = record_of(&RunResult {
             status: Status::Ok,
             exit_code: Some(0),
+            stderr: String::new(),
+            failure_kind: None,
             ..failed_traced_result()
         });
-        assert!(!empty_success.complete());
+        assert!(!silent.complete());
+    }
+
+    /// Timing that is neither wholly present nor wholly absent is corrupt data
+    /// for every status — no writer produces it, and admitting it would put this
+    /// check out of step with the schema the SDK validators are generated from.
+    #[test]
+    fn half_measured_timing_is_refused_whatever_the_run_did() {
+        for status in ["nonzero", "timeout", "ok"] {
+            let mut partial = serde_json::to_value(record_of(&failed_traced_result())).unwrap();
+            partial["status"] = Value::String(status.to_string());
+            partial["started_at"] = Value::String("2026-01-01T00:00:00Z".to_string());
+            assert!(
+                serde_json::from_value::<HistoryRecord>(partial).is_err(),
+                "{status}"
+            );
+        }
+    }
+
+    #[test]
+    fn failure_text_is_normalized_bounded_and_never_taken_from_a_run_that_worked() {
+        let text = |status, error, stderr| {
+            failure_text(status, error, stderr).map(|text| text.as_str().to_string())
+        };
+        // oneharness's own diagnostic wins over the child's stderr: on a spawn
+        // failure or a timeout it is the only account of what happened.
+        assert_eq!(
+            text(Status::SpawnError, Some("  could not spawn  "), "noise").as_deref(),
+            Some("could not spawn")
+        );
+        // A failed run with no diagnostic of its own falls back to stderr.
+        assert_eq!(
+            text(Status::Nonzero, None, "\n401 Unauthorized\n").as_deref(),
+            Some("401 Unauthorized")
+        );
+        // A run that worked never contributes its stderr chatter.
+        assert_eq!(text(Status::Ok, None, "warning: deprecated"), None);
+        // Nothing to say stays absent rather than becoming an empty string.
+        assert_eq!(text(Status::Nonzero, None, "   \n"), None);
+        // A runaway stderr is cut to the bound, with the cut marked.
+        let flood = "x".repeat(ERROR_MAX * 2);
+        let bounded = text(Status::Timeout, None, &flood).unwrap();
+        assert_eq!(bounded.chars().count(), ERROR_MAX);
+        assert!(bounded.ends_with(ERROR_TRUNCATION_MARKER));
+        // Exactly at the bound, nothing is marked.
+        let exact = "y".repeat(ERROR_MAX);
+        assert_eq!(
+            text(Status::Timeout, None, &exact).as_deref(),
+            Some(&*exact)
+        );
+        // An invalid value is not constructible, so a record cannot carry one.
+        assert_eq!("".parse::<FailureText>(), Err(FailureTextError));
+        assert_eq!(
+            "z".repeat(ERROR_MAX + 1).parse::<FailureText>(),
+            Err(FailureTextError)
+        );
+    }
+
+    #[test]
+    fn failure_text_is_gated_to_the_version_that_introduced_it() {
+        let failed = record_of(&failed_traced_result());
+        let mut older = serde_json::to_value(&failed).unwrap();
+        for version in [
+            FIRST_EVENT_SCHEMA_VERSION,
+            PREVIOUS_CURRENT_SCHEMA_VERSION,
+            OBSERVED_TIMING_SCHEMA_VERSION,
+        ] {
+            older["schema_version"] = Value::String(version.to_string());
+            assert!(
+                serde_json::from_value::<HistoryRecord>(older.clone()).is_err(),
+                "{version} predates the error field"
+            );
+        }
+        // An empty or over-long value is not what the contract promises either.
+        let mut empty = serde_json::to_value(&failed).unwrap();
+        empty["error"] = Value::String(String::new());
+        assert!(serde_json::from_value::<HistoryRecord>(empty).is_err());
+        let mut long = serde_json::to_value(&failed).unwrap();
+        long["error"] = Value::String("z".repeat(ERROR_MAX + 1));
+        assert!(serde_json::from_value::<HistoryRecord>(long).is_err());
+    }
+
+    /// `error` is a failure signal, so the record cannot claim one for a run that
+    /// reported no failure — but a clean exit that *did* report one (the
+    /// deferred-tool dead-end: exit 0, no work done) is exactly the case the
+    /// field exists for, and must not be caught by the same rule.
+    #[test]
+    fn failure_text_belongs_only_to_a_run_that_reported_a_failure() {
+        let failed = record_of(&failed_traced_result());
+        let mut clean_exit = serde_json::to_value(&failed).unwrap();
+        clean_exit["status"] = Value::String("ok".to_string());
+        clean_exit["exit_code"] = Value::from(0);
+        clean_exit["started_at"] = Value::String("2026-01-01T00:00:00Z".to_string());
+        clean_exit["finished_at"] = Value::String("2026-01-01T00:00:01Z".to_string());
+        clean_exit["model_ms"] = Value::from(1);
+        clean_exit["tool_ms"] = Value::from(0);
+        clean_exit["duration_ms"] = Value::from(42);
+
+        let mut unreported = clean_exit.clone();
+        unreported["failure_kind"] = Value::Null;
+        assert!(serde_json::from_value::<HistoryRecord>(unreported).is_err());
+
+        let deferred = record_of(&RunResult {
+            status: Status::Ok,
+            exit_code: Some(0),
+            stderr: String::new(),
+            failure_kind: Some(FailureKind::ToolDeferred),
+            error: Some("claude-code deferred a builtin tool call".to_string()),
+            ..result()
+        });
+        assert_eq!(
+            deferred.error.as_ref().map(FailureText::as_str),
+            Some("claude-code deferred a builtin tool call")
+        );
+        assert!(deferred.complete());
+    }
+
+    #[test]
+    fn readable_versions_are_ordered_so_a_field_gate_can_ask_for_a_minimum() {
+        assert!(version_at_least(SCHEMA_VERSION, FIRST_EVENT_SCHEMA_VERSION));
+        assert!(version_at_least(
+            OBSERVED_TIMING_SCHEMA_VERSION,
+            OBSERVED_TIMING_SCHEMA_VERSION
+        ));
+        assert!(!version_at_least(
+            PREVIOUS_CURRENT_SCHEMA_VERSION,
+            OBSERVED_TIMING_SCHEMA_VERSION
+        ));
+        // An unreadable version never satisfies a minimum by accident.
+        assert!(!version_at_least("9.9", FIRST_EVENT_SCHEMA_VERSION));
+        assert!(!version_at_least(SCHEMA_VERSION, "9.9"));
     }
 
     #[test]

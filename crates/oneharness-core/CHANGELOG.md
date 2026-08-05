@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.7](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.6.6...oneharness-core-v0.6.7) - 2026-08-05
+
+### Fixed
+
+- record history for a run that failed before it could be measured ([#1217](https://github.com/nickderobertis/oneharness/pull/1217))
+
 ## [0.6.6](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.6.5...oneharness-core-v0.6.6) - 2026-08-03
 
 ### Fixed

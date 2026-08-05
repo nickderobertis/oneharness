@@ -9181,9 +9181,14 @@ fn history_records_a_failure_whose_telemetry_could_not_be_measured() {
             "{tag}"
         );
         assert_eq!(record["schema_version"], "1.3", "{tag}");
-        // Timing the run never reached is absent, never fabricated.
-        assert!(record.get("started_at").is_none(), "{tag}");
+        // Partial telemetry, preserved rather than discarded with the split: the
+        // instant the runner itself watched the invocation start is measured, so
+        // it survives; the provider/tool split a transcript that stopped mid-turn
+        // could never yield is absent, never fabricated.
+        assert!(record["started_at"].is_string(), "{tag}");
         assert!(record.get("model_ms").is_none(), "{tag}");
+        assert!(record.get("tool_ms").is_none(), "{tag}");
+        assert!(record["finished_at"].is_null(), "{tag}");
         // Salvaged provider text is reported as-is; absent stays null, never
         // filled in from the error text.
         assert_eq!(
@@ -9284,6 +9289,69 @@ fn history_records_the_failure_text_of_a_clean_exit_dead_end() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A run can fail silently: a non-zero exit with nothing on stderr and no
+/// oneharness diagnostic of its own. There is then no failure text to record —
+/// the field is omitted rather than invented — but the invocation the runner
+/// watched is still measured, so the record carries invocation-bounds-only
+/// timing and declares the version that shape arrived in.
+#[test]
+fn a_silent_failure_records_partial_timing_without_inventing_failure_text() {
+    let dir = hist_dir("silent-failure");
+    let ds = dir.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "silent",
+            "--bin",
+            &bin_override("codex"),
+            "--history",
+            "--history-dir",
+            &ds,
+            "--bypass",
+            "--compact",
+        ],
+        // Exits 1 having written nothing at all — no transcript, no stderr.
+        &[("MOCK_EXIT", "1"), ("MOCK_STDOUT", ""), ("MOCK_STDERR", "")],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("could not write history record"),
+        "a silent failure is still recorded: {stderr}"
+    );
+    let report = json_stdout(&output);
+    let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
+    assert_eq!(record["status"], "nonzero");
+    assert_eq!(record["exit_code"], 1);
+    assert!(record["failure_kind"].is_null());
+    assert!(
+        record.get("error").is_none(),
+        "nothing was reported, so nothing is invented: {record}"
+    );
+    // The partial measurement alone forces the version forward.
+    assert!(record["started_at"].is_string());
+    assert!(record.get("model_ms").is_none());
+    assert_eq!(record["schema_version"], "1.3");
+    let shown = json_stdout(&run(
+        &[
+            "history",
+            "show",
+            "--last",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--compact",
+        ],
+        &[],
+    ));
+    assert_eq!(shown[0]["started_at"], record["started_at"]);
+    assert!(shown[0].get("error").is_none());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// A harness that floods stderr must not flood history with it. The bound is a
 /// property of the persisted record, so assert it there — on the file a consumer
 /// reads — rather than only on the pure helper that applies it.
@@ -9360,8 +9428,13 @@ fn documented_history_failure_text_tracks_the_record_contract() {
         "README.md must state the failure-text bound as `{bound}`"
     );
     let introduced = format!(
-        "arrived in history schema **v{}**",
+        "both arrived in history schema **v{}**",
         oneharness_core::domain::history::FIRST_ERROR_SCHEMA_VERSION
+    );
+    assert_eq!(
+        oneharness_core::domain::history::FIRST_PARTIAL_TIMING_SCHEMA_VERSION,
+        oneharness_core::domain::history::FIRST_ERROR_SCHEMA_VERSION,
+        "the README says `both`, so the two gates must name one version"
     );
     assert!(
         readme.contains(&introduced),
@@ -9429,8 +9502,10 @@ fn a_successful_run_records_no_failure_text() {
 fn history_records_every_shape_of_run_that_never_produced_output() {
     // Each case's `error` comes from oneharness's own diagnostic rather than the
     // child's stderr — the harness never got far enough to write one, so this is
-    // the only account of what happened.
-    for (tag, bin, extra, envs, status, exit, error_needle) in [
+    // the only account of what happened. `bounds` says which of the two honest
+    // timing shapes to expect: a run that was spawned leaves the invocation start
+    // the runner watched, a harness that was never spawned leaves nothing at all.
+    for (tag, bin, extra, envs, status, exit, error_needle, bounds) in [
         (
             "timeout",
             bin_override("codex"),
@@ -9439,6 +9514,7 @@ fn history_records_every_shape_of_run_that_never_produced_output() {
             "timeout",
             Some(1),
             "timeout",
+            true,
         ),
         (
             "spawn-error",
@@ -9448,6 +9524,7 @@ fn history_records_every_shape_of_run_that_never_produced_output() {
             "spawn-error",
             Some(1),
             "failed to spawn",
+            true,
         ),
         // Not installed: no run at all, so `oneharness` itself still exits 0.
         (
@@ -9458,6 +9535,7 @@ fn history_records_every_shape_of_run_that_never_produced_output() {
             "skipped",
             Some(0),
             "not found on PATH",
+            false,
         ),
     ] {
         let dir = hist_dir(&format!("no-output-{tag}"));
@@ -9488,7 +9566,14 @@ fn history_records_every_shape_of_run_that_never_produced_output() {
         let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
         assert_eq!(record["status"], status, "{tag}");
         assert!(record["text"].is_null(), "{tag}");
+        // No provider/tool split either way — the trace never got far enough.
         assert!(record.get("model_ms").is_none(), "{tag}");
+        assert_eq!(
+            record["started_at"].is_string(),
+            bounds,
+            "{tag}: a spawned run keeps its observed invocation start; an \
+             unspawned one has none to keep"
+        );
         let error = record["error"]
             .as_str()
             .unwrap_or_else(|| panic!("{tag}: the failure text must be recorded: {record}"));

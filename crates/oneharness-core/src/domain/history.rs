@@ -38,8 +38,11 @@ use crate::domain::signals::{FailureKind, Usage};
 /// shape of every record — and what makes each version constant below the exact
 /// gate for the one field it introduced.
 pub const SCHEMA_VERSION: &str = "1.3";
-/// v1.3 introduced the normalized failure `error` text.
+/// v1.3 introduced the normalized failure `error` text and invocation-bounds-only
+/// timing, so both name the same version — and both must, because an older
+/// reader refuses either shape rather than misreading it.
 pub const FIRST_ERROR_SCHEMA_VERSION: &str = SCHEMA_VERSION;
+pub const FIRST_PARTIAL_TIMING_SCHEMA_VERSION: &str = SCHEMA_VERSION;
 /// v1.2 introduced stdout-observed tool timing (`observed_tool_ms`) and the
 /// `timing_source` provenance it puts on events.
 pub const OBSERVED_TIMING_SCHEMA_VERSION: &str = "1.2";
@@ -253,6 +256,14 @@ impl HistoryRunRecord {
                         .is_some_and(|duration| model_ms.saturating_add(tool_ms) <= duration)
                     && (!matches!(self.status, Status::Ok | Status::Nonzero)
                         || finished_at.is_some())
+            }
+            // Invocation bounds with no split derived from them: what a run cut
+            // short leaves, legible only on a run that was cut short and only to
+            // a reader that knows the shape.
+            (Some(started_at), _, None, None, time_to_first_token_ms) => {
+                run_failed(self.status)
+                    && version_at_least(&self.schema_version, FIRST_PARTIAL_TIMING_SCHEMA_VERSION)
+                    && partial_trace_valid(started_at, time_to_first_token_ms, self.duration_ms)
             }
             _ => false,
         }
@@ -747,14 +758,23 @@ impl HistoryRecord {
                 tool_ms,
                 time_to_first_token_ms,
             )),
-            crate::domain::report::ExecutionTelemetry::StdoutObserved { .. } => None,
+            crate::domain::report::ExecutionTelemetry::StdoutObserved { .. }
+            | crate::domain::report::ExecutionTelemetry::PartialInvocation { .. } => None,
+        });
+        let partial = telemetry.and_then(|telemetry| match telemetry {
+            crate::domain::report::ExecutionTelemetry::PartialInvocation { started_at } => {
+                Some(started_at)
+            }
+            _ => None,
         });
         let error = failure_text(r.status, r.error.as_deref(), &r.stderr);
         HistoryRecord {
-            // The oldest reader that can understand this record: only the field
-            // a record actually carries forces its version forward.
+            // The oldest reader that can understand this record: only the shape a
+            // record actually carries forces its version forward.
             schema_version: if error.is_some() {
                 FIRST_ERROR_SCHEMA_VERSION
+            } else if partial.is_some() {
+                FIRST_PARTIAL_TIMING_SCHEMA_VERSION
             } else if matches!(
                 telemetry,
                 Some(crate::domain::report::ExecutionTelemetry::StdoutObserved { .. })
@@ -779,7 +799,9 @@ impl HistoryRecord {
             status: r.status,
             exit_code: r.exit_code,
             duration_ms: r.duration_ms,
-            started_at: measured.map(|timing| timing.0.clone()),
+            started_at: measured
+                .map(|timing| timing.0.clone())
+                .or_else(|| partial.map(|started_at| started_at.as_str().to_string())),
             finished_at: measured.and_then(|timing| timing.1.clone()),
             model_ms: measured.and_then(|timing| *timing.2),
             tool_ms: measured.and_then(|timing| *timing.3),
@@ -788,7 +810,8 @@ impl HistoryRecord {
                 crate::domain::report::ExecutionTelemetry::StdoutObserved { tool_ms } => {
                     Some(*tool_ms)
                 }
-                crate::domain::report::ExecutionTelemetry::ProviderMeasured { .. } => None,
+                crate::domain::report::ExecutionTelemetry::ProviderMeasured { .. }
+                | crate::domain::report::ExecutionTelemetry::PartialInvocation { .. } => None,
             }),
             text: r.text.clone(),
             text_source: r.text_source.clone(),
@@ -828,9 +851,18 @@ impl HistoryRecord {
                 run_failed(self.status)
                     || (self.harness_lacks_trace() && self.untimed_trace_valid())
             }
-            // Timing that is neither wholly present nor wholly absent is corrupt
-            // whatever the run did, and no writer produces it — a failure records
-            // its telemetry as absent, not as half a measurement.
+            // A measurement cut short belongs to a run that was cut short. On a
+            // run that succeeded the same shape is corrupt data: the provider
+            // answered, so the split it never wrote should have been there.
+            Ok(HistoryTiming::Partial {
+                started_at,
+                time_to_first_token_ms,
+            }) => {
+                run_failed(self.status)
+                    && version_at_least(&self.schema_version, FIRST_PARTIAL_TIMING_SCHEMA_VERSION)
+                    && partial_trace_valid(started_at, time_to_first_token_ms, self.duration_ms)
+            }
+            // Anything else is incoherent rather than partial (see `timing_state`).
             Err(()) => false,
         }
     }
@@ -934,6 +966,16 @@ impl HistoryRecord {
                     finished_at,
                     model_ms,
                     tool_ms,
+                })
+            }
+            // A measurement that stopped at the invocation bounds. Every other
+            // combination is incoherent rather than partial — a finish with no
+            // start, a model total with no tool total, a first-token offset with
+            // nothing to measure it from — and stays refused.
+            (Some(started_at), _, None, None, time_to_first_token_ms) => {
+                Ok(HistoryTiming::Partial {
+                    started_at,
+                    time_to_first_token_ms,
                 })
             }
             _ => Err(()),
@@ -1042,12 +1084,36 @@ fn invalid_history(message: &str) -> serde_json::Error {
 /// and readers from treating a partial set of optional fields as meaningful.
 enum HistoryTiming<'a> {
     Unavailable,
+    /// The invocation bounds the runner observed directly, with no provider/tool
+    /// split derived from them — what a run cut short leaves behind. Only the
+    /// bounds: a split read out of a transcript that never finished is not a
+    /// measurement, so it is dropped rather than reported as one. Introduced in
+    /// [`FIRST_PARTIAL_TIMING_SCHEMA_VERSION`], which every record carrying it
+    /// declares.
+    Partial {
+        started_at: &'a str,
+        time_to_first_token_ms: Option<u128>,
+    },
     Measured {
         started_at: &'a str,
         finished_at: Option<&'a str>,
         model_ms: u128,
         tool_ms: u128,
     },
+}
+
+/// Whether an invocation-bounds-only measurement agrees with the run's own wall
+/// clock. Shared by the record and the run line so the file a writer produces and
+/// the record a reader materializes are held to one rule.
+fn partial_trace_valid(
+    started_at: &str,
+    time_to_first_token_ms: Option<u128>,
+    duration_ms: Option<u128>,
+) -> bool {
+    !started_at.is_empty()
+        && duration_ms.is_some_and(|duration| {
+            time_to_first_token_ms.is_none_or(|to_first_token| to_first_token <= duration)
+        })
 }
 
 /// Whether the run this record describes did not succeed. Such a run may have no
@@ -1209,7 +1275,16 @@ fn reported_failure(status: Status, failure_kind: Option<FailureKind>) -> bool {
 /// arrived in [`FIRST_ERROR_SCHEMA_VERSION`], so an older record carrying it was
 /// not written by any oneharness, and it is a *failure* signal, so a run that
 /// reported no failure has nothing to put in it. (Emptiness and length are not
-/// checked here — [`FailureText`] makes those unrepresentable.)
+/// checked here — [`FailureText`] makes those unrepresentable, and the generated
+/// schema states them.)
+///
+/// These two are the reader's own cross-field rules rather than shape the
+/// generated schema restates: expressing them there would mean splitting every
+/// timing branch by version and by whether it carries text, roughly doubling the
+/// contract the SDKs are generated from, to describe a record no writer produces.
+/// The gap runs only in the safe direction — an SDK accepts a shape the CLI's own
+/// reader refuses, never the reverse — which is the direction that would
+/// otherwise ship an SDK refusing what the CLI writes.
 fn error_text_valid(
     schema_version: &str,
     error: Option<&FailureText>,
@@ -1984,19 +2059,100 @@ mod tests {
         assert!(!silent.complete());
     }
 
-    /// Timing that is neither wholly present nor wholly absent is corrupt data
-    /// for every status — no writer produces it, and admitting it would put this
-    /// check out of step with the schema the SDK validators are generated from.
+    /// A run cut short leaves the invocation bounds the runner watched directly,
+    /// with no provider/tool split derived from a transcript that never finished.
+    /// That partial measurement is legible on a failed run and corrupt on one
+    /// that succeeded — where the provider answered, so the split it never wrote
+    /// should have been there.
     #[test]
-    fn half_measured_timing_is_refused_whatever_the_run_did() {
-        for status in ["nonzero", "timeout", "ok"] {
-            let mut partial = serde_json::to_value(record_of(&failed_traced_result())).unwrap();
-            partial["status"] = Value::String(status.to_string());
-            partial["started_at"] = Value::String("2026-01-01T00:00:00Z".to_string());
+    fn invocation_bounds_without_a_split_belong_to_a_run_that_was_cut_short() {
+        let mut partial = serde_json::to_value(record_of(&failed_traced_result())).unwrap();
+        partial["started_at"] = Value::String("2026-01-01T00:00:00Z".to_string());
+        let read = serde_json::from_value::<HistoryRecord>(partial.clone()).unwrap();
+        assert_eq!(read.started_at.as_deref(), Some("2026-01-01T00:00:00Z"));
+        assert!(read.model_ms.is_none() && read.tool_ms.is_none());
+        // A first-token offset within the run's duration rides along...
+        let mut with_offset = partial.clone();
+        with_offset["time_to_first_token_ms"] = Value::from(7);
+        assert!(serde_json::from_value::<HistoryRecord>(with_offset).is_ok());
+        // ...but not one the run was never long enough to contain.
+        let mut impossible = partial.clone();
+        impossible["time_to_first_token_ms"] = Value::from(u64::from(u32::MAX));
+        assert!(serde_json::from_value::<HistoryRecord>(impossible).is_err());
+
+        // The written run line reads back by the same rule.
+        let mut line =
+            serde_json::to_value(HistoryLine::Run(HistoryRunRecord::from_record(&read))).unwrap();
+        assert!(serde_json::from_value::<HistoryLine>(line.clone()).is_ok());
+
+        // The same shape on a run that succeeded is refused, record and line alike.
+        for succeeded in ["ok", "planned"] {
+            let mut worked = partial.clone();
+            worked["status"] = Value::String(succeeded.to_string());
+            worked["failure_kind"] = Value::Null;
+            worked.as_object_mut().unwrap().remove("error");
             assert!(
-                serde_json::from_value::<HistoryRecord>(partial).is_err(),
-                "{status}"
+                serde_json::from_value::<HistoryRecord>(worked).is_err(),
+                "{succeeded}"
             );
+        }
+        line["status"] = Value::String("ok".to_string());
+        line["failure_kind"] = Value::Null;
+        line.as_object_mut().unwrap().remove("error");
+        assert!(serde_json::from_value::<HistoryLine>(line).is_err());
+    }
+
+    /// A measurement is either whole, stopped at the bounds, or absent. Anything
+    /// else is incoherent rather than partial — a total with no counterpart, an
+    /// offset with nothing to measure it from — and no status makes it legible.
+    #[test]
+    fn an_incoherent_half_measurement_is_refused_whatever_the_run_did() {
+        let base = serde_json::to_value(record_of(&failed_traced_result())).unwrap();
+        let incoherent = [
+            (
+                "model total with no tool total",
+                vec![
+                    (
+                        "started_at",
+                        Value::String("2026-01-01T00:00:00Z".to_string()),
+                    ),
+                    ("model_ms", Value::from(1)),
+                ],
+            ),
+            (
+                "tool total with no model total",
+                vec![
+                    (
+                        "started_at",
+                        Value::String("2026-01-01T00:00:00Z".to_string()),
+                    ),
+                    ("tool_ms", Value::from(1)),
+                ],
+            ),
+            (
+                "first-token offset with no start",
+                vec![("time_to_first_token_ms", Value::from(1))],
+            ),
+            (
+                "finish with no start",
+                vec![(
+                    "finished_at",
+                    Value::String("2026-01-01T00:00:01Z".to_string()),
+                )],
+            ),
+        ];
+        for (tag, fields) in incoherent {
+            for status in ["nonzero", "timeout", "ok"] {
+                let mut record = base.clone();
+                record["status"] = Value::String(status.to_string());
+                for (field, value) in &fields {
+                    record[*field] = value.clone();
+                }
+                assert!(
+                    serde_json::from_value::<HistoryRecord>(record).is_err(),
+                    "{tag} on {status}"
+                );
+            }
         }
     }
 

@@ -5,21 +5,12 @@
 # diff); the diff-scoped run is the blocking PR check, not part of `check`.
 # Rules come from the pinned plugins below; tune one in place with
 # `override: true`. Bump a plugin's `@version` pin to pull new rules.
-version: 2
+version: 1
 files:
   # No `include`: llmlint lints the whole tree (exclude + .gitignore honored).
   # List committed files that shouldn't be judged (lock files, generated output).
   exclude:
     - "**/.git/**"
-    # The language SDKs' generated contracts. `just sdk-generate` /
-    # `just python-sdk-generate` write them from `sdk_schema::bundle`, and
-    # `generate:check` in `just sdk-check` / `just python-sdk-check` is their
-    # deterministic drift gate — there is no hand-written intent here to judge.
-    # They are also large enough that including them in a diff-scoped run
-    # overruns the judge's answer, which fails the whole tier rather than the
-    # generated files; the rules still cover the Rust that generates them.
-    - "npm/oneharness-sdk/src/generated/**"
-    - "python/oneharness-sdk/src/oneharness_sdk/_generated/**"
 rationales: true
 # No `agents` block: the harness/model are NOT pinned here. `oneharness.toml`
 # (composed alongside this file) selects them in fallback mode — codex + gpt-5.5

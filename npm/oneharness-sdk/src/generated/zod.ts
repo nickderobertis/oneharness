@@ -228,355 +228,364 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
       variant: z.union([z.string(), z.null()]).optional(),
     }),
   ]),
-  z.intersection(
-    z.union([
-      z.looseObject({
-        duration_ms: z
-          .int()
-          .gte(0)
-          .refine((value) => value !== undefined, { message: "Required" }),
-        error: z
-          .union([
-            z
-              .string()
-              .min(1)
-              .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
-            z.null(),
-          ])
-          .optional(),
-        exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        failure_kind: z
-          .union([z.lazy(() => FailureKindSchema), z.null()])
-          .refine((value) => value !== undefined, { message: "Required" }),
-        finished_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        harness_id: z.union([z.string(), z.null()]).optional(),
-        history_id: z
-          .string()
-          .min(36)
-          .regex(
-            new RegExp(
-              "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
-              "u",
-            ),
-          )
-          .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
-          .refine((value) => value !== undefined, { message: "Required" }),
-        labels: z.lazy(() => HistoryLabelsSchema).optional(),
-        model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        model_ms: z
-          .int()
-          .gte(0)
-          .refine((value) => value !== undefined, { message: "Required" }),
-        name: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        observed_tool_ms: z.never().optional(),
-        permission_mode: z
-          .lazy(() => PermissionModeSchema)
-          .refine((value) => value !== undefined, { message: "Required" }),
-        project: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        schema_version: z
-          .union([z.literal("1.0"), z.literal("1.1"), z.literal("1.2"), z.literal("1.3")])
-          .refine((value) => value !== undefined, { message: "Required" }),
-        session: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        started_at: z
-          .string()
-          .min(1)
-          .refine((value) => value !== undefined, { message: "Required" }),
-        status: z
-          .union([z.literal("ok"), z.literal("nonzero")])
-          .refine((value) => value !== undefined, { message: "Required" }),
-        text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        time_to_first_token_ms: z.union([z.int().gte(0), z.null()]).optional(),
-        timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        tool_ms: z
-          .int()
-          .gte(0)
-          .refine((value) => value !== undefined, { message: "Required" }),
-        type: z.literal("run").refine((value) => value !== undefined, { message: "Required" }),
-        usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
-        variant: z.union([z.string(), z.null()]).optional(),
-      }),
-      z.looseObject({
-        duration_ms: z
-          .int()
-          .gte(0)
-          .refine((value) => value !== undefined, { message: "Required" }),
-        error: z
-          .union([
-            z
-              .string()
-              .min(1)
-              .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
-            z.null(),
-          ])
-          .optional(),
-        exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        failure_kind: z
-          .union([z.lazy(() => FailureKindSchema), z.null()])
-          .refine((value) => value !== undefined, { message: "Required" }),
-        finished_at: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        harness_id: z.union([z.string(), z.null()]).optional(),
-        history_id: z
-          .string()
-          .min(36)
-          .regex(
-            new RegExp(
-              "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
-              "u",
-            ),
-          )
-          .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
-          .refine((value) => value !== undefined, { message: "Required" }),
-        labels: z.lazy(() => HistoryLabelsSchema).optional(),
-        model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        model_ms: z
-          .int()
-          .gte(0)
-          .refine((value) => value !== undefined, { message: "Required" }),
-        name: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        observed_tool_ms: z.never().optional(),
-        permission_mode: z
-          .lazy(() => PermissionModeSchema)
-          .refine((value) => value !== undefined, { message: "Required" }),
-        project: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        schema_version: z
-          .union([z.literal("1.0"), z.literal("1.1"), z.literal("1.2"), z.literal("1.3")])
-          .refine((value) => value !== undefined, { message: "Required" }),
-        session: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        started_at: z
-          .string()
-          .min(1)
-          .refine((value) => value !== undefined, { message: "Required" }),
-        status: z
-          .union([z.literal("timeout"), z.literal("spawn-error"), z.literal("skipped"), z.literal("planned")])
-          .refine((value) => value !== undefined, { message: "Required" }),
-        text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        time_to_first_token_ms: z.union([z.int().gte(0), z.null()]).optional(),
-        timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        tool_ms: z
-          .int()
-          .gte(0)
-          .refine((value) => value !== undefined, { message: "Required" }),
-        type: z.literal("run").refine((value) => value !== undefined, { message: "Required" }),
-        usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
-        variant: z.union([z.string(), z.null()]).optional(),
-      }),
-      z.looseObject({
-        duration_ms: z
-          .int()
-          .gte(0)
-          .refine((value) => value !== undefined, { message: "Required" }),
-        error: z
-          .union([
-            z
-              .string()
-              .min(1)
-              .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
-            z.null(),
-          ])
-          .optional(),
-        exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        failure_kind: z
-          .union([z.lazy(() => FailureKindSchema), z.null()])
-          .refine((value) => value !== undefined, { message: "Required" }),
-        finished_at: z.null().refine((value) => value !== undefined, { message: "Required" }),
-        harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        harness_id: z.union([z.string(), z.null()]).optional(),
-        history_id: z
-          .string()
-          .min(36)
-          .regex(
-            new RegExp(
-              "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
-              "u",
-            ),
-          )
-          .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
-          .refine((value) => value !== undefined, { message: "Required" }),
-        labels: z.lazy(() => HistoryLabelsSchema).optional(),
-        model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        model_ms: z.never().optional(),
-        name: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        observed_tool_ms: z
-          .int()
-          .gte(0)
-          .refine((value) => value !== undefined, { message: "Required" }),
-        permission_mode: z
-          .lazy(() => PermissionModeSchema)
-          .refine((value) => value !== undefined, { message: "Required" }),
-        project: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        schema_version: z
-          .union([z.literal("1.2"), z.literal("1.3")])
-          .refine((value) => value !== undefined, { message: "Required" }),
-        session: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        started_at: z.never().optional(),
-        status: z.lazy(() => StatusSchema).refine((value) => value !== undefined, { message: "Required" }),
-        text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        time_to_first_token_ms: z.never().optional(),
-        timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        tool_ms: z.never().optional(),
-        type: z.literal("run").refine((value) => value !== undefined, { message: "Required" }),
-        usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
-        variant: z.union([z.string(), z.null()]).optional(),
-      }),
-      z.looseObject({
-        duration_ms: z
-          .union([z.int().gte(0), z.null()])
-          .refine((value) => value !== undefined, { message: "Required" }),
-        error: z
-          .union([
-            z
-              .string()
-              .min(1)
-              .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
-            z.null(),
-          ])
-          .optional(),
-        exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        failure_kind: z
-          .union([z.lazy(() => FailureKindSchema), z.null()])
-          .refine((value) => value !== undefined, { message: "Required" }),
-        finished_at: z.null().refine((value) => value !== undefined, { message: "Required" }),
-        harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        harness_id: z.union([z.string(), z.null()]).optional(),
-        history_id: z
-          .string()
-          .min(36)
-          .regex(
-            new RegExp(
-              "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
-              "u",
-            ),
-          )
-          .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
-          .refine((value) => value !== undefined, { message: "Required" }),
-        labels: z.lazy(() => HistoryLabelsSchema).optional(),
-        model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        model_ms: z.never().optional(),
-        name: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        observed_tool_ms: z.never().optional(),
-        permission_mode: z
-          .lazy(() => PermissionModeSchema)
-          .refine((value) => value !== undefined, { message: "Required" }),
-        project: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        schema_version: z
-          .union([z.literal("1.0"), z.literal("1.1"), z.literal("1.2"), z.literal("1.3")])
-          .refine((value) => value !== undefined, { message: "Required" }),
-        session: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        started_at: z.never().optional(),
-        status: z
-          .union([z.literal("nonzero"), z.literal("timeout"), z.literal("spawn-error"), z.literal("skipped")])
-          .refine((value) => value !== undefined, { message: "Required" }),
-        text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        time_to_first_token_ms: z.never().optional(),
-        timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        tool_ms: z.never().optional(),
-        type: z.literal("run").refine((value) => value !== undefined, { message: "Required" }),
-        usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
-        variant: z.union([z.string(), z.null()]).optional(),
-      }),
-      z.looseObject({
-        duration_ms: z
-          .union([z.int().gte(0), z.null()])
-          .refine((value) => value !== undefined, { message: "Required" }),
-        error: z
-          .union([
-            z
-              .string()
-              .min(1)
-              .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
-            z.null(),
-          ])
-          .optional(),
-        exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        failure_kind: z
-          .union([z.lazy(() => FailureKindSchema), z.null()])
-          .refine((value) => value !== undefined, { message: "Required" }),
-        finished_at: z.null().refine((value) => value !== undefined, { message: "Required" }),
-        harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        harness_id: z.union([z.string(), z.null()]).optional(),
-        history_id: z
-          .string()
-          .min(36)
-          .regex(
-            new RegExp(
-              "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
-              "u",
-            ),
-          )
-          .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
-          .refine((value) => value !== undefined, { message: "Required" }),
-        labels: z.lazy(() => HistoryLabelsSchema).optional(),
-        model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        model_ms: z.never().optional(),
-        name: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        observed_tool_ms: z.never().optional(),
-        permission_mode: z
-          .lazy(() => PermissionModeSchema)
-          .refine((value) => value !== undefined, { message: "Required" }),
-        project: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        schema_version: z
-          .union([z.literal("1.0"), z.literal("1.1"), z.literal("1.2"), z.literal("1.3")])
-          .refine((value) => value !== undefined, { message: "Required" }),
-        session: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        started_at: z.never().optional(),
-        status: z
-          .union([z.literal("ok"), z.literal("planned")])
-          .refine((value) => value !== undefined, { message: "Required" }),
-        text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-        time_to_first_token_ms: z.never().optional(),
-        timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        tool_ms: z.never().optional(),
-        type: z.literal("run").refine((value) => value !== undefined, { message: "Required" }),
-        usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
-        variant: z.union([z.string(), z.null()]).optional(),
-      }),
-    ]),
-    z.union([
-      z.looseObject({
-        error: z.null().optional(),
-        schema_version: z
-          .union([z.literal("0.1"), z.literal("0.2"), z.literal("1.0"), z.literal("1.1"), z.literal("1.2")])
-          .optional(),
-      }),
-      z.looseObject({
-        error: z.null().optional(),
-        schema_version: z.literal("1.3").optional(),
-      }),
-      z.intersection(
-        z.looseObject({
-          error: z.string().refine((value) => value !== undefined, { message: "Required" }),
-          schema_version: z.literal("1.3").optional(),
-        }),
-        z.union([
-          z.looseObject({
-            status: z
-              .union([z.literal("nonzero"), z.literal("timeout"), z.literal("spawn-error"), z.literal("skipped")])
-              .optional(),
-          }),
-          z.looseObject({
-            failure_kind: z.string().refine((value) => value !== undefined, { message: "Required" }),
-          }),
-        ]),
-      ),
-    ]),
-  ),
+  z.union([
+    z.looseObject({
+      duration_ms: z
+        .int()
+        .gte(0)
+        .refine((value) => value !== undefined, { message: "Required" }),
+      error: z
+        .union([
+          z
+            .string()
+            .min(1)
+            .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
+          z.null(),
+        ])
+        .optional(),
+      exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      failure_kind: z
+        .union([z.lazy(() => FailureKindSchema), z.null()])
+        .refine((value) => value !== undefined, { message: "Required" }),
+      finished_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      harness_id: z.union([z.string(), z.null()]).optional(),
+      history_id: z
+        .string()
+        .min(36)
+        .regex(
+          new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+        )
+        .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
+        .refine((value) => value !== undefined, { message: "Required" }),
+      labels: z.lazy(() => HistoryLabelsSchema).optional(),
+      model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      model_ms: z
+        .int()
+        .gte(0)
+        .refine((value) => value !== undefined, { message: "Required" }),
+      name: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      observed_tool_ms: z.never().optional(),
+      permission_mode: z
+        .lazy(() => PermissionModeSchema)
+        .refine((value) => value !== undefined, { message: "Required" }),
+      project: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      schema_version: z
+        .union([z.literal("1.0"), z.literal("1.1"), z.literal("1.2"), z.literal("1.3")])
+        .refine((value) => value !== undefined, { message: "Required" }),
+      session: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      started_at: z
+        .string()
+        .min(1)
+        .refine((value) => value !== undefined, { message: "Required" }),
+      status: z
+        .union([z.literal("ok"), z.literal("nonzero")])
+        .refine((value) => value !== undefined, { message: "Required" }),
+      text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      time_to_first_token_ms: z.union([z.int().gte(0), z.null()]).optional(),
+      timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      tool_ms: z
+        .int()
+        .gte(0)
+        .refine((value) => value !== undefined, { message: "Required" }),
+      type: z.literal("run").refine((value) => value !== undefined, { message: "Required" }),
+      usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
+      variant: z.union([z.string(), z.null()]).optional(),
+    }),
+    z.looseObject({
+      duration_ms: z
+        .int()
+        .gte(0)
+        .refine((value) => value !== undefined, { message: "Required" }),
+      error: z
+        .union([
+          z
+            .string()
+            .min(1)
+            .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
+          z.null(),
+        ])
+        .optional(),
+      exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      failure_kind: z
+        .union([z.lazy(() => FailureKindSchema), z.null()])
+        .refine((value) => value !== undefined, { message: "Required" }),
+      finished_at: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      harness_id: z.union([z.string(), z.null()]).optional(),
+      history_id: z
+        .string()
+        .min(36)
+        .regex(
+          new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+        )
+        .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
+        .refine((value) => value !== undefined, { message: "Required" }),
+      labels: z.lazy(() => HistoryLabelsSchema).optional(),
+      model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      model_ms: z
+        .int()
+        .gte(0)
+        .refine((value) => value !== undefined, { message: "Required" }),
+      name: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      observed_tool_ms: z.never().optional(),
+      permission_mode: z
+        .lazy(() => PermissionModeSchema)
+        .refine((value) => value !== undefined, { message: "Required" }),
+      project: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      schema_version: z
+        .union([z.literal("1.0"), z.literal("1.1"), z.literal("1.2"), z.literal("1.3")])
+        .refine((value) => value !== undefined, { message: "Required" }),
+      session: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      started_at: z
+        .string()
+        .min(1)
+        .refine((value) => value !== undefined, { message: "Required" }),
+      status: z
+        .union([z.literal("timeout"), z.literal("spawn-error"), z.literal("skipped"), z.literal("planned")])
+        .refine((value) => value !== undefined, { message: "Required" }),
+      text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      time_to_first_token_ms: z.union([z.int().gte(0), z.null()]).optional(),
+      timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      tool_ms: z
+        .int()
+        .gte(0)
+        .refine((value) => value !== undefined, { message: "Required" }),
+      type: z.literal("run").refine((value) => value !== undefined, { message: "Required" }),
+      usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
+      variant: z.union([z.string(), z.null()]).optional(),
+    }),
+    z.looseObject({
+      duration_ms: z
+        .int()
+        .gte(0)
+        .refine((value) => value !== undefined, { message: "Required" }),
+      error: z
+        .union([
+          z
+            .string()
+            .min(1)
+            .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
+          z.null(),
+        ])
+        .optional(),
+      exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      failure_kind: z
+        .union([z.lazy(() => FailureKindSchema), z.null()])
+        .refine((value) => value !== undefined, { message: "Required" }),
+      finished_at: z.null().refine((value) => value !== undefined, { message: "Required" }),
+      harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      harness_id: z.union([z.string(), z.null()]).optional(),
+      history_id: z
+        .string()
+        .min(36)
+        .regex(
+          new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+        )
+        .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
+        .refine((value) => value !== undefined, { message: "Required" }),
+      labels: z.lazy(() => HistoryLabelsSchema).optional(),
+      model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      model_ms: z.never().optional(),
+      name: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      observed_tool_ms: z
+        .int()
+        .gte(0)
+        .refine((value) => value !== undefined, { message: "Required" }),
+      permission_mode: z
+        .lazy(() => PermissionModeSchema)
+        .refine((value) => value !== undefined, { message: "Required" }),
+      project: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      schema_version: z
+        .union([z.literal("1.2"), z.literal("1.3")])
+        .refine((value) => value !== undefined, { message: "Required" }),
+      session: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      started_at: z.never().optional(),
+      status: z.lazy(() => StatusSchema).refine((value) => value !== undefined, { message: "Required" }),
+      text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      time_to_first_token_ms: z.never().optional(),
+      timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      tool_ms: z.never().optional(),
+      type: z.literal("run").refine((value) => value !== undefined, { message: "Required" }),
+      usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
+      variant: z.union([z.string(), z.null()]).optional(),
+    }),
+    z.looseObject({
+      duration_ms: z.union([z.int().gte(0), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      error: z
+        .union([
+          z
+            .string()
+            .min(1)
+            .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
+          z.null(),
+        ])
+        .optional(),
+      exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      failure_kind: z
+        .union([z.lazy(() => FailureKindSchema), z.null()])
+        .refine((value) => value !== undefined, { message: "Required" }),
+      finished_at: z.null().refine((value) => value !== undefined, { message: "Required" }),
+      harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      harness_id: z.union([z.string(), z.null()]).optional(),
+      history_id: z
+        .string()
+        .min(36)
+        .regex(
+          new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+        )
+        .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
+        .refine((value) => value !== undefined, { message: "Required" }),
+      labels: z.lazy(() => HistoryLabelsSchema).optional(),
+      model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      model_ms: z.never().optional(),
+      name: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      observed_tool_ms: z.never().optional(),
+      permission_mode: z
+        .lazy(() => PermissionModeSchema)
+        .refine((value) => value !== undefined, { message: "Required" }),
+      project: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      schema_version: z
+        .union([z.literal("1.0"), z.literal("1.1"), z.literal("1.2"), z.literal("1.3")])
+        .refine((value) => value !== undefined, { message: "Required" }),
+      session: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      started_at: z.never().optional(),
+      status: z
+        .union([z.literal("nonzero"), z.literal("timeout"), z.literal("spawn-error"), z.literal("skipped")])
+        .refine((value) => value !== undefined, { message: "Required" }),
+      text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      time_to_first_token_ms: z.never().optional(),
+      timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      tool_ms: z.never().optional(),
+      type: z.literal("run").refine((value) => value !== undefined, { message: "Required" }),
+      usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
+      variant: z.union([z.string(), z.null()]).optional(),
+    }),
+    z.looseObject({
+      duration_ms: z
+        .int()
+        .gte(0)
+        .refine((value) => value !== undefined, { message: "Required" }),
+      error: z
+        .union([
+          z
+            .string()
+            .min(1)
+            .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
+          z.null(),
+        ])
+        .optional(),
+      exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      failure_kind: z
+        .union([z.lazy(() => FailureKindSchema), z.null()])
+        .refine((value) => value !== undefined, { message: "Required" }),
+      finished_at: z.null().refine((value) => value !== undefined, { message: "Required" }),
+      harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      harness_id: z.union([z.string(), z.null()]).optional(),
+      history_id: z
+        .string()
+        .min(36)
+        .regex(
+          new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+        )
+        .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
+        .refine((value) => value !== undefined, { message: "Required" }),
+      labels: z.lazy(() => HistoryLabelsSchema).optional(),
+      model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      model_ms: z.never().optional(),
+      name: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      observed_tool_ms: z.never().optional(),
+      permission_mode: z
+        .lazy(() => PermissionModeSchema)
+        .refine((value) => value !== undefined, { message: "Required" }),
+      project: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      schema_version: z.literal("1.3").refine((value) => value !== undefined, { message: "Required" }),
+      session: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      started_at: z
+        .string()
+        .min(1)
+        .refine((value) => value !== undefined, { message: "Required" }),
+      status: z
+        .union([z.literal("nonzero"), z.literal("timeout"), z.literal("spawn-error"), z.literal("skipped")])
+        .refine((value) => value !== undefined, { message: "Required" }),
+      text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      time_to_first_token_ms: z.union([z.int().gte(0), z.null()]).optional(),
+      timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      tool_ms: z.never().optional(),
+      type: z.literal("run").refine((value) => value !== undefined, { message: "Required" }),
+      usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
+      variant: z.union([z.string(), z.null()]).optional(),
+    }),
+    z.looseObject({
+      duration_ms: z.union([z.int().gte(0), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      error: z
+        .union([
+          z
+            .string()
+            .min(1)
+            .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
+          z.null(),
+        ])
+        .optional(),
+      exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      failure_kind: z
+        .union([z.lazy(() => FailureKindSchema), z.null()])
+        .refine((value) => value !== undefined, { message: "Required" }),
+      finished_at: z.null().refine((value) => value !== undefined, { message: "Required" }),
+      harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      harness_id: z.union([z.string(), z.null()]).optional(),
+      history_id: z
+        .string()
+        .min(36)
+        .regex(
+          new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+        )
+        .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
+        .refine((value) => value !== undefined, { message: "Required" }),
+      labels: z.lazy(() => HistoryLabelsSchema).optional(),
+      model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      model_ms: z.never().optional(),
+      name: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      observed_tool_ms: z.never().optional(),
+      permission_mode: z
+        .lazy(() => PermissionModeSchema)
+        .refine((value) => value !== undefined, { message: "Required" }),
+      project: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      schema_version: z
+        .union([z.literal("1.0"), z.literal("1.1"), z.literal("1.2"), z.literal("1.3")])
+        .refine((value) => value !== undefined, { message: "Required" }),
+      session: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      started_at: z.never().optional(),
+      status: z
+        .union([z.literal("ok"), z.literal("planned")])
+        .refine((value) => value !== undefined, { message: "Required" }),
+      text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+      time_to_first_token_ms: z.never().optional(),
+      timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
+      tool_ms: z.never().optional(),
+      type: z.literal("run").refine((value) => value !== undefined, { message: "Required" }),
+      usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
+      variant: z.union([z.string(), z.null()]).optional(),
+    }),
+  ]),
 ]);
 
 export const HistoryListSchema: z.ZodType<HistoryList> = z.array(z.lazy(() => HistorySessionSummarySchema));
@@ -611,25 +620,159 @@ export const HistoryLookupBySessionSchema: z.ZodType<HistoryLookupBySession> = z
     .refine((value) => value !== undefined, { message: "Required" }),
 });
 
-export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
-  z.union([
-    z.looseObject({
-      duration_ms: z
-        .int()
-        .gte(0)
-        .refine((value) => value !== undefined, { message: "Required" }),
-      error: z
-        .union([
-          z
-            .string()
-            .min(1)
-            .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
-          z.null(),
-        ])
-        .optional(),
-      events: z
-        .union([
-          z.array(
+export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.union([
+  z.looseObject({
+    duration_ms: z
+      .int()
+      .gte(0)
+      .refine((value) => value !== undefined, { message: "Required" }),
+    error: z
+      .union([
+        z
+          .string()
+          .min(1)
+          .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
+        z.null(),
+      ])
+      .optional(),
+    events: z
+      .union([
+        z.array(
+          z.union([
+            z.intersection(
+              z.lazy(() => ActionEventSchema),
+              z.looseObject({
+                duration_ms: z
+                  .int()
+                  .gte(0)
+                  .refine((value) => value !== undefined, { message: "Required" }),
+                finished_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+                kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
+                started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+                status: z.literal("completed").refine((value) => value !== undefined, { message: "Required" }),
+                tool_call_id: z
+                  .string()
+                  .min(1)
+                  .refine((value) => value !== undefined, { message: "Required" }),
+              }),
+            ),
+            z.intersection(
+              z.lazy(() => ActionEventSchema),
+              z.looseObject({
+                duration_ms: z
+                  .int()
+                  .gte(0)
+                  .refine((value) => value !== undefined, { message: "Required" }),
+                finished_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+                kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
+                started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+                status: z.literal("failed").refine((value) => value !== undefined, { message: "Required" }),
+                tool_call_id: z
+                  .string()
+                  .min(1)
+                  .refine((value) => value !== undefined, { message: "Required" }),
+              }),
+            ),
+            z.intersection(
+              z.lazy(() => ActionEventSchema),
+              z.looseObject({
+                kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
+                started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+                status: z.literal("timeout").refine((value) => value !== undefined, { message: "Required" }),
+                tool_call_id: z
+                  .string()
+                  .min(1)
+                  .refine((value) => value !== undefined, { message: "Required" }),
+              }),
+            ),
+            z.intersection(
+              z.lazy(() => ActionEventSchema),
+              z.looseObject({
+                kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
+                started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+                status: z.literal("interrupted").refine((value) => value !== undefined, { message: "Required" }),
+                tool_call_id: z
+                  .string()
+                  .min(1)
+                  .refine((value) => value !== undefined, { message: "Required" }),
+              }),
+            ),
+            z.intersection(
+              z.lazy(() => ActionEventSchema),
+              z.looseObject({
+                kind: z.literal("tool_result").optional(),
+              }),
+            ),
+          ]),
+        ),
+        z.null(),
+      ])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    failure_kind: z
+      .union([z.lazy(() => FailureKindSchema), z.null()])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    finished_at: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    harness_id: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    history_id: z
+      .string()
+      .min(36)
+      .regex(
+        new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+      )
+      .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
+      .refine((value) => value !== undefined, { message: "Required" }),
+    labels: z.lazy(() => HistoryLabelsSchema).optional(),
+    model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    model_ms: z
+      .int()
+      .gte(0)
+      .refine((value) => value !== undefined, { message: "Required" }),
+    name: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    observed_tool_ms: z.never().optional(),
+    permission_mode: z.lazy(() => PermissionModeSchema).refine((value) => value !== undefined, { message: "Required" }),
+    project: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    schema_version: z
+      .union([z.literal("1.2"), z.literal("1.3")])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    session: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    started_at: z
+      .string()
+      .min(1)
+      .refine((value) => value !== undefined, { message: "Required" }),
+    status: z.lazy(() => StatusSchema).refine((value) => value !== undefined, { message: "Required" }),
+    text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    time_to_first_token_ms: z.union([z.int().gte(0), z.null()]).optional(),
+    timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    tool_ms: z
+      .int()
+      .gte(0)
+      .refine((value) => value !== undefined, { message: "Required" }),
+    usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
+    variant: z.union([z.string(), z.null()]).optional(),
+  }),
+  z.looseObject({
+    duration_ms: z
+      .int()
+      .gte(0)
+      .refine((value) => value !== undefined, { message: "Required" }),
+    error: z
+      .union([
+        z
+          .string()
+          .min(1)
+          .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
+        z.null(),
+      ])
+      .optional(),
+    events: z
+      .union([
+        z.array(
+          z.intersection(
             z.union([
               z.intersection(
                 z.lazy(() => ActionEventSchema),
@@ -696,214 +839,383 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
                 }),
               ),
             ]),
+            z.looseObject({
+              timing_source: z.never().optional(),
+            }),
           ),
-          z.null(),
-        ])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      failure_kind: z
-        .union([z.lazy(() => FailureKindSchema), z.null()])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      finished_at: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      harness_id: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      history_id: z
-        .string()
-        .min(36)
-        .regex(
-          new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
-        )
-        .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
-        .refine((value) => value !== undefined, { message: "Required" }),
-      labels: z.lazy(() => HistoryLabelsSchema).optional(),
-      model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      model_ms: z
-        .int()
-        .gte(0)
-        .refine((value) => value !== undefined, { message: "Required" }),
-      name: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      observed_tool_ms: z.never().optional(),
-      permission_mode: z
-        .lazy(() => PermissionModeSchema)
-        .refine((value) => value !== undefined, { message: "Required" }),
-      project: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      schema_version: z
-        .union([z.literal("1.2"), z.literal("1.3")])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      session: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      started_at: z
-        .string()
-        .min(1)
-        .refine((value) => value !== undefined, { message: "Required" }),
-      status: z.lazy(() => StatusSchema).refine((value) => value !== undefined, { message: "Required" }),
-      text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      time_to_first_token_ms: z.union([z.int().gte(0), z.null()]).optional(),
-      timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      tool_ms: z
-        .int()
-        .gte(0)
-        .refine((value) => value !== undefined, { message: "Required" }),
-      usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
-      variant: z.union([z.string(), z.null()]).optional(),
-    }),
-    z.looseObject({
-      duration_ms: z
-        .int()
-        .gte(0)
-        .refine((value) => value !== undefined, { message: "Required" }),
-      error: z
-        .union([
-          z
-            .string()
-            .min(1)
-            .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
-          z.null(),
-        ])
-        .optional(),
-      events: z
-        .union([
-          z.array(
-            z.intersection(
-              z.union([
-                z.intersection(
-                  z.lazy(() => ActionEventSchema),
-                  z.looseObject({
-                    duration_ms: z
-                      .int()
-                      .gte(0)
-                      .refine((value) => value !== undefined, { message: "Required" }),
-                    finished_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-                    kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
-                    started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-                    status: z.literal("completed").refine((value) => value !== undefined, { message: "Required" }),
-                    tool_call_id: z
-                      .string()
-                      .min(1)
-                      .refine((value) => value !== undefined, { message: "Required" }),
-                  }),
-                ),
-                z.intersection(
-                  z.lazy(() => ActionEventSchema),
-                  z.looseObject({
-                    duration_ms: z
-                      .int()
-                      .gte(0)
-                      .refine((value) => value !== undefined, { message: "Required" }),
-                    finished_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-                    kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
-                    started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-                    status: z.literal("failed").refine((value) => value !== undefined, { message: "Required" }),
-                    tool_call_id: z
-                      .string()
-                      .min(1)
-                      .refine((value) => value !== undefined, { message: "Required" }),
-                  }),
-                ),
-                z.intersection(
-                  z.lazy(() => ActionEventSchema),
-                  z.looseObject({
-                    kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
-                    started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-                    status: z.literal("timeout").refine((value) => value !== undefined, { message: "Required" }),
-                    tool_call_id: z
-                      .string()
-                      .min(1)
-                      .refine((value) => value !== undefined, { message: "Required" }),
-                  }),
-                ),
-                z.intersection(
-                  z.lazy(() => ActionEventSchema),
-                  z.looseObject({
-                    kind: z.literal("tool_call").refine((value) => value !== undefined, { message: "Required" }),
-                    started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-                    status: z.literal("interrupted").refine((value) => value !== undefined, { message: "Required" }),
-                    tool_call_id: z
-                      .string()
-                      .min(1)
-                      .refine((value) => value !== undefined, { message: "Required" }),
-                  }),
-                ),
-                z.intersection(
-                  z.lazy(() => ActionEventSchema),
-                  z.looseObject({
-                    kind: z.literal("tool_result").optional(),
-                  }),
-                ),
-              ]),
-              z.looseObject({
-                timing_source: z.never().optional(),
-              }),
-            ),
+        ),
+        z.null(),
+      ])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    failure_kind: z
+      .union([z.lazy(() => FailureKindSchema), z.null()])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    finished_at: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    harness_id: z.string().optional(),
+    history_id: z
+      .string()
+      .min(36)
+      .regex(
+        new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+      )
+      .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
+      .refine((value) => value !== undefined, { message: "Required" }),
+    labels: z.lazy(() => HistoryLabelsSchema).optional(),
+    model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    model_ms: z
+      .int()
+      .gte(0)
+      .refine((value) => value !== undefined, { message: "Required" }),
+    name: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    observed_tool_ms: z.never().optional(),
+    permission_mode: z.lazy(() => PermissionModeSchema).refine((value) => value !== undefined, { message: "Required" }),
+    project: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    schema_version: z
+      .union([z.literal("1.0"), z.literal("1.1")])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    session: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    started_at: z
+      .string()
+      .min(1)
+      .refine((value) => value !== undefined, { message: "Required" }),
+    status: z.lazy(() => StatusSchema).refine((value) => value !== undefined, { message: "Required" }),
+    text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    time_to_first_token_ms: z.union([z.int().gte(0), z.null()]).optional(),
+    timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    tool_ms: z
+      .int()
+      .gte(0)
+      .refine((value) => value !== undefined, { message: "Required" }),
+    usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
+    variant: z.union([z.string(), z.null()]).optional(),
+  }),
+  z.looseObject({
+    duration_ms: z.union([z.int().gte(0), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    error: z
+      .union([
+        z
+          .string()
+          .min(1)
+          .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
+        z.null(),
+      ])
+      .optional(),
+    events: z
+      .union([
+        z.array(
+          z.looseObject({
+            duration_ms: z.null().optional(),
+            finished_at: z.null().optional(),
+            index: z
+              .int()
+              .gte(0)
+              .refine((value) => value !== undefined, { message: "Required" }),
+            input: z.unknown().refine((value) => value !== undefined, { message: "Required" }),
+            kind: z.string().refine((value) => value !== undefined, { message: "Required" }),
+            name: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+            output: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+            started_at: z.null().optional(),
+            status: z.null().optional(),
+            tool_call_id: z.union([z.string(), z.null()]).optional(),
+          }),
+        ),
+        z.null(),
+      ])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    failure_kind: z
+      .union([z.lazy(() => FailureKindSchema), z.null()])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    finished_at: z.null().refine((value) => value !== undefined, { message: "Required" }),
+    harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    harness_id: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    history_id: z
+      .string()
+      .min(36)
+      .regex(
+        new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+      )
+      .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
+      .refine((value) => value !== undefined, { message: "Required" }),
+    labels: z.lazy(() => HistoryLabelsSchema).optional(),
+    model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    model_ms: z.never().optional(),
+    name: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    observed_tool_ms: z.never().optional(),
+    permission_mode: z.lazy(() => PermissionModeSchema).refine((value) => value !== undefined, { message: "Required" }),
+    project: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    schema_version: z
+      .union([z.literal("1.2"), z.literal("1.3")])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    session: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    started_at: z.never().optional(),
+    status: z
+      .union([z.literal("ok"), z.literal("planned")])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    time_to_first_token_ms: z.never().optional(),
+    timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    tool_ms: z.never().optional(),
+    usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
+    variant: z.union([z.string(), z.null()]).optional(),
+  }),
+  z.looseObject({
+    duration_ms: z
+      .int()
+      .gte(0)
+      .refine((value) => value !== undefined, { message: "Required" }),
+    error: z
+      .union([
+        z
+          .string()
+          .min(1)
+          .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
+        z.null(),
+      ])
+      .optional(),
+    events: z
+      .union([z.array(z.lazy(() => ActionEventSchema)), z.null()])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    failure_kind: z
+      .union([z.lazy(() => FailureKindSchema), z.null()])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    finished_at: z.null().refine((value) => value !== undefined, { message: "Required" }),
+    harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    harness_id: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    history_id: z
+      .string()
+      .min(36)
+      .regex(
+        new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+      )
+      .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
+      .refine((value) => value !== undefined, { message: "Required" }),
+    labels: z.lazy(() => HistoryLabelsSchema).optional(),
+    model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    model_ms: z.never().optional(),
+    name: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    observed_tool_ms: z
+      .int()
+      .gte(0)
+      .refine((value) => value !== undefined, { message: "Required" }),
+    permission_mode: z.lazy(() => PermissionModeSchema).refine((value) => value !== undefined, { message: "Required" }),
+    project: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    schema_version: z
+      .union([z.literal("1.2"), z.literal("1.3")])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    session: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    started_at: z.never().optional(),
+    status: z.lazy(() => StatusSchema).refine((value) => value !== undefined, { message: "Required" }),
+    text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    time_to_first_token_ms: z.never().optional(),
+    timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    tool_ms: z.never().optional(),
+    usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
+    variant: z.union([z.string(), z.null()]).optional(),
+  }),
+  z.looseObject({
+    duration_ms: z.union([z.int().gte(0), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    error: z
+      .union([
+        z
+          .string()
+          .min(1)
+          .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
+        z.null(),
+      ])
+      .optional(),
+    events: z
+      .union([z.array(z.lazy(() => ActionEventSchema)), z.null()])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    failure_kind: z
+      .union([z.lazy(() => FailureKindSchema), z.null()])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    finished_at: z.null().refine((value) => value !== undefined, { message: "Required" }),
+    harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    harness_id: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    history_id: z
+      .string()
+      .min(36)
+      .regex(
+        new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+      )
+      .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
+      .refine((value) => value !== undefined, { message: "Required" }),
+    labels: z.lazy(() => HistoryLabelsSchema).optional(),
+    model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    model_ms: z.never().optional(),
+    name: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    observed_tool_ms: z.never().optional(),
+    permission_mode: z.lazy(() => PermissionModeSchema).refine((value) => value !== undefined, { message: "Required" }),
+    project: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    schema_version: z
+      .union([z.literal("1.2"), z.literal("1.3")])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    session: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    started_at: z.never().optional(),
+    status: z
+      .union([z.literal("nonzero"), z.literal("timeout"), z.literal("spawn-error"), z.literal("skipped")])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    time_to_first_token_ms: z.never().optional(),
+    timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    tool_ms: z.never().optional(),
+    usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
+    variant: z.union([z.string(), z.null()]).optional(),
+  }),
+  z.looseObject({
+    duration_ms: z
+      .int()
+      .gte(0)
+      .refine((value) => value !== undefined, { message: "Required" }),
+    error: z
+      .union([
+        z
+          .string()
+          .min(1)
+          .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
+        z.null(),
+      ])
+      .optional(),
+    events: z
+      .union([z.array(z.lazy(() => ActionEventSchema)), z.null()])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    failure_kind: z
+      .union([z.lazy(() => FailureKindSchema), z.null()])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    finished_at: z.null().refine((value) => value !== undefined, { message: "Required" }),
+    harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    harness_id: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    history_id: z
+      .string()
+      .min(36)
+      .regex(
+        new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+      )
+      .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
+      .refine((value) => value !== undefined, { message: "Required" }),
+    labels: z.lazy(() => HistoryLabelsSchema).optional(),
+    model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    model_ms: z.never().optional(),
+    name: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    observed_tool_ms: z.never().optional(),
+    permission_mode: z.lazy(() => PermissionModeSchema).refine((value) => value !== undefined, { message: "Required" }),
+    project: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    schema_version: z.literal("1.3").refine((value) => value !== undefined, { message: "Required" }),
+    session: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    started_at: z
+      .string()
+      .min(1)
+      .refine((value) => value !== undefined, { message: "Required" }),
+    status: z
+      .union([z.literal("nonzero"), z.literal("timeout"), z.literal("spawn-error"), z.literal("skipped")])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    time_to_first_token_ms: z.union([z.int().gte(0), z.null()]).optional(),
+    timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    tool_ms: z.never().optional(),
+    usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
+    variant: z.union([z.string(), z.null()]).optional(),
+  }),
+  z.looseObject({
+    duration_ms: z.union([z.int().gte(0), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    error: z
+      .union([
+        z
+          .string()
+          .min(1)
+          .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
+        z.null(),
+      ])
+      .optional(),
+    events: z
+      .union([
+        z.array(
+          z.intersection(
+            z.lazy(() => ActionEventSchema),
+            z.looseObject({
+              timing_source: z.never().optional(),
+            }),
           ),
-          z.null(),
-        ])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      failure_kind: z
-        .union([z.lazy(() => FailureKindSchema), z.null()])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      finished_at: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      harness_id: z.string().optional(),
-      history_id: z
-        .string()
-        .min(36)
-        .regex(
-          new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
-        )
-        .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
-        .refine((value) => value !== undefined, { message: "Required" }),
-      labels: z.lazy(() => HistoryLabelsSchema).optional(),
-      model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      model_ms: z
-        .int()
-        .gte(0)
-        .refine((value) => value !== undefined, { message: "Required" }),
-      name: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      observed_tool_ms: z.never().optional(),
-      permission_mode: z
-        .lazy(() => PermissionModeSchema)
-        .refine((value) => value !== undefined, { message: "Required" }),
-      project: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      schema_version: z
-        .union([z.literal("1.0"), z.literal("1.1")])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      session: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      started_at: z
-        .string()
-        .min(1)
-        .refine((value) => value !== undefined, { message: "Required" }),
-      status: z.lazy(() => StatusSchema).refine((value) => value !== undefined, { message: "Required" }),
-      text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      time_to_first_token_ms: z.union([z.int().gte(0), z.null()]).optional(),
-      timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      tool_ms: z
-        .int()
-        .gte(0)
-        .refine((value) => value !== undefined, { message: "Required" }),
-      usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
-      variant: z.union([z.string(), z.null()]).optional(),
-    }),
-    z.looseObject({
-      duration_ms: z.union([z.int().gte(0), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      error: z
-        .union([
-          z
-            .string()
-            .min(1)
-            .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
-          z.null(),
-        ])
-        .optional(),
-      events: z
-        .union([
-          z.array(
+        ),
+        z.null(),
+      ])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    failure_kind: z
+      .union([z.lazy(() => FailureKindSchema), z.null()])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    finished_at: z.null().refine((value) => value !== undefined, { message: "Required" }),
+    harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    harness_id: z.string().optional(),
+    history_id: z
+      .string()
+      .min(36)
+      .regex(
+        new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+      )
+      .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
+      .refine((value) => value !== undefined, { message: "Required" }),
+    labels: z.lazy(() => HistoryLabelsSchema).optional(),
+    model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    model_ms: z.never().optional(),
+    name: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    observed_tool_ms: z.never().optional(),
+    permission_mode: z.lazy(() => PermissionModeSchema).refine((value) => value !== undefined, { message: "Required" }),
+    project: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    schema_version: z
+      .union([z.literal("1.0"), z.literal("1.1")])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    session: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    started_at: z.never().optional(),
+    status: z
+      .union([z.literal("nonzero"), z.literal("timeout"), z.literal("spawn-error"), z.literal("skipped")])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    time_to_first_token_ms: z.never().optional(),
+    timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    tool_ms: z.never().optional(),
+    usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
+    variant: z.union([z.string(), z.null()]).optional(),
+  }),
+  z.looseObject({
+    duration_ms: z.union([z.int().gte(0), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    error: z
+      .union([
+        z
+          .string()
+          .min(1)
+          .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
+        z.null(),
+      ])
+      .optional(),
+    events: z
+      .union([
+        z.array(
+          z.intersection(
             z.looseObject({
               duration_ms: z.null().optional(),
               finished_at: z.null().optional(),
@@ -919,412 +1231,121 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
               status: z.null().optional(),
               tool_call_id: z.union([z.string(), z.null()]).optional(),
             }),
-          ),
-          z.null(),
-        ])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      failure_kind: z
-        .union([z.lazy(() => FailureKindSchema), z.null()])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      finished_at: z.null().refine((value) => value !== undefined, { message: "Required" }),
-      harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      harness_id: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      history_id: z
-        .string()
-        .min(36)
-        .regex(
-          new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
-        )
-        .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
-        .refine((value) => value !== undefined, { message: "Required" }),
-      labels: z.lazy(() => HistoryLabelsSchema).optional(),
-      model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      model_ms: z.never().optional(),
-      name: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      observed_tool_ms: z.never().optional(),
-      permission_mode: z
-        .lazy(() => PermissionModeSchema)
-        .refine((value) => value !== undefined, { message: "Required" }),
-      project: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      schema_version: z
-        .union([z.literal("1.2"), z.literal("1.3")])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      session: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      started_at: z.never().optional(),
-      status: z
-        .union([z.literal("ok"), z.literal("planned")])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      time_to_first_token_ms: z.never().optional(),
-      timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      tool_ms: z.never().optional(),
-      usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
-      variant: z.union([z.string(), z.null()]).optional(),
-    }),
-    z.looseObject({
-      duration_ms: z
-        .int()
-        .gte(0)
-        .refine((value) => value !== undefined, { message: "Required" }),
-      error: z
-        .union([
-          z
-            .string()
-            .min(1)
-            .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
-          z.null(),
-        ])
-        .optional(),
-      events: z
-        .union([z.array(z.lazy(() => ActionEventSchema)), z.null()])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      failure_kind: z
-        .union([z.lazy(() => FailureKindSchema), z.null()])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      finished_at: z.null().refine((value) => value !== undefined, { message: "Required" }),
-      harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      harness_id: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      history_id: z
-        .string()
-        .min(36)
-        .regex(
-          new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
-        )
-        .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
-        .refine((value) => value !== undefined, { message: "Required" }),
-      labels: z.lazy(() => HistoryLabelsSchema).optional(),
-      model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      model_ms: z.never().optional(),
-      name: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      observed_tool_ms: z
-        .int()
-        .gte(0)
-        .refine((value) => value !== undefined, { message: "Required" }),
-      permission_mode: z
-        .lazy(() => PermissionModeSchema)
-        .refine((value) => value !== undefined, { message: "Required" }),
-      project: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      schema_version: z
-        .union([z.literal("1.2"), z.literal("1.3")])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      session: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      started_at: z.never().optional(),
-      status: z.lazy(() => StatusSchema).refine((value) => value !== undefined, { message: "Required" }),
-      text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      time_to_first_token_ms: z.never().optional(),
-      timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      tool_ms: z.never().optional(),
-      usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
-      variant: z.union([z.string(), z.null()]).optional(),
-    }),
-    z.looseObject({
-      duration_ms: z.union([z.int().gte(0), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      error: z
-        .union([
-          z
-            .string()
-            .min(1)
-            .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
-          z.null(),
-        ])
-        .optional(),
-      events: z
-        .union([z.array(z.lazy(() => ActionEventSchema)), z.null()])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      failure_kind: z
-        .union([z.lazy(() => FailureKindSchema), z.null()])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      finished_at: z.null().refine((value) => value !== undefined, { message: "Required" }),
-      harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      harness_id: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      history_id: z
-        .string()
-        .min(36)
-        .regex(
-          new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
-        )
-        .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
-        .refine((value) => value !== undefined, { message: "Required" }),
-      labels: z.lazy(() => HistoryLabelsSchema).optional(),
-      model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      model_ms: z.never().optional(),
-      name: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      observed_tool_ms: z.never().optional(),
-      permission_mode: z
-        .lazy(() => PermissionModeSchema)
-        .refine((value) => value !== undefined, { message: "Required" }),
-      project: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      schema_version: z
-        .union([z.literal("1.2"), z.literal("1.3")])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      session: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      started_at: z.never().optional(),
-      status: z
-        .union([z.literal("nonzero"), z.literal("timeout"), z.literal("spawn-error"), z.literal("skipped")])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      time_to_first_token_ms: z.never().optional(),
-      timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      tool_ms: z.never().optional(),
-      usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
-      variant: z.union([z.string(), z.null()]).optional(),
-    }),
-    z.looseObject({
-      duration_ms: z.union([z.int().gte(0), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      error: z
-        .union([
-          z
-            .string()
-            .min(1)
-            .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
-          z.null(),
-        ])
-        .optional(),
-      events: z
-        .union([
-          z.array(
-            z.intersection(
-              z.lazy(() => ActionEventSchema),
-              z.looseObject({
-                timing_source: z.never().optional(),
-              }),
-            ),
-          ),
-          z.null(),
-        ])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      failure_kind: z
-        .union([z.lazy(() => FailureKindSchema), z.null()])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      finished_at: z.null().refine((value) => value !== undefined, { message: "Required" }),
-      harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      harness_id: z.string().optional(),
-      history_id: z
-        .string()
-        .min(36)
-        .regex(
-          new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
-        )
-        .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
-        .refine((value) => value !== undefined, { message: "Required" }),
-      labels: z.lazy(() => HistoryLabelsSchema).optional(),
-      model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      model_ms: z.never().optional(),
-      name: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      observed_tool_ms: z.never().optional(),
-      permission_mode: z
-        .lazy(() => PermissionModeSchema)
-        .refine((value) => value !== undefined, { message: "Required" }),
-      project: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      schema_version: z
-        .union([z.literal("1.0"), z.literal("1.1")])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      session: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      started_at: z.never().optional(),
-      status: z
-        .union([z.literal("nonzero"), z.literal("timeout"), z.literal("spawn-error"), z.literal("skipped")])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      time_to_first_token_ms: z.never().optional(),
-      timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      tool_ms: z.never().optional(),
-      usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
-      variant: z.union([z.string(), z.null()]).optional(),
-    }),
-    z.looseObject({
-      duration_ms: z.union([z.int().gte(0), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      error: z
-        .union([
-          z
-            .string()
-            .min(1)
-            .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
-          z.null(),
-        ])
-        .optional(),
-      events: z
-        .union([
-          z.array(
-            z.intersection(
-              z.looseObject({
-                duration_ms: z.null().optional(),
-                finished_at: z.null().optional(),
-                index: z
-                  .int()
-                  .gte(0)
-                  .refine((value) => value !== undefined, { message: "Required" }),
-                input: z.unknown().refine((value) => value !== undefined, { message: "Required" }),
-                kind: z.string().refine((value) => value !== undefined, { message: "Required" }),
-                name: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-                output: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-                started_at: z.null().optional(),
-                status: z.null().optional(),
-                tool_call_id: z.union([z.string(), z.null()]).optional(),
-              }),
-              z.looseObject({
-                timing_source: z.never().optional(),
-              }),
-            ),
-          ),
-          z.null(),
-        ])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      failure_kind: z
-        .union([z.lazy(() => FailureKindSchema), z.null()])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      finished_at: z.null().refine((value) => value !== undefined, { message: "Required" }),
-      harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      harness_id: z.string().optional(),
-      history_id: z
-        .string()
-        .min(36)
-        .regex(
-          new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
-        )
-        .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
-        .refine((value) => value !== undefined, { message: "Required" }),
-      labels: z.lazy(() => HistoryLabelsSchema).optional(),
-      model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      model_ms: z.never().optional(),
-      name: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      observed_tool_ms: z.never().optional(),
-      permission_mode: z
-        .lazy(() => PermissionModeSchema)
-        .refine((value) => value !== undefined, { message: "Required" }),
-      project: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      schema_version: z
-        .union([z.literal("1.0"), z.literal("1.1")])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      session: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      started_at: z.never().optional(),
-      status: z
-        .union([z.literal("ok"), z.literal("planned")])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      time_to_first_token_ms: z.never().optional(),
-      timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      tool_ms: z.never().optional(),
-      usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
-      variant: z.union([z.string(), z.null()]).optional(),
-    }),
-    z.looseObject({
-      duration_ms: z.union([z.int().gte(0), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      error: z
-        .union([
-          z
-            .string()
-            .min(1)
-            .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
-          z.null(),
-        ])
-        .optional(),
-      events: z
-        .union([
-          z.array(
             z.looseObject({
-              index: z
-                .int()
-                .gte(0)
-                .refine((value) => value !== undefined, { message: "Required" }),
-              input: z.unknown().refine((value) => value !== undefined, { message: "Required" }),
-              kind: z.string().refine((value) => value !== undefined, { message: "Required" }),
-              name: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-              output: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+              timing_source: z.never().optional(),
             }),
           ),
-          z.null(),
-        ])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      failure_kind: z
-        .union([z.lazy(() => FailureKindSchema), z.null()])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      finished_at: z.union([z.string(), z.null()]).optional(),
-      harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      harness_id: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      history_id: z
-        .string()
-        .min(36)
-        .regex(
-          new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
-        )
-        .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
-        .refine((value) => value !== undefined, { message: "Required" }),
-      labels: z.lazy(() => HistoryLabelsSchema).optional(),
-      model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      model_ms: z.union([z.int().gte(0), z.null()]).optional(),
-      name: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      observed_tool_ms: z.union([z.int().gte(0), z.null()]).optional(),
-      permission_mode: z
-        .lazy(() => PermissionModeSchema)
-        .refine((value) => value !== undefined, { message: "Required" }),
-      project: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      schema_version: z
-        .union([z.literal("0.1"), z.literal("0.2")])
-        .refine((value) => value !== undefined, { message: "Required" }),
-      session: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      started_at: z.union([z.string(), z.null()]).optional(),
-      status: z.lazy(() => StatusSchema).refine((value) => value !== undefined, { message: "Required" }),
-      text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-      time_to_first_token_ms: z.union([z.int().gte(0), z.null()]).optional(),
-      timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
-      tool_ms: z.union([z.int().gte(0), z.null()]).optional(),
-      usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
-      variant: z.union([z.string(), z.null()]).optional(),
-    }),
-  ]),
-  z.union([
-    z.looseObject({
-      error: z.null().optional(),
-      schema_version: z
-        .union([z.literal("0.1"), z.literal("0.2"), z.literal("1.0"), z.literal("1.1"), z.literal("1.2")])
-        .optional(),
-    }),
-    z.looseObject({
-      error: z.null().optional(),
-      schema_version: z.literal("1.3").optional(),
-    }),
-    z.intersection(
-      z.looseObject({
-        error: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        schema_version: z.literal("1.3").optional(),
-      }),
-      z.union([
-        z.looseObject({
-          status: z
-            .union([z.literal("nonzero"), z.literal("timeout"), z.literal("spawn-error"), z.literal("skipped")])
-            .optional(),
-        }),
-        z.looseObject({
-          failure_kind: z.string().refine((value) => value !== undefined, { message: "Required" }),
-        }),
-      ]),
-    ),
-  ]),
-);
+        ),
+        z.null(),
+      ])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    failure_kind: z
+      .union([z.lazy(() => FailureKindSchema), z.null()])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    finished_at: z.null().refine((value) => value !== undefined, { message: "Required" }),
+    harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    harness_id: z.string().optional(),
+    history_id: z
+      .string()
+      .min(36)
+      .regex(
+        new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+      )
+      .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
+      .refine((value) => value !== undefined, { message: "Required" }),
+    labels: z.lazy(() => HistoryLabelsSchema).optional(),
+    model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    model_ms: z.never().optional(),
+    name: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    observed_tool_ms: z.never().optional(),
+    permission_mode: z.lazy(() => PermissionModeSchema).refine((value) => value !== undefined, { message: "Required" }),
+    project: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    schema_version: z
+      .union([z.literal("1.0"), z.literal("1.1")])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    session: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    started_at: z.never().optional(),
+    status: z
+      .union([z.literal("ok"), z.literal("planned")])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    time_to_first_token_ms: z.never().optional(),
+    timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    tool_ms: z.never().optional(),
+    usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
+    variant: z.union([z.string(), z.null()]).optional(),
+  }),
+  z.looseObject({
+    duration_ms: z.union([z.int().gte(0), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    error: z
+      .union([
+        z
+          .string()
+          .min(1)
+          .refine((value) => [...value].length <= 2048, { message: "Too long: expected at most 2048 characters" }),
+        z.null(),
+      ])
+      .optional(),
+    events: z
+      .union([
+        z.array(
+          z.looseObject({
+            index: z
+              .int()
+              .gte(0)
+              .refine((value) => value !== undefined, { message: "Required" }),
+            input: z.unknown().refine((value) => value !== undefined, { message: "Required" }),
+            kind: z.string().refine((value) => value !== undefined, { message: "Required" }),
+            name: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+            output: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+          }),
+        ),
+        z.null(),
+      ])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    exit_code: z.union([z.int(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    failure_kind: z
+      .union([z.lazy(() => FailureKindSchema), z.null()])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    finished_at: z.union([z.string(), z.null()]).optional(),
+    harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    harness_id: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    history_id: z
+      .string()
+      .min(36)
+      .regex(
+        new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+      )
+      .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
+      .refine((value) => value !== undefined, { message: "Required" }),
+    labels: z.lazy(() => HistoryLabelsSchema).optional(),
+    model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    model_ms: z.union([z.int().gte(0), z.null()]).optional(),
+    name: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    observed_tool_ms: z.union([z.int().gte(0), z.null()]).optional(),
+    permission_mode: z.lazy(() => PermissionModeSchema).refine((value) => value !== undefined, { message: "Required" }),
+    project: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    schema_version: z
+      .union([z.literal("0.1"), z.literal("0.2")])
+      .refine((value) => value !== undefined, { message: "Required" }),
+    session: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    session_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    started_at: z.union([z.string(), z.null()]).optional(),
+    status: z.lazy(() => StatusSchema).refine((value) => value !== undefined, { message: "Required" }),
+    text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    time_to_first_token_ms: z.union([z.int().gte(0), z.null()]).optional(),
+    timestamp: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    tool_ms: z.union([z.int().gte(0), z.null()]).optional(),
+    usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
+    variant: z.union([z.string(), z.null()]).optional(),
+  }),
+]);
 
 export const HistoryRecordsSchema: z.ZodType<HistoryRecords> = z.array(z.lazy(() => HistoryRecordSchema));
 

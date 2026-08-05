@@ -9,9 +9,10 @@ use serde::Serialize;
 
 use crate::domain::history::run_failed;
 use crate::domain::history::{
-    HistoryLine, HistoryRecord, HistoryStreamEnvelope, FIRST_ERROR_SCHEMA_VERSION,
-    FIRST_EVENT_SCHEMA_VERSION, OBSERVED_TIMING_SCHEMA_VERSION, PREVIOUS_CURRENT_SCHEMA_VERSION,
-    PRE_LIFECYCLE_RECORD_VERSIONS, SCHEMA_VERSION as HISTORY_SCHEMA_VERSION,
+    HistoryLine, HistoryRecord, HistoryStreamEnvelope, FIRST_EVENT_SCHEMA_VERSION,
+    FIRST_PARTIAL_TIMING_SCHEMA_VERSION, OBSERVED_TIMING_SCHEMA_VERSION,
+    PREVIOUS_CURRENT_SCHEMA_VERSION, PRE_LIFECYCLE_RECORD_VERSIONS,
+    SCHEMA_VERSION as HISTORY_SCHEMA_VERSION,
 };
 use crate::domain::report::{RunReport, RunStreamEnvelope, Status};
 use crate::domain::sdk::{
@@ -215,25 +216,24 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                         required.push(serde_json::Value::String(field.to_string()));
                     }
                 }
-                // A run that failed has no timing *because* it failed. Split by
-                // status so this stays disjoint from the untimed success branch
-                // and `oneOf` keeps meaning exactly one.
-                let mut failed = unavailable.clone();
+                // A run that failed has no timing, or only the invocation bounds,
+                // *because* it failed. Split by status so both stay disjoint from
+                // the untimed success branch and `oneOf` keeps meaning exactly one.
                 let (failed_statuses, untimed_success_statuses) = status_partition();
-                failed["properties"]["status"] = failed_statuses;
+                let mut failed = unavailable.clone();
+                failed["properties"]["status"] = failed_statuses.clone();
+                let failed_partial = partial_branch(&unavailable, &failed_statuses);
                 unavailable["properties"]["status"] = untimed_success_statuses;
                 object.clear();
                 object.insert(
-                    "allOf".to_string(),
+                    "oneOf".to_string(),
                     serde_json::json!([
-                        {"oneOf": [
-                            {"allOf": [terminal]},
-                            {"allOf": [measured]},
-                            {"allOf": [observed]},
-                            {"allOf": [failed]},
-                            {"allOf": [unavailable]}
-                        ]},
-                        error_version_gate()
+                        {"allOf": [terminal]},
+                        {"allOf": [measured]},
+                        {"allOf": [observed]},
+                        {"allOf": [failed]},
+                        {"allOf": [failed_partial]},
+                        {"allOf": [unavailable]}
                     ]),
                 );
                 return;
@@ -307,50 +307,34 @@ fn status_partition() -> (serde_json::Value, serde_json::Value) {
     )
 }
 
-/// The normalized failure text arrived in [`FIRST_ERROR_SCHEMA_VERSION`] and is a
-/// *failure* signal, so it is legible only at or after that version and only on a
-/// record whose run reported a failure — by status, or by a classified
-/// `failure_kind` on an otherwise clean exit (the deferred-tool dead-end). Stated
-/// once and composed with `allOf` so it gates every timing branch without
-/// doubling them.
-fn error_version_gate() -> serde_json::Value {
-    let (failed_statuses, _) = status_partition();
-    let pre_error_versions = [
-        PRE_LIFECYCLE_RECORD_VERSIONS.as_slice(),
-        PRE_TIMING_PROVENANCE_VERSIONS,
-        &[OBSERVED_TIMING_SCHEMA_VERSION],
-    ]
-    .concat()
-    .into_iter()
-    .collect::<Vec<_>>();
-    let current_version =
-        serde_json::json!({"const": FIRST_ERROR_SCHEMA_VERSION, "type": "string"});
-    serde_json::json!({
-        "oneOf": [
-            // Before the field existed, no record may carry it.
-            {"type": "object", "properties": {
-                "schema_version": versions_schema(&pre_error_versions),
-                "error": {"type": "null"}
-            }},
-            // Current, with nothing to report.
-            {"type": "object", "properties": {
-                "schema_version": current_version,
-                "error": {"type": "null"}
-            }},
-            // Current, with failure text — only for a run that reported one.
-            {"allOf": [
-                {"type": "object",
-                 "properties": {"schema_version": current_version, "error": {"type": "string"}},
-                 "required": ["error"]},
-                {"anyOf": [
-                    {"type": "object", "properties": {"status": failed_statuses}},
-                    {"type": "object",
-                     "properties": {"failure_kind": {"type": "string"}},
-                     "required": ["failure_kind"]}
-                ]}
-            ]}
-        ]
-    })
+/// Restate an untimed branch as the *partial* one: the invocation bounds the
+/// runner observed, with no provider/tool split derived from them. Legible only
+/// on a run that failed, which is what `statuses` pins — and disjoint from every
+/// other branch, since the measured ones require the split this forbids and the
+/// untimed ones forbid the `started_at` this requires.
+///
+/// The arithmetic the runtime also checks (a first-token offset within the run's
+/// duration) is not expressible here, exactly as `model_ms + tool_ms <= duration`
+/// is not on the measured branches; this states the shape, and the runtime states
+/// the sums.
+fn partial_branch(untimed: &serde_json::Value, statuses: &serde_json::Value) -> serde_json::Value {
+    let mut partial = untimed.clone();
+    partial["properties"]["schema_version"] =
+        versions_schema(&[FIRST_PARTIAL_TIMING_SCHEMA_VERSION]);
+    partial["properties"]["status"] = statuses.clone();
+    partial["properties"]["started_at"] = serde_json::json!({"type": "string", "minLength": 1});
+    partial["properties"]["duration_ms"] = serde_json::json!({"type": "integer", "minimum": 0});
+    partial["properties"]["time_to_first_token_ms"] =
+        serde_json::json!({"type": ["integer", "null"], "minimum": 0});
+    // `finished_at` stays as the untimed branch left it: a run cut short has no
+    // provider finish to report, whatever instant the process itself stopped at.
+    for field in ["started_at", "duration_ms"] {
+        let required = partial["required"].as_array_mut().expect("required array");
+        if !required.iter().any(|value| value.as_str() == Some(field)) {
+            required.push(serde_json::Value::String(field.to_string()));
+        }
+    }
+    partial
 }
 
 fn set_history_identity_version(
@@ -523,10 +507,11 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                 // events its failure interrupted keep the boundaries they did
                 // reach. Splitting by status keeps this disjoint from the untimed
                 // success branch above, so `oneOf` still means exactly one.
-                let mut failed = unavailable.clone();
                 let (failed_statuses, untimed_success_statuses) = status_partition();
-                failed["properties"]["status"] = failed_statuses;
+                let mut failed = unavailable.clone();
+                failed["properties"]["status"] = failed_statuses.clone();
                 failed["properties"]["events"] = base["properties"]["events"].clone();
+                let failed_partial = partial_branch(&failed, &failed_statuses);
                 unavailable["properties"]["status"] = untimed_success_statuses;
                 let pre_provenance_failed = as_pre_provenance_branch(&failed);
                 let pre_provenance_unavailable = as_pre_provenance_branch(&unavailable);
@@ -590,19 +575,17 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                 object.clear();
                 object.extend(metadata);
                 object.insert(
-                    "allOf".to_string(),
+                    "oneOf".to_string(),
                     serde_json::json!([
-                        {"oneOf": [
-                            current,
-                            pre_provenance_current,
-                            unavailable,
-                            observed,
-                            failed,
-                            pre_provenance_failed,
-                            pre_provenance_unavailable,
-                            legacy
-                        ]},
-                        error_version_gate()
+                        current,
+                        pre_provenance_current,
+                        unavailable,
+                        observed,
+                        failed,
+                        failed_partial,
+                        pre_provenance_failed,
+                        pre_provenance_unavailable,
+                        legacy
                     ]),
                 );
                 return;

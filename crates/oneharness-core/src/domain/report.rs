@@ -12,6 +12,7 @@ use crate::domain::events::ActionEvent;
 use crate::domain::mode::PermissionMode;
 use crate::domain::session::SessionPhase;
 use crate::domain::signals::{FailureKind, Usage};
+use crate::domain::usage::UtcInstant;
 
 /// Bumped when the JSON shape changes in a way consumers must notice.
 pub const SCHEMA_VERSION: &str = "0.3";
@@ -98,6 +99,13 @@ pub enum ExecutionTelemetry {
         tool_ms: Option<u128>,
         time_to_first_token_ms: Option<u128>,
     },
+    /// The invocation bounds the runner observed for a run whose provider trace
+    /// never completed, with no model/tool split: a split read out of a
+    /// transcript that stopped mid-turn is not a measurement, but when the run
+    /// itself started is, and it is what an operator reads off a failure. Typed
+    /// as a [`UtcInstant`] so the one thing this variant claims to know cannot be
+    /// empty or in some other offset by the time a record renders it.
+    PartialInvocation { started_at: UtcInstant },
     /// History-only union observed at the stdout pipe. `RunResult::telemetry`
     /// is skipped on the report wire; report provenance lives on `ActionEvent`.
     StdoutObserved { tool_ms: u128 },

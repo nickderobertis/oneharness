@@ -1362,6 +1362,27 @@ If a run times out after emitting parseable records, their normalized signals ar
 preserved here just as they are in the report; the record's status remains
 `timeout`.
 
+**A run that failed is recorded too.** A run killed at launch or cut short
+mid-turn has no complete provider trace *because* it failed, and history keeps it
+anyway rather than fabricating one — a history that could only hold successes
+would hide exactly the runs an operator has to see. Its timing is whichever of
+two honest shapes applies: **partial**, the invocation start the runner itself
+watched, with no model/tool split (a split read out of a transcript that stopped
+mid-turn is not a measurement); or **absent**, for a harness that was never
+spawned at all. Such a record carries `status`, `exit_code`, the classified
+`failure_kind`, the measured `duration_ms`, whatever partial transcript the
+failure left (`events`, `usage`, any salvaged `text`), and `error`: the harness's own account of the failure as
+captured on its stderr, or oneharness's own message when it generated one (a
+spawn failure, a timeout, a binary that is not installed). `error` is trimmed,
+bounded to 2048 characters (Unicode code points, like every other bounded string
+here), omitted entirely when there is nothing to report, and never written for a
+run that succeeded — so a working harness's stderr chatter stays out of history.
+It is the one place a record quotes the process's own bytes, and it is never
+taken from stdout, so it can never stand in for provider output the run did not
+produce. It and partial timing both arrived in history schema **v1.3**;
+a record's `schema_version` names the oldest reader that can understand it, so a
+record carrying either declares `1.3` while a provider-measured success still declares `1.1`.
+
 It is **off by default** and opt-in three ways, layered like every other setting
 (CLI > env > project file > user file):
 

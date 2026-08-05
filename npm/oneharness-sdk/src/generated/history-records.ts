@@ -1,13 +1,22 @@
 /* Generated from oneharness-core. Do not edit. */
 
-/**
- * One harness run, normalized and frozen for the history log. Serialized as one
- * JSONL line per harness run, appended as the run finalizes. Carries only the
- * normalized cross-harness signals — no raw stdout/stderr.
- */
 export type HistoryRecord =
   | {
       duration_ms: number;
+      /**
+       * Best-effort normalized failure text for a run that did not succeed: the
+       * harness's own diagnostic as oneharness captured it on stderr, or
+       * oneharness's own message when it generated one (a spawn failure, a
+       * timeout, a binary that is not installed). This is the *only* place a
+       * record quotes the process's own bytes, and it is deliberately narrow —
+       * trimmed, bounded to [`ERROR_MAX`] characters, and written only for a run
+       * that failed. `failure_kind` says what class of failure it was; this says
+       * what the harness actually reported, which is what an operator reads when
+       * the class is unclassified. Never derived from stdout, so it can never
+       * stand in for provider output the run did not produce. Omitted on the wire
+       * when absent, and gated to [`FIRST_ERROR_SCHEMA_VERSION`].
+       */
+      error?: string | null | undefined;
       /**
        * Best-effort normalized tool-call events; `null` when the harness exposes
        * no machine-readable trace.
@@ -95,7 +104,7 @@ export type HistoryRecord =
        * run's single prompt).
        */
       prompt: string;
-      schema_version: "1.2";
+      schema_version: "1.2" | "1.3";
       /**
        * The oneharness session id this run belongs to (the history file's stem).
        */
@@ -126,6 +135,20 @@ export type HistoryRecord =
     }
   | {
       duration_ms: number;
+      /**
+       * Best-effort normalized failure text for a run that did not succeed: the
+       * harness's own diagnostic as oneharness captured it on stderr, or
+       * oneharness's own message when it generated one (a spawn failure, a
+       * timeout, a binary that is not installed). This is the *only* place a
+       * record quotes the process's own bytes, and it is deliberately narrow —
+       * trimmed, bounded to [`ERROR_MAX`] characters, and written only for a run
+       * that failed. `failure_kind` says what class of failure it was; this says
+       * what the harness actually reported, which is what an operator reads when
+       * the class is unclassified. Never derived from stdout, so it can never
+       * stand in for provider output the run did not produce. Omitted on the wire
+       * when absent, and gated to [`FIRST_ERROR_SCHEMA_VERSION`].
+       */
+      error?: string | null | undefined;
       /**
        * Best-effort normalized tool-call events; `null` when the harness exposes
        * no machine-readable trace.
@@ -216,7 +239,7 @@ export type HistoryRecord =
        * run's single prompt).
        */
       prompt: string;
-      schema_version: "1.1";
+      schema_version: "1.0" | "1.1";
       /**
        * The oneharness session id this run belongs to (the history file's stem).
        */
@@ -246,128 +269,21 @@ export type HistoryRecord =
       [k: string]: unknown;
     }
   | {
-      duration_ms: number;
-      /**
-       * Best-effort normalized tool-call events; `null` when the harness exposes
-       * no machine-readable trace.
-       */
-      events:
-        | ((
-            | (ActionEvent & {
-                duration_ms: number;
-                finished_at: string;
-                kind: "tool_call";
-                started_at: string;
-                status: "completed";
-                tool_call_id: string;
-                [k: string]: unknown;
-              })
-            | (ActionEvent & {
-                duration_ms: number;
-                finished_at: string;
-                kind: "tool_call";
-                started_at: string;
-                status: "failed";
-                tool_call_id: string;
-                [k: string]: unknown;
-              })
-            | (ActionEvent & {
-                kind: "tool_call";
-                started_at: string;
-                status: "timeout";
-                tool_call_id: string;
-                [k: string]: unknown;
-              })
-            | (ActionEvent & {
-                kind: "tool_call";
-                started_at: string;
-                status: "interrupted";
-                tool_call_id: string;
-                [k: string]: unknown;
-              })
-            | (ActionEvent & {
-                kind?: "tool_result" | undefined;
-                [k: string]: unknown;
-              })
-          ) & {
-            timing_source?: never | undefined;
-            [k: string]: unknown;
-          })[]
-        | null;
-      exit_code: number | null;
-      /**
-       * Best-effort classified failure reason (see [`FailureKind`]); `null` when
-       * unclassified.
-       */
-      failure_kind: FailureKind | null;
-      finished_at: string | null;
-      /**
-       * Canonical harness id (e.g. `claude-code`).
-       */
-      harness: string;
-      harness_id?: string | undefined;
-      /**
-       * Globally unique, time-ordered record id. This is also the cursor accepted
-       * by `history watch --after` and the exact id accepted by history lookup.
-       */
-      history_id: string;
-      labels?: HistoryLabels2 | undefined;
-      /**
-       * The effective top-level model for the run, if any.
-       */
-      model: string | null;
-      model_ms: number;
-      /**
-       * The human-meaningful session name (see [`session_name`]); repeated on
-       * every record so a reader can resolve a session by name from any line.
-       */
-      name: string;
-      observed_tool_ms?: never | undefined;
-      /**
-       * The normalized approval mode requested for the run.
-       */
-      permission_mode: "read-only" | "plan" | "default" | "edit" | "auto" | "bypass";
-      /**
-       * The project directory the run operated in (the real path, not the
-       * on-disk slug), so the list view can show where a session ran.
-       */
-      project: string;
-      /**
-       * The prompt this harness run received (its own, on a batch run; else the
-       * run's single prompt).
-       */
-      prompt: string;
-      schema_version: "1.0";
-      /**
-       * The oneharness session id this run belongs to (the history file's stem).
-       */
-      session: string;
-      /**
-       * The harness's own continuation id, when it exposed one; `null` otherwise.
-       */
-      session_id: string | null;
-      started_at: string;
-      status: Status;
-      /**
-       * Best-effort final assistant text; `null` when extraction was impossible.
-       */
-      text: string | null;
-      /**
-       * How `text` was extracted; `null` when absent.
-       */
-      text_source: string | null;
-      time_to_first_token_ms?: number | null | undefined;
-      /**
-       * RFC3339 UTC instant the record was written (append time).
-       */
-      timestamp: string;
-      tool_ms: number;
-      usage: Usage2;
-      variant?: string | null | undefined;
-      [k: string]: unknown;
-    }
-  | {
       duration_ms: number | null;
+      /**
+       * Best-effort normalized failure text for a run that did not succeed: the
+       * harness's own diagnostic as oneharness captured it on stderr, or
+       * oneharness's own message when it generated one (a spawn failure, a
+       * timeout, a binary that is not installed). This is the *only* place a
+       * record quotes the process's own bytes, and it is deliberately narrow —
+       * trimmed, bounded to [`ERROR_MAX`] characters, and written only for a run
+       * that failed. `failure_kind` says what class of failure it was; this says
+       * what the harness actually reported, which is what an operator reads when
+       * the class is unclassified. Never derived from stdout, so it can never
+       * stand in for provider output the run did not produce. Omitted on the wire
+       * when absent, and gated to [`FIRST_ERROR_SCHEMA_VERSION`].
+       */
+      error?: string | null | undefined;
       /**
        * Best-effort normalized tool-call events; `null` when the harness exposes
        * no machine-readable trace.
@@ -404,7 +320,7 @@ export type HistoryRecord =
        * by `history watch --after` and the exact id accepted by history lookup.
        */
       history_id: string;
-      labels?: HistoryLabels3 | undefined;
+      labels?: HistoryLabels2 | undefined;
       /**
        * The effective top-level model for the run, if any.
        */
@@ -430,7 +346,100 @@ export type HistoryRecord =
        * run's single prompt).
        */
       prompt: string;
-      schema_version: "1.2";
+      schema_version: "1.2" | "1.3";
+      /**
+       * The oneharness session id this run belongs to (the history file's stem).
+       */
+      session: string;
+      /**
+       * The harness's own continuation id, when it exposed one; `null` otherwise.
+       */
+      session_id: string | null;
+      started_at?: never | undefined;
+      status: "ok" | "planned";
+      /**
+       * Best-effort final assistant text; `null` when extraction was impossible.
+       */
+      text: string | null;
+      /**
+       * How `text` was extracted; `null` when absent.
+       */
+      text_source: string | null;
+      time_to_first_token_ms?: never | undefined;
+      /**
+       * RFC3339 UTC instant the record was written (append time).
+       */
+      timestamp: string;
+      tool_ms?: never | undefined;
+      usage: Usage2;
+      variant?: string | null | undefined;
+      [k: string]: unknown;
+    }
+  | {
+      duration_ms: number;
+      /**
+       * Best-effort normalized failure text for a run that did not succeed: the
+       * harness's own diagnostic as oneharness captured it on stderr, or
+       * oneharness's own message when it generated one (a spawn failure, a
+       * timeout, a binary that is not installed). This is the *only* place a
+       * record quotes the process's own bytes, and it is deliberately narrow —
+       * trimmed, bounded to [`ERROR_MAX`] characters, and written only for a run
+       * that failed. `failure_kind` says what class of failure it was; this says
+       * what the harness actually reported, which is what an operator reads when
+       * the class is unclassified. Never derived from stdout, so it can never
+       * stand in for provider output the run did not produce. Omitted on the wire
+       * when absent, and gated to [`FIRST_ERROR_SCHEMA_VERSION`].
+       */
+      error?: string | null | undefined;
+      /**
+       * Best-effort normalized tool-call events; `null` when the harness exposes
+       * no machine-readable trace.
+       */
+      events: ActionEvent[] | null;
+      exit_code: number | null;
+      /**
+       * Best-effort classified failure reason (see [`FailureKind`]); `null` when
+       * unclassified.
+       */
+      failure_kind: FailureKind | null;
+      finished_at: null;
+      /**
+       * Canonical harness id (e.g. `claude-code`).
+       */
+      harness: string;
+      harness_id: string;
+      /**
+       * Globally unique, time-ordered record id. This is also the cursor accepted
+       * by `history watch --after` and the exact id accepted by history lookup.
+       */
+      history_id: string;
+      labels?: HistoryLabels3 | undefined;
+      /**
+       * The effective top-level model for the run, if any.
+       */
+      model: string | null;
+      model_ms?: never | undefined;
+      /**
+       * The human-meaningful session name (see [`session_name`]); repeated on
+       * every record so a reader can resolve a session by name from any line.
+       */
+      name: string;
+      observed_tool_ms: number;
+      /**
+       * The normalized approval mode requested for the run.
+       */
+      permission_mode: "read-only" | "plan" | "default" | "edit" | "auto" | "bypass";
+      /**
+       * The project directory the run operated in (the real path, not the
+       * on-disk slug), so the list view can show where a session ran.
+       */
+      project: string;
+      /**
+       * The prompt this harness run received (its own, on a batch run; else the
+       * run's single prompt).
+       */
+      prompt: string;
+      schema_version: "1.2" | "1.3";
       /**
        * The oneharness session id this run belongs to (the history file's stem).
        */
@@ -460,7 +469,21 @@ export type HistoryRecord =
       [k: string]: unknown;
     }
   | {
-      duration_ms: number;
+      duration_ms: number | null;
+      /**
+       * Best-effort normalized failure text for a run that did not succeed: the
+       * harness's own diagnostic as oneharness captured it on stderr, or
+       * oneharness's own message when it generated one (a spawn failure, a
+       * timeout, a binary that is not installed). This is the *only* place a
+       * record quotes the process's own bytes, and it is deliberately narrow —
+       * trimmed, bounded to [`ERROR_MAX`] characters, and written only for a run
+       * that failed. `failure_kind` says what class of failure it was; this says
+       * what the harness actually reported, which is what an operator reads when
+       * the class is unclassified. Never derived from stdout, so it can never
+       * stand in for provider output the run did not produce. Omitted on the wire
+       * when absent, and gated to [`FIRST_ERROR_SCHEMA_VERSION`].
+       */
+      error?: string | null | undefined;
       /**
        * Best-effort normalized tool-call events; `null` when the harness exposes
        * no machine-readable trace.
@@ -494,7 +517,7 @@ export type HistoryRecord =
        * every record so a reader can resolve a session by name from any line.
        */
       name: string;
-      observed_tool_ms: number;
+      observed_tool_ms?: never | undefined;
       /**
        * The normalized approval mode requested for the run.
        */
@@ -509,7 +532,7 @@ export type HistoryRecord =
        * run's single prompt).
        */
       prompt: string;
-      schema_version: "1.2";
+      schema_version: "1.2" | "1.3";
       /**
        * The oneharness session id this run belongs to (the history file's stem).
        */
@@ -519,7 +542,7 @@ export type HistoryRecord =
        */
       session_id: string | null;
       started_at?: never | undefined;
-      status: Status;
+      status: "nonzero" | "timeout" | "spawn-error" | "skipped";
       /**
        * Best-effort final assistant text; `null` when extraction was impossible.
        */
@@ -539,29 +562,26 @@ export type HistoryRecord =
       [k: string]: unknown;
     }
   | {
-      duration_ms: number | null;
+      duration_ms: number;
+      /**
+       * Best-effort normalized failure text for a run that did not succeed: the
+       * harness's own diagnostic as oneharness captured it on stderr, or
+       * oneharness's own message when it generated one (a spawn failure, a
+       * timeout, a binary that is not installed). This is the *only* place a
+       * record quotes the process's own bytes, and it is deliberately narrow —
+       * trimmed, bounded to [`ERROR_MAX`] characters, and written only for a run
+       * that failed. `failure_kind` says what class of failure it was; this says
+       * what the harness actually reported, which is what an operator reads when
+       * the class is unclassified. Never derived from stdout, so it can never
+       * stand in for provider output the run did not produce. Omitted on the wire
+       * when absent, and gated to [`FIRST_ERROR_SCHEMA_VERSION`].
+       */
+      error?: string | null | undefined;
       /**
        * Best-effort normalized tool-call events; `null` when the harness exposes
        * no machine-readable trace.
        */
-      events:
-        | ({
-            duration_ms?: null | undefined;
-            finished_at?: null | undefined;
-            index: number;
-            input: unknown;
-            kind: string;
-            name: string | null;
-            output: string | null;
-            started_at?: null | undefined;
-            status?: null | undefined;
-            tool_call_id?: string | null | undefined;
-            [k: string]: unknown;
-          } & {
-            timing_source?: never | undefined;
-            [k: string]: unknown;
-          })[]
-        | null;
+      events: ActionEvent[] | null;
       exit_code: number | null;
       /**
        * Best-effort classified failure reason (see [`FailureKind`]); `null` when
@@ -573,7 +593,7 @@ export type HistoryRecord =
        * Canonical harness id (e.g. `claude-code`).
        */
       harness: string;
-      harness_id?: string | undefined;
+      harness_id: string;
       /**
        * Globally unique, time-ordered record id. This is also the cursor accepted
        * by `history watch --after` and the exact id accepted by history lookup.
@@ -605,7 +625,7 @@ export type HistoryRecord =
        * run's single prompt).
        */
       prompt: string;
-      schema_version: "1.1";
+      schema_version: "1.3";
       /**
        * The oneharness session id this run belongs to (the history file's stem).
        */
@@ -614,8 +634,8 @@ export type HistoryRecord =
        * The harness's own continuation id, when it exposed one; `null` otherwise.
        */
       session_id: string | null;
-      started_at?: never | undefined;
-      status: Status;
+      started_at: string;
+      status: "nonzero" | "timeout" | "spawn-error" | "skipped";
       /**
        * Best-effort final assistant text; `null` when extraction was impossible.
        */
@@ -624,7 +644,7 @@ export type HistoryRecord =
        * How `text` was extracted; `null` when absent.
        */
       text_source: string | null;
-      time_to_first_token_ms?: never | undefined;
+      time_to_first_token_ms?: number | null | undefined;
       /**
        * RFC3339 UTC instant the record was written (append time).
        */
@@ -637,23 +657,25 @@ export type HistoryRecord =
   | {
       duration_ms: number | null;
       /**
+       * Best-effort normalized failure text for a run that did not succeed: the
+       * harness's own diagnostic as oneharness captured it on stderr, or
+       * oneharness's own message when it generated one (a spawn failure, a
+       * timeout, a binary that is not installed). This is the *only* place a
+       * record quotes the process's own bytes, and it is deliberately narrow —
+       * trimmed, bounded to [`ERROR_MAX`] characters, and written only for a run
+       * that failed. `failure_kind` says what class of failure it was; this says
+       * what the harness actually reported, which is what an operator reads when
+       * the class is unclassified. Never derived from stdout, so it can never
+       * stand in for provider output the run did not produce. Omitted on the wire
+       * when absent, and gated to [`FIRST_ERROR_SCHEMA_VERSION`].
+       */
+      error?: string | null | undefined;
+      /**
        * Best-effort normalized tool-call events; `null` when the harness exposes
        * no machine-readable trace.
        */
       events:
-        | ({
-            duration_ms?: null | undefined;
-            finished_at?: null | undefined;
-            index: number;
-            input: unknown;
-            kind: string;
-            name: string | null;
-            output: string | null;
-            started_at?: null | undefined;
-            status?: null | undefined;
-            tool_call_id?: string | null | undefined;
-            [k: string]: unknown;
-          } & {
+        | (ActionEvent & {
             timing_source?: never | undefined;
             [k: string]: unknown;
           })[]
@@ -701,7 +723,7 @@ export type HistoryRecord =
        * run's single prompt).
        */
       prompt: string;
-      schema_version: "1.0";
+      schema_version: "1.0" | "1.1";
       /**
        * The oneharness session id this run belongs to (the history file's stem).
        */
@@ -711,7 +733,7 @@ export type HistoryRecord =
        */
       session_id: string | null;
       started_at?: never | undefined;
-      status: Status;
+      status: "nonzero" | "timeout" | "spawn-error" | "skipped";
       /**
        * Best-effort final assistant text; `null` when extraction was impossible.
        */
@@ -732,6 +754,130 @@ export type HistoryRecord =
     }
   | {
       duration_ms: number | null;
+      /**
+       * Best-effort normalized failure text for a run that did not succeed: the
+       * harness's own diagnostic as oneharness captured it on stderr, or
+       * oneharness's own message when it generated one (a spawn failure, a
+       * timeout, a binary that is not installed). This is the *only* place a
+       * record quotes the process's own bytes, and it is deliberately narrow —
+       * trimmed, bounded to [`ERROR_MAX`] characters, and written only for a run
+       * that failed. `failure_kind` says what class of failure it was; this says
+       * what the harness actually reported, which is what an operator reads when
+       * the class is unclassified. Never derived from stdout, so it can never
+       * stand in for provider output the run did not produce. Omitted on the wire
+       * when absent, and gated to [`FIRST_ERROR_SCHEMA_VERSION`].
+       */
+      error?: string | null | undefined;
+      /**
+       * Best-effort normalized tool-call events; `null` when the harness exposes
+       * no machine-readable trace.
+       */
+      events:
+        | ({
+            duration_ms?: null | undefined;
+            finished_at?: null | undefined;
+            index: number;
+            input: unknown;
+            kind: string;
+            name: string | null;
+            output: string | null;
+            started_at?: null | undefined;
+            status?: null | undefined;
+            tool_call_id?: string | null | undefined;
+            [k: string]: unknown;
+          } & {
+            timing_source?: never | undefined;
+            [k: string]: unknown;
+          })[]
+        | null;
+      exit_code: number | null;
+      /**
+       * Best-effort classified failure reason (see [`FailureKind`]); `null` when
+       * unclassified.
+       */
+      failure_kind: FailureKind | null;
+      finished_at: null;
+      /**
+       * Canonical harness id (e.g. `claude-code`).
+       */
+      harness: string;
+      harness_id?: string | undefined;
+      /**
+       * Globally unique, time-ordered record id. This is also the cursor accepted
+       * by `history watch --after` and the exact id accepted by history lookup.
+       */
+      history_id: string;
+      labels?: HistoryLabels7 | undefined;
+      /**
+       * The effective top-level model for the run, if any.
+       */
+      model: string | null;
+      model_ms?: never | undefined;
+      /**
+       * The human-meaningful session name (see [`session_name`]); repeated on
+       * every record so a reader can resolve a session by name from any line.
+       */
+      name: string;
+      observed_tool_ms?: never | undefined;
+      /**
+       * The normalized approval mode requested for the run.
+       */
+      permission_mode: "read-only" | "plan" | "default" | "edit" | "auto" | "bypass";
+      /**
+       * The project directory the run operated in (the real path, not the
+       * on-disk slug), so the list view can show where a session ran.
+       */
+      project: string;
+      /**
+       * The prompt this harness run received (its own, on a batch run; else the
+       * run's single prompt).
+       */
+      prompt: string;
+      schema_version: "1.0" | "1.1";
+      /**
+       * The oneharness session id this run belongs to (the history file's stem).
+       */
+      session: string;
+      /**
+       * The harness's own continuation id, when it exposed one; `null` otherwise.
+       */
+      session_id: string | null;
+      started_at?: never | undefined;
+      status: "ok" | "planned";
+      /**
+       * Best-effort final assistant text; `null` when extraction was impossible.
+       */
+      text: string | null;
+      /**
+       * How `text` was extracted; `null` when absent.
+       */
+      text_source: string | null;
+      time_to_first_token_ms?: never | undefined;
+      /**
+       * RFC3339 UTC instant the record was written (append time).
+       */
+      timestamp: string;
+      tool_ms?: never | undefined;
+      usage: Usage7;
+      variant?: string | null | undefined;
+      [k: string]: unknown;
+    }
+  | {
+      duration_ms: number | null;
+      /**
+       * Best-effort normalized failure text for a run that did not succeed: the
+       * harness's own diagnostic as oneharness captured it on stderr, or
+       * oneharness's own message when it generated one (a spawn failure, a
+       * timeout, a binary that is not installed). This is the *only* place a
+       * record quotes the process's own bytes, and it is deliberately narrow —
+       * trimmed, bounded to [`ERROR_MAX`] characters, and written only for a run
+       * that failed. `failure_kind` says what class of failure it was; this says
+       * what the harness actually reported, which is what an operator reads when
+       * the class is unclassified. Never derived from stdout, so it can never
+       * stand in for provider output the run did not produce. Omitted on the wire
+       * when absent, and gated to [`FIRST_ERROR_SCHEMA_VERSION`].
+       */
+      error?: string | null | undefined;
       events:
         | {
             index: number;
@@ -759,7 +905,7 @@ export type HistoryRecord =
        * by `history watch --after` and the exact id accepted by history lookup.
        */
       history_id: string;
-      labels?: HistoryLabels7 | undefined;
+      labels?: HistoryLabels8 | undefined;
       /**
        * The effective top-level model for the run, if any.
        */
@@ -820,7 +966,7 @@ export type HistoryRecord =
        */
       timestamp: string;
       tool_ms?: number | null | undefined;
-      usage: Usage7;
+      usage: Usage8;
       variant?: string | null | undefined;
       [k: string]: unknown;
     };
@@ -844,7 +990,27 @@ export type FailureKind = "auth" | "rate_limit" | "model_not_found" | "quota" | 
  * The outcome of attempting to run one harness.
  */
 export type Status = "ok" | "nonzero" | "timeout" | "spawn-error" | "skipped" | "planned";
-export type HistoryRecords = HistoryRecord[];
+export type HistoryRecords = ((
+  | {
+      error?: null | undefined;
+      [k: string]: unknown;
+    }
+  | ({
+      error: string;
+      schema_version?: "1.3" | undefined;
+      [k: string]: unknown;
+    } & (
+      | {
+          status?: "nonzero" | "timeout" | "spawn-error" | "skipped" | undefined;
+          [k: string]: unknown;
+        }
+      | {
+          failure_kind: "tool_deferred";
+          [k: string]: unknown;
+        }
+    ))
+) &
+  HistoryRecord)[];
 
 /**
  * One normalized action a harness took, harness-agnostic so a single consumer
@@ -1173,6 +1339,43 @@ export interface HistoryLabels7 {
  * Best-effort token/cost accounting (every field `null` when unreported).
  */
 export interface Usage7 {
+  /**
+   * Prompt tokens served from the provider's prompt cache (a cheap read of a
+   * previously-written prefix), when the harness reports them. `None` when the
+   * harness does not surface cache counts — never `0` as a guess.
+   */
+  cache_read_tokens: number | null;
+  /**
+   * Prompt tokens written to the provider's prompt cache (a.k.a. cache
+   * creation), when the harness reports them. `None` when not surfaced.
+   */
+  cache_write_tokens: number | null;
+  /**
+   * Total cost in USD, when the harness reports it (often absent on
+   * subscription auth, where there is no per-call dollar figure).
+   */
+  cost_usd: number | null;
+  /**
+   * Prompt/input tokens billed, when the harness reports them.
+   */
+  input_tokens: number | null;
+  /**
+   * Completion/output tokens billed, when the harness reports them.
+   */
+  output_tokens: number | null;
+  [k: string]: unknown;
+}
+/**
+ * Caller-supplied metadata used to select related task-graph records.
+ * Omitted on the wire when empty for additive compatibility.
+ */
+export interface HistoryLabels8 {
+  [k: string]: string;
+}
+/**
+ * Best-effort token/cost accounting (every field `null` when unreported).
+ */
+export interface Usage8 {
   /**
    * Prompt tokens served from the provider's prompt cache (a cheap read of a
    * previously-written prefix), when the harness reports them. `None` when the

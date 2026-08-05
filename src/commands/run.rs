@@ -2202,6 +2202,10 @@ fn executed_result(
     } else {
         None
     };
+    // Whether this harness/format pair advertises a provider trace at all: only
+    // then is an incomplete one a *shortfall* whose invocation bounds are worth
+    // preserving. A harness that declares no trace has nothing to fall short of.
+    let attempted_trace = timing.is_some();
     let telemetry = timing
         .filter(|timing| timing.trace_complete)
         .map(
@@ -2219,6 +2223,23 @@ fn executed_result(
                     tool_ms: observed_tool_ms,
                 }
             })
+        })
+        .or_else(|| {
+            // A trace-capable run that failed before its trace completed. The
+            // provider/tool split was never derivable, but the instant the runner
+            // itself watched the invocation start is measured, not inferred — so
+            // it is preserved rather than discarded with the split.
+            // The runner mints this instant, so the parse is a boundary check
+            // rather than a doubt: text that is not a canonical UTC instant
+            // yields no telemetry rather than a claim about when the run began.
+            (attempted_trace && oneharness_core::domain::history::run_failed(capture.status))
+                .then(|| capture.started_at.parse().ok())
+                .flatten()
+                .map(|started_at| {
+                    oneharness_core::domain::report::ExecutionTelemetry::PartialInvocation {
+                        started_at,
+                    }
+                })
         });
     // A deferred-tool dead-end: the harness completed cleanly (exit 0) but only
     // *deferred* a builtin tool call instead of running it (Claude Code bridge

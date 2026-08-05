@@ -1283,14 +1283,6 @@ fn reported_failure(status: Status, failure_kind: Option<FailureKind>) -> bool {
 /// reported no failure has nothing to put in it. (Emptiness and length are not
 /// checked here — [`FailureText`] makes those unrepresentable, and the generated
 /// schema states them.)
-///
-/// These two are the reader's own cross-field rules rather than shape the
-/// generated schema restates: expressing them there would mean splitting every
-/// timing branch by version and by whether it carries text, roughly doubling the
-/// contract the SDKs are generated from, to describe a record no writer produces.
-/// The gap runs only in the safe direction — an SDK accepts a shape the CLI's own
-/// reader refuses, never the reverse — which is the direction that would
-/// otherwise ship an SDK refusing what the CLI writes.
 fn error_text_valid(
     schema_version: &str,
     error: Option<&FailureText>,

@@ -256,7 +256,7 @@ fn every_report_carries_the_shared_schema_version() {
     // so a consumer reads any of them with one number — and a bump must move
     // every surface at once. Pinned literally on purpose: asserting against the
     // constant would pass through a bump nobody intended.
-    let version = "0.4";
+    let version = "0.5";
     let printed = run(
         &[
             "run",
@@ -299,7 +299,7 @@ fn list_describes_every_harness() {
     let output = run(&["list"], &[]);
     assert!(output.status.success());
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.4");
+    assert_eq!(value["schema_version"], "0.5");
     let ids: Vec<&str> = value["harnesses"]
         .as_array()
         .unwrap()
@@ -3986,6 +3986,11 @@ fn timeout_preserves_partial_telemetry_in_report_and_history() {
 
     // History freezes the same normalized evidence while omitting raw streams.
     let history_file = value["history_file"].as_str().expect("history file");
+    // The trace completed before the process was killed, so the measurement is
+    // provider-measured — and the report carries it, not just history.
+    assert_eq!(result["telemetry"]["source"], "provider_measured");
+    assert!(result["telemetry"]["started_at"].is_string());
+
     let record = first_history_run(Path::new(history_file));
     assert_eq!(record["status"], "timeout");
     assert_eq!(record["text"], "partial answer");
@@ -4000,6 +4005,565 @@ fn timeout_preserves_partial_telemetry_in_report_and_history() {
 
     let _ = std::fs::remove_file(ticks);
     let _ = std::fs::remove_dir_all(history);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
+    // The CLI face of cancellation. The harness writes nothing at all, so the run
+    // has no line to react to, and its descendant outlives a launcher kill. A
+    // SIGTERM to oneharness must therefore tear the whole tree down through the
+    // ordinary terminate path and still emit the machine-readable report, rather
+    // than dying and orphaning a harness that keeps working (and billing).
+    let history = hist_dir("cancel-signal");
+    let history_arg = history.display().to_string();
+    let ticks = native_tick_file("cancel-signal");
+    let _ = std::fs::remove_file(&ticks);
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        // No MOCK_STDOUT: the fixture is completely silent.
+        .env("MOCK_NATIVE_GRANDCHILD_MS", "20000")
+        .env("MOCK_TICK_FILE", ticks.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "cancel me",
+            "--bin",
+            &bin_override("claude-code"),
+            // Far beyond the teardown this test measures, so a run that only
+            // ended at its own deadline could never pass.
+            "--timeout",
+            "60",
+            "--history",
+            "--history-dir",
+            &history_arg,
+            "--compact",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn oneharness");
+
+    // Cancel only once the descendant has proven it is really running, so the
+    // teardown assertion below is about a live tree rather than a spawn race.
+    let alive_deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::fs::metadata(&ticks).map(|m| m.len()).unwrap_or(0) == 0 {
+        assert!(
+            std::time::Instant::now() < alive_deadline,
+            "the silent harness never started its descendant"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let signalled = std::time::Instant::now();
+    let sent = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("failed to signal oneharness");
+    assert!(sent.success(), "kill -TERM did not succeed");
+
+    let output = child.wait_with_output().expect("failed to reap oneharness");
+    assert!(
+        signalled.elapsed() < std::time::Duration::from_secs(15),
+        "the signalled run did not tear down promptly: {:?}",
+        signalled.elapsed()
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "oneharness did not exit through its own reporting path: {:?}",
+        output.status
+    );
+
+    // The report is still the contract: a cancelled run is a value a consumer
+    // reads, not a process that vanished.
+    let value = json_stdout(&output);
+    assert_eq!(value["schema_version"], "0.5");
+    let result = &value["results"][0];
+    assert_eq!(result["status"], "cancelled");
+    assert_eq!(result["exit_code"], Value::Null);
+    assert!(
+        result["error"].as_str().unwrap().contains("cancelled"),
+        "{}",
+        result["error"]
+    );
+
+    let record = first_history_run(Path::new(value["history_file"].as_str().unwrap()));
+    assert_eq!(record["status"], "cancelled");
+    assert_eq!(record["schema_version"], "1.4");
+
+    assert_native_descendant_stopped(&ticks);
+    let _ = std::fs::remove_file(ticks);
+    let _ = std::fs::remove_dir_all(history);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_cancelled_batch_claims_no_invocation_for_its_queued_prompts() {
+    // The queued half of cancellation, end to end. A batch of three prompts runs
+    // one at a time, so when the signal lands only the first prompt has ever been
+    // invoked — the other two are still queued. They are still the caller's
+    // prompts, so the report stays one entry per prompt and each queued entry is
+    // `cancelled`; but never having run, they must claim no invocation bounds.
+    // The harness is opencode because it declares a provider trace: on a
+    // trace-capable harness a cancelled run *does* report the instant it began,
+    // so `telemetry` here separates the prompt that ran from the ones that never
+    // did — a queued entry reporting a start time would be measuring nothing.
+    let history = hist_dir("cancel-queued");
+    let history_arg = history.display().to_string();
+    let log = batch_log_path("cancel-queued");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        // Silent — no MOCK_STDOUT — and long-running, so the run has no line to
+        // react to and only the cancel re-check can end it.
+        .env("MOCK_SLEEP_MS", "60000")
+        // Every invocation that gets as far as running appends `S` here.
+        .env("MOCK_LOG_FILE", log.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "first",
+            "--prompt",
+            "second",
+            "--prompt",
+            "third",
+            "--bin",
+            &bin_override("opencode"),
+            // One at a time, so prompts two and three are unambiguously queued
+            // behind the first when the signal arrives.
+            "--max-parallel",
+            "1",
+            "--timeout",
+            "60",
+            "--history",
+            "--history-dir",
+            &history_arg,
+            "--compact",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn oneharness");
+
+    // Cancel only once the first prompt has really spawned, so the queued state
+    // below is a fact about scheduling rather than a spawn race.
+    let alive_deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::fs::read_to_string(&log).unwrap_or_default().is_empty() {
+        assert!(
+            std::time::Instant::now() < alive_deadline,
+            "the batch never spawned its first prompt"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let signalled = std::time::Instant::now();
+    let sent = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("failed to signal oneharness");
+    assert!(sent.success(), "kill -TERM did not succeed");
+
+    let output = child.wait_with_output().expect("failed to reap oneharness");
+    assert!(
+        signalled.elapsed() < std::time::Duration::from_secs(15),
+        "the signalled batch did not tear down promptly: {:?}",
+        signalled.elapsed()
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "oneharness did not exit through its own reporting path: {:?}",
+        output.status
+    );
+
+    let value = json_stdout(&output);
+    assert_eq!(value["batch"]["prompt_count"], 3);
+    let results = value["results"].as_array().unwrap();
+    assert_eq!(
+        results.len(),
+        3,
+        "a cancelled batch still reports one entry per prompt: {results:?}"
+    );
+    assert_eq!(results[0]["prompt"], "first");
+    assert_eq!(results[1]["prompt"], "second");
+    assert_eq!(results[2]["prompt"], "third");
+    for result in results {
+        assert_eq!(result["status"], "cancelled", "{result}");
+        assert!(
+            result["error"].as_str().unwrap().contains("cancelled"),
+            "{}",
+            result["error"]
+        );
+    }
+
+    // The prompt that ran was cut short mid-invocation, so the instant it began
+    // is a real measurement the report keeps.
+    assert_eq!(results[0]["telemetry"]["source"], "partial_invocation");
+    assert!(results[0]["telemetry"]["started_at"].is_string());
+
+    // The two queued prompts were never invoked: no exit code, no measured
+    // duration, and — the contrast that matters — no telemetry claiming when a
+    // run that never began started.
+    for result in &results[1..] {
+        assert_eq!(result["exit_code"], Value::Null, "{result}");
+        assert_eq!(result["duration_ms"], 0, "{result}");
+        assert_eq!(result["telemetry"], Value::Null, "{result}");
+    }
+
+    // And exactly one invocation ever reached the harness itself.
+    let spawns = std::fs::read_to_string(&log).unwrap_or_default();
+    assert_eq!(
+        spawns.matches('S').count(),
+        1,
+        "more than one prompt reached the harness: {spawns:?}"
+    );
+
+    // History keeps the same one-record-per-prompt shape, cancelled included.
+    let records = materialized_history(Path::new(value["history_file"].as_str().unwrap()));
+    assert_eq!(records.len(), 3);
+    for record in &records {
+        assert_eq!(record["status"], "cancelled", "{record}");
+    }
+
+    let _ = std::fs::remove_file(log);
+    let _ = std::fs::remove_dir_all(history);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_cancelled_run_keeps_the_output_it_had_already_produced() {
+    // Cancelling is not a reason to throw away evidence. The harness emits a
+    // complete transcript and then keeps its descendant alive, so the run is cut
+    // short *after* it produced parseable output — which must still normalize
+    // into text/usage/session/events, exactly as it does for a timeout.
+    let history = hist_dir("cancel-normalized");
+    let history_arg = history.display().to_string();
+    let ticks = native_tick_file("cancel-normalized");
+    let _ = std::fs::remove_file(&ticks);
+    let transcript = concat!(
+        "{\"type\":\"text\",\"sessionID\":\"ses-cancel\",\"part\":",
+        "{\"type\":\"text\",\"text\":\"partial answer\"}}\n",
+        "{\"type\":\"tool_use\",\"sessionID\":\"ses-cancel\",\"part\":",
+        "{\"id\":\"call-cancel\",\"type\":\"tool\",\"tool\":\"bash\",\"state\":",
+        "{\"input\":{\"command\":\"echo hi\"},\"output\":\"hi\"}}}\n",
+        "{\"type\":\"step_finish\",\"sessionID\":\"ses-cancel\",\"part\":",
+        "{\"cost\":0.01,\"tokens\":{\"input\":12,\"output\":3,",
+        "\"cache\":{\"read\":9,\"write\":4}}}}\n",
+    );
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_STDOUT", transcript)
+        .env("MOCK_NATIVE_GRANDCHILD_MS", "20000")
+        .env("MOCK_TICK_FILE", ticks.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "cancel me after output",
+            "--bin",
+            &bin_override("opencode"),
+            "--timeout",
+            "60",
+            "--history",
+            "--history-dir",
+            &history_arg,
+            "--compact",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn oneharness");
+
+    // The fixture writes its transcript before its first tick, so a tick proves
+    // the output oneharness must preserve has already been produced.
+    let alive_deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::fs::metadata(&ticks).map(|m| m.len()).unwrap_or(0) == 0 {
+        assert!(
+            std::time::Instant::now() < alive_deadline,
+            "the harness never produced its transcript"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    assert!(Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("failed to signal oneharness")
+        .success());
+
+    let output = child.wait_with_output().expect("failed to reap oneharness");
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["status"], "cancelled");
+    assert_eq!(result["text"], "partial answer");
+    assert_eq!(result["text_source"], "json:opencode-parts");
+    assert_eq!(result["usage"]["input_tokens"], 12);
+    assert_eq!(result["usage"]["output_tokens"], 3);
+    assert_eq!(result["usage"]["cache_read_tokens"], 9);
+    assert_eq!(result["usage"]["cost_usd"], 0.01);
+    assert_eq!(result["session_id"], "ses-cancel");
+    assert_eq!(result["events"][0]["name"], "bash");
+
+    // History freezes the same normalized evidence under the cancelled status.
+    let record = first_history_run(Path::new(value["history_file"].as_str().unwrap()));
+    assert_eq!(record["status"], "cancelled");
+    assert_eq!(record["text"], "partial answer");
+    assert_eq!(record["session_id"], "ses-cancel");
+    assert_eq!(record["events"][0]["name"], "bash");
+
+    assert_native_descendant_stopped(&ticks);
+    let _ = std::fs::remove_file(ticks);
+    let _ = std::fs::remove_dir_all(history);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_cancelled_fallback_candidate_stops_the_chain() {
+    // Falling through a cancellation would spawn the very next harness the
+    // cancellation was meant to prevent — so the chain stops, and `results`
+    // holds only the candidate that was actually attempted.
+    let ticks = native_tick_file("cancel-signal-fallback");
+    let _ = std::fs::remove_file(&ticks);
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_NATIVE_GRANDCHILD_MS", "20000")
+        .env("MOCK_TICK_FILE", ticks.display().to_string())
+        .args([
+            "run",
+            "--run-mode",
+            "fallback",
+            "--harness",
+            "claude-code",
+            "--harness",
+            "codex",
+            "--prompt",
+            "cancel me",
+            "--bin",
+            &bin_override("claude-code"),
+            "--bin",
+            &bin_override("codex"),
+            "--timeout",
+            "60",
+            "--compact",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn oneharness");
+
+    let alive_deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::fs::metadata(&ticks).map(|m| m.len()).unwrap_or(0) == 0 {
+        assert!(
+            std::time::Instant::now() < alive_deadline,
+            "the silent harness never started its descendant"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    assert!(Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("failed to signal oneharness")
+        .success());
+
+    let output = child.wait_with_output().expect("failed to reap oneharness");
+    let value = json_stdout(&output);
+    let results = value["results"].as_array().expect("results array");
+    assert_eq!(
+        results.len(),
+        1,
+        "the chain continued past a cancellation: {results:?}"
+    );
+    assert_eq!(results[0]["harness"], "claude-code");
+    assert_eq!(results[0]["status"], "cancelled");
+    assert!(
+        value["fallback"]["fell_through"]
+            .as_array()
+            .expect("fell_through array")
+            .is_empty(),
+        "a cancellation is not a startup failure: {}",
+        value["fallback"]
+    );
+
+    assert_native_descendant_stopped(&ticks);
+    let _ = std::fs::remove_file(ticks);
+}
+
+/// A "harness" that ignores SIGTERM and stays alive, so oneharness's teardown
+/// takes its full TERM→KILL grace rather than finishing in a few milliseconds.
+/// `$OH_READY_FILE` gets a byte as soon as it is running. The inner `sleep` dies
+/// with the process group; the loop is what keeps the script itself alive
+/// through the grace.
+#[cfg(unix)]
+fn term_ignoring_harness(label: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = std::env::temp_dir().join(format!(
+        "oneharness-{label}-{}-{:?}.sh",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::write(
+        &path,
+        "#!/bin/sh\ntrap '' TERM\nprintf x >> \"$OH_READY_FILE\"\ni=0\nwhile [ $i -lt 600 ]; do sleep 0.05; i=$((i + 1)); done\n",
+    )
+    .expect("failed to write the fixture harness");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("failed to make the fixture harness executable");
+    path
+}
+
+#[cfg(unix)]
+#[test]
+fn a_second_host_signal_stops_waiting_for_teardown() {
+    // Teardown is bounded but not instant, and an operator pressing Ctrl-C twice
+    // is asking to stop waiting for it: the second signal exits 130 straight from
+    // the handler, without the report the first one would have produced.
+    //
+    // The harness ignores TERM on purpose. That is what makes the window this
+    // test aims at deterministic: oneharness must spend its whole TERM→KILL
+    // grace on the tree, so a follow-up signal reliably lands while the first
+    // one's teardown is still in progress.
+    let harness = term_ignoring_harness("cancel-signal-twice");
+    let ready = native_tick_file("cancel-signal-twice");
+    let _ = std::fs::remove_file(&ready);
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("OH_READY_FILE", ready.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "cancel me twice",
+            "--bin",
+            &format!("claude-code={}", harness.display()),
+            "--timeout",
+            "60",
+            "--compact",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn oneharness");
+
+    let alive_deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::fs::metadata(&ready).map(|m| m.len()).unwrap_or(0) == 0 {
+        assert!(
+            std::time::Instant::now() < alive_deadline,
+            "the fixture harness never started"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    // Signal across the teardown window rather than exactly twice: a standard
+    // signal does not queue, so two sends the process has not been scheduled to
+    // handle yet collapse into a single delivery. Repeating guarantees a second
+    // *delivery* once the first handler has returned.
+    let pid = child.id().to_string();
+    let signal = || {
+        Command::new("kill")
+            .args(["-TERM", &pid])
+            .status()
+            .expect("failed to signal oneharness")
+            .success()
+    };
+    assert!(signal(), "kill -TERM did not reach oneharness");
+    for _ in 0..40 {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        signal();
+    }
+
+    let output = child.wait_with_output().expect("failed to reap oneharness");
+    assert_eq!(
+        output.status.code(),
+        Some(130),
+        "a second signal must exit immediately: {:?}",
+        output.status
+    );
+    let _ = std::fs::remove_file(ready);
+    let _ = std::fs::remove_file(harness);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_host_signal_cancels_a_streaming_run_and_still_terminates_the_stream() {
+    // Streaming is where a silent harness is hardest to stop: the loop reacts to
+    // lines, and there are none. The consumer must still get its terminal
+    // `result` envelope — a stream that simply stops is indistinguishable from a
+    // stalled one.
+    let ticks = native_tick_file("cancel-signal-stream");
+    let _ = std::fs::remove_file(&ticks);
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_NATIVE_GRANDCHILD_MS", "20000")
+        .env("MOCK_TICK_FILE", ticks.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "cancel me",
+            "--bin",
+            &bin_override("opencode"),
+            "--timeout",
+            "60",
+            "--stream",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn oneharness");
+
+    let alive_deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::fs::metadata(&ticks).map(|m| m.len()).unwrap_or(0) == 0 {
+        assert!(
+            std::time::Instant::now() < alive_deadline,
+            "the silent harness never started its descendant"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let signalled = std::time::Instant::now();
+    assert!(Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("failed to signal oneharness")
+        .success());
+
+    let output = child.wait_with_output().expect("failed to reap oneharness");
+    assert!(
+        signalled.elapsed() < std::time::Duration::from_secs(15),
+        "the signalled stream did not tear down promptly: {:?}",
+        signalled.elapsed()
+    );
+    assert_eq!(output.status.code(), Some(1));
+
+    let last = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .last()
+        .expect("the stream ended without any line")
+        .to_string();
+    match serde_json::from_str::<RunStreamEnvelope>(&last).expect("terminal envelope is typed") {
+        RunStreamEnvelope::Result { report } => {
+            assert_eq!(report.results[0].status, Status::Cancelled);
+        }
+        RunStreamEnvelope::Event { .. } => panic!("the stream never reached its terminal result"),
+    }
+
+    assert_native_descendant_stopped(&ticks);
+    let _ = std::fs::remove_file(ticks);
 }
 
 #[cfg(windows)]
@@ -6253,7 +6817,7 @@ fn config_command_shows_values_with_sources() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.4");
+    assert_eq!(value["schema_version"], "0.5");
     assert_eq!(value["config_files"].as_array().unwrap().len(), 2);
 
     // The project file wins for model and is named as the source...
@@ -9469,9 +10033,14 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
             report_call["timing_source"], "stdout_observed",
             "{id}: report event provenance"
         );
+        // The aggregate reaches the report through `telemetry`, tagged with the
+        // source that produced it — a consumer reads it here rather than
+        // re-opening the history file the same run just wrote.
+        let telemetry = &report["results"][0]["telemetry"];
+        assert_eq!(telemetry["source"], "stdout_observed", "{id}");
         assert!(
             report["results"][0].get("observed_tool_ms").is_none(),
-            "{id}: the aggregate is a history-only contract"
+            "{id}: the flat field name stays a history-only spelling"
         );
         let history_path = Path::new(report["history_file"].as_str().unwrap());
         assert!(
@@ -9497,6 +10066,10 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
         assert!(call["finished_at"].is_string(), "{id}");
         assert_eq!(call["status"], "completed", "{id}");
         assert_eq!(call["duration_ms"], record["observed_tool_ms"], "{id}");
+        assert_eq!(
+            report["results"][0]["telemetry"]["tool_ms"], record["observed_tool_ms"],
+            "{id}: report and history must agree on one measurement"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -9686,6 +10259,12 @@ fn history_records_a_failure_whose_telemetry_could_not_be_measured() {
         assert!(record.get("model_ms").is_none(), "{tag}");
         assert!(record.get("tool_ms").is_none(), "{tag}");
         assert!(record["finished_at"].is_null(), "{tag}");
+        // The report says the same thing, and says *which* kind of measurement
+        // it is — so a consumer never reads a bare `started_at` as a full trace.
+        let telemetry = &report["results"][0]["telemetry"];
+        assert_eq!(telemetry["source"], "partial_invocation", "{tag}");
+        assert_eq!(telemetry["started_at"], record["started_at"], "{tag}");
+        assert!(telemetry.get("model_ms").is_none(), "{tag}");
         // Salvaged provider text is reported as-is; absent stays null, never
         // filled in from the error text.
         assert_eq!(
@@ -10221,6 +10800,14 @@ fn history_preserves_format_contracts_and_composes_with_resume() {
     assert!(record["finished_at"].is_string());
     assert!(record["model_ms"].is_u64());
     assert!(record["tool_ms"].is_u64());
+    // The report carries the same measurement, so a consumer never has to open
+    // the history file to read what its own run already knew.
+    let telemetry = &report["results"][0]["telemetry"];
+    assert_eq!(telemetry["source"], "provider_measured");
+    assert_eq!(telemetry["started_at"], record["started_at"]);
+    assert_eq!(telemetry["finished_at"], record["finished_at"]);
+    assert_eq!(telemetry["model_ms"], record["model_ms"]);
+    assert_eq!(telemetry["tool_ms"], record["tool_ms"]);
 
     let _ = std::fs::remove_file(schema);
     let _ = std::fs::remove_dir_all(explicit_dir);
@@ -11949,7 +12536,7 @@ fn history_watch_streams_stdout_observed_event_at_the_current_version() {
     // Event lines are written by the current writer and read live, so they
     // always declare the current version (unlike a run record, whose version is
     // the oldest reader that can understand the fields it carries).
-    assert_eq!(envelope["line"]["schema_version"], "1.3");
+    assert_eq!(envelope["line"]["schema_version"], "1.4");
     assert_eq!(
         envelope["line"]["event"]["timing_source"],
         "stdout_observed"

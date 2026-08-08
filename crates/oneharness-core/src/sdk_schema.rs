@@ -7,12 +7,11 @@
 use schemars::{schema_for, Schema};
 use serde::Serialize;
 
-use crate::domain::history::run_failed;
+use crate::domain::history::{requires_provider_finish, run_failed, versions_from};
 use crate::domain::history::{
-    HistoryLine, HistoryRecord, HistoryStreamEnvelope, FIRST_ERROR_SCHEMA_VERSION,
-    FIRST_EVENT_SCHEMA_VERSION, FIRST_PARTIAL_TIMING_SCHEMA_VERSION,
+    HistoryLine, HistoryRecord, HistoryStreamEnvelope, FIRST_CANCELLED_SCHEMA_VERSION,
+    FIRST_ERROR_SCHEMA_VERSION, FIRST_EVENT_SCHEMA_VERSION, FIRST_PARTIAL_TIMING_SCHEMA_VERSION,
     OBSERVED_TIMING_SCHEMA_VERSION, PREVIOUS_CURRENT_SCHEMA_VERSION, PRE_LIFECYCLE_RECORD_VERSIONS,
-    SCHEMA_VERSION as HISTORY_SCHEMA_VERSION,
 };
 use crate::domain::report::{RunReport, RunStreamEnvelope, Status};
 use crate::domain::sdk::{
@@ -144,7 +143,7 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
             if properties.contains_key("run_id") && properties.contains_key("event") {
                 let mut current = serde_json::Value::Object(object.clone());
                 current["properties"]["schema_version"] =
-                    versions_schema(TIMING_PROVENANCE_VERSIONS);
+                    versions_schema(&timing_provenance_versions());
                 let mut previous = serde_json::Value::Object(object.clone());
                 previous["properties"]["schema_version"] =
                     versions_schema(PRE_TIMING_PROVENANCE_VERSIONS);
@@ -180,14 +179,14 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                         serde_json::json!({"type": "integer", "minimum": 0});
                 }
                 measured["properties"]["observed_tool_ms"] = serde_json::Value::Bool(false);
+                // Split by the runtime's own finish rule rather than a hand-kept
+                // list, so a new `Status` variant lands on the right branch here
+                // instead of quietly falling out of both.
+                let (finished, unfinished) = status_split(requires_provider_finish);
                 let mut terminal = measured.clone();
-                terminal["properties"]["status"] =
-                    serde_json::json!({"enum": ["ok", "nonzero"], "type": "string"});
+                terminal["properties"]["status"] = finished;
                 terminal["properties"]["finished_at"] = serde_json::json!({"type": "string"});
-                measured["properties"]["status"] = serde_json::json!({
-                    "enum": ["timeout", "spawn-error", "skipped", "planned"],
-                    "type": "string"
-                });
+                measured["properties"]["status"] = unfinished;
                 let mut unavailable = base;
                 unavailable["properties"]["schema_version"] = current_history_versions_schema();
                 unavailable["properties"]["finished_at"] = serde_json::json!({"type": "null"});
@@ -206,7 +205,7 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                 }
                 let mut observed = unavailable.clone();
                 observed["properties"]["schema_version"] =
-                    versions_schema(TIMING_PROVENANCE_VERSIONS);
+                    versions_schema(&timing_provenance_versions());
                 observed["properties"]["observed_tool_ms"] =
                     serde_json::json!({"type": "integer", "minimum": 0});
                 observed["properties"]["duration_ms"] =
@@ -239,7 +238,7 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                 );
                 object.insert(
                     "allOf".to_string(),
-                    serde_json::json!([error_placement_gate()]),
+                    serde_json::json!([error_placement_gate(), cancelled_version_gate()]),
                 );
                 return;
             }
@@ -259,8 +258,9 @@ fn history_schema(schema: Schema) -> Schema {
 /// stdout-observed tool time, and whose writers always emit the composed harness
 /// identity. Provider-measured timing itself predates them — this is about where
 /// a measurement came from, not whether one exists.
-const TIMING_PROVENANCE_VERSIONS: &[&str] =
-    &[OBSERVED_TIMING_SCHEMA_VERSION, HISTORY_SCHEMA_VERSION];
+fn timing_provenance_versions() -> Vec<&'static str> {
+    versions_from(OBSERVED_TIMING_SCHEMA_VERSION)
+}
 /// The event-sourced versions before that: they still carry provider-measured
 /// timing, but no event may say where its timing came from.
 const PRE_TIMING_PROVENANCE_VERSIONS: &[&str] =
@@ -270,12 +270,21 @@ fn versions_schema(versions: &[&str]) -> serde_json::Value {
 }
 
 fn current_history_versions_schema() -> serde_json::Value {
-    versions_schema(
-        &[PRE_TIMING_PROVENANCE_VERSIONS, TIMING_PROVENANCE_VERSIONS]
-            .concat()
-            .into_iter()
-            .collect::<Vec<_>>(),
-    )
+    versions_schema(&versions_from(FIRST_EVENT_SCHEMA_VERSION))
+}
+
+/// Every [`Status`] as its serialized wire token, read out of the enum's own
+/// generated schema so no list here can drift from the statuses a record can
+/// actually carry.
+fn status_values() -> Vec<serde_json::Value> {
+    // llmlint: ignore[no_panics_on_recoverable_errors] Schema generation is a build-time codegen boundary like every sibling transformation in this module; a `Status` that no longer renders as a union of serialized consts is a generator invariant a caller cannot recover from, and emitting an empty status list would ship an SDK that silently accepts anything.
+    let rendered = serde_json::to_value(schema_for!(Status)).expect("Status schema serializes");
+    rendered["oneOf"]
+        .as_array()
+        .expect("Status renders as a union of serialized consts")
+        .iter()
+        .map(|variant| variant["const"].clone())
+        .collect()
 }
 
 /// Split every [`Status`] by [`run_failed`] — the same predicate the runtime
@@ -285,30 +294,30 @@ fn current_history_versions_schema() -> serde_json::Value {
 ///
 /// Returns (failed, succeeded) as schemas ready to drop into a branch.
 fn status_partition() -> (serde_json::Value, serde_json::Value) {
-    // llmlint: ignore[no_panics_on_recoverable_errors] Schema generation is a build-time codegen boundary like every sibling transformation in this module; a `Status` that no longer renders as a union of serialized consts is a generator invariant a caller cannot recover from, and emitting an empty status branch would ship an SDK that silently accepts anything.
-    let rendered = serde_json::to_value(schema_for!(Status)).expect("Status schema serializes");
-    let variants = rendered["oneOf"]
-        .as_array()
-        .expect("Status renders as a union of serialized consts")
-        .clone();
-    let (mut failed, mut succeeded) = (Vec::new(), Vec::new());
-    for variant in variants {
-        let name = variant["const"].clone();
+    status_split(run_failed)
+}
+
+/// Split every [`Status`] by `predicate`, as (matching, rest), each ready to drop
+/// into a branch. The variants come from the enum's own generated schema, so no
+/// caller can restate a list that drifts from the statuses a record can carry.
+fn status_split(predicate: fn(Status) -> bool) -> (serde_json::Value, serde_json::Value) {
+    let (mut matching, mut rest) = (Vec::new(), Vec::new());
+    for name in status_values() {
         let status: Status =
             serde_json::from_value(name.clone()).expect("a generated Status variant reads back");
-        if run_failed(status) {
-            failed.push(name);
+        if predicate(status) {
+            matching.push(name);
         } else {
-            succeeded.push(name);
+            rest.push(name);
         }
     }
     assert!(
-        !failed.is_empty() && !succeeded.is_empty(),
+        !matching.is_empty() && !rest.is_empty(),
         "both status branches must stay reachable"
     );
     (
-        serde_json::json!({"enum": failed, "type": "string"}),
-        serde_json::json!({"enum": succeeded, "type": "string"}),
+        serde_json::json!({"enum": matching, "type": "string"}),
+        serde_json::json!({"enum": rest, "type": "string"}),
     )
 }
 
@@ -325,7 +334,7 @@ fn status_partition() -> (serde_json::Value, serde_json::Value) {
 fn partial_branch(untimed: &serde_json::Value, statuses: &serde_json::Value) -> serde_json::Value {
     let mut partial = untimed.clone();
     partial["properties"]["schema_version"] =
-        versions_schema(&[FIRST_PARTIAL_TIMING_SCHEMA_VERSION]);
+        versions_schema(&versions_from(FIRST_PARTIAL_TIMING_SCHEMA_VERSION));
     partial["properties"]["status"] = statuses.clone();
     partial["properties"]["started_at"] = serde_json::json!({"type": "string", "minLength": 1});
     partial["properties"]["duration_ms"] = serde_json::json!({"type": "integer", "minimum": 0});
@@ -367,10 +376,9 @@ fn error_placement_gate() -> serde_json::Value {
                 {
                     "type": "object",
                     "properties": {
-                        "schema_version": {
-                            "const": FIRST_ERROR_SCHEMA_VERSION,
-                            "type": "string"
-                        },
+                        "schema_version": versions_schema(
+                            &versions_from(FIRST_ERROR_SCHEMA_VERSION)
+                        ),
                         "error": {"type": "string"}
                     },
                     "required": ["error"]
@@ -384,6 +392,39 @@ fn error_placement_gate() -> serde_json::Value {
                     }
                 ]}
             ]}
+        ]
+    })
+}
+
+/// The `cancelled` status is legible only to a reader at or after the version
+/// that introduced it. Stated as its own gate, alongside
+/// [`error_placement_gate`], so every timing branch inherits the rule instead of
+/// each branch restating it — and so a v1.3 record claiming a status v1.3 never
+/// had is refused rather than silently accepted by a generated validator.
+fn cancelled_version_gate() -> serde_json::Value {
+    // llmlint: ignore[no_panics_on_recoverable_errors] Schema generation is a build-time codegen boundary like every sibling transformation here; a `Status` that no longer serializes to its wire token is a generator invariant, and emitting a gate that accepts the value at any version would ship an SDK looser than the reader it describes.
+    let cancelled =
+        serde_json::to_value(Status::Cancelled).expect("Status serializes to its wire token");
+    // Spelled as the *other* statuses rather than a negated one: every generated
+    // validator enforces an enum, and `not` is a keyword they would have to grow.
+    let others: Vec<_> = status_values()
+        .into_iter()
+        .filter(|value| *value != cancelled)
+        .collect();
+    serde_json::json!({
+        "anyOf": [
+            {
+                "type": "object",
+                "properties": {"status": {"enum": others, "type": "string"}}
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "schema_version": versions_schema(
+                        &versions_from(FIRST_CANCELLED_SCHEMA_VERSION)
+                    )
+                }
+            }
         ]
     })
 }
@@ -449,7 +490,7 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                     .collect::<serde_json::Map<_, _>>();
                 let base = serde_json::Value::Object(object.clone());
                 let mut current = base.clone();
-                set_history_identity_version(&mut current, TIMING_PROVENANCE_VERSIONS, true);
+                set_history_identity_version(&mut current, &timing_provenance_versions(), true);
                 let required = current["required"]
                     .as_array_mut()
                     .expect("history required array");
@@ -517,7 +558,7 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                 });
                 let pre_provenance_current = as_pre_provenance_branch(&current);
                 let mut unavailable = base.clone();
-                set_history_identity_version(&mut unavailable, TIMING_PROVENANCE_VERSIONS, true);
+                set_history_identity_version(&mut unavailable, &timing_provenance_versions(), true);
                 unavailable["properties"]["finished_at"] = serde_json::json!({"type": "null"});
                 if let Some(required) = unavailable["required"].as_array_mut() {
                     required.retain(|value| {
@@ -567,7 +608,7 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                 let pre_provenance_failed = as_pre_provenance_branch(&failed);
                 let pre_provenance_unavailable = as_pre_provenance_branch(&unavailable);
                 let mut observed = base.clone();
-                set_history_identity_version(&mut observed, TIMING_PROVENANCE_VERSIONS, true);
+                set_history_identity_version(&mut observed, &timing_provenance_versions(), true);
                 observed["properties"]["finished_at"] = serde_json::json!({"type": "null"});
                 for field in [
                     "started_at",
@@ -641,7 +682,7 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                 );
                 object.insert(
                     "allOf".to_string(),
-                    serde_json::json!([error_placement_gate()]),
+                    serde_json::json!([error_placement_gate(), cancelled_version_gate()]),
                 );
                 return;
             }

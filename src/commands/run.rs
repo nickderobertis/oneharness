@@ -884,11 +884,21 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let session_report = finalize_session(session_wiring, &results, args.print_command);
     // Every interrupt this run served, read off the live handle before the
     // listener is dropped (which removes the socket).
-    let control_report = control_listener.as_ref().map(|listener| ControlReport {
-        socket: listener.path().display().to_string(),
-        mechanism: listener.handle_ref().shape(),
-        interrupts: listener.handle_ref().events(),
-    });
+    // `bind` canonicalized the socket path, so it is absolute by construction;
+    // a run that somehow held a relative one has no address to publish.
+    let control_report = match control_listener.as_ref() {
+        Some(listener) => Some(ControlReport {
+            socket: control::AbsolutePath::new(listener.path()).map_err(|message| {
+                OneharnessError::ControlSocket {
+                    path: listener.path().display().to_string(),
+                    source: std::io::Error::new(std::io::ErrorKind::InvalidInput, message),
+                }
+            })?,
+            mechanism: listener.handle_ref().shape(),
+            interrupts: listener.handle_ref().events(),
+        }),
+        None => None,
+    };
 
     if let Some(dir) = &args.output_dir {
         write_output_dir(dir, &results)?;

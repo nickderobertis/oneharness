@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::history::sanitize_name;
 use crate::domain::report::OutputFormat;
+use crate::domain::usage::UtcInstant;
 
 /// The control protocol version carried in every frame's `v` field.
 ///
@@ -31,6 +32,48 @@ pub const PROTOCOL_VERSION: u32 = 1;
 
 /// The directory (under the session store) holding one socket per named run.
 pub const CONTROL_DIR: &str = "control";
+
+/// A filesystem path that is known to be absolute.
+///
+/// Control addresses are handed to a *different process* — the socket path in
+/// the report is how a supervisor finds the run — so a relative path is not a
+/// smaller version of the right answer, it is a different file depending on who
+/// reads it. The type is the difference between "we documented it as absolute"
+/// and "it is".
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, JsonSchema)]
+#[serde(transparent)]
+pub struct AbsolutePath(PathBuf);
+
+impl AbsolutePath {
+    /// Wrap `path`, or say why it cannot be an address.
+    pub fn new(path: impl Into<PathBuf>) -> Result<Self, String> {
+        let path = path.into();
+        if path.is_absolute() {
+            Ok(AbsolutePath(path))
+        } else {
+            Err(format!("`{}` is not an absolute path", path.display()))
+        }
+    }
+
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for AbsolutePath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.display())
+    }
+}
+
+impl<'de> Deserialize<'de> for AbsolutePath {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        AbsolutePath::new(PathBuf::from(String::deserialize(deserializer)?))
+            .map_err(D::Error::custom)
+    }
+}
 
 /// How a harness accepts an out-of-band interrupt for an in-flight turn.
 ///
@@ -143,7 +186,7 @@ pub enum ServerAddress {
     /// The transport is the process's own pipes; there is nothing to dial.
     Stdio,
     /// A unix domain socket the server bound.
-    UnixSocket { path: String },
+    UnixSocket { path: AbsolutePath },
     /// A loopback TCP port the server bound.
     Tcp { host: String, port: u16 },
 }
@@ -207,6 +250,24 @@ pub fn pool_key(
         material.push_str(arg);
     }
     format!("{harness_id}-{:016x}", fnv1a64(material.as_bytes()))
+}
+
+/// Whether `key` is shaped like a [`pool_key`] result and is therefore safe to
+/// use as one directory name.
+///
+/// The pool joins the key straight into a filesystem path, and `acquire` is a
+/// *published* library entry point — a sibling tool could pass anything. A key
+/// carrying a separator or `..` would place a lease tree outside the pool root,
+/// so the boundary refuses it rather than trusting the caller to have used
+/// `pool_key`.
+#[must_use]
+pub fn is_pool_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 128
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        && !key.contains("..")
 }
 
 /// FNV-1a, 64-bit. A tiny, dependency-free, *stable* digest — `DefaultHasher`
@@ -421,7 +482,7 @@ impl ControlResponse {
 
     /// The run-report record for having handled `verb` at `at` with this answer.
     #[must_use]
-    pub fn record(&self, verb: ControlVerb, at: String) -> ControlEvent {
+    pub fn record(&self, verb: ControlVerb, at: UtcInstant) -> ControlEvent {
         match self {
             ControlResponse::Served { .. } => ControlEvent::Served { verb, at },
             ControlResponse::Refused { reason, .. } => ControlEvent::Refused {
@@ -563,13 +624,13 @@ pub enum ControlEvent {
     Served {
         /// The verb requested.
         verb: ControlVerb,
-        /// RFC 3339 timestamp the request was handled.
-        at: String,
+        /// When the request was handled.
+        at: UtcInstant,
     },
     /// The request was refused, with why.
     Refused {
         verb: ControlVerb,
-        at: String,
+        at: UtcInstant,
         reason: ControlReason,
     },
 }
@@ -583,9 +644,9 @@ impl ControlEvent {
         }
     }
 
-    /// When it was handled (RFC 3339).
+    /// When it was handled.
     #[must_use]
-    pub fn at(&self) -> &str {
+    pub fn at(&self) -> &UtcInstant {
         match self {
             ControlEvent::Served { at, .. } | ControlEvent::Refused { at, .. } => at,
         }
@@ -612,7 +673,7 @@ impl ControlEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ControlReport {
     /// Absolute path of the socket this run listened on.
-    pub socket: String,
+    pub socket: AbsolutePath,
     /// The harness mechanism backing it.
     pub mechanism: ControlShape,
     /// Every control request served, in order.
@@ -649,11 +710,23 @@ mod tests {
     }
 
     #[test]
+    fn an_address_must_be_absolute_to_exist() {
+        assert!(AbsolutePath::new("relative/x.sock").is_err());
+        let ok = AbsolutePath::new("/tmp/x.sock").unwrap();
+        assert_eq!(ok.to_string(), "/tmp/x.sock");
+        assert_eq!(
+            serde_json::to_value(&ok).unwrap(),
+            serde_json::json!("/tmp/x.sock")
+        );
+        assert!(serde_json::from_value::<AbsolutePath>(serde_json::json!("rel")).is_err());
+    }
+
+    #[test]
     fn a_server_address_carries_its_own_transport() {
         assert_eq!(ServerAddress::Stdio.transport(), ServerTransport::Stdio);
         assert_eq!(
             ServerAddress::UnixSocket {
-                path: "/tmp/x.sock".into()
+                path: AbsolutePath::new("/tmp/x.sock").unwrap()
             }
             .transport(),
             ServerTransport::UnixSocket
@@ -743,12 +816,12 @@ mod tests {
 
     #[test]
     fn a_recorded_event_carries_its_reason_only_when_refused() {
-        let at = "2026-08-08T00:00:00.000Z".to_string();
+        let at = UtcInstant::from_epoch(1_786_190_000);
         let served = ControlResponse::served(ControlShape::ClaudeControlRequest)
             .record(ControlVerb::Interrupt, at.clone());
         assert!(served.is_served());
         assert_eq!(served.verb(), ControlVerb::Interrupt);
-        assert_eq!(served.at(), at);
+        assert_eq!(served.at(), &at);
         assert_eq!(served.reason(), None);
         let value = serde_json::to_value(&served).unwrap();
         assert_eq!(value["outcome"], "served");
@@ -807,6 +880,22 @@ mod tests {
         let different = pool_key("codex", &[("CODEX_HOME".into(), Some("/b".into()))], &[]);
         assert_ne!(a, different);
         assert!(a.starts_with("codex-"), "{a}");
+    }
+
+    #[test]
+    fn a_pool_key_that_could_escape_the_pool_root_is_refused() {
+        assert!(is_pool_key(&pool_key("codex", &[], &[])));
+        for bad in [
+            "",
+            "../escape",
+            "a/b",
+            "a\\b",
+            "..",
+            "x..y",
+            &"a".repeat(129),
+        ] {
+            assert!(!is_pool_key(bad), "`{bad}` should not be a pool key");
+        }
     }
 
     #[test]

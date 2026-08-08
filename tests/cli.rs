@@ -18391,6 +18391,38 @@ fn control_run_pins_the_message_stream_argv_and_leaves_the_prompt_off_it() {
     let _ = std::fs::remove_dir_all(&cwd);
 }
 
+#[cfg(not(unix))]
+#[test]
+fn control_on_a_platform_without_unix_sockets_is_a_usage_error() {
+    // There is no socket to open on Windows, so `--control` must say so before
+    // spawning rather than running a turn nobody can address.
+    let store = control_store_dir("platform");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "win",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--control needs a unix domain socket"),
+        "stderr:\n{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
 #[test]
 fn control_without_a_session_is_a_usage_error_naming_the_reason() {
     let output = run(

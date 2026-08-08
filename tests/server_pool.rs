@@ -40,6 +40,22 @@ fn plan() -> LaunchPlan {
 }
 
 #[test]
+fn the_pool_root_defaults_under_the_platform_state_dir_and_honors_an_override() {
+    // The default is what a consumer gets when it configures nothing, so it is
+    // part of the published surface — an override that silently fell back would
+    // put a sibling tool's servers in someone else's pool.
+    assert_eq!(
+        server_pool::resolve_root(Some("/custom/servers")),
+        Some(PathBuf::from("/custom/servers"))
+    );
+    let default = server_pool::resolve_root(None).expect("a state dir on this platform");
+    assert!(default.is_absolute(), "{default:?}");
+    assert!(default.ends_with("oneharness/servers"), "{default:?}");
+    // An empty override is not an override.
+    assert_eq!(server_pool::resolve_root(Some("")), Some(default));
+}
+
+#[test]
 fn two_dispatches_sharing_a_key_share_one_server_and_a_dead_holder_cannot_leak_it() {
     let root = pool_root("shared");
     let key = oneharness_core::domain::control::pool_key(

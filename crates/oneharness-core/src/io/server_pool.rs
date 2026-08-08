@@ -30,7 +30,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::control::{ServerAddress, ServerSpec};
+use crate::domain::control::{is_pool_key, ServerAddress, ServerSpec};
 
 /// How long an idle server (no live lease) is kept before reclamation, so a
 /// burst of short dispatches does not thrash a heavyweight process up and down.
@@ -59,6 +59,7 @@ pub struct ServerRecord {
 /// The drop is a courtesy, not the correctness mechanism: reclamation verifies
 /// the holder pid is alive, so a lease whose holder was `SIGKILL`ed is
 /// reclaimed by the next pool operation regardless.
+#[derive(Debug)]
 pub struct ServerLease {
     entry: PathBuf,
     lease_file: PathBuf,
@@ -159,6 +160,15 @@ pub fn acquire(
     plan: &LaunchPlan,
     linger: Duration,
 ) -> io::Result<ServerLease> {
+    // `key` reaches this published entry point from a caller, not necessarily
+    // from `pool_key`; refuse anything that would place a lease tree somewhere
+    // other than one directory under the root.
+    if !is_pool_key(key) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("`{key}` is not a valid pool key (use `domain::control::pool_key`)"),
+        ));
+    }
     let entry = root.join(key);
     fs::create_dir_all(entry.join(LEASE_DIR))?;
     let _guard = EntryLock::acquire(&entry)?;
@@ -491,6 +501,15 @@ mod tests {
             env: Vec::new(),
             address: ServerAddress::Stdio,
         }
+    }
+
+    #[test]
+    fn acquire_refuses_a_key_that_is_not_a_pool_key() {
+        let root = temp_root("badkey");
+        let err = acquire(&root, "../escape", &sleeper_plan(), DEFAULT_LINGER).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(!root.parent().unwrap().join("escape").exists());
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]

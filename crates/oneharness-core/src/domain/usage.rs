@@ -209,6 +209,22 @@ pub struct UtcInstantError(String);
 #[serde(transparent)]
 pub struct UtcInstant(String);
 
+impl schemars::JsonSchema for UtcInstant {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "UtcInstant".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        // A canonical RFC 3339 UTC string. Described rather than pattern-matched
+        // so every SDK validator accepts exactly what `FromStr` does, which is
+        // the one rule they all have to agree on.
+        schemars::json_schema!({
+            "type": "string",
+            "description": "An RFC 3339 timestamp in UTC (`Z`), in oneharness's canonical spelling.",
+        })
+    }
+}
+
 impl UtcInstant {
     /// The instant `secs` seconds after the UNIX epoch.
     #[must_use]

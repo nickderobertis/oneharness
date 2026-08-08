@@ -22,19 +22,23 @@ use crate::domain::control::{
     interrupt_frame, ControlEvent, ControlReason, ControlRequest, ControlResponse, ControlShape,
     ControlVerb,
 };
+use crate::domain::usage::UtcInstant;
 
 /// How long a client waits for a run to answer before giving up. Generous
 /// enough for a busy run, short enough that a wedged peer is not a hang.
 const CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The single clock read this module makes, kept here so
-/// [`crate::domain::control`] stays pure.
-fn now_rfc3339() -> String {
-    let millis = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    crate::domain::history::format_rfc3339_millis(millis)
+/// [`crate::domain::control`] stays pure. A pre-1970 clock falls back to the
+/// epoch rather than panicking — control is a side channel and never takes a
+/// run down.
+fn now() -> UtcInstant {
+    UtcInstant::from_epoch(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0),
+    )
 }
 
 /// The live end of a stdin-borne control mechanism.
@@ -53,6 +57,12 @@ enum TurnState {
 
 /// Shared, thread-safe access to a run's control mechanism plus the audit trail
 /// of everything it served (which the report echoes).
+///
+/// Every lock here recovers from poisoning (`into_inner`) rather than
+/// propagating a panic: control is a side channel, and a worker that panicked
+/// mid-turn must not also take down the run whose results are the deliverable.
+/// The guarded state is a stdin handle and an append-only log, neither of which
+/// a panic can leave half-updated in a way a later write would misread.
 pub struct ControlHandle {
     shape: ControlShape,
     state: Mutex<TurnState>,
@@ -78,20 +88,29 @@ impl ControlHandle {
 
     /// Park the child's stdin and mark a turn in flight.
     pub fn begin_turn(&self, stdin: std::process::ChildStdin) {
-        *self.state.lock().expect("control state poisoned") = TurnState::Active(stdin);
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = TurnState::Active(stdin);
     }
 
     /// End the turn and close the child's stdin (dropping it signals EOF, which
     /// is how a control-enabled child — whose stdin was deliberately held open
     /// — learns it may exit).
     pub fn end_turn(&self) {
-        *self.state.lock().expect("control state poisoned") = TurnState::Idle;
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = TurnState::Idle;
     }
 
     /// Write one raw line into the live turn's stdin, e.g. the prompt frame.
     /// Errors when no turn is active or the child closed its end.
     pub fn write_line(&self, line: &str) -> io::Result<()> {
-        let mut state = self.state.lock().expect("control state poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match &mut *state {
             TurnState::Active(stdin) => {
                 use std::io::Write;
@@ -112,8 +131,8 @@ impl ControlHandle {
         };
         self.events
             .lock()
-            .expect("control events poisoned")
-            .push(response.record(request.verb, now_rfc3339()));
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(response.record(request.verb, now()));
         response
     }
 
@@ -141,7 +160,10 @@ impl ControlHandle {
     }
 
     fn next_request_id(&self) -> String {
-        let mut counter = self.requests.lock().expect("control counter poisoned");
+        let mut counter = self
+            .requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         *counter += 1;
         format!("oh-control-{counter}")
     }
@@ -149,7 +171,10 @@ impl ControlHandle {
     /// Every request served so far, for the run report's `control` block.
     #[must_use]
     pub fn events(&self) -> Vec<ControlEvent> {
-        self.events.lock().expect("control events poisoned").clone()
+        self.events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 }
 
@@ -200,8 +225,22 @@ mod imp {
     /// listening on it, so two concurrent runs of the same session name cannot
     /// silently steal each other's address.
     pub fn bind(path: &Path, shape: ControlShape) -> io::Result<ControlListener> {
+        // Canonicalize the directory before binding: the socket path is an
+        // address handed to a *different* process, and a relative one resolves
+        // differently depending on where that process runs.
+        let path = &match path.parent() {
+            Some(parent) => {
+                std::fs::create_dir_all(parent)?;
+                std::fs::canonicalize(parent)?.join(path.file_name().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "the control socket path names no file",
+                    )
+                })?)
+            }
+            None => path.to_path_buf(),
+        };
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
             // The directory holds addressable levers over running agents, so
             // owner-only is a requirement, not a preference: failing to narrow it
             // must abort the run rather than leave a wider default in place.
@@ -509,7 +548,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].verb(), ControlVerb::Interrupt);
         assert!(events[0].is_served());
-        assert!(!events[0].at().is_empty());
+        assert!(!events[0].at().as_str().is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 

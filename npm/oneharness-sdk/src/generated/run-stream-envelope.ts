@@ -36,7 +36,7 @@ export type TimingSource = "provider_measured" | "stdout_observed";
 export type ControlEvent =
   | {
       /**
-       * RFC 3339 timestamp the request was handled.
+       * When the request was handled.
        */
       at: string;
       outcome: "served";
@@ -47,12 +47,16 @@ export type ControlEvent =
       [k: string]: unknown;
     }
   | {
-      at: string;
+      at: UtcInstant;
       outcome: "refused";
       reason: ControlReason;
       verb: ControlVerb;
       [k: string]: unknown;
     };
+/**
+ * An RFC 3339 timestamp in UTC (`Z`), in oneharness's canonical spelling.
+ */
+export type UtcInstant = string;
 /**
  * Why a control request could not be served. Distinct reasons because a
  * supervisor reacts differently to each: `unsupported` is permanent for the

@@ -165,6 +165,10 @@
       "results"
     ],
     "$defs": {
+      "AbsolutePath": {
+        "description": "A filesystem path that is known to be absolute.\n\nControl addresses are handed to a *different process* — the socket path in\nthe report is how a supervisor finds the run — so a relative path is not a\nsmaller version of the right answer, it is a different file depending on who\nreads it. The type is the difference between \"we documented it as absolute\"\nand \"it is\".",
+        "type": "string"
+      },
       "ActionEvent": {
         "description": "One normalized action a harness took, harness-agnostic so a single consumer\nassertion works across harnesses. Every field is always serialized (null when\nabsent) so the shape is stable, mirroring the `usage` contract.",
         "type": "object",
@@ -309,8 +313,8 @@
             "type": "object",
             "properties": {
               "at": {
-                "description": "RFC 3339 timestamp the request was handled.",
-                "type": "string"
+                "description": "When the request was handled.",
+                "$ref": "#/$defs/UtcInstant"
               },
               "outcome": {
                 "type": "string",
@@ -332,7 +336,7 @@
             "type": "object",
             "properties": {
               "at": {
-                "type": "string"
+                "$ref": "#/$defs/UtcInstant"
               },
               "outcome": {
                 "type": "string",
@@ -391,7 +395,7 @@
           },
           "socket": {
             "description": "Absolute path of the socket this run listened on.",
-            "type": "string"
+            "$ref": "#/$defs/AbsolutePath"
           }
         },
         "required": [
@@ -939,6 +943,10 @@
           "cache_write_tokens",
           "cost_usd"
         ]
+      },
+      "UtcInstant": {
+        "description": "An RFC 3339 timestamp in UTC (`Z`), in oneharness's canonical spelling.",
+        "type": "string"
       }
     }
   },
@@ -983,6 +991,10 @@
       }
     ],
     "$defs": {
+      "AbsolutePath": {
+        "description": "A filesystem path that is known to be absolute.\n\nControl addresses are handed to a *different process* — the socket path in\nthe report is how a supervisor finds the run — so a relative path is not a\nsmaller version of the right answer, it is a different file depending on who\nreads it. The type is the difference between \"we documented it as absolute\"\nand \"it is\".",
+        "type": "string"
+      },
       "ActionEvent": {
         "description": "One normalized action a harness took, harness-agnostic so a single consumer\nassertion works across harnesses. Every field is always serialized (null when\nabsent) so the shape is stable, mirroring the `usage` contract.",
         "type": "object",
@@ -1127,8 +1139,8 @@
             "type": "object",
             "properties": {
               "at": {
-                "description": "RFC 3339 timestamp the request was handled.",
-                "type": "string"
+                "description": "When the request was handled.",
+                "$ref": "#/$defs/UtcInstant"
               },
               "outcome": {
                 "type": "string",
@@ -1150,7 +1162,7 @@
             "type": "object",
             "properties": {
               "at": {
-                "type": "string"
+                "$ref": "#/$defs/UtcInstant"
               },
               "outcome": {
                 "type": "string",
@@ -1209,7 +1221,7 @@
           },
           "socket": {
             "description": "Absolute path of the socket this run listened on.",
-            "type": "string"
+            "$ref": "#/$defs/AbsolutePath"
           }
         },
         "required": [
@@ -1921,6 +1933,10 @@
           "cache_write_tokens",
           "cost_usd"
         ]
+      },
+      "UtcInstant": {
+        "description": "An RFC 3339 timestamp in UTC (`Z`), in oneharness's canonical spelling.",
+        "type": "string"
       }
     }
   },

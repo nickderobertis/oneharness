@@ -118,14 +118,18 @@ fn state_dir() -> Option<PathBuf> {
 }
 
 /// Everything the pool needs to start a server for one key.
+///
+/// Built only through [`LaunchPlan::new`], so its argv always has a program in
+/// it: a plan that cannot name what to spawn is not a smaller plan, it is not a
+/// plan, and the pool would otherwise index into an empty vector.
 pub struct LaunchPlan {
     /// argv[0] is the harness binary; the rest is `ServerSpec::launch` plus any
-    /// caller overrides and address flags.
-    pub argv: Vec<String>,
+    /// caller overrides and address flags. Never empty.
+    argv: Vec<String>,
     /// Environment applied to the server process.
-    pub env: Vec<(String, String)>,
+    env: Vec<(String, String)>,
     /// The address the server will be reachable at.
-    pub address: ServerAddress,
+    address: ServerAddress,
 }
 
 impl LaunchPlan {
@@ -148,6 +152,18 @@ impl LaunchPlan {
         argv.extend(spec.launch.iter().map(|a| (*a).to_string()));
         argv.extend(overrides.iter().cloned());
         LaunchPlan { argv, env, address }
+    }
+
+    /// The full argv the server is spawned with (argv[0] is the program).
+    #[must_use]
+    pub fn argv(&self) -> &[String] {
+        &self.argv
+    }
+
+    /// The address the server will be reachable at.
+    #[must_use]
+    pub fn address(&self) -> &ServerAddress {
+        &self.address
     }
 }
 
@@ -280,9 +296,13 @@ pub fn sweep(root: &Path, linger: Duration) -> io::Result<usize> {
 /// process tree on purpose: it must outlive the run that started it, which is
 /// the entire point of pooling.
 fn start(entry: &Path, plan: &LaunchPlan) -> io::Result<ServerRecord> {
-    let mut command = std::process::Command::new(&plan.argv[0]);
+    let (program, args) = plan
+        .argv
+        .split_first()
+        .expect("LaunchPlan::new always puts the program in argv[0]");
+    let mut command = std::process::Command::new(program);
     command
-        .args(&plan.argv[1..])
+        .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -496,11 +516,17 @@ mod tests {
     /// asks the OS about pids, so a `sleep` exercises exactly the same paths a
     /// `codex app-server` would.
     fn sleeper_plan() -> LaunchPlan {
-        LaunchPlan {
-            argv: vec!["sleep".to_string(), "120".to_string()],
-            env: Vec::new(),
-            address: ServerAddress::Stdio,
-        }
+        LaunchPlan::new(
+            "sleep",
+            &ServerSpec {
+                launch: &["120"],
+                key_env: &[],
+                transport: ServerTransport::Stdio,
+            },
+            &[],
+            ServerAddress::Stdio,
+            Vec::new(),
+        )
     }
 
     #[test]
@@ -539,8 +565,8 @@ mod tests {
             address.clone(),
             Vec::new(),
         );
-        assert_eq!(plan.argv, ["opencode", "serve", "--port", "7777"]);
-        assert_eq!(plan.address, address);
+        assert_eq!(plan.argv(), ["opencode", "serve", "--port", "7777"]);
+        assert_eq!(plan.address(), &address);
     }
 
     #[cfg(unix)]

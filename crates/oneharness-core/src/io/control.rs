@@ -126,13 +126,13 @@ impl ControlHandle {
 
     /// Serve one request, recording it for the report either way.
     pub fn serve(&self, request: ControlRequest) -> ControlResponse {
-        let response = match request.verb {
+        let response = match request.verb() {
             ControlVerb::Interrupt => self.interrupt(),
         };
         self.events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(response.record(request.verb, now()));
+            .push(response.record(request.verb(), now()));
         response
     }
 

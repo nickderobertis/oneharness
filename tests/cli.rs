@@ -18946,3 +18946,101 @@ fn control_under_print_command_shows_the_control_argv_and_opens_nothing() {
     );
     let _ = std::fs::remove_dir_all(&store);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_second_controlled_run_cannot_steal_a_live_sessions_socket() {
+    // The socket is a lever over a running agent, so a second run of the same
+    // session name must not displace the first — the supervisor's `interrupt`
+    // would otherwise silently address the wrong dispatch. A bind failure is a
+    // loud usage error before the second run spawns anything.
+    let store = control_store_dir("conflict");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("conflict-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let turn_log = store.join("turn.log");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_TURN_LOG", turn_log.display().to_string())
+        .env("MOCK_TURN_HOLD", "1")
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "taken",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the first controlled run");
+
+    wait_until("the first run's socket", || {
+        store.join("control").join("taken.sock").exists()
+    });
+    wait_until("the first turn to start", || {
+        std::fs::read_to_string(&turn_log)
+            .map(|log| log.contains("keep working"))
+            .unwrap_or(false)
+    });
+
+    let second = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "taken",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "me too",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(second.status.code(), Some(2), "{second:?}");
+    let stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        stderr.contains("could not open the control socket")
+            && stderr.contains("already listening"),
+        "stderr:\n{stderr}"
+    );
+
+    // The first run is untouched and still interruptible.
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "taken",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    let output = child.wait_with_output().expect("first run did not finish");
+    assert!(output.status.success(), "{output:?}");
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}

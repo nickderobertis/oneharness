@@ -300,10 +300,14 @@ impl ControlVerb {
 }
 
 /// One newline-terminated request frame: `{"v":1,"verb":"interrupt"}`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+///
+/// The version is not a field a caller sets: a `ControlRequest` that exists is
+/// one this build speaks, so an unsupported `v` is rejected while parsing
+/// rather than travelling as a value every reader must re-check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ControlRequest {
-    pub v: u32,
-    pub verb: ControlVerb,
+    v: u32,
+    verb: ControlVerb,
 }
 
 impl ControlRequest {
@@ -313,6 +317,38 @@ impl ControlRequest {
             v: PROTOCOL_VERSION,
             verb: ControlVerb::Interrupt,
         }
+    }
+
+    /// The verb requested.
+    #[must_use]
+    pub fn verb(self) -> ControlVerb {
+        self.verb
+    }
+}
+
+impl<'de> Deserialize<'de> for ControlRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        // llmlint: ignore[invalid_states_unrepresentable] This is the literal
+        // untrusted wire frame, whose arbitrary `v` is exactly what a peer can
+        // send; it exists for one step so the version can be refused before a
+        // `ControlRequest` — which cannot hold an unsupported version — is built.
+        #[derive(Deserialize)]
+        struct RequestWire {
+            v: u32,
+            verb: ControlVerb,
+        }
+        let wire = RequestWire::deserialize(deserializer)?;
+        if wire.v != PROTOCOL_VERSION {
+            return Err(D::Error::custom(format!(
+                "unsupported control protocol version {} (this oneharness speaks v{PROTOCOL_VERSION})",
+                wire.v
+            )));
+        }
+        Ok(ControlRequest {
+            v: wire.v,
+            verb: wire.verb,
+        })
     }
 }
 
@@ -520,15 +556,16 @@ pub fn parse_request(line: &str) -> Result<ControlRequest, String> {
     if trimmed.is_empty() {
         return Err("empty control request".to_string());
     }
-    let request: ControlRequest =
-        serde_json::from_str(trimmed).map_err(|err| format!("malformed control request: {err}"))?;
-    if request.v != PROTOCOL_VERSION {
-        return Err(format!(
-            "unsupported control protocol version {} (this oneharness speaks v{PROTOCOL_VERSION})",
-            request.v
-        ));
-    }
-    Ok(request)
+    // Deserialization refuses an unsupported version, so a `ControlRequest`
+    // that exists here is one this build speaks.
+    serde_json::from_str(trimmed).map_err(|err| {
+        let message = err.to_string();
+        if message.contains("protocol version") {
+            message
+        } else {
+            format!("malformed control request: {message}")
+        }
+    })
 }
 
 /// The socket file name backing session `name` (`<sanitized name>.sock`).
@@ -774,6 +811,9 @@ mod tests {
             .contains("malformed"));
         let future = parse_request(r#"{"v":2,"verb":"interrupt"}"#).unwrap_err();
         assert!(future.contains("version 2"), "{future}");
+        // The version cannot be carried past parsing: there is no way to build
+        // a request that claims one this build does not speak.
+        assert_eq!(ControlRequest::interrupt().verb(), ControlVerb::Interrupt);
     }
 
     #[test]

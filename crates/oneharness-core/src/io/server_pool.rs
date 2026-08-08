@@ -30,7 +30,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::control::{is_pool_key, ServerAddress, ServerSpec};
+use crate::domain::control::{PoolKey, ServerAddress, ServerSpec};
 
 /// How long an idle server (no live lease) is kept before reclamation, so a
 /// burst of short dispatches does not thrash a heavyweight process up and down.
@@ -40,13 +40,81 @@ const LEASE_DIR: &str = "leases";
 const SERVER_FILE: &str = "server.json";
 const LOCK_FILE: &str = ".lock";
 
+/// A process id the OS could actually have handed out.
+///
+/// `0` is not a smaller pid — on Unix it addresses the caller's whole process
+/// group, so a record that lost its pid and kept a `0` would have reclamation
+/// signal *this* dispatch's tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
+pub struct Pid(u32);
+
+impl Pid {
+    /// Accept `raw` as a pid, or say why it cannot be one.
+    pub fn new(raw: u32) -> Result<Self, String> {
+        if raw == 0 {
+            Err("0 is not a process id".to_string())
+        } else {
+            Ok(Pid(raw))
+        }
+    }
+
+    #[must_use]
+    pub fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for Pid {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        Pid::new(u32::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
+}
+
+/// A spawn argv that names a program: never empty, so `argv[0]` is always there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct LaunchArgv(Vec<String>);
+
+impl LaunchArgv {
+    /// Accept `argv` as a spawn plan, or say why it cannot be one.
+    pub fn new(argv: Vec<String>) -> Result<Self, String> {
+        if argv.is_empty() {
+            Err("a launch argv must name a program".to_string())
+        } else {
+            Ok(LaunchArgv(argv))
+        }
+    }
+
+    /// The program to spawn and the arguments to pass it.
+    #[must_use]
+    pub fn split(&self) -> (&String, &[String]) {
+        self.0
+            .split_first()
+            .expect("LaunchArgv is never empty by construction")
+    }
+
+    #[must_use]
+    pub fn as_slice(&self) -> &[String] {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for LaunchArgv {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        LaunchArgv::new(Vec::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
+}
+
 /// The record describing the server currently backing a pool entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerRecord {
     /// The server process's pid.
-    pub pid: u32,
+    pub pid: Pid,
     /// The full argv it was launched with (for diagnostics and drift).
-    pub argv: Vec<String>,
+    pub argv: LaunchArgv,
     /// How it is reached — the transport and its coordinates together, so a
     /// reader can never see a port that belongs to a socket.
     pub address: ServerAddress,
@@ -126,7 +194,7 @@ fn state_dir() -> Option<PathBuf> {
 pub struct LaunchPlan {
     /// argv[0] is the harness binary; the rest is `ServerSpec::launch` plus any
     /// caller overrides and address flags. Never empty.
-    argv: Vec<String>,
+    argv: LaunchArgv,
     /// Environment applied to the server process.
     env: Vec<(String, String)>,
     /// The address the server will be reachable at.
@@ -161,12 +229,14 @@ impl LaunchPlan {
         let mut argv = vec![bin.to_string()];
         argv.extend(spec.launch.iter().map(|a| (*a).to_string()));
         argv.extend(overrides.iter().cloned());
+        let argv = LaunchArgv::new(argv)
+            .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
         Ok(LaunchPlan { argv, env, address })
     }
 
     /// The full argv the server is spawned with (argv[0] is the program).
     #[must_use]
-    pub fn argv(&self) -> &[String] {
+    pub fn argv(&self) -> &LaunchArgv {
         &self.argv
     }
 
@@ -182,20 +252,11 @@ impl LaunchPlan {
 /// same record without spawning anything.
 pub fn acquire(
     root: &Path,
-    key: &str,
+    key: &PoolKey,
     plan: &LaunchPlan,
     linger: Duration,
 ) -> io::Result<ServerLease> {
-    // `key` reaches this published entry point from a caller, not necessarily
-    // from `pool_key`; refuse anything that would place a lease tree somewhere
-    // other than one directory under the root.
-    if !is_pool_key(key) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("`{key}` is not a valid pool key (use `domain::control::pool_key`)"),
-        ));
-    }
-    let entry = root.join(key);
+    let entry = root.join(key.as_str());
     fs::create_dir_all(entry.join(LEASE_DIR))?;
     let _guard = EntryLock::acquire(&entry)?;
 
@@ -235,7 +296,8 @@ fn reconcile(entry: &Path, linger: Duration) -> io::Result<Option<ServerRecord>>
             let path = lease.path();
             let holder = fs::read_to_string(&path)
                 .ok()
-                .and_then(|text| text.trim().parse::<u32>().ok());
+                .and_then(|text| text.trim().parse::<u32>().ok())
+                .and_then(|raw| Pid::new(raw).ok());
             match holder {
                 Some(pid) if pid_alive(pid) => live_leases += 1,
                 // No readable pid, or a pid the OS no longer knows: the holder
@@ -306,10 +368,7 @@ pub fn sweep(root: &Path, linger: Duration) -> io::Result<usize> {
 /// process tree on purpose: it must outlive the run that started it, which is
 /// the entire point of pooling.
 fn start(entry: &Path, plan: &LaunchPlan) -> io::Result<ServerRecord> {
-    let (program, args) = plan
-        .argv
-        .split_first()
-        .expect("LaunchPlan::new always puts the program in argv[0]");
+    let (program, args) = plan.argv.split();
     let mut command = std::process::Command::new(program);
     command
         .args(args)
@@ -321,7 +380,8 @@ fn start(entry: &Path, plan: &LaunchPlan) -> io::Result<ServerRecord> {
     }
     detach(&mut command);
     let child = command.spawn()?;
-    let pid = child.id();
+    let pid =
+        Pid::new(child.id()).map_err(|message| io::Error::new(io::ErrorKind::Other, message))?;
     remember_spawned(child);
     let record = ServerRecord {
         pid,
@@ -354,7 +414,8 @@ fn detach(_command: &mut std::process::Command) {}
 /// Whether the OS still knows `pid`. This is the pool's whole correctness
 /// argument, so it asks the kernel rather than trusting any bookkeeping.
 #[must_use]
-pub fn pid_alive(pid: u32) -> bool {
+pub fn pid_alive(pid: Pid) -> bool {
+    let pid = pid.get();
     #[cfg(unix)]
     {
         // Signal 0 performs the existence/permission check without delivering.
@@ -421,7 +482,8 @@ fn reap_finished() {
     children.retain_mut(|child| !matches!(child.try_wait(), Ok(Some(_))));
 }
 
-fn kill(pid: u32) {
+fn kill(pid: Pid) {
+    let pid = pid.get();
     #[cfg(unix)]
     unsafe {
         // The server was started in its own session; signal the whole group so
@@ -509,7 +571,11 @@ impl Drop for EntryLock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::control::ServerTransport;
+    use crate::domain::control::{pool_key, ServerTransport};
+
+    fn key() -> PoolKey {
+        pool_key("test", &[], &[])
+    }
 
     fn temp_root(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -541,11 +607,9 @@ mod tests {
     }
 
     #[test]
-    fn acquire_refuses_a_key_that_is_not_a_pool_key() {
+    fn a_key_that_could_escape_the_pool_root_cannot_be_built() {
         let root = temp_root("badkey");
-        let err = acquire(&root, "../escape", &sleeper_plan(), DEFAULT_LINGER).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-        assert!(!root.parent().unwrap().join("escape").exists());
+        assert!(PoolKey::parse("../escape").is_err());
         fs::remove_dir_all(&root).ok();
     }
 
@@ -577,7 +641,10 @@ mod tests {
             Vec::new(),
         )
         .unwrap();
-        assert_eq!(plan.argv(), ["opencode", "serve", "--port", "7777"]);
+        assert_eq!(
+            plan.argv().as_slice(),
+            ["opencode", "serve", "--port", "7777"]
+        );
         assert_eq!(plan.address(), &address);
 
         // An address that speaks a different transport is refused, not asserted
@@ -590,13 +657,13 @@ mod tests {
     #[test]
     fn one_server_is_reused_across_dispatches_sharing_a_key() {
         let root = temp_root("reuse");
-        let first = acquire(&root, "k", &sleeper_plan(), DEFAULT_LINGER).unwrap();
-        let second = acquire(&root, "k", &sleeper_plan(), DEFAULT_LINGER).unwrap();
+        let first = acquire(&root, &key(), &sleeper_plan(), DEFAULT_LINGER).unwrap();
+        let second = acquire(&root, &key(), &sleeper_plan(), DEFAULT_LINGER).unwrap();
         assert_eq!(first.record().pid, second.record().pid);
         assert!(pid_alive(first.record().pid));
 
         // Two live leases on the one entry.
-        let leases = fs::read_dir(root.join("k").join(LEASE_DIR))
+        let leases = fs::read_dir(root.join(key().as_str()).join(LEASE_DIR))
             .unwrap()
             .count();
         assert_eq!(leases, 2);
@@ -626,14 +693,14 @@ mod tests {
             .arg("120")
             .spawn()
             .unwrap();
-        let holder_pid = holder.id();
-        let entry = root.join("k");
+        let holder_pid = Pid::new(holder.id()).unwrap();
+        let entry = root.join(key().as_str());
         fs::create_dir_all(entry.join(LEASE_DIR)).unwrap();
-        let ours = acquire(&root, "k", &sleeper_plan(), DEFAULT_LINGER).unwrap();
+        let ours = acquire(&root, &key(), &sleeper_plan(), DEFAULT_LINGER).unwrap();
         let server_pid = ours.record().pid;
         fs::write(
             entry.join(LEASE_DIR).join("stray.lease"),
-            holder_pid.to_string(),
+            holder_pid.get().to_string(),
         )
         .unwrap();
         drop(ours);
@@ -645,7 +712,7 @@ mod tests {
 
         let mut holder = holder;
         unsafe {
-            libc::kill(holder_pid as libc::pid_t, libc::SIGKILL);
+            libc::kill(holder_pid.get() as libc::pid_t, libc::SIGKILL);
         }
         holder.wait().ok();
 
@@ -660,14 +727,14 @@ mod tests {
     #[test]
     fn a_server_that_died_is_replaced_on_the_next_acquire() {
         let root = temp_root("dead");
-        let first = acquire(&root, "k", &sleeper_plan(), DEFAULT_LINGER).unwrap();
+        let first = acquire(&root, &key(), &sleeper_plan(), DEFAULT_LINGER).unwrap();
         let dead_pid = first.record().pid;
         unsafe {
-            libc::kill(dead_pid as libc::pid_t, libc::SIGKILL);
+            libc::kill(dead_pid.get() as libc::pid_t, libc::SIGKILL);
         }
         wait_until_dead(dead_pid);
 
-        let second = acquire(&root, "k", &sleeper_plan(), DEFAULT_LINGER).unwrap();
+        let second = acquire(&root, &key(), &sleeper_plan(), DEFAULT_LINGER).unwrap();
         assert_ne!(second.record().pid, dead_pid);
         assert!(pid_alive(second.record().pid));
         let pid = second.record().pid;
@@ -678,7 +745,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn wait_until_dead(pid: u32) {
+    fn wait_until_dead(pid: Pid) {
         // A terminated child may briefly remain a zombie; give the reap a moment.
         for _ in 0..100 {
             if !pid_alive(pid) {

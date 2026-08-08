@@ -94,7 +94,7 @@ fn two_dispatches_sharing_a_key_share_one_server_and_a_dead_holder_cannot_leak_i
         .unwrap();
     let holder_pid = holder.id();
     std::fs::write(
-        root.join(&key).join("leases").join("stray.lease"),
+        root.join(key.as_str()).join("leases").join("stray.lease"),
         holder_pid.to_string(),
     )
     .unwrap();
@@ -106,7 +106,7 @@ fn two_dispatches_sharing_a_key_share_one_server_and_a_dead_holder_cannot_leak_i
     // were all released).
     server_pool::sweep(&root, Duration::from_secs(0)).unwrap();
     assert!(
-        root.join(&key).join("server.json").exists(),
+        root.join(key.as_str()).join("server.json").exists(),
         "a live lease must retain the server whatever the linger says"
     );
     assert!(
@@ -124,7 +124,7 @@ fn two_dispatches_sharing_a_key_share_one_server_and_a_dead_holder_cannot_leak_i
         1
     );
     assert!(
-        !root.join(&key).join("server.json").exists(),
+        !root.join(key.as_str()).join("server.json").exists(),
         "a server no live process holds must be reclaimed"
     );
     assert!(!server_pool::pid_alive(other_pid));

@@ -224,16 +224,57 @@ pub struct ServerSpec {
 
 /// The identity two dispatches must share to reuse one sidecar server.
 ///
-/// Pure string arithmetic over the harness id, the *resolved* values of the
-/// spec's `key_env` names, and any caller launch overrides — so the same key is
-/// computed identically by independent processes, which is what makes the
-/// on-disk pool work at all.
+/// A validated value rather than a loose string: the pool joins it straight
+/// into a filesystem path, so a key carrying a separator or `..` would place a
+/// lease tree outside the pool root. Constructed by [`pool_key`], or parsed
+/// from text with [`PoolKey::parse`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
+pub struct PoolKey(String);
+
+impl PoolKey {
+    /// Accept `text` as a key, or say why it cannot be one.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        if is_pool_key(text) {
+            Ok(PoolKey(text.to_string()))
+        } else {
+            Err(format!(
+                "`{text}` is not a valid pool key (it must be a single path segment of                  alphanumerics, `-`, `_`, or `.`, at most 128 characters)"
+            ))
+        }
+    }
+
+    /// The key's text, which is also its directory name under the pool root.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for PoolKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for PoolKey {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        PoolKey::parse(&String::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
+}
+
+/// The key for `harness_id` under the given resolved `key_env` values and
+/// launch overrides.
+///
+/// Pure string arithmetic — so the same key is computed identically by
+/// independent processes, which is what makes the on-disk pool work at all.
 #[must_use]
 pub fn pool_key(
     harness_id: &str,
     key_env: &[(String, Option<String>)],
     launch_overrides: &[String],
-) -> String {
+) -> PoolKey {
     let mut material = String::from(harness_id);
     // Sort so two dispatches that resolved the same variables in a different
     // order still land on one server.
@@ -249,19 +290,18 @@ pub fn pool_key(
         material.push('\n');
         material.push_str(arg);
     }
-    format!("{harness_id}-{:016x}", fnv1a64(material.as_bytes()))
+    // `harness_id` comes from the registry, so the composed key is always
+    // segment-shaped; `parse` is the one place that rule lives.
+    PoolKey::parse(&format!(
+        "{harness_id}-{:016x}",
+        fnv1a64(material.as_bytes())
+    ))
+    .expect("a registry harness id composes a valid pool key")
 }
 
-/// Whether `key` is shaped like a [`pool_key`] result and is therefore safe to
-/// use as one directory name.
-///
-/// The pool joins the key straight into a filesystem path, and `acquire` is a
-/// *published* library entry point — a sibling tool could pass anything. A key
-/// carrying a separator or `..` would place a lease tree outside the pool root,
-/// so the boundary refuses it rather than trusting the caller to have used
-/// `pool_key`.
-#[must_use]
-pub fn is_pool_key(key: &str) -> bool {
+/// Whether `key` is shaped like a [`pool_key`] result — the single rule behind
+/// [`PoolKey`].
+fn is_pool_key(key: &str) -> bool {
     !key.is_empty()
         && key.len() <= 128
         && key
@@ -927,12 +967,12 @@ mod tests {
 
         let different = pool_key("codex", &[("CODEX_HOME".into(), Some("/b".into()))], &[]);
         assert_ne!(a, different);
-        assert!(a.starts_with("codex-"), "{a}");
+        assert!(a.as_str().starts_with("codex-"), "{a}");
     }
 
     #[test]
     fn a_pool_key_that_could_escape_the_pool_root_is_refused() {
-        assert!(is_pool_key(&pool_key("codex", &[], &[])));
+        assert!(PoolKey::parse(pool_key("codex", &[], &[]).as_str()).is_ok());
         for bad in [
             "",
             "../escape",
@@ -942,8 +982,12 @@ mod tests {
             "x..y",
             &"a".repeat(129),
         ] {
-            assert!(!is_pool_key(bad), "`{bad}` should not be a pool key");
+            assert!(
+                PoolKey::parse(bad).is_err(),
+                "`{bad}` should not be a pool key"
+            );
         }
+        assert!(serde_json::from_value::<PoolKey>(serde_json::json!("../escape")).is_err());
     }
 
     #[test]

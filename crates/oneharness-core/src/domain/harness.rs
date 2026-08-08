@@ -364,6 +364,12 @@ pub struct HarnessSpec {
     /// that was never exercised is the specific failure this field must not
     /// have (see the capability matrix in `README.md` and
     /// `scripts/explore-control.sh`, the drift alarm).
+    // llmlint: ignore[invalid_states_unrepresentable] `control` and `server` are
+    // two fields by approved design (a mechanism is declared independently of the
+    // process that backs it, and Claude Code's needs none), so the relationship is
+    // enforced where it can also catch a future harness: the registry invariant
+    // test below fails if a server-backed mechanism declares no server, or a
+    // server is declared for a harness with no control.
     pub control: Option<ControlShape>,
     /// The sidecar server this harness's control mechanism needs, when it needs
     /// one. Declared per harness rather than special-casing the one that does
@@ -2487,6 +2493,34 @@ mod tests {
             schema: None,
             system_file: None,
             delivery: PromptDelivery::Argv,
+        }
+    }
+
+    #[test]
+    fn every_declared_control_mechanism_has_the_process_it_needs() {
+        // The pairing rule for the two capability fields, checked across the
+        // whole registry so a harness added later cannot declare a server-backed
+        // mechanism and then fail to start a server at run time.
+        for spec in all() {
+            match (spec.control, spec.server.is_some()) {
+                (Some(shape), has_server) => assert_eq!(
+                    shape.needs_server(),
+                    has_server,
+                    "`{}` declares `{}` but {} a server",
+                    spec.id,
+                    shape.as_str(),
+                    if has_server {
+                        "also declares"
+                    } else {
+                        "declares no"
+                    }
+                ),
+                (None, has_server) => assert!(
+                    !has_server,
+                    "`{}` declares a server but no control mechanism to use it",
+                    spec.id
+                ),
+            }
         }
     }
 

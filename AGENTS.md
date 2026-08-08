@@ -229,7 +229,6 @@ Use the `just` recipes; do not hand-roll equivalents.
   interrupting a CLI-driven run was live-REFUTED: opencode's `run --port` binds
   nothing and `run --attach` leaves the server's `/api/session/active` empty
   while the run works, so the route answers `2xx` and the turn carries on.
-<!-- llmlint: ignore-end[no_redundant_instruction_pointers] -->
   `gate <id>` is the odd one out: the runtime pre-tool gate an
   installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It
@@ -687,6 +686,7 @@ shape. When you add one:
   per-thread settings must NOT widen that key — and holds membership as a
   **lease naming a live pid, never a counter**, because a counter leaks a
   permanently-live server the first time a dispatch is SIGKILLed.
+<!-- llmlint: ignore-end[no_redundant_instruction_pointers] -->
 - Give the harness its `global_hook` (the user-global hook location, for `sync
   --global` / `install` at `Scope::Global`) and its `gate_deny` (how it expresses
   a pre-tool deny when it runs `oneharness gate <id>`). Both are registry data

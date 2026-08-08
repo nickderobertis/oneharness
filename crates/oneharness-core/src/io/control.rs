@@ -237,13 +237,15 @@ impl ControlHandle {
                 },
                 None => match interrupt_frame(self.shape, &self.next_request_id()) {
                     Some(frame) => vec![frame],
-                    None => return ControlResponse::refused(
-                        format!(
+                    None => {
+                        return ControlResponse::refused(
+                            format!(
                             "the `{}` control mechanism is not wired for stdin-borne interrupts",
                             self.shape.as_str()
                         ),
-                        ControlReason::Unsupported,
-                    ),
+                            ControlReason::Unsupported,
+                        )
+                    }
                 },
             }
         };

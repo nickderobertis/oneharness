@@ -415,6 +415,11 @@ impl<'de> Deserialize<'de> for ControlResponse {
             )));
         }
         if wire.ok {
+            if wire.error.is_some() || wire.reason.is_some() {
+                return Err(D::Error::custom(
+                    "a successful control frame must not carry an error or a refusal reason",
+                ));
+            }
             let mechanism = wire.mechanism.ok_or_else(|| {
                 D::Error::custom("a successful control frame must carry a mechanism")
             })?;
@@ -799,6 +804,9 @@ mod tests {
         for bad in [
             r#"{"v":1,"ok":true}"#,
             r#"{"v":1,"ok":true,"mechanism":"made-up"}"#,
+            r#"{"v":1,"ok":true,"mechanism":"acp-cancel","error":"nope"}"#,
+            r#"{"v":1,"ok":true,"mechanism":"acp-cancel","reason":"not_running"}"#,
+            r#"{"v":1,"ok":false,"error":"nope","reason":"not_running","mechanism":"acp-cancel"}"#,
             r#"{"v":1,"ok":false,"reason":"not_running"}"#,
             r#"{"v":1,"ok":false,"error":"nope"}"#,
             r#"{"v":2,"ok":true,"mechanism":"claude-control-request"}"#,

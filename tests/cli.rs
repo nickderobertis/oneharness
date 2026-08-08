@@ -18896,3 +18896,53 @@ fn the_readme_documents_every_control_refusal_reason() {
         );
     }
 }
+
+#[test]
+fn control_under_print_command_shows_the_control_argv_and_opens_nothing() {
+    // A dry run must still show what a control run WOULD spawn (the message
+    // stream replaces the positional prompt), while opening no socket — the
+    // rule `--print-command` follows everywhere else: nothing executes, so
+    // nothing is created.
+    let store = control_store_dir("dryrun");
+    let store_arg = store.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "dry",
+            "--session-dir",
+            &store_arg,
+            "--prompt",
+            "dry-run-prompt",
+            "--bin",
+            &bin_override("claude-code"),
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let report = json_stdout(&output);
+    assert_eq!(report["dry_run"], true);
+    assert!(report["control"].is_null(), "a dry run opens no socket");
+    let command: Vec<String> = serde_json::from_value(report["results"][0]["command"].clone())
+        .expect("the planned command");
+    assert!(
+        command
+            .windows(2)
+            .any(|w| w == ["--input-format", "stream-json"]),
+        "command: {command:?}"
+    );
+    assert!(
+        !command.contains(&"dry-run-prompt".to_string()),
+        "the prompt rides the control stream, not the argv: {command:?}"
+    );
+    assert!(
+        !store.join("control").exists(),
+        "a dry run must create no control directory"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}

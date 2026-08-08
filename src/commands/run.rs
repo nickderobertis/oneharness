@@ -2664,11 +2664,14 @@ impl HarnessPlan {
     /// to the prompt, native ones get it on the flag. `feedback` (the prior answer
     /// + validation errors) is appended on a retry so the model can correct itself.
     ///
-    /// When `prompt_stdin` is set, the assembled prompt is returned as
+    /// Under [`PromptDelivery::Stdin`] the assembled prompt is returned as
     /// [`BuiltCommand::stdin`] instead of riding the argv (the adapter omits the
     /// positional), with the system prompt folded in for a harness whose system
     /// rides the prompt ([`LargeInput::system_rides_prompt`]) — so the bytes the
-    /// model sees are identical to the inline path.
+    /// model sees are identical to the inline path. Under
+    /// [`PromptDelivery::ControlStream`] the adapter also omits the positional,
+    /// and [`BuiltCommand::prompt`] is what the control channel writes as its
+    /// first frame.
     fn build(&self, schema: Option<&Schema>, feedback: Option<(&str, &[String])>) -> BuiltCommand {
         let mut prompt = self.base_prompt.clone();
         // A mode that synthesizes a behavioral posture from an instruction

@@ -18,7 +18,7 @@ $ oneharness run --all --prompt "Reply with the single word: pong" --model haiku
 
 ```jsonc
 {
-  "schema_version": "0.1",
+  "schema_version": "0.4",
   "oneharness_version": "0.1.0",
   "prompt": "Reply with the single word: pong",
   "model": "haiku",

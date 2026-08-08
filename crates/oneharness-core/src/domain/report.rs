@@ -15,7 +15,16 @@ use crate::domain::signals::{FailureKind, Usage};
 use crate::domain::usage::UtcInstant;
 
 /// Bumped when the JSON shape changes in a way consumers must notice.
-pub const SCHEMA_VERSION: &str = "0.3";
+///
+/// Shared by every non-history report on stdout — `run`, `list`, `detect`,
+/// `sync`, and `config` — so one number describes the whole surface; the history
+/// records carry their own (`domain::history::SCHEMA_VERSION`).
+///
+/// `0.4` adds the `config` report's `stream` field (the layered `--stream`
+/// value, with its provenance). Additive, so a reader of `0.3` keeps working —
+/// the bump is how a consumer *learns* the field exists rather than having to
+/// probe for it.
+pub const SCHEMA_VERSION: &str = "0.4";
 
 /// How a harness emits its result, which decides how `text` is extracted.
 ///

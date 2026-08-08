@@ -255,7 +255,7 @@ fn list_describes_every_harness() {
     let output = run(&["list"], &[]);
     assert!(output.status.success());
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.3");
+    assert_eq!(value["schema_version"], "0.4");
     let ids: Vec<&str> = value["harnesses"]
         .as_array()
         .unwrap()
@@ -6166,7 +6166,7 @@ fn config_command_shows_values_with_sources() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.3");
+    assert_eq!(value["schema_version"], "0.4");
     assert_eq!(value["config_files"].as_array().unwrap().len(), 2);
 
     // The project file wins for model and is named as the source...
@@ -6181,6 +6181,9 @@ fn config_command_shows_values_with_sources() {
     // ...untouched fields fall to their built-in defaults...
     assert_eq!(value["bypass"]["value"], false);
     assert_eq!(value["bypass"]["source"], "default");
+    // `stream` is the field schema 0.4 added; it reports like any other scalar.
+    assert_eq!(value["stream"]["value"], false);
+    assert_eq!(value["stream"]["source"], "default");
     // `mode` has no built-in default (it derives from `bypass` when unset).
     assert!(value["mode"]["value"].is_null());
     assert!(value["mode"]["source"].is_null());

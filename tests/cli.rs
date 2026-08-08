@@ -4102,6 +4102,141 @@ fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
 
 #[cfg(unix)]
 #[test]
+fn a_cancelled_batch_claims_no_invocation_for_its_queued_prompts() {
+    // The queued half of cancellation, end to end. A batch of three prompts runs
+    // one at a time, so when the signal lands only the first prompt has ever been
+    // invoked — the other two are still queued. They are still the caller's
+    // prompts, so the report stays one entry per prompt and each queued entry is
+    // `cancelled`; but never having run, they must claim no invocation bounds.
+    // The harness is opencode because it declares a provider trace: on a
+    // trace-capable harness a cancelled run *does* report the instant it began,
+    // so `telemetry` here separates the prompt that ran from the ones that never
+    // did — a queued entry reporting a start time would be measuring nothing.
+    let history = hist_dir("cancel-queued");
+    let history_arg = history.display().to_string();
+    let log = batch_log_path("cancel-queued");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        // Silent — no MOCK_STDOUT — and long-running, so the run has no line to
+        // react to and only the cancel re-check can end it.
+        .env("MOCK_SLEEP_MS", "60000")
+        // Every invocation that gets as far as running appends `S` here.
+        .env("MOCK_LOG_FILE", log.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "first",
+            "--prompt",
+            "second",
+            "--prompt",
+            "third",
+            "--bin",
+            &bin_override("opencode"),
+            // One at a time, so prompts two and three are unambiguously queued
+            // behind the first when the signal arrives.
+            "--max-parallel",
+            "1",
+            "--timeout",
+            "60",
+            "--history",
+            "--history-dir",
+            &history_arg,
+            "--compact",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn oneharness");
+
+    // Cancel only once the first prompt has really spawned, so the queued state
+    // below is a fact about scheduling rather than a spawn race.
+    let alive_deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::fs::read_to_string(&log).unwrap_or_default().is_empty() {
+        assert!(
+            std::time::Instant::now() < alive_deadline,
+            "the batch never spawned its first prompt"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let signalled = std::time::Instant::now();
+    let sent = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("failed to signal oneharness");
+    assert!(sent.success(), "kill -TERM did not succeed");
+
+    let output = child.wait_with_output().expect("failed to reap oneharness");
+    assert!(
+        signalled.elapsed() < std::time::Duration::from_secs(15),
+        "the signalled batch did not tear down promptly: {:?}",
+        signalled.elapsed()
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "oneharness did not exit through its own reporting path: {:?}",
+        output.status
+    );
+
+    let value = json_stdout(&output);
+    assert_eq!(value["batch"]["prompt_count"], 3);
+    let results = value["results"].as_array().unwrap();
+    assert_eq!(
+        results.len(),
+        3,
+        "a cancelled batch still reports one entry per prompt: {results:?}"
+    );
+    assert_eq!(results[0]["prompt"], "first");
+    assert_eq!(results[1]["prompt"], "second");
+    assert_eq!(results[2]["prompt"], "third");
+    for result in results {
+        assert_eq!(result["status"], "cancelled", "{result}");
+        assert!(
+            result["error"].as_str().unwrap().contains("cancelled"),
+            "{}",
+            result["error"]
+        );
+    }
+
+    // The prompt that ran was cut short mid-invocation, so the instant it began
+    // is a real measurement the report keeps.
+    assert_eq!(results[0]["telemetry"]["source"], "partial_invocation");
+    assert!(results[0]["telemetry"]["started_at"].is_string());
+
+    // The two queued prompts were never invoked: no exit code, no measured
+    // duration, and — the contrast that matters — no telemetry claiming when a
+    // run that never began started.
+    for result in &results[1..] {
+        assert_eq!(result["exit_code"], Value::Null, "{result}");
+        assert_eq!(result["duration_ms"], 0, "{result}");
+        assert_eq!(result["telemetry"], Value::Null, "{result}");
+    }
+
+    // And exactly one invocation ever reached the harness itself.
+    let spawns = std::fs::read_to_string(&log).unwrap_or_default();
+    assert_eq!(
+        spawns.matches('S').count(),
+        1,
+        "more than one prompt reached the harness: {spawns:?}"
+    );
+
+    // History keeps the same one-record-per-prompt shape, cancelled included.
+    let records = materialized_history(Path::new(value["history_file"].as_str().unwrap()));
+    assert_eq!(records.len(), 3);
+    for record in &records {
+        assert_eq!(record["status"], "cancelled", "{record}");
+    }
+
+    let _ = std::fs::remove_file(log);
+    let _ = std::fs::remove_dir_all(history);
+}
+
+#[cfg(unix)]
+#[test]
 fn a_cancelled_run_keeps_the_output_it_had_already_produced() {
     // Cancelling is not a reason to throw away evidence. The harness emits a
     // complete transcript and then keeps its descendant alive, so the run is cut

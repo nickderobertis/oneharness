@@ -1119,7 +1119,7 @@ that is only probe-verified is **not** declared in the registry, so
 | Claude Code | `claude-control-request` | A `control_request` frame on the run's own stdin (`-p --input-format stream-json`) | **LIVE** through oneharness |
 | Codex | `codex-app-server` | `turn/interrupt {threadId,turnId}` over the `codex app-server` JSON-RPC stdio protocol | **LIVE** through oneharness |
 | Copilot | `acp-cancel` | The ACP `session/cancel` **notification** over `copilot --acp` | **LIVE** through oneharness |
-| Goose | — | The same ACP `session/cancel` over `goose acp` | BLOCKED — no provider credentials; see below |
+| Goose | `acp-cancel` | The same ACP `session/cancel` **notification** over `goose acp` | **LIVE** through oneharness |
 | OpenCode | — | `POST /api/session/{id}/interrupt` against `opencode serve` | REFUTED for a CLI-driven run; see below |
 | Crush | — | `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against `crush server` | UNVERIFIED — needs the same HTTP-driven turn OpenCode does |
 | Cursor | — | none | cursor-agent exposes no headless control surface |
@@ -1127,12 +1127,12 @@ that is only probe-verified is **not** declared in the registry, so
 
 A declared mechanism means oneharness **drives the turn** over that protocol
 rather than through the harness's ordinary headless run: it spawns
-`codex app-server` / `copilot --acp` as the run's own child, negotiates the
-thread or session, sends the prompt, and holds that same stdin open so the
-interrupt reaches the live turn. Model, working directory, sandbox and approvals
-are negotiated on the wire, so they leave the argv entirely — which is also why
-Copilot can take `--session` under `--control` even though none of its ordinary
-output formats carries a session id.
+`codex app-server` / `copilot --acp` / `goose acp` as the run's own child,
+negotiates the thread or session, sends the prompt, and holds that same stdin
+open so the interrupt reaches the live turn. Model, working directory, sandbox
+and approvals are negotiated on the wire, so they leave the argv entirely —
+which is also why Copilot and Goose can take `--session` under `--control` even
+though none of their ordinary output formats carries a session id.
 
 **OpenCode's interrupt only reaches a turn that was submitted over HTTP.** Its
 route works — driving `opencode serve` directly (create a session, `POST
@@ -1151,17 +1151,15 @@ which is a third execution model alongside the ordinary run and the JSON-RPC
 protocols. Crush is in the same position with less discovered: its `run` has no
 attach flag at all, and its session route answered 404 in the probe.
 
-**Goose is blocked on credentials, not on the mechanism.** It speaks the same
-ACP protocol Copilot is proven on, through the same code path. On the
-development host `goose acp` answers `initialize` and then fails
-`session/new` with `-32603 Internal error: Failed to resolve provider:
-Configuration value not found: GOOSE_PROVIDER` — there is no
-`~/.config/goose/config.yaml` and no provider key in the environment, and the
-one credential the host does have (GitHub Copilot) needs an interactive
-`goose configure` flow that never completes headlessly. `control` stays `None`
-until a run with credentials proves the interrupt end to end.
+**Goose takes its provider and model from the environment, in ACP too.**
+`goose acp` resolves `GOOSE_PROVIDER` / `GOOSE_MODEL` (plus the matching
+provider key) exactly as an ordinary `goose run` does, and neither travels on
+the argv or the wire — so with none set, `session/new` fails `-32603 Internal
+error: Failed to resolve provider` and the run never reaches a turn to
+interrupt. `scripts/e2e-control.sh` exports them for the goose phase like
+`e2e-goose.sh` does.
 
-Notes worth keeping, all from the probe rather than documentation:Notes worth keeping, all from the probe rather than documentation:
+Notes worth keeping, all from the probe rather than documentation:
 
 - Claude Code **silently drops** a plain user message written mid-turn, so the
   `control_request` frame is the only mechanism that works.

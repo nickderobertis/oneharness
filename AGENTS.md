@@ -215,7 +215,7 @@ Use the `just` recipes; do not hand-roll equivalents.
   A shape that `drives_turn` runs the turn over its own JSON-RPC protocol
   (`domain::dialogue`, a pure state machine the runner just pumps lines through)
   instead of the harness's headless run: oneharness spawns `codex app-server` /
-  `copilot --acp` as the run's OWN child, so the interrupt rides the same stdin
+  `copilot --acp` / `goose acp` as the run's OWN child, so the interrupt rides the same stdin
   and nothing is pooled. Two protocol facts are load-bearing and cost real time
   to find: codex answers `turn/start` immediately with `status:"inProgress"`
   (the turn ends on `turn/completed`, and treating the response as terminal ends

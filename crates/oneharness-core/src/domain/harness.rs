@@ -1081,7 +1081,15 @@ static REGISTRY: &[HarnessSpec] = &[
         // GitHub token, so that headroom is readable under `copilot` instead.)
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::NoPlanQuota,
-        control: None,
+        // LIVE-VERIFIED: the ACP `session/cancel` NOTIFICATION over `goose acp`
+        // stops the turn (step files frozen for 15s) — the same protocol and the
+        // same client code copilot is proven on. Two rules the client must
+        // honor: answer `session/request_permission` (goose blocks indefinitely
+        // and never begins work otherwise), and send cancel WITHOUT an id (with
+        // one, goose answers `-32601 Method not found` and the work carries on).
+        // Goose then reports `stopReason: "end_turn"` and emits nothing else at
+        // all, so the cancellation is recorded from oneharness's own side.
+        control: Some(ControlShape::AcpCancel),
         server: None,
         build_argv: argv_goose,
     },
@@ -2568,6 +2576,50 @@ mod tests {
                     "`{}` declares a server but no control mechanism to use it",
                     spec.id
                 ),
+            }
+        }
+    }
+
+    #[test]
+    fn a_turn_driving_control_run_launches_that_harness_protocol_server() {
+        // A control run on a turn-driving mechanism spawns the harness's OWN
+        // protocol server instead of its headless run, so the launch argv is the
+        // whole command: prompt, mode and model are negotiated on the wire and
+        // must not appear on it. Pinned per harness (each sourced from that CLI
+        // and re-proven by `scripts/explore-control.sh`), so a drifted subcommand
+        // fails here rather than as a controlled run that never starts a turn.
+        let launches = [
+            ("codex", &["app-server"][..]),
+            ("goose", &["acp"][..]),
+            ("copilot", &["--acp"][..]),
+        ];
+        for (id, tail) in launches {
+            let spec = by_id(id).unwrap();
+            assert!(
+                spec.control.is_some_and(ControlShape::drives_turn),
+                "`{id}` should drive its turn over its own protocol"
+            );
+            let argv = (spec.build_argv)(&BuildCtx {
+                delivery: PromptDelivery::ControlStream,
+                model: Some("some-model"),
+                system: Some("be terse"),
+                ..base_ctx(spec)
+            });
+            let expected: Vec<String> = std::iter::once(spec.default_bin)
+                .chain(tail.iter().copied())
+                .map(str::to_string)
+                .collect();
+            assert_eq!(argv, expected, "`{id}` control launch argv");
+        }
+        // A harness whose turn is driven but whose launch is unpinned would ship
+        // a guessed subcommand, so the list above must cover the registry.
+        for spec in all() {
+            if spec.control.is_some_and(ControlShape::drives_turn) {
+                assert!(
+                    launches.iter().any(|(id, _)| *id == spec.id),
+                    "`{}` drives its own turn but its launch argv is unpinned",
+                    spec.id
+                );
             }
         }
     }

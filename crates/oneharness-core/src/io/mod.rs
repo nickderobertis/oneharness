@@ -7,6 +7,7 @@ pub mod control;
 pub mod detect;
 pub mod history;
 pub mod hooks;
+pub mod http;
 mod process;
 pub mod runner;
 pub mod server_pool;

@@ -24,7 +24,7 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::domain::control::ControlShape;
+use crate::domain::control::{AbsolutePath, ControlShape};
 use crate::domain::mode::PermissionMode;
 
 /// What a run needs to open a turn over one of these protocols. The command
@@ -34,8 +34,10 @@ pub struct DialogueConfig {
     /// The assembled user prompt (system prompt already folded in where the
     /// harness has no separate channel for one).
     pub prompt: String,
-    /// The working directory the turn runs in, absolute.
-    pub cwd: String,
+    /// The working directory the turn runs in. Absolute by type: the server is
+    /// a separate process that would resolve a relative path against its own
+    /// directory, which is silently a different place.
+    pub cwd: AbsolutePath,
     /// The model to request, when one was resolved.
     pub model: Option<String>,
     /// The approval posture, which decides how the client answers the server's
@@ -240,9 +242,14 @@ impl Dialogue {
     fn on_server_request(&mut self, method: &str, id: Value, params: &Value) -> DialogueStep {
         let allow = self.permits_action();
         let result = match self.shape {
-            ControlShape::CodexAppServer => {
+            // Approve only what is actually an approval request. A permissive
+            // mode means "act without asking", not "say yes to any method the
+            // server invents" — and a method this build does not recognize is
+            // still *answered*, because an unanswered request stalls the turn.
+            ControlShape::CodexAppServer if is_codex_approval(method) => {
                 json!({"decision": if allow { "approved" } else { "denied" }})
             }
+            ControlShape::CodexAppServer => json!({}),
             // ACP: select one of the server's OWN options — the protocol offers
             // no way to narrow a grant, so the choice is which option, not how
             // much of it.
@@ -349,7 +356,7 @@ impl Dialogue {
                         send: vec![request(
                             open_id,
                             "session/new",
-                            json!({"cwd": self.config.cwd, "mcpServers": []}),
+                            json!({"cwd": self.config.cwd.to_string(), "mcpServers": []}),
                         )],
                         terminal: false,
                     },
@@ -425,7 +432,7 @@ impl Dialogue {
 
     fn thread_start_params(&self) -> Value {
         let mut params = json!({
-            "cwd": self.config.cwd,
+            "cwd": self.config.cwd.to_string(),
             "approvalPolicy": self.codex_approval_policy(),
         });
         if let Some(model) = &self.config.model {
@@ -438,7 +445,7 @@ impl Dialogue {
         match self.shape {
             ControlShape::CodexAppServer => json!({
                 "threadId": session,
-                "cwd": self.config.cwd,
+                "cwd": self.config.cwd.to_string(),
                 "input": [{"type": "text", "text": self.config.prompt}],
                 "approvalPolicy": self.codex_approval_policy(),
                 "sandboxPolicy": self.codex_sandbox_policy(),
@@ -464,7 +471,7 @@ impl Dialogue {
         if self.permits_action() {
             json!({
                 "type": "workspaceWrite",
-                "writableRoots": [self.config.cwd],
+                "writableRoots": [self.config.cwd.to_string()],
                 "networkAccess": false,
             })
         } else {
@@ -483,18 +490,36 @@ struct PermissionOption {
 }
 
 /// The option to select for a `session/request_permission` under a permissive
-/// mode: the server's own "allow" option, preferring a one-shot grant over a
-/// standing one. `None` when the server offered nothing selectable.
+/// mode: the server's own **allow** option, preferring a one-shot grant over a
+/// standing one.
+///
+/// `None` when no offered option says it allows anything — including when the
+/// server offered options this build cannot read. Picking whatever came first
+/// would be granting a permission nobody chose, which is worse than declining:
+/// declining costs a turn, granting costs whatever the option was.
 #[must_use]
 pub fn acp_allow_option(options: &Value) -> Option<String> {
     let options: Vec<PermissionOption> = serde_json::from_value(options.clone()).ok()?;
+    let allowing = |option: &&PermissionOption| option.kind.contains("allow");
     let once = options
         .iter()
-        .find(|option| option.kind.contains("allow") && option.kind.contains("once"));
-    let any = options.iter().find(|option| option.kind.contains("allow"));
-    once.or(any)
-        .or_else(|| options.first())
+        .find(|option| allowing(option) && option.kind.contains("once"));
+    once.or_else(|| options.iter().find(allowing))
         .map(|option| option.option_id.clone())
+}
+
+/// Whether `method` is one of Codex's approval requests — the only ones an
+/// approval decision is a meaningful answer to. Sourced from the app-server's
+/// own generated protocol schema, never guessed.
+fn is_codex_approval(method: &str) -> bool {
+    matches!(
+        method,
+        "applyPatchApproval"
+            | "execCommandApproval"
+            | "item/commandExecution/requestApproval"
+            | "item/fileChange/requestApproval"
+            | "item/permissions/requestApproval"
+    )
 }
 
 fn request(id: u64, method: &str, params: Value) -> String {
@@ -523,7 +548,7 @@ mod tests {
     fn config() -> DialogueConfig {
         DialogueConfig {
             prompt: "do the thing".to_string(),
-            cwd: "/work".to_string(),
+            cwd: AbsolutePath::new("/work").unwrap(),
             model: Some("gpt-5-codex".to_string()),
             mode: PermissionMode::Bypass,
         }
@@ -740,6 +765,31 @@ mod tests {
     }
 
     #[test]
+    fn codex_answers_an_unrecognized_request_without_granting_it() {
+        // Answering is mandatory — an unanswered request stalls the turn — but a
+        // permissive mode means "act without asking", not "approve any method
+        // the server invents".
+        let mut d = Dialogue::new(ControlShape::CodexAppServer, config()).unwrap();
+        let reply = parse(
+            &d.on_line(r#"{"jsonrpc":"2.0","id":8,"method":"attestation/generate","params":{}}"#)
+                .send[0],
+        );
+        assert_eq!(reply["id"], 8, "the request is still answered");
+        assert!(
+            reply["result"].get("decision").is_none(),
+            "an unrecognized method gets no approval: {reply}"
+        );
+
+        let approved = parse(
+            &d.on_line(
+                r#"{"jsonrpc":"2.0","id":9,"method":"item/commandExecution/requestApproval","params":{}}"#,
+            )
+            .send[0],
+        );
+        assert_eq!(approved["result"]["decision"], "approved");
+    }
+
+    #[test]
     fn allow_option_prefers_a_one_shot_grant() {
         let options = json!([
             {"optionId": "always", "kind": "allow_always"},
@@ -750,6 +800,13 @@ mod tests {
         let only_always = json!([{"optionId": "always", "kind": "allow_always"}]);
         assert_eq!(acp_allow_option(&only_always).as_deref(), Some("always"));
         assert_eq!(acp_allow_option(&json!([])), None);
+        // No option says it allows anything, so nothing is granted — picking
+        // the first would grant a permission nobody chose.
+        let none_allow = json!([
+            {"optionId": "reject", "kind": "reject_once"},
+            {"optionId": "mystery", "kind": "something_new"},
+        ]);
+        assert_eq!(acp_allow_option(&none_allow), None);
     }
 
     #[test]

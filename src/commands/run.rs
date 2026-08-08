@@ -691,12 +691,13 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 .as_ref()
                 .expect("validate_control refuses --control without --session");
             let path = control::socket_path(&wiring.dir, &wiring.name);
+            let cwd = control_cwd(args)?;
             let dialogue = control_prompt.as_deref().and_then(|prompt| {
                 Dialogue::new(
                     shape,
                     DialogueConfig {
                         prompt: prompt.to_string(),
-                        cwd: control_cwd(args),
+                        cwd: cwd.clone(),
                         model: model.map(str::to_string),
                         mode,
                     },
@@ -1916,7 +1917,7 @@ fn apply_dialogue_signals(
 /// inheriting it from a spawn, and the server may well resolve a relative path
 /// against its own cwd rather than the dispatch's — so it is made absolute here,
 /// once, from the same `--cwd` an ordinary run would spawn into.
-fn control_cwd(args: &RunArgs) -> String {
+fn control_cwd(args: &RunArgs) -> Result<control::AbsolutePath, OneharnessError> {
     let cwd = args
         .cwd
         .clone()
@@ -1928,10 +1929,11 @@ fn control_cwd(args: &RunArgs) -> String {
             .map(|base| base.join(&cwd))
             .unwrap_or(cwd)
     };
-    std::fs::canonicalize(&absolute)
-        .unwrap_or(absolute)
-        .display()
-        .to_string()
+    let absolute = std::fs::canonicalize(&absolute).unwrap_or(absolute);
+    control::AbsolutePath::new(&absolute).map_err(|message| OneharnessError::ControlSocket {
+        path: absolute.display().to_string(),
+        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, message),
+    })
 }
 
 /// The comma-joined ids of every control-capable harness, for the "control

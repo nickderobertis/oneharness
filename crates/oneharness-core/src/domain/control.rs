@@ -204,8 +204,10 @@ pub enum ServerAddress {
     Stdio,
     /// A unix domain socket the server bound.
     UnixSocket { path: AbsolutePath },
-    /// A loopback TCP port the server bound.
-    Tcp { host: String, port: u16 },
+    /// A loopback TCP port the server bound. Loopback by construction: a
+    /// control server is a private lever over a running agent, so an address
+    /// reachable from anywhere else is not a variant worth being able to spell.
+    Tcp { port: u16 },
 }
 
 impl ServerAddress {
@@ -846,10 +848,7 @@ mod tests {
             .transport(),
             ServerTransport::UnixSocket
         );
-        let tcp = ServerAddress::Tcp {
-            host: "127.0.0.1".into(),
-            port: 7777,
-        };
+        let tcp = ServerAddress::Tcp { port: 7777 };
         assert_eq!(tcp.transport(), ServerTransport::Tcp);
         // Round-trips with the transport as its discriminator, so a reader can
         // never see coordinates that belong to a different transport.

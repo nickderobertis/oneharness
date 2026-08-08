@@ -629,10 +629,7 @@ mod tests {
             key_env: &[],
             transport: ServerTransport::Tcp,
         };
-        let address = ServerAddress::Tcp {
-            host: "127.0.0.1".to_string(),
-            port: 7777,
-        };
+        let address = ServerAddress::Tcp { port: 7777 };
         let plan = LaunchPlan::new(
             "opencode",
             &spec,

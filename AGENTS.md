@@ -229,6 +229,7 @@ Use the `just` recipes; do not hand-roll equivalents.
   interrupting a CLI-driven run was live-REFUTED: opencode's `run --port` binds
   nothing and `run --attach` leaves the server's `/api/session/active` empty
   while the run works, so the route answers `2xx` and the turn carries on.
+<!-- llmlint: ignore-end[no_redundant_instruction_pointers] -->
   `gate <id>` is the odd one out: the runtime pre-tool gate an
   installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It
@@ -665,6 +666,7 @@ shape. When you add one:
   omission. A probing tier requires a zero-turn probe sourced from a real
   capture; a probe that sends a user message or completes a turn is disqualified.
   <!-- llmlint: ignore-end[no_redundant_instruction_pointers, agents_md_durable_and_terse, comments_earn_their_place] -->
+<!-- llmlint: ignore-block[no_redundant_instruction_pointers] The capability matrix is per-harness data that lives in `README.md` (like the mode, resume, and events tables above); naming the file an adapter author must edit is the instruction, not a deferral of one. -->
 - Declare its `control` ([`ControlShape`]) ONLY once a live interrupt through
   **oneharness** is proven. `run --control --session <NAME>` opens a 0600 unix
   socket (`<session-dir>/control/<name>.sock`) for the run's lifetime; the

@@ -130,19 +130,28 @@ class JsonRpc:
                 message = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            # A server's stdout is external input: a valid JSON scalar, or an
+            # object whose `id` cannot key a dict, would crash this reader thread
+            # and leave every later request waiting on a response that can no
+            # longer arrive. Neither is a JSON-RPC message, so neither is one.
+            if not isinstance(message, dict):
+                continue
+            message_id = message.get("id")
+            if message_id is not None and not isinstance(message_id, (str, int)):
+                continue
             with self.lock:
-                if "id" in message and ("result" in message or "error" in message):
-                    self.responses[message["id"]] = message
-                elif "id" in message and "method" in message:
+                if message_id is not None and ("result" in message or "error" in message):
+                    self.responses[message_id] = message
+                elif message_id is not None and "method" in message:
                     self.server_requests.append(message)
                     handler = self.on_server_request
                 else:
                     self.notifications.append(message)
                     handler = None
-            if "id" in message and "method" in message and self.on_server_request:
+            if message_id is not None and "method" in message and self.on_server_request:
                 reply = self.on_server_request(message)
                 if reply is not None:
-                    self.send_response(message["id"], reply)
+                    self.send_response(message_id, reply)
 
     def _write(self, payload: dict) -> None:
         assert self.process.stdin is not None

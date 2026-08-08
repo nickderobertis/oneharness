@@ -223,7 +223,12 @@ Use the `just` recipes; do not hand-roll equivalents.
   `session/request_permission` or the turn never begins at all. Such a harness
   also becomes `--session`-capable only under `--control`
   (`session_capable_under`), because the id comes off the wire rather than out
-  of an output format.
+  of an output format. A mechanism whose interrupt is an HTTP route on a
+  *separate server* (opencode, crush) needs a third execution model — the turn
+  submitted over that server, not through the harness's CLI — because
+  interrupting a CLI-driven run was live-REFUTED: opencode's `run --port` binds
+  nothing and `run --attach` leaves the server's `/api/session/active` empty
+  while the run works, so the route answers `2xx` and the turn carries on.
   `gate <id>` is the odd one out: the runtime pre-tool gate an
   installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It

@@ -1120,8 +1120,8 @@ that is only probe-verified is **not** declared in the registry, so
 | Codex | `codex-app-server` | `turn/interrupt {threadId,turnId}` over the `codex app-server` JSON-RPC stdio protocol | **LIVE** through oneharness |
 | Copilot | `acp-cancel` | The ACP `session/cancel` **notification** over `copilot --acp` | **LIVE** through oneharness |
 | Goose | — | The same ACP `session/cancel` over `goose acp` | BLOCKED — no provider credentials; see below |
-| OpenCode | — | `POST /api/session/{id}/interrupt` against `opencode serve` | UNVERIFIED through oneharness |
-| Crush | — | `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against `crush server` | UNVERIFIED through oneharness |
+| OpenCode | — | `POST /api/session/{id}/interrupt` against `opencode serve` | REFUTED for a CLI-driven run; see below |
+| Crush | — | `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against `crush server` | UNVERIFIED — needs the same HTTP-driven turn OpenCode does |
 | Cursor | — | none | cursor-agent exposes no headless control surface |
 | Qwen | — | none | qwen exposes no headless control surface |
 
@@ -1133,6 +1133,23 @@ interrupt reaches the live turn. Model, working directory, sandbox and approvals
 are negotiated on the wire, so they leave the argv entirely — which is also why
 Copilot can take `--session` under `--control` even though none of its ordinary
 output formats carries a session id.
+
+**OpenCode's interrupt only reaches a turn that was submitted over HTTP.** Its
+route works — driving `opencode serve` directly (create a session, `POST
+/prompt`, `POST /interrupt`) does stop the work. What does *not* work is
+interrupting an ordinary `opencode run`, and both ways of pointing one at a
+server were tried and refuted: `run --port <n>` binds nothing (the port never
+appears in `ss -ltn`), and `run --attach http://…` leaves the attached server's
+`/api/session/active` **empty while the run is creating files** — the agent loop
+stays in the CLI process, so the interrupt reaches a server that is not running
+the turn, answers `2xx`, and the work continues (measured: 3 → 9 step files in
+the 15s after a "successful" interrupt). Declaring it on that evidence is
+precisely the "reports success while the turn keeps running" failure this matrix
+exists to prevent. Supporting OpenCode therefore means driving the turn over
+HTTP end to end — create the session, post the prompt, follow the event stream —
+which is a third execution model alongside the ordinary run and the JSON-RPC
+protocols. Crush is in the same position with less discovered: its `run` has no
+attach flag at all, and its session route answered 404 in the probe.
 
 **Goose is blocked on credentials, not on the mechanism.** It speaks the same
 ACP protocol Copilot is proven on, through the same code path. On the

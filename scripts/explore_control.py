@@ -546,7 +546,10 @@ def probe_crush(bin_name: str) -> Tuple[str, str]:
             return Verdict.BLOCKED, f"workspace create returned no id: {text[:200]}"
         workspace_id = path_segment(workspace_id, "crush workspace id")
 
-        status, text = call("POST", f"/v1/workspaces/{workspace_id}/agent/sessions", {"title": "probe"})
+        # Sessions are created on the WORKSPACE (`/sessions`); everything under
+        # `/agent` addresses an existing one. Posting the create to
+        # `/agent/sessions` answers a bare `404 page not found`.
+        status, text = call("POST", f"/v1/workspaces/{workspace_id}/sessions", {"title": "probe"})
         if status >= 400:
             return Verdict.BLOCKED, f"session create failed ({status}): {text[:200]}"
         session_id = json.loads(text).get("id")
@@ -554,10 +557,14 @@ def probe_crush(bin_name: str) -> Tuple[str, str]:
             return Verdict.BLOCKED, f"session create returned no id: {text[:200]}"
         session_id = path_segment(session_id, "crush session id")
 
+        # The prompt goes to the workspace's agent with the session named in the
+        # BODY — `/agent/sessions/{sid}` is a GET-only resource, and posting
+        # there answers `405 Method Not Allowed`. A missing `prompt`/`session_id`
+        # is a 500 naming the field, which is how both were pinned.
         status, text = call(
             "POST",
-            f"/v1/workspaces/{workspace_id}/agent/sessions/{session_id}/messages",
-            {"content": PROMPT},
+            f"/v1/workspaces/{workspace_id}/agent",
+            {"prompt": PROMPT, "session_id": session_id},
         )
         if status >= 400:
             return Verdict.BLOCKED, f"prompt failed ({status}): {text[:200]}"

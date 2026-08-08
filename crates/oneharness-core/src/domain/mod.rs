@@ -12,6 +12,7 @@ pub mod gate;
 pub mod harness;
 pub mod history;
 pub mod hooks;
+pub mod http;
 pub mod mock;
 pub mod mode;
 pub mod normalize;

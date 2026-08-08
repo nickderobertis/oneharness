@@ -50,7 +50,9 @@ pub struct NextRun {
 }
 
 /// One job's final result plus how many times it was invoked. `attempts` is 1
-/// for a plain run, and more when a retry policy re-ran it (structured output).
+/// for a plain run, more when a retry policy re-ran it (structured output), and
+/// **0** for a job cancelled while still queued — it has no invocation, which is
+/// what stops a caller from reporting bounds for a run that never began.
 pub struct Outcome {
     pub capture: Capture,
     pub attempts: u32,

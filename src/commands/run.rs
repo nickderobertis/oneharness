@@ -2343,14 +2343,20 @@ fn executed_result(
             // The runner mints this instant, so the parse is a boundary check
             // rather than a doubt: text that is not a canonical UTC instant
             // yields no telemetry rather than a claim about when the run began.
-            (attempted_trace && oneharness_core::domain::history::run_failed(capture.status))
-                .then(|| capture.started_at.parse().ok())
-                .flatten()
-                .map(|started_at| {
-                    oneharness_core::domain::report::ExecutionTelemetry::PartialInvocation {
-                        started_at,
-                    }
-                })
+            // `attempts == 0` is the one case with nothing to preserve: the job
+            // was cancelled while still queued, so it has no invocation to bound
+            // and saying when it "started" would be the fabrication this arm
+            // exists to avoid.
+            (attempts > 0
+                && attempted_trace
+                && oneharness_core::domain::history::run_failed(capture.status))
+            .then(|| capture.started_at.parse().ok())
+            .flatten()
+            .map(|started_at| {
+                oneharness_core::domain::report::ExecutionTelemetry::PartialInvocation {
+                    started_at,
+                }
+            })
         });
     // A deferred-tool dead-end: the harness completed cleanly (exit 0) but only
     // *deferred* a builtin tool call instead of running it (Claude Code bridge
@@ -3229,6 +3235,34 @@ mod tests {
         let events = r.events.expect("the complete tool event survives");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].name.as_deref(), Some("bash"));
+    }
+
+    #[test]
+    fn a_never_invoked_cancelled_job_claims_no_invocation_bounds() {
+        // A job cancelled while still queued has `attempts == 0`. Its status is a
+        // failed one on a trace-capable harness, which is exactly the shape that
+        // would otherwise report invocation bounds — but there was no invocation,
+        // so reporting when it "started" would be a measurement of nothing. The
+        // same run *after* a spawn keeps its bounds, which is the contrast here.
+        let cap = capture(Status::Cancelled, "");
+        let result_for = |attempts| {
+            executed_result(
+                harness::by_id("opencode").unwrap(),
+                "opencode".into(),
+                vec!["opencode".into()],
+                OutputFormat::Json,
+                &cap,
+                None,
+                attempts,
+                None,
+                None,
+            )
+        };
+        assert!(result_for(0).telemetry.is_none());
+        assert!(matches!(
+            result_for(1).telemetry,
+            Some(oneharness_core::domain::report::ExecutionTelemetry::PartialInvocation { .. })
+        ));
     }
 
     #[test]

@@ -169,11 +169,16 @@ mod platform {
 mod platform {
     use std::io;
 
-    use windows_sys::Win32::Foundation::{BOOL, FALSE, TRUE};
+    use windows_sys::core::BOOL;
     use windows_sys::Win32::System::Console::{
         SetConsoleCtrlHandler, CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT, CTRL_C_EVENT, CTRL_LOGOFF_EVENT,
         CTRL_SHUTDOWN_EVENT,
     };
+
+    /// The Win32 `BOOL` values, spelled here because `windows-sys` exposes the
+    /// type as a plain `i32` without named constants.
+    const TRUE: BOOL = 1;
+    const FALSE: BOOL = 0;
 
     pub(super) fn install() -> io::Result<()> {
         // SAFETY: a valid handler pointer is registered exactly as documented;

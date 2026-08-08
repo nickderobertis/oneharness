@@ -3183,6 +3183,49 @@ bin = "{bin}"
     ));
     assert_eq!(config["stream"]["value"], true);
     assert_eq!(config["stream"]["source"], "environment");
+    // A file value is attributed to that file, like any other scalar...
+    let from_file = json_stdout(&run_with_config(
+        &["config", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    ));
+    assert_eq!(from_file["stream"]["value"], true);
+    assert!(
+        from_file["stream"]["source"]
+            .as_str()
+            .unwrap()
+            .ends_with("oneharness.toml"),
+        "{from_file}"
+    );
+
+    // ...and the flag wins over an explicit `stream = false` too, not just over
+    // an absent value.
+    let off = ConfigFixture::new(
+        "stream-off",
+        &format!(
+            r#"
+harnesses = ["opencode"]
+stream = false
+[harness.opencode]
+bin = "{bin}"
+"#
+        ),
+        "",
+    );
+    let forced = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &off.cwd(), "--stream"],
+        &[("MOCK_STDOUT", stdout)],
+        &off.user_config(),
+    );
+    assert!(
+        forced.status.success(),
+        "{}",
+        String::from_utf8_lossy(&forced.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&forced.stdout).contains("\"type\":\"event\""),
+        "--stream lost to `stream = false`"
+    );
 }
 
 #[test]

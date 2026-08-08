@@ -251,6 +251,50 @@ fn mock_fixture_only_exposes_session_ids_in_session_bearing_formats() {
 }
 
 #[test]
+fn every_report_carries_the_shared_schema_version() {
+    // `run`, `list`, `detect`, `sync`, and `config` share one contract version,
+    // so a consumer reads any of them with one number — and a bump must move
+    // every surface at once. Pinned literally on purpose: asserting against the
+    // constant would pass through a bump nobody intended.
+    let version = "0.4";
+    let printed = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--print-command",
+        ],
+        &[],
+    );
+    assert_eq!(json_stdout(&printed)["schema_version"], version);
+    assert_eq!(json_stdout(&run(&["list"], &[]))["schema_version"], version);
+    assert_eq!(
+        json_stdout(&run(&["detect"], &[]))["schema_version"],
+        version
+    );
+    let fx = ConfigFixture::new("shared-schema-version", "allowed_tools = [\"Read\"]\n", "");
+    let synced = run_with_config(
+        &["sync", "--harness", "claude-code", "--cwd", &fx.cwd()],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        synced.status.success(),
+        "{}",
+        String::from_utf8_lossy(&synced.stderr)
+    );
+    assert_eq!(json_stdout(&synced)["schema_version"], version);
+    let config = run_with_config(
+        &["config", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(json_stdout(&config)["schema_version"], version);
+}
+
+#[test]
 fn list_describes_every_harness() {
     let output = run(&["list"], &[]);
     assert!(output.status.success());

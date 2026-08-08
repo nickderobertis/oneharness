@@ -40,6 +40,13 @@ pub const CONTROL_DIR: &str = "control";
 /// smaller version of the right answer, it is a different file depending on who
 /// reads it. The type is the difference between "we documented it as absolute"
 /// and "it is".
+// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] The generated SDK
+// contract is a plain string on purpose: this appears only in *output* (the
+// report's `control.socket`), which oneharness produces and the SDKs validate
+// leniently so a reader never rejects a report the CLI just emitted. There is
+// also no portable JSON Schema for "absolute" — the rule differs between
+// `/x` and `C:\x` — so a pattern would encode one platform's answer as the
+// contract's.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 #[serde(transparent)]
 pub struct AbsolutePath(PathBuf);
@@ -192,6 +199,38 @@ pub enum ServerTransport {
     Tcp,
 }
 
+/// A TCP port something can actually be dialed on.
+///
+/// `0` is the kernel's "pick one for me" sentinel, never an address: a record
+/// that lost its port and kept a `0` would send every later interrupt to
+/// whatever happens to answer, which is the one outcome worse than sending none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
+pub struct Port(u16);
+
+impl Port {
+    /// Accept `raw` as a dialable port, or say why it cannot be one.
+    pub fn new(raw: u16) -> Result<Self, String> {
+        if raw == 0 {
+            Err("0 is not a dialable port".to_string())
+        } else {
+            Ok(Port(raw))
+        }
+    }
+
+    #[must_use]
+    pub fn get(self) -> u16 {
+        self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for Port {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        Port::new(u16::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
+}
+
 /// Where a *running* sidecar server actually is.
 ///
 /// One value rather than a transport tag beside a loose address string: a
@@ -209,7 +248,7 @@ pub enum ServerAddress {
     /// A loopback TCP port the server bound. Loopback by construction: a
     /// control server is a private lever over a running agent, so an address
     /// reachable from anywhere else is not a variant worth being able to spell.
-    Tcp { port: u16 },
+    Tcp { port: Port },
 }
 
 impl ServerAddress {
@@ -855,7 +894,10 @@ mod tests {
             .transport(),
             ServerTransport::UnixSocket
         );
-        let tcp = ServerAddress::Tcp { port: 7777 };
+        let tcp = ServerAddress::Tcp {
+            port: Port::new(7777).unwrap(),
+        };
+        assert!(Port::new(0).is_err(), "0 is the kernel's sentinel");
         assert_eq!(tcp.transport(), ServerTransport::Tcp);
         // Round-trips with the transport as its discriminator, so a reader can
         // never see coordinates that belong to a different transport.

@@ -209,6 +209,11 @@ pub struct UtcInstantError(String);
 #[serde(transparent)]
 pub struct UtcInstant(String);
 
+// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] Deliberately a
+// described string rather than a pattern: this type appears only in *output*,
+// which the SDKs validate leniently so a reader never rejects a report the CLI
+// just emitted. A pattern here would make every SDK re-implement `FromStr`'s
+// normalization to agree with it.
 impl schemars::JsonSchema for UtcInstant {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "UtcInstant".into()

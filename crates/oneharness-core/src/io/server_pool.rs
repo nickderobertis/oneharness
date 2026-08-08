@@ -84,11 +84,14 @@ pub struct LaunchArgv(Vec<String>);
 
 impl LaunchArgv {
     /// Accept `argv` as a spawn plan, or say why it cannot be one.
+    ///
+    /// A blank `argv[0]` is refused alongside an empty vector: both fail to name
+    /// a program, and the blank one fails later and less legibly — as a spawn
+    /// error for `""` rather than as the plan being wrong.
     pub fn new(argv: Vec<String>) -> Result<Self, String> {
-        if argv.is_empty() {
-            Err("a launch argv must name a program".to_string())
-        } else {
-            Ok(LaunchArgv(argv))
+        match argv.first() {
+            Some(program) if !program.trim().is_empty() => Ok(LaunchArgv(argv)),
+            _ => Err("a launch argv must name a program".to_string()),
         }
     }
 
@@ -619,6 +622,15 @@ mod tests {
     }
 
     #[test]
+    fn a_launch_argv_must_actually_name_a_program() {
+        assert!(LaunchArgv::new(Vec::new()).is_err());
+        assert!(LaunchArgv::new(vec![String::new()]).is_err());
+        assert!(LaunchArgv::new(vec!["  ".to_string(), "serve".to_string()]).is_err());
+        let argv = LaunchArgv::new(vec!["opencode".to_string(), "serve".to_string()]).unwrap();
+        assert_eq!(argv.split().0, "opencode");
+    }
+
+    #[test]
     fn resolve_root_prefers_the_configured_path() {
         assert_eq!(
             resolve_root(Some("/custom/servers")),
@@ -634,7 +646,9 @@ mod tests {
             key_env: &[],
             transport: ServerTransport::Tcp,
         };
-        let address = ServerAddress::Tcp { port: 7777 };
+        let address = ServerAddress::Tcp {
+            port: crate::domain::control::Port::new(7777).unwrap(),
+        };
         let plan = LaunchPlan::new(
             "opencode",
             &spec,

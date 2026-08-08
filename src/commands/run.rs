@@ -1001,13 +1001,6 @@ fn apply_result_identity(result: &mut RunResult, composed: &str) {
         .map(|(_, variant)| variant.to_string());
 }
 
-/// Assemble the top-level [`RunReport`] from the finished results and the shared
-/// run metadata. Extracted so the normal and streaming paths emit an identical
-/// envelope shape (the streaming path passes `batch: None`).
-// llmlint: ignore[suppressions_justified] The allow is justified here: the
-// parameters are exactly the report fields this helper fills in, so the list is
-// the envelope's shape rather than an accident of factoring.
-#[allow(clippy::too_many_arguments)]
 /// What `--mock-rules`/`--spy-file` wired up before spawning, and how to undo
 /// it. Built by [`setup_mock`]; consumed by [`MockWiring::finish`] the moment
 /// every job is done — the restore must run on the same code path as the run
@@ -1226,6 +1219,9 @@ fn setup_mock(
     Ok(Some(wiring))
 }
 
+/// Assemble the top-level [`RunReport`] from the finished results and the shared
+/// run metadata. Extracted so the normal and streaming paths emit an identical
+/// envelope shape (the streaming path passes `batch: None`).
 // llmlint: ignore[suppressions_justified] The allow is justified here: this
 // assembles the report's own top-level fields, so the parameter list IS the
 // contract's shape — bundling it into a struct would create a second definition

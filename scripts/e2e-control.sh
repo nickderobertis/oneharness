@@ -109,6 +109,10 @@ for id in "${CONTROLLABLE[@]}"; do
         }
         export OH_MODEL=""
         ;;
+    # Dormant while crush declares no mechanism (the loop above reads the
+    # capability matrix), and ready for the run that proves one: it needs a
+    # provider crush can reach, which the Bedrock role on the development host
+    # is not — see the comment at crush's `control` field.
     crush)
         have_env "Crush auth" CRUSH_E2E_AUTH ANTHROPIC_API_KEY || {
             skipped+=("$id")

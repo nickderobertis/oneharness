@@ -1258,13 +1258,27 @@ static REGISTRY: &[HarnessSpec] = &[
         // stats` is local SQLite spend-to-date, not headroom.
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::NoHeadroomReader,
-        control: Some(ControlShape::CrushHttp),
-        server: Some(ServerSpec {
-            launch: &["server"],
-            address_args: &["-H", "unix://{address}"],
-            key_env: &[],
-            transport: ServerTransport::UnixSocket,
-        }),
+        // UNVERIFIED, so undeclared. The mechanism is implemented and its shape
+        // is probe-sourced — [`ControlShape::CrushHttp`] and [`HttpShape::Crush`]
+        // carry every route — but no interrupt has been proven to STOP a real
+        // crush turn through oneharness: the only provider reachable on the
+        // development host refuses with a classified auth failure (Bedrock `403
+        // Forbidden`, the role has no `bedrock:InvokeModelWithResponseStream`),
+        // so no turn ever does work there is anything to freeze. A declared
+        // mechanism that was never exercised answers `ok:true` while the turn
+        // keeps running, which is strictly worse than the loud usage error
+        // `None` gives. To declare it, restore this pair —
+        //   control: Some(ControlShape::CrushHttp),
+        //   server: Some(ServerSpec {
+        //       launch: &["server"],
+        //       address_args: &["-H", "unix://{address}"],
+        //       key_env: &[],
+        //       transport: ServerTransport::UnixSocket,
+        //   }),
+        // — with a provider crush can actually reach, and land the passing
+        // `oh_control_enforce crush` transcript as the evidence.
+        control: None,
+        server: None,
         build_argv: argv_crush,
     },
     HarnessSpec {
@@ -2624,10 +2638,7 @@ mod tests {
         // The other kind of turn-driving harness never spawns its CLI at all:
         // its turn goes to a pooled server, so the launch to pin is the
         // `ServerSpec` the pool starts, plus how the chosen address reaches it.
-        let servers = [
-            ("opencode", &["serve"][..], &["--port", "{address}"][..]),
-            ("crush", &["server"][..], &["-H", "unix://{address}"][..]),
-        ];
+        let servers = [("opencode", &["serve"][..], &["--port", "{address}"][..])];
         for (id, launch, address_args) in servers {
             let spec = by_id(id).unwrap();
             let server = spec

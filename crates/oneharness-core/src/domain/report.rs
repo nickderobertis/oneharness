@@ -56,7 +56,10 @@ pub enum Status {
     Timeout,
     /// The binary was resolved but could not be executed.
     SpawnError,
-    /// The binary was not found, so the harness was not run.
+    /// The harness was not run. Either the binary was not found (`available:
+    /// false`), or it was found but the identity the selection points at is not
+    /// provisioned — an `env_from` home directory that is not on disk, reported
+    /// as `available: true` with `failure_kind: "auth"`.
     Skipped,
     /// `--print-command`: the command was built but not executed.
     Planned,
@@ -204,7 +207,8 @@ pub struct RunResult {
     /// run, and it also marks the run as failed for exit-code purposes.
     /// Serialized as its snake_case token (see [`FailureKind`]).
     pub failure_kind: Option<FailureKind>,
-    /// Where `failure_kind` was read (`stderr`/`stdout`); `null` when absent.
+    /// Where `failure_kind` was read (`stderr`/`stdout`, or `config:env_from`
+    /// for a candidate refused before spawning); `null` when absent.
     pub failure_kind_source: Option<String>,
     /// Raw captured stdout (empty for skipped/planned).
     pub stdout: String,

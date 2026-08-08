@@ -4,7 +4,10 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use crate::cli::RunArgs;
-use crate::commands::{print_json, select_specs, variant_environment};
+use crate::commands::{
+    print_json, select_specs, variant_environment, variant_unprovisioned_identity,
+    UnprovisionedIdentity,
+};
 use oneharness_core::domain::batch::{self, BatchStrategy};
 use oneharness_core::domain::fallback::{self, RunMode};
 use oneharness_core::domain::harness::{self, BuildCtx, HarnessSpec};
@@ -567,6 +570,22 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 output_format,
                 result_prompt,
                 unit_model.clone(),
+            ))));
+        } else if let Some(identity) = variant_unprovisioned_identity(cfg, selected_id) {
+            // The identity this variant selects has no home directory on disk, so
+            // it holds no credentials: an `auth` failure a chain falls through,
+            // exactly like the empty-directory state the harness itself reports.
+            // Not spawning is the point — the harness would either refuse
+            // unreadably or create the directory for an account nobody has logged
+            // into.
+            plan.push(Plan::Ready(Box::new(unprovisioned_result(
+                spec,
+                &resolved.bin,
+                harness_plan.build(schema.as_ref(), None).argv,
+                output_format,
+                result_prompt,
+                unit_model.clone(),
+                &identity,
             ))));
         } else {
             let job_index = jobs.len();
@@ -2115,6 +2134,42 @@ fn skipped_result(
             "`{bin}` not found on PATH; harness skipped. Install it: {}",
             spec.install_hint
         )),
+    }
+}
+
+/// A candidate whose variant selects an identity with no home directory on disk.
+///
+/// Reported as an `auth` failure that was **not run**: the binary is installed
+/// (`available: true`, unlike [`skipped_result`]) and the argv is recorded, but
+/// there are no credentials at the path the indirection names, so spawning could
+/// only produce the harness's own unreadable refusal — or, worse, leave a config
+/// directory behind for an account nobody has authenticated. `auth` is the
+/// classification a fallback chain routes around, so an unauthenticated
+/// candidate costs a chain nothing, exactly as an *empty* home directory already
+/// does (see [`variant_unprovisioned_identity`]).
+fn unprovisioned_result(
+    spec: &HarnessSpec,
+    bin: &str,
+    command: Vec<String>,
+    output_format: OutputFormat,
+    prompt: Option<String>,
+    model: Option<String>,
+    identity: &UnprovisionedIdentity,
+) -> RunResult {
+    RunResult {
+        available: true,
+        status: Status::Skipped,
+        failure_kind: Some(signals::FailureKind::Auth),
+        failure_kind_source: Some("config:env_from".to_string()),
+        error: Some(format!(
+            "`{target}` (from `{source}`) points at `{path}`, which does not exist, so this \
+             identity has no credentials; harness not run. Create and authenticate that directory, \
+             or drop this candidate from the selection.",
+            target = identity.target,
+            source = identity.source,
+            path = identity.path,
+        )),
+        ..skipped_result(spec, bin, command, output_format, prompt, model)
     }
 }
 

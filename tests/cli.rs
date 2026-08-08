@@ -4861,6 +4861,134 @@ MOCK_STDOUT = "{{\"type\":\"result\",\"result\":\"served-by-good\"}}"
 }
 
 #[test]
+fn an_absent_env_from_home_falls_through_as_auth_like_an_empty_one() {
+    // A variant's `env_from` points a child at one account's home directory. A
+    // directory that is not on disk holds no credentials — the same "not set up
+    // yet" state an EMPTY one is in, which the harness itself already reports as
+    // `auth`. Both must therefore fall through a chain: the absent one is
+    // classified without spawning (so no config directory is created for an
+    // account nobody has logged into), the empty one still runs and is judged by
+    // what the harness says.
+    let bin = mock_bin().display().to_string().replace('\\', "\\\\");
+    let fx = ConfigFixture::new(
+        "variant-absent-home",
+        &format!(
+            r#"
+harnesses = ["claude-code:absent", "claude-code:empty"]
+run_mode = "fallback"
+[harness.claude-code.variant.absent]
+bin = "{bin}"
+[harness.claude-code.variant.absent.env_from]
+CLAUDE_CONFIG_DIR = "OH_TEST_ABSENT_HOME"
+[harness.claude-code.variant.empty]
+bin = "{bin}"
+[harness.claude-code.variant.empty.env_from]
+CLAUDE_CONFIG_DIR = "OH_TEST_EMPTY_HOME"
+"#
+        ),
+        "",
+    );
+    let empty_home = std::path::Path::new(&fx.cwd()).join("empty-home");
+    std::fs::create_dir_all(&empty_home).unwrap();
+    let absent_home = std::path::Path::new(&fx.cwd()).join("absent-home");
+    let absent = absent_home.display().to_string();
+    let empty = empty_home.display().to_string();
+    let envs: Vec<(&str, &str)> = vec![
+        ("OH_TEST_ABSENT_HOME", absent.as_str()),
+        ("OH_TEST_EMPTY_HOME", empty.as_str()),
+        (
+            "MOCK_STDOUT",
+            r#"{"type":"result","result":"served-by-empty"}"#,
+        ),
+    ];
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &envs,
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    let refused = &value["results"][0];
+    assert_eq!(refused["harness_id"], "claude-code:absent");
+    assert_eq!(refused["status"], "skipped");
+    // Installed — this is a credential problem, not a missing binary.
+    assert_eq!(refused["available"], true);
+    assert_eq!(refused["failure_kind"], "auth");
+    assert_eq!(refused["failure_kind_source"], "config:env_from");
+    assert_eq!(refused["command"][0], mock_bin().display().to_string());
+    // Never spawned: the mock's stdout would have surfaced as `text`.
+    assert!(refused["text"].is_null(), "{refused}");
+    let error = refused["error"].as_str().unwrap();
+    for needle in ["CLAUDE_CONFIG_DIR", "OH_TEST_ABSENT_HOME", &absent] {
+        assert!(error.contains(needle), "{error}");
+    }
+    assert!(!absent_home.exists(), "the absent home was created");
+    // The empty home is left to the harness, and the chain advances past the
+    // absent candidate to it.
+    assert_eq!(value["results"][1]["harness_id"], "claude-code:empty");
+    assert_eq!(value["results"][1]["text"], "served-by-empty");
+    assert_eq!(value["fallback"]["ran"], "claude-code:empty");
+    assert_eq!(
+        value["fallback"]["fell_through"][0]["harness"],
+        "claude-code:absent"
+    );
+    assert_eq!(value["fallback"]["fell_through"][0]["reason"], "auth");
+
+    // Outside a chain there is nothing to fall through to, so the run fails —
+    // with the same classification, not an unreadable harness-side refusal.
+    let alone = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--harness",
+            "claude-code:absent",
+            "--run-mode",
+            "parallel",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &envs,
+        &fx.user_config(),
+    );
+    assert_eq!(alone.status.code(), Some(1));
+    assert_eq!(json_stdout(&alone)["results"][0]["failure_kind"], "auth");
+
+    // An opaque credential is never probed on disk: `env_from` values that are
+    // not absolute paths reach the child untouched.
+    let opaque = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--harness",
+            "claude-code:absent",
+            "--run-mode",
+            "parallel",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[
+            ("OH_TEST_ABSENT_HOME", "sk-ant-not-a-path"),
+            ("MOCK_ECHO_ENV", "CLAUDE_CONFIG_DIR"),
+        ],
+        &fx.user_config(),
+    );
+    assert!(
+        opaque.status.success(),
+        "{}",
+        String::from_utf8_lossy(&opaque.stderr)
+    );
+    assert_eq!(json_stdout(&opaque)["results"][0]["status"], "ok");
+}
+
+#[test]
 fn sync_rejects_conflicting_variants_sharing_one_native_config() {
     let fx = ConfigFixture::new(
         "variant-sync-conflict",

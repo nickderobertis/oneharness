@@ -483,6 +483,18 @@ removes even an ambient canonical key, which is required for subscription
 variants. These operations affect only the spawned child, so variants run
 concurrently without credential leakage.
 
+An `env_from` value that is an **absolute path** names the identity's home
+directory (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, …). When that directory is **not on
+disk**, nothing has been provisioned there, so oneharness does not run the
+harness: the result is `status: "skipped"` with `available: true` and
+`failure_kind: "auth"` — the same classification an *empty* home directory earns
+from the harness itself, and one a [fallback chain](#fallback-mode-first-that-runs-wins)
+routes around. So a second account can sit in a committed chain before anyone
+logs into it, costing nothing and leaving no config directory behind for it.
+Authenticate the path to activate the candidate. Only absolute values are checked
+(a credential is never probed on disk), and only `env_from` — a committed `env`
+path is the config author's own declaration, where a typo should stay loud.
+
 Variants share the base harness's one native project config file. Selecting two
 variants with conflicting sync fields is therefore a usage error, not
 last-writer-wins.
@@ -1058,6 +1070,7 @@ chain, so a long, genuine run can never be mistaken for "try the next one".
 | --- | --- |
 | Did the task's work (a tool call, or billed tokens/cost) | ⛔ stop — it ran, whatever its record says |
 | Not installed (`skipped`) | ✅ fall through — `not-installed` |
+| Installed, but the variant's [`env_from`](#configuration) home directory is absent (`skipped`, `auth`) | ✅ fall through — `auth` |
 | Resolved but unspawnable (`spawn-error`) | ✅ fall through — `spawn-error` |
 | Ran, exited non-zero, classified `auth`, no work done | ✅ fall through — `auth` |
 | Ran, exited non-zero, classified `quota` (no credit), no work done | ✅ fall through — `quota` |

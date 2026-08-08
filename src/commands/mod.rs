@@ -16,7 +16,7 @@ use std::io::Write;
 
 use serde::Serialize;
 
-use oneharness_core::domain::config::valid_env_name;
+use oneharness_core::domain::config::{names_absolute_path, valid_env_name};
 use oneharness_core::domain::harness::{self, HarnessSpec};
 use oneharness_core::errors::OneharnessError;
 
@@ -181,6 +181,55 @@ pub fn variant_environment(
         env.push((target.clone(), value));
     }
     Ok(env)
+}
+
+/// An identity a variant selects through `env_from` whose home directory is not
+/// on disk — so nothing has been provisioned there yet.
+pub struct UnprovisionedIdentity {
+    /// The variable the child would have received (e.g. `CODEX_HOME`).
+    // llmlint: ignore[invalid_states_unrepresentable] These are the configured names/paths as written, kept verbatim for a terminal diagnostic and never used for further I/O.
+    pub target: String,
+    /// The parent variable it was sourced from (e.g. `ORCHESTRATOR_CODEX_ALT_HOME`).
+    pub source: String,
+    /// The absolute path that does not exist.
+    pub path: String,
+}
+
+/// The first `env_from` indirection of `composed`'s variant that names an
+/// absolute path which is **not on disk**, if any.
+///
+/// A variant's `env_from` is the identity-selection seam: it points a child at
+/// one account's home directory without the parent switching to it. A home
+/// directory that does not exist holds no credentials, which is the same
+/// "account not set up yet" state an *empty* one is in — and an empty one is
+/// already an `auth` failure that a fallback chain routes around, because the
+/// harness starts, gets rejected, and says so. An absent one is not: the CLI
+/// refuses before it can report anything readable (Codex exits 2 with `CODEX_HOME
+/// points to … but that path does not exist`), so the chain stops at a candidate
+/// nobody has logged into. Reading it here makes the two states behave alike, and
+/// makes an unauthenticated candidate free to leave in a committed chain without
+/// pre-creating a directory for it.
+///
+/// Scoped to `env_from` on purpose. It is the only environment field whose value
+/// comes from *outside* the config — a committed `env` path is the author's own
+/// declaration, and treating its absence as a provisioning state would silently
+/// route around a typo. Only [`names_absolute_path`] values are probed, so a
+/// credential is never touched.
+pub fn variant_unprovisioned_identity(
+    cfg: &oneharness_core::domain::config::FileConfig,
+    composed: &str,
+) -> Option<UnprovisionedIdentity> {
+    let variant = cfg.variant_for(composed)?;
+    variant.env_from.iter().find_map(|(target, source)| {
+        let value = std::env::var(source).ok()?;
+        (names_absolute_path(&value) && !std::path::Path::new(&value).exists()).then(|| {
+            UnprovisionedIdentity {
+                target: target.clone(),
+                source: source.clone(),
+                path: value,
+            }
+        })
+    })
 }
 
 /// Write `text` to stdout verbatim, reporting a write failure rather than

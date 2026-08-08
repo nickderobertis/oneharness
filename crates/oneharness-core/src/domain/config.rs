@@ -192,6 +192,22 @@ pub fn valid_env_name(name: &str) -> bool {
         && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
 }
 
+/// Whether an `env_from` value names a **filesystem location** the identity
+/// lives in (an absolute path) rather than an opaque credential.
+///
+/// Absolute is the whole test, and it is deliberately conservative in the safe
+/// direction: a credential — an API key, a token, an account name — is never an
+/// absolute path, so a secret can never be probed on disk, while every
+/// home-directory indirection in practice is one (`CODEX_HOME`,
+/// `CLAUDE_CONFIG_DIR`). A relative value stays untouched too: oneharness has no
+/// business deciding what it would be relative to.
+///
+/// Pure: this asks what the string *is*, never what is on disk. The existence
+/// check belongs to the caller at the I/O boundary.
+pub fn names_absolute_path(value: &str) -> bool {
+    std::path::Path::new(value).is_absolute()
+}
+
 impl VariantName {
     pub fn as_str(&self) -> &str {
         &self.0
@@ -1886,6 +1902,23 @@ variant = true
         let report = explain(&[]);
         assert_eq!(report.history, Field::default_value(false));
         assert_eq!(report.history_dir, Field::unset());
+    }
+
+    #[test]
+    fn only_absolute_values_read_as_a_filesystem_identity() {
+        // The home-directory indirections a variant maps are absolute; a
+        // credential never is, so a secret is never probed on disk.
+        let absolute = std::env::temp_dir().join("oneharness-identity");
+        assert!(names_absolute_path(&absolute.display().to_string()));
+        for opaque in [
+            "sk-ant-api03-secret",
+            "ghp_token",
+            ".codex-alt",
+            "relative/home",
+            "",
+        ] {
+            assert!(!names_absolute_path(opaque), "{opaque} read as a path");
+        }
     }
 
     #[test]

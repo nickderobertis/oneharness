@@ -109,10 +109,14 @@ impl RunWork {
 ///
 /// - [`Status::Skipped`] → `"not-installed"` (the binary was not on PATH).
 /// - [`Status::SpawnError`] → `"spawn-error"` (resolved but could not execute).
-/// - [`Status::Nonzero`] or [`Status::Ok`] with `failure_kind == "auth"` → `"auth"` (rejected
-///   before doing any work — bad/absent credentials).
-/// - [`Status::Nonzero`] or [`Status::Ok`] with `failure_kind == "quota"` → `"quota"` (the account
-///   has no credit/quota to do work — a provisioning problem like `auth`).
+/// - [`Status::Nonzero`], [`Status::Ok`] or [`Status::Skipped`] with `failure_kind == "auth"` →
+///   `"auth"` (rejected before doing any work — bad/absent credentials). A
+///   classified `auth` outranks the skip reason: a candidate the command layer
+///   declined to run because the identity it selects is unprovisioned (an
+///   `env_from` home directory that is not on disk) reads as the credential
+///   problem it is, not as a missing binary.
+/// - [`Status::Nonzero`], [`Status::Ok`] or [`Status::Skipped`] with `failure_kind == "quota"` →
+///   `"quota"` (the account has no credit/quota to do work — a provisioning problem like `auth`).
 ///
 /// Everything else is a **real run**, so `None`: a clean [`Status::Ok`]; a
 /// [`Status::Timeout`] (a genuine, if slow, run — falling through it would let a
@@ -142,10 +146,14 @@ pub fn startup_failure_reason(
         return None;
     }
     match (status, failure_kind) {
-        (_, Some(FailureKind::Auth)) if matches!(status, Status::Ok | Status::Nonzero) => {
+        (_, Some(FailureKind::Auth))
+            if matches!(status, Status::Ok | Status::Nonzero | Status::Skipped) =>
+        {
             Some("auth")
         }
-        (_, Some(FailureKind::Quota)) if matches!(status, Status::Ok | Status::Nonzero) => {
+        (_, Some(FailureKind::Quota))
+            if matches!(status, Status::Ok | Status::Nonzero | Status::Skipped) =>
+        {
             Some("quota")
         }
         (Status::Skipped, _) => Some("not-installed"),
@@ -219,6 +227,26 @@ mod tests {
         assert_eq!(
             startup_failure_reason(
                 Status::Nonzero,
+                Some(FailureKind::Quota),
+                false,
+                RunWork::None
+            ),
+            Some("quota")
+        );
+        // A candidate that was not run *because* its identity is unprovisioned
+        // carries the credential reason, not the missing-binary one.
+        assert_eq!(
+            startup_failure_reason(
+                Status::Skipped,
+                Some(FailureKind::Auth),
+                false,
+                RunWork::None
+            ),
+            Some("auth")
+        );
+        assert_eq!(
+            startup_failure_reason(
+                Status::Skipped,
                 Some(FailureKind::Quota),
                 false,
                 RunWork::None

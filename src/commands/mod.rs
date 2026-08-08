@@ -187,12 +187,13 @@ pub fn variant_environment(
 /// on disk — so nothing has been provisioned there yet.
 pub struct UnprovisionedIdentity {
     /// The variable the child would have received (e.g. `CODEX_HOME`).
-    // llmlint: ignore[invalid_states_unrepresentable] These are the configured names/paths as written, kept verbatim for a terminal diagnostic and never used for further I/O.
+    // llmlint: ignore[invalid_states_unrepresentable] Environment names are TOML map keys/values that stay strings for backward-compatible config merging (see `VariantConfig::env_from`); `validate` checks every target before FileConfig is exposed, and this payload only quotes the already-validated name in a terminal diagnostic.
     pub target: String,
     /// The parent variable it was sourced from (e.g. `ORCHESTRATOR_CODEX_ALT_HOME`).
+    // llmlint: ignore[invalid_states_unrepresentable] Same validated-at-parse-time env name as `target`, from the same TOML map; a competing env-name type here would duplicate that boundary without removing the string the config contract stores.
     pub source: String,
     /// The absolute path that does not exist.
-    pub path: String,
+    pub path: std::path::PathBuf,
 }
 
 /// The first `env_from` indirection of `composed`'s variant that names an
@@ -222,12 +223,12 @@ pub fn variant_unprovisioned_identity(
     let variant = cfg.variant_for(composed)?;
     variant.env_from.iter().find_map(|(target, source)| {
         let value = std::env::var(source).ok()?;
-        (names_absolute_path(&value) && !std::path::Path::new(&value).exists()).then(|| {
-            UnprovisionedIdentity {
-                target: target.clone(),
-                source: source.clone(),
-                path: value,
-            }
+        names_absolute_path(&value).then_some(())?;
+        let path = std::path::PathBuf::from(value);
+        (!path.exists()).then(|| UnprovisionedIdentity {
+            target: target.clone(),
+            source: source.clone(),
+            path,
         })
     })
 }

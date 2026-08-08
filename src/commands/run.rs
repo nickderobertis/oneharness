@@ -1672,25 +1672,6 @@ fn emit_stream_result(report: &RunReport) -> Result<(), OneharnessError> {
 /// harness's models (the multi-model half is refused in [`validate_multi_model`],
 /// which allows it here for the same reason): only the candidate that runs ever
 /// publishes (see [`stream_plan`]), so there is nothing to interleave.
-/// Whether this run streams: `--stream` / `--no-stream` (clap-exclusive, so at
-/// most one is set) beat the layered `stream` config value, which is itself off
-/// by default.
-///
-/// The flag wins in both directions on purpose. A consumer that always reads
-/// events declares `stream = true` once instead of injecting the flag per
-/// invocation, and a single call that needs the buffered report back — a
-/// one-off `--schema` run, a multi-harness parallel sweep — says `--no-stream`
-/// rather than having to unset the config it inherited.
-fn resolve_stream(args: &RunArgs, cfg: &oneharness_core::domain::config::FileConfig) -> bool {
-    if args.stream {
-        true
-    } else if args.no_stream {
-        false
-    } else {
-        cfg.stream.unwrap_or(false)
-    }
-}
-
 fn validate_stream(
     stream: bool,
     specs: &[&'static HarnessSpec],
@@ -1724,6 +1705,24 @@ fn validate_stream(
         ));
     }
     Ok(())
+}
+
+/// Whether this run streams: `--stream` / `--no-stream` (clap-exclusive, so at
+/// most one is set) beat the layered `stream` config value, which is off by
+/// default.
+///
+/// The flag wins in both directions on purpose. A consumer that always reads
+/// events declares `stream = true` once instead of injecting the flag per
+/// invocation, and a single call that needs the buffered report back says
+/// `--no-stream` instead of having to unset the config it inherited.
+fn resolve_stream(args: &RunArgs, cfg: &oneharness_core::domain::config::FileConfig) -> bool {
+    if args.stream {
+        true
+    } else if args.no_stream {
+        false
+    } else {
+        cfg.stream.unwrap_or(false)
+    }
 }
 
 /// Run `jobs` wave by wave, preserving global order in the returned outcomes.
@@ -2167,7 +2166,7 @@ fn unprovisioned_result(
              or drop this candidate from the selection.",
             target = identity.target,
             source = identity.source,
-            path = identity.path,
+            path = identity.path.display(),
         )),
         ..skipped_result(spec, bin, command, output_format, prompt, model)
     }

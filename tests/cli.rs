@@ -11,7 +11,8 @@ use std::process::{Command, Output, Stdio};
 
 use oneharness_core::domain::events::{ActionEvent, TimingSource, ToolCallStatus};
 use oneharness_core::domain::history::{HistoryLabels, HistoryLine, HistoryStreamEnvelope};
-use oneharness_core::domain::report::RunStreamEnvelope;
+use oneharness_core::domain::report::{RunStreamEnvelope, Status};
+use oneharness_core::domain::signals::FailureKind;
 use oneharness_core::domain::usage::{UsageProbe, UsageSupport};
 use oneharness_core::io::history::HistoryWriter;
 use serde_json::Value;
@@ -3128,14 +3129,51 @@ bin = "{bin}"
         "--no-stream still streamed"
     );
 
-    // The environment layer is the same value by another name.
+    // The environment layer is the same value by another name: it streams on its
+    // own, from a config that says nothing about streaming...
+    let env_only = ConfigFixture::new(
+        "stream-env",
+        &format!(
+            r#"
+harnesses = ["opencode"]
+[harness.opencode]
+bin = "{bin}"
+"#
+        ),
+        "",
+    );
     let from_env = run_with_config(
-        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--no-stream"],
+        &["run", "--prompt", "hi", "--cwd", &env_only.cwd()],
         &[("MOCK_STDOUT", stdout), ("ONEHARNESS_STREAM", "true")],
-        &fx.user_config(),
+        &env_only.user_config(),
     );
     assert!(
-        !String::from_utf8_lossy(&from_env.stdout).contains("\"type\":\"event\""),
+        from_env.status.success(),
+        "{}",
+        String::from_utf8_lossy(&from_env.stderr)
+    );
+    let envelopes: Vec<RunStreamEnvelope> = String::from_utf8_lossy(&from_env.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("each stream line matches the contract"))
+        .collect();
+    assert_eq!(envelopes.len(), 2);
+    assert!(matches!(envelopes[0], RunStreamEnvelope::Event { .. }));
+    // ...and still loses to the explicit flag.
+    let env_refused = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &env_only.cwd(),
+            "--no-stream",
+        ],
+        &[("MOCK_STDOUT", stdout), ("ONEHARNESS_STREAM", "true")],
+        &env_only.user_config(),
+    );
+    assert!(
+        !String::from_utf8_lossy(&env_refused.stdout).contains("\"type\":\"event\""),
         "--no-stream lost to ONEHARNESS_STREAM"
     );
     let config = json_stdout(&run_with_config(
@@ -3193,6 +3231,43 @@ bin = "{bin}"
         json_stdout(&allowed)["results"].as_array().unwrap().len(),
         2
     );
+
+    // Every other shape streaming cannot serve is refused the same way, whether
+    // the value came from the flag or from config: a batch, structured output,
+    // and a parallel model fan-out.
+    let schema = std::path::Path::new(&fx.cwd()).join("schema.json");
+    std::fs::write(&schema, r#"{"type":"object"}"#).unwrap();
+    let single = ["run", "--harness", "opencode", "--cwd"];
+    for (args, needle) in [
+        (
+            vec![
+                "--prompt",
+                "one",
+                "--prompt",
+                "two",
+                "--batch-strategy",
+                "speed",
+            ],
+            "--stream is incompatible with a batch",
+        ),
+        (
+            vec!["--prompt", "hi", "--schema", &schema.display().to_string()],
+            "--stream is incompatible with --schema",
+        ),
+        (
+            vec!["--prompt", "hi", "--model", "a", "--model", "b"],
+            "--stream",
+        ),
+    ] {
+        let mut argv: Vec<&str> = single.to_vec();
+        let cwd = fx.cwd();
+        argv.push(&cwd);
+        argv.extend(args.iter().copied());
+        let refused = run_with_config(&argv, &[], &fx.user_config());
+        assert_eq!(refused.status.code(), Some(2), "{argv:?}");
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(stderr.contains(needle), "{argv:?}: {stderr}");
+    }
 }
 
 #[test]
@@ -4937,6 +5012,35 @@ CLAUDE_CONFIG_DIR = "OH_TEST_EMPTY_HOME"
         "claude-code:absent"
     );
     assert_eq!(value["fallback"]["fell_through"][0]["reason"], "auth");
+
+    // A streamed chain selects the same candidate a buffered one did: the
+    // unprovisioned candidate publishes nothing and the chain advances past it.
+    let streamed = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--stream"],
+        &envs,
+        &fx.user_config(),
+    );
+    assert!(
+        streamed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&streamed.stderr)
+    );
+    let envelopes: Vec<RunStreamEnvelope> = String::from_utf8_lossy(&streamed.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("each stream line matches the contract"))
+        .collect();
+    match envelopes.last().expect("a terminal result line") {
+        RunStreamEnvelope::Result { report } => {
+            let fallback = report.fallback.as_ref().expect("a fallback report");
+            assert_eq!(fallback.ran.as_deref(), Some("claude-code:empty"));
+            assert_eq!(fallback.fell_through[0].harness, "claude-code:absent");
+            assert_eq!(fallback.fell_through[0].reason, "auth");
+            assert_eq!(report.results[0].status, Status::Skipped);
+            assert_eq!(report.results[0].failure_kind, Some(FailureKind::Auth));
+        }
+        RunStreamEnvelope::Event { .. } => panic!("missing terminal report"),
+    }
 
     // Outside a chain there is nothing to fall through to, so the run fails —
     // with the same classification, not an unreadable harness-side refusal.

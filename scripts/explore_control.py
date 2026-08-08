@@ -356,7 +356,19 @@ def probe_codex(bin_name: str) -> Tuple[str, str]:
         rpc = JsonRpc(process)
         # Approvals arrive as server->client requests; answer them or the turn
         # blocks forever waiting on a client that is not listening.
-        rpc.on_server_request = lambda message: {"decision": "approved"}
+        # Approve only what is actually an approval request — the same rule the
+        # shipped client follows. An unrecognized method is still answered
+        # (silence stalls the turn), just not granted.
+        approvals = {
+            "applyPatchApproval",
+            "execCommandApproval",
+            "item/commandExecution/requestApproval",
+            "item/fileChange/requestApproval",
+            "item/permissions/requestApproval",
+        }
+        rpc.on_server_request = lambda message: (
+            {"decision": "approved"} if message.get("method") in approvals else {}
+        )
         rpc.request(
             "initialize",
             {"clientInfo": {"name": "oneharness-control-probe", "title": "probe", "version": "0"}},

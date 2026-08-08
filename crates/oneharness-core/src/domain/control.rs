@@ -93,8 +93,10 @@ pub enum ControlShape {
     /// message written mid-turn is *silently dropped*, so the control frame is
     /// the only mechanism that works.
     ClaudeControlRequest,
-    /// Codex: `turn/interrupt` over the `codex app-server` JSON-RPC stdio
-    /// protocol, keyed on `CODEX_HOME`.
+    /// Codex: `turn/interrupt {threadId,turnId}` over the `codex app-server`
+    /// JSON-RPC stdio protocol, which oneharness spawns as the run's own child
+    /// and drives the thread/turn lifecycle on — so the interrupt rides the same
+    /// open stdin and nothing is shared or pooled.
     CodexAppServer,
     /// OpenCode: `POST /api/session/{id}/interrupt` against `opencode serve`.
     OpencodeHttp,
@@ -288,6 +290,9 @@ impl<'de> Deserialize<'de> for PoolKey {
 ///
 /// Pure string arithmetic — so the same key is computed identically by
 /// independent processes, which is what makes the on-disk pool work at all.
+/// Infallible: the digest covers every input including the id, so a caller
+/// passing something unusable as a directory name gets a different key rather
+/// than an error it has nothing useful to do with.
 #[must_use]
 pub fn pool_key(
     harness_id: &str,
@@ -309,13 +314,15 @@ pub fn pool_key(
         material.push('\n');
         material.push_str(arg);
     }
-    // `harness_id` comes from the registry, so the composed key is always
-    // segment-shaped; `parse` is the one place that rule lives.
-    PoolKey::parse(&format!(
-        "{harness_id}-{:016x}",
-        fnv1a64(material.as_bytes())
-    ))
-    .expect("a registry harness id composes a valid pool key")
+    // The prefix is only there to make a pool directory readable; the digest is
+    // what makes the key unique, and it already covers the untouched id. So the
+    // prefix is reduced to what a directory name can hold rather than refused.
+    let prefix: String = harness_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(32)
+        .collect();
+    PoolKey(format!("{prefix}-{:016x}", fnv1a64(material.as_bytes())))
 }
 
 /// Whether `key` is shaped like a [`pool_key`] result — the single rule behind
@@ -1000,6 +1007,21 @@ mod tests {
         let different = pool_key("codex", &[("CODEX_HOME".into(), Some("/b".into()))], &[]);
         assert_ne!(a, different);
         assert!(a.as_str().starts_with("codex-"), "{a}");
+    }
+
+    #[test]
+    fn a_pool_key_is_always_a_safe_segment_whatever_the_caller_passed() {
+        // The digest already covers the id, so an id that cannot be a directory
+        // name yields a different key rather than a refusal (or a panic) the
+        // caller could do nothing with.
+        for id in ["codex", "../escape", "a/b", "", "wild name!"] {
+            let key = pool_key(id, &[], &[]);
+            assert!(
+                PoolKey::parse(key.as_str()).is_ok(),
+                "`{id}` produced an unusable key `{key}`"
+            );
+        }
+        assert_ne!(pool_key("a/b", &[], &[]), pool_key("ab", &[], &[]));
     }
 
     #[test]

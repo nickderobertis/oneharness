@@ -1,11 +1,16 @@
 //! The generic sidecar-server pool.
 //!
-//! Most controllable harnesses reach their turn only through a server process
-//! (`codex app-server`, `opencode serve`, `crush server`, `goose acp`,
-//! `copilot --acp`); Claude Code does not. That difference is declared per
-//! harness in [`crate::domain::control::ServerSpec`] rather than special-cased,
-//! so a server costing ~137MB is started once and shared by every dispatch with
-//! the same key instead of once per turn.
+//! Some control mechanisms reach their turn only through a server that must
+//! already be running and outlives any one turn (`opencode serve`,
+//! `crush server`). Those are declared per harness in
+//! [`crate::domain::control::ServerSpec`] rather than special-cased, so a server
+//! costing ~137MB is started once and shared by every dispatch with the same key
+//! instead of once per turn.
+//!
+//! The stdio protocols (`codex app-server`, `copilot --acp`, `goose acp`) are
+//! deliberately NOT pooled: oneharness spawns them as the dispatch's own child,
+//! so the interrupt rides the same stdin the turn does and the process dies with
+//! the run — there is nothing to share and nothing to leak.
 //!
 //! **Membership is a lease held by a live process, never a counter.** A counter
 //! leaks a permanently-live server the first time a dispatch is `SIGKILL`ed

@@ -329,6 +329,12 @@ pub enum OneharnessError {
     #[error("no session store directory: pass --session-dir or set `session_dir` in config (a default under the platform state dir could not be resolved)")]
     ControlNoSessionDir,
 
+    #[error("--session-dir `{path}` is not valid UTF-8, so it cannot address a session store")]
+    SessionDirInvalid {
+        // llmlint: ignore[invalid_states_unrepresentable] The rejected path is kept in its lossy display form solely to quote it back; it is never reused for I/O.
+        path: String,
+    },
+
     #[error("failed to write JSON output: {0}")]
     Serialize(#[from] serde_json::Error),
 

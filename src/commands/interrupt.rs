@@ -26,8 +26,19 @@ pub fn run(args: &InterruptArgs) -> Result<i32, OneharnessError> {
         .clone()
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let dir = session_io::resolve_dir(args.session_dir.as_deref().and_then(|p| p.to_str()))
-        .ok_or(OneharnessError::ControlNoSessionDir)?;
+    // A `--session-dir` that cannot be spelled as UTF-8 is refused rather than
+    // dropped: silently falling back to the default store would report
+    // `not_running` for a run that is very much running.
+    let configured = match args.session_dir.as_deref() {
+        Some(path) => Some(
+            path.to_str()
+                .ok_or_else(|| OneharnessError::SessionDirInvalid {
+                    path: path.display().to_string(),
+                })?,
+        ),
+        None => None,
+    };
+    let dir = session_io::resolve_dir(configured).ok_or(OneharnessError::ControlNoSessionDir)?;
 
     let response = refuse_unsupported(&dir, &cwd, &args.session)
         .unwrap_or_else(|| control::send(&socket_path(&dir, &args.session), interrupt()));

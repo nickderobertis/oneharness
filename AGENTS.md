@@ -210,7 +210,8 @@ Use the `just` recipes; do not hand-roll equivalents.
   prompt, so the runner must close it on the harness's end-of-turn document
   (`is_turn_terminal`) or a control-enabled run never exits. And a `ControlShape`
   is declared only for a harness whose interrupt was proven live *through
-  oneharness* (see "Adding or changing a harness").
+  oneharness*: a declared-but-unexercised shape answers `ok:true` while the turn
+  keeps running, which is strictly worse than the loud usage error `None` gives.
   `gate <id>` is the odd one out: the runtime pre-tool gate an
   installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It

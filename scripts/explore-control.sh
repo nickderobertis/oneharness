@@ -15,12 +15,16 @@
 # Usage: scripts/explore-control.sh <harness-id|all>
 # Auth/model come from the environment (same as the e2e jobs). A missing binary
 # or a provider refusal is reported as BLOCKED — never as support.
+# llmlint: ignore-file[tool_output_is_signal] This is an investigative probe, not
+# a gate step: its per-harness headings and verdict table ARE the findings a
+# reader runs it to obtain (same contract as explore-hooks.sh / explore-events.sh).
+# Quiet-on-success would leave it with nothing to report.
 set -uo pipefail
 
 ID="${1:?usage: explore-control.sh <harness-id|all>}"
 
 if ! command -v python3 >/dev/null 2>&1; then
-    echo "explore-control: python3 is required to drive the JSON-RPC/HTTP control protocols" >&2
+    echo "explore-control: python3 is required to drive the JSON-RPC/HTTP control protocols. Install it ('apt-get install python3' / 'brew install python3' / https://www.python.org/downloads/) and rerun this script." >&2
     exit 2
 fi
 

@@ -78,6 +78,10 @@ Use the `just` recipes; do not hand-roll equivalents.
 - `just smoke` — hermetic end-to-end smoke of the built binary (part of `just
   check` and CI). `just smoke-live` is the opt-in variant that hits installed,
   authenticated harnesses with real model calls — never in the gate or CI.
+- `just live-control` — the per-feature live turn-control suite: interrupt a real
+  multi-step turn on every control-capable harness and prove the work stopped.
+  Slow by nature (a 15s freeze window per harness), so it is opt-in and outside
+  both the gate and the per-PR e2e matrix.
 - `just sdk-check` / `just python-sdk-check` — generated-contract drift, strict
   language lint/type/test coverage, and packed-artifact subprocess e2e for the
   Node and Python SDKs. The Python gate runs on the oldest supported Python 3.9.
@@ -194,6 +198,19 @@ Use the `just` recipes; do not hand-roll equivalents.
   `CURSOR_API_KEY` from its child: passing it authenticates rather than selects,
   a hazard any future Cursor dispatch also hits.
   <!-- llmlint: ignore-end[agents_md_durable_and_terse, no_redundant_instruction_pointers, comments_earn_their_place] -->
+  `run --control` + the separate `interrupt` verb are out-of-band **turn
+  control**: a supervisor aborts an in-flight turn without killing the dispatch
+  or losing the session (the lever that did not exist while a 600-2000s turn
+  could only be destroyed). Pure frames/capability/pool-key in `domain::control`,
+  the socket and client in `io::control`, the sidecar-server pool in
+  `io::server_pool`. Three constraints are load-bearing. `--control` requires
+  `--session` (a run with no caller-owned handle has no address) and exactly one
+  harness, both loud usage errors — a control lever that silently is not there is
+  worse than none. A stdin-borne mechanism holds the child's stdin open past the
+  prompt, so the runner must close it on the harness's end-of-turn document
+  (`is_turn_terminal`) or a control-enabled run never exits. And a `ControlShape`
+  is declared only for a harness whose interrupt was proven live *through
+  oneharness* (see "Adding or changing a harness").
   `gate <id>` is the odd one out: the runtime pre-tool gate an
   installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It
@@ -630,6 +647,26 @@ shape. When you add one:
   omission. A probing tier requires a zero-turn probe sourced from a real
   capture; a probe that sends a user message or completes a turn is disqualified.
   <!-- llmlint: ignore-end[no_redundant_instruction_pointers, agents_md_durable_and_terse, comments_earn_their_place] -->
+- Declare its `control` ([`ControlShape`]) ONLY once a live interrupt through
+  **oneharness** is proven. `run --control --session <NAME>` opens a 0600 unix
+  socket (`<session-dir>/control/<name>.sock`) for the run's lifetime; the
+  separate `oneharness interrupt --session <NAME>` process addresses it. The
+  refusal a declared-but-unexercised shape produces — `ok:true` while the turn
+  keeps running — is strictly worse than `None` (a loud usage error), so
+  `None` is the honest default. Source the mechanism from
+  `scripts/explore-control.sh <id>` (the probe drives each harness's own control
+  path, interrupts a real turn, and judges on the FILESYSTEM: goose and copilot
+  both report a normal `end_turn` after a genuine cancellation, so the harness's
+  own stop reason proves nothing). Then add the `oh_control_enforce <id>` phase
+  to `scripts/e2e-control.sh` — a per-*feature* live suite (`just live-control`),
+  deliberately outside the per-harness scripts because each phase drives a
+  multi-step turn and then waits out a 15s freeze window. Update the control
+  matrix in `README.md`. A mechanism needing a sidecar server also declares
+  `server` ([`ServerSpec`]); the generic pool in `io::server_pool` keys it on
+  (harness id, resolved `key_env` values, launch overrides) — per-turn and
+  per-thread settings must NOT widen that key — and holds membership as a
+  **lease naming a live pid, never a counter**, because a counter leaks a
+  permanently-live server the first time a dispatch is SIGKILLed.
 - Give the harness its `global_hook` (the user-global hook location, for `sync
   --global` / `install` at `Scope::Global`) and its `gate_deny` (how it expresses
   a pre-tool deny when it runs `oneharness gate <id>`). Both are registry data

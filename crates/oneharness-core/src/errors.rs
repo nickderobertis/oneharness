@@ -308,6 +308,9 @@ pub enum OneharnessError {
     #[error("--control needs a unix domain socket, which this platform does not provide")]
     ControlPlatform,
 
+    #[error("--control cannot be combined with --schema: the structured-output retry loop re-prompts, which would need a second turn on the control channel's open stdin")]
+    ControlSchema,
+
     #[error("harness `{id}` needs output format `{required}` for --control, but `{selected}` was selected; drop the explicit --output-format")]
     ControlOutputFormat {
         id: String,

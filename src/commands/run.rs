@@ -290,7 +290,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // a platform with unix sockets, and — for a stdin-borne mechanism — the
     // message-stream output format the CLI requires. All loud usage errors: a
     // control lever that silently is not there is worse than none.
-    let control_shape = validate_control(args, &specs, explicit_format)?;
+    let control_shape = validate_control(args, &specs, explicit_format, schema.is_some())?;
     // Open the socket before anything spawns, so a supervisor that races the
     // dispatch finds an address rather than a gap. `--print-command` executes
     // nothing, so it opens nothing.
@@ -712,10 +712,8 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         streamed_history = streamed.history;
         (streamed.results, streamed.fallback)
     } else if let Some(input) = controlled.as_ref().filter(|_| !jobs.is_empty()) {
-        // Structured-output retries are not wired into the controlled path: a
-        // re-prompt would need a second turn on the same open stdin, and
-        // `--schema` with `--control` has no proven mechanism yet. One turn, one
-        // capture.
+        // One turn, one capture: `--schema` (the only thing that re-runs a job)
+        // is refused alongside `--control` up front.
         let capture = runner::run_job_streaming_controlled(&jobs[0], Some(input), |_| {
             runner::StreamStep::Continue
         });
@@ -1794,12 +1792,19 @@ fn validate_control(
     args: &RunArgs,
     specs: &[&'static HarnessSpec],
     explicit_format: Option<OutputFormat>,
+    schema: bool,
 ) -> Result<Option<ControlShape>, OneharnessError> {
     if !args.control {
         return Ok(None);
     }
     if args.session.is_none() {
         return Err(OneharnessError::ControlNeedsSession);
+    }
+    // The validate/retry loop re-prompts, which is a second turn — and the
+    // control channel owns the one open stdin. Refuse rather than silently
+    // running with retries disabled.
+    if schema {
+        return Err(OneharnessError::ControlSchema);
     }
     if specs.len() != 1 {
         return Err(OneharnessError::ControlSingleHarness {

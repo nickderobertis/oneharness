@@ -18647,3 +18647,127 @@ fn a_run_without_control_opens_no_socket_and_keeps_its_argv() {
     let _ = std::fs::remove_dir_all(&store);
     let _ = std::fs::remove_dir_all(&cwd);
 }
+
+#[cfg(unix)]
+#[test]
+fn control_works_alongside_streaming_so_a_supervisor_can_watch_and_interrupt() {
+    // The supervisor use case: read normalized events as they arrive and cut the
+    // turn short on what you see. Streaming and control share one open stdin, so
+    // this pins that they compose.
+    let store = control_store_dir("stream");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("stream-cwd");
+    let turn_log = store.join("turn.log");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_TURN_LOG", turn_log.display().to_string())
+        .env("MOCK_TURN_HOLD", "1")
+        .env(
+            "MOCK_STDOUT",
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"step"}}]},"session_id":"sess-stream"}"#,
+        )
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--stream",
+            "--session",
+            "streamed",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd.display().to_string(),
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("claude-code"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the streamed controlled run");
+
+    let socket = store.join("control").join("streamed.sock");
+    wait_until("the control socket to appear", || socket.exists());
+    wait_until("the turn to start", || {
+        std::fs::read_to_string(&turn_log)
+            .map(|log| log.contains("keep working"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "streamed",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd.display().to_string(),
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stdout);
+    // The incremental event envelope arrived before the closing report.
+    let mut envelopes = text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<RunStreamEnvelope>(line).ok());
+    assert!(
+        matches!(envelopes.next(), Some(RunStreamEnvelope::Event { .. })),
+        "expected a streamed event first:\n{text}"
+    );
+    let report = match envelopes.next_back() {
+        Some(RunStreamEnvelope::Result { report }) => report,
+        other => panic!("expected a closing result envelope, got {other:?}\n{text}"),
+    };
+    let control = report.control.expect("streamed run should report control");
+    assert_eq!(control.mechanism, "claude-control-request");
+    assert_eq!(control.interrupts.len(), 1);
+    assert!(control.interrupts[0].ok);
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn control_with_a_schema_is_a_usage_error() {
+    // The structured-output loop re-prompts, which is a second turn; the control
+    // channel owns the one open stdin. Refused up front rather than silently
+    // running with retries disabled.
+    let store = control_store_dir("schema");
+    let schema = store.join("schema.json");
+    std::fs::write(&schema, r#"{"type":"object"}"#).unwrap();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "sch",
+            "--session-dir",
+            &store.display().to_string(),
+            "--schema",
+            &schema.display().to_string(),
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--control cannot be combined with --schema"),
+        "stderr:\n{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}

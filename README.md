@@ -1046,6 +1046,104 @@ This is the substrate a multi-turn driver (e.g. a simulated-user / skill-testing
 framework) builds on: thread one handle, get faithful state, read `events` for what
 the agent *did*.
 
+### Turn control (interrupt a running turn)
+
+A dispatched turn can run for many minutes. Without a control channel the only
+way to redirect one that has gone the wrong way is to kill the dispatch — which
+throws away the whole turn *and* its session. `--control` gives a supervisor a
+lever that keeps the session:
+
+```bash
+# The dispatch. Opens <session-dir>/control/triage.sock for the run's lifetime.
+oneharness run --harness claude-code --control --session triage \
+  --prompt "Refactor the parser." &
+
+# A SEPARATE process, whenever the supervisor decides to redirect it.
+oneharness interrupt --session triage
+# {"v":1,"ok":true,"mechanism":"claude-control-request"}
+
+# The turn aborted, the session survived: the next turn continues with full context.
+oneharness run --harness claude-code --session triage --prompt "Stop there — do X instead."
+```
+
+`interrupt` being a separate process is the whole point, and is why the channel
+is a socket rather than a flag. The protocol is one newline-terminated JSON
+request per connection, one response, connection closed:
+
+```jsonc
+→ {"v":1,"verb":"interrupt"}
+← {"v":1,"ok":true,"mechanism":"<shape-id>"}
+← {"v":1,"ok":false,"error":"<msg>","reason":"unsupported"|"no_active_turn"|"not_running"}
+```
+
+`interrupt` is the only verb; `v` is what leaves room to add one later (some
+harnesses can also *steer* a turn without ending it, which is deliberately out of
+scope). The three refusal reasons are distinct because a supervisor reacts
+differently to each: `unsupported` is permanent for the harness, `not_running`
+means the dispatch is gone, `no_active_turn` means the run is alive but between
+turns. `interrupt` exits 0 when the request was served and 1 when it was refused.
+
+Requirements, all loud usage errors before anything spawns — a control lever that
+silently is not there is worse than none:
+
+- **`--session <NAME>` is required.** The socket is addressed by the caller-owned
+  handle; oneharness never infers one, because a run nobody can name is a run
+  nobody can interrupt.
+- **Exactly one harness**, which must declare a control mechanism (`control` in
+  `oneharness list`).
+- **Unix only** (the socket has no Windows equivalent in `std`).
+
+The socket is created mode `0600` under a `0700` directory and removed when the
+run exits. A dispatch killed with `SIGKILL` cannot run its cleanup, so a stale
+socket file can survive; a client then gets `ECONNREFUSED` and reports
+`not_running`, the same answer as a missing file. The run report gains a
+`control` block recording the socket, the mechanism, and every request served, so
+a consumer can tell an interrupted turn from one that simply ended.
+
+**Without `--control` nothing changes**: no socket, no extra process, and a
+byte-identical argv.
+
+#### Control support matrix
+
+Every entry is sourced from a real interrupt against the real CLI —
+`scripts/explore-control.sh <id>` stands up each harness's control path, drives a
+multi-step turn, interrupts it, and reports whether work actually *stopped*
+(measured on the filesystem, because several harnesses report a normal
+`end_turn` after a genuine cancellation). `LIVE` means an interrupt through
+**oneharness** was proven end to end by `scripts/e2e-control.sh`; a mechanism
+that is only probe-verified is **not** declared in the registry, so
+`oneharness interrupt` can never report success on a path nobody exercised.
+
+| Harness | `control` | Mechanism | Status |
+| --- | --- | --- | --- |
+| Claude Code | `claude-control-request` | Control frame on the run's own stdin (`-p --input-format stream-json`); no sidecar server | **LIVE** through oneharness — `oh_control_enforce claude-code` |
+| Codex | — | `turn/interrupt` over `codex app-server` JSON-RPC stdio (`thread/start` → `turn/start` → `turn/interrupt {threadId,turnId}`), keyed on `CODEX_HOME` | PROBE-VERIFIED (work froze); not wired — needs the app-server execution model |
+| Copilot | — | ACP `session/cancel` **notification** over `copilot --acp` | PROBE-VERIFIED (work froze); not wired — needs an ACP execution model |
+| Goose | — | ACP `session/cancel` **notification** over `goose acp` | UNVERIFIED — the probe host had no `GOOSE_PROVIDER`/credentials, so `session/new` failed |
+| OpenCode | — | `POST /api/session/{id}/interrupt` against `opencode serve` | UNVERIFIED — the probe reached the server but the turn never produced work |
+| Crush | — | `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against `crush server` | UNVERIFIED — the probe created a workspace but its session route 404'd |
+| Cursor | — | none | cursor-agent exposes no headless control surface |
+| Qwen | — | none | qwen exposes no headless control surface |
+
+Notes worth keeping, all from the probe rather than documentation:
+
+- Claude Code **silently drops** a plain user message written mid-turn, so the
+  `control_request` frame is the only mechanism that works.
+- The ACP client **must answer `session/request_permission`** — goose and copilot
+  block indefinitely and never begin work otherwise, which is easy to mistake for
+  a slow or broken harness — and cancel must be sent as a **notification** (with
+  an `id`, goose answers `-32601 Method not found`).
+- Crush's `client_id` is a self-assigned UUID that travels in the request **body**
+  when creating a workspace but as a **query parameter** on every other route; a
+  mismatch yields a bare `{"message":"invalid client_id"}`. Its prompt POST
+  returns `202` immediately, so control is fire-and-forget against the event
+  stream rather than request-scoped, and its server answers
+  `Transfer-Encoding: chunked` (an HTTP client that skips de-chunking reports a
+  JSON decode error where the harness in fact answered correctly).
+- Codex must **not** be driven through `codex app-server daemon`: it requires a
+  managed standalone install this project does not use and self-updates from a
+  fixed path, which conflicts with pinning an exact version.
+
 ### Fallback mode (first that runs wins)
 
 By default `run` drives every selected harness in **parallel** and reports them

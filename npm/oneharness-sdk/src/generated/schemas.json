@@ -488,7 +488,7 @@
             ]
           },
           "failure_kind_source": {
-            "description": "Where `failure_kind` was read (`stderr`/`stdout`); `null` when absent.",
+            "description": "Where `failure_kind` was read (`stderr`/`stdout`, or `config:env_from`\nfor a candidate refused before spawning); `null` when absent.",
             "type": [
               "string",
               "null"
@@ -700,7 +700,7 @@
             "const": "spawn-error"
           },
           {
-            "description": "The binary was not found, so the harness was not run.",
+            "description": "The harness was not run. Either the binary was not found (`available:\nfalse`), or it was found but the identity the selection points at is not\nprovisioned — an `env_from` home directory that is not on disk, reported\nas `available: true` with `failure_kind: \"auth\"`.",
             "type": "string",
             "const": "skipped"
           },
@@ -1322,7 +1322,7 @@
             ]
           },
           "failure_kind_source": {
-            "description": "Where `failure_kind` was read (`stderr`/`stdout`); `null` when absent.",
+            "description": "Where `failure_kind` was read (`stderr`/`stdout`, or `config:env_from`\nfor a candidate refused before spawning); `null` when absent.",
             "type": [
               "string",
               "null"
@@ -1534,7 +1534,7 @@
             "const": "spawn-error"
           },
           {
-            "description": "The binary was not found, so the harness was not run.",
+            "description": "The harness was not run. Either the binary was not found (`available:\nfalse`), or it was found but the identity the selection points at is not\nprovisioned — an `env_from` home directory that is not on disk, reported\nas `available: true` with `failure_kind: \"auth\"`.",
             "type": "string",
             "const": "skipped"
           },
@@ -3325,7 +3325,7 @@
             "const": "spawn-error"
           },
           {
-            "description": "The binary was not found, so the harness was not run.",
+            "description": "The harness was not run. Either the binary was not found (`available:\nfalse`), or it was found but the identity the selection points at is not\nprovisioned — an `env_from` home directory that is not on disk, reported\nas `available: true` with `failure_kind: \"auth\"`.",
             "type": "string",
             "const": "skipped"
           },
@@ -5818,7 +5818,7 @@
             "const": "spawn-error"
           },
           {
-            "description": "The binary was not found, so the harness was not run.",
+            "description": "The harness was not run. Either the binary was not found (`available:\nfalse`), or it was found but the identity the selection points at is not\nprovisioned — an `env_from` home directory that is not on disk, reported\nas `available: true` with `failure_kind: \"auth\"`.",
             "type": "string",
             "const": "skipped"
           },
@@ -8458,7 +8458,7 @@
             "const": "spawn-error"
           },
           {
-            "description": "The binary was not found, so the harness was not run.",
+            "description": "The harness was not run. Either the binary was not found (`available:\nfalse`), or it was found but the identity the selection points at is not\nprovisioned — an `env_from` home directory that is not on disk, reported\nas `available: true` with `failure_kind: \"auth\"`.",
             "type": "string",
             "const": "skipped"
           },
@@ -10957,7 +10957,7 @@
             "const": "spawn-error"
           },
           {
-            "description": "The binary was not found, so the harness was not run.",
+            "description": "The harness was not run. Either the binary was not found (`available:\nfalse`), or it was found but the identity the selection points at is not\nprovisioned — an `env_from` home directory that is not on disk, reported\nas `available: true` with `failure_kind: \"auth\"`.",
             "type": "string",
             "const": "skipped"
           },

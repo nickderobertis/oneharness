@@ -254,7 +254,8 @@ export interface RunResult {
    */
   failure_kind: FailureKind | null;
   /**
-   * Where `failure_kind` was read (`stderr`/`stdout`); `null` when absent.
+   * Where `failure_kind` was read (`stderr`/`stdout`, or `config:env_from`
+   * for a candidate refused before spawning); `null` when absent.
    */
   failure_kind_source: string | null;
   /**

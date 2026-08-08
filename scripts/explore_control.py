@@ -267,6 +267,11 @@ def path_segment(value: str, what: str) -> str:
         c.isalnum() or c in "-_." for c in value
     ):
         raise ValueError(f"{what} `{value}` is not a usable path segment")
+    # A segment of nothing but dots (`.`, `..`) carries no `/` and so clears the
+    # character check above, yet a server still resolves it as a traversal —
+    # which is the retargeting this function exists to refuse.
+    if not value.strip("."):
+        raise ValueError(f"{what} `{value}` traverses rather than names a path segment")
     return value
 
 

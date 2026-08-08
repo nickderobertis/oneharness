@@ -4174,21 +4174,48 @@ fn a_cancelled_fallback_candidate_stops_the_chain() {
     let _ = std::fs::remove_file(ticks);
 }
 
+/// A "harness" that ignores SIGTERM and stays alive, so oneharness's teardown
+/// takes its full TERM→KILL grace rather than finishing in a few milliseconds.
+/// `$OH_READY_FILE` gets a byte as soon as it is running. The inner `sleep` dies
+/// with the process group; the loop is what keeps the script itself alive
+/// through the grace.
+#[cfg(unix)]
+fn term_ignoring_harness(label: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = std::env::temp_dir().join(format!(
+        "oneharness-{label}-{}-{:?}.sh",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::write(
+        &path,
+        "#!/bin/sh\ntrap '' TERM\nprintf x >> \"$OH_READY_FILE\"\ni=0\nwhile [ $i -lt 600 ]; do sleep 0.05; i=$((i + 1)); done\n",
+    )
+    .expect("failed to write the fixture harness");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("failed to make the fixture harness executable");
+    path
+}
+
 #[cfg(unix)]
 #[test]
 fn a_second_host_signal_stops_waiting_for_teardown() {
     // Teardown is bounded but not instant, and an operator pressing Ctrl-C twice
     // is asking to stop waiting for it: the second signal exits 130 straight from
     // the handler, without the report the first one would have produced.
-    let ticks = native_tick_file("cancel-signal-twice");
-    let _ = std::fs::remove_file(&ticks);
+    //
+    // The harness ignores TERM on purpose. That is what makes the window this
+    // test aims at deterministic: oneharness must spend its whole TERM→KILL
+    // grace on the tree, so a follow-up signal reliably lands while the first
+    // one's teardown is still in progress.
+    let harness = term_ignoring_harness("cancel-signal-twice");
+    let ready = native_tick_file("cancel-signal-twice");
+    let _ = std::fs::remove_file(&ready);
 
     let child = Command::new(oneharness_bin())
         .env("ONEHARNESS_NO_CONFIG", "1")
-        // Short-lived: this run is abandoned, so the descendant is left to exit
-        // on its own rather than being reaped by a teardown that never happens.
-        .env("MOCK_NATIVE_GRANDCHILD_MS", "3000")
-        .env("MOCK_TICK_FILE", ticks.display().to_string())
+        .env("OH_READY_FILE", ready.display().to_string())
         .args([
             "run",
             "--harness",
@@ -4196,7 +4223,7 @@ fn a_second_host_signal_stops_waiting_for_teardown() {
             "--prompt",
             "cancel me twice",
             "--bin",
-            &bin_override("claude-code"),
+            &format!("claude-code={}", harness.display()),
             "--timeout",
             "60",
             "--compact",
@@ -4207,23 +4234,30 @@ fn a_second_host_signal_stops_waiting_for_teardown() {
         .expect("failed to spawn oneharness");
 
     let alive_deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    while std::fs::metadata(&ticks).map(|m| m.len()).unwrap_or(0) == 0 {
+    while std::fs::metadata(&ready).map(|m| m.len()).unwrap_or(0) == 0 {
         assert!(
             std::time::Instant::now() < alive_deadline,
-            "the silent harness never started its descendant"
+            "the fixture harness never started"
         );
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
-    // Back to back, so both land while the run is still in flight — the handler
-    // counts them, and the teardown the first one asked for never gets to finish.
+    // Signal across the teardown window rather than exactly twice: a standard
+    // signal does not queue, so two sends the process has not been scheduled to
+    // handle yet collapse into a single delivery. Repeating guarantees a second
+    // *delivery* once the first handler has returned.
     let pid = child.id().to_string();
-    for _ in 0..2 {
-        assert!(Command::new("kill")
+    let signal = || {
+        Command::new("kill")
             .args(["-TERM", &pid])
             .status()
             .expect("failed to signal oneharness")
-            .success());
+            .success()
+    };
+    assert!(signal(), "kill -TERM did not reach oneharness");
+    for _ in 0..40 {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        signal();
     }
 
     let output = child.wait_with_output().expect("failed to reap oneharness");
@@ -4233,7 +4267,8 @@ fn a_second_host_signal_stops_waiting_for_teardown() {
         "a second signal must exit immediately: {:?}",
         output.status
     );
-    let _ = std::fs::remove_file(ticks);
+    let _ = std::fs::remove_file(ready);
+    let _ = std::fs::remove_file(harness);
 }
 
 #[cfg(unix)]

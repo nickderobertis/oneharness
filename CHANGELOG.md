@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.8](https://github.com/nickderobertis/oneharness/compare/v0.6.7...v0.6.8) - 2026-08-08
+
+### Added
+
+- stream config key and absent-home auth fallthrough ([#1220](https://github.com/nickderobertis/oneharness/pull/1220))
+
 ## [0.6.7](https://github.com/nickderobertis/oneharness/compare/v0.6.6...v0.6.7) - 2026-08-05
 
 ### Fixed

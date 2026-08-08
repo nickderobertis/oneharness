@@ -70,6 +70,15 @@ pub struct FileConfig {
     pub timeout: Option<u64>,
     /// Output format override (like `--output-format`).
     pub output_format: Option<OutputFormat>,
+    /// Publish normalized events to stdout as they occur (like `--stream`; off
+    /// by default). Exactly the flag's semantics, including its single-outcome
+    /// validation — a config that turns streaming on for a selection it cannot
+    /// stream (parallel multi-harness, a batch, `--schema`) is the same loud
+    /// usage error the flag raises, never a silent downgrade. Most naturally set
+    /// in the config of a supervising consumer that always reads events, so a
+    /// wrapper no longer has to inject the flag per invocation. The CLI's
+    /// `--stream` / `--no-stream` always win.
+    pub stream: Option<bool>,
     /// Path to a JSON Schema file constraining each harness's final answer
     /// (like `--schema`). Resolved relative to the working directory. Turns the
     /// run into a structured-output run: the schema is delivered to the harness
@@ -481,6 +490,7 @@ pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Option<FileConfi
         mode: env_mode(&read)?,
         timeout: env_num(&read, "ONEHARNESS_TIMEOUT", "a non-negative integer")?,
         output_format: env_output_format(&read)?,
+        stream: env_bool(&read, "ONEHARNESS_STREAM")?,
         schema_file: read("ONEHARNESS_SCHEMA_FILE"),
         schema_max_retries: env_num(
             &read,
@@ -645,6 +655,7 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
         mode: over.mode.or(base.mode),
         timeout: over.timeout.or(base.timeout),
         output_format: over.output_format.or(base.output_format),
+        stream: over.stream.or(base.stream),
         schema_file: over.schema_file.or(base.schema_file),
         schema_max_retries: over.schema_max_retries.or(base.schema_max_retries),
         max_parallel: over.max_parallel.or(base.max_parallel),
@@ -909,6 +920,9 @@ pub struct ConfigReport {
     pub mode: Field<PermissionMode>,
     pub timeout: Field<u64>,
     pub output_format: Field<OutputFormat>,
+    /// Whether config asks every `run` to stream (`--stream` / ONEHARNESS_STREAM);
+    /// defaults to false, the built-in buffered report.
+    pub stream: Field<bool>,
     pub schema_file: Field<String>,
     pub schema_max_retries: Field<u32>,
     pub max_parallel: Field<usize>,
@@ -1132,6 +1146,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         mode: pick(layers, |c| c.mode),
         timeout: pick(layers, |c| c.timeout).or_default(120),
         output_format: pick(layers, |c| c.output_format),
+        stream: pick(layers, |c| c.stream).or_default(false),
         schema_file: pick(layers, |c| c.schema_file.clone()),
         schema_max_retries: pick(layers, |c| c.schema_max_retries),
         max_parallel: pick(layers, |c| c.max_parallel),
@@ -1871,6 +1886,25 @@ variant = true
         let report = explain(&[]);
         assert_eq!(report.history, Field::default_value(false));
         assert_eq!(report.history_dir, Field::unset());
+    }
+
+    #[test]
+    fn stream_layers_from_file_and_environment_with_a_default() {
+        // `stream` is an ordinary layered boolean: a project value beats the user
+        // one, the environment beats both, and it defaults to off.
+        let merged = merge(parsed("stream = false"), parsed("stream = true"));
+        assert_eq!(merged.stream, Some(true));
+
+        let report = explain(&layers("stream = true", "stream = false"));
+        assert_eq!(report.stream.value, Some(false));
+        assert_eq!(report.stream.source.as_deref(), Some("/project.toml"));
+        assert_eq!(explain(&[]).stream, Field::default_value(false));
+
+        let c = from_env(env_get(&[("ONEHARNESS_STREAM", "1")]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(c.stream, Some(true));
+        assert!(from_env(env_get(&[("ONEHARNESS_STREAM", "yes")])).is_err());
     }
 
     #[test]

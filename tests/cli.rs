@@ -78,6 +78,7 @@ const ENV_OVERRIDE_VARS: &[&str] = &[
     "ONEHARNESS_HISTORY",
     "ONEHARNESS_HISTORY_DIR",
     "ONEHARNESS_HISTORY_LABELS",
+    "ONEHARNESS_STREAM",
 ];
 
 /// Run with config loading enabled but still hermetic: the user-level config is
@@ -3055,6 +3056,143 @@ fn stream_buffers_partial_provider_records_until_newline() {
         }
         RunStreamEnvelope::Event { .. } => panic!("missing terminal report"),
     }
+}
+
+#[test]
+fn stream_config_key_streams_and_an_explicit_flag_wins() {
+    // `stream = true` in config is exactly `--stream`, so a consumer that always
+    // reads events declares it once instead of injecting the flag per invocation.
+    // `--no-stream` takes it back for a single call.
+    let bin = mock_bin().display().to_string().replace('\\', "\\\\");
+    let fx = ConfigFixture::new(
+        "stream-config",
+        &format!(
+            r#"
+harnesses = ["opencode"]
+stream = true
+[harness.opencode]
+bin = "{bin}"
+"#
+        ),
+        "",
+    );
+    let stdout = concat!(
+        r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"echo hi"},"output":"hi"}}}"#,
+        "\n",
+        r#"{"type":"text","part":{"type":"text","text":"done"}}"#,
+        "\n",
+    );
+    let streamed = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd()],
+        &[("MOCK_STDOUT", stdout)],
+        &fx.user_config(),
+    );
+    assert!(
+        streamed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&streamed.stderr)
+    );
+    let text = String::from_utf8_lossy(&streamed.stdout);
+    let envelopes: Vec<RunStreamEnvelope> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("each stream line matches the contract"))
+        .collect();
+    assert_eq!(envelopes.len(), 2, "lines: {text}");
+    match &envelopes[0] {
+        RunStreamEnvelope::Event { event } => assert_eq!(event.name.as_deref(), Some("bash")),
+        RunStreamEnvelope::Result { .. } => panic!("config `stream` did not publish events"),
+    }
+    match &envelopes[1] {
+        RunStreamEnvelope::Result { report } => {
+            assert_eq!(report.results[0].text.as_deref(), Some("done"));
+        }
+        RunStreamEnvelope::Event { .. } => panic!("missing terminal report"),
+    }
+
+    // The explicit flag wins over the config value.
+    let buffered = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--no-stream"],
+        &[("MOCK_STDOUT", stdout)],
+        &fx.user_config(),
+    );
+    assert!(
+        buffered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&buffered.stderr)
+    );
+    let report = json_stdout(&buffered);
+    assert_eq!(report["results"][0]["text"], "done");
+    assert!(
+        !String::from_utf8_lossy(&buffered.stdout).contains("\"type\":\"event\""),
+        "--no-stream still streamed"
+    );
+
+    // The environment layer is the same value by another name.
+    let from_env = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--no-stream"],
+        &[("MOCK_STDOUT", stdout), ("ONEHARNESS_STREAM", "true")],
+        &fx.user_config(),
+    );
+    assert!(
+        !String::from_utf8_lossy(&from_env.stdout).contains("\"type\":\"event\""),
+        "--no-stream lost to ONEHARNESS_STREAM"
+    );
+    let config = json_stdout(&run_with_config(
+        &["config", "--cwd", &fx.cwd(), "--compact"],
+        &[("ONEHARNESS_STREAM", "true")],
+        &fx.user_config(),
+    ));
+    assert_eq!(config["stream"]["value"], true);
+    assert_eq!(config["stream"]["source"], "environment");
+}
+
+#[test]
+fn stream_config_key_refuses_a_selection_it_cannot_stream() {
+    // A config value is the flag, validation and all: a parallel multi-harness
+    // selection is the same loud usage error `--stream` raises, never a silent
+    // downgrade to a buffered report.
+    let bin = mock_bin().display().to_string().replace('\\', "\\\\");
+    let fx = ConfigFixture::new(
+        "stream-config-refused",
+        &format!(
+            r#"
+harnesses = ["opencode", "codex"]
+stream = true
+[harness.opencode]
+bin = "{bin}"
+[harness.codex]
+bin = "{bin}"
+"#
+        ),
+        "",
+    );
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd()],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--stream runs a single harness"),
+        "{stderr}"
+    );
+    // ...and `--no-stream` is how one call opts out of the inherited config.
+    let allowed = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--no-stream"],
+        &[("MOCK_STDOUT", "hello")],
+        &fx.user_config(),
+    );
+    assert!(
+        allowed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+    assert_eq!(
+        json_stdout(&allowed)["results"].as_array().unwrap().len(),
+        2
+    );
 }
 
 #[test]

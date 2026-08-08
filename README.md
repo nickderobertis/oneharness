@@ -498,6 +498,7 @@ bypass = true                   # legacy --bypass toggle (opt-in; default false)
 mode = "default"                # --mode; beats `bypass` (default: "default")
 timeout = 120                   # --timeout, in seconds
 output_format = "json"          # --output-format
+stream = false                  # --stream / --no-stream (incremental events)
 schema_file = "person.json"     # --schema (structured output; relative to project)
 schema_max_retries = 2          # --schema-max-retries (default 2)
 max_parallel = 4                # --max-parallel
@@ -887,6 +888,12 @@ truncated final JSONL record is ignored rather than invalidating earlier ones):
   one selected harness — several would interleave their streams on one stdout —
   but a whole [`--run-mode fallback`](#fallback-mode-first-that-runs-wins) chain
   is allowed, because only the candidate that runs ever publishes events.
+  Streaming is also settable declaratively as `stream = true` in config (or
+  `ONEHARNESS_STREAM`), so a consumer that always reads events does not have to
+  inject the flag per invocation; `--stream` / `--no-stream` beat it either way.
+  A config that asks for streaming on a selection that cannot stream raises the
+  same loud usage error the flag does — turn it off for that call with
+  `--no-stream`.
 - `failure_kind` / `failure_kind_source` — on a non-zero run, a coarse reason
   (`auth`, `rate_limit`, `model_not_found`, `quota`) so a caller can tell a
   retryable condition from a broken request. This is **distinct from `status`**,

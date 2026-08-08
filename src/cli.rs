@@ -609,9 +609,15 @@ pub struct RunArgs {
     /// interleave). Under --run-mode fallback a whole candidate chain IS allowed,
     /// over harnesses and over models alike: candidates run one at a time, only
     /// the one that runs publishes, and the chain selects the same candidate a
-    /// buffered run would.
-    #[arg(long)]
+    /// buffered run would. Also settable via `stream` in config or
+    /// ONEHARNESS_STREAM — most naturally in the config of a consumer that always
+    /// reads events, so no wrapper has to inject the flag per invocation.
+    #[arg(long, conflicts_with = "no_stream")]
     pub stream: bool,
+
+    /// Do NOT stream this run, overriding `stream` in config or ONEHARNESS_STREAM.
+    #[arg(long)]
+    pub no_stream: bool,
 
     /// Mock/spy the selected harnesses' tool calls FOR THIS RUN ONLY: a JSON
     /// ruleset (same format as `oneharness mock --rules`) whose matching rules

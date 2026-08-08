@@ -230,6 +230,10 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // only one harness will run (the command must be valid for the whole set).
     let run_mode = args.run_mode.or(cfg.run_mode).unwrap_or(RunMode::Parallel);
     let fallback_mode = run_mode == RunMode::Fallback;
+    // Streaming is a CLI flag with a config/env layer, resolved once here so every
+    // validator, the format selection, and the driver choice read the same
+    // effective value.
+    let stream = resolve_stream(args, cfg);
     if fallback_mode {
         validate_fallback(batch_run, args)?;
     }
@@ -238,7 +242,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // errors). It is *compatible* with fallback: the model list is exactly the
     // fallback chain there.
     if multi_model {
-        validate_multi_model(batch_run, fallback_mode, args)?;
+        validate_multi_model(batch_run, fallback_mode, stream, args)?;
     }
     // Selection already preserves explicit caller/config order (and uses registry
     // order for `--all`). Fallback treats that sequence as its priority chain;
@@ -275,13 +279,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // selects the anchor harness's preferred session-bearing format.
     let explicit_format = args.output_format.or(cfg.output_format);
     validate_session_output_format(session_anchor, explicit_format)?;
-    validate_stream(
-        args.stream,
-        &specs,
-        batch_run,
-        schema.is_some(),
-        fallback_mode,
-    )?;
+    validate_stream(stream, &specs, batch_run, schema.is_some(), fallback_mode)?;
     // Resolve the approval mode (CLI --mode > --bypass/--no-bypass > config
     // `mode` > config `bypass` > the built-in default, which is `default`). A
     // mode a selected harness *cannot express* is refused here (a command can't
@@ -443,7 +441,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         // when a named session is in play). Otherwise events/streaming selects the
         // harness's transcript-bearing format; absent that, the named-session
         // anchor selects its id-bearing format. Ordinary runs keep the default.
-        let want_events = args.events || args.stream || history_writer.is_some();
+        let want_events = args.events || stream || history_writer.is_some();
         // Timing is a best-effort normalized signal, like usage. Harnesses that
         // expose a provider/tool boundary trace select its required format;
         // others still write history with the timing fields absent.
@@ -617,7 +615,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
 
     // Schedule and run the jobs. `--print-command` never executes, so it always
     // takes the last branch, which emits the planned rows.
-    let stream_run = args.stream && !args.print_command;
+    let stream_run = stream && !args.print_command;
     let mut forked = false;
     // Empty off the streaming path, where history is written once at the end.
     let mut streamed_history: Vec<StreamedHistory> = Vec::new();
@@ -1655,6 +1653,25 @@ fn emit_stream_result(report: &RunReport) -> Result<(), OneharnessError> {
 /// harness's models (the multi-model half is refused in [`validate_multi_model`],
 /// which allows it here for the same reason): only the candidate that runs ever
 /// publishes (see [`stream_plan`]), so there is nothing to interleave.
+/// Whether this run streams: `--stream` / `--no-stream` (clap-exclusive, so at
+/// most one is set) beat the layered `stream` config value, which is itself off
+/// by default.
+///
+/// The flag wins in both directions on purpose. A consumer that always reads
+/// events declares `stream = true` once instead of injecting the flag per
+/// invocation, and a single call that needs the buffered report back — a
+/// one-off `--schema` run, a multi-harness parallel sweep — says `--no-stream`
+/// rather than having to unset the config it inherited.
+fn resolve_stream(args: &RunArgs, cfg: &oneharness_core::domain::config::FileConfig) -> bool {
+    if args.stream {
+        true
+    } else if args.no_stream {
+        false
+    } else {
+        cfg.stream.unwrap_or(false)
+    }
+}
+
 fn validate_stream(
     stream: bool,
     specs: &[&'static HarnessSpec],
@@ -1835,6 +1852,7 @@ fn validate_fallback(batch_run: bool, args: &RunArgs) -> Result<(), OneharnessEr
 fn validate_multi_model(
     batch_run: bool,
     fallback_mode: bool,
+    stream: bool,
     args: &RunArgs,
 ) -> Result<(), OneharnessError> {
     let conflict = |with, why| Err(OneharnessError::MultiModelConflict { with, why });
@@ -1856,7 +1874,7 @@ fn validate_multi_model(
             "a named session is tied to one model, so it cannot fan out over several",
         );
     }
-    if args.stream && !fallback_mode {
+    if stream && !fallback_mode {
         return conflict(
             "--stream",
             "streaming emits one incremental output; a parallel model fan-out produces several results at once. Use --run-mode fallback to stream the first (harness, model) pair that runs",

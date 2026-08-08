@@ -248,23 +248,21 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
         let submit_error = Arc::clone(&submit_error);
         std::thread::spawn(move || {
             let request = http::prompt_request(turn.shape, &turn.address, &prompt);
-            match turn.client.send(&request) {
-                Ok(response) if response.ok() => {}
-                Ok(response) => {
-                    *submit_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!(
-                        "the control server refused the prompt ({}): {}",
-                        response.status,
-                        response.body.trim()
-                    ));
-                    finished.store(true, Ordering::SeqCst);
-                    return;
-                }
-                Err(err) => {
-                    *submit_error.lock().unwrap_or_else(|e| e.into_inner()) =
-                        Some(format!("could not submit the prompt: {err}"));
-                    finished.store(true, Ordering::SeqCst);
-                    return;
-                }
+            // A prompt the server would not take means there is no turn to
+            // follow, so the reader is released rather than left waiting out the
+            // whole timeout for events that can never arrive.
+            let refusal = match turn.client.send(&request) {
+                Ok(response) if response.ok() => None,
+                Ok(response) => Some(format!(
+                    "the control server refused the prompt ({}): {}",
+                    response.status,
+                    response.body.trim()
+                )),
+                Err(err) => Some(format!("could not submit the prompt: {err}")),
+            };
+            if let Some(refusal) = refusal {
+                *submit_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(refusal);
+                finished.store(true, Ordering::SeqCst);
             }
         })
     };

@@ -2621,16 +2621,46 @@ mod tests {
                 .collect();
             assert_eq!(argv, expected, "`{id}` control launch argv");
         }
+        // The other kind of turn-driving harness never spawns its CLI at all:
+        // its turn goes to a pooled server, so the launch to pin is the
+        // `ServerSpec` the pool starts, plus how the chosen address reaches it.
+        let servers = [
+            ("opencode", &["serve"][..], &["--port", "{address}"][..]),
+            ("crush", &["server"][..], &["-H", "unix://{address}"][..]),
+        ];
+        for (id, launch, address_args) in servers {
+            let spec = by_id(id).unwrap();
+            let server = spec
+                .server
+                .unwrap_or_else(|| panic!("`{id}` should declare the server its control needs"));
+            assert_eq!(server.launch, launch, "`{id}` server launch");
+            assert_eq!(server.address_args, address_args, "`{id}` address args");
+            // Per-turn settings are negotiated on the wire, so nothing about a
+            // dispatch may key the pool: a widened key starts one heavyweight
+            // server per dispatch instead of sharing one.
+            assert!(
+                server.key_env.is_empty(),
+                "`{id}` keys its pool on {:?}",
+                server.key_env
+            );
+        }
         // A harness whose turn is driven but whose launch is unpinned would ship
-        // a guessed subcommand, so the list above must cover the registry.
+        // a guessed subcommand, so the lists above must cover the registry —
+        // each harness in exactly the one its mechanism calls for.
         for spec in all() {
-            if spec.control.is_some_and(ControlShape::drives_turn) {
-                assert!(
-                    launches.iter().any(|(id, _)| *id == spec.id),
-                    "`{}` drives its own turn but its launch argv is unpinned",
-                    spec.id
-                );
-            }
+            let Some(shape) = spec.control.filter(|shape| shape.drives_turn()) else {
+                continue;
+            };
+            let pinned = if shape.needs_pooled_server() {
+                servers.iter().any(|(id, _, _)| *id == spec.id)
+            } else {
+                launches.iter().any(|(id, _)| *id == spec.id)
+            };
+            assert!(
+                pinned,
+                "`{}` drives its own turn but its launch is unpinned",
+                spec.id
+            );
         }
     }
 

@@ -305,6 +305,9 @@ pub enum OneharnessError {
     )]
     ControlSingleHarness { selected: String },
 
+    #[error("--control drives one live turn, so it cannot be combined with a batch run (more than one prompt)")]
+    ControlBatch,
+
     #[error("--control needs a unix domain socket, which this platform does not provide")]
     ControlPlatform,
 

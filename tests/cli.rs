@@ -19065,3 +19065,56 @@ fn a_second_controlled_run_cannot_steal_a_live_sessions_socket() {
     let _ = std::fs::remove_dir_all(&store);
     let _ = std::fs::remove_dir_all(&cwd);
 }
+
+#[test]
+fn control_with_more_than_one_prompt_is_a_usage_error() {
+    // A batch fans one harness over N prompts, so there is no single live turn
+    // for a supervisor to address.
+    let store = control_store_dir("batch");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "batched",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "one",
+            "--prompt",
+            "two",
+            "--bin",
+            &bin_override("claude-code"),
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--control drives one live turn") && stderr.contains("batch run"),
+        "stderr:\n{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn the_readme_documents_the_control_protocol_version_in_force() {
+    // The frames in the README are what a supervisor copies; a `v` that drifted
+    // from the constant would have them writing frames the run refuses.
+    let readme =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md")).unwrap();
+    let section = readme
+        .split("### Turn control")
+        .nth(1)
+        .expect("README documents turn control");
+    let expected = format!(
+        r#"{{"v":{},"verb":"interrupt"}}"#,
+        oneharness_core::domain::control::PROTOCOL_VERSION
+    );
+    assert!(
+        section.contains(&expected),
+        "README does not show the current control request frame ({expected})"
+    );
+}

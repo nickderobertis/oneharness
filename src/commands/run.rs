@@ -269,6 +269,13 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // the anchor (the first session-capable harness in the chain). On a continue it
     // yields the token to resume with, reusing the harness's verified `--resume`
     // mapping. `None` when the flag was not passed.
+    // `--control` is validated before the session is resolved so its own
+    // vocabulary wins the diagnostic: a supervisor who passed `--control` needs
+    // to be told which control rule they broke, not a session rule that happens
+    // to catch the same shape first.
+    let explicit_format = args.output_format.or(cfg.output_format);
+    let control_shape =
+        validate_control(args, &specs, explicit_format, schema.is_some(), batch_run)?;
     let session_wiring = setup_session(args, &specs, batch_run, fallback_mode, &project_start)?;
     let session_resume: Option<String> = session_wiring
         .as_ref()
@@ -282,15 +289,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // lossy pin before spawning instead of accepting `--session` and silently
     // leaving the store empty. With no explicit format, the plan loop below
     // selects the anchor harness's preferred session-bearing format.
-    let explicit_format = args.output_format.or(cfg.output_format);
     validate_session_output_format(session_anchor, explicit_format)?;
-    // `--control` opens the out-of-band interrupt socket. Everything it needs is
-    // knowable before anything spawns: a caller-owned handle to address it by, a
-    // single live turn to interrupt, a harness that can actually be interrupted,
-    // a platform with unix sockets, and — for a stdin-borne mechanism — the
-    // message-stream output format the CLI requires. All loud usage errors: a
-    // control lever that silently is not there is worse than none.
-    let control_shape = validate_control(args, &specs, explicit_format, schema.is_some())?;
     // Open the socket before anything spawns, so a supervisor that races the
     // dispatch finds an address rather than a gap. `--print-command` executes
     // nothing, so it opens nothing.
@@ -1791,21 +1790,28 @@ fn emit_stream_result(report: &RunReport) -> Result<(), OneharnessError> {
 /// failure this feature must never have is a supervisor being told the lever
 /// exists when it does not. In order: a caller-owned handle to address the run
 /// by (oneharness never infers one — an unaddressable run is the whole reason
-/// `--session` is required), exactly one harness (control drives one live turn;
-/// a fan-out has no single turn to interrupt), a harness that declares a
-/// *proven* control mechanism, a platform with unix sockets, and an explicit
-/// output format compatible with the mechanism.
+/// `--session` is required), one prompt and exactly one harness (control drives
+/// one live turn; a batch or fan-out has no single turn to interrupt), a
+/// harness that declares a *proven* control mechanism, a platform with unix
+/// sockets, and an explicit output format compatible with the mechanism.
 fn validate_control(
     args: &RunArgs,
     specs: &[&'static HarnessSpec],
     explicit_format: Option<OutputFormat>,
     schema: bool,
+    batch_run: bool,
 ) -> Result<Option<ControlShape>, OneharnessError> {
     if !args.control {
         return Ok(None);
     }
     if args.session.is_none() {
         return Err(OneharnessError::ControlNeedsSession);
+    }
+    // A batch fans one harness over N prompts, so there is no single live turn
+    // to address. `--session` refuses a batch too, but say it in the control
+    // vocabulary rather than leaving a supervisor to infer it.
+    if batch_run {
+        return Err(OneharnessError::ControlBatch);
     }
     // The validate/retry loop re-prompts, which is a second turn — and the
     // control channel owns the one open stdin. Refuse rather than silently

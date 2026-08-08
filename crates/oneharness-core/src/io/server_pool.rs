@@ -122,6 +122,7 @@ fn state_dir() -> Option<PathBuf> {
 /// Built only through [`LaunchPlan::new`], so its argv always has a program in
 /// it: a plan that cannot name what to spawn is not a smaller plan, it is not a
 /// plan, and the pool would otherwise index into an empty vector.
+#[derive(Debug)]
 pub struct LaunchPlan {
     /// argv[0] is the harness binary; the rest is `ServerSpec::launch` plus any
     /// caller overrides and address flags. Never empty.

@@ -11,7 +11,7 @@ use crate::commands::{
 use oneharness_core::domain::batch::{self, BatchStrategy};
 use oneharness_core::domain::control::{self, ControlReport, ControlShape};
 use oneharness_core::domain::fallback::{self, RunMode};
-use oneharness_core::domain::harness::{self, BuildCtx, HarnessSpec};
+use oneharness_core::domain::harness::{self, BuildCtx, HarnessSpec, PromptDelivery};
 use oneharness_core::domain::mock::{self, MockDelivery};
 use oneharness_core::domain::mode::{ModeHeadless, PermissionMode};
 use oneharness_core::domain::report::{
@@ -118,7 +118,12 @@ fn plan_large_input(
     // system rides the same stream.
     let use_stdin = li.prompt_stdin && (prompt_large || (li.system_rides_prompt && system_large));
     if use_stdin {
-        plan.prompt_stdin = true;
+        // A control-enabled run already owns stdin as a message stream; a large
+        // prompt rides that stream's first frame, so the blob route never
+        // displaces it.
+        if !plan.delivery.is_control_stream() {
+            plan.delivery = PromptDelivery::Stdin;
+        }
     }
     // Loud when a large value is stuck on the argv anyway (e.g. Goose's inline
     // `--system`, or any harness oneharness has not wired for off-argv input).
@@ -580,8 +585,11 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             base_prompt: unit_prompt.to_string(),
             extra,
             system_file: None,
-            prompt_stdin: false,
-            control: control_shape.is_some(),
+            delivery: if control_shape.is_some() {
+                PromptDelivery::ControlStream
+            } else {
+                PromptDelivery::Argv
+            },
         };
 
         if args.print_command {
@@ -2630,14 +2638,13 @@ struct HarnessPlan {
     /// deliver off the argv on a harness with a system-file flag (Claude Code).
     /// `None` keeps the system inline. Set by the command layer before spawning.
     system_file: Option<String>,
-    /// When true, deliver the user prompt on the child's stdin (a large prompt on
-    /// a stdin-capable harness): `build` omits the positional and returns the
-    /// assembled prompt as [`BuiltCommand::stdin`]. `false` keeps it on the argv.
-    prompt_stdin: bool,
-    /// Whether this run is control-enabled (`--control`), which makes a
-    /// stdin-borne adapter read a message stream instead of taking a positional
-    /// prompt. `false` keeps the argv byte-identical to an ordinary run.
-    control: bool,
+    /// How the user prompt reaches the harness. [`PromptDelivery::Stdin`] (a
+    /// large prompt on a stdin-capable harness) makes `build` omit the
+    /// positional and return the assembled prompt as [`BuiltCommand::stdin`];
+    /// [`PromptDelivery::ControlStream`] (a `--control` run) makes it the first
+    /// frame the control channel writes. [`PromptDelivery::Argv`] keeps the argv
+    /// byte-identical to an ordinary run.
+    delivery: PromptDelivery,
 }
 
 /// The result of building one attempt: the argv to spawn and, when the prompt is
@@ -2693,7 +2700,7 @@ impl HarnessPlan {
         // have inlined: for a harness whose system rides the prompt, prepend the
         // system (mirroring `prompt_with_system`); otherwise the system is carried
         // separately (Claude's file flag, Goose's inline `--system`).
-        let stdin = if self.prompt_stdin {
+        let stdin = if self.delivery.is_stdin_blob() {
             Some(if self.spec.large_input.system_rides_prompt {
                 harness::prompt_with_system_text(self.system.as_deref(), &prompt)
             } else {
@@ -2717,8 +2724,7 @@ impl HarnessPlan {
                 None
             },
             system_file: self.system_file.as_deref(),
-            prompt_stdin: self.prompt_stdin,
-            control: self.control,
+            delivery: self.delivery,
         };
         let mut argv = (self.spec.build_argv)(&ctx);
         argv.extend(self.extra.iter().cloned());
@@ -3187,8 +3193,7 @@ mod tests {
             base_prompt: "p".into(),
             extra: Vec::new(),
             system_file: None,
-            prompt_stdin: false,
-            control: false,
+            delivery: PromptDelivery::Argv,
         }
     }
 
@@ -3220,7 +3225,10 @@ mod tests {
         let spec = plan.spec;
         let mut temps = TempPromptFiles::default();
         plan_large_input(&mut plan, spec, Some(&big), 0, &mut temps).unwrap();
-        assert!(!plan.prompt_stdin, "no stdin route → prompt stays inline");
+        assert!(
+            !plan.delivery.is_stdin_blob(),
+            "no stdin route → prompt stays inline"
+        );
         assert!(
             plan.system_file.is_none(),
             "no file route → system stays inline"
@@ -3235,7 +3243,7 @@ mod tests {
         let spec = plan.spec;
         let mut temps = TempPromptFiles::default();
         plan_large_input(&mut plan, spec, Some("small"), 0, &mut temps).unwrap();
-        assert!(!plan.prompt_stdin);
+        assert!(!plan.delivery.is_stdin_blob());
         assert!(temps.0.is_empty());
     }
 

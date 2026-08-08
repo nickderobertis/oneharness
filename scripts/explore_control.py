@@ -246,6 +246,21 @@ def dechunk(body: bytes) -> bytes:
         body = rest[size:].lstrip(b"\r\n")
 
 
+def path_segment(value: str, what: str) -> str:
+    """A harness-supplied id, checked before it becomes part of a request path.
+
+    The ids come from another program's JSON, so they are external input: one
+    carrying `/` or `..` would silently retarget the request at a route the
+    probe never meant to call, and the resulting verdict would describe
+    something else entirely.
+    """
+    if not value or len(value) > 128 or not all(
+        c.isalnum() or c in "-_." for c in value
+    ):
+        raise ValueError(f"{what} `{value}` is not a usable path segment")
+    return value
+
+
 def free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -433,6 +448,7 @@ def probe_opencode(bin_name: str) -> Tuple[str, str]:
         session_id = session.get("id")
         if not session_id:
             return Verdict.BLOCKED, f"session create returned no id: {text[:200]}"
+        session_id = path_segment(session_id, "opencode session id")
 
         def prompt() -> None:
             try:
@@ -504,6 +520,7 @@ def probe_crush(bin_name: str) -> Tuple[str, str]:
         workspace_id = workspace.get("id") or workspace.get("workspace", {}).get("id")
         if not workspace_id:
             return Verdict.BLOCKED, f"workspace create returned no id: {text[:200]}"
+        workspace_id = path_segment(workspace_id, "crush workspace id")
 
         status, text = call("POST", f"/v1/workspaces/{workspace_id}/agent/sessions", {"title": "probe"})
         if status >= 400:
@@ -511,6 +528,7 @@ def probe_crush(bin_name: str) -> Tuple[str, str]:
         session_id = json.loads(text).get("id")
         if not session_id:
             return Verdict.BLOCKED, f"session create returned no id: {text[:200]}"
+        session_id = path_segment(session_id, "crush session id")
 
         status, text = call(
             "POST",

@@ -135,8 +135,7 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 output_format: spec.output_format,
                 schema: None,
                 system_file: None,
-                prompt_stdin: false,
-                control: false,
+                delivery: harness::PromptDelivery::Argv,
             };
             let sync = spec.sync.as_ref();
             HarnessInfo {

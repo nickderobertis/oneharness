@@ -63,26 +63,56 @@ pub struct BuildCtx<'a> {
     /// `--append-system-prompt-file`) instead of inline `--append-system-prompt`;
     /// `system` is left unread. `None` keeps the ordinary inline path.
     pub system_file: Option<&'a str>,
-    /// When true, the user prompt is delivered on the child's **stdin** rather
-    /// than an argv positional — set by the command layer for a large prompt on a
-    /// harness that declares [`LargeInput::prompt_stdin`]. The adapter then omits
-    /// the positional prompt (and adds any stdin-selecting flags, e.g. Claude
-    /// Code's `--input-format text`); the command layer pipes `prompt` to stdin.
-    /// `prompt` still holds the text so a non-stdin adapter and the report are
-    /// unaffected. `false` keeps the ordinary argv path.
-    pub prompt_stdin: bool,
-    /// When true, this run is **control-enabled** (`run --control`): its stdin
-    /// stays open for the run's lifetime so a separate `oneharness interrupt`
-    /// process can push an out-of-band frame into the live turn. An adapter
-    /// whose [`HarnessSpec::control`] rides its own stdin
-    /// ([`crate::domain::control::ControlShape::ClaudeControlRequest`]) selects
-    /// the message-stream input format here and omits the positional prompt (the
-    /// command layer delivers it as the first stdin frame instead). Every other
-    /// adapter ignores it — a server-backed mechanism carries the prompt over
-    /// its own protocol, and a harness with no control mechanism is refused
-    /// before `build_argv` is ever called. `false` keeps the ordinary argv path
-    /// byte for byte, which is what makes `--control`'s absence a no-op.
-    pub control: bool,
+    /// How the user prompt reaches the harness for this run. One value rather
+    /// than a flag per route, because the routes are alternatives: a prompt
+    /// cannot ride both an argv positional and a message stream, and the two
+    /// stdin shapes ([`PromptDelivery::Stdin`] vs
+    /// [`PromptDelivery::ControlStream`]) select different CLI flags.
+    pub delivery: PromptDelivery,
+}
+
+/// How the user prompt reaches the harness.
+///
+/// The command layer decides; `build_argv` reads. Keeping it one value is what
+/// makes "positional prompt *and* `--input-format stream-json`" — a spawn the
+/// CLI would reject — impossible to ask for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptDelivery {
+    /// An argv positional: the ordinary case, and byte-identical to what every
+    /// `--print-command` assertion pins.
+    Argv,
+    /// Piped to the child's **stdin** as one blob, for a prompt large enough to
+    /// risk the argv ceiling (`E2BIG`) on a harness that declares
+    /// [`LargeInput::prompt_stdin`]. The adapter omits the positional and adds
+    /// its stdin-selecting flags (Claude Code's `--input-format text`, Goose's
+    /// `-i -`).
+    Stdin,
+    /// Written to the child's stdin as the first frame of a **message stream**
+    /// whose handle then stays open for the run's lifetime — the delivery a
+    /// control-enabled run (`--control`) needs, since that same handle is how an
+    /// out-of-band interrupt reaches the live turn. Only ever selected for a
+    /// harness whose [`HarnessSpec::control`] rides its own stdin.
+    ControlStream,
+}
+
+impl PromptDelivery {
+    /// Whether the adapter should omit the argv positional.
+    #[must_use]
+    pub fn off_argv(self) -> bool {
+        !matches!(self, PromptDelivery::Argv)
+    }
+
+    /// Whether the prompt is piped as one blob (the large-prompt route).
+    #[must_use]
+    pub fn is_stdin_blob(self) -> bool {
+        matches!(self, PromptDelivery::Stdin)
+    }
+
+    /// Whether the prompt opens a control-enabled message stream.
+    #[must_use]
+    pub fn is_control_stream(self) -> bool {
+        matches!(self, PromptDelivery::ControlStream)
+    }
 }
 
 /// The CLI token for a format, as the harnesses spell it.
@@ -1398,14 +1428,14 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     // and add `--input-format text` — claude then reads the prompt from stdin,
     // off the argv (no `E2BIG`). Sourced from `claude --help` (2.1.207).
     let mut a = vec![c.bin.into(), "-p".into()];
-    if c.control {
+    if c.delivery.is_control_stream() {
         // A control-enabled run reads a *stream* of JSON messages from stdin
         // rather than one blob, which is what lets the handle stay open past the
         // prompt for an out-of-band `control_request`. The prompt is the first
         // frame the command layer writes, so it leaves the positional off.
         a.push("--input-format".into());
         a.push("stream-json".into());
-    } else if c.prompt_stdin {
+    } else if c.delivery.is_stdin_blob() {
         a.push("--input-format".into());
         a.push("text".into());
     } else {
@@ -1530,7 +1560,7 @@ fn argv_codex(c: &BuildCtx) -> Vec<String> {
     // (system-prepended) prompt; the `-` sentinel forces `codex exec` to read it
     // from stdin (works with `resume <id> -` too). Otherwise the prompt is the
     // positional.
-    if c.prompt_stdin {
+    if c.delivery.is_stdin_blob() {
         a.push("-".into());
     } else {
         a.push(prompt_with_system(c));
@@ -1574,7 +1604,7 @@ fn argv_opencode(c: &BuildCtx) -> Vec<String> {
     // For a large prompt the command layer sets `prompt_stdin` and pipes the
     // (system-prepended) prompt; `opencode run` reads stdin when the positional
     // message is omitted, so drop it. Otherwise the prompt is the positional.
-    if !c.prompt_stdin {
+    if !c.delivery.is_stdin_blob() {
         a.push(prompt_with_system(c));
     }
     a
@@ -1613,7 +1643,7 @@ fn argv_goose(c: &BuildCtx) -> Vec<String> {
     // `-i -` sentinel (`--instructions -`) makes goose read the prompt from stdin,
     // off the argv. Otherwise the prompt rides `-t`. (`--system` stays inline
     // either way — goose has no per-run system file route.)
-    if c.prompt_stdin {
+    if c.delivery.is_stdin_blob() {
         a.push("-i".into());
         a.push("-".into());
     } else {
@@ -1671,7 +1701,7 @@ fn argv_qwen(c: &BuildCtx) -> Vec<String> {
     // For a large prompt the command layer sets `prompt_stdin` and pipes the
     // (system-prepended) prompt; qwen reads stdin as the prompt when `-p` is
     // omitted, so drop it. Otherwise the prompt rides `-p`.
-    if !c.prompt_stdin {
+    if !c.delivery.is_stdin_blob() {
         a.push("-p".into());
         a.push(prompt_with_system(c));
     }
@@ -1698,7 +1728,7 @@ fn argv_crush(c: &BuildCtx) -> Vec<String> {
     // For a large prompt the command layer sets `prompt_stdin` and pipes the
     // (system-prepended) prompt; `crush run` reads stdin when the positional is
     // omitted, so drop it. Otherwise the prompt is the positional.
-    if !c.prompt_stdin {
+    if !c.delivery.is_stdin_blob() {
         a.push(prompt_with_system(c));
     }
     a
@@ -1717,7 +1747,7 @@ fn argv_copilot(c: &BuildCtx) -> Vec<String> {
     // (system-prepended) prompt; copilot reads stdin as the prompt only when `-p`
     // is ABSENT (a `-p` value makes the pipe be ignored), so drop `-p` entirely.
     // Otherwise the prompt rides `-p`.
-    let mut a = if c.prompt_stdin {
+    let mut a = if c.delivery.is_stdin_blob() {
         vec![c.bin.into()]
     } else {
         vec![c.bin.into(), "-p".into(), prompt_with_system(c)]
@@ -1778,7 +1808,7 @@ fn argv_cursor(c: &BuildCtx) -> Vec<String> {
     // scripts/explore-cursor-stdin.sh — piped stdin with `-p` and no positional
     // round-trips; the `-` sentinel does NOT). Otherwise the prompt is the positional.
     let mut a = vec![c.bin.into(), "-p".into()];
-    if !c.prompt_stdin {
+    if !c.delivery.is_stdin_blob() {
         a.push(prompt_with_system(c));
     }
     // `--force` is bypass (it also implies trust). Otherwise a headless run still
@@ -1839,8 +1869,7 @@ mod tests {
             output_format,
             schema: None,
             system_file: None,
-            prompt_stdin: false,
-            control: false,
+            delivery: PromptDelivery::Argv,
         }
     }
 
@@ -2377,8 +2406,7 @@ mod tests {
             output_format: OutputFormat::Json,
             schema: None,
             system_file: None,
-            prompt_stdin: false,
-            control: false,
+            delivery: PromptDelivery::Argv,
         };
         let argv = (spec.build_argv)(&ctx);
         assert!(
@@ -2458,8 +2486,7 @@ mod tests {
             output_format: spec.output_format,
             schema: None,
             system_file: None,
-            prompt_stdin: false,
-            control: false,
+            delivery: PromptDelivery::Argv,
         }
     }
 
@@ -2470,7 +2497,7 @@ mod tests {
         // never touches the argv (`E2BIG`) — and add whatever stdin-selecting
         // flags its CLI needs. Sourced per-adapter (see each `build_argv` comment).
         let stdin_ctx = |spec: &'static HarnessSpec| BuildCtx {
-            prompt_stdin: true,
+            delivery: PromptDelivery::Stdin,
             // A system prompt too, to prove it is never inlined either.
             system: Some("be terse"),
             ..base_ctx(spec)

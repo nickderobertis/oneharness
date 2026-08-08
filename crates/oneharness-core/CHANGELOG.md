@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.9](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.6.8...oneharness-core-v0.6.9) - 2026-08-08
+
+### Added
+
+- cancel a run's harness tree on signal and expose telemetry on results ([#1222](https://github.com/nickderobertis/oneharness/pull/1222))
+
 ## [0.6.8](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.6.7...oneharness-core-v0.6.8) - 2026-08-08
 
 ### Added

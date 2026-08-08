@@ -255,6 +255,11 @@
             "type": "string"
           },
           {
+            "const": "cancelled",
+            "description": "Terminated before it finished because the run was **cancelled** \u2014 a\nlibrary caller flipped its [`crate::io::cancel::CancelToken`], or the host\nreceived SIGINT/SIGTERM while [`crate::io::cancel::install_signal_cancel`]\nwas in force. Distinct from `timeout` (the harness was given its full\ndeadline and exceeded it) and from a consumer-driven streaming stop (which\nstays `ok`, because the consumer already got what it asked for). Any\noutput captured before the cancellation is still normalized, exactly as it\nis for a timeout.",
+            "type": "string"
+          },
+          {
             "const": "spawn-error",
             "description": "The binary was resolved but could not be executed.",
             "type": "string"
@@ -386,7 +391,8 @@
                       "schema_version": {
                         "enum": [
                           "1.2",
-                          "1.3"
+                          "1.3",
+                          "1.4"
                         ],
                         "type": "string"
                       },
@@ -500,7 +506,10 @@
                             "type": "string"
                           },
                           "schema_version": {
-                            "const": "1.3",
+                            "enum": [
+                              "1.3",
+                              "1.4"
+                            ],
                             "type": "string"
                           }
                         },
@@ -517,6 +526,7 @@
                                 "enum": [
                                   "nonzero",
                                   "timeout",
+                                  "cancelled",
                                   "spawn-error",
                                   "skipped"
                                 ],
@@ -539,6 +549,37 @@
                         ]
                       }
                     ]
+                  }
+                ]
+              },
+              {
+                "anyOf": [
+                  {
+                    "properties": {
+                      "status": {
+                        "enum": [
+                          "ok",
+                          "nonzero",
+                          "timeout",
+                          "spawn-error",
+                          "skipped",
+                          "planned"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "schema_version": {
+                        "enum": [
+                          "1.4"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
                   }
                 ]
               }
@@ -628,7 +669,8 @@
                           "1.0",
                           "1.1",
                           "1.2",
-                          "1.3"
+                          "1.3",
+                          "1.4"
                         ],
                         "type": "string"
                       },
@@ -809,7 +851,8 @@
                           "1.0",
                           "1.1",
                           "1.2",
-                          "1.3"
+                          "1.3",
+                          "1.4"
                         ],
                         "type": "string"
                       },
@@ -829,6 +872,7 @@
                       "status": {
                         "enum": [
                           "timeout",
+                          "cancelled",
                           "spawn-error",
                           "skipped",
                           "planned"
@@ -987,7 +1031,8 @@
                       "schema_version": {
                         "enum": [
                           "1.2",
-                          "1.3"
+                          "1.3",
+                          "1.4"
                         ],
                         "type": "string"
                       },
@@ -1147,7 +1192,8 @@
                           "1.0",
                           "1.1",
                           "1.2",
-                          "1.3"
+                          "1.3",
+                          "1.4"
                         ],
                         "type": "string"
                       },
@@ -1165,6 +1211,7 @@
                         "enum": [
                           "nonzero",
                           "timeout",
+                          "cancelled",
                           "spawn-error",
                           "skipped"
                         ],
@@ -1305,7 +1352,8 @@
                       },
                       "schema_version": {
                         "enum": [
-                          "1.3"
+                          "1.3",
+                          "1.4"
                         ],
                         "type": "string"
                       },
@@ -1326,6 +1374,7 @@
                         "enum": [
                           "nonzero",
                           "timeout",
+                          "cancelled",
                           "spawn-error",
                           "skipped"
                         ],
@@ -1480,7 +1529,8 @@
                           "1.0",
                           "1.1",
                           "1.2",
-                          "1.3"
+                          "1.3",
+                          "1.4"
                         ],
                         "type": "string"
                       },
@@ -1938,6 +1988,11 @@
             "type": "string"
           },
           {
+            "const": "cancelled",
+            "description": "Terminated before it finished because the run was **cancelled** \u2014 a\nlibrary caller flipped its [`crate::io::cancel::CancelToken`], or the host\nreceived SIGINT/SIGTERM while [`crate::io::cancel::install_signal_cancel`]\nwas in force. Distinct from `timeout` (the harness was given its full\ndeadline and exceeded it) and from a consumer-driven streaming stop (which\nstays `ok`, because the consumer already got what it asked for). Any\noutput captured before the cancellation is still normalized, exactly as it\nis for a timeout.",
+            "type": "string"
+          },
+          {
             "const": "spawn-error",
             "description": "The binary was resolved but could not be executed.",
             "type": "string"
@@ -2056,7 +2111,10 @@
                     "type": "string"
                   },
                   "schema_version": {
-                    "const": "1.3",
+                    "enum": [
+                      "1.3",
+                      "1.4"
+                    ],
                     "type": "string"
                   }
                 },
@@ -2073,6 +2131,7 @@
                         "enum": [
                           "nonzero",
                           "timeout",
+                          "cancelled",
                           "spawn-error",
                           "skipped"
                         ],
@@ -2095,6 +2154,37 @@
                 ]
               }
             ]
+          }
+        ]
+      },
+      {
+        "anyOf": [
+          {
+            "properties": {
+              "status": {
+                "enum": [
+                  "ok",
+                  "nonzero",
+                  "timeout",
+                  "spawn-error",
+                  "skipped",
+                  "planned"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "properties": {
+              "schema_version": {
+                "enum": [
+                  "1.4"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
           }
         ]
       }
@@ -2366,7 +2456,8 @@
           "schema_version": {
             "enum": [
               "1.2",
-              "1.3"
+              "1.3",
+              "1.4"
             ],
             "type": "string"
           },
@@ -2965,7 +3056,8 @@
           "schema_version": {
             "enum": [
               "1.2",
-              "1.3"
+              "1.3",
+              "1.4"
             ],
             "type": "string"
           },
@@ -3139,7 +3231,8 @@
           "schema_version": {
             "enum": [
               "1.2",
-              "1.3"
+              "1.3",
+              "1.4"
             ],
             "type": "string"
           },
@@ -3311,7 +3404,8 @@
           "schema_version": {
             "enum": [
               "1.2",
-              "1.3"
+              "1.3",
+              "1.4"
             ],
             "type": "string"
           },
@@ -3331,6 +3425,7 @@
             "enum": [
               "nonzero",
               "timeout",
+              "cancelled",
               "spawn-error",
               "skipped"
             ],
@@ -3483,7 +3578,8 @@
           },
           "schema_version": {
             "enum": [
-              "1.3"
+              "1.3",
+              "1.4"
             ],
             "type": "string"
           },
@@ -3506,6 +3602,7 @@
             "enum": [
               "nonzero",
               "timeout",
+              "cancelled",
               "spawn-error",
               "skipped"
             ],
@@ -3700,6 +3797,7 @@
             "enum": [
               "nonzero",
               "timeout",
+              "cancelled",
               "spawn-error",
               "skipped"
             ],
@@ -4397,7 +4495,10 @@
                         "type": "string"
                       },
                       "schema_version": {
-                        "const": "1.3",
+                        "enum": [
+                          "1.3",
+                          "1.4"
+                        ],
                         "type": "string"
                       }
                     },
@@ -4414,6 +4515,7 @@
                             "enum": [
                               "nonzero",
                               "timeout",
+                              "cancelled",
                               "spawn-error",
                               "skipped"
                             ],
@@ -4436,6 +4538,37 @@
                     ]
                   }
                 ]
+              }
+            ]
+          },
+          {
+            "anyOf": [
+              {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "ok",
+                      "nonzero",
+                      "timeout",
+                      "spawn-error",
+                      "skipped",
+                      "planned"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "schema_version": {
+                    "enum": [
+                      "1.4"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "type": "object"
               }
             ]
           }
@@ -4707,7 +4840,8 @@
               "schema_version": {
                 "enum": [
                   "1.2",
-                  "1.3"
+                  "1.3",
+                  "1.4"
                 ],
                 "type": "string"
               },
@@ -5306,7 +5440,8 @@
               "schema_version": {
                 "enum": [
                   "1.2",
-                  "1.3"
+                  "1.3",
+                  "1.4"
                 ],
                 "type": "string"
               },
@@ -5480,7 +5615,8 @@
               "schema_version": {
                 "enum": [
                   "1.2",
-                  "1.3"
+                  "1.3",
+                  "1.4"
                 ],
                 "type": "string"
               },
@@ -5652,7 +5788,8 @@
               "schema_version": {
                 "enum": [
                   "1.2",
-                  "1.3"
+                  "1.3",
+                  "1.4"
                 ],
                 "type": "string"
               },
@@ -5672,6 +5809,7 @@
                 "enum": [
                   "nonzero",
                   "timeout",
+                  "cancelled",
                   "spawn-error",
                   "skipped"
                 ],
@@ -5824,7 +5962,8 @@
               },
               "schema_version": {
                 "enum": [
-                  "1.3"
+                  "1.3",
+                  "1.4"
                 ],
                 "type": "string"
               },
@@ -5847,6 +5986,7 @@
                 "enum": [
                   "nonzero",
                   "timeout",
+                  "cancelled",
                   "spawn-error",
                   "skipped"
                 ],
@@ -6041,6 +6181,7 @@
                 "enum": [
                   "nonzero",
                   "timeout",
+                  "cancelled",
                   "spawn-error",
                   "skipped"
                 ],
@@ -6621,6 +6762,11 @@
           {
             "const": "timeout",
             "description": "Killed after exceeding the per-harness timeout.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "Terminated before it finished because the run was **cancelled** \u2014 a\nlibrary caller flipped its [`crate::io::cancel::CancelToken`], or the host\nreceived SIGINT/SIGTERM while [`crate::io::cancel::install_signal_cancel`]\nwas in force. Distinct from `timeout` (the harness was given its full\ndeadline and exceeded it) and from a consumer-driven streaming stop (which\nstays `ok`, because the consumer already got what it asked for). Any\noutput captured before the cancellation is still normalized, exactly as it\nis for a timeout.",
             "type": "string"
           },
           {
@@ -6885,7 +7031,8 @@
                   "schema_version": {
                     "enum": [
                       "1.2",
-                      "1.3"
+                      "1.3",
+                      "1.4"
                     ],
                     "type": "string"
                   },
@@ -7004,7 +7151,10 @@
                         "type": "string"
                       },
                       "schema_version": {
-                        "const": "1.3",
+                        "enum": [
+                          "1.3",
+                          "1.4"
+                        ],
                         "type": "string"
                       }
                     },
@@ -7021,6 +7171,7 @@
                             "enum": [
                               "nonzero",
                               "timeout",
+                              "cancelled",
                               "spawn-error",
                               "skipped"
                             ],
@@ -7043,6 +7194,37 @@
                     ]
                   }
                 ]
+              }
+            ]
+          },
+          {
+            "anyOf": [
+              {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "ok",
+                      "nonzero",
+                      "timeout",
+                      "spawn-error",
+                      "skipped",
+                      "planned"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "schema_version": {
+                    "enum": [
+                      "1.4"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "type": "object"
               }
             ]
           }
@@ -7314,7 +7496,8 @@
               "schema_version": {
                 "enum": [
                   "1.2",
-                  "1.3"
+                  "1.3",
+                  "1.4"
                 ],
                 "type": "string"
               },
@@ -7913,7 +8096,8 @@
               "schema_version": {
                 "enum": [
                   "1.2",
-                  "1.3"
+                  "1.3",
+                  "1.4"
                 ],
                 "type": "string"
               },
@@ -8087,7 +8271,8 @@
               "schema_version": {
                 "enum": [
                   "1.2",
-                  "1.3"
+                  "1.3",
+                  "1.4"
                 ],
                 "type": "string"
               },
@@ -8259,7 +8444,8 @@
               "schema_version": {
                 "enum": [
                   "1.2",
-                  "1.3"
+                  "1.3",
+                  "1.4"
                 ],
                 "type": "string"
               },
@@ -8279,6 +8465,7 @@
                 "enum": [
                   "nonzero",
                   "timeout",
+                  "cancelled",
                   "spawn-error",
                   "skipped"
                 ],
@@ -8431,7 +8618,8 @@
               },
               "schema_version": {
                 "enum": [
-                  "1.3"
+                  "1.3",
+                  "1.4"
                 ],
                 "type": "string"
               },
@@ -8454,6 +8642,7 @@
                 "enum": [
                   "nonzero",
                   "timeout",
+                  "cancelled",
                   "spawn-error",
                   "skipped"
                 ],
@@ -8648,6 +8837,7 @@
                 "enum": [
                   "nonzero",
                   "timeout",
+                  "cancelled",
                   "spawn-error",
                   "skipped"
                 ],
@@ -9228,6 +9418,11 @@
           {
             "const": "timeout",
             "description": "Killed after exceeding the per-harness timeout.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "Terminated before it finished because the run was **cancelled** \u2014 a\nlibrary caller flipped its [`crate::io::cancel::CancelToken`], or the host\nreceived SIGINT/SIGTERM while [`crate::io::cancel::install_signal_cancel`]\nwas in force. Distinct from `timeout` (the harness was given its full\ndeadline and exceeded it) and from a consumer-driven streaming stop (which\nstays `ok`, because the consumer already got what it asked for). Any\noutput captured before the cancellation is still normalized, exactly as it\nis for a timeout.",
             "type": "string"
           },
           {
@@ -10175,6 +10370,104 @@
         ],
         "type": "string"
       },
+      "ExecutionTelemetry": {
+        "description": "Measured execution telemetry for one harness run: when the invocation ran,\nand \u2014 when the harness's transcript supports it \u2014 how its wall clock split\nbetween provider latency and tool work.\n\nCarried from the runner/parser to the history writer *and*, since report\nschema `0.5`, serialized on [`RunResult::telemetry`]. Exposing it there is\nwhat lets a consumer read the numbers off the run it just made instead of\nre-opening the history file the same run wrote.\n\nInternally tagged by `source`, so the variant is a value a consumer switches\non rather than a shape it has to sniff. Every variant states only what was\nactually measured \u2014 there is no variant meaning \"no telemetry\"; that is a\n`null` field.",
+        "oneOf": [
+          {
+            "description": "The harness's own transcript carried a complete provider trace, so the\ninvocation bounds *and* the model/tool split are measured.",
+            "properties": {
+              "finished_at": {
+                "maxLength": 24,
+                "minLength": 24,
+                "pattern": "^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:([0-5]\\d|60)\\.\\d{3}Z$",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model_ms": {
+                "format": "uint128",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "source": {
+                "const": "provider_measured",
+                "type": "string"
+              },
+              "started_at": {
+                "maxLength": 24,
+                "minLength": 24,
+                "pattern": "^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:([0-5]\\d|60)\\.\\d{3}Z$",
+                "type": "string"
+              },
+              "time_to_first_token_ms": {
+                "format": "uint128",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "tool_ms": {
+                "format": "uint128",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "source",
+              "started_at",
+              "finished_at",
+              "model_ms",
+              "tool_ms",
+              "time_to_first_token_ms"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The invocation bounds the runner observed for a run whose provider trace\nnever completed, with no model/tool split: a split read out of a\ntranscript that stopped mid-turn is not a measurement, but when the run\nitself started is, and it is what an operator reads off a failure. Typed\nas a [`UtcInstant`] so the one thing this variant claims to know cannot be\nempty or in some other offset by the time a record renders it.",
+            "properties": {
+              "source": {
+                "const": "partial_invocation",
+                "type": "string"
+              },
+              "started_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "started_at"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The union of tool intervals observed at the stdout pipe, for a harness\nwhose transcript carries no provider trace to split. Not provider-measured\nand with no model-latency counterpart, which is what the `source` tag tells\na consumer; per-event provenance lives on `ActionEvent`.",
+            "properties": {
+              "source": {
+                "const": "stdout_observed",
+                "type": "string"
+              },
+              "tool_ms": {
+                "format": "uint128",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "source",
+              "tool_ms"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "FailureKind": {
         "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `tool_deferred`), so the\nwire shape is unchanged \u2014 modeling it as an enum keeps a misspelled or\ninvalid kind unrepresentable and gives every producer/consumer (classifier,\n`is_failure`, the fallback fall-through rule, the report, history) one\ndefinition to share instead of scattered string literals.",
         "oneOf": [
@@ -10448,6 +10741,18 @@
           "structured": {
             "description": "Structured-output run only: the JSON value extracted from the final\nanswer and validated against the requested schema. `null` when no schema\nwas requested, or when no JSON value could be extracted. Carries the\nlast-attempted value even when it failed validation, so a consumer can\nsee what the harness produced."
           },
+          "telemetry": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ExecutionTelemetry"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Measured execution telemetry for this run: the invocation bounds and, when\nthe harness's transcript carried a trace to read them from, the\nmodel/tool split. `null` when nothing was measured \u2014 never estimated.\nAdded in report schema `0.5`; before that a consumer had to re-read the\nhistory file for numbers the run itself already had."
+          },
           "text": {
             "description": "Best-effort final assistant text; `null` when extraction is impossible.",
             "type": [
@@ -10492,6 +10797,7 @@
           "model",
           "exit_code",
           "duration_ms",
+          "telemetry",
           "command",
           "output_format",
           "text",
@@ -10578,6 +10884,11 @@
           {
             "const": "timeout",
             "description": "Killed after exceeding the per-harness timeout.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "Terminated before it finished because the run was **cancelled** \u2014 a\nlibrary caller flipped its [`crate::io::cancel::CancelToken`], or the host\nreceived SIGINT/SIGTERM while [`crate::io::cancel::install_signal_cancel`]\nwas in force. Distinct from `timeout` (the harness was given its full\ndeadline and exceeded it) and from a consumer-driven streaming stop (which\nstays `ok`, because the consumer already got what it asked for). Any\noutput captured before the cancellation is still normalized, exactly as it\nis for a timeout.",
             "type": "string"
           },
           {
@@ -11126,6 +11437,104 @@
         ],
         "type": "string"
       },
+      "ExecutionTelemetry": {
+        "description": "Measured execution telemetry for one harness run: when the invocation ran,\nand \u2014 when the harness's transcript supports it \u2014 how its wall clock split\nbetween provider latency and tool work.\n\nCarried from the runner/parser to the history writer *and*, since report\nschema `0.5`, serialized on [`RunResult::telemetry`]. Exposing it there is\nwhat lets a consumer read the numbers off the run it just made instead of\nre-opening the history file the same run wrote.\n\nInternally tagged by `source`, so the variant is a value a consumer switches\non rather than a shape it has to sniff. Every variant states only what was\nactually measured \u2014 there is no variant meaning \"no telemetry\"; that is a\n`null` field.",
+        "oneOf": [
+          {
+            "description": "The harness's own transcript carried a complete provider trace, so the\ninvocation bounds *and* the model/tool split are measured.",
+            "properties": {
+              "finished_at": {
+                "maxLength": 24,
+                "minLength": 24,
+                "pattern": "^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:([0-5]\\d|60)\\.\\d{3}Z$",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model_ms": {
+                "format": "uint128",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "source": {
+                "const": "provider_measured",
+                "type": "string"
+              },
+              "started_at": {
+                "maxLength": 24,
+                "minLength": 24,
+                "pattern": "^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:([0-5]\\d|60)\\.\\d{3}Z$",
+                "type": "string"
+              },
+              "time_to_first_token_ms": {
+                "format": "uint128",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "tool_ms": {
+                "format": "uint128",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "source",
+              "started_at",
+              "finished_at",
+              "model_ms",
+              "tool_ms",
+              "time_to_first_token_ms"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The invocation bounds the runner observed for a run whose provider trace\nnever completed, with no model/tool split: a split read out of a\ntranscript that stopped mid-turn is not a measurement, but when the run\nitself started is, and it is what an operator reads off a failure. Typed\nas a [`UtcInstant`] so the one thing this variant claims to know cannot be\nempty or in some other offset by the time a record renders it.",
+            "properties": {
+              "source": {
+                "const": "partial_invocation",
+                "type": "string"
+              },
+              "started_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "started_at"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The union of tool intervals observed at the stdout pipe, for a harness\nwhose transcript carries no provider trace to split. Not provider-measured\nand with no model-latency counterpart, which is what the `source` tag tells\na consumer; per-event provenance lives on `ActionEvent`.",
+            "properties": {
+              "source": {
+                "const": "stdout_observed",
+                "type": "string"
+              },
+              "tool_ms": {
+                "format": "uint128",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "source",
+              "tool_ms"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "FailureKind": {
         "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `tool_deferred`), so the\nwire shape is unchanged \u2014 modeling it as an enum keeps a misspelled or\ninvalid kind unrepresentable and gives every producer/consumer (classifier,\n`is_failure`, the fallback fall-through rule, the report, history) one\ndefinition to share instead of scattered string literals.",
         "oneOf": [
@@ -11563,6 +11972,18 @@
           "structured": {
             "description": "Structured-output run only: the JSON value extracted from the final\nanswer and validated against the requested schema. `null` when no schema\nwas requested, or when no JSON value could be extracted. Carries the\nlast-attempted value even when it failed validation, so a consumer can\nsee what the harness produced."
           },
+          "telemetry": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ExecutionTelemetry"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Measured execution telemetry for this run: the invocation bounds and, when\nthe harness's transcript carried a trace to read them from, the\nmodel/tool split. `null` when nothing was measured \u2014 never estimated.\nAdded in report schema `0.5`; before that a consumer had to re-read the\nhistory file for numbers the run itself already had."
+          },
           "text": {
             "description": "Best-effort final assistant text; `null` when extraction is impossible.",
             "type": [
@@ -11607,6 +12028,7 @@
           "model",
           "exit_code",
           "duration_ms",
+          "telemetry",
           "command",
           "output_format",
           "text",
@@ -11693,6 +12115,11 @@
           {
             "const": "timeout",
             "description": "Killed after exceeding the per-harness timeout.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "Terminated before it finished because the run was **cancelled** \u2014 a\nlibrary caller flipped its [`crate::io::cancel::CancelToken`], or the host\nreceived SIGINT/SIGTERM while [`crate::io::cancel::install_signal_cancel`]\nwas in force. Distinct from `timeout` (the harness was given its full\ndeadline and exceeded it) and from a consumer-driven streaming stop (which\nstays `ok`, because the consumer already got what it asked for). Any\noutput captured before the cancellation is still normalized, exactly as it\nis for a timeout.",
             "type": "string"
           },
           {

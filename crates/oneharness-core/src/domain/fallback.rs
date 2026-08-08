@@ -122,7 +122,9 @@ impl RunWork {
 ///
 /// Everything else is a **real run**, so `None`: a clean [`Status::Ok`]; a
 /// [`Status::Timeout`] (a genuine, if slow, run — falling through it would let a
-/// long real run masquerade as a setup problem); a plain non-zero task failure;
+/// long real run masquerade as a setup problem); a [`Status::Cancelled`] one
+/// (nothing about the candidate failed, and falling through would spawn the very
+/// next harness the caller just cancelled); a plain non-zero task failure;
 /// and — by default — a non-zero classified `rate_limit` (a transient condition
 /// of a *working, authenticated* harness) or `model_not_found` (a configuration
 /// mistake the user should see, not silently route around). A [`Status::Planned`]
@@ -165,7 +167,7 @@ pub fn startup_failure_reason(
             Some(FailureKind::RateLimit) if model_fallback => Some("rate-limit"),
             _ => None,
         },
-        (Status::Ok | Status::Timeout | Status::Planned, _) => None,
+        (Status::Ok | Status::Timeout | Status::Cancelled | Status::Planned, _) => None,
     }
 }
 
@@ -279,6 +281,23 @@ mod tests {
         assert!(!is_startup_failure(Status::Ok, None, false, RunWork::None));
         assert!(!is_startup_failure(
             Status::Timeout,
+            None,
+            false,
+            RunWork::None
+        ));
+    }
+
+    #[test]
+    fn a_cancelled_candidate_does_not_fall_through() {
+        // Nothing about the candidate failed — the caller stopped it. Falling
+        // through would spawn the very next harness the cancellation was meant
+        // to prevent, which is the opposite of what was asked for.
+        assert_eq!(
+            startup_failure_reason(Status::Cancelled, None, false, RunWork::None),
+            None
+        );
+        assert!(!is_startup_failure(
+            Status::Cancelled,
             None,
             false,
             RunWork::None

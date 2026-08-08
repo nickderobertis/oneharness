@@ -91,7 +91,42 @@ export type OutputFormat = "text" | "json" | "stream-json";
 /**
  * The outcome of attempting to run one harness.
  */
-export type Status = "ok" | "nonzero" | "timeout" | "spawn-error" | "skipped" | "planned";
+export type Status = "ok" | "nonzero" | "timeout" | "cancelled" | "spawn-error" | "skipped" | "planned";
+/**
+ * Measured execution telemetry for one harness run: when the invocation ran,
+ * and — when the harness's transcript supports it — how its wall clock split
+ * between provider latency and tool work.
+ *
+ * Carried from the runner/parser to the history writer *and*, since report
+ * schema `0.5`, serialized on [`RunResult::telemetry`]. Exposing it there is
+ * what lets a consumer read the numbers off the run it just made instead of
+ * re-opening the history file the same run wrote.
+ *
+ * Internally tagged by `source`, so the variant is a value a consumer switches
+ * on rather than a shape it has to sniff. Every variant states only what was
+ * actually measured — there is no variant meaning "no telemetry"; that is a
+ * `null` field.
+ */
+export type ExecutionTelemetry =
+  | {
+      finished_at: string | null;
+      model_ms: number | null;
+      source: "provider_measured";
+      started_at: string;
+      time_to_first_token_ms: number | null;
+      tool_ms: number | null;
+      [k: string]: unknown;
+    }
+  | {
+      source: "partial_invocation";
+      started_at: string;
+      [k: string]: unknown;
+    }
+  | {
+      source: "stdout_observed";
+      tool_ms: number;
+      [k: string]: unknown;
+    };
 
 /**
  * One normalized action a harness took, harness-agnostic so a single consumer
@@ -472,6 +507,14 @@ export interface RunResult {
    * see what the harness produced.
    */
   structured: unknown;
+  /**
+   * Measured execution telemetry for this run: the invocation bounds and, when
+   * the harness's transcript carried a trace to read them from, the
+   * model/tool split. `null` when nothing was measured — never estimated.
+   * Added in report schema `0.5`; before that a consumer had to re-read the
+   * history file for numbers the run itself already had.
+   */
+  telemetry: ExecutionTelemetry | null;
   /**
    * Best-effort final assistant text; `null` when extraction is impossible.
    */

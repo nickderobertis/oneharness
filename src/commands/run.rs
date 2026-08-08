@@ -25,6 +25,7 @@ use oneharness_core::domain::signals::Usage;
 use oneharness_core::domain::structured::{self, Schema};
 use oneharness_core::domain::{events, normalize, signals};
 use oneharness_core::errors::OneharnessError;
+use oneharness_core::io::cancel;
 use oneharness_core::io::config as config_io;
 use oneharness_core::io::control as control_io;
 use oneharness_core::io::detect::{self, BinOverrides};
@@ -696,6 +697,26 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 model: unit_model.clone(),
             });
             job_plans.push(harness_plan);
+        }
+    }
+
+    // Own SIGINT/SIGTERM for the spawn phase only. A harness is its own
+    // process-group leader, so a signal that killed oneharness outright would
+    // leave the harness (and its descendants) running and billing; instead the
+    // signal cancels the in-flight runs, which tears each tree down and still
+    // emits the report — with the cut-short harnesses as `status: "cancelled"`.
+    // A second signal exits immediately, so an operator is never trapped.
+    //
+    // Installed *here*, not at the top of the verb: everything above may block on
+    // stdin (`--prompt-file -`), and a handler over a restarted read would swallow
+    // the interrupt instead of ending it. Skipped under `--print-command`, which
+    // spawns nothing to cancel.
+    if !args.print_command {
+        if let Err(err) = cancel::install_signal_cancel() {
+            eprintln!(
+                "oneharness: warning: could not install the cancellation signal handler ({err}); \
+                 an interrupt will kill oneharness and may leave a harness running"
+            );
         }
     }
 
@@ -2714,10 +2735,12 @@ fn failure_dialect(spec: &HarnessSpec) -> signals::FailureDialect {
     }
 }
 
-// llmlint: ignore[suppressions_justified] The allow is justified here: these are
-// one finished job's already-resolved facts (spec/bin/command/format/capture plus
-// the schema and per-unit prompt/model), each read once to build one `RunResult`;
-// a wrapper struct would restate the same list one indirection away.
+// llmlint: ignore[suppressions_justified] The allow is justified here: each
+// argument is a separately-owned piece of the run this result freezes — the
+// registry spec, what was actually spawned, what came back, the schema, and the
+// per-unit prompt/model a batch or model fan-out varies. Grouping them into a
+// struct would move the same list one call up, where three different callers
+// assemble it from three different places.
 #[allow(clippy::too_many_arguments)]
 fn executed_result(
     spec: &HarnessSpec,
@@ -2734,9 +2757,12 @@ fn executed_result(
     // Normalize them best-effort exactly like an exited run. SpawnError retains
     // its existing null-signal semantics because a failed wait cannot establish
     // that its captured output is complete or trustworthy.
+    // A run cut short still gets its captured bytes normalized: the same rule a
+    // timeout follows, for the same reason — output already produced is evidence,
+    // and discarding it would be the only thing that made the stop lossy.
     let normalize_capture = matches!(
         capture.status,
-        Status::Ok | Status::Nonzero | Status::Timeout
+        Status::Ok | Status::Nonzero | Status::Timeout | Status::Cancelled
     );
     let extracted = normalize_capture
         .then(|| normalize::extract(&capture.stdout, output_format))
@@ -2818,15 +2844,24 @@ fn executed_result(
     let attempted_trace = timing.is_some();
     let telemetry = timing
         .filter(|timing| timing.trace_complete)
-        .map(
-            |timing| oneharness_core::domain::report::ExecutionTelemetry::ProviderMeasured {
-                started_at: capture.started_at.clone(),
-                finished_at: capture.finished_at.clone(),
-                model_ms: timing.model_ms,
-                tool_ms: timing.tool_ms,
-                time_to_first_token_ms: timing.time_to_first_token_ms,
-            },
-        )
+        // The runner mints both bounds, so parsing them is a boundary check
+        // rather than a doubt — the same one the partial arm below applies.
+        // Text that is not a millisecond-precision UTC instant yields no
+        // telemetry rather than a measurement nothing measured.
+        .and_then(|timing| {
+            capture.started_at.parse().ok().map(|started_at| {
+                oneharness_core::domain::report::ExecutionTelemetry::ProviderMeasured {
+                    started_at,
+                    finished_at: capture
+                        .finished_at
+                        .as_deref()
+                        .and_then(|text| text.parse().ok()),
+                    model_ms: timing.model_ms,
+                    tool_ms: timing.tool_ms,
+                    time_to_first_token_ms: timing.time_to_first_token_ms,
+                }
+            })
+        })
         .or_else(|| {
             observed_tool_ms.map(|observed_tool_ms| {
                 oneharness_core::domain::report::ExecutionTelemetry::StdoutObserved {
@@ -2842,14 +2877,20 @@ fn executed_result(
             // The runner mints this instant, so the parse is a boundary check
             // rather than a doubt: text that is not a canonical UTC instant
             // yields no telemetry rather than a claim about when the run began.
-            (attempted_trace && oneharness_core::domain::history::run_failed(capture.status))
-                .then(|| capture.started_at.parse().ok())
-                .flatten()
-                .map(|started_at| {
-                    oneharness_core::domain::report::ExecutionTelemetry::PartialInvocation {
-                        started_at,
-                    }
-                })
+            // `attempts == 0` is the one case with nothing to preserve: the job
+            // was cancelled while still queued, so it has no invocation to bound
+            // and saying when it "started" would be the fabrication this arm
+            // exists to avoid.
+            (attempts > 0
+                && attempted_trace
+                && oneharness_core::domain::history::run_failed(capture.status))
+            .then(|| capture.started_at.parse().ok())
+            .flatten()
+            .map(|started_at| {
+                oneharness_core::domain::report::ExecutionTelemetry::PartialInvocation {
+                    started_at,
+                }
+            })
         });
     // A deferred-tool dead-end: the harness completed cleanly (exit 0) but only
     // *deferred* a builtin tool call instead of running it (Claude Code bridge
@@ -3138,7 +3179,8 @@ fn load_schema(
 }
 
 /// A harness "failed" when it ran and did not exit cleanly, when it could not be
-/// spawned, when — under `--require-available` — it was skipped as missing, when
+/// spawned, when it was cancelled before finishing (no answer, whoever asked for
+/// the stop), when — under `--require-available` — it was skipped as missing, when
 /// a structured-output run never produced a schema-conforming answer (a run you
 /// asked for JSON from and didn't get is a failure, regardless of exit code), or
 /// when it dead-ended by deferring a tool call (`tool_deferred`) — a clean exit
@@ -3157,7 +3199,7 @@ fn is_failure(
         return true;
     }
     match status {
-        Status::Nonzero | Status::Timeout | Status::SpawnError => true,
+        Status::Nonzero | Status::Timeout | Status::SpawnError | Status::Cancelled => true,
         Status::Skipped => require_available && !available,
         Status::Ok | Status::Planned => false,
     }
@@ -3744,6 +3786,34 @@ mod tests {
         let events = r.events.expect("the complete tool event survives");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].name.as_deref(), Some("bash"));
+    }
+
+    #[test]
+    fn a_never_invoked_cancelled_job_claims_no_invocation_bounds() {
+        // A job cancelled while still queued has `attempts == 0`. Its status is a
+        // failed one on a trace-capable harness, which is exactly the shape that
+        // would otherwise report invocation bounds — but there was no invocation,
+        // so reporting when it "started" would be a measurement of nothing. The
+        // same run *after* a spawn keeps its bounds, which is the contrast here.
+        let cap = capture(Status::Cancelled, "");
+        let result_for = |attempts| {
+            executed_result(
+                harness::by_id("opencode").unwrap(),
+                "opencode".into(),
+                vec!["opencode".into()],
+                OutputFormat::Json,
+                &cap,
+                None,
+                attempts,
+                None,
+                None,
+            )
+        };
+        assert!(result_for(0).telemetry.is_none());
+        assert!(matches!(
+            result_for(1).telemetry,
+            Some(oneharness_core::domain::report::ExecutionTelemetry::PartialInvocation { .. })
+        ));
     }
 
     #[test]

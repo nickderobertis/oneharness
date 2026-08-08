@@ -602,11 +602,26 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             // --print-command never spawns, so nothing is materialized off-argv:
             // the printed command is the deterministic inline form (large prompts
             // that would actually run via file/stdin are shown inline).
+            //
+            // A server-submitted control run would launch the harness's SERVER,
+            // never its CLI, so that is the command a dry run must show — with
+            // the address left as its placeholder, because the pool picks one
+            // only when it actually starts a server.
+            let planned_command = control_shape
+                .and_then(HttpShape::of)
+                .and(spec.server)
+                .map(|server| {
+                    std::iter::once(resolved.bin.clone())
+                        .chain(server.launch.iter().map(|arg| (*arg).to_string()))
+                        .chain(server.address_args.iter().map(|arg| (*arg).to_string()))
+                        .collect()
+                })
+                .unwrap_or_else(|| harness_plan.build(schema.as_ref(), None).argv);
             plan.push(Plan::Ready(Box::new(planned_result(
                 spec,
                 &resolved.bin,
                 resolved.available,
-                harness_plan.build(schema.as_ref(), None).argv,
+                planned_command,
                 output_format,
                 result_prompt,
                 unit_model.clone(),

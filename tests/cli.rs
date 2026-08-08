@@ -19503,8 +19503,108 @@ fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there()
     assert_eq!(command[1], "serve", "{command:?}");
     assert_eq!(command[2], "--port", "{command:?}");
 
+    // The pooled server outlives the dispatch by design and shuts itself down
+    // once the turn it served is over. This waits for the PROCESS to be gone,
+    // not merely for its port to close: a detached process still finishing its
+    // exit is one whose coverage profile is still being written, and a profile
+    // half-written while the coverage merge reads the directory corrupts the
+    // whole run's data.
+    let record = pool
+        .join("oneharness")
+        .join("servers")
+        .read_dir()
+        .expect("the pool root exists once a server was started")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("server.json"))
+        .find(|path| path.exists())
+        .expect("the pool recorded the server it started");
+    let pid: u32 = serde_json::from_str::<Value>(&std::fs::read_to_string(&record).unwrap())
+        .unwrap()["pid"]
+        .as_u64()
+        .expect("a recorded pid") as u32;
+    wait_until("the pooled server process to exit", || {
+        !std::path::Path::new(&format!("/proc/{pid}")).exists()
+            && std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .output()
+                .map(|out| !out.status.success())
+                .unwrap_or(true)
+    });
+
     let _ = std::fs::remove_dir_all(&store);
     let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn a_dry_run_of_a_server_submitted_controlled_turn_shows_the_server_it_would_launch() {
+    // `--print-command` answers "what would run". For these mechanisms that is
+    // the harness's SERVER, never its CLI — printing `opencode run …` would name
+    // a process this run never starts and whose interrupt was refuted.
+    let store = control_store_dir("dry-http");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--session",
+            "dry",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--bin",
+            &bin_override("opencode"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let report = json_stdout(&output);
+    let command: Vec<String> = report["results"][0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        command[1..],
+        ["serve", "--port", "{address}"],
+        "{command:?}"
+    );
+    assert_eq!(report["results"][0]["status"], "planned");
+    // Nothing was launched and no socket opened: a dry run stays dry.
+    assert!(!store.join("control").join("dry.sock").exists());
+
+    // The same dry run on a stdin-borne mechanism still shows its CLI.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "dry2",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let command = json_stdout(&output)["results"][0]["command"].clone();
+    let command = command.as_array().unwrap();
+    assert!(
+        command.iter().any(|arg| arg == "--input-format"),
+        "{command:?}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]

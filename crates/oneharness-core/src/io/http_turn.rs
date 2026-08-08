@@ -215,9 +215,9 @@ pub fn open(
 /// Submit `prompt` and follow the turn to its end, answering every permission
 /// the server blocks on.
 ///
-/// `interrupted` is set by the control socket's thread; a turn that ends after
-/// one is still a completed run — oneharness records the interrupt from its own
-/// side, never from the harness's stop reason.
+/// A turn that ends because it was interrupted is still a completed run here:
+/// oneharness records the interrupt from its own side (the socket that served
+/// it), never from what the harness says about how the turn stopped.
 pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duration) -> TurnOutcome {
     let allow = http::permits_action(mode);
     let started = Instant::now();
@@ -431,13 +431,15 @@ pub fn await_ready(shape: HttpShape, address: &ServerAddress, within: Duration) 
     ))
 }
 
-/// A client identity for a server that requires one (crush). Derived from the
-/// dispatch's own pid and the session name rather than randomly, so it is
-/// reproducible within a run and distinct across concurrent ones.
+/// A client identity for a server that requires one (crush).
+///
+/// Derived from `material` (the caller's own key — the harness id today) and
+/// this dispatch's pid rather than randomly, so it is reproducible within a run
+/// and distinct across concurrent ones.
 #[must_use]
-pub fn client_id(session: &str) -> String {
+pub fn client_id(material: &str) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in session.bytes().chain(std::process::id().to_le_bytes()) {
+    for byte in material.bytes().chain(std::process::id().to_le_bytes()) {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }

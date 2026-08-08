@@ -3268,6 +3268,43 @@ bin = "{bin}"
         let stderr = String::from_utf8_lossy(&refused.stderr);
         assert!(stderr.contains(needle), "{argv:?}: {stderr}");
     }
+
+    // A malformed environment value is the same loud usage error any other
+    // ONEHARNESS_* boolean raises, never a silent "not true, so off".
+    let malformed = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+        ],
+        &[("ONEHARNESS_STREAM", "maybe")],
+        &fx.user_config(),
+    );
+    assert_eq!(malformed.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&malformed.stderr);
+    assert!(stderr.contains("ONEHARNESS_STREAM"), "{stderr}");
+
+    // Asking for both directions at once is refused by the parser.
+    let both = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--stream",
+            "--no-stream",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(!both.status.success());
+    let stderr = String::from_utf8_lossy(&both.stderr);
+    assert!(stderr.contains("--no-stream"), "{stderr}");
 }
 
 #[test]

@@ -1142,14 +1142,14 @@ _oh_control_enforce_once() {
     # when the interrupt arrives, and each step must be individually observable.
     local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create 60 files named step-001.txt through step-060.txt in the current directory, ONE PER TOOL CALL, sleeping 1 second between each (for example: sleep 1 && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
 
+    # The turn must actually run shell commands for there to be work to stop, so a
+    # narrower mode would make the freeze assertion vacuous. Confined to a fresh
+    # mktemp sandbox, like every other oh_*_enforce phase.
+    local grant=(--mode bypass) # llmlint: ignore[least_privilege_grants] see above
     note "  control-enforce: starting a controlled run ($id, session $name)"
     ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --prompt "$prompt" \
         --control --session "$name" --session-dir "$store" --cwd "$sandbox" \
-        `# llmlint: ignore[least_privilege_grants] The turn must actually run shell` \
-        `# commands for there to be work to stop; a narrower mode makes the freeze` \
-        `# assertion vacuous. Confined to a fresh mktemp sandbox, like every other` \
-        `# oh_*_enforce phase.` \
-        --mode bypass --timeout "${OH_TIMEOUT:-300}" --compact \
+        "${grant[@]}" --timeout "${OH_TIMEOUT:-300}" --compact \
         "${model_args[@]+"${model_args[@]}"}" >"$report" 2>"$sandbox/run.err" &
     local run_pid=$!
 

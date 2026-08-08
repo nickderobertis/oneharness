@@ -135,11 +135,28 @@ impl ControlShape {
         .find(|shape| shape.as_str() == mechanism)
     }
 
-    /// Whether this mechanism needs a sidecar server process (everything except
-    /// Claude Code, whose control rides the run's own stdin).
+    /// Whether oneharness *drives the turn itself* over this mechanism's own
+    /// protocol, rather than riding the harness's ordinary headless run.
+    ///
+    /// True for everything except Claude Code, whose control frame rides the
+    /// same `-p` run a plain dispatch uses. A driven turn negotiates its model,
+    /// working directory and approvals on the wire, so none of them appear on
+    /// the argv and the harness's stdout format has no bearing on its session id.
     #[must_use]
-    pub fn needs_server(self) -> bool {
+    pub fn drives_turn(self) -> bool {
         !matches!(self, ControlShape::ClaudeControlRequest)
+    }
+
+    /// Whether this mechanism needs a **shared, long-lived** server process,
+    /// declared as a [`ServerSpec`] and managed by the pool.
+    ///
+    /// The stdio protocols do not: oneharness spawns the server as the run's own
+    /// child, so the interrupt rides the same stdin the turn does and the
+    /// process dies with the dispatch. Only the HTTP mechanisms need a server
+    /// that outlives one turn and is worth sharing across dispatches.
+    #[must_use]
+    pub fn needs_pooled_server(self) -> bool {
+        matches!(self, ControlShape::OpencodeHttp | ControlShape::CrushHttp)
     }
 
     /// The output format a control-enabled run must use, when the mechanism
@@ -779,16 +796,32 @@ mod tests {
     }
 
     #[test]
-    fn only_claude_control_rides_the_run_process() {
-        assert!(!ControlShape::ClaudeControlRequest.needs_server());
+    fn only_claude_control_rides_the_harnesss_ordinary_run() {
+        assert!(!ControlShape::ClaudeControlRequest.drives_turn());
         for shape in [
             ControlShape::CodexAppServer,
             ControlShape::OpencodeHttp,
             ControlShape::AcpCancel,
             ControlShape::CrushHttp,
         ] {
-            assert!(shape.needs_server(), "{shape:?} should need a server");
+            assert!(shape.drives_turn(), "{shape:?} should drive its own turn");
         }
+    }
+
+    #[test]
+    fn only_the_http_mechanisms_need_a_pooled_server() {
+        // The stdio protocols run as the dispatch's own child, so there is
+        // nothing to share and nothing to leak; only a server that outlives one
+        // turn is worth pooling.
+        for shape in [
+            ControlShape::ClaudeControlRequest,
+            ControlShape::CodexAppServer,
+            ControlShape::AcpCancel,
+        ] {
+            assert!(!shape.needs_pooled_server(), "{shape:?}");
+        }
+        assert!(ControlShape::OpencodeHttp.needs_pooled_server());
+        assert!(ControlShape::CrushHttp.needs_pooled_server());
     }
 
     #[test]

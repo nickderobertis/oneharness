@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::domain::control::ControlShape;
 use crate::domain::report::{Capture, OutputObservation, Status};
 use crate::io::control::ControlHandle;
 use crate::io::process::{resolve_program, Finish, PipeEvent, Process};
@@ -348,12 +347,14 @@ where
 /// the runner closes it again the moment the harness emits its end-of-turn
 /// document, so a control-enabled run still terminates on its own.
 pub struct ControlledInput<'a> {
-    /// The shared handle the control socket serves requests through.
+    /// The shared handle the control socket serves requests through. It also
+    /// owns the protocol conversation for a server-backed mechanism, so the
+    /// runner only pumps lines through it rather than knowing any protocol.
     pub handle: &'a ControlHandle,
-    /// The harness's control mechanism, which decides the end-of-turn document.
-    pub shape: ControlShape,
-    /// The first stdin frame: the prompt, in the harness's message-stream shape.
-    pub first_frame: String,
+    /// The assembled user prompt. For a mechanism that rides the harness's own
+    /// run it becomes the first stdin frame; for a server-backed one the
+    /// dialogue sends it after its handshake.
+    pub prompt: String,
 }
 
 /// [`run_job_streaming`], with the child's stdin held open for turn control when
@@ -430,8 +431,11 @@ where
     if let Some(control) = control {
         if let Some(stdin) = process.take_stdin() {
             control.handle.begin_turn(stdin);
-            if let Err(err) = control.handle.write_line(&control.first_frame) {
-                eprintln!("oneharness: warning: could not write the control-mode prompt: {err}");
+            for frame in control.handle.open_frames(&control.prompt) {
+                if let Err(err) = control.handle.write_line(&frame) {
+                    eprintln!("oneharness: warning: could not open the controlled turn: {err}");
+                    break;
+                }
             }
         }
     }
@@ -439,10 +443,21 @@ where
     // Stdin was held open past the prompt, so a controlled harness waits for
     // another message instead of exiting. Closing it on the end-of-turn document
     // is what lets the run finish on its own, interrupted or not.
+    //
+    // A harness whose turn oneharness *drives* (a JSON-RPC server) has no reason
+    // to exit at all once its turn is over — it is a server, waiting for the
+    // next one — so there the end of the turn is the end of the run and the
+    // child is torn down rather than waited on.
+    let mut stopped_after_turn = false;
     let mut on_line = |line: &str| {
         if let Some(control) = control {
-            if crate::domain::control::is_turn_terminal(control.shape, line) {
+            if control.handle.advance(line) {
                 control.handle.end_turn();
+                if control.handle.drives_turn() {
+                    stopped_after_turn = true;
+                    on_line(line);
+                    return StreamStep::Stop;
+                }
             }
         }
         on_line(line)

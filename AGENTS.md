@@ -212,6 +212,18 @@ Use the `just` recipes; do not hand-roll equivalents.
   is declared only for a harness whose interrupt was proven live *through
   oneharness*: a declared-but-unexercised shape answers `ok:true` while the turn
   keeps running, which is strictly worse than the loud usage error `None` gives.
+  A shape that `drives_turn` runs the turn over its own JSON-RPC protocol
+  (`domain::dialogue`, a pure state machine the runner just pumps lines through)
+  instead of the harness's headless run: oneharness spawns `codex app-server` /
+  `copilot --acp` as the run's OWN child, so the interrupt rides the same stdin
+  and nothing is pooled. Two protocol facts are load-bearing and cost real time
+  to find: codex answers `turn/start` immediately with `status:"inProgress"`
+  (the turn ends on `turn/completed`, and treating the response as terminal ends
+  every run in under half a second), and an ACP client MUST answer
+  `session/request_permission` or the turn never begins at all. Such a harness
+  also becomes `--session`-capable only under `--control`
+  (`session_capable_under`), because the id comes off the wire rather than out
+  of an output format.
   `gate <id>` is the odd one out: the runtime pre-tool gate an
   installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It

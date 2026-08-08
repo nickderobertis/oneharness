@@ -22,6 +22,7 @@ use crate::domain::control::{
     interrupt_frame, ControlEvent, ControlReason, ControlRequest, ControlResponse, ControlShape,
     ControlVerb,
 };
+use crate::domain::dialogue::Dialogue;
 use crate::domain::usage::UtcInstant;
 
 /// How long a client waits for a run to answer before giving up. Generous
@@ -68,17 +69,99 @@ pub struct ControlHandle {
     state: Mutex<TurnState>,
     events: Mutex<Vec<ControlEvent>>,
     requests: Mutex<u64>,
+    /// The protocol conversation driving the turn, for a server-backed
+    /// mechanism. `None` for Claude Code, whose control rides its ordinary run
+    /// and needs no handshake. Locked *before* `state` everywhere, so the two
+    /// paths that touch both (serving an interrupt, advancing on a line) can
+    /// never deadlock against each other.
+    dialogue: Mutex<Option<Dialogue>>,
 }
 
 impl ControlHandle {
     #[must_use]
     pub fn new(shape: ControlShape) -> Self {
+        Self::with_dialogue(shape, None)
+    }
+
+    /// A handle whose turn is driven by `dialogue` (a server-backed mechanism).
+    #[must_use]
+    pub fn with_dialogue(shape: ControlShape, dialogue: Option<Dialogue>) -> Self {
         ControlHandle {
             shape,
             state: Mutex::new(TurnState::Idle),
             events: Mutex::new(Vec::new()),
             requests: Mutex::new(0),
+            dialogue: Mutex::new(dialogue),
         }
+    }
+
+    /// The frames that open the turn: a dialogue's handshake, or the prompt
+    /// frame for a mechanism that rides the harness's ordinary run.
+    pub fn open_frames(&self, prompt: &str) -> Vec<String> {
+        let mut dialogue = self.dialogue();
+        match dialogue.as_mut() {
+            Some(dialogue) => dialogue.open(),
+            None => crate::domain::control::prompt_frame(self.shape, prompt)
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    /// Feed one stdout line to the dialogue, writing whatever it answers with.
+    /// Returns `true` when the turn is over.
+    ///
+    /// A write failure is not fatal here: the server has gone, which its own
+    /// exit and output will report far more usefully than a panic would.
+    pub fn advance(&self, line: &str) -> bool {
+        let step = {
+            let mut dialogue = self.dialogue();
+            match dialogue.as_mut() {
+                Some(dialogue) => dialogue.on_line(line),
+                // No dialogue: the harness's own end-of-turn document is the
+                // only signal, and there is nothing to write back.
+                None => {
+                    return crate::domain::control::is_turn_terminal(self.shape, line);
+                }
+            }
+        };
+        for frame in &step.send {
+            if let Err(err) = self.write_line(frame) {
+                eprintln!("oneharness: warning: could not write a control frame: {err}");
+                return true;
+            }
+        }
+        step.terminal
+    }
+
+    /// The harness's native session id, when the dialogue captured one.
+    #[must_use]
+    pub fn session_id(&self) -> Option<String> {
+        self.dialogue()
+            .as_ref()
+            .and_then(|dialogue| dialogue.session_id().map(str::to_string))
+    }
+
+    /// The assistant text the dialogue accumulated, with how it was obtained.
+    /// `None` when the turn produced none — never fabricated.
+    #[must_use]
+    pub fn text(&self) -> Option<(String, &'static str)> {
+        let dialogue = self.dialogue();
+        let dialogue = dialogue.as_ref()?;
+        dialogue.text().map(|text| (text, dialogue.text_source()))
+    }
+
+    /// Whether this handle drives the turn itself (rather than riding the
+    /// harness's ordinary run), in which case the driver tears the server down
+    /// once the turn ends instead of waiting for it to exit on its own.
+    #[must_use]
+    pub fn drives_turn(&self) -> bool {
+        self.dialogue().is_some()
+    }
+
+    fn dialogue(&self) -> std::sync::MutexGuard<'_, Option<Dialogue>> {
+        self.dialogue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     #[must_use]
@@ -137,26 +220,51 @@ impl ControlHandle {
     }
 
     fn interrupt(&self) -> ControlResponse {
-        let Some(frame) = interrupt_frame(self.shape, &self.next_request_id()) else {
-            return ControlResponse::refused(
-                format!(
-                    "the `{}` control mechanism is not wired for stdin-borne interrupts",
-                    self.shape.as_str()
-                ),
-                ControlReason::Unsupported,
-            );
+        let frames = {
+            let mut dialogue = self.dialogue();
+            match dialogue.as_mut() {
+                // A server-backed mechanism addresses the live thread/session
+                // by the ids the dialogue captured, so it alone knows whether
+                // there is a turn to abort at all.
+                Some(dialogue) => match dialogue.interrupt() {
+                    Some(frames) => frames,
+                    None => {
+                        return ControlResponse::refused(
+                            "the run is alive but no turn is in flight",
+                            ControlReason::NoActiveTurn,
+                        )
+                    }
+                },
+                None => match interrupt_frame(self.shape, &self.next_request_id()) {
+                    Some(frame) => vec![frame],
+                    None => return ControlResponse::refused(
+                        format!(
+                            "the `{}` control mechanism is not wired for stdin-borne interrupts",
+                            self.shape.as_str()
+                        ),
+                        ControlReason::Unsupported,
+                    ),
+                },
+            }
         };
-        match self.write_line(&frame) {
-            Ok(()) => ControlResponse::served(self.shape),
-            Err(err) if err.kind() == io::ErrorKind::NotConnected => ControlResponse::refused(
-                "the run is alive but no turn is in flight",
-                ControlReason::NoActiveTurn,
-            ),
-            Err(err) => ControlResponse::refused(
-                format!("could not deliver the interrupt to the harness: {err}"),
-                ControlReason::NotRunning,
-            ),
+        for frame in &frames {
+            match self.write_line(frame) {
+                Ok(()) => {}
+                Err(err) if err.kind() == io::ErrorKind::NotConnected => {
+                    return ControlResponse::refused(
+                        "the run is alive but no turn is in flight",
+                        ControlReason::NoActiveTurn,
+                    )
+                }
+                Err(err) => {
+                    return ControlResponse::refused(
+                        format!("could not deliver the interrupt to the harness: {err}"),
+                        ControlReason::NotRunning,
+                    )
+                }
+            }
         }
+        ControlResponse::served(self.shape)
     }
 
     fn next_request_id(&self) -> String {
@@ -224,7 +332,11 @@ mod imp {
     /// serving. A pre-existing file is removed first only when nothing is
     /// listening on it, so two concurrent runs of the same session name cannot
     /// silently steal each other's address.
-    pub fn bind(path: &Path, shape: ControlShape) -> io::Result<ControlListener> {
+    pub fn bind(
+        path: &Path,
+        shape: ControlShape,
+        dialogue: Option<Dialogue>,
+    ) -> io::Result<ControlListener> {
         // Canonicalize the directory before binding: the socket path is an
         // address handed to a *different* process, and a relative one resolves
         // differently depending on where that process runs.
@@ -261,7 +373,7 @@ mod imp {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         listener.set_nonblocking(true)?;
 
-        let handle = Arc::new(ControlHandle::new(shape));
+        let handle = Arc::new(ControlHandle::with_dialogue(shape, dialogue));
         let worker_handle = Arc::clone(&handle);
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let worker = std::thread::spawn(move || serve_loop(listener, worker_handle, &rx));
@@ -396,7 +508,11 @@ mod imp {
 mod imp {
     use super::*;
 
-    pub fn bind(_path: &Path, _shape: ControlShape) -> io::Result<ControlListener> {
+    pub fn bind(
+        _path: &Path,
+        _shape: ControlShape,
+        _dialogue: Option<Dialogue>,
+    ) -> io::Result<ControlListener> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "unix domain sockets are unavailable on this platform",
@@ -417,8 +533,16 @@ mod imp {
 }
 
 /// Bind the run's control socket at `path`, serving `shape`'s mechanism.
-pub fn bind(path: &Path, shape: ControlShape) -> io::Result<ControlListener> {
-    imp::bind(path, shape)
+///
+/// `dialogue` is the protocol conversation that drives the turn for a
+/// server-backed mechanism; `None` for one that rides the harness's ordinary
+/// run (Claude Code).
+pub fn bind(
+    path: &Path,
+    shape: ControlShape,
+    dialogue: Option<Dialogue>,
+) -> io::Result<ControlListener> {
+    imp::bind(path, shape, dialogue)
 }
 
 /// Send one control request to the run listening at `path`.
@@ -461,7 +585,7 @@ mod tests {
         let dir = temp_dir("lifecycle");
         let path = socket_path(&dir, "flow");
         {
-            let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+            let listener = bind(&path, ControlShape::ClaudeControlRequest, None).unwrap();
             assert!(path.exists(), "socket should exist while the run is alive");
             let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "socket must be owner-only");
@@ -475,7 +599,7 @@ mod tests {
     fn interrupt_without_an_active_turn_is_refused_with_no_active_turn() {
         let dir = temp_dir("noturn");
         let path = socket_path(&dir, "idle");
-        let _listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let _listener = bind(&path, ControlShape::ClaudeControlRequest, None).unwrap();
         let response = send(&path, ControlRequest::interrupt());
         assert!(!response.is_ok());
         assert_eq!(response.reason(), Some(ControlReason::NoActiveTurn));
@@ -498,10 +622,10 @@ mod tests {
         let path = socket_path(&dir, "stale");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"").unwrap();
-        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let listener = bind(&path, ControlShape::ClaudeControlRequest, None).unwrap();
         assert_eq!(listener.path(), path);
         // And a live listener refuses to be displaced.
-        let conflict = bind(&path, ControlShape::ClaudeControlRequest);
+        let conflict = bind(&path, ControlShape::ClaudeControlRequest, None);
         assert!(conflict.is_err(), "a live socket must not be stolen");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -511,7 +635,7 @@ mod tests {
         use std::io::Read;
         let dir = temp_dir("served");
         let path = socket_path(&dir, "live");
-        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let listener = bind(&path, ControlShape::ClaudeControlRequest, None).unwrap();
         let handle = listener.handle();
 
         // A real child process standing in for the harness: it echoes whatever
@@ -558,7 +682,7 @@ mod tests {
         use std::os::unix::net::UnixStream;
         let dir = temp_dir("malformed");
         let path = socket_path(&dir, "bad");
-        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let listener = bind(&path, ControlShape::ClaudeControlRequest, None).unwrap();
         let mut stream = UnixStream::connect(&path).unwrap();
         stream
             .write_all(b"{\"v\":9,\"verb\":\"interrupt\"}\n")

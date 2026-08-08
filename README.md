@@ -1116,16 +1116,35 @@ that is only probe-verified is **not** declared in the registry, so
 
 | Harness | `control` | Mechanism | Status |
 | --- | --- | --- | --- |
-| Claude Code | `claude-control-request` | Control frame on the run's own stdin (`-p --input-format stream-json`); no sidecar server | **LIVE** through oneharness — `oh_control_enforce claude-code` |
-| Codex | — | `turn/interrupt` over `codex app-server` JSON-RPC stdio (`thread/start` → `turn/start` → `turn/interrupt {threadId,turnId}`), keyed on `CODEX_HOME` | PROBE-VERIFIED (work froze); not wired — needs the app-server execution model |
-| Copilot | — | ACP `session/cancel` **notification** over `copilot --acp` | PROBE-VERIFIED (work froze); not wired — needs an ACP execution model |
-| Goose | — | ACP `session/cancel` **notification** over `goose acp` | UNVERIFIED — the probe host had no `GOOSE_PROVIDER`/credentials, so `session/new` failed |
-| OpenCode | — | `POST /api/session/{id}/interrupt` against `opencode serve` | UNVERIFIED — the probe reached the server but the turn never produced work |
-| Crush | — | `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against `crush server` | UNVERIFIED — the probe created a workspace but its session route 404'd |
+| Claude Code | `claude-control-request` | A `control_request` frame on the run's own stdin (`-p --input-format stream-json`) | **LIVE** through oneharness |
+| Codex | `codex-app-server` | `turn/interrupt {threadId,turnId}` over the `codex app-server` JSON-RPC stdio protocol | **LIVE** through oneharness |
+| Copilot | `acp-cancel` | The ACP `session/cancel` **notification** over `copilot --acp` | **LIVE** through oneharness |
+| Goose | — | The same ACP `session/cancel` over `goose acp` | BLOCKED — no provider credentials; see below |
+| OpenCode | — | `POST /api/session/{id}/interrupt` against `opencode serve` | UNVERIFIED through oneharness |
+| Crush | — | `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against `crush server` | UNVERIFIED through oneharness |
 | Cursor | — | none | cursor-agent exposes no headless control surface |
 | Qwen | — | none | qwen exposes no headless control surface |
 
-Notes worth keeping, all from the probe rather than documentation:
+A declared mechanism means oneharness **drives the turn** over that protocol
+rather than through the harness's ordinary headless run: it spawns
+`codex app-server` / `copilot --acp` as the run's own child, negotiates the
+thread or session, sends the prompt, and holds that same stdin open so the
+interrupt reaches the live turn. Model, working directory, sandbox and approvals
+are negotiated on the wire, so they leave the argv entirely — which is also why
+Copilot can take `--session` under `--control` even though none of its ordinary
+output formats carries a session id.
+
+**Goose is blocked on credentials, not on the mechanism.** It speaks the same
+ACP protocol Copilot is proven on, through the same code path. On the
+development host `goose acp` answers `initialize` and then fails
+`session/new` with `-32603 Internal error: Failed to resolve provider:
+Configuration value not found: GOOSE_PROVIDER` — there is no
+`~/.config/goose/config.yaml` and no provider key in the environment, and the
+one credential the host does have (GitHub Copilot) needs an interactive
+`goose configure` flow that never completes headlessly. `control` stays `None`
+until a run with credentials proves the interrupt end to end.
+
+Notes worth keeping, all from the probe rather than documentation:Notes worth keeping, all from the probe rather than documentation:
 
 - Claude Code **silently drops** a plain user message written mid-turn, so the
   `control_request` frame is the only mechanism that works.
@@ -1143,6 +1162,10 @@ Notes worth keeping, all from the probe rather than documentation:
 - Codex must **not** be driven through `codex app-server daemon`: it requires a
   managed standalone install this project does not use and self-updates from a
   fixed path, which conflicts with pinning an exact version.
+- Codex answers `turn/start` **immediately** with the new turn's id and
+  `status: "inProgress"`. That response is the acknowledgement, not the end of
+  the turn — reading it as terminal ends every controlled run in under half a
+  second, before the agent does anything. `turn/completed` is the end.
 
 ### Fallback mode (first that runs wins)
 

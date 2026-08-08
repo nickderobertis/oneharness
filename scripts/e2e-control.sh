@@ -62,7 +62,7 @@ for id in "${CONTROLLABLE[@]}"; do
         ;;
     codex)
         need_env "Codex auth" CODEX_E2E_AUTH OPENAI_API_KEY
-        export OH_MODEL="${CODEX_E2E_MODEL:-gpt-5.1-codex-mini}"
+        export OH_MODEL="${CODEX_E2E_MODEL:-}"
         ;;
     opencode)
         need_env "OpenCode auth" OPENCODE_E2E_AUTH ANTHROPIC_API_KEY

@@ -18450,11 +18450,12 @@ fn control_without_a_session_is_a_usage_error_naming_the_reason() {
 fn control_on_a_harness_without_a_mechanism_is_a_usage_error() {
     let store = control_store_dir("unsupported");
     let store_arg = store.display().to_string();
+    // cursor-agent was probed and has no headless control surface at all.
     let output = run(
         &[
             "run",
             "--harness",
-            "codex",
+            "cursor",
             "--control",
             "--session",
             "nope",
@@ -18463,7 +18464,7 @@ fn control_on_a_harness_without_a_mechanism_is_a_usage_error() {
             "--prompt",
             "hi",
             "--bin",
-            &bin_override("codex"),
+            &bin_override("cursor"),
         ],
         &[],
     );
@@ -18573,6 +18574,7 @@ fn interrupt_between_turns_reports_no_active_turn() {
     let listener = oneharness_core::io::control::bind(
         &socket_path(&store, "idle"),
         oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
+        None,
     )
     .unwrap();
 
@@ -18614,7 +18616,7 @@ fn interrupt_on_a_harness_without_a_mechanism_reports_unsupported() {
         "schema_version": "0.1",
         "name": "bound",
         "project": cwd.display().to_string(),
-        "harness": "codex",
+        "harness": "cursor",
         "token": "th-1",
         "created": "2026-08-08T00:00:00Z",
         "updated": "2026-08-08T00:00:00Z",
@@ -18640,7 +18642,7 @@ fn interrupt_on_a_harness_without_a_mechanism_reports_unsupported() {
     let frame = json_stdout(&output);
     assert_eq!(frame["ok"], false);
     assert_eq!(frame["reason"], "unsupported");
-    assert!(frame["error"].as_str().unwrap().contains("codex"));
+    assert!(frame["error"].as_str().unwrap().contains("cursor"));
 
     let _ = std::fs::remove_dir_all(&store);
     let _ = std::fs::remove_dir_all(&cwd);
@@ -19132,6 +19134,7 @@ fn interrupt_defaults_to_the_platform_session_store_and_prints_readable_json() {
     let _listener = oneharness_core::io::control::bind(
         &socket_path(&store, "defaulted"),
         oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
+        None,
     )
     .unwrap();
 
@@ -19192,4 +19195,106 @@ fn interrupt_without_a_resolvable_store_is_a_usage_error() {
         stderr.contains("no session store directory"),
         "stderr:\n{stderr}"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_acp_controlled_run_answers_permission_and_records_a_cancel_the_harness_calls_end_turn() {
+    // The two ACP behaviors that decide whether this works at all, driven
+    // through the real CLI against a server that reproduces both:
+    //   * the turn does not begin until the client answers
+    //     `session/request_permission` — so an unanswered request would leave
+    //     every downstream assertion vacuous; and
+    //   * after a genuine cancel the harness reports `stopReason: "end_turn"`,
+    //     so the interrupt has to be recorded from oneharness's own side.
+    let store = control_store_dir("acp");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("acp-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let acp_log = store.join("acp.log");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_ACP_LOG", acp_log.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "copilot",
+            "--control",
+            "--session",
+            "acp",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("copilot"),
+            "--compact",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the ACP controlled run");
+
+    wait_until("the control socket", || {
+        store.join("control").join("acp.sock").exists()
+    });
+    // The server asked for permission and oneharness answered — without that
+    // reply a real ACP harness never begins work.
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(&acp_log)
+            .map(|log| log.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "acp",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    assert_eq!(json_stdout(&interrupt)["mechanism"], "acp-cancel");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+
+    let log = std::fs::read_to_string(&acp_log).unwrap();
+    let cancel = log
+        .lines()
+        .find(|line| line.contains("session/cancel"))
+        .expect("a cancel reached the server");
+    // A cancel sent as a REQUEST gets `-32601 Method not found` from goose and
+    // the work carries on, so the absence of an id is the contract.
+    assert!(
+        !cancel.contains("\"id\""),
+        "cancel must be a notification: {cancel}"
+    );
+    assert!(cancel.contains("mock-acp-session"), "{cancel}");
+
+    // The harness reported a normal stop reason; oneharness still records the
+    // interrupt, because it records what IT did rather than what it was told.
+    assert_eq!(report["control"]["mechanism"], "acp-cancel");
+    assert_eq!(report["control"]["interrupts"][0]["outcome"], "served");
+    assert_eq!(report["session"]["token"], "mock-acp-session");
+    assert_eq!(report["results"][0]["session_id"], "mock-acp-session");
+    assert_eq!(
+        report["results"][0]["text_source"],
+        "jsonrpc:acp-session-update"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
 }

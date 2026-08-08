@@ -455,6 +455,17 @@ impl HarnessSpec {
         !self.session_formats.is_empty()
     }
 
+    /// Whether it can back that handle *for this run*, given whether the run is
+    /// control-enabled.
+    ///
+    /// A harness whose control mechanism drives the turn over its own protocol
+    /// (Codex's app-server, ACP) mints a thread/session id on the wire even when
+    /// none of its ordinary output formats carries one — which is how Copilot and
+    /// Goose can take `--session` under `--control` and only there.
+    pub fn session_capable_under(&self, control: bool) -> bool {
+        self.session_capable() || (control && self.control.is_some())
+    }
+
     /// The session-id-bearing format selected automatically for `--session`.
     pub fn session_format(&self) -> Option<OutputFormat> {
         self.session_formats.first().copied()
@@ -881,7 +892,15 @@ static REGISTRY: &[HarnessSpec] = &[
         // own app-server probe rather than piggybacking on a dispatch.
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::Probed(UsageProbe::CodexAppServer),
-        control: None,
+        // LIVE-VERIFIED: `turn/interrupt {threadId,turnId}` over the
+        // `codex app-server` JSON-RPC stdio protocol stops the turn (step files
+        // frozen for 15s). oneharness spawns the app-server as the run's OWN
+        // child and drives the thread/turn lifecycle on it, so the interrupt
+        // rides the same open stdin — no shared sidecar, hence no `ServerSpec`.
+        // Model, cwd, sandbox, and approvals are negotiated on the wire.
+        // NOT `app-server daemon`: that needs a managed standalone install this
+        // project does not use, and self-updates from a fixed path.
+        control: Some(ControlShape::CodexAppServer),
         server: None,
         build_argv: argv_codex,
     },
@@ -1306,7 +1325,15 @@ static REGISTRY: &[HarnessSpec] = &[
         // are unreachable as oneharness wires Copilot (text mode).
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::Probed(UsageProbe::CopilotUserEndpoint),
-        control: None,
+        // LIVE-VERIFIED: the ACP `session/cancel` NOTIFICATION over
+        // `copilot --acp` stops the turn (step files frozen for 15s). Two rules
+        // the client must honor: answer `session/request_permission` (copilot
+        // blocks indefinitely and never starts work otherwise), and send cancel
+        // WITHOUT an id. Copilot then reports `stopReason: "end_turn"` plus a
+        // text chunk reading "Info: Operation cancelled by user", so the
+        // cancellation is recorded from oneharness's own side, never read off
+        // the harness's stop reason.
+        control: Some(ControlShape::AcpCancel),
         server: None,
         build_argv: argv_copilot,
     },
@@ -1519,6 +1546,16 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
 /// session handle is the `thread_id` Codex emits under `--json`; oneharness reads
 /// it via [`crate::domain::signals::extract_session`].
 fn argv_codex(c: &BuildCtx) -> Vec<String> {
+    // A control-enabled run drives the turn over the app-server's JSON-RPC
+    // protocol instead of `exec`: that is where `turn/interrupt` lives, and it
+    // is a second execution model rather than a flag on `exec`. Everything the
+    // turn needs (model, cwd, sandbox, approvals, the prompt itself) is
+    // negotiated per thread/turn on the wire, so nothing else belongs on the
+    // argv. NOT `app-server daemon`: that needs a managed standalone install
+    // this project does not use, and self-updates from a fixed path.
+    if c.delivery.is_control_stream() {
+        return vec![c.bin.into(), "app-server".into()];
+    }
     let mut a = vec![c.bin.into(), "exec".into()];
     if c.resume.is_some() {
         a.push("resume".into());
@@ -1625,6 +1662,12 @@ fn argv_opencode(c: &BuildCtx) -> Vec<String> {
 /// read here. It does expose a native `--system` flag, so `--system` maps to it
 /// rather than being prepended.
 fn argv_goose(c: &BuildCtx) -> Vec<String> {
+    // Control rides the Agent Client Protocol server (`goose acp`). Its
+    // provider/model still come from the environment (GOOSE_PROVIDER /
+    // GOOSE_MODEL), exactly as they do for an ordinary `goose run`.
+    if c.delivery.is_control_stream() {
+        return vec![c.bin.into(), "acp".into()];
+    }
     let mut a = vec![
         c.bin.into(),
         "run".into(),
@@ -1749,6 +1792,11 @@ fn argv_crush(c: &BuildCtx) -> Vec<String> {
 /// the session when the id is new (create-or-resume) — so the caller mints and
 /// reuses a UUID; `session_id` stays null (nothing to extract).
 fn argv_copilot(c: &BuildCtx) -> Vec<String> {
+    // Control rides the Agent Client Protocol server, where `session/cancel`
+    // lives. Model, cwd, and approvals are negotiated on the wire.
+    if c.delivery.is_control_stream() {
+        return vec![c.bin.into(), "--acp".into()];
+    }
     // For a large prompt the command layer sets `prompt_stdin` and pipes the
     // (system-prepended) prompt; copilot reads stdin as the prompt only when `-p`
     // is ABSENT (a `-p` value makes the pipe be ignored), so drop `-p` entirely.
@@ -2504,7 +2552,7 @@ mod tests {
         for spec in all() {
             match (spec.control, spec.server.is_some()) {
                 (Some(shape), has_server) => assert_eq!(
-                    shape.needs_server(),
+                    shape.needs_pooled_server(),
                     has_server,
                     "`{}` declares `{}` but {} a server",
                     spec.id,

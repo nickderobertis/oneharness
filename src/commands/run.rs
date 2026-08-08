@@ -10,6 +10,7 @@ use crate::commands::{
 };
 use oneharness_core::domain::batch::{self, BatchStrategy};
 use oneharness_core::domain::control::{self, ControlReport, ControlShape};
+use oneharness_core::domain::dialogue::{Dialogue, DialogueConfig};
 use oneharness_core::domain::fallback::{self, RunMode};
 use oneharness_core::domain::harness::{self, BuildCtx, HarnessSpec, PromptDelivery};
 use oneharness_core::domain::mock::{self, MockDelivery};
@@ -281,7 +282,14 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let explicit_format = args.output_format.or(cfg.output_format);
     let control_shape =
         validate_control(args, &specs, explicit_format, schema.is_some(), batch_run)?;
-    let session_wiring = setup_session(args, &specs, batch_run, fallback_mode, &project_start)?;
+    let session_wiring = setup_session(
+        args,
+        &specs,
+        batch_run,
+        fallback_mode,
+        &project_start,
+        control_shape.is_some(),
+    )?;
     let session_resume: Option<String> = session_wiring
         .as_ref()
         .and_then(|w| w.plan.resume_token.clone());
@@ -294,25 +302,12 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // lossy pin before spawning instead of accepting `--session` and silently
     // leaving the store empty. With no explicit format, the plan loop below
     // selects the anchor harness's preferred session-bearing format.
-    validate_session_output_format(session_anchor, explicit_format)?;
-    // Open the socket before anything spawns, so a supervisor that races the
-    // dispatch finds an address rather than a gap. `--print-command` executes
-    // nothing, so it opens nothing.
-    let control_listener = match control_shape {
-        Some(shape) if !args.print_command => {
-            let wiring = session_wiring
-                .as_ref()
-                .expect("validate_control refuses --control without --session");
-            let path = control::socket_path(&wiring.dir, &wiring.name);
-            Some(control_io::bind(&path, shape).map_err(|source| {
-                OneharnessError::ControlSocket {
-                    path: path.display().to_string(),
-                    source,
-                }
-            })?)
-        }
-        _ => None,
-    };
+    // A mechanism that drives the turn over its own protocol captures the
+    // session id on the wire, so the harness's stdout format has no bearing on
+    // it — checking one here would refuse a perfectly good pairing.
+    if !control_shape.is_some_and(ControlShape::drives_turn) {
+        validate_session_output_format(session_anchor, explicit_format)?;
+    }
     validate_stream(stream, &specs, batch_run, schema.is_some(), fallback_mode)?;
     // Resolve the approval mode (CLI --mode > --bypass/--no-bypass > config
     // `mode` > config `bypass` > the built-in default, which is `default`). A
@@ -492,9 +487,10 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                     } else if want_events {
                         spec.events_format.unwrap_or(spec.output_format)
                     } else if session_anchor == Some(spec.id) {
-                        spec.session_format().expect(
-                            "setup_session selected only a harness with a session-bearing format",
-                        )
+                        // A control run on a protocol-driven harness may have no
+                        // session-bearing format at all: its id comes off the
+                        // wire, not out of the harness's stdout document.
+                        spec.session_format().unwrap_or(spec.output_format)
                     } else {
                         spec.output_format
                     }
@@ -684,22 +680,47 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let mut forked = false;
     // Empty off the streaming path, where history is written once at the end.
     let mut streamed_history: Vec<StreamedHistory> = Vec::new();
+    // Open the control socket before anything spawns, so a supervisor that races
+    // the dispatch finds an address rather than a gap — but after the plan loop,
+    // because a server-backed mechanism needs the assembled prompt to open its
+    // protocol conversation. `--print-command` executes nothing, so it opens
+    // nothing.
+    let control_listener = match control_shape.filter(|_| !args.print_command) {
+        Some(shape) => {
+            let wiring = session_wiring
+                .as_ref()
+                .expect("validate_control refuses --control without --session");
+            let path = control::socket_path(&wiring.dir, &wiring.name);
+            let dialogue = control_prompt.as_deref().and_then(|prompt| {
+                Dialogue::new(
+                    shape,
+                    DialogueConfig {
+                        prompt: prompt.to_string(),
+                        cwd: control_cwd(args),
+                        model: model.map(str::to_string),
+                        mode,
+                    },
+                )
+            });
+            Some(control_io::bind(&path, shape, dialogue).map_err(|source| {
+                OneharnessError::ControlSocket {
+                    path: path.display().to_string(),
+                    source,
+                }
+            })?)
+        }
+        None => None,
+    };
     // A control-enabled run holds the child's stdin open for the whole turn, so
     // the socket's listener thread can push an interrupt into the live process.
     // It is single-harness/single-prompt by construction (validate_control), so
     // there is exactly one job to drive this way.
     let controlled = control_listener
         .as_ref()
-        .zip(control_shape)
-        .and_then(|(listener, shape)| {
-            control_prompt
-                .as_deref()
-                .map(|prompt| runner::ControlledInput {
-                    handle: listener.handle_ref(),
-                    shape,
-                    first_frame: control::prompt_frame(shape, prompt)
-                        .unwrap_or_else(|| format!("{prompt}\n")),
-                })
+        .zip(control_prompt.as_deref())
+        .map(|(listener, prompt)| runner::ControlledInput {
+            handle: listener.handle_ref(),
+            prompt: prompt.to_string(),
         });
     let (mut results, mut fallback_report): (Vec<RunResult>, Option<FallbackReport>) = if stream_run
     {
@@ -735,17 +756,21 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                     job_index,
                     prompt,
                     model,
-                } => executed_result(
-                    spec,
-                    bin,
-                    jobs[job_index].argv.clone(),
-                    output_format,
-                    &capture,
-                    schema.as_ref(),
-                    1,
-                    prompt,
-                    model,
-                ),
+                } => {
+                    let mut result = executed_result(
+                        spec,
+                        bin,
+                        jobs[job_index].argv.clone(),
+                        output_format,
+                        &capture,
+                        schema.as_ref(),
+                        1,
+                        prompt,
+                        model,
+                    );
+                    apply_dialogue_signals(&mut result, input.handle);
+                    result
+                }
             })
             .collect();
         (results, None)
@@ -1330,6 +1355,7 @@ fn setup_session(
     batch_run: bool,
     fallback_mode: bool,
     project: &std::path::Path,
+    control: bool,
 ) -> Result<Option<SessionWiring>, OneharnessError> {
     let Some(name) = args.session.as_deref() else {
         return Ok(None);
@@ -1344,7 +1370,7 @@ fn setup_session(
         specs
             .iter()
             .copied()
-            .find(|s| s.session_capable())
+            .find(|s| s.session_capable_under(control))
             .ok_or_else(|| OneharnessError::SessionUnsupported {
                 id: specs.iter().map(|s| s.id).collect::<Vec<_>>().join(", "),
                 supported: session_capable_ids(),
@@ -1357,7 +1383,7 @@ fn setup_session(
             });
         }
         let spec = specs[0];
-        if !spec.session_capable() {
+        if !spec.session_capable_under(control) {
             return Err(OneharnessError::SessionUnsupported {
                 id: spec.id.to_string(),
                 supported: session_capable_ids(),
@@ -1859,6 +1885,53 @@ fn validate_control(
         }
     }
     Ok(Some(shape))
+}
+
+/// Take the normalized signals a protocol-driven control run produced from the
+/// dialogue that produced them.
+///
+/// A server-backed mechanism's stdout is a JSON-RPC stream, not the harness's
+/// ordinary output document, so the generic extractors read nothing from it.
+/// The dialogue already parsed the same stream to drive the turn, and is the
+/// only thing that knows which frame carried the session id and which carried
+/// the answer. It leaves both `null` when the turn produced neither — a
+/// protocol run never fabricates a signal any more than a plain one does.
+fn apply_dialogue_signals(
+    result: &mut RunResult,
+    handle: &oneharness_core::io::control::ControlHandle,
+) {
+    if !handle.drives_turn() {
+        return;
+    }
+    result.session_id = handle.session_id();
+    if let Some((text, source)) = handle.text() {
+        result.text = Some(text);
+        result.text_source = Some(source.to_string());
+    }
+}
+
+/// The absolute working directory a controlled turn runs in.
+///
+/// A server-backed mechanism negotiates the directory on the wire rather than
+/// inheriting it from a spawn, and the server may well resolve a relative path
+/// against its own cwd rather than the dispatch's — so it is made absolute here,
+/// once, from the same `--cwd` an ordinary run would spawn into.
+fn control_cwd(args: &RunArgs) -> String {
+    let cwd = args
+        .cwd
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(std::path::Component::CurDir.as_os_str()));
+    let absolute = if cwd.is_absolute() {
+        cwd
+    } else {
+        std::env::current_dir()
+            .map(|base| base.join(&cwd))
+            .unwrap_or(cwd)
+    };
+    std::fs::canonicalize(&absolute)
+        .unwrap_or(absolute)
+        .display()
+        .to_string()
 }
 
 /// The comma-joined ids of every control-capable harness, for the "control
@@ -3764,6 +3837,7 @@ mod tests {
             false,
             true,
             std::path::Path::new("/proj"),
+            false,
         )
         .expect("fallback + multi-harness --session is allowed")
         .expect("a wiring is returned when --session is set");
@@ -3786,6 +3860,7 @@ mod tests {
                 false,
                 false,
                 std::path::Path::new("/proj"),
+                false,
             ),
             Err(OneharnessError::SessionMultipleHarnesses { count: 2, .. })
         ));
@@ -3805,6 +3880,7 @@ mod tests {
                 false,
                 true,
                 std::path::Path::new("/proj"),
+                false,
             ),
             Err(OneharnessError::SessionUnsupported { .. })
         ));

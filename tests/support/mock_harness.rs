@@ -85,6 +85,16 @@
 //!   MOCK_TURN_HOLD  with MOCK_TURN_LOG, keep the turn running after the prompt
 //!                   instead of completing it, so a test can interrupt a turn
 //!                   that is genuinely still in flight.
+//!   MOCK_ACP_LOG    if set to a path, act like an **ACP JSON-RPC server** on
+//!                   stdio (the shape `copilot --acp` / `goose acp` speak):
+//!                   answer `initialize` and `session/new`, hold `session/prompt`
+//!                   open, ask one `session/request_permission`, and end the turn
+//!                   only when a `session/cancel` NOTIFICATION arrives — reporting
+//!                   `stopReason: "end_turn"`, exactly as the real harnesses do
+//!                   after a genuine cancellation. Every received line is appended
+//!                   to the log, so a test can assert the client answered the
+//!                   permission request (without which a real turn never starts)
+//!                   and that cancel carried no `id`.
 //!   MOCK_LOG_FILE   if set, an append-only run log: each invocation appends `S\n`
 //!                   when it starts (before MOCK_SLEEP_MS) and `E\n` when it ends
 //!                   (after the sleep). With a sleep that exceeds spawn latency,
@@ -333,6 +343,88 @@ fn run_native_descendant() -> ! {
     std::process::exit(0);
 }
 
+/// Act like an ACP server: the protocol `copilot --acp` and `goose acp` speak,
+/// including the two behaviors that decide whether a turn works at all or
+/// silently never starts — a mandatory `session/request_permission`, and a
+/// cancel that is a notification rather than a request.
+fn run_acp_server(log_path: &str) -> ! {
+    let append = |line: &str| {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+        {
+            let _ = writeln!(file, "{line}");
+            let _ = file.flush();
+        }
+    };
+    let mut out = std::io::stdout();
+    let mut send = |value: &str| {
+        let _ = writeln!(out, "{value}");
+        let _ = out.flush();
+    };
+
+    let mut prompt_id: Option<String> = None;
+    let mut asked_permission = false;
+    for line in std::io::BufRead::lines(std::io::stdin().lock()) {
+        let Ok(line) = line else { break };
+        append(&line);
+        let id = json_number(&line, "\"id\"");
+        let method = json_string(&line, "\"method\":\"");
+        match method.as_deref() {
+            Some("initialize") => send(&format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":{{\"protocolVersion\":1}}}}",
+                id.unwrap_or_else(|| "1".to_string())
+            )),
+            Some("session/new") => send(&format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":{{\"sessionId\":\"mock-acp-session\"}}}}",
+                id.unwrap_or_else(|| "2".to_string())
+            )),
+            Some("session/prompt") => {
+                prompt_id = id.clone();
+                // The turn does not begin until the client answers this.
+                asked_permission = true;
+                send(
+                    "{\"jsonrpc\":\"2.0\",\"id\":9001,\"method\":\"session/request_permission\",\"params\":{\"sessionId\":\"mock-acp-session\",\"options\":[{\"optionId\":\"allow\",\"kind\":\"allow_once\"},{\"optionId\":\"deny\",\"kind\":\"reject_once\"}]}}",
+                );
+            }
+            // A cancel carries no `id`. The turn then ends reporting a NORMAL
+            // stop reason — the lie oneharness must not read as the truth.
+            Some("session/cancel") => {
+                send("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"mock-acp-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"Info: Operation cancelled by user\"}}}}");
+                if let Some(prompt_id) = prompt_id.take() {
+                    send(&format!(
+                        "{{\"jsonrpc\":\"2.0\",\"id\":{prompt_id},\"result\":{{\"stopReason\":\"end_turn\"}}}}"
+                    ));
+                }
+                break;
+            }
+            _ => {
+                // A permission answer arrives as a plain response; record it so
+                // a test can assert the client actually sent one.
+                if method.is_none() && id.is_some() && asked_permission {
+                    append("PERMISSION_ANSWERED");
+                }
+            }
+        }
+    }
+    std::process::exit(0);
+}
+
+/// The text after `key` in a JSON line, up to the next `"`. Enough for a fixture
+/// that never sees anything but the frames it wrote the other half of.
+fn json_string(line: &str, key: &str) -> Option<String> {
+    let rest = line.split_once(key)?.1;
+    Some(rest.split('"').next()?.to_string())
+}
+
+/// The digits after `key` in a JSON line (`"id":41`).
+fn json_number(line: &str, key: &str) -> Option<String> {
+    let rest = line.split_once(key)?.1.trim_start_matches([':', ' ']);
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    (!digits.is_empty()).then_some(digits)
+}
+
 /// Act like a harness whose turn is driven over an open stdin message stream and
 /// can be aborted out of band. Emits the in-turn transcript, then blocks reading
 /// stdin — so the turn is genuinely still running while a separate process sends
@@ -485,6 +577,10 @@ pub fn run() -> ! {
     // expected sees a real response rather than a hang.
     if let Ok(path) = std::env::var("MOCK_TURN_LOG") {
         run_controlled_turn(&path);
+    }
+
+    if let Ok(path) = std::env::var("MOCK_ACP_LOG") {
+        run_acp_server(&path);
     }
 
     if let Ok(count) = std::env::var("MOCK_REPLY_AFTER_LINES") {

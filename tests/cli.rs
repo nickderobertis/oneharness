@@ -19150,3 +19150,46 @@ fn interrupt_defaults_to_the_platform_session_store_and_prints_readable_json() {
 
     let _ = std::fs::remove_dir_all(&state);
 }
+
+#[cfg(unix)]
+#[test]
+fn interrupt_refuses_a_session_dir_that_is_not_utf8() {
+    // Silently dropping it would resolve the DEFAULT store, so the command
+    // would report `not_running` for a run that is very much running.
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let output = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args([
+            OsStr::new("interrupt"),
+            OsStr::new("--session"),
+            OsStr::new("x"),
+        ])
+        .arg("--session-dir")
+        .arg(OsStr::from_bytes(b"/tmp/oh-\xff-store"))
+        .output()
+        .expect("failed to run oneharness");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("is not valid UTF-8"), "stderr:\n{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn interrupt_without_a_resolvable_store_is_a_usage_error() {
+    // No --session-dir and no platform state dir: there is no address to
+    // resolve, which must be said rather than guessed at.
+    let output = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env_remove("HOME")
+        .env_remove("XDG_STATE_HOME")
+        .args(["interrupt", "--session", "homeless"])
+        .output()
+        .expect("failed to run oneharness");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no session store directory"),
+        "stderr:\n{stderr}"
+    );
+}

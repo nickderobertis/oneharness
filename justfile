@@ -290,11 +290,7 @@ live-schema: _live-install
 # every phase drives a multi-step turn then waits out a 15s freeze window, which
 # is far too slow for a per-PR job. See scripts/e2e-control.sh.
 live-control: _live-install
-    # llmlint: ignore[tool_output_is_signal] Like every other `live-*` recipe this
-    # forwards a live e2e transcript: the phase lines are what attribute a failure
-    # — or a hang inside a 15s freeze window — to a step in a log nobody can attach
-    # a debugger to. The script owns that contract (see its file-level ignore).
-    ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-control.sh
+    ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-control.sh # llmlint: ignore[tool_output_is_signal] Like every other `live-*` recipe this forwards a live e2e transcript: the phase lines are what attribute a failure — or a hang inside a 15s freeze window — to a step in a log nobody can attach a debugger to. The script owns that contract (see its file-level ignore).
 
 live-variants: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-variants.sh

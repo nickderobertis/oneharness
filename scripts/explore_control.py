@@ -21,6 +21,11 @@ Not part of any gate. Verdicts:
   binary, auth/quota refusal, protocol error). Never reported as support.
 """
 
+# llmlint: ignore-file[tool_output_is_signal] This script's OUTPUT IS its product:
+# it is an investigative probe, not a gate step, and the per-harness heading,
+# per-harness verdict, and summary table are the findings a reader runs it to
+# obtain. Silencing them on success would leave it with nothing to report.
+
 from __future__ import annotations
 
 import json
@@ -263,7 +268,6 @@ def terminate(process: Optional[subprocess.Popen]) -> None:
         process.kill()
 
 
-# --- claude-code -------------------------------------------------------------
 
 
 def probe_claude(bin_name: str) -> Tuple[str, str]:
@@ -278,7 +282,11 @@ def probe_claude(bin_name: str) -> Tuple[str, str]:
         "stream-json",
         "--verbose",
         "--permission-mode",
-        "bypassPermissions",
+        # llmlint: ignore[least_privilege_grants] Claude Code offers no
+        # per-directory sandbox to scope this to, and its narrower headless
+        # postures deny the very shell calls the probe measures — which would make
+        # every verdict vacuous. Blast radius is one fresh mktemp scratch dir.
+        "bypassPermissions",  # llmlint: ignore[least_privilege_grants] see above
     ]
     model = os.environ.get("CLAUDE_E2E_MODEL")
     if model:
@@ -316,7 +324,6 @@ def probe_claude(bin_name: str) -> Tuple[str, str]:
         shutil.rmtree(work, ignore_errors=True)
 
 
-# --- codex -------------------------------------------------------------------
 
 
 def probe_codex(bin_name: str) -> Tuple[str, str]:
@@ -356,7 +363,14 @@ def probe_codex(bin_name: str) -> Tuple[str, str]:
                         "threadId": thread_id,
                         "input": [{"type": "text", "text": PROMPT}],
                         "approvalPolicy": "never",
-                        "sandboxPolicy": {"type": "dangerFullAccess"},
+                        # The narrowest policy that still lets the probe write
+                        # its step files: writes confined to the scratch
+                        # workspace, no network.
+                        "sandboxPolicy": {
+                            "type": "workspaceWrite",
+                            "writableRoots": [work],
+                            "networkAccess": False,
+                        },
                         "cwd": work,
                     },
                     timeout=600,
@@ -388,7 +402,6 @@ def probe_codex(bin_name: str) -> Tuple[str, str]:
         shutil.rmtree(work, ignore_errors=True)
 
 
-# --- opencode ----------------------------------------------------------------
 
 
 def probe_opencode(bin_name: str) -> Tuple[str, str]:
@@ -441,14 +454,13 @@ def probe_opencode(bin_name: str) -> Tuple[str, str]:
             log(f"  interrupt responded {code}: {body[-200:]}")
 
         return judge(work, interrupt)
-    except Exception as err:  # noqa: BLE001
+    except Exception as err:  # noqa: BLE001 - a probe reports a protocol fault as BLOCKED rather than crashing the sweep
         return Verdict.BLOCKED, f"{type(err).__name__}: {err}"
     finally:
         terminate(server)
         shutil.rmtree(work, ignore_errors=True)
 
 
-# --- crush -------------------------------------------------------------------
 
 
 def probe_crush(bin_name: str) -> Tuple[str, str]:
@@ -515,7 +527,7 @@ def probe_crush(bin_name: str) -> Tuple[str, str]:
             log(f"  cancel responded {code}: {body[-200:]}")
 
         return judge(work, interrupt)
-    except Exception as err:  # noqa: BLE001
+    except Exception as err:  # noqa: BLE001 - a probe reports a protocol fault as BLOCKED rather than crashing the sweep
         return Verdict.BLOCKED, f"{type(err).__name__}: {err}"
     finally:
         terminate(server)
@@ -523,7 +535,6 @@ def probe_crush(bin_name: str) -> Tuple[str, str]:
         shutil.rmtree(os.path.dirname(sock_path), ignore_errors=True)
 
 
-# --- goose / copilot (ACP) ---------------------------------------------------
 
 
 def probe_acp(bin_name: str, launch: List[str]) -> Tuple[str, str]:
@@ -549,7 +560,15 @@ def probe_acp(bin_name: str, launch: List[str]) -> Tuple[str, str]:
         def answer(message: dict) -> Optional[Any]:
             if message.get("method") != "session/request_permission":
                 return None
+            # llmlint: ignore[least_privilege_grants] The option set is defined by
+            # the harness, not the client: ACP offers no way to narrow a grant, and
+            # declining is exactly the failure mode this probe must not create (a
+            # refused turn produces no work, so the freeze assertion proves nothing).
             options = (message.get("params") or {}).get("options") or []
+            # llmlint: ignore[least_privilege_grants] ACP lets a client accept or
+            # decline the harness's own options; there is no narrower grant to
+            # choose, and declining is the one outcome that makes the probe prove
+            # nothing (no work runs, so nothing can be observed to stop).
             allow = next(
                 (o for o in options if "allow" in str(o.get("kind", "")).lower()),
                 options[0] if options else None,
@@ -580,7 +599,7 @@ def probe_acp(bin_name: str, launch: List[str]) -> Tuple[str, str]:
                     {"sessionId": session_id, "prompt": [{"type": "text", "text": PROMPT}]},
                     timeout=600,
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 - the prompt thread's fate is irrelevant; the filesystem is the verdict
                 pass
 
         threading.Thread(target=prompt, daemon=True).start()
@@ -591,7 +610,7 @@ def probe_acp(bin_name: str, launch: List[str]) -> Tuple[str, str]:
             rpc.notify("session/cancel", {"sessionId": session_id})
 
         return judge(work, interrupt)
-    except Exception as err:  # noqa: BLE001
+    except Exception as err:  # noqa: BLE001 - a probe reports a protocol fault as BLOCKED rather than crashing the sweep
         return Verdict.BLOCKED, f"{type(err).__name__}: {err}"
     finally:
         terminate(process)
@@ -653,7 +672,7 @@ def main(argv: List[str]) -> int:
             continue
         try:
             verdict, detail = with_deadline(PROBE_TIMEOUT, lambda: probe(bin_name))
-        except Exception as err:  # noqa: BLE001
+        except Exception as err:  # noqa: BLE001 - any protocol fault is data (BLOCKED), never a crash
             verdict, detail = Verdict.BLOCKED, f"{type(err).__name__}: {err}"
         log(f"  {verdict}: {detail}")
         results.append((harness, mechanism, verdict, detail))

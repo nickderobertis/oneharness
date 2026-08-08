@@ -30,7 +30,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::control::{ServerSpec, ServerTransport};
+use crate::domain::control::{ServerAddress, ServerSpec};
 
 /// How long an idle server (no live lease) is kept before reclamation, so a
 /// burst of short dispatches does not thrash a heavyweight process up and down.
@@ -47,11 +47,9 @@ pub struct ServerRecord {
     pub pid: u32,
     /// The full argv it was launched with (for diagnostics and drift).
     pub argv: Vec<String>,
-    /// How it is reached: a unix socket path, a `host:port`, or empty for a
-    /// stdio server (whose transport is the process's own pipes).
-    pub address: String,
-    /// Transport, echoed so a reader does not have to re-derive it.
-    pub transport: ServerTransport,
+    /// How it is reached — the transport and its coordinates together, so a
+    /// reader can never see a port that belongs to a socket.
+    pub address: ServerAddress,
     /// Epoch seconds the entry last had no live lease; `None` while leased.
     pub idle_since: Option<u64>,
 }
@@ -125,9 +123,8 @@ pub struct LaunchPlan {
     pub argv: Vec<String>,
     /// Environment applied to the server process.
     pub env: Vec<(String, String)>,
-    /// The address the server will be reachable at, or empty for stdio.
-    pub address: String,
-    pub transport: ServerTransport,
+    /// The address the server will be reachable at.
+    pub address: ServerAddress,
 }
 
 impl LaunchPlan {
@@ -138,18 +135,18 @@ impl LaunchPlan {
         bin: &str,
         spec: &ServerSpec,
         overrides: &[String],
-        address: String,
+        address: ServerAddress,
         env: Vec<(String, String)>,
     ) -> Self {
+        debug_assert_eq!(
+            address.transport(),
+            spec.transport,
+            "a launch plan's address must speak the transport its spec declares"
+        );
         let mut argv = vec![bin.to_string()];
         argv.extend(spec.launch.iter().map(|a| (*a).to_string()));
         argv.extend(overrides.iter().cloned());
-        LaunchPlan {
-            argv,
-            env,
-            address,
-            transport: spec.transport,
-        }
+        LaunchPlan { argv, env, address }
     }
 }
 
@@ -290,7 +287,6 @@ fn start(entry: &Path, plan: &LaunchPlan) -> io::Result<ServerRecord> {
         pid,
         argv: plan.argv.clone(),
         address: plan.address.clone(),
-        transport: plan.transport,
         idle_since: None,
     };
     write_record(entry, &record)?;
@@ -473,6 +469,7 @@ impl Drop for EntryLock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::control::ServerTransport;
 
     fn temp_root(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -492,8 +489,7 @@ mod tests {
         LaunchPlan {
             argv: vec!["sleep".to_string(), "120".to_string()],
             env: Vec::new(),
-            address: String::new(),
-            transport: ServerTransport::Stdio,
+            address: ServerAddress::Stdio,
         }
     }
 
@@ -513,15 +509,19 @@ mod tests {
             key_env: &[],
             transport: ServerTransport::Tcp,
         };
+        let address = ServerAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 7777,
+        };
         let plan = LaunchPlan::new(
             "opencode",
             &spec,
             &["--port".to_string(), "7777".to_string()],
-            "127.0.0.1:7777".to_string(),
+            address.clone(),
             Vec::new(),
         );
         assert_eq!(plan.argv, ["opencode", "serve", "--port", "7777"]);
-        assert_eq!(plan.address, "127.0.0.1:7777");
+        assert_eq!(plan.address, address);
     }
 
     #[cfg(unix)]

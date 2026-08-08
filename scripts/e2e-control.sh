@@ -21,6 +21,12 @@
 #
 # Auth and model mirror the per-harness scripts. A missing CLI or auth is a
 # SKIP, never a failure.
+#
+# llmlint: ignore-file[tool_output_is_signal] Every live e2e script in this repo
+# announces its phases (see e2e-claude.sh, e2e-schema.sh): the transcript is what
+# attributes a later failure — or a hang inside a 15s freeze window — to a phase
+# in a CI log where nobody can attach a debugger. Silence here would make a
+# timeout indistinguishable from a harness that never started.
 set -euo pipefail
 # shellcheck source=scripts/e2e-lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"

@@ -1101,6 +1101,10 @@ TOML
 # that refused or finished early is flakiness, not a control regression).
 #
 #   $1 harness id
+# llmlint: ignore-block[tool_output_is_signal] The phase's progress lines are how a
+# CI log attributes a failure inside a multi-minute turn plus a 15s freeze window
+# to the step that produced it — the same contract every other oh_*_enforce helper
+# here follows.
 oh_control_enforce() {
     local id="$1"
     local attempt
@@ -1141,6 +1145,10 @@ _oh_control_enforce_once() {
     note "  control-enforce: starting a controlled run ($id, session $name)"
     ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --prompt "$prompt" \
         --control --session "$name" --session-dir "$store" --cwd "$sandbox" \
+        `# llmlint: ignore[least_privilege_grants] The turn must actually run shell` \
+        `# commands for there to be work to stop; a narrower mode makes the freeze` \
+        `# assertion vacuous. Confined to a fresh mktemp sandbox, like every other` \
+        `# oh_*_enforce phase.` \
         --mode bypass --timeout "${OH_TIMEOUT:-300}" --compact \
         "${model_args[@]+"${model_args[@]}"}" >"$report" 2>"$sandbox/run.err" &
     local run_pid=$!
@@ -1219,7 +1227,7 @@ _oh_control_enforce_once() {
     wait "$run_pid" 2>/dev/null || true
     # The run must have ended on its own (not been killed) and recorded the
     # interrupt, and the session must have survived.
-    if ! jq -e '.control.interrupts | length >= 1 and (.[0].ok == true)' "$report" >/dev/null 2>&1; then
+    if ! jq -e '.control.interrupts | length >= 1 and (.[0].outcome == "served")' "$report" >/dev/null 2>&1; then
         sed 's/^/    /' "$sandbox/run.err" >&2 || true
         head -c 2000 "$report" >&2 || true
         rm -rf "$sandbox"
@@ -1248,6 +1256,8 @@ _oh_step_count() {
     done
     printf '%s' "$count"
 }
+
+# llmlint: ignore-end[tool_output_is_signal]
 
 # Poll `condition` (a shell expression) until it holds or `seconds` elapse.
 # Returns 1 on timeout. Control is a race between two processes, so every wait

@@ -38,7 +38,7 @@ pub fn run(args: &InterruptArgs) -> Result<i32, OneharnessError> {
         serde_json::to_string_pretty(&response)?
     };
     println!("{text}");
-    Ok(i32::from(!response.ok))
+    Ok(i32::from(!response.is_ok()))
 }
 
 fn interrupt() -> ControlRequest {

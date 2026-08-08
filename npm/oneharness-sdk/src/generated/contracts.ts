@@ -1,12 +1,46 @@
 /* Generated from oneharness-core. Do not edit. */
 
 /**
+ * One control request the run handled, recorded in the report so a consumer
+ * can tell an interrupted turn from one that simply ended.
+ *
+ * A sum type discriminated by `outcome`, so a record can never say "served,
+ * and here is the refusal reason": the reason exists exactly when there was a
+ * refusal. Serialized flat — `{"outcome":"served","verb":…,"at":…}` /
+ * `{"outcome":"refused","verb":…,"at":…,"reason":…}`.
+ */
+export type ControlEvent =
+  | {
+      /**
+       * RFC 3339 timestamp the request was handled.
+       */
+      at: string;
+      outcome: "served";
+      /**
+       * The verb requested.
+       */
+      verb: "interrupt";
+      [k: string]: unknown;
+    }
+  | {
+      at: string;
+      outcome: "refused";
+      reason: ControlReason;
+      verb: ControlVerb;
+      [k: string]: unknown;
+    };
+/**
  * Why a control request could not be served. Distinct reasons because a
  * supervisor reacts differently to each: `unsupported` is permanent for the
  * harness, `not_running` means the dispatch is gone, `no_active_turn` means
  * the run is alive but between turns.
  */
 export type ControlReason = "unsupported" | "no_active_turn" | "not_running";
+/**
+ * The control verb a supervisor sends. Only `interrupt` exists today; the
+ * frame's `v` is what leaves room for `steer` later.
+ */
+export type ControlVerb = "interrupt";
 export type ToolCallStatus = "completed" | "failed" | "timeout" | "interrupted";
 /**
  * How a normalized tool interval was obtained.
@@ -187,34 +221,11 @@ export interface ControlReport {
   /**
    * The harness mechanism backing it.
    */
-  mechanism: string;
+  mechanism: "claude-control-request" | "codex-app-server" | "opencode-http" | "acp-cancel" | "crush-http";
   /**
    * Absolute path of the socket this run listened on.
    */
   socket: string;
-  [k: string]: unknown;
-}
-/**
- * One interrupt the run served, recorded in the report so a consumer can tell
- * an interrupted turn from one that simply ended.
- */
-export interface ControlEvent {
-  /**
-   * RFC 3339 timestamp the request was served.
-   */
-  at: string;
-  /**
-   * Whether the mechanism accepted it.
-   */
-  ok: boolean;
-  /**
-   * Why it was refused; `null` when `ok`.
-   */
-  reason?: ControlReason | null | undefined;
-  /**
-   * The verb requested (`interrupt`).
-   */
-  verb: string;
   [k: string]: unknown;
 }
 /**

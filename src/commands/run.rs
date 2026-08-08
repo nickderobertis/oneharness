@@ -886,7 +886,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // listener is dropped (which removes the socket).
     let control_report = control_listener.as_ref().map(|listener| ControlReport {
         socket: listener.path().display().to_string(),
-        mechanism: listener.handle_ref().shape().as_str().to_string(),
+        mechanism: listener.handle_ref().shape(),
         interrupts: listener.handle_ref().events(),
     });
 
@@ -1668,6 +1668,10 @@ struct StreamedHarness {
 /// consumer (it closed the stream — short-circuiting on what it saw) tells the
 /// runner to stop and tear down the child. `schema` is always `None` here
 /// (`--stream` and `--schema` are mutually exclusive, enforced up front).
+// llmlint: ignore[suppressions_justified] The allow below is justified here: these
+// are one plan entry's already-resolved fields (spec/bin/format/prompt/model plus
+// the two optional side channels), and bundling them into a struct would only move
+// the same list one indirection away from the single call site in `stream_plan`.
 #[allow(clippy::too_many_arguments)]
 fn stream_one_harness(
     job: &Job,
@@ -1769,13 +1773,6 @@ fn emit_stream_result(report: &RunReport) -> Result<(), OneharnessError> {
     Ok(())
 }
 
-/// Refuse `--stream` combined with anything it cannot serve: a batch
-/// (multi-prompt) run or structured output — each needs the whole output at
-/// once, which streaming does not provide — and, in the default `parallel` mode,
-/// more than one harness. A loud usage error before anything spawns.
-///
-/// A **fallback** chain may list several candidates — harnesses, and each
-/// harness's models (the multi-model half is refused in [`validate_multi_model`],
 /// Validate a `--control` request and return the mechanism that will back it,
 /// or `None` when the flag was not passed (which must change nothing at all —
 /// no socket, no extra process, and a byte-identical argv).
@@ -1852,6 +1849,13 @@ fn control_capable_ids() -> String {
     }
 }
 
+/// Refuse `--stream` combined with anything it cannot serve: a batch
+/// (multi-prompt) run or structured output — each needs the whole output at
+/// once, which streaming does not provide — and, in the default `parallel` mode,
+/// more than one harness. A loud usage error before anything spawns.
+///
+/// A **fallback** chain may list several candidates — harnesses, and each
+/// harness's models (the multi-model half is refused in [`validate_multi_model`],
 /// which allows it here for the same reason): only the candidate that runs ever
 /// publishes (see [`stream_plan`]), so there is nothing to interleave.
 fn validate_stream(

@@ -7,6 +7,8 @@ import type {
   ControlEvent,
   ControlReason,
   ControlReport,
+  ControlShape,
+  ControlVerb,
   FailureKind,
   FallThrough,
   FallbackReport,
@@ -66,12 +68,19 @@ export const BatchReportSchema: z.ZodType<BatchReport> = z.looseObject({
 
 export const BatchStrategySchema: z.ZodType<BatchStrategy> = z.union([z.literal("speed"), z.literal("min-tokens")]);
 
-export const ControlEventSchema: z.ZodType<ControlEvent> = z.looseObject({
-  at: z.string().refine((value) => value !== undefined, { message: "Required" }),
-  ok: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
-  reason: z.union([z.lazy(() => ControlReasonSchema), z.null()]).optional(),
-  verb: z.string().refine((value) => value !== undefined, { message: "Required" }),
-});
+export const ControlEventSchema: z.ZodType<ControlEvent> = z.union([
+  z.looseObject({
+    at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    outcome: z.literal("served").refine((value) => value !== undefined, { message: "Required" }),
+    verb: z.lazy(() => ControlVerbSchema).refine((value) => value !== undefined, { message: "Required" }),
+  }),
+  z.looseObject({
+    at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    outcome: z.literal("refused").refine((value) => value !== undefined, { message: "Required" }),
+    reason: z.lazy(() => ControlReasonSchema).refine((value) => value !== undefined, { message: "Required" }),
+    verb: z.lazy(() => ControlVerbSchema).refine((value) => value !== undefined, { message: "Required" }),
+  }),
+]);
 
 export const ControlReasonSchema: z.ZodType<ControlReason> = z.union([
   z.literal("unsupported"),
@@ -81,9 +90,19 @@ export const ControlReasonSchema: z.ZodType<ControlReason> = z.union([
 
 export const ControlReportSchema: z.ZodType<ControlReport> = z.looseObject({
   interrupts: z.array(z.lazy(() => ControlEventSchema)).refine((value) => value !== undefined, { message: "Required" }),
-  mechanism: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  mechanism: z.lazy(() => ControlShapeSchema).refine((value) => value !== undefined, { message: "Required" }),
   socket: z.string().refine((value) => value !== undefined, { message: "Required" }),
 });
+
+export const ControlShapeSchema: z.ZodType<ControlShape> = z.union([
+  z.literal("claude-control-request"),
+  z.literal("codex-app-server"),
+  z.literal("opencode-http"),
+  z.literal("acp-cancel"),
+  z.literal("crush-http"),
+]);
+
+export const ControlVerbSchema: z.ZodType<ControlVerb> = z.literal("interrupt");
 
 export const DetectInfoSchema: z.ZodType<DetectInfo> = z.looseObject({
   available: z.boolean().refine((value) => value !== undefined, { message: "Required" }),

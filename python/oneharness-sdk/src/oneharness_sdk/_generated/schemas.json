@@ -10002,38 +10002,57 @@
         ]
       },
       "ControlEvent": {
-        "description": "One interrupt the run served, recorded in the report so a consumer can tell\nan interrupted turn from one that simply ended.",
-        "properties": {
-          "at": {
-            "description": "RFC 3339 timestamp the request was served.",
-            "type": "string"
+        "description": "One control request the run handled, recorded in the report so a consumer\ncan tell an interrupted turn from one that simply ended.\n\nA sum type discriminated by `outcome`, so a record can never say \"served,\nand here is the refusal reason\": the reason exists exactly when there was a\nrefusal. Serialized flat \u2014 `{\"outcome\":\"served\",\"verb\":\u2026,\"at\":\u2026}` /\n`{\"outcome\":\"refused\",\"verb\":\u2026,\"at\":\u2026,\"reason\":\u2026}`.",
+        "oneOf": [
+          {
+            "description": "The mechanism accepted the request.",
+            "properties": {
+              "at": {
+                "description": "RFC 3339 timestamp the request was handled.",
+                "type": "string"
+              },
+              "outcome": {
+                "const": "served",
+                "type": "string"
+              },
+              "verb": {
+                "$ref": "#/$defs/ControlVerb",
+                "description": "The verb requested."
+              }
+            },
+            "required": [
+              "outcome",
+              "verb",
+              "at"
+            ],
+            "type": "object"
           },
-          "ok": {
-            "description": "Whether the mechanism accepted it.",
-            "type": "boolean"
-          },
-          "reason": {
-            "anyOf": [
-              {
+          {
+            "description": "The request was refused, with why.",
+            "properties": {
+              "at": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "refused",
+                "type": "string"
+              },
+              "reason": {
                 "$ref": "#/$defs/ControlReason"
               },
-              {
-                "type": "null"
+              "verb": {
+                "$ref": "#/$defs/ControlVerb"
               }
+            },
+            "required": [
+              "outcome",
+              "verb",
+              "at",
+              "reason"
             ],
-            "description": "Why it was refused; `null` when `ok`."
-          },
-          "verb": {
-            "description": "The verb requested (`interrupt`).",
-            "type": "string"
+            "type": "object"
           }
-        },
-        "required": [
-          "verb",
-          "at",
-          "ok"
-        ],
-        "type": "object"
+        ]
       },
       "ControlReason": {
         "description": "Why a control request could not be served. Distinct reasons because a\nsupervisor reacts differently to each: `unsupported` is permanent for the\nharness, `not_running` means the dispatch is gone, `no_active_turn` means\nthe run is alive but between turns.",
@@ -10066,8 +10085,8 @@
             "type": "array"
           },
           "mechanism": {
-            "description": "The harness mechanism backing it.",
-            "type": "string"
+            "$ref": "#/$defs/ControlShape",
+            "description": "The harness mechanism backing it."
           },
           "socket": {
             "description": "Absolute path of the socket this run listened on.",
@@ -10080,6 +10099,43 @@
           "interrupts"
         ],
         "type": "object"
+      },
+      "ControlShape": {
+        "description": "How a harness accepts an out-of-band interrupt for an in-flight turn.\n\nRegistry data on [`crate::domain::harness::HarnessSpec::control`], sourced\nfrom a live interrupt against the real CLI \u2014 never guessed. `None` there\nmeans `oneharness interrupt` is a loud usage error for the harness, never a\nsilent no-op: a supervisor that is told \"ok\" while the turn keeps running is\nworse off than one told the lever does not exist.",
+        "oneOf": [
+          {
+            "const": "claude-control-request",
+            "description": "Claude Code: the control frame rides the run process's **own stdin**\n(`-p --input-format stream-json`), so no sidecar server is needed. A\n`{\"type\":\"control_request\",\u2026,\"request\":{\"subtype\":\"interrupt\"}}` line\naborts the turn with a `result` document; the session survives and a\nlater turn continues it with full context. Verified live: a plain user\nmessage written mid-turn is *silently dropped*, so the control frame is\nthe only mechanism that works.",
+            "type": "string"
+          },
+          {
+            "const": "codex-app-server",
+            "description": "Codex: `turn/interrupt` over the `codex app-server` JSON-RPC stdio\nprotocol, keyed on `CODEX_HOME`.",
+            "type": "string"
+          },
+          {
+            "const": "opencode-http",
+            "description": "OpenCode: `POST /api/session/{id}/interrupt` against `opencode serve`.",
+            "type": "string"
+          },
+          {
+            "const": "acp-cancel",
+            "description": "Goose and Copilot: the ACP `session/cancel` **notification** (no `id`)\nover their JSON-RPC stdio servers.",
+            "type": "string"
+          },
+          {
+            "const": "crush-http",
+            "description": "Crush: `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against\n`crush server`.",
+            "type": "string"
+          }
+        ]
+      },
+      "ControlVerb": {
+        "description": "The control verb a supervisor sends. Only `interrupt` exists today; the\nframe's `v` is what leaves room for `steer` later.",
+        "enum": [
+          "interrupt"
+        ],
+        "type": "string"
       },
       "FailureKind": {
         "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `tool_deferred`), so the\nwire shape is unchanged \u2014 modeling it as an enum keeps a misspelled or\ninvalid kind unrepresentable and gives every producer/consumer (classifier,\n`is_failure`, the fallback fall-through rule, the report, history) one\ndefinition to share instead of scattered string literals.",
@@ -10889,38 +10945,57 @@
         ]
       },
       "ControlEvent": {
-        "description": "One interrupt the run served, recorded in the report so a consumer can tell\nan interrupted turn from one that simply ended.",
-        "properties": {
-          "at": {
-            "description": "RFC 3339 timestamp the request was served.",
-            "type": "string"
+        "description": "One control request the run handled, recorded in the report so a consumer\ncan tell an interrupted turn from one that simply ended.\n\nA sum type discriminated by `outcome`, so a record can never say \"served,\nand here is the refusal reason\": the reason exists exactly when there was a\nrefusal. Serialized flat \u2014 `{\"outcome\":\"served\",\"verb\":\u2026,\"at\":\u2026}` /\n`{\"outcome\":\"refused\",\"verb\":\u2026,\"at\":\u2026,\"reason\":\u2026}`.",
+        "oneOf": [
+          {
+            "description": "The mechanism accepted the request.",
+            "properties": {
+              "at": {
+                "description": "RFC 3339 timestamp the request was handled.",
+                "type": "string"
+              },
+              "outcome": {
+                "const": "served",
+                "type": "string"
+              },
+              "verb": {
+                "$ref": "#/$defs/ControlVerb",
+                "description": "The verb requested."
+              }
+            },
+            "required": [
+              "outcome",
+              "verb",
+              "at"
+            ],
+            "type": "object"
           },
-          "ok": {
-            "description": "Whether the mechanism accepted it.",
-            "type": "boolean"
-          },
-          "reason": {
-            "anyOf": [
-              {
+          {
+            "description": "The request was refused, with why.",
+            "properties": {
+              "at": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "refused",
+                "type": "string"
+              },
+              "reason": {
                 "$ref": "#/$defs/ControlReason"
               },
-              {
-                "type": "null"
+              "verb": {
+                "$ref": "#/$defs/ControlVerb"
               }
+            },
+            "required": [
+              "outcome",
+              "verb",
+              "at",
+              "reason"
             ],
-            "description": "Why it was refused; `null` when `ok`."
-          },
-          "verb": {
-            "description": "The verb requested (`interrupt`).",
-            "type": "string"
+            "type": "object"
           }
-        },
-        "required": [
-          "verb",
-          "at",
-          "ok"
-        ],
-        "type": "object"
+        ]
       },
       "ControlReason": {
         "description": "Why a control request could not be served. Distinct reasons because a\nsupervisor reacts differently to each: `unsupported` is permanent for the\nharness, `not_running` means the dispatch is gone, `no_active_turn` means\nthe run is alive but between turns.",
@@ -10953,8 +11028,8 @@
             "type": "array"
           },
           "mechanism": {
-            "description": "The harness mechanism backing it.",
-            "type": "string"
+            "$ref": "#/$defs/ControlShape",
+            "description": "The harness mechanism backing it."
           },
           "socket": {
             "description": "Absolute path of the socket this run listened on.",
@@ -10967,6 +11042,43 @@
           "interrupts"
         ],
         "type": "object"
+      },
+      "ControlShape": {
+        "description": "How a harness accepts an out-of-band interrupt for an in-flight turn.\n\nRegistry data on [`crate::domain::harness::HarnessSpec::control`], sourced\nfrom a live interrupt against the real CLI \u2014 never guessed. `None` there\nmeans `oneharness interrupt` is a loud usage error for the harness, never a\nsilent no-op: a supervisor that is told \"ok\" while the turn keeps running is\nworse off than one told the lever does not exist.",
+        "oneOf": [
+          {
+            "const": "claude-control-request",
+            "description": "Claude Code: the control frame rides the run process's **own stdin**\n(`-p --input-format stream-json`), so no sidecar server is needed. A\n`{\"type\":\"control_request\",\u2026,\"request\":{\"subtype\":\"interrupt\"}}` line\naborts the turn with a `result` document; the session survives and a\nlater turn continues it with full context. Verified live: a plain user\nmessage written mid-turn is *silently dropped*, so the control frame is\nthe only mechanism that works.",
+            "type": "string"
+          },
+          {
+            "const": "codex-app-server",
+            "description": "Codex: `turn/interrupt` over the `codex app-server` JSON-RPC stdio\nprotocol, keyed on `CODEX_HOME`.",
+            "type": "string"
+          },
+          {
+            "const": "opencode-http",
+            "description": "OpenCode: `POST /api/session/{id}/interrupt` against `opencode serve`.",
+            "type": "string"
+          },
+          {
+            "const": "acp-cancel",
+            "description": "Goose and Copilot: the ACP `session/cancel` **notification** (no `id`)\nover their JSON-RPC stdio servers.",
+            "type": "string"
+          },
+          {
+            "const": "crush-http",
+            "description": "Crush: `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against\n`crush server`.",
+            "type": "string"
+          }
+        ]
+      },
+      "ControlVerb": {
+        "description": "The control verb a supervisor sends. Only `interrupt` exists today; the\nframe's `v` is what leaves room for `steer` later.",
+        "enum": [
+          "interrupt"
+        ],
+        "type": "string"
       },
       "FailureKind": {
         "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `tool_deferred`), so the\nwire shape is unchanged \u2014 modeling it as an enum keeps a misspelled or\ninvalid kind unrepresentable and gives every producer/consumer (classifier,\n`is_failure`, the fallback fall-through rule, the report, history) one\ndefinition to share instead of scattered string literals.",

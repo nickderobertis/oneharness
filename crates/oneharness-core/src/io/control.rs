@@ -110,16 +110,10 @@ impl ControlHandle {
         let response = match request.verb {
             ControlVerb::Interrupt => self.interrupt(),
         };
-        let event = ControlEvent {
-            verb: request.verb.as_str().to_string(),
-            at: now_rfc3339(),
-            ok: response.ok,
-            reason: response.reason,
-        };
         self.events
             .lock()
             .expect("control events poisoned")
-            .push(event);
+            .push(response.record(request.verb, now_rfc3339()));
         response
     }
 
@@ -208,8 +202,10 @@ mod imp {
     pub fn bind(path: &Path, shape: ControlShape) -> io::Result<ControlListener> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
-            // The directory holds addressable control channels; keep it owner-only.
-            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            // The directory holds addressable levers over running agents, so
+            // owner-only is a requirement, not a preference: failing to narrow it
+            // must abort the run rather than leave a wider default in place.
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
         }
         if path.exists() {
             if UnixStream::connect(path).is_ok() {
@@ -442,8 +438,8 @@ mod tests {
         let path = socket_path(&dir, "idle");
         let _listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         let response = send(&path, ControlRequest::interrupt());
-        assert!(!response.ok);
-        assert_eq!(response.reason, Some(ControlReason::NoActiveTurn));
+        assert!(!response.is_ok());
+        assert_eq!(response.reason(), Some(ControlReason::NoActiveTurn));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -452,8 +448,8 @@ mod tests {
         let dir = temp_dir("missing");
         let path = socket_path(&dir, "gone");
         let response = send(&path, ControlRequest::interrupt());
-        assert!(!response.ok);
-        assert_eq!(response.reason, Some(ControlReason::NotRunning));
+        assert!(!response.is_ok());
+        assert_eq!(response.reason(), Some(ControlReason::NotRunning));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -490,10 +486,10 @@ mod tests {
         handle.begin_turn(child.stdin.take().unwrap());
 
         let response = send(&path, ControlRequest::interrupt());
-        assert!(response.ok, "{response:?}");
+        assert!(response.is_ok(), "{response:?}");
         assert_eq!(
-            response.mechanism.as_deref(),
-            Some("claude-control-request")
+            response.mechanism(),
+            Some(ControlShape::ClaudeControlRequest)
         );
 
         handle.end_turn();
@@ -511,9 +507,9 @@ mod tests {
 
         let events = handle.events();
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].verb, "interrupt");
-        assert!(events[0].ok);
-        assert!(!events[0].at.is_empty());
+        assert_eq!(events[0].verb(), ControlVerb::Interrupt);
+        assert!(events[0].is_served());
+        assert!(!events[0].at().is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -531,8 +527,8 @@ mod tests {
         let mut reply = String::new();
         BufReader::new(&stream).read_line(&mut reply).unwrap();
         let response: ControlResponse = serde_json::from_str(reply.trim()).unwrap();
-        assert!(!response.ok);
-        assert_eq!(response.reason, Some(ControlReason::Unsupported));
+        assert!(!response.is_ok());
+        assert_eq!(response.reason(), Some(ControlReason::Unsupported));
         assert!(listener.handle().events().is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }

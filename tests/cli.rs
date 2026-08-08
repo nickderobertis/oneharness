@@ -18308,7 +18308,7 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
     let interrupts = report["control"]["interrupts"].as_array().unwrap();
     assert_eq!(interrupts.len(), 1);
     assert_eq!(interrupts[0]["verb"], "interrupt");
-    assert_eq!(interrupts[0]["ok"], true);
+    assert_eq!(interrupts[0]["outcome"], "served");
     assert!(!interrupts[0]["at"].as_str().unwrap().is_empty());
 
     // The harness really received the control frame — asserted at the harness,
@@ -18542,9 +18542,9 @@ fn interrupt_between_turns_reports_no_active_turn() {
     )
     .unwrap();
     let response = oneharness_core::io::control::send(listener.path(), ControlRequest::interrupt());
-    assert!(!response.ok);
+    assert!(!response.is_ok());
     assert_eq!(
-        response.reason,
+        response.reason(),
         Some(oneharness_core::domain::control::ControlReason::NoActiveTurn)
     );
     let _ = std::fs::remove_dir_all(&store);
@@ -18728,9 +18728,12 @@ fn control_works_alongside_streaming_so_a_supervisor_can_watch_and_interrupt() {
         other => panic!("expected a closing result envelope, got {other:?}\n{text}"),
     };
     let control = report.control.expect("streamed run should report control");
-    assert_eq!(control.mechanism, "claude-control-request");
+    assert_eq!(
+        control.mechanism,
+        oneharness_core::domain::control::ControlShape::ClaudeControlRequest
+    );
     assert_eq!(control.interrupts.len(), 1);
-    assert!(control.interrupts[0].ok);
+    assert!(control.interrupts[0].is_served());
 
     let _ = std::fs::remove_dir_all(&store);
     let _ = std::fs::remove_dir_all(&cwd);
@@ -18770,4 +18773,94 @@ fn control_with_a_schema_is_a_usage_error() {
         "stderr:\n{stderr}"
     );
     let _ = std::fs::remove_dir_all(&store);
+}
+
+/// Every row of the README's control support matrix: the harness id and the
+/// `control` cell (a mechanism id, or the em dash meaning "none").
+fn readme_control_matrix() -> Vec<(String, String)> {
+    let readme = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md"))
+        .expect("README.md is readable");
+    let table = readme
+        .split("#### Control support matrix")
+        .nth(1)
+        .expect("README has a control support matrix");
+    table
+        .lines()
+        .skip_while(|line| !line.starts_with("| Harness "))
+        .skip(2)
+        .take_while(|line| line.starts_with('|'))
+        .map(|line| {
+            let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
+            (
+                cells[0].to_lowercase().replace(' ', "-"),
+                cells[1].trim_matches('`').to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_readme_control_matrix_matches_the_registry() {
+    // The matrix is the capability's public face, and a stale row is exactly the
+    // decay this feature exists to prevent (a supervisor reading support that
+    // was removed). Pin it to `oneharness list`, the registry's own report.
+    let listed = json_stdout(&run(&["list"], &[]));
+    let mut declared: Vec<(String, String)> = listed["harnesses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| {
+            (
+                h["id"].as_str().unwrap().to_string(),
+                h["control"].as_str().unwrap_or("—").to_string(),
+            )
+        })
+        .collect();
+    declared.sort();
+
+    let mut documented = readme_control_matrix();
+    // The matrix names harnesses by display-ish name; map them to registry ids.
+    for row in &mut documented {
+        row.0 = match row.0.as_str() {
+            "claude-code" => "claude-code",
+            "opencode" => "opencode",
+            "codex" => "codex",
+            "crush" => "crush",
+            "goose" => "goose",
+            "copilot" => "copilot",
+            "cursor" => "cursor",
+            "qwen" => "qwen",
+            other => panic!("unknown harness `{other}` in the README control matrix"),
+        }
+        .to_string();
+    }
+    documented.sort();
+
+    assert_eq!(
+        documented, declared,
+        "the README control matrix has drifted from the registry (`oneharness list`)"
+    );
+}
+
+#[test]
+fn the_readme_documents_every_control_refusal_reason() {
+    // The three reasons are a wire contract a supervisor branches on; a reason
+    // added to the enum but missing from the docs is an undocumented branch.
+    let readme =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md")).unwrap();
+    let section = readme
+        .split("### Turn control")
+        .nth(1)
+        .expect("README documents turn control");
+    for reason in [
+        oneharness_core::domain::control::ControlReason::Unsupported,
+        oneharness_core::domain::control::ControlReason::NoActiveTurn,
+        oneharness_core::domain::control::ControlReason::NotRunning,
+    ] {
+        assert!(
+            section.contains(reason.as_str()),
+            "README does not document the `{}` refusal reason",
+            reason.as_str()
+        );
+    }
 }

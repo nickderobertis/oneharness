@@ -76,6 +76,22 @@ impl ControlShape {
         }
     }
 
+    /// The shape a wire `mechanism` names, or `None` for one this build does not
+    /// know — a supervisor reading an unrecognized mechanism gets a loud parse
+    /// failure rather than a silently-degraded frame.
+    #[must_use]
+    pub fn from_wire(mechanism: &str) -> Option<ControlShape> {
+        [
+            ControlShape::ClaudeControlRequest,
+            ControlShape::CodexAppServer,
+            ControlShape::OpencodeHttp,
+            ControlShape::AcpCancel,
+            ControlShape::CrushHttp,
+        ]
+        .into_iter()
+        .find(|shape| shape.as_str() == mechanism)
+    }
+
     /// Whether this mechanism needs a sidecar server process (everything except
     /// Claude Code, whose control rides the run's own stdin).
     #[must_use]
@@ -99,7 +115,10 @@ impl ControlShape {
     }
 }
 
-/// How a sidecar server is reached once launched.
+/// How a sidecar server is reached once launched — the *declaration*, on
+/// [`ServerSpec`]. The running server's actual address is [`ServerAddress`],
+/// which carries the transport and its coordinates together so the two can
+/// never disagree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum ServerTransport {
@@ -109,6 +128,36 @@ pub enum ServerTransport {
     UnixSocket,
     /// HTTP over a loopback TCP port the server binds (opencode).
     Tcp,
+}
+
+/// Where a *running* sidecar server actually is.
+///
+/// One value rather than a transport tag beside a loose address string: a
+/// stdio server has no address at all, and a TCP server's port is meaningless
+/// to a unix-socket reader, so pairing them separately would make
+/// "`Stdio` with a port" and "`Tcp` with a socket path" representable states a
+/// reader would have to defend against.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "transport", rename_all = "kebab-case")]
+pub enum ServerAddress {
+    /// The transport is the process's own pipes; there is nothing to dial.
+    Stdio,
+    /// A unix domain socket the server bound.
+    UnixSocket { path: String },
+    /// A loopback TCP port the server bound.
+    Tcp { host: String, port: u16 },
+}
+
+impl ServerAddress {
+    /// The transport this address speaks.
+    #[must_use]
+    pub fn transport(&self) -> ServerTransport {
+        match self {
+            ServerAddress::Stdio => ServerTransport::Stdio,
+            ServerAddress::UnixSocket { .. } => ServerTransport::UnixSocket,
+            ServerAddress::Tcp { .. } => ServerTransport::Tcp,
+        }
+    }
 }
 
 /// A harness's sidecar server: how to launch it, what makes two launches
@@ -234,41 +283,152 @@ impl ControlReason {
 }
 
 /// One newline-terminated response frame, the whole answer to one connection.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ControlResponse {
-    pub v: u32,
-    pub ok: bool,
-    /// The harness mechanism that served the interrupt; present iff `ok`.
+///
+/// A sum type, not an `ok` flag with optional companions: a frame is either a
+/// success carrying the mechanism that served it, or a refusal carrying an
+/// error *and* a reason. "Succeeded, and here is why it was refused" is a state
+/// a supervisor would have to defend against, so it is not representable. The
+/// serialized shape is the fixed wire contract either way —
+/// `{"v":1,"ok":true,"mechanism":…}` / `{"v":1,"ok":false,"error":…,"reason":…}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlResponse {
+    Served {
+        mechanism: ControlShape,
+    },
+    Refused {
+        error: String,
+        reason: ControlReason,
+    },
+}
+
+/// The serialized form of [`ControlResponse`]. Private: it exists only so serde
+/// derives the exact wire frame, and its "any combination" shape is never
+/// reachable from outside this module.
+// llmlint: ignore[invalid_states_unrepresentable] This is the literal external
+// wire frame, whose `ok` + optional-companion shape is fixed by the published
+// protocol and is exactly what an untrusted peer can send. Its whole purpose is
+// to hold that unvalidated form for one step so `Deserialize` can reject every
+// contradictory combination; the public type it produces cannot represent one.
+#[derive(Serialize, Deserialize)]
+struct ResponseWire {
+    v: u32,
+    ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mechanism: Option<String>,
+    mechanism: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<ControlReason>,
+    reason: Option<ControlReason>,
+}
+
+impl Serialize for ControlResponse {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let wire = match self {
+            ControlResponse::Served { mechanism } => ResponseWire {
+                v: PROTOCOL_VERSION,
+                ok: true,
+                mechanism: Some(mechanism.as_str().to_string()),
+                error: None,
+                reason: None,
+            },
+            ControlResponse::Refused { error, reason } => ResponseWire {
+                v: PROTOCOL_VERSION,
+                ok: false,
+                mechanism: None,
+                error: Some(error.clone()),
+                reason: Some(*reason),
+            },
+        };
+        wire.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ControlResponse {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let wire = ResponseWire::deserialize(deserializer)?;
+        if wire.v != PROTOCOL_VERSION {
+            return Err(D::Error::custom(format!(
+                "unsupported control protocol version {} (this oneharness speaks v{PROTOCOL_VERSION})",
+                wire.v
+            )));
+        }
+        if wire.ok {
+            let mechanism = wire.mechanism.ok_or_else(|| {
+                D::Error::custom("a successful control frame must carry a mechanism")
+            })?;
+            return ControlShape::from_wire(&mechanism)
+                .map(|mechanism| ControlResponse::Served { mechanism })
+                .ok_or_else(|| {
+                    D::Error::custom(format!("unknown control mechanism `{mechanism}`"))
+                });
+        }
+        if wire.mechanism.is_some() {
+            return Err(D::Error::custom(
+                "a refused control frame must not carry a mechanism",
+            ));
+        }
+        Ok(ControlResponse::Refused {
+            error: wire
+                .error
+                .ok_or_else(|| D::Error::custom("a refused control frame must carry an error"))?,
+            reason: wire
+                .reason
+                .ok_or_else(|| D::Error::custom("a refused control frame must carry a reason"))?,
+        })
+    }
 }
 
 impl ControlResponse {
     /// The documented success frame, carrying the mechanism that served it.
     #[must_use]
     pub fn served(shape: ControlShape) -> Self {
-        ControlResponse {
-            v: PROTOCOL_VERSION,
-            ok: true,
-            mechanism: Some(shape.as_str().to_string()),
-            error: None,
-            reason: None,
-        }
+        ControlResponse::Served { mechanism: shape }
     }
 
     /// The documented failure frame.
     #[must_use]
     pub fn refused(error: impl Into<String>, reason: ControlReason) -> Self {
-        ControlResponse {
-            v: PROTOCOL_VERSION,
-            ok: false,
-            mechanism: None,
-            error: Some(error.into()),
-            reason: Some(reason),
+        ControlResponse::Refused {
+            error: error.into(),
+            reason,
+        }
+    }
+
+    /// Whether the request was served.
+    #[must_use]
+    pub fn is_ok(&self) -> bool {
+        matches!(self, ControlResponse::Served { .. })
+    }
+
+    /// The mechanism that served it, or `None` on a refusal.
+    #[must_use]
+    pub fn mechanism(&self) -> Option<ControlShape> {
+        match self {
+            ControlResponse::Served { mechanism } => Some(*mechanism),
+            ControlResponse::Refused { .. } => None,
+        }
+    }
+
+    /// Why it was refused, or `None` when it was served.
+    #[must_use]
+    pub fn reason(&self) -> Option<ControlReason> {
+        match self {
+            ControlResponse::Served { .. } => None,
+            ControlResponse::Refused { reason, .. } => Some(*reason),
+        }
+    }
+
+    /// The run-report record for having handled `verb` at `at` with this answer.
+    #[must_use]
+    pub fn record(&self, verb: ControlVerb, at: String) -> ControlEvent {
+        match self {
+            ControlResponse::Served { .. } => ControlEvent::Served { verb, at },
+            ControlResponse::Refused { reason, .. } => ControlEvent::Refused {
+                verb,
+                at,
+                reason: *reason,
+            },
         }
     }
 
@@ -389,19 +549,62 @@ pub fn is_turn_terminal(shape: ControlShape, line: &str) -> bool {
     }
 }
 
-/// One interrupt the run served, recorded in the report so a consumer can tell
-/// an interrupted turn from one that simply ended.
+/// One control request the run handled, recorded in the report so a consumer
+/// can tell an interrupted turn from one that simply ended.
+///
+/// A sum type discriminated by `outcome`, so a record can never say "served,
+/// and here is the refusal reason": the reason exists exactly when there was a
+/// refusal. Serialized flat — `{"outcome":"served","verb":…,"at":…}` /
+/// `{"outcome":"refused","verb":…,"at":…,"reason":…}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ControlEvent {
-    /// The verb requested (`interrupt`).
-    pub verb: String,
-    /// RFC 3339 timestamp the request was served.
-    pub at: String,
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum ControlEvent {
+    /// The mechanism accepted the request.
+    Served {
+        /// The verb requested.
+        verb: ControlVerb,
+        /// RFC 3339 timestamp the request was handled.
+        at: String,
+    },
+    /// The request was refused, with why.
+    Refused {
+        verb: ControlVerb,
+        at: String,
+        reason: ControlReason,
+    },
+}
+
+impl ControlEvent {
+    /// The verb this record is about.
+    #[must_use]
+    pub fn verb(&self) -> ControlVerb {
+        match self {
+            ControlEvent::Served { verb, .. } | ControlEvent::Refused { verb, .. } => *verb,
+        }
+    }
+
+    /// When it was handled (RFC 3339).
+    #[must_use]
+    pub fn at(&self) -> &str {
+        match self {
+            ControlEvent::Served { at, .. } | ControlEvent::Refused { at, .. } => at,
+        }
+    }
+
     /// Whether the mechanism accepted it.
-    pub ok: bool,
-    /// Why it was refused; `null` when `ok`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<ControlReason>,
+    #[must_use]
+    pub fn is_served(&self) -> bool {
+        matches!(self, ControlEvent::Served { .. })
+    }
+
+    /// Why it was refused, or `None` when it was served.
+    #[must_use]
+    pub fn reason(&self) -> Option<ControlReason> {
+        match self {
+            ControlEvent::Served { .. } => None,
+            ControlEvent::Refused { reason, .. } => Some(*reason),
+        }
+    }
 }
 
 /// The run report's `control` block: where the socket lived, which mechanism
@@ -411,7 +614,7 @@ pub struct ControlReport {
     /// Absolute path of the socket this run listened on.
     pub socket: String,
     /// The harness mechanism backing it.
-    pub mechanism: String,
+    pub mechanism: ControlShape,
     /// Every control request served, in order.
     pub interrupts: Vec<ControlEvent>,
 }
@@ -443,6 +646,29 @@ mod tests {
         ] {
             assert!(shape.needs_server(), "{shape:?} should need a server");
         }
+    }
+
+    #[test]
+    fn a_server_address_carries_its_own_transport() {
+        assert_eq!(ServerAddress::Stdio.transport(), ServerTransport::Stdio);
+        assert_eq!(
+            ServerAddress::UnixSocket {
+                path: "/tmp/x.sock".into()
+            }
+            .transport(),
+            ServerTransport::UnixSocket
+        );
+        let tcp = ServerAddress::Tcp {
+            host: "127.0.0.1".into(),
+            port: 7777,
+        };
+        assert_eq!(tcp.transport(), ServerTransport::Tcp);
+        // Round-trips with the transport as its discriminator, so a reader can
+        // never see coordinates that belong to a different transport.
+        let value = serde_json::to_value(&tcp).unwrap();
+        assert_eq!(value["transport"], "tcp");
+        assert_eq!(value["port"], 7777);
+        assert_eq!(serde_json::from_value::<ServerAddress>(value).unwrap(), tcp);
     }
 
     #[test]
@@ -490,6 +716,64 @@ mod tests {
         );
         assert_eq!(ControlReason::NoActiveTurn.as_str(), "no_active_turn");
         assert_eq!(ControlReason::Unsupported.as_str(), "unsupported");
+    }
+
+    #[test]
+    fn a_frame_that_contradicts_itself_is_refused_at_parse_time() {
+        // The type cannot represent "ok, and here is the refusal reason", so a
+        // frame claiming success without a mechanism (or a refusal without one)
+        // fails loudly instead of decoding into a half-state.
+        for bad in [
+            r#"{"v":1,"ok":true}"#,
+            r#"{"v":1,"ok":true,"mechanism":"made-up"}"#,
+            r#"{"v":1,"ok":false,"reason":"not_running"}"#,
+            r#"{"v":1,"ok":false,"error":"nope"}"#,
+            r#"{"v":2,"ok":true,"mechanism":"claude-control-request"}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<ControlResponse>(bad).is_err(),
+                "should have refused {bad}"
+            );
+        }
+        let served: ControlResponse =
+            serde_json::from_str(r#"{"v":1,"ok":true,"mechanism":"acp-cancel"}"#).unwrap();
+        assert_eq!(served.mechanism(), Some(ControlShape::AcpCancel));
+        assert!(served.is_ok());
+    }
+
+    #[test]
+    fn a_recorded_event_carries_its_reason_only_when_refused() {
+        let at = "2026-08-08T00:00:00.000Z".to_string();
+        let served = ControlResponse::served(ControlShape::ClaudeControlRequest)
+            .record(ControlVerb::Interrupt, at.clone());
+        assert!(served.is_served());
+        assert_eq!(served.verb(), ControlVerb::Interrupt);
+        assert_eq!(served.at(), at);
+        assert_eq!(served.reason(), None);
+        let value = serde_json::to_value(&served).unwrap();
+        assert_eq!(value["outcome"], "served");
+        assert!(value.get("reason").is_none());
+
+        let refused = ControlResponse::refused("nope", ControlReason::NoActiveTurn)
+            .record(ControlVerb::Interrupt, at);
+        assert_eq!(refused.reason(), Some(ControlReason::NoActiveTurn));
+        let value = serde_json::to_value(&refused).unwrap();
+        assert_eq!(value["outcome"], "refused");
+        assert_eq!(value["reason"], "no_active_turn");
+    }
+
+    #[test]
+    fn every_shape_round_trips_through_its_wire_name() {
+        for shape in [
+            ControlShape::ClaudeControlRequest,
+            ControlShape::CodexAppServer,
+            ControlShape::OpencodeHttp,
+            ControlShape::AcpCancel,
+            ControlShape::CrushHttp,
+        ] {
+            assert_eq!(ControlShape::from_wire(shape.as_str()), Some(shape));
+        }
+        assert_eq!(ControlShape::from_wire("nope"), None);
     }
 
     #[test]

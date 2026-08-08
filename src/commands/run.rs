@@ -745,7 +745,20 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             controlled.as_ref(),
         );
         streamed_history = streamed.history;
-        (streamed.results, streamed.fallback)
+        let mut streamed_results = streamed.results;
+        // A driven turn's signals come off the dialogue in the streaming path
+        // exactly as they do in the buffered one — the stream published events
+        // as they happened, but the session id and answer are only knowable
+        // from the protocol frames, and without this the terminal envelope
+        // carries the raw JSON-RPC transcript as `text` and no session token to
+        // continue with. Applied before the report is built, so nothing already
+        // published has to be retracted.
+        if let Some(input) = controlled.as_ref() {
+            for result in &mut streamed_results {
+                apply_dialogue_signals(result, input.handle);
+            }
+        }
+        (streamed_results, streamed.fallback)
     } else if let Some(input) = controlled.as_ref().filter(|_| !jobs.is_empty()) {
         // One turn, one capture: `--schema` (the only thing that re-runs a job)
         // is refused alongside `--control` up front.

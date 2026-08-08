@@ -19299,6 +19299,107 @@ fn an_acp_controlled_run_answers_permission_and_records_a_cancel_the_harness_cal
     let _ = std::fs::remove_dir_all(&cwd);
 }
 
+#[cfg(unix)]
+#[test]
+fn a_streamed_controlled_run_publishes_the_protocol_turns_own_signals() {
+    // Streaming and a turn-driving mechanism are two different sources of the
+    // run's signals: the streamed envelope is assembled as the turn goes, while
+    // the session id and text come off the protocol dialogue rather than the
+    // harness's output format. A consumer reading the stream must still see the
+    // dialogue's own answers — and the interrupt it asked for — on the wire.
+    let store = control_store_dir("acp-stream");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("acp-stream-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let acp_log = store.join("acp.log");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_ACP_LOG", acp_log.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "copilot",
+            "--control",
+            "--stream",
+            "--session",
+            "acps",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("copilot"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the streamed ACP controlled run");
+
+    wait_until("the control socket", || {
+        store.join("control").join("acps.sock").exists()
+    });
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(&acp_log)
+            .map(|log| log.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "acps",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    assert_eq!(json_stdout(&interrupt)["mechanism"], "acp-cancel");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    // Every published line is the typed envelope contract, and the terminal one
+    // carries the report.
+    let typed: Vec<RunStreamEnvelope> = lines
+        .iter()
+        .map(|l| serde_json::from_str(l).expect("each stream line matches the Rust contract"))
+        .collect();
+    assert!(
+        matches!(typed.last(), Some(RunStreamEnvelope::Result { .. })),
+        "the stream must end with a result envelope: {text}"
+    );
+    let last: Value = serde_json::from_str(lines.last().expect("a terminal line")).unwrap();
+    let report = &last["report"];
+    assert_eq!(report["control"]["mechanism"], "acp-cancel");
+    assert_eq!(report["control"]["interrupts"][0]["outcome"], "served");
+    // The signals a streamed run would otherwise read out of an output format
+    // the ACP turn never produces.
+    assert_eq!(report["session"]["token"], "mock-acp-session");
+    assert_eq!(report["results"][0]["session_id"], "mock-acp-session");
+    assert_eq!(
+        report["results"][0]["text_source"],
+        "jsonrpc:acp-session-update"
+    );
+    assert_eq!(
+        report["results"][0]["text"],
+        "Info: Operation cancelled by user"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
 #[test]
 fn control_with_a_model_fan_out_is_a_usage_error() {
     // A fan-out multiplies the run into several (harness, model) units, and the

@@ -27,10 +27,30 @@ use serde_json::{json, Value};
 use crate::domain::control::ControlShape;
 use crate::domain::mode::PermissionMode;
 
+/// The HTTP methods these control protocols use. A closed set rather than a
+/// string: a typo'd verb is a route that silently does not exist, which reads
+/// as a harness that ignored the request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Method {
+    Get,
+    Post,
+}
+
+impl Method {
+    /// The token as it goes on the request line.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Method::Get => "GET",
+            Method::Post => "POST",
+        }
+    }
+}
+
 /// One HTTP request to a control server: everything but the socket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpRequest {
-    pub method: &'static str,
+    pub method: Method,
     pub path: String,
     /// The JSON body, already serialized. `None` sends no body at all, which is
     /// not the same as `{}` for a route that validates its shape.
@@ -38,7 +58,7 @@ pub struct HttpRequest {
 }
 
 impl HttpRequest {
-    fn new(method: &'static str, path: String, body: Option<Value>) -> Self {
+    fn new(method: Method, path: String, body: Option<Value>) -> Self {
         HttpRequest {
             method,
             path,
@@ -73,11 +93,14 @@ pub enum TurnEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermissionAsk {
     /// The request's own id, as it appears in the answer's route or body.
-    pub id: String,
+    /// Validated on recognition, because answering is a request whose PATH it
+    /// becomes: an ask carrying an unusable id is ignored rather than turned
+    /// into a request at some other route.
+    pub id: ResourceId,
     /// The session the request belongs to, when the event names one — opencode
     /// routes the answer through it, so a request for another session must not
     /// be answered on this one's path.
-    pub session: Option<String>,
+    pub session: Option<ResourceId>,
     /// The whole request payload, for a server (crush) that wants it echoed
     /// back rather than referenced by id.
     pub payload: Value,
@@ -158,6 +181,32 @@ impl ResourceId {
     }
 }
 
+/// A client identity safe to interpolate into a query string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientId(String);
+
+impl ClientId {
+    /// Accept `raw` as a client id, or say why it cannot be one. Hyphenated hex
+    /// is the shape crush hands out and accepts; anything that could add a
+    /// query parameter is refused rather than escaped.
+    pub fn new(raw: &str) -> Result<Self, String> {
+        if raw.is_empty() || raw.len() > 128 {
+            return Err(format!("`{raw}` is not a usable client id"));
+        }
+        if !raw.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Err(format!(
+                "`{raw}` carries characters no query parameter may hold"
+            ));
+        }
+        Ok(ClientId(raw.to_string()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// The ids one HTTP turn is addressed by, as that server addresses it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnAddress {
@@ -165,13 +214,15 @@ pub struct TurnAddress {
     pub workspace: Option<ResourceId>,
     pub session: ResourceId,
     /// The client identity crush requires on every route (see the module note).
-    pub client: Option<String>,
+    /// Validated, because it is interpolated into a query string: a value
+    /// carrying `&` or `#` would silently become other parameters.
+    pub client: Option<ClientId>,
 }
 
 impl TurnAddress {
     fn query(&self) -> String {
         match &self.client {
-            Some(client) => format!("?client_id={client}"),
+            Some(client) => format!("?client_id={}", client.as_str()),
             None => String::new(),
         }
     }
@@ -198,21 +249,23 @@ pub fn permits_action(mode: PermissionMode) -> bool {
 /// The request that creates the turn's own session (opencode), or the workspace
 /// everything else hangs off (crush).
 #[must_use]
-pub fn open_request(shape: HttpShape, cwd: &str, client: Option<&str>) -> HttpRequest {
+pub fn open_request(shape: HttpShape, cwd: &str, client: Option<&ClientId>) -> HttpRequest {
     match shape {
         // The session names its own working directory, so the server can be
         // shared by dispatches in different projects — the cwd stays a per-turn
         // setting and never widens the pool key.
         HttpShape::Opencode => HttpRequest::new(
-            "POST",
+            Method::Post,
             "/api/session".to_string(),
             Some(json!({"location": {"directory": cwd}})),
         ),
         // The workspace is where crush's `client_id` travels in the BODY.
         HttpShape::Crush => HttpRequest::new(
-            "POST",
+            Method::Post,
             "/v1/workspaces".to_string(),
-            Some(json!({"client_id": client.unwrap_or_default(), "path": cwd})),
+            Some(
+                json!({"client_id": client.map(ClientId::as_str).unwrap_or_default(), "path": cwd}),
+            ),
         ),
     }
 }
@@ -223,7 +276,7 @@ pub fn open_request(shape: HttpShape, cwd: &str, client: Option<&str>) -> HttpRe
 pub fn session_request(
     shape: HttpShape,
     workspace: &ResourceId,
-    client: &str,
+    client: &ClientId,
 ) -> Option<HttpRequest> {
     match shape {
         HttpShape::Opencode => None,
@@ -231,10 +284,11 @@ pub fn session_request(
         // EXISTING one is addressed, and creating there answers `404 page not
         // found`.
         HttpShape::Crush => Some(HttpRequest::new(
-            "POST",
+            Method::Post,
             format!(
-                "/v1/workspaces/{}/sessions?client_id={client}",
-                workspace.as_str()
+                "/v1/workspaces/{}/sessions?client_id={}",
+                workspace.as_str(),
+                client.as_str()
             ),
             Some(json!({"title": "oneharness"})),
         )),
@@ -258,7 +312,7 @@ pub fn parse_id(body: &str) -> Option<ResourceId> {
 pub fn prompt_request(shape: HttpShape, address: &TurnAddress, prompt: &str) -> HttpRequest {
     match shape {
         HttpShape::Opencode => HttpRequest::new(
-            "POST",
+            Method::Post,
             format!("/api/session/{}/prompt", address.session.as_str()),
             Some(json!({"prompt": {"text": prompt}})),
         ),
@@ -267,7 +321,7 @@ pub fn prompt_request(shape: HttpShape, address: &TurnAddress, prompt: &str) -> 
         // `405 Method Not Allowed`. It returns 202 with the turn running in the
         // background, so completion is read off the event stream.
         HttpShape::Crush => HttpRequest::new(
-            "POST",
+            Method::Post,
             format!("{}/agent{}", address.workspace_path(), address.query()),
             Some(json!({"prompt": prompt, "session_id": address.session.as_str()})),
         ),
@@ -280,12 +334,12 @@ pub fn prompt_request(shape: HttpShape, address: &TurnAddress, prompt: &str) -> 
 pub fn interrupt_request(shape: HttpShape, address: &TurnAddress) -> HttpRequest {
     match shape {
         HttpShape::Opencode => HttpRequest::new(
-            "POST",
+            Method::Post,
             format!("/api/session/{}/interrupt", address.session.as_str()),
             Some(json!({})),
         ),
         HttpShape::Crush => HttpRequest::new(
-            "POST",
+            Method::Post,
             format!(
                 "{}/agent/sessions/{}/cancel{}",
                 address.workspace_path(),
@@ -310,7 +364,7 @@ pub fn skip_permissions_request(
         HttpShape::Opencode => None,
         HttpShape::Crush => allow.then(|| {
             HttpRequest::new(
-                "POST",
+                Method::Post,
                 format!(
                     "{}/permissions/skip{}",
                     address.workspace_path(),
@@ -333,15 +387,13 @@ pub fn permission_reply_request(
 ) -> Option<HttpRequest> {
     match shape {
         HttpShape::Opencode => {
-            let session = ask.session.as_deref().unwrap_or(address.session.as_str());
-            let session = ResourceId::new(session).ok()?;
-            let request = ResourceId::new(&ask.id).ok()?;
+            let session = ask.session.as_ref().unwrap_or(&address.session);
             Some(HttpRequest::new(
-                "POST",
+                Method::Post,
                 format!(
                     "/api/session/{}/permission/{}/reply",
                     session.as_str(),
-                    request.as_str()
+                    ask.id.as_str()
                 ),
                 // `once` rather than `always`: a grant this run makes must not
                 // outlive it into the next one.
@@ -349,7 +401,7 @@ pub fn permission_reply_request(
             ))
         }
         HttpShape::Crush => Some(HttpRequest::new(
-            "POST",
+            Method::Post,
             format!(
                 "{}/permissions/grant{}",
                 address.workspace_path(),
@@ -369,8 +421,8 @@ pub fn permission_reply_request(
 #[must_use]
 pub fn readiness_request(shape: HttpShape) -> HttpRequest {
     match shape {
-        HttpShape::Opencode => HttpRequest::new("GET", "/api/app".to_string(), None),
-        HttpShape::Crush => HttpRequest::new("GET", "/v1/health".to_string(), None),
+        HttpShape::Opencode => HttpRequest::new(Method::Get, "/api/app".to_string(), None),
+        HttpShape::Crush => HttpRequest::new(Method::Get, "/v1/health".to_string(), None),
     }
 }
 
@@ -378,9 +430,9 @@ pub fn readiness_request(shape: HttpShape) -> HttpRequest {
 #[must_use]
 pub fn event_stream_request(shape: HttpShape, address: &TurnAddress) -> HttpRequest {
     match shape {
-        HttpShape::Opencode => HttpRequest::new("GET", "/api/event".to_string(), None),
+        HttpShape::Opencode => HttpRequest::new(Method::Get, "/api/event".to_string(), None),
         HttpShape::Crush => HttpRequest::new(
-            "GET",
+            Method::Get,
             format!("{}/events{}", address.workspace_path(), address.query()),
             None,
         ),
@@ -412,13 +464,13 @@ fn classify_opencode(kind: &str, value: &Value) -> TurnEvent {
                 .get("id")
                 .or_else(|| data.get("requestID"))
                 .and_then(Value::as_str);
-            match id {
+            match id.and_then(|id| ResourceId::new(id).ok()) {
                 Some(id) => TurnEvent::PermissionRequest(PermissionAsk {
-                    id: id.to_string(),
+                    id,
                     session: data
                         .get("sessionID")
                         .and_then(Value::as_str)
-                        .map(str::to_string),
+                        .and_then(|session| ResourceId::new(session).ok()),
                     payload: data,
                 }),
                 None => TurnEvent::Ignored,
@@ -447,13 +499,17 @@ fn classify_crush(kind: &str, value: &Value) -> TurnEvent {
         .cloned()
         .unwrap_or(Value::Null);
     match kind {
-        "permission_request" => match inner.get("id").and_then(Value::as_str) {
+        "permission_request" => match inner
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|id| ResourceId::new(id).ok())
+        {
             Some(id) => TurnEvent::PermissionRequest(PermissionAsk {
-                id: id.to_string(),
+                id,
                 session: inner
                     .get("session_id")
                     .and_then(Value::as_str)
-                    .map(str::to_string),
+                    .and_then(|session| ResourceId::new(session).ok()),
                 payload: inner,
             }),
             None => TurnEvent::Ignored,
@@ -595,7 +651,7 @@ mod tests {
         TurnAddress {
             workspace: Some(ResourceId::new("ws-1").unwrap()),
             session: ResourceId::new("ses-1").unwrap(),
-            client: Some("client-9".to_string()),
+            client: Some(ClientId::new("client-9").unwrap()),
         }
     }
 
@@ -634,10 +690,14 @@ mod tests {
         .unwrap();
         assert_eq!(opencode["location"]["directory"], "/work/here");
         let crush: Value = serde_json::from_str(
-            open_request(HttpShape::Crush, "/work/here", Some("c"))
-                .body
-                .as_ref()
-                .unwrap(),
+            open_request(
+                HttpShape::Crush,
+                "/work/here",
+                Some(&ClientId::new("c").unwrap()),
+            )
+            .body
+            .as_ref()
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(crush["path"], "/work/here");
@@ -647,7 +707,8 @@ mod tests {
     fn crush_carries_its_client_id_in_the_body_then_the_query() {
         // The one detail that answers a bare `{"message":"invalid client_id"}`
         // when it is got wrong.
-        let open = open_request(HttpShape::Crush, "/work", Some("client-9"));
+        let client = ClientId::new("client-9").unwrap();
+        let open = open_request(HttpShape::Crush, "/work", Some(&client));
         assert_eq!(open.path, "/v1/workspaces");
         let body: Value = serde_json::from_str(open.body.as_ref().unwrap()).unwrap();
         assert_eq!(body["client_id"], "client-9");
@@ -683,7 +744,7 @@ mod tests {
         let session = session_request(
             HttpShape::Crush,
             crush.workspace.as_ref().unwrap(),
-            "client-9",
+            &ClientId::new("client-9").unwrap(),
         );
         assert_eq!(
             session.unwrap().path,
@@ -703,7 +764,7 @@ mod tests {
         assert!(session_request(
             HttpShape::Opencode,
             &ResourceId::new("unused").unwrap(),
-            "c"
+            &ClientId::new("c").unwrap(),
         )
         .is_none());
     }

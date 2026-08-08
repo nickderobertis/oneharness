@@ -177,11 +177,15 @@ impl ControlHandle {
         dialogue.text().map(|text| (text, dialogue.text_source()))
     }
 
-    /// Whether this handle drives the turn itself (rather than riding the
-    /// harness's ordinary run), in which case the driver tears the server down
-    /// once the turn ends instead of waiting for it to exit on its own.
+    /// Whether this handle drives its turn over a JSON-RPC dialogue on the
+    /// child's stdin, in which case the runner tears the server down once the
+    /// turn ends instead of waiting for it to exit on its own.
+    ///
+    /// Narrower than [`ControlShape::drives_turn`] on purpose: the HTTP
+    /// mechanisms drive their turns too, but not through any child of this
+    /// process — nothing about a spawned run applies to them.
     #[must_use]
-    pub fn drives_turn(&self) -> bool {
+    pub fn drives_turn_over_stdin(&self) -> bool {
         self.dialogue().is_some()
     }
 

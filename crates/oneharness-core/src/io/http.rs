@@ -12,6 +12,8 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 use crate::domain::control::ServerAddress;
+#[cfg(test)]
+use crate::domain::http::Method;
 use crate::domain::http::{parse_head, ChunkedDecoder, HttpRequest, SseAccumulator};
 
 /// A server's answer to one request.
@@ -50,9 +52,15 @@ impl HttpClient {
         write_request(&mut stream, request, &self.address)?;
         let mut raw = Vec::new();
         // The server closes the connection at the end of the body, so a read to
-        // EOF is the whole answer; a timeout keeps a wedged server from
-        // hanging the run instead of failing it.
-        let _ = stream.read_to_end(&mut raw);
+        // EOF is the whole answer. A read that FAILED did not reach that end, so
+        // whatever arrived is a truncated answer rather than a short one — and a
+        // truncated body parsed as JSON is a wrong answer, not a missing one.
+        stream.read_to_end(&mut raw).map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!("the control server's answer was cut short: {err}"),
+            )
+        })?;
         let Some(head) = parse_head(&raw) else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -78,6 +86,7 @@ impl HttpClient {
         write_request(&mut stream, request, &self.address)?;
         Ok(EventStream {
             stream,
+            status: None,
             head_seen: false,
             chunked: false,
             pending: Vec::new(),
@@ -118,6 +127,10 @@ impl HttpClient {
 /// A live event stream, yielding one `data:` payload at a time.
 pub struct EventStream {
     stream: Socket,
+    /// The status the stream answered with, once its head arrived. A server
+    /// that refused the subscription (`404`, `401`) still sends a body, and
+    /// reading that body as events would report a turn that never streamed.
+    status: Option<u16>,
     head_seen: bool,
     chunked: bool,
     pending: Vec<u8>,
@@ -136,6 +149,9 @@ pub enum StreamPoll {
     Event(String),
     /// Nothing arrived within the read timeout; the stream is still open.
     Idle,
+    /// The server answered the subscription with a non-success status, so its
+    /// body is an error document rather than a stream of events.
+    Refused(u16),
     /// The server closed the stream.
     Closed,
 }
@@ -170,6 +186,10 @@ impl EventStream {
                     continue;
                 };
                 self.head_seen = true;
+                self.status = Some(head.status);
+                if !(200..300).contains(&head.status) {
+                    return StreamPoll::Refused(head.status);
+                }
                 self.chunked = head.chunked;
                 let body: Vec<u8> = self.pending.split_off(head.body_at);
                 self.pending.clear();
@@ -239,7 +259,7 @@ fn write_request(
     let head = format!(
         "{} {} HTTP/1.1\r\nHost: {host}\r\nAccept: text/event-stream, application/json\r\n\
          Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        request.method,
+        request.method.as_str(),
         request.path,
         body.len()
     );
@@ -301,7 +321,7 @@ mod tests {
         );
         let response = client(port)
             .send(&HttpRequest {
-                method: "POST",
+                method: Method::Post,
                 path: "/api/session".to_string(),
                 body: Some("{}".to_string()),
             })
@@ -327,7 +347,7 @@ mod tests {
         );
         let response = client(port)
             .send(&HttpRequest {
-                method: "POST",
+                method: Method::Post,
                 path: "/v1/workspaces/x/agent/sessions".to_string(),
                 body: None,
             })
@@ -343,7 +363,7 @@ mod tests {
         let (port, server) = serve_once(b"this is not a response");
         let err = client(port)
             .send(&HttpRequest {
-                method: "GET",
+                method: Method::Get,
                 path: "/api/app".to_string(),
                 body: None,
             })
@@ -362,7 +382,7 @@ mod tests {
         let mut stream = client(port)
             .open_stream(
                 &HttpRequest {
-                    method: "GET",
+                    method: Method::Get,
                     path: "/api/event".to_string(),
                     body: None,
                 },
@@ -387,7 +407,7 @@ mod tests {
         // mechanism's "address" is its pipes, which no HTTP client can reach.
         let err = HttpClient::new(ServerAddress::Stdio, Duration::from_secs(1))
             .send(&HttpRequest {
-                method: "GET",
+                method: Method::Get,
                 path: "/".to_string(),
                 body: None,
             })

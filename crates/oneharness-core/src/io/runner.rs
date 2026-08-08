@@ -453,7 +453,7 @@ where
         if let Some(control) = control {
             if control.handle.advance(line) {
                 control.handle.end_turn();
-                if control.handle.drives_turn() {
+                if control.handle.drives_turn_over_stdin() {
                     stopped_after_turn = true;
                     on_line(line);
                     return StreamStep::Stop;

@@ -17,7 +17,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::domain::control::ServerAddress;
-use crate::domain::http::{self, HttpShape, PermissionAsk, ResourceId, TurnAddress, TurnEvent};
+use crate::domain::http::{
+    self, ClientId, HttpShape, PermissionAsk, ResourceId, TurnAddress, TurnEvent,
+};
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::{Capture, Status};
 use crate::io::http::{HttpClient, StreamPoll};
@@ -145,11 +147,17 @@ pub fn open(
     let allow = http::permits_action(mode);
     // Crush names its client on every route; opencode has no such notion, and
     // sending one would be a query parameter it never reads.
-    let client_id = matches!(shape, HttpShape::Crush).then(|| client_id.to_string());
+    let client_id = match shape {
+        HttpShape::Crush => Some(
+            ClientId::new(client_id)
+                .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?,
+        ),
+        HttpShape::Opencode => None,
+    };
 
     let opened = expect_ok(
         &client,
-        &http::open_request(shape, cwd, client_id.as_deref()),
+        &http::open_request(shape, cwd, client_id.as_ref()),
         "open the control session",
     )?;
     let first = http::parse_id(&opened.body).ok_or_else(|| {
@@ -162,33 +170,36 @@ pub fn open(
         )
     })?;
 
-    let address =
-        match http::session_request(shape, &first, client_id.as_deref().unwrap_or_default()) {
-            // Crush: the first id was the workspace; the session hangs off it.
-            Some(request) => {
-                let created = expect_ok(&client, &request, "create the control session")?;
-                let session = http::parse_id(&created.body).ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "the control server created no usable session: {}",
-                            created.body.trim()
-                        ),
-                    )
-                })?;
-                TurnAddress {
-                    workspace: Some(first),
-                    session,
-                    client: client_id.clone(),
-                }
-            }
-            // Opencode: the first id was already the session.
-            None => TurnAddress {
-                workspace: None,
-                session: first,
+    // Opencode's branch never reads this, so a placeholder identity is only
+    // ever passed where it is ignored.
+    let unused = ClientId::new("none").expect("a constant client id is valid");
+    let address = match http::session_request(shape, &first, client_id.as_ref().unwrap_or(&unused))
+    {
+        // Crush: the first id was the workspace; the session hangs off it.
+        Some(request) => {
+            let created = expect_ok(&client, &request, "create the control session")?;
+            let session = http::parse_id(&created.body).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "the control server created no usable session: {}",
+                        created.body.trim()
+                    ),
+                )
+            })?;
+            TurnAddress {
+                workspace: Some(first),
+                session,
                 client: client_id.clone(),
-            },
-        };
+            }
+        }
+        // Opencode: the first id was already the session.
+        None => TurnAddress {
+            workspace: None,
+            session: first,
+            client: client_id.clone(),
+        },
+    };
 
     if let Some(request) = http::skip_permissions_request(shape, &address, allow) {
         expect_ok(&client, &request, "set the permission posture")?;
@@ -302,6 +313,15 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
                 }
             }
             StreamPoll::Idle => {}
+            // A refused subscription is not a quiet turn: nothing will ever
+            // arrive, so the run reports why rather than waiting out its
+            // timeout on a stream that is an error document.
+            StreamPoll::Refused(status) => {
+                *submit_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!(
+                    "the control server refused the event subscription ({status})"
+                ));
+                break;
+            }
             // The server closed the stream: nothing more will arrive, so the
             // only remaining end-of-turn signal is the submitting thread's.
             StreamPoll::Closed => break,
@@ -374,7 +394,7 @@ fn expect_ok(
     } else {
         Err(io::Error::other(format!(
             "could not {what} ({} {} answered {}): {}",
-            request.method,
+            request.method.as_str(),
             request.path,
             response.status,
             response.body.trim()

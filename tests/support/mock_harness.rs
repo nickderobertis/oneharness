@@ -453,6 +453,17 @@ fn run_http_control_server(log_path: &str) -> ! {
             if line.starts_with("POST /api/session/") && line.contains("/interrupt") {
                 aborted.store(true, std::sync::atomic::Ordering::SeqCst);
                 reply(&mut socket, "204 No Content", "");
+                // Shut down cleanly once the turn it was serving is over, rather
+                // than waiting to be reclaimed: the pool stops a server with
+                // SIGTERM, whose default disposition skips the at-exit handlers
+                // — including the one that writes this binary's coverage
+                // profile, leaving a truncated file that fails the whole
+                // coverage merge. The delay lets the aborted turn's final events
+                // reach the client first.
+                std::thread::spawn(|| {
+                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                    std::process::exit(0);
+                });
             } else if line.starts_with("POST /api/session/") && line.contains("/prompt") {
                 admitted.store(true, std::sync::atomic::Ordering::SeqCst);
                 reply(&mut socket, "200 OK", "{\"data\":{\"admittedSeq\":1}}");

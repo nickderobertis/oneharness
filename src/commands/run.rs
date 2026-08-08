@@ -2119,7 +2119,7 @@ fn apply_dialogue_signals(
     result: &mut RunResult,
     handle: &oneharness_core::io::control::ControlHandle,
 ) {
-    if !handle.drives_turn() {
+    if !handle.drives_turn_over_stdin() {
         return;
     }
     result.session_id = handle.session_id();

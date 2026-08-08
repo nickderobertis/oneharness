@@ -142,7 +142,9 @@ export const FallbackReportSchema: z.ZodType<FallbackReport> = z.looseObject({
 });
 
 export const HarnessInfoSchema: z.ZodType<HarnessInfo> = z.looseObject({
-  control: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+  control: z
+    .union([z.lazy(() => ControlShapeSchema), z.null()])
+    .refine((value) => value !== undefined, { message: "Required" }),
   default_bin: z.string().refine((value) => value !== undefined, { message: "Required" }),
   display: z.string().refine((value) => value !== undefined, { message: "Required" }),
   example_command: z.array(z.string()).refine((value) => value !== undefined, { message: "Required" }),

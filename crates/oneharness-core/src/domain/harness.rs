@@ -150,7 +150,7 @@ pub fn prompt_with_system_text(system: Option<&str>, prompt: &str) -> String {
 /// from each CLI's headless docs, never guessed.
 pub struct LargeInput {
     /// The user prompt can be delivered on the child's **stdin** instead of an
-    /// argv positional. When the command layer sets [`BuildCtx::prompt_stdin`],
+    /// argv positional. When the command layer selects [`PromptDelivery::Stdin`],
     /// `build_argv` omits the positional (and adds any stdin-selecting flags —
     /// Claude Code's `--input-format text`, Goose's `-i -`) and the command layer
     /// pipes the assembled prompt to stdin.
@@ -319,7 +319,7 @@ pub struct HarnessSpec {
     /// system prompt to a temp file / pipes the user prompt to stdin only when a
     /// prompt clears the size threshold *and* the flag here says the harness can
     /// receive it that way, then `build_argv` reads the matching [`BuildCtx`]
-    /// fields ([`BuildCtx::system_file`] / [`BuildCtx::prompt_stdin`]). A small
+    /// fields ([`BuildCtx::system_file`] / [`BuildCtx::delivery`]). A small
     /// prompt keeps the byte-identical inline argv, so the common case (and every
     /// `--print-command`) is unchanged. Sourced from each CLI's headless docs,
     /// never guessed; [`LargeInput::NONE`] (inline only) is the safe default for a

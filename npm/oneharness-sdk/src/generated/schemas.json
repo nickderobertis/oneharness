@@ -11464,14 +11464,48 @@
       "harnesses"
     ],
     "$defs": {
+      "ControlShape": {
+        "description": "How a harness accepts an out-of-band interrupt for an in-flight turn.\n\nRegistry data on [`crate::domain::harness::HarnessSpec::control`], sourced\nfrom a live interrupt against the real CLI — never guessed. `None` there\nmeans `oneharness interrupt` is a loud usage error for the harness, never a\nsilent no-op: a supervisor that is told \"ok\" while the turn keeps running is\nworse off than one told the lever does not exist.",
+        "oneOf": [
+          {
+            "description": "Claude Code: the control frame rides the run process's **own stdin**\n(`-p --input-format stream-json`), so no sidecar server is needed. A\n`{\"type\":\"control_request\",…,\"request\":{\"subtype\":\"interrupt\"}}` line\naborts the turn with a `result` document; the session survives and a\nlater turn continues it with full context. Verified live: a plain user\nmessage written mid-turn is *silently dropped*, so the control frame is\nthe only mechanism that works.",
+            "type": "string",
+            "const": "claude-control-request"
+          },
+          {
+            "description": "Codex: `turn/interrupt {threadId,turnId}` over the `codex app-server`\nJSON-RPC stdio protocol, which oneharness spawns as the run's own child\nand drives the thread/turn lifecycle on — so the interrupt rides the same\nopen stdin and nothing is shared or pooled.",
+            "type": "string",
+            "const": "codex-app-server"
+          },
+          {
+            "description": "OpenCode: `POST /api/session/{id}/interrupt` against `opencode serve`.",
+            "type": "string",
+            "const": "opencode-http"
+          },
+          {
+            "description": "Goose and Copilot: the ACP `session/cancel` **notification** (no `id`)\nover their JSON-RPC stdio servers.",
+            "type": "string",
+            "const": "acp-cancel"
+          },
+          {
+            "description": "Crush: `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against\n`crush server`.",
+            "type": "string",
+            "const": "crush-http"
+          }
+        ]
+      },
       "HarnessInfo": {
         "type": "object",
         "properties": {
           "control": {
             "description": "How `run --control` + `oneharness interrupt` abort an in-flight turn on\nthis harness (the mechanism id), or `null` when it has no out-of-band\nturn control at all — in which case `--control` is a loud usage error for\nit, never a socket that reports success while the turn keeps running.",
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ControlShape"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "default_bin": {

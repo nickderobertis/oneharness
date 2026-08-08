@@ -5,6 +5,7 @@ use serde::Serialize;
 
 use crate::cli::ListArgs;
 use crate::commands::print_json;
+use oneharness_core::domain::control::ControlShape;
 use oneharness_core::domain::harness::{self, BuildCtx};
 use oneharness_core::domain::mode::{ModeHeadless, PermissionMode};
 use oneharness_core::domain::report::OutputFormat;
@@ -43,7 +44,7 @@ pub struct HarnessInfo {
     /// this harness (the mechanism id), or `null` when it has no out-of-band
     /// turn control at all — in which case `--control` is a loud usage error for
     /// it, never a socket that reports success while the turn keeps running.
-    control: Option<&'static str>,
+    control: Option<ControlShape>,
     /// Whether a forked run reuses the parent session's prompt-cache prefix, so a
     /// fork-based `--batch-strategy min-tokens` run actually reduces tokens. `true`
     /// only for Claude Code today; `false` (incl. OpenCode, whose fork re-sends the
@@ -147,7 +148,7 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 supports_resume: spec.supports_resume,
                 session_capable: spec.session_capable(),
                 supports_fork: spec.supports_fork,
-                control: spec.control.map(|shape| shape.as_str()),
+                control: spec.control,
                 fork_reuses_cache: spec.fork_reuses_cache,
                 modes: spec
                     .modes

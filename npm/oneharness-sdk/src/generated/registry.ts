@@ -1,6 +1,17 @@
 /* Generated from oneharness. Do not edit. */
 
 /**
+ * How a harness accepts an out-of-band interrupt for an in-flight turn.
+ *
+ * Registry data on [`crate::domain::harness::HarnessSpec::control`], sourced
+ * from a live interrupt against the real CLI — never guessed. `None` there
+ * means `oneharness interrupt` is a loud usage error for the harness, never a
+ * silent no-op: a supervisor that is told "ok" while the turn keeps running is
+ * worse off than one told the lever does not exist.
+ */
+export type ControlShape =
+  "claude-control-request" | "codex-app-server" | "opencode-http" | "acp-cancel" | "crush-http";
+/**
  * The unified approval mode, from least to most autonomy. A harness may not
  * support every value (see [`crate::domain::harness::HarnessSpec::mode`]); the
  * command layer refuses an unsupported one before spawning, never silently
@@ -28,7 +39,7 @@ export interface HarnessInfo {
    * turn control at all — in which case `--control` is a loud usage error for
    * it, never a socket that reports success while the turn keeps running.
    */
-  control: string | null;
+  control: ControlShape | null;
   default_bin: string;
   display: string;
   /**

@@ -388,11 +388,21 @@ pub fn sweep(root: &Path, linger: Duration) -> io::Result<usize> {
 /// Spawn the server and record it. The child is detached from this dispatch's
 /// process tree on purpose: it must outlive the run that started it, which is
 /// the entire point of pooling.
+///
+/// It is also started in the pool entry's own directory rather than inheriting
+/// the starting dispatch's cwd. A pooled server belongs to no one dispatch —
+/// every turn carries its own working directory on the wire — so an inherited
+/// cwd is an arbitrary project directory that later dispatches never chose, and
+/// anything the server resolves relative to it (a tool call that slips the
+/// per-turn directory, a log, a scratch file) lands in that project's tree. It
+/// did: a live control run from this repository's root left the agent's
+/// `step-*.txt` files in the checkout.
 fn start(entry: &Path, plan: &LaunchPlan) -> io::Result<ServerRecord> {
     let (program, args) = plan.argv.split();
     let mut command = std::process::Command::new(program);
     command
         .args(args)
+        .current_dir(entry)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -761,6 +771,53 @@ mod tests {
         assert_eq!(sweep(&root, Duration::from_secs(0)).unwrap(), 1);
         wait_until_dead(server_pid);
         assert!(!entry.join(LEASE_DIR).join("stray.lease").exists());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_started_server_runs_in_the_pool_entry_not_the_starting_dispatch_cwd() {
+        let root = temp_root("cwd");
+        // A stand-in server that records where it was started, then stays alive
+        // like a real one. The dispatch's own cwd is this crate's source tree,
+        // so an inherited cwd would show up as anything but the pool entry.
+        let plan = LaunchPlan::new(
+            "sh",
+            &ServerSpec {
+                launch: &["-c"],
+                address_args: &[],
+                key_env: &[],
+                transport: ServerTransport::Stdio,
+            },
+            &["pwd > started-in.txt; sleep 120".to_string()],
+            ServerAddress::Stdio,
+            Vec::new(),
+        )
+        .expect("a stdio address backs a stdio spec");
+        let lease = acquire(&root, &key(), &plan, DEFAULT_LINGER).unwrap();
+        let entry = lease.entry().to_path_buf();
+
+        let marker = entry.join("started-in.txt");
+        let mut started_in = None;
+        for _ in 0..200 {
+            if let Ok(text) = fs::read_to_string(&marker) {
+                started_in = Some(text.trim().to_string());
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let started_in = started_in.expect(
+            "the server wrote its cwd marker somewhere other than the pool entry, so it \
+             inherited the starting dispatch's working directory",
+        );
+        assert_eq!(
+            fs::canonicalize(&started_in).unwrap(),
+            fs::canonicalize(&entry).unwrap(),
+            "a pooled server must not inherit the starting dispatch's working directory"
+        );
+
+        drop(lease);
+        sweep(&root, Duration::from_secs(0)).unwrap();
         fs::remove_dir_all(&root).ok();
     }
 

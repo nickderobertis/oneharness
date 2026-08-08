@@ -3160,7 +3160,7 @@ bin = "{bin}"
     assert_eq!(envelopes.len(), 2);
     assert!(matches!(envelopes[0], RunStreamEnvelope::Event { .. }));
     // ...and still loses to the explicit flag.
-    let env_refused = run_with_config(
+    let env_overridden = run_with_config(
         &[
             "run",
             "--prompt",
@@ -3173,7 +3173,7 @@ bin = "{bin}"
         &env_only.user_config(),
     );
     assert!(
-        !String::from_utf8_lossy(&env_refused.stdout).contains("\"type\":\"event\""),
+        !String::from_utf8_lossy(&env_overridden.stdout).contains("\"type\":\"event\""),
         "--no-stream lost to ONEHARNESS_STREAM"
     );
     let config = json_stdout(&run_with_config(

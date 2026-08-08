@@ -311,6 +311,9 @@ pub enum OneharnessError {
     #[error("--control needs a unix domain socket, which this platform does not provide")]
     ControlPlatform,
 
+    #[error("harness `{id}` submits its controlled turn to a server rather than running its CLI, so there is no line-by-line output to stream; drop --stream (the report still carries the turn's transcript)")]
+    ControlStreamUnsupported { id: String },
+
     #[error("--control cannot be combined with --schema: the structured-output retry loop re-prompts, which would need a second turn on the control channel's open stdin")]
     ControlSchema,
 

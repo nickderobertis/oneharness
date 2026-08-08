@@ -1092,6 +1092,11 @@ silently is not there is worse than none:
 - **Exactly one harness**, which must declare a control mechanism (`control` in
   `oneharness list`).
 - **Unix only** (the socket has no Windows equivalent in `std`).
+- **No `--stream` on a server-submitted mechanism** (`opencode-http`,
+  `crush-http`): those turns never spawn the harness CLI, so there is no stdout
+  to publish line by line — and accepting the flag would silently select the
+  ordinary run, whose interrupt does not reach the turn. The report still
+  carries the whole event transcript as the result's `stdout`.
 
 The socket is created mode `0600` under a `0700` directory and removed when the
 run exits. A dispatch killed with `SIGKILL` cannot run its cleanup, so a stale

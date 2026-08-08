@@ -19508,6 +19508,63 @@ fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there()
 }
 
 #[test]
+fn streaming_a_server_submitted_controlled_turn_is_a_usage_error() {
+    // `--stream` publishes a spawned run's stdout line by line, and a turn
+    // submitted to a control server has no such run. Refusing is what keeps the
+    // combination from silently selecting the ordinary CLI run — whose
+    // interrupt does not reach the turn, which is why this mechanism exists.
+    let store = control_store_dir("stream-http");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--stream",
+            "--session",
+            "s",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("opencode"),
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("submits its controlled turn to a server"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("--stream"), "{stderr}");
+    // A stdin-borne mechanism still streams: the refusal is about the execution
+    // model, not about `--control`.
+    let ok = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--stream",
+            "--session",
+            "s2",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--bin",
+            &bin_override("claude-code"),
+        ],
+        &[],
+    );
+    assert!(ok.status.success(), "{ok:?}");
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
 fn control_with_a_model_fan_out_is_a_usage_error() {
     // A fan-out multiplies the run into several (harness, model) units, and the
     // controlled path drives exactly one live turn — so there is no single turn

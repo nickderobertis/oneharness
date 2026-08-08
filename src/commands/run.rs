@@ -263,6 +263,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         schema.is_some(),
         batch_run,
         multi_model,
+        stream,
     )?;
     // A model fan-out multiplies the run into several (harness, model) units, so —
     // like a batch — it refuses every single-unit shape up front (loud usage
@@ -1877,6 +1878,7 @@ fn emit_stream_result(report: &RunReport) -> Result<(), OneharnessError> {
 /// one live turn; a batch or fan-out has no single turn to interrupt), a
 /// harness that declares a *proven* control mechanism, a platform with unix
 /// sockets, and an explicit output format compatible with the mechanism.
+#[allow(clippy::fn_params_excessive_bools)] // llmlint: ignore[suppressions_justified] Each flag is one independently-decided run property the control rules must check; folding them into a struct used at this single call site would hide the list rather than shorten it.
 fn validate_control(
     args: &RunArgs,
     specs: &[&'static HarnessSpec],
@@ -1884,6 +1886,7 @@ fn validate_control(
     schema: bool,
     batch_run: bool,
     multi_model: bool,
+    stream: bool,
 ) -> Result<Option<ControlShape>, OneharnessError> {
     if !args.control {
         return Ok(None);
@@ -1932,6 +1935,15 @@ fn validate_control(
             supported: control_capable_ids(),
         });
     };
+    // A server-submitted turn never spawns the harness CLI, so there is no
+    // stdout to publish line by line. Refusing is what keeps `--stream` from
+    // silently selecting the ordinary run — whose interrupt does NOT reach the
+    // turn, which is the whole reason this mechanism exists.
+    if stream && HttpShape::of(shape).is_some() {
+        return Err(OneharnessError::ControlStreamUnsupported {
+            id: spec.id.to_string(),
+        });
+    }
     if let (Some(required), Some(explicit)) = (shape.required_format(), explicit_format) {
         if required != explicit {
             return Err(OneharnessError::ControlOutputFormat {

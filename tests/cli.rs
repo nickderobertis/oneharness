@@ -19298,3 +19298,39 @@ fn an_acp_controlled_run_answers_permission_and_records_a_cancel_the_harness_cal
     let _ = std::fs::remove_dir_all(&store);
     let _ = std::fs::remove_dir_all(&cwd);
 }
+
+#[test]
+fn control_with_a_model_fan_out_is_a_usage_error() {
+    // A fan-out multiplies the run into several (harness, model) units, and the
+    // controlled path drives exactly one live turn — so there is no single turn
+    // for a supervisor to address.
+    let store = control_store_dir("fanout");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "fan",
+            "--session-dir",
+            &store.display().to_string(),
+            "--model",
+            "one",
+            "--model",
+            "two",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("incompatible with --control"),
+        "stderr:\n{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}

@@ -248,6 +248,19 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     if fallback_mode {
         validate_fallback(batch_run, args)?;
     }
+    // `--control` is validated before the session is resolved so its own
+    // vocabulary wins the diagnostic: a supervisor who passed `--control` needs
+    // to be told which control rule they broke, not a session rule that happens
+    // to catch the same shape first.
+    let explicit_format = args.output_format.or(cfg.output_format);
+    let control_shape = validate_control(
+        args,
+        &specs,
+        explicit_format,
+        schema.is_some(),
+        batch_run,
+        multi_model,
+    )?;
     // A model fan-out multiplies the run into several (harness, model) units, so —
     // like a batch — it refuses every single-unit shape up front (loud usage
     // errors). It is *compatible* with fallback: the model list is exactly the
@@ -275,13 +288,6 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // the anchor (the first session-capable harness in the chain). On a continue it
     // yields the token to resume with, reusing the harness's verified `--resume`
     // mapping. `None` when the flag was not passed.
-    // `--control` is validated before the session is resolved so its own
-    // vocabulary wins the diagnostic: a supervisor who passed `--control` needs
-    // to be told which control rule they broke, not a session rule that happens
-    // to catch the same shape first.
-    let explicit_format = args.output_format.or(cfg.output_format);
-    let control_shape =
-        validate_control(args, &specs, explicit_format, schema.is_some(), batch_run)?;
     let session_wiring = setup_session(
         args,
         &specs,
@@ -1838,6 +1844,7 @@ fn validate_control(
     explicit_format: Option<OutputFormat>,
     schema: bool,
     batch_run: bool,
+    multi_model: bool,
 ) -> Result<Option<ControlShape>, OneharnessError> {
     if !args.control {
         return Ok(None);
@@ -1850,6 +1857,16 @@ fn validate_control(
     // vocabulary rather than leaving a supervisor to infer it.
     if batch_run {
         return Err(OneharnessError::ControlBatch);
+    }
+    // A model fan-out multiplies the run into several (harness, model) units,
+    // and the controlled path drives exactly one live turn. `--session` refuses
+    // a fan-out too, but a supervisor who passed `--control` needs to be told
+    // which control rule they broke.
+    if multi_model {
+        return Err(OneharnessError::MultiModelConflict {
+            with: "--control",
+            why: "control drives one live turn, and a fan-out has no single turn to interrupt",
+        });
     }
     // The validate/retry loop re-prompts, which is a second turn — and the
     // control channel owns the one open stdin. Refuse rather than silently

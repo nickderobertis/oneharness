@@ -365,15 +365,13 @@ def probe_codex(bin_name: str) -> Tuple[str, str]:
         rpc = JsonRpc(process)
         # Approvals arrive as server->client requests; answer them or the turn
         # blocks forever waiting on a client that is not listening.
-        # Approve only what is actually an approval request — the same rule the
-        # shipped client follows. An unrecognized method is still answered
-        # (silence stalls the turn), just not granted.
+        # The probe's prompt only ever runs shell commands, so only command
+        # execution is approved — a patch or file-change approval would be a
+        # grant nothing in this probe needs. An unrecognized or unneeded method
+        # is still ANSWERED (silence stalls the turn), just not granted.
         approvals = {
-            "applyPatchApproval",
             "execCommandApproval",
             "item/commandExecution/requestApproval",
-            "item/fileChange/requestApproval",
-            "item/permissions/requestApproval",
         }
         rpc.on_server_request = lambda message: (
             {"decision": "approved"} if message.get("method") in approvals else {}

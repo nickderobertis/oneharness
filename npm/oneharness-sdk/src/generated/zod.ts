@@ -84,7 +84,12 @@ export const ExecutionTelemetrySchema: z.ZodType<ExecutionTelemetry> = z.union([
         z
           .string()
           .min(24)
-          .regex(new RegExp("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$", "u"))
+          .regex(
+            new RegExp(
+              "^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:([0-5]\\d|60)\\.\\d{3}Z$",
+              "u",
+            ),
+          )
           .refine((value) => [...value].length <= 24, { message: "Too long: expected at most 24 characters" }),
         z.null(),
       ])
@@ -94,7 +99,12 @@ export const ExecutionTelemetrySchema: z.ZodType<ExecutionTelemetry> = z.union([
     started_at: z
       .string()
       .min(24)
-      .regex(new RegExp("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$", "u"))
+      .regex(
+        new RegExp(
+          "^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:([0-5]\\d|60)\\.\\d{3}Z$",
+          "u",
+        ),
+      )
       .refine((value) => [...value].length <= 24, { message: "Too long: expected at most 24 characters" })
       .refine((value) => value !== undefined, { message: "Required" }),
     time_to_first_token_ms: z

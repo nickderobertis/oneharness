@@ -39,8 +39,10 @@ use crate::domain::signals::{FailureKind, Usage};
 /// gate for the one field it introduced.
 pub const SCHEMA_VERSION: &str = "1.4";
 /// v1.4 introduced the `cancelled` run status — a record a v1.3 reader would
-/// refuse rather than misread, since its `status` enum has no such value.
-pub const FIRST_CANCELLED_SCHEMA_VERSION: &str = SCHEMA_VERSION;
+/// refuse rather than misread, since its `status` enum has no such value. Spelled
+/// literally, like every constant here: aliasing [`SCHEMA_VERSION`] would move
+/// this "first version that understood it" on the next bump.
+pub const FIRST_CANCELLED_SCHEMA_VERSION: &str = "1.4";
 /// v1.3 introduced the normalized failure `error` text and invocation-bounds-only
 /// timing, so both name the same version — and both must, because an older
 /// reader refuses either shape rather than misreading it.
@@ -245,12 +247,14 @@ impl HistoryRunRecord {
         ) {
             return false;
         }
-        if !error_text_valid(
-            &self.schema_version,
-            self.error.as_ref(),
-            self.status,
-            self.failure_kind,
-        ) {
+        if !status_version_valid(&self.schema_version, self.status)
+            || !error_text_valid(
+                &self.schema_version,
+                self.error.as_ref(),
+                self.status,
+                self.failure_kind,
+            )
+        {
             return false;
         }
         if self.observed_tool_ms.is_some() {
@@ -2031,7 +2035,6 @@ mod tests {
         });
         assert_eq!(cancelled.status, Status::Cancelled);
         assert_eq!(cancelled.schema_version, FIRST_CANCELLED_SCHEMA_VERSION);
-        assert_eq!(cancelled.schema_version, SCHEMA_VERSION);
         assert!(run_failed(cancelled.status));
         assert!(cancelled.complete());
         // Round-trips: the writer's shape is the reader's shape.

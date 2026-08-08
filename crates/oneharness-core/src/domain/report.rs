@@ -121,7 +121,8 @@ pub struct OutputObservation {
 /// The exact text [`crate::domain::history::format_rfc3339_millis`] produces:
 /// `YYYY-MM-DDTHH:MM:SS.mmmZ`, always 24 characters.
 const RUN_INSTANT_LEN: u32 = 24;
-const RUN_INSTANT_PATTERN: &str = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$";
+const RUN_INSTANT_PATTERN: &str =
+    r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:([0-5]\d|60)\.\d{3}Z$";
 
 /// The error returned when text is not a [`RunInstant`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -141,6 +142,14 @@ pub struct RunInstantError;
 /// reader and every generated SDK validator accept exactly the same values. The
 /// length bound is load-bearing, not decorative: it is what makes a trailing
 /// newline fail even where a regex `$` would match before one.
+///
+/// That shared rule is the shape plus each component's range (month `01`-`12`,
+/// hour `00`-`23`, a real `:60` leap second, …). It deliberately stops short of
+/// the calendar — `2026-02-30` passes — because a regex cannot express which days
+/// a month has, and a Rust check that went further would be a rule the generated
+/// validators could not state. One rule both sides enforce is worth more here
+/// than catching a date no clock can produce: every value is minted by the runner
+/// from a real instant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct RunInstant(String);
@@ -172,11 +181,21 @@ impl std::str::FromStr for RunInstant {
         if !shaped {
             return Err(RunInstantError);
         }
-        // Reject a shape that reads as a time but is not one (month 13, hour 25),
-        // by the same rule the usage parser applies to its own instants.
-        crate::domain::usage::normalize_timestamp(text)
-            .ok_or(RunInstantError)
-            .map(|_| Self(text.to_string()))
+        // Then each component's range, so a shape that reads as a time but is not
+        // one (month 13, hour 25) is refused — the same set the pattern above
+        // states, so neither validator is stricter than the other.
+        let field = |at: usize| -> u32 {
+            u32::from(bytes[at] - b'0') * 10 + u32::from(bytes[at + 1] - b'0')
+        };
+        let in_range = (1..=12).contains(&field(5))
+            && (1..=31).contains(&field(8))
+            && field(11) <= 23
+            && field(14) <= 59
+            && field(17) <= 60; // a real leap second
+        if !in_range {
+            return Err(RunInstantError);
+        }
+        Ok(Self(text.to_string()))
     }
 }
 
@@ -707,12 +726,19 @@ mod tests {
             "2026-01-01T25:00:00.000Z",
             "2026-01-01 00:00:00.000Z", // the space form loses the length bound
             "2026-01-01T00:00:00.000Z\n", // the trailing newline a `$` would admit
+            "2026-01-32T00:00:00.000Z",
+            "2026-01-01T00:61:00.000Z",
         ] {
             assert!(
                 bad.parse::<RunInstant>().is_err(),
                 "accepted {bad:?} as a run instant"
             );
         }
+        // A real leap second is in range, and the calendar deliberately is not
+        // checked past each component's range — the limit of a rule the generated
+        // SDK validators have to be able to state too.
+        assert!("2026-06-30T23:59:60.000Z".parse::<RunInstant>().is_ok());
+        assert!("2026-02-30T00:00:00.000Z".parse::<RunInstant>().is_ok());
         // And the same rule on the deserialization boundary, not just FromStr.
         assert!(serde_json::from_value::<RunInstant>(serde_json::json!("nope")).is_err());
     }

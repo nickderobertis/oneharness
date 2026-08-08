@@ -70,6 +70,38 @@
       }
     },
     {
+      "name": "history line run rejects the cancelled status at v1.3, which arrived in v1.4",
+      "root": "history_line",
+      "accepted": false,
+      "value": {
+        "type": "run", "schema_version": "1.3",
+        "history_id": "0198f0d0-7b31-7000-8000-000000000019",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-07-19T00:00:01Z", "harness": "claude-code",
+        "harness_id": "claude-code", "model": null, "prompt": "test",
+        "permission_mode": "default", "status": "cancelled", "exit_code": null, "duration_ms": 1000,
+        "finished_at": null, "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "failure_kind": null, "error": "`claude` was cancelled"
+      }
+    },
+    {
+      "name": "history line run accepts the cancelled status at v1.4",
+      "root": "history_line",
+      "accepted": true,
+      "value": {
+        "type": "run", "schema_version": "1.4",
+        "history_id": "0198f0d0-7b31-7000-8000-00000000001a",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-07-19T00:00:01Z", "harness": "claude-code",
+        "harness_id": "claude-code", "model": null, "prompt": "test",
+        "permission_mode": "default", "status": "cancelled", "exit_code": null, "duration_ms": 1000,
+        "finished_at": null, "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "failure_kind": null, "error": "`claude` was cancelled"
+      }
+    },
+    {
       "name": "history line run rejects the v1.3 error text at v1.1",
       "root": "history_line",
       "accepted": false,

@@ -2202,6 +2202,11 @@ fn failure_dialect(spec: &HarnessSpec) -> signals::FailureDialect {
     }
 }
 
+// Each argument is a separately-owned piece of the run this result freezes — the
+// registry spec, what was actually spawned, what came back, and the per-unit
+// prompt/model a batch or model fan-out varies. Grouping them into a struct would
+// move the same list one call up, where three different callers assemble it from
+// three different places.
 #[allow(clippy::too_many_arguments)]
 fn executed_result(
     spec: &HarnessSpec,

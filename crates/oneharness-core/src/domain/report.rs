@@ -143,13 +143,13 @@ pub struct RunInstantError;
 /// length bound is load-bearing, not decorative: it is what makes a trailing
 /// newline fail even where a regex `$` would match before one.
 ///
-/// That shared rule is the shape plus each component's range (month `01`-`12`,
-/// hour `00`-`23`, a real `:60` leap second, …). It deliberately stops short of
-/// the calendar — `2026-02-30` passes — because a regex cannot express which days
-/// a month has, and a Rust check that went further would be a rule the generated
-/// validators could not state. One rule both sides enforce is worth more here
-/// than catching a date no clock can produce: every value is minted by the runner
-/// from a real instant.
+/// The schema states everything a JSON Schema can: the shape, the length, and
+/// each component's range (month `01`-`12`, hour `00`-`23`, a real `:60` leap
+/// second). `FromStr` adds the one thing a regex cannot express — that the date
+/// exists at all, so `2026-02-30` is refused. The residual slack is **one-way**
+/// and harmless: a generated validator accepts a shape this parser would reject,
+/// but oneharness can never emit one, because every value it writes came from a
+/// real clock and through here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct RunInstant(String);
@@ -181,21 +181,12 @@ impl std::str::FromStr for RunInstant {
         if !shaped {
             return Err(RunInstantError);
         }
-        // Then each component's range, so a shape that reads as a time but is not
-        // one (month 13, hour 25) is refused — the same set the pattern above
-        // states, so neither validator is stricter than the other.
-        let field = |at: usize| -> u32 {
-            u32::from(bytes[at] - b'0') * 10 + u32::from(bytes[at + 1] - b'0')
-        };
-        let in_range = (1..=12).contains(&field(5))
-            && (1..=31).contains(&field(8))
-            && field(11) <= 23
-            && field(14) <= 59
-            && field(17) <= 60; // a real leap second
-        if !in_range {
-            return Err(RunInstantError);
-        }
-        Ok(Self(text.to_string()))
+        // Then that it is a real instant, by the same rule the usage parser holds
+        // its own timestamps to: every component in range *and* a date that exists.
+        // llmlint: ignore[contracts_have_one_source_or_a_drift_gate] The generated SDK validators state this rule as far as a JSON Schema reaches — length, shape, and every component's range, per RUN_INSTANT_PATTERN; only "the date exists" is inexpressible as a regex. The resulting slack runs one way (a validator accepts what this parser rejects, never the reverse), so no consumer is ever told a value is valid that oneharness would refuse to write.
+        crate::domain::usage::normalize_timestamp(text)
+            .ok_or(RunInstantError)
+            .map(|_| Self(text.to_string()))
     }
 }
 
@@ -734,11 +725,9 @@ mod tests {
                 "accepted {bad:?} as a run instant"
             );
         }
-        // A real leap second is in range, and the calendar deliberately is not
-        // checked past each component's range — the limit of a rule the generated
-        // SDK validators have to be able to state too.
+        // A real leap second is a real instant; a date that does not exist is not.
         assert!("2026-06-30T23:59:60.000Z".parse::<RunInstant>().is_ok());
-        assert!("2026-02-30T00:00:00.000Z".parse::<RunInstant>().is_ok());
+        assert!("2026-02-30T00:00:00.000Z".parse::<RunInstant>().is_err());
         // And the same rule on the deserialization boundary, not just FromStr.
         assert!(serde_json::from_value::<RunInstant>(serde_json::json!("nope")).is_err());
     }

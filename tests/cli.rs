@@ -4102,6 +4102,95 @@ fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
 
 #[cfg(unix)]
 #[test]
+fn a_cancelled_run_keeps_the_output_it_had_already_produced() {
+    // Cancelling is not a reason to throw away evidence. The harness emits a
+    // complete transcript and then keeps its descendant alive, so the run is cut
+    // short *after* it produced parseable output — which must still normalize
+    // into text/usage/session/events, exactly as it does for a timeout.
+    let history = hist_dir("cancel-normalized");
+    let history_arg = history.display().to_string();
+    let ticks = native_tick_file("cancel-normalized");
+    let _ = std::fs::remove_file(&ticks);
+    let transcript = concat!(
+        "{\"type\":\"text\",\"sessionID\":\"ses-cancel\",\"part\":",
+        "{\"type\":\"text\",\"text\":\"partial answer\"}}\n",
+        "{\"type\":\"tool_use\",\"sessionID\":\"ses-cancel\",\"part\":",
+        "{\"id\":\"call-cancel\",\"type\":\"tool\",\"tool\":\"bash\",\"state\":",
+        "{\"input\":{\"command\":\"echo hi\"},\"output\":\"hi\"}}}\n",
+        "{\"type\":\"step_finish\",\"sessionID\":\"ses-cancel\",\"part\":",
+        "{\"cost\":0.01,\"tokens\":{\"input\":12,\"output\":3,",
+        "\"cache\":{\"read\":9,\"write\":4}}}}\n",
+    );
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_STDOUT", transcript)
+        .env("MOCK_NATIVE_GRANDCHILD_MS", "20000")
+        .env("MOCK_TICK_FILE", ticks.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "cancel me after output",
+            "--bin",
+            &bin_override("opencode"),
+            "--timeout",
+            "60",
+            "--history",
+            "--history-dir",
+            &history_arg,
+            "--compact",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn oneharness");
+
+    // The fixture writes its transcript before its first tick, so a tick proves
+    // the output oneharness must preserve has already been produced.
+    let alive_deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::fs::metadata(&ticks).map(|m| m.len()).unwrap_or(0) == 0 {
+        assert!(
+            std::time::Instant::now() < alive_deadline,
+            "the harness never produced its transcript"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    assert!(Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("failed to signal oneharness")
+        .success());
+
+    let output = child.wait_with_output().expect("failed to reap oneharness");
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["status"], "cancelled");
+    assert_eq!(result["text"], "partial answer");
+    assert_eq!(result["text_source"], "json:opencode-parts");
+    assert_eq!(result["usage"]["input_tokens"], 12);
+    assert_eq!(result["usage"]["output_tokens"], 3);
+    assert_eq!(result["usage"]["cache_read_tokens"], 9);
+    assert_eq!(result["usage"]["cost_usd"], 0.01);
+    assert_eq!(result["session_id"], "ses-cancel");
+    assert_eq!(result["events"][0]["name"], "bash");
+
+    // History freezes the same normalized evidence under the cancelled status.
+    let record = first_history_run(Path::new(value["history_file"].as_str().unwrap()));
+    assert_eq!(record["status"], "cancelled");
+    assert_eq!(record["text"], "partial answer");
+    assert_eq!(record["session_id"], "ses-cancel");
+    assert_eq!(record["events"][0]["name"], "bash");
+
+    assert_native_descendant_stopped(&ticks);
+    let _ = std::fs::remove_file(ticks);
+    let _ = std::fs::remove_dir_all(history);
+}
+
+#[cfg(unix)]
+#[test]
 fn a_cancelled_fallback_candidate_stops_the_chain() {
     // Falling through a cancellation would spawn the very next harness the
     // cancellation was meant to prevent — so the chain stops, and `results`

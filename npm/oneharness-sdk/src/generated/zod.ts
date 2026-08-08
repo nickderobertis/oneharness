@@ -408,7 +408,13 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
             .min(1)
             .refine((value) => value !== undefined, { message: "Required" }),
           status: z
-            .union([z.literal("timeout"), z.literal("spawn-error"), z.literal("skipped"), z.literal("planned")])
+            .union([
+              z.literal("timeout"),
+              z.literal("cancelled"),
+              z.literal("spawn-error"),
+              z.literal("skipped"),
+              z.literal("planned"),
+            ])
             .refine((value) => value !== undefined, { message: "Required" }),
           text: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
           text_source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),

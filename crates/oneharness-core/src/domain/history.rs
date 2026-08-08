@@ -279,8 +279,7 @@ impl HistoryRunRecord {
                     && self
                         .duration_ms
                         .is_some_and(|duration| model_ms.saturating_add(tool_ms) <= duration)
-                    && (!matches!(self.status, Status::Ok | Status::Nonzero)
-                        || finished_at.is_some())
+                    && (!requires_provider_finish(self.status) || finished_at.is_some())
             }
             // Invocation bounds with no split derived from them, and no provider
             // finish either: what a run cut short leaves, legible only on a run
@@ -919,7 +918,7 @@ impl HistoryRecord {
         if started_at.is_empty() || model_ms.saturating_add(tool_ms) > duration {
             return false;
         }
-        if matches!(self.status, Status::Ok | Status::Nonzero) && finished_at.is_none() {
+        if requires_provider_finish(self.status) && finished_at.is_none() {
             return false;
         }
         self.events.as_ref().is_none_or(|events| {
@@ -1146,6 +1145,19 @@ fn partial_trace_valid(
         && duration_ms.is_some_and(|duration| {
             time_to_first_token_ms.is_none_or(|to_first_token| to_first_token <= duration)
         })
+}
+
+/// Whether a record with this status must carry a provider `finished_at` to be a
+/// complete measurement: the run reached its own end, so a measured trace that
+/// omits the finish is corrupt rather than cut short.
+///
+/// Public for the same reason [`run_failed`] is: the generated SDK schemas split
+/// their measured-timing branches by this predicate, so the rule lives once and
+/// is applied to the enum's own variants rather than being restated as a
+/// hand-kept status list that a new variant would silently fall out of.
+#[must_use]
+pub fn requires_provider_finish(status: Status) -> bool {
+    matches!(status, Status::Ok | Status::Nonzero)
 }
 
 /// Whether the run this record describes did not succeed. Such a run may have no

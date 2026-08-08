@@ -7,7 +7,7 @@
 use schemars::{schema_for, Schema};
 use serde::Serialize;
 
-use crate::domain::history::{run_failed, versions_from};
+use crate::domain::history::{requires_provider_finish, run_failed, versions_from};
 use crate::domain::history::{
     HistoryLine, HistoryRecord, HistoryStreamEnvelope, FIRST_CANCELLED_SCHEMA_VERSION,
     FIRST_ERROR_SCHEMA_VERSION, FIRST_EVENT_SCHEMA_VERSION, FIRST_PARTIAL_TIMING_SCHEMA_VERSION,
@@ -179,14 +179,14 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                         serde_json::json!({"type": "integer", "minimum": 0});
                 }
                 measured["properties"]["observed_tool_ms"] = serde_json::Value::Bool(false);
+                // Split by the runtime's own finish rule rather than a hand-kept
+                // list, so a new `Status` variant lands on the right branch here
+                // instead of quietly falling out of both.
+                let (finished, unfinished) = status_split(requires_provider_finish);
                 let mut terminal = measured.clone();
-                terminal["properties"]["status"] =
-                    serde_json::json!({"enum": ["ok", "nonzero"], "type": "string"});
+                terminal["properties"]["status"] = finished;
                 terminal["properties"]["finished_at"] = serde_json::json!({"type": "string"});
-                measured["properties"]["status"] = serde_json::json!({
-                    "enum": ["timeout", "spawn-error", "skipped", "planned"],
-                    "type": "string"
-                });
+                measured["properties"]["status"] = unfinished;
                 let mut unavailable = base;
                 unavailable["properties"]["schema_version"] = current_history_versions_schema();
                 unavailable["properties"]["finished_at"] = serde_json::json!({"type": "null"});
@@ -294,23 +294,30 @@ fn status_values() -> Vec<serde_json::Value> {
 ///
 /// Returns (failed, succeeded) as schemas ready to drop into a branch.
 fn status_partition() -> (serde_json::Value, serde_json::Value) {
-    let (mut failed, mut succeeded) = (Vec::new(), Vec::new());
+    status_split(run_failed)
+}
+
+/// Split every [`Status`] by `predicate`, as (matching, rest), each ready to drop
+/// into a branch. The variants come from the enum's own generated schema, so no
+/// caller can restate a list that drifts from the statuses a record can carry.
+fn status_split(predicate: fn(Status) -> bool) -> (serde_json::Value, serde_json::Value) {
+    let (mut matching, mut rest) = (Vec::new(), Vec::new());
     for name in status_values() {
         let status: Status =
             serde_json::from_value(name.clone()).expect("a generated Status variant reads back");
-        if run_failed(status) {
-            failed.push(name);
+        if predicate(status) {
+            matching.push(name);
         } else {
-            succeeded.push(name);
+            rest.push(name);
         }
     }
     assert!(
-        !failed.is_empty() && !succeeded.is_empty(),
+        !matching.is_empty() && !rest.is_empty(),
         "both status branches must stay reachable"
     );
     (
-        serde_json::json!({"enum": failed, "type": "string"}),
-        serde_json::json!({"enum": succeeded, "type": "string"}),
+        serde_json::json!({"enum": matching, "type": "string"}),
+        serde_json::json!({"enum": rest, "type": "string"}),
     )
 }
 

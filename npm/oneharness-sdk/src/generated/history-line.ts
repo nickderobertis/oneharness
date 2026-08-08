@@ -121,7 +121,7 @@ export type HistoryLine =
             session: string;
             session_id: string | null;
             started_at: string;
-            status: "timeout" | "spawn-error" | "skipped" | "planned";
+            status: "timeout" | "cancelled" | "spawn-error" | "skipped" | "planned";
             text: string | null;
             text_source: string | null;
             time_to_first_token_ms?: number | null | undefined;

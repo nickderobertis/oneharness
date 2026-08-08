@@ -872,6 +872,7 @@
                       "status": {
                         "enum": [
                           "timeout",
+                          "cancelled",
                           "spawn-error",
                           "skipped",
                           "planned"

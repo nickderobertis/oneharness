@@ -4,7 +4,10 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use crate::cli::RunArgs;
-use crate::commands::{print_json, select_specs, variant_environment};
+use crate::commands::{
+    print_json, select_specs, variant_environment, variant_unprovisioned_identity,
+    UnprovisionedIdentity,
+};
 use oneharness_core::domain::batch::{self, BatchStrategy};
 use oneharness_core::domain::fallback::{self, RunMode};
 use oneharness_core::domain::harness::{self, BuildCtx, HarnessSpec};
@@ -230,6 +233,10 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // only one harness will run (the command must be valid for the whole set).
     let run_mode = args.run_mode.or(cfg.run_mode).unwrap_or(RunMode::Parallel);
     let fallback_mode = run_mode == RunMode::Fallback;
+    // Streaming is a CLI flag with a config/env layer, resolved once here so every
+    // validator, the format selection, and the driver choice read the same
+    // effective value.
+    let stream = resolve_stream(args, cfg);
     if fallback_mode {
         validate_fallback(batch_run, args)?;
     }
@@ -238,7 +245,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // errors). It is *compatible* with fallback: the model list is exactly the
     // fallback chain there.
     if multi_model {
-        validate_multi_model(batch_run, fallback_mode, args)?;
+        validate_multi_model(batch_run, fallback_mode, stream, args)?;
     }
     // Selection already preserves explicit caller/config order (and uses registry
     // order for `--all`). Fallback treats that sequence as its priority chain;
@@ -275,13 +282,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // selects the anchor harness's preferred session-bearing format.
     let explicit_format = args.output_format.or(cfg.output_format);
     validate_session_output_format(session_anchor, explicit_format)?;
-    validate_stream(
-        args.stream,
-        &specs,
-        batch_run,
-        schema.is_some(),
-        fallback_mode,
-    )?;
+    validate_stream(stream, &specs, batch_run, schema.is_some(), fallback_mode)?;
     // Resolve the approval mode (CLI --mode > --bypass/--no-bypass > config
     // `mode` > config `bypass` > the built-in default, which is `default`). A
     // mode a selected harness *cannot express* is refused here (a command can't
@@ -443,7 +444,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         // when a named session is in play). Otherwise events/streaming selects the
         // harness's transcript-bearing format; absent that, the named-session
         // anchor selects its id-bearing format. Ordinary runs keep the default.
-        let want_events = args.events || args.stream || history_writer.is_some();
+        let want_events = args.events || stream || history_writer.is_some();
         // Timing is a best-effort normalized signal, like usage. Harnesses that
         // expose a provider/tool boundary trace select its required format;
         // others still write history with the timing fields absent.
@@ -570,6 +571,22 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 result_prompt,
                 unit_model.clone(),
             ))));
+        } else if let Some(identity) = variant_unprovisioned_identity(cfg, selected_id) {
+            // The identity this variant selects has no home directory on disk, so
+            // it holds no credentials: an `auth` failure a chain falls through,
+            // exactly like the empty-directory state the harness itself reports.
+            // Not spawning is the point — the harness would either refuse
+            // unreadably or create the directory for an account nobody has logged
+            // into.
+            plan.push(Plan::Ready(Box::new(unprovisioned_result(
+                spec,
+                &resolved.bin,
+                harness_plan.build(schema.as_ref(), None).argv,
+                output_format,
+                result_prompt,
+                unit_model.clone(),
+                &identity,
+            ))));
         } else {
             let job_index = jobs.len();
             // Large prompt / system: deliver it off the argv (temp file / stdin)
@@ -617,7 +634,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
 
     // Schedule and run the jobs. `--print-command` never executes, so it always
     // takes the last branch, which emits the planned rows.
-    let stream_run = args.stream && !args.print_command;
+    let stream_run = stream && !args.print_command;
     let mut forked = false;
     // Empty off the streaming path, where history is written once at the end.
     let mut streamed_history: Vec<StreamedHistory> = Vec::new();
@@ -1690,6 +1707,24 @@ fn validate_stream(
     Ok(())
 }
 
+/// Whether this run streams: `--stream` / `--no-stream` (clap-exclusive, so at
+/// most one is set) beat the layered `stream` config value, which is off by
+/// default.
+///
+/// The flag wins in both directions on purpose. A consumer that always reads
+/// events declares `stream = true` once instead of injecting the flag per
+/// invocation, and a single call that needs the buffered report back says
+/// `--no-stream` instead of having to unset the config it inherited.
+fn resolve_stream(args: &RunArgs, cfg: &oneharness_core::domain::config::FileConfig) -> bool {
+    if args.stream {
+        true
+    } else if args.no_stream {
+        false
+    } else {
+        cfg.stream.unwrap_or(false)
+    }
+}
+
 /// Run `jobs` wave by wave, preserving global order in the returned outcomes.
 /// Each wave is a set of job indices run concurrently (up to `max_parallel`),
 /// with a barrier between waves — so a `min-tokens` batch's warm-up call fully
@@ -1835,6 +1870,7 @@ fn validate_fallback(batch_run: bool, args: &RunArgs) -> Result<(), OneharnessEr
 fn validate_multi_model(
     batch_run: bool,
     fallback_mode: bool,
+    stream: bool,
     args: &RunArgs,
 ) -> Result<(), OneharnessError> {
     let conflict = |with, why| Err(OneharnessError::MultiModelConflict { with, why });
@@ -1856,7 +1892,7 @@ fn validate_multi_model(
             "a named session is tied to one model, so it cannot fan out over several",
         );
     }
-    if args.stream && !fallback_mode {
+    if stream && !fallback_mode {
         return conflict(
             "--stream",
             "streaming emits one incremental output; a parallel model fan-out produces several results at once. Use --run-mode fallback to stream the first (harness, model) pair that runs",
@@ -2097,6 +2133,43 @@ fn skipped_result(
             "`{bin}` not found on PATH; harness skipped. Install it: {}",
             spec.install_hint
         )),
+    }
+}
+
+/// A candidate whose variant selects an identity with no home directory on disk.
+///
+/// Reported as an `auth` failure that was **not run**: the binary is installed
+/// (`available: true`, unlike [`skipped_result`]) and the argv is recorded, but
+/// there are no credentials at the path the indirection names, so spawning could
+/// only produce the harness's own unreadable refusal — or, worse, leave a config
+/// directory behind for an account nobody has authenticated. `auth` is the
+/// classification a fallback chain routes around, so an unauthenticated
+/// candidate costs a chain nothing, exactly as an *empty* home directory already
+/// does (see [`variant_unprovisioned_identity`]).
+fn unprovisioned_result(
+    spec: &HarnessSpec,
+    bin: &str,
+    command: Vec<String>,
+    output_format: OutputFormat,
+    prompt: Option<String>,
+    model: Option<String>,
+    identity: &UnprovisionedIdentity,
+) -> RunResult {
+    RunResult {
+        available: true,
+        status: Status::Skipped,
+        failure_kind: Some(signals::FailureKind::Auth),
+        // llmlint: ignore[invalid_states_unrepresentable] `failure_kind_source` is an open serialized string by contract (see its field doc); this is its one pre-spawn producer, pinned by the integration test that reads the emitted value.
+        failure_kind_source: Some("config:env_from".to_string()),
+        error: Some(format!(
+            "`{target}` (from `{source}`) points at `{path}`, which does not exist, so this \
+             identity has no credentials; harness not run. Create and authenticate that directory, \
+             or drop this candidate from the selection.",
+            target = identity.target,
+            source = identity.source,
+            path = identity.path.display(),
+        )),
+        ..skipped_result(spec, bin, command, output_format, prompt, model)
     }
 }
 

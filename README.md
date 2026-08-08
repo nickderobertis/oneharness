@@ -18,7 +18,7 @@ $ oneharness run --all --prompt "Reply with the single word: pong" --model haiku
 
 ```jsonc
 {
-  "schema_version": "0.1",
+  "schema_version": "…", // the contract version this binary emits
   "oneharness_version": "0.1.0",
   "prompt": "Reply with the single word: pong",
   "model": "haiku",
@@ -483,6 +483,18 @@ removes even an ambient canonical key, which is required for subscription
 variants. These operations affect only the spawned child, so variants run
 concurrently without credential leakage.
 
+An `env_from` value that is an **absolute path** names the identity's home
+directory (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, …). When that directory is **not on
+disk**, nothing has been provisioned there, so oneharness does not run the
+harness: the result is `status: "skipped"` with `available: true` and
+`failure_kind: "auth"` — the same classification an *empty* home directory earns
+from the harness itself, and one a [fallback chain](#fallback-mode-first-that-runs-wins)
+routes around. So a second account can sit in a committed chain before anyone
+logs into it, costing nothing and leaving no config directory behind for it.
+Authenticate the path to activate the candidate. Only absolute values are checked
+(a credential is never probed on disk), and only `env_from` — a committed `env`
+path is the config author's own declaration, where a typo should stay loud.
+
 Variants share the base harness's one native project config file. Selecting two
 variants with conflicting sync fields is therefore a usage error, not
 last-writer-wins.
@@ -498,6 +510,7 @@ bypass = true                   # legacy --bypass toggle (opt-in; default false)
 mode = "default"                # --mode; beats `bypass` (default: "default")
 timeout = 120                   # --timeout, in seconds
 output_format = "json"          # --output-format
+stream = false                  # --stream / --no-stream (incremental events)
 schema_file = "person.json"     # --schema (structured output; relative to project)
 schema_max_retries = 2          # --schema-max-retries (default 2)
 max_parallel = 4                # --max-parallel
@@ -887,6 +900,12 @@ truncated final JSONL record is ignored rather than invalidating earlier ones):
   one selected harness — several would interleave their streams on one stdout —
   but a whole [`--run-mode fallback`](#fallback-mode-first-that-runs-wins) chain
   is allowed, because only the candidate that runs ever publishes events.
+  Streaming is also settable declaratively as `stream = true` in config (or
+  `ONEHARNESS_STREAM`), so a consumer that always reads events does not have to
+  inject the flag per invocation; `--stream` / `--no-stream` beat it either way.
+  A config that asks for streaming on a selection that cannot stream raises the
+  same loud usage error the flag does — turn it off for that call with
+  `--no-stream`.
 - `failure_kind` / `failure_kind_source` — on a non-zero run, a coarse reason
   (`auth`, `rate_limit`, `model_not_found`, `quota`) so a caller can tell a
   retryable condition from a broken request. This is **distinct from `status`**,
@@ -1051,6 +1070,7 @@ chain, so a long, genuine run can never be mistaken for "try the next one".
 | --- | --- |
 | Did the task's work (a tool call, or billed tokens/cost) | ⛔ stop — it ran, whatever its record says |
 | Not installed (`skipped`) | ✅ fall through — `not-installed` |
+| Installed, but the variant's [`env_from`](#configuration) home directory is absent (`skipped`, `auth`) | ✅ fall through — `auth` |
 | Resolved but unspawnable (`spawn-error`) | ✅ fall through — `spawn-error` |
 | Ran, exited non-zero, classified `auth`, no work done | ✅ fall through — `auth` |
 | Ran, exited non-zero, classified `quota` (no credit), no work done | ✅ fall through — `quota` |

@@ -11,7 +11,8 @@ use std::process::{Command, Output, Stdio};
 
 use oneharness_core::domain::events::{ActionEvent, TimingSource, ToolCallStatus};
 use oneharness_core::domain::history::{HistoryLabels, HistoryLine, HistoryStreamEnvelope};
-use oneharness_core::domain::report::RunStreamEnvelope;
+use oneharness_core::domain::report::{RunStreamEnvelope, Status};
+use oneharness_core::domain::signals::FailureKind;
 use oneharness_core::domain::usage::{UsageProbe, UsageSupport};
 use oneharness_core::io::history::HistoryWriter;
 use serde_json::Value;
@@ -78,6 +79,7 @@ const ENV_OVERRIDE_VARS: &[&str] = &[
     "ONEHARNESS_HISTORY",
     "ONEHARNESS_HISTORY_DIR",
     "ONEHARNESS_HISTORY_LABELS",
+    "ONEHARNESS_STREAM",
 ];
 
 /// Run with config loading enabled but still hermetic: the user-level config is
@@ -249,11 +251,55 @@ fn mock_fixture_only_exposes_session_ids_in_session_bearing_formats() {
 }
 
 #[test]
+fn every_report_carries_the_shared_schema_version() {
+    // `run`, `list`, `detect`, `sync`, and `config` share one contract version,
+    // so a consumer reads any of them with one number — and a bump must move
+    // every surface at once. Pinned literally on purpose: asserting against the
+    // constant would pass through a bump nobody intended.
+    let version = "0.4";
+    let printed = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--print-command",
+        ],
+        &[],
+    );
+    assert_eq!(json_stdout(&printed)["schema_version"], version);
+    assert_eq!(json_stdout(&run(&["list"], &[]))["schema_version"], version);
+    assert_eq!(
+        json_stdout(&run(&["detect"], &[]))["schema_version"],
+        version
+    );
+    let fx = ConfigFixture::new("shared-schema-version", "allowed_tools = [\"Read\"]\n", "");
+    let synced = run_with_config(
+        &["sync", "--harness", "claude-code", "--cwd", &fx.cwd()],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        synced.status.success(),
+        "{}",
+        String::from_utf8_lossy(&synced.stderr)
+    );
+    assert_eq!(json_stdout(&synced)["schema_version"], version);
+    let config = run_with_config(
+        &["config", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(json_stdout(&config)["schema_version"], version);
+}
+
+#[test]
 fn list_describes_every_harness() {
     let output = run(&["list"], &[]);
     assert!(output.status.success());
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.3");
+    assert_eq!(value["schema_version"], "0.4");
     let ids: Vec<&str> = value["harnesses"]
         .as_array()
         .unwrap()
@@ -3058,6 +3104,297 @@ fn stream_buffers_partial_provider_records_until_newline() {
 }
 
 #[test]
+fn stream_config_key_streams_and_an_explicit_flag_wins() {
+    // `stream = true` in config is exactly `--stream`, so a consumer that always
+    // reads events declares it once instead of injecting the flag per invocation.
+    // `--no-stream` takes it back for a single call.
+    let bin = mock_bin().display().to_string().replace('\\', "\\\\");
+    let fx = ConfigFixture::new(
+        "stream-config",
+        &format!(
+            r#"
+harnesses = ["opencode"]
+stream = true
+[harness.opencode]
+bin = "{bin}"
+"#
+        ),
+        "",
+    );
+    let stdout = concat!(
+        r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"echo hi"},"output":"hi"}}}"#,
+        "\n",
+        r#"{"type":"text","part":{"type":"text","text":"done"}}"#,
+        "\n",
+    );
+    let streamed = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd()],
+        &[("MOCK_STDOUT", stdout)],
+        &fx.user_config(),
+    );
+    assert!(
+        streamed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&streamed.stderr)
+    );
+    let text = String::from_utf8_lossy(&streamed.stdout);
+    let envelopes: Vec<RunStreamEnvelope> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("each stream line matches the contract"))
+        .collect();
+    assert_eq!(envelopes.len(), 2, "lines: {text}");
+    match &envelopes[0] {
+        RunStreamEnvelope::Event { event } => assert_eq!(event.name.as_deref(), Some("bash")),
+        RunStreamEnvelope::Result { .. } => panic!("config `stream` did not publish events"),
+    }
+    match &envelopes[1] {
+        RunStreamEnvelope::Result { report } => {
+            assert_eq!(report.results[0].text.as_deref(), Some("done"));
+        }
+        RunStreamEnvelope::Event { .. } => panic!("missing terminal report"),
+    }
+
+    // The explicit flag wins over the config value.
+    let buffered = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--no-stream"],
+        &[("MOCK_STDOUT", stdout)],
+        &fx.user_config(),
+    );
+    assert!(
+        buffered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&buffered.stderr)
+    );
+    let report = json_stdout(&buffered);
+    assert_eq!(report["results"][0]["text"], "done");
+    assert!(
+        !String::from_utf8_lossy(&buffered.stdout).contains("\"type\":\"event\""),
+        "--no-stream still streamed"
+    );
+
+    // The environment layer is the same value by another name: it streams on its
+    // own, from a config that says nothing about streaming...
+    let env_only = ConfigFixture::new(
+        "stream-env",
+        &format!(
+            r#"
+harnesses = ["opencode"]
+[harness.opencode]
+bin = "{bin}"
+"#
+        ),
+        "",
+    );
+    let from_env = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &env_only.cwd()],
+        &[("MOCK_STDOUT", stdout), ("ONEHARNESS_STREAM", "true")],
+        &env_only.user_config(),
+    );
+    assert!(
+        from_env.status.success(),
+        "{}",
+        String::from_utf8_lossy(&from_env.stderr)
+    );
+    let envelopes: Vec<RunStreamEnvelope> = String::from_utf8_lossy(&from_env.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("each stream line matches the contract"))
+        .collect();
+    assert_eq!(envelopes.len(), 2);
+    assert!(matches!(envelopes[0], RunStreamEnvelope::Event { .. }));
+    // ...and still loses to the explicit flag.
+    let env_overridden = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &env_only.cwd(),
+            "--no-stream",
+        ],
+        &[("MOCK_STDOUT", stdout), ("ONEHARNESS_STREAM", "true")],
+        &env_only.user_config(),
+    );
+    assert!(
+        !String::from_utf8_lossy(&env_overridden.stdout).contains("\"type\":\"event\""),
+        "--no-stream lost to ONEHARNESS_STREAM"
+    );
+    let config = json_stdout(&run_with_config(
+        &["config", "--cwd", &fx.cwd(), "--compact"],
+        &[("ONEHARNESS_STREAM", "true")],
+        &fx.user_config(),
+    ));
+    assert_eq!(config["stream"]["value"], true);
+    assert_eq!(config["stream"]["source"], "environment");
+    // A file value is attributed to that file, like any other scalar...
+    let from_file = json_stdout(&run_with_config(
+        &["config", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    ));
+    assert_eq!(from_file["stream"]["value"], true);
+    assert!(
+        from_file["stream"]["source"]
+            .as_str()
+            .unwrap()
+            .ends_with("oneharness.toml"),
+        "{from_file}"
+    );
+
+    // ...and the flag wins over an explicit `stream = false` too, not just over
+    // an absent value.
+    let off = ConfigFixture::new(
+        "stream-off",
+        &format!(
+            r#"
+harnesses = ["opencode"]
+stream = false
+[harness.opencode]
+bin = "{bin}"
+"#
+        ),
+        "",
+    );
+    let forced = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &off.cwd(), "--stream"],
+        &[("MOCK_STDOUT", stdout)],
+        &off.user_config(),
+    );
+    assert!(
+        forced.status.success(),
+        "{}",
+        String::from_utf8_lossy(&forced.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&forced.stdout).contains("\"type\":\"event\""),
+        "--stream lost to `stream = false`"
+    );
+}
+
+#[test]
+fn stream_config_key_refuses_a_selection_it_cannot_stream() {
+    // A config value is the flag, validation and all: a parallel multi-harness
+    // selection is the same loud usage error `--stream` raises, never a silent
+    // downgrade to a buffered report.
+    let bin = mock_bin().display().to_string().replace('\\', "\\\\");
+    let fx = ConfigFixture::new(
+        "stream-config-refused",
+        &format!(
+            r#"
+harnesses = ["opencode", "codex"]
+stream = true
+[harness.opencode]
+bin = "{bin}"
+[harness.codex]
+bin = "{bin}"
+"#
+        ),
+        "",
+    );
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd()],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--stream runs a single harness"),
+        "{stderr}"
+    );
+    // ...and `--no-stream` is how one call opts out of the inherited config.
+    let allowed = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--no-stream"],
+        &[("MOCK_STDOUT", "hello")],
+        &fx.user_config(),
+    );
+    assert!(
+        allowed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+    assert_eq!(
+        json_stdout(&allowed)["results"].as_array().unwrap().len(),
+        2
+    );
+
+    // Every other shape streaming cannot serve is refused the same way, whether
+    // the value came from the flag or from config: a batch, structured output,
+    // and a parallel model fan-out.
+    let schema = std::path::Path::new(&fx.cwd()).join("schema.json");
+    std::fs::write(&schema, r#"{"type":"object"}"#).unwrap();
+    let single = ["run", "--harness", "opencode", "--cwd"];
+    for (args, needle) in [
+        (
+            vec![
+                "--prompt",
+                "one",
+                "--prompt",
+                "two",
+                "--batch-strategy",
+                "speed",
+            ],
+            "--stream is incompatible with a batch",
+        ),
+        (
+            vec!["--prompt", "hi", "--schema", &schema.display().to_string()],
+            "--stream is incompatible with --schema",
+        ),
+        (
+            vec!["--prompt", "hi", "--model", "a", "--model", "b"],
+            "--stream",
+        ),
+    ] {
+        let mut argv: Vec<&str> = single.to_vec();
+        let cwd = fx.cwd();
+        argv.push(&cwd);
+        argv.extend(args.iter().copied());
+        let refused = run_with_config(&argv, &[], &fx.user_config());
+        assert_eq!(refused.status.code(), Some(2), "{argv:?}");
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(stderr.contains(needle), "{argv:?}: {stderr}");
+    }
+
+    // A malformed environment value is the same loud usage error any other
+    // ONEHARNESS_* boolean raises, never a silent "not true, so off".
+    let malformed = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+        ],
+        &[("ONEHARNESS_STREAM", "maybe")],
+        &fx.user_config(),
+    );
+    assert_eq!(malformed.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&malformed.stderr);
+    assert!(stderr.contains("ONEHARNESS_STREAM"), "{stderr}");
+
+    // Asking for both directions at once is refused by the parser.
+    let both = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--stream",
+            "--no-stream",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(!both.status.success());
+    let stderr = String::from_utf8_lossy(&both.stderr);
+    assert!(stderr.contains("--no-stream"), "{stderr}");
+}
+
+#[test]
 fn stream_short_circuit_tears_down_the_child_when_the_consumer_closes() {
     // The flagship streaming behavior: when the consumer stops reading (closes
     // oneharness's stdout), oneharness's next event write fails (broken pipe) and
@@ -4723,6 +5060,163 @@ MOCK_STDOUT = "{{\"type\":\"result\",\"result\":\"served-by-good\"}}"
 }
 
 #[test]
+fn an_absent_env_from_home_falls_through_as_auth_like_an_empty_one() {
+    // A variant's `env_from` points a child at one account's home directory. A
+    // directory that is not on disk holds no credentials — the same "not set up
+    // yet" state an EMPTY one is in, which the harness itself already reports as
+    // `auth`. Both must therefore fall through a chain: the absent one is
+    // classified without spawning (so no config directory is created for an
+    // account nobody has logged into), the empty one still runs and is judged by
+    // what the harness says.
+    let bin = mock_bin().display().to_string().replace('\\', "\\\\");
+    let fx = ConfigFixture::new(
+        "variant-absent-home",
+        &format!(
+            r#"
+harnesses = ["claude-code:absent", "claude-code:empty"]
+run_mode = "fallback"
+[harness.claude-code.variant.absent]
+bin = "{bin}"
+[harness.claude-code.variant.absent.env_from]
+CLAUDE_CONFIG_DIR = "OH_TEST_ABSENT_HOME"
+[harness.claude-code.variant.empty]
+bin = "{bin}"
+[harness.claude-code.variant.empty.env_from]
+CLAUDE_CONFIG_DIR = "OH_TEST_EMPTY_HOME"
+"#
+        ),
+        "",
+    );
+    let empty_home = std::path::Path::new(&fx.cwd()).join("empty-home");
+    std::fs::create_dir_all(&empty_home).unwrap();
+    let absent_home = std::path::Path::new(&fx.cwd()).join("absent-home");
+    let absent = absent_home.display().to_string();
+    let empty = empty_home.display().to_string();
+    let envs: Vec<(&str, &str)> = vec![
+        ("OH_TEST_ABSENT_HOME", absent.as_str()),
+        ("OH_TEST_EMPTY_HOME", empty.as_str()),
+        (
+            "MOCK_STDOUT",
+            r#"{"type":"result","result":"served-by-empty"}"#,
+        ),
+    ];
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &envs,
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    let refused = &value["results"][0];
+    assert_eq!(refused["harness_id"], "claude-code:absent");
+    assert_eq!(refused["status"], "skipped");
+    // Installed — this is a credential problem, not a missing binary.
+    assert_eq!(refused["available"], true);
+    assert_eq!(refused["failure_kind"], "auth");
+    assert_eq!(refused["failure_kind_source"], "config:env_from");
+    assert_eq!(refused["command"][0], mock_bin().display().to_string());
+    // Never spawned: the mock's stdout would have surfaced as `text`.
+    assert!(refused["text"].is_null(), "{refused}");
+    let error = refused["error"].as_str().unwrap();
+    for needle in ["CLAUDE_CONFIG_DIR", "OH_TEST_ABSENT_HOME", &absent] {
+        assert!(error.contains(needle), "{error}");
+    }
+    assert!(!absent_home.exists(), "the absent home was created");
+    // The empty home is left to the harness, and the chain advances past the
+    // absent candidate to it.
+    assert_eq!(value["results"][1]["harness_id"], "claude-code:empty");
+    assert_eq!(value["results"][1]["text"], "served-by-empty");
+    assert_eq!(value["fallback"]["ran"], "claude-code:empty");
+    assert_eq!(
+        value["fallback"]["fell_through"][0]["harness"],
+        "claude-code:absent"
+    );
+    assert_eq!(value["fallback"]["fell_through"][0]["reason"], "auth");
+
+    // A streamed chain selects the same candidate a buffered one did: the
+    // unprovisioned candidate publishes nothing and the chain advances past it.
+    let streamed = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--stream"],
+        &envs,
+        &fx.user_config(),
+    );
+    assert!(
+        streamed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&streamed.stderr)
+    );
+    let envelopes: Vec<RunStreamEnvelope> = String::from_utf8_lossy(&streamed.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("each stream line matches the contract"))
+        .collect();
+    match envelopes.last().expect("a terminal result line") {
+        RunStreamEnvelope::Result { report } => {
+            let fallback = report.fallback.as_ref().expect("a fallback report");
+            assert_eq!(fallback.ran.as_deref(), Some("claude-code:empty"));
+            assert_eq!(fallback.fell_through[0].harness, "claude-code:absent");
+            assert_eq!(fallback.fell_through[0].reason, "auth");
+            assert_eq!(report.results[0].status, Status::Skipped);
+            assert_eq!(report.results[0].failure_kind, Some(FailureKind::Auth));
+        }
+        RunStreamEnvelope::Event { .. } => panic!("missing terminal report"),
+    }
+
+    // Outside a chain there is nothing to fall through to, so the run fails —
+    // with the same classification, not an unreadable harness-side refusal.
+    let alone = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--harness",
+            "claude-code:absent",
+            "--run-mode",
+            "parallel",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &envs,
+        &fx.user_config(),
+    );
+    assert_eq!(alone.status.code(), Some(1));
+    assert_eq!(json_stdout(&alone)["results"][0]["failure_kind"], "auth");
+
+    // An opaque credential is never probed on disk: `env_from` values that are
+    // not absolute paths reach the child untouched.
+    let opaque = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--harness",
+            "claude-code:absent",
+            "--run-mode",
+            "parallel",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[
+            ("OH_TEST_ABSENT_HOME", "sk-ant-not-a-path"),
+            ("MOCK_ECHO_ENV", "CLAUDE_CONFIG_DIR"),
+        ],
+        &fx.user_config(),
+    );
+    assert!(
+        opaque.status.success(),
+        "{}",
+        String::from_utf8_lossy(&opaque.stderr)
+    );
+    assert_eq!(json_stdout(&opaque)["results"][0]["status"], "ok");
+}
+
+#[test]
 fn sync_rejects_conflicting_variants_sharing_one_native_config() {
     let fx = ConfigFixture::new(
         "variant-sync-conflict",
@@ -5759,7 +6253,7 @@ fn config_command_shows_values_with_sources() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.3");
+    assert_eq!(value["schema_version"], "0.4");
     assert_eq!(value["config_files"].as_array().unwrap().len(), 2);
 
     // The project file wins for model and is named as the source...
@@ -5774,6 +6268,9 @@ fn config_command_shows_values_with_sources() {
     // ...untouched fields fall to their built-in defaults...
     assert_eq!(value["bypass"]["value"], false);
     assert_eq!(value["bypass"]["source"], "default");
+    // `stream` is the field schema 0.4 added; it reports like any other scalar.
+    assert_eq!(value["stream"]["value"], false);
+    assert_eq!(value["stream"]["source"], "default");
     // `mode` has no built-in default (it derives from `bypass` when unset).
     assert!(value["mode"]["value"].is_null());
     assert!(value["mode"]["source"].is_null());

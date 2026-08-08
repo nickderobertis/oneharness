@@ -109,8 +109,14 @@ impl RunWork {
 ///
 /// - [`Status::Skipped`] → `"not-installed"` (the binary was not on PATH).
 /// - [`Status::SpawnError`] → `"spawn-error"` (resolved but could not execute).
-/// - [`Status::Nonzero`] or [`Status::Ok`] with `failure_kind == "auth"` → `"auth"` (rejected
-///   before doing any work — bad/absent credentials).
+/// - [`Status::Nonzero`], [`Status::Ok`] or [`Status::Skipped`] with `failure_kind == "auth"` →
+///   `"auth"` (rejected before doing any work — bad/absent credentials). A
+///   classified `auth` outranks the skip reason: a candidate the command layer
+///   declined to run because the identity it selects is unprovisioned (an
+///   `env_from` home directory that is not on disk) reads as the credential
+///   problem it is, not as a missing binary. [`Status::Skipped`] is listed only
+///   for `auth`, because that refusal is the only one decided before a spawn;
+///   every other kind is read out of a process that ran.
 /// - [`Status::Nonzero`] or [`Status::Ok`] with `failure_kind == "quota"` → `"quota"` (the account
 ///   has no credit/quota to do work — a provisioning problem like `auth`).
 ///
@@ -142,7 +148,9 @@ pub fn startup_failure_reason(
         return None;
     }
     match (status, failure_kind) {
-        (_, Some(FailureKind::Auth)) if matches!(status, Status::Ok | Status::Nonzero) => {
+        (_, Some(FailureKind::Auth))
+            if matches!(status, Status::Ok | Status::Nonzero | Status::Skipped) =>
+        {
             Some("auth")
         }
         (_, Some(FailureKind::Quota)) if matches!(status, Status::Ok | Status::Nonzero) => {
@@ -224,6 +232,17 @@ mod tests {
                 RunWork::None
             ),
             Some("quota")
+        );
+        // A candidate that was not run *because* its identity is unprovisioned
+        // carries the credential reason, not the missing-binary one.
+        assert_eq!(
+            startup_failure_reason(
+                Status::Skipped,
+                Some(FailureKind::Auth),
+                false,
+                RunWork::None
+            ),
+            Some("auth")
         );
         for status in [Status::Skipped, Status::SpawnError] {
             assert!(is_startup_failure(status, None, false, RunWork::None));

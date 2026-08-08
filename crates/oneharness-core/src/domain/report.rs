@@ -15,7 +15,16 @@ use crate::domain::signals::{FailureKind, Usage};
 use crate::domain::usage::UtcInstant;
 
 /// Bumped when the JSON shape changes in a way consumers must notice.
-pub const SCHEMA_VERSION: &str = "0.3";
+///
+/// Shared by every non-history report on stdout — `run`, `list`, `detect`,
+/// `sync`, and `config` — so one number describes the whole surface; the history
+/// records carry their own (`domain::history::SCHEMA_VERSION`).
+///
+/// `0.4` adds the `config` report's `stream` field (the layered `--stream`
+/// value, with its provenance). Additive, so a reader of `0.3` keeps working —
+/// the bump is how a consumer *learns* the field exists rather than having to
+/// probe for it.
+pub const SCHEMA_VERSION: &str = "0.4";
 
 /// How a harness emits its result, which decides how `text` is extracted.
 ///
@@ -56,7 +65,10 @@ pub enum Status {
     Timeout,
     /// The binary was resolved but could not be executed.
     SpawnError,
-    /// The binary was not found, so the harness was not run.
+    /// The harness was not run. Either the binary was not found (`available:
+    /// false`), or it was found but the identity the selection points at is not
+    /// provisioned — an `env_from` home directory that is not on disk, reported
+    /// as `available: true` with `failure_kind: "auth"`.
     Skipped,
     /// `--print-command`: the command was built but not executed.
     Planned,
@@ -204,7 +216,9 @@ pub struct RunResult {
     /// run, and it also marks the run as failed for exit-code purposes.
     /// Serialized as its snake_case token (see [`FailureKind`]).
     pub failure_kind: Option<FailureKind>,
-    /// Where `failure_kind` was read (`stderr`/`stdout`); `null` when absent.
+    /// Where `failure_kind` was read (`stderr`/`stdout`, or `config:env_from`
+    /// for a candidate refused before spawning); `null` when absent.
+    // llmlint: ignore[invalid_states_unrepresentable] This is a stable serialized string in the JSON/SDK contract, deliberately open so a new reading site is an additive value rather than a generated-type change for every consumer; the values are produced only by `domain::signals` and the pre-spawn refusal, and the report round-trip tests pin them.
     pub failure_kind_source: Option<String>,
     /// Raw captured stdout (empty for skipped/planned).
     pub stdout: String,

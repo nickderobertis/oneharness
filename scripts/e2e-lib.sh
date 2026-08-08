@@ -1081,6 +1081,189 @@ TOML
     note "PASS: $id hook enforcement"
 }
 
+# Live proof that out-of-band turn control actually STOPS work: drive a real
+# turn that produces one observable artifact per step, interrupt it from a
+# SEPARATE process mid-flight, and prove the artifact count is frozen afterwards.
+#
+# The assertion is deliberately at the filesystem, not at the harness's own
+# report: goose and copilot both report a normal `end_turn` after a real
+# cancellation, so a report-trusting check passes for the wrong reason. Files on
+# disk are the one signal a harness cannot fake.
+#
+# Also asserts the contract around the stop: the socket exists at the documented
+# path while the run lives and is gone after it, the interrupt response carries
+# the harness's mechanism, the run's own report records the served interrupt,
+# and the SESSION survives (the whole point — the dispatch is redirected, not
+# destroyed).
+#
+# Only call this for a harness `oneharness list` reports a `control` mechanism
+# for. Retries once when the turn ended before the interrupt landed (a model
+# that refused or finished early is flakiness, not a control regression).
+#
+#   $1 harness id
+oh_control_enforce() {
+    local id="$1"
+    local attempt
+    for attempt in 1 2; do
+        if _oh_control_enforce_once "$id" "$attempt"; then
+            note "PASS: $id control enforcement"
+            return 0
+        fi
+        note "  control-enforce: attempt $attempt was inconclusive (the turn ended before the interrupt landed); retrying"
+    done
+    fail "$id: the turn never stayed in flight long enough to interrupt across 2 attempts"
+}
+
+# One attempt. Returns 0 on a proven interrupt, 1 when the turn ended too early
+# to prove anything (retryable). Any real contract violation calls fail().
+_oh_control_enforce_once() {
+    local id="$1" attempt="$2"
+    local bin sandbox store name socket count frozen frozen_after report
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    sandbox="$(mktemp -d)"
+    sandbox="$(oh_native_path "$sandbox")"
+    oh_sandbox_prepare "$id" "$sandbox"
+    git init -q "$sandbox" 2>/dev/null || true
+    store="$sandbox/sessions"
+    name="ohctl${attempt}${RANDOM}"
+    socket="$store/control/$name.sock"
+    report="$sandbox/report.json"
+
+    local model_args=()
+    [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+
+    # Many small steps with a pause between each: the turn must still be running
+    # when the interrupt arrives, and each step must be individually observable.
+    local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create 60 files named step-001.txt through step-060.txt in the current directory, ONE PER TOOL CALL, sleeping 1 second between each (for example: sleep 1 && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
+
+    note "  control-enforce: starting a controlled run ($id, session $name)"
+    ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --prompt "$prompt" \
+        --control --session "$name" --session-dir "$store" --cwd "$sandbox" \
+        --mode bypass --timeout "${OH_TIMEOUT:-300}" --compact \
+        "${model_args[@]+"${model_args[@]}"}" >"$report" 2>"$sandbox/run.err" &
+    local run_pid=$!
+
+    # The socket must appear at the documented path while the run is alive.
+    if ! _oh_wait_for 60 "test -S '$socket'"; then
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        sed 's/^/    /' "$sandbox/run.err" >&2 || true
+        rm -rf "$sandbox"
+        fail "$id: no control socket appeared at $socket (--control did not open one)"
+    fi
+    note "  ok: control socket present at $socket"
+
+    # Wait until the agent is demonstrably working: at least two steps done, so
+    # a frozen count afterwards means something real stopped.
+    if ! _oh_wait_for 180 "[ \"\$(_oh_step_count '$sandbox')\" -ge 2 ]"; then
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        rm -rf "$sandbox"
+        note "  control-enforce: the agent never produced two steps"
+        return 1
+    fi
+    if ! kill -0 "$run_pid" 2>/dev/null; then
+        rm -rf "$sandbox"
+        return 1
+    fi
+
+    note "  control-enforce: interrupting from a separate process"
+    local frame
+    frame="$(ONEHARNESS_NO_CONFIG=1 "$bin" interrupt --session "$name" --session-dir "$store" --cwd "$sandbox" --compact 2>&1)" || {
+        # A turn that ended between the count check and the interrupt answers
+        # `no_active_turn` — retryable, not a regression.
+        if printf '%s' "$frame" | grep -q no_active_turn; then
+            kill "$run_pid" 2>/dev/null || true
+            wait "$run_pid" 2>/dev/null || true
+            rm -rf "$sandbox"
+            return 1
+        fi
+        printf '%s\n' "$frame" >&2
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        rm -rf "$sandbox"
+        fail "$id: the interrupt was refused"
+    }
+    local ok mechanism
+    ok="$(printf '%s' "$frame" | jq -r '.ok')"
+    mechanism="$(printf '%s' "$frame" | jq -r '.mechanism // ""')"
+    [ "$ok" = "true" ] || {
+        printf '%s\n' "$frame" >&2
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        rm -rf "$sandbox"
+        fail "$id: the interrupt response was not ok"
+    }
+    [ -n "$mechanism" ] || {
+        rm -rf "$sandbox"
+        fail "$id: the interrupt response carried no mechanism"
+    }
+    note "  ok: interrupt served by mechanism '$mechanism'"
+
+    # THE assertion: the work is frozen. Sample right after the interrupt (with
+    # a beat for an in-flight tool call to land), then again 15s later.
+    sleep 3
+    frozen="$(_oh_step_count "$sandbox")"
+    sleep 15
+    frozen_after="$(_oh_step_count "$sandbox")"
+    if [ "$frozen_after" != "$frozen" ]; then
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        rm -rf "$sandbox"
+        fail "$id: work did NOT stop — step files went from $frozen to $frozen_after in the 15s after the interrupt, so the '$mechanism' interrupt is not honored"
+    fi
+    note "  ok: work frozen at $frozen step files for 15s after the interrupt"
+
+    wait "$run_pid" 2>/dev/null || true
+    # The run must have ended on its own (not been killed) and recorded the
+    # interrupt, and the session must have survived.
+    if ! jq -e '.control.interrupts | length >= 1 and (.[0].ok == true)' "$report" >/dev/null 2>&1; then
+        sed 's/^/    /' "$sandbox/run.err" >&2 || true
+        head -c 2000 "$report" >&2 || true
+        rm -rf "$sandbox"
+        fail "$id: the run report did not record a served interrupt"
+    fi
+    if ! jq -e '.session.token != null' "$report" >/dev/null 2>&1; then
+        rm -rf "$sandbox"
+        fail "$id: the session did not survive the interrupt (no token was captured), so the turn was destroyed rather than redirected"
+    fi
+    if [ -e "$socket" ]; then
+        rm -rf "$sandbox"
+        fail "$id: the control socket outlived the run ($socket still present)"
+    fi
+    note "  ok: report records the interrupt, session survived, socket removed"
+
+    rm -rf "$sandbox"
+    return 0
+}
+
+# How many observable work artifacts the agent has produced so far. A glob
+# rather than `ls | grep` so a name shellcheck worries about can never miscount.
+_oh_step_count() {
+    local dir="$1" file count=0
+    for file in "$dir"/step-*; do
+        [ -e "$file" ] && count=$((count + 1))
+    done
+    printf '%s' "$count"
+}
+
+# Poll `condition` (a shell expression) until it holds or `seconds` elapse.
+# Returns 1 on timeout. Control is a race between two processes, so every wait
+# here is on observable state rather than a fixed sleep.
+_oh_wait_for() {
+    local seconds="$1" condition="$2" waited=0
+    while [ "$waited" -lt "$seconds" ]; do
+        if eval "$condition"; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    return 1
+}
+
 # Live proof that `run --mock-rules` — the single-flag ephemeral mock — is
 # honored end to end by the real harness: the hook is delivered for THIS run
 # only (claude: a per-run --settings temp file; the rest: a project-scope

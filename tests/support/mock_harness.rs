@@ -69,6 +69,22 @@
 //!                   through it to the next (the `model_not_found` classification).
 //!                   MOCK_FAIL_STDERR overrides the emitted stderr (so the same
 //!                   hook can simulate a rate limit instead of a missing model).
+//!   MOCK_TURN_LOG   if set to a path, act like a *control-capable* harness whose
+//!                   stdin is a message stream: emit MOCK_STDOUT immediately (the
+//!                   in-turn transcript), then keep reading stdin, appending each
+//!                   received line to the log verbatim. A line containing
+//!                   `control_request` ends the turn — the log gains an
+//!                   `INTERRUPTED` line and MOCK_TURN_RESULT is emitted — as does
+//!                   EOF. This is the hermetic stand-in for Claude Code's
+//!                   `-p --input-format stream-json` control channel: the turn is
+//!                   observably in flight (the prompt frame appears in the log),
+//!                   so a test can drive a *separate* `oneharness interrupt`
+//!                   process against the live run.
+//!   MOCK_TURN_RESULT  with MOCK_TURN_LOG, the terminal document emitted when the
+//!                   turn ends (default: a stream-json `result` document).
+//!   MOCK_TURN_HOLD  with MOCK_TURN_LOG, keep the turn running after the prompt
+//!                   instead of completing it, so a test can interrupt a turn
+//!                   that is genuinely still in flight.
 //!   MOCK_LOG_FILE   if set, an append-only run log: each invocation appends `S\n`
 //!                   when it starts (before MOCK_SLEEP_MS) and `E\n` when it ends
 //!                   (after the sleep). With a sleep that exceeds spawn latency,
@@ -317,6 +333,62 @@ fn run_native_descendant() -> ! {
     std::process::exit(0);
 }
 
+/// Act like a harness whose turn is driven over an open stdin message stream and
+/// can be aborted out of band. Emits the in-turn transcript, then blocks reading
+/// stdin — so the turn is genuinely still running while a separate process sends
+/// the interrupt — and ends on either a control frame or EOF.
+fn run_controlled_turn(log_path: &str) -> ! {
+    let append = |line: &str| {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+        {
+            let _ = writeln!(file, "{line}");
+            let _ = file.flush();
+        }
+    };
+    let mut out = std::io::stdout();
+    if let Ok(stdout) = std::env::var("MOCK_STDOUT") {
+        if !stdout.is_empty() {
+            let _ = writeln!(out, "{}", stdout.trim_end_matches('\n'));
+            let _ = out.flush();
+        }
+    }
+    append("TURN_STARTED");
+
+    // A turn that completes on its own ends as soon as it has the prompt (the
+    // ordinary case); MOCK_TURN_HOLD keeps it running so a test can interrupt a
+    // genuinely in-flight turn.
+    let hold = std::env::var_os("MOCK_TURN_HOLD").is_some();
+    let mut interrupted = false;
+    for line in std::io::BufRead::lines(std::io::stdin().lock()) {
+        let Ok(line) = line else { break };
+        append(&line);
+        if line.contains("control_request") {
+            interrupted = true;
+            append("INTERRUPTED");
+            break;
+        }
+        if !hold {
+            break;
+        }
+    }
+    let result = std::env::var("MOCK_TURN_RESULT").unwrap_or_else(|_| {
+        format!(
+            r#"{{"type":"result","subtype":"{}","session_id":"mock-session","result":"mock turn"}}"#,
+            if interrupted {
+                "error_during_execution"
+            } else {
+                "success"
+            }
+        )
+    });
+    let _ = writeln!(out, "{result}");
+    let _ = out.flush();
+    std::process::exit(0);
+}
+
 pub fn run() -> ! {
     #[cfg(windows)]
     if std::env::var_os("ONEHARNESS_MOCK_NATIVE_DESCENDANT").is_some() {
@@ -411,6 +483,10 @@ pub fn run() -> ! {
 
     // An early stdin EOF still answers, so a probe that writes fewer lines than
     // expected sees a real response rather than a hang.
+    if let Ok(path) = std::env::var("MOCK_TURN_LOG") {
+        run_controlled_turn(&path);
+    }
+
     if let Ok(count) = std::env::var("MOCK_REPLY_AFTER_LINES") {
         // Loud on a malformed value: silently reading it as 1 would let a
         // typo'd test drive the wrong exchange and still report success.

@@ -9424,6 +9424,13 @@
     "$defs": {
       "HarnessInfo": {
         "properties": {
+          "control": {
+            "description": "How `run --control` + `oneharness interrupt` abort an in-flight turn on\nthis harness (the mechanism id), or `null` when it has no out-of-band\nturn control at all \u2014 in which case `--control` is a loud usage error for\nit, never a socket that reports success while the turn keeps running.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "default_bin": {
             "type": "string"
           },
@@ -9529,6 +9536,7 @@
           "supports_resume",
           "session_capable",
           "supports_fork",
+          "control",
           "fork_reuses_cache",
           "modes",
           "supports_native_schema",
@@ -9992,6 +10000,86 @@
             "type": "string"
           }
         ]
+      },
+      "ControlEvent": {
+        "description": "One interrupt the run served, recorded in the report so a consumer can tell\nan interrupted turn from one that simply ended.",
+        "properties": {
+          "at": {
+            "description": "RFC 3339 timestamp the request was served.",
+            "type": "string"
+          },
+          "ok": {
+            "description": "Whether the mechanism accepted it.",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ControlReason"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why it was refused; `null` when `ok`."
+          },
+          "verb": {
+            "description": "The verb requested (`interrupt`).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "verb",
+          "at",
+          "ok"
+        ],
+        "type": "object"
+      },
+      "ControlReason": {
+        "description": "Why a control request could not be served. Distinct reasons because a\nsupervisor reacts differently to each: `unsupported` is permanent for the\nharness, `not_running` means the dispatch is gone, `no_active_turn` means\nthe run is alive but between turns.",
+        "oneOf": [
+          {
+            "const": "unsupported",
+            "description": "The harness declares no [`ControlShape`] \u2014 the lever does not exist.",
+            "type": "string"
+          },
+          {
+            "const": "no_active_turn",
+            "description": "The run is alive but no turn is in flight right now.",
+            "type": "string"
+          },
+          {
+            "const": "not_running",
+            "description": "No run is listening on the socket (never started, already exited, or a\nstale socket file left by an abnormally-terminated dispatch).",
+            "type": "string"
+          }
+        ]
+      },
+      "ControlReport": {
+        "description": "The run report's `control` block: where the socket lived, which mechanism\nbacked it, and every request served over the run's lifetime.",
+        "properties": {
+          "interrupts": {
+            "description": "Every control request served, in order.",
+            "items": {
+              "$ref": "#/$defs/ControlEvent"
+            },
+            "type": "array"
+          },
+          "mechanism": {
+            "description": "The harness mechanism backing it.",
+            "type": "string"
+          },
+          "socket": {
+            "description": "Absolute path of the socket this run listened on.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "socket",
+          "mechanism",
+          "interrupts"
+        ],
+        "type": "object"
       },
       "FailureKind": {
         "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `tool_deferred`), so the\nwire shape is unchanged \u2014 modeling it as an enum keeps a misspelled or\ninvalid kind unrepresentable and gives every producer/consumer (classifier,\n`is_failure`, the fallback fall-through rule, the report, history) one\ndefinition to share instead of scattered string literals.",
@@ -10522,6 +10610,17 @@
         },
         "type": "array"
       },
+      "control": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ControlReport"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Out-of-band turn control for this run (`--control`), or `null` when none\nwas requested \u2014 which is every ordinary run. It records the socket a\nseparate `oneharness interrupt` process could address, the harness\nmechanism behind it, and each request served, so a consumer can tell an\ninterrupted turn from one that simply ended."
+      },
       "dry_run": {
         "type": "boolean"
       },
@@ -10645,6 +10744,7 @@
       "spy_file",
       "history_file",
       "config_files",
+      "control",
       "results"
     ],
     "title": "RunReport",
@@ -10787,6 +10887,86 @@
             "type": "string"
           }
         ]
+      },
+      "ControlEvent": {
+        "description": "One interrupt the run served, recorded in the report so a consumer can tell\nan interrupted turn from one that simply ended.",
+        "properties": {
+          "at": {
+            "description": "RFC 3339 timestamp the request was served.",
+            "type": "string"
+          },
+          "ok": {
+            "description": "Whether the mechanism accepted it.",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ControlReason"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why it was refused; `null` when `ok`."
+          },
+          "verb": {
+            "description": "The verb requested (`interrupt`).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "verb",
+          "at",
+          "ok"
+        ],
+        "type": "object"
+      },
+      "ControlReason": {
+        "description": "Why a control request could not be served. Distinct reasons because a\nsupervisor reacts differently to each: `unsupported` is permanent for the\nharness, `not_running` means the dispatch is gone, `no_active_turn` means\nthe run is alive but between turns.",
+        "oneOf": [
+          {
+            "const": "unsupported",
+            "description": "The harness declares no [`ControlShape`] \u2014 the lever does not exist.",
+            "type": "string"
+          },
+          {
+            "const": "no_active_turn",
+            "description": "The run is alive but no turn is in flight right now.",
+            "type": "string"
+          },
+          {
+            "const": "not_running",
+            "description": "No run is listening on the socket (never started, already exited, or a\nstale socket file left by an abnormally-terminated dispatch).",
+            "type": "string"
+          }
+        ]
+      },
+      "ControlReport": {
+        "description": "The run report's `control` block: where the socket lived, which mechanism\nbacked it, and every request served over the run's lifetime.",
+        "properties": {
+          "interrupts": {
+            "description": "Every control request served, in order.",
+            "items": {
+              "$ref": "#/$defs/ControlEvent"
+            },
+            "type": "array"
+          },
+          "mechanism": {
+            "description": "The harness mechanism backing it.",
+            "type": "string"
+          },
+          "socket": {
+            "description": "Absolute path of the socket this run listened on.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "socket",
+          "mechanism",
+          "interrupts"
+        ],
+        "type": "object"
       },
       "FailureKind": {
         "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `tool_deferred`), so the\nwire shape is unchanged \u2014 modeling it as an enum keeps a misspelled or\ninvalid kind unrepresentable and gives every producer/consumer (classifier,\n`is_failure`, the fallback fall-through rule, the report, history) one\ndefinition to share instead of scattered string literals.",
@@ -10940,6 +11120,17 @@
             },
             "type": "array"
           },
+          "control": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ControlReport"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Out-of-band turn control for this run (`--control`), or `null` when none\nwas requested \u2014 which is every ordinary run. It records the socket a\nseparate `oneharness interrupt` process could address, the harness\nmechanism behind it, and each request served, so a consumer can tell an\ninterrupted turn from one that simply ended."
+          },
           "dry_run": {
             "type": "boolean"
           },
@@ -11063,6 +11254,7 @@
           "spy_file",
           "history_file",
           "config_files",
+          "control",
           "results"
         ],
         "type": "object"

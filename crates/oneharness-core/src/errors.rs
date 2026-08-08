@@ -290,6 +290,42 @@ pub enum OneharnessError {
     #[error("invalid history cursor `{value}`: expected a UUID")]
     HistoryCursorInvalid { value: String },
 
+    #[error("--control requires --session <NAME>: a run with no caller-owned handle has no address an `oneharness interrupt` process could resolve")]
+    ControlNeedsSession,
+
+    #[error("harness `{id}` has no out-of-band turn control, so --control cannot be honored (control-capable: {supported})")]
+    ControlUnsupported {
+        // llmlint: ignore[invalid_states_unrepresentable] The id is echoed from the already-validated registry selection purely for the diagnostic.
+        id: String,
+        supported: String,
+    },
+
+    #[error(
+        "--control drives one live turn, so it needs exactly one harness (selected: {selected})"
+    )]
+    ControlSingleHarness { selected: String },
+
+    #[error("--control needs a unix domain socket, which this platform does not provide")]
+    ControlPlatform,
+
+    #[error("harness `{id}` needs output format `{required}` for --control, but `{selected}` was selected; drop the explicit --output-format")]
+    ControlOutputFormat {
+        id: String,
+        required: String,
+        selected: String,
+    },
+
+    #[error("could not open the control socket `{path}`: {source}")]
+    ControlSocket {
+        // llmlint: ignore[invalid_states_unrepresentable] The failed socket path is retained in display form for a terminal diagnostic and never reused for I/O.
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("no session store directory: pass --session-dir or set `session_dir` in config (a default under the platform state dir could not be resolved)")]
+    ControlNoSessionDir,
+
     #[error("failed to write JSON output: {0}")]
     Serialize(#[from] serde_json::Error),
 

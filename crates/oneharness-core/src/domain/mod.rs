@@ -4,6 +4,7 @@
 
 pub mod batch;
 pub mod config;
+pub mod control;
 pub mod events;
 pub mod fallback;
 pub mod gate;

@@ -22,6 +22,13 @@ export interface ListReport {
   [k: string]: unknown;
 }
 export interface HarnessInfo {
+  /**
+   * How `run --control` + `oneharness interrupt` abort an in-flight turn on
+   * this harness (the mechanism id), or `null` when it has no out-of-band
+   * turn control at all — in which case `--control` is a loud usage error for
+   * it, never a socket that reports success while the turn keeps running.
+   */
+  control: string | null;
   default_bin: string;
   display: string;
   /**

@@ -256,7 +256,7 @@ fn every_report_carries_the_shared_schema_version() {
     // so a consumer reads any of them with one number — and a bump must move
     // every surface at once. Pinned literally on purpose: asserting against the
     // constant would pass through a bump nobody intended.
-    let version = "0.4";
+    let version = "0.5";
     let printed = run(
         &[
             "run",
@@ -299,7 +299,7 @@ fn list_describes_every_harness() {
     let output = run(&["list"], &[]);
     assert!(output.status.success());
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.4");
+    assert_eq!(value["schema_version"], "0.5");
     let ids: Vec<&str> = value["harnesses"]
         .as_array()
         .unwrap()
@@ -6253,7 +6253,7 @@ fn config_command_shows_values_with_sources() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.4");
+    assert_eq!(value["schema_version"], "0.5");
     assert_eq!(value["config_files"].as_array().unwrap().len(), 2);
 
     // The project file wins for model and is named as the source...
@@ -18190,4 +18190,460 @@ fn usage_reports_a_failed_stdout_write_instead_of_panicking() {
             "`{label}` must name what failed, stderr:\n{stderr}"
         );
     }
+}
+
+// --- out-of-band turn control (`run --control` + `oneharness interrupt`) ------
+
+/// A private, per-test session store (which is also where the run's control
+/// socket lives, at `<dir>/control/<name>.sock`).
+fn control_store_dir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "oh-control-{tag}-{}-{}",
+        std::process::id(),
+        tag.len()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Poll until `condition` holds or the deadline passes. Control is inherently a
+/// race between two processes, so the tests wait on observable state (a socket
+/// appearing, a prompt frame reaching the harness) rather than on a sleep.
+fn wait_until(label: &str, mut condition: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::time::Instant::now() < deadline {
+        if condition() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    panic!("timed out waiting for {label}");
+}
+
+#[cfg(unix)]
+#[test]
+fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
+    // The whole contract in one exchange: a `run --control --session` process
+    // opens an addressable socket, a SEPARATE `oneharness interrupt` process
+    // resolves it and aborts the in-flight turn, and the run finishes normally
+    // (session intact) with the interrupt recorded in its report.
+    let store = control_store_dir("interrupt");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("interrupt-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let turn_log = store.join("turn.log");
+    let turn_log_arg = turn_log.display().to_string();
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_TURN_LOG", &turn_log_arg)
+        .env("MOCK_TURN_HOLD", "1")
+        .env(
+            "MOCK_STDOUT",
+            r#"{"type":"system","subtype":"init","session_id":"sess-ctl"}"#,
+        )
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "watched",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the controlled run");
+
+    let socket = store.join("control").join("watched.sock");
+    wait_until("the control socket to appear", || socket.exists());
+    // 0600: the socket is a lever over a running agent.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "control socket must be owner-only");
+    }
+    // The turn is genuinely in flight once the harness has the prompt frame.
+    wait_until("the turn to start", || {
+        std::fs::read_to_string(&turn_log)
+            .map(|log| log.contains("keep working"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "watched",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    let frame = json_stdout(&interrupt);
+    assert_eq!(frame["v"], 1);
+    assert_eq!(frame["ok"], true);
+    assert_eq!(frame["mechanism"], "claude-control-request");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("run report was not JSON");
+    assert_eq!(report["schema_version"], "0.5");
+    assert_eq!(report["control"]["mechanism"], "claude-control-request");
+    assert_eq!(report["control"]["socket"], socket.display().to_string());
+    let interrupts = report["control"]["interrupts"].as_array().unwrap();
+    assert_eq!(interrupts.len(), 1);
+    assert_eq!(interrupts[0]["verb"], "interrupt");
+    assert_eq!(interrupts[0]["ok"], true);
+    assert!(!interrupts[0]["at"].as_str().unwrap().is_empty());
+
+    // The harness really received the control frame — asserted at the harness,
+    // not from oneharness's own bookkeeping.
+    let log = std::fs::read_to_string(&turn_log).unwrap();
+    assert!(log.contains("control_request"), "turn log:\n{log}");
+    assert!(log.contains("INTERRUPTED"), "turn log:\n{log}");
+
+    // The socket is gone with the run, and the session survived the interrupt.
+    assert!(
+        !socket.exists(),
+        "socket must be removed when the run exits"
+    );
+    assert_eq!(report["results"][0]["status"], "ok");
+    assert_eq!(report["session"]["name"], "watched");
+    assert_eq!(report["session"]["token"], "sess-ctl");
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
+fn control_run_pins_the_message_stream_argv_and_leaves_the_prompt_off_it() {
+    // The control channel IS the run's stdin, so the prompt cannot ride the
+    // argv: `--input-format stream-json` replaces the positional.
+    let store = control_store_dir("argv");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("argv-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let turn_log = store.join("turn.log");
+    let argv_file = store.join("argv.txt");
+
+    let output = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_TURN_LOG", turn_log.display().to_string())
+        .env("MOCK_ARGV_FILE", argv_file.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "argvcheck",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "secret-prompt-text",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ])
+        .output()
+        .expect("failed to run oneharness");
+    assert!(output.status.success(), "{output:?}");
+
+    let argv = std::fs::read_to_string(&argv_file).unwrap();
+    let args: Vec<&str> = argv.lines().collect();
+    assert!(
+        args.windows(2)
+            .any(|w| w == ["--input-format", "stream-json"]),
+        "argv:\n{argv}"
+    );
+    assert!(
+        args.windows(2)
+            .any(|w| w == ["--output-format", "stream-json"]),
+        "argv:\n{argv}"
+    );
+    assert!(
+        !args.contains(&"secret-prompt-text"),
+        "the prompt must ride the control stream, not the argv:\n{argv}"
+    );
+    // It reached the harness over stdin instead.
+    let log = std::fs::read_to_string(&turn_log).unwrap();
+    assert!(log.contains("secret-prompt-text"), "turn log:\n{log}");
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn control_without_a_session_is_a_usage_error_naming_the_reason() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--control requires --session"),
+        "stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn control_on_a_harness_without_a_mechanism_is_a_usage_error() {
+    let store = control_store_dir("unsupported");
+    let store_arg = store.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--control",
+            "--session",
+            "nope",
+            "--session-dir",
+            &store_arg,
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("codex"),
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("has no out-of-band turn control"),
+        "stderr:\n{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn control_needs_exactly_one_harness() {
+    let store = control_store_dir("multi");
+    let store_arg = store.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--harness",
+            "codex",
+            "--control",
+            "--session",
+            "many",
+            "--session-dir",
+            &store_arg,
+            "--prompt",
+            "hi",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("needs exactly one harness"),
+        "stderr:\n{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn control_rejects_an_output_format_the_mechanism_cannot_use() {
+    let store = control_store_dir("format");
+    let store_arg = store.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "fmt",
+            "--session-dir",
+            &store_arg,
+            "--output-format",
+            "json",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("needs output format `stream-json` for --control"),
+        "stderr:\n{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn interrupt_against_a_run_that_is_not_running_reports_not_running() {
+    let store = control_store_dir("notrunning");
+    let store_arg = store.display().to_string();
+    let output = run(
+        &[
+            "interrupt",
+            "--session",
+            "ghost",
+            "--session-dir",
+            &store_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let frame = json_stdout(&output);
+    assert_eq!(frame["ok"], false);
+    assert_eq!(frame["reason"], "not_running");
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
+fn interrupt_between_turns_reports_no_active_turn() {
+    // The run is alive and listening, but its turn has not begun: the honest
+    // answer is `no_active_turn`, not a success a supervisor would misread.
+    use oneharness_core::domain::control::{socket_path, ControlRequest};
+    let store = control_store_dir("noturn");
+    let socket = socket_path(&store, "idle");
+    let listener = oneharness_core::io::control::bind(
+        &socket,
+        oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
+    )
+    .unwrap();
+    let response = oneharness_core::io::control::send(listener.path(), ControlRequest::interrupt());
+    assert!(!response.ok);
+    assert_eq!(
+        response.reason,
+        Some(oneharness_core::domain::control::ControlReason::NoActiveTurn)
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn interrupt_on_a_harness_without_a_mechanism_reports_unsupported() {
+    // The store binds the session to a harness with no control mechanism, so
+    // the refusal is knowable without a live run — the one refusal a supervisor
+    // can learn before spending a dispatch.
+    let store = control_store_dir("unsupported-interrupt");
+    let cwd = control_store_dir("unsupported-interrupt-cwd");
+    let record = serde_json::json!({
+        "schema_version": "0.1",
+        "name": "bound",
+        "project": cwd.display().to_string(),
+        "harness": "codex",
+        "token": "th-1",
+        "created": "2026-08-08T00:00:00Z",
+        "updated": "2026-08-08T00:00:00Z",
+    });
+    let path = oneharness_core::io::session::session_path(&store, &cwd, "bound");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, serde_json::to_string(&record).unwrap()).unwrap();
+
+    let output = run(
+        &[
+            "interrupt",
+            "--session",
+            "bound",
+            "--session-dir",
+            &store.display().to_string(),
+            "--cwd",
+            &cwd.display().to_string(),
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let frame = json_stdout(&output);
+    assert_eq!(frame["ok"], false);
+    assert_eq!(frame["reason"], "unsupported");
+    assert!(frame["error"].as_str().unwrap().contains("codex"));
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn a_run_without_control_opens_no_socket_and_keeps_its_argv() {
+    // The non-breaking guarantee: absent `--control`, nothing changes — no
+    // socket directory, and the prompt still rides the argv as a positional.
+    let store = control_store_dir("absent");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("absent-cwd");
+    let argv_file = store.join("argv.txt");
+
+    let output = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_ARGV_FILE", argv_file.display().to_string())
+        .env(
+            "MOCK_STDOUT",
+            r#"{"type":"result","result":"hi","session_id":"sess-plain"}"#,
+        )
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--session",
+            "plain",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd.display().to_string(),
+            "--prompt",
+            "ordinary-prompt",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ])
+        .output()
+        .expect("failed to run oneharness");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(report["control"].is_null(), "{report}");
+    assert!(
+        !store.join("control").exists(),
+        "no control directory should be created"
+    );
+    let argv = std::fs::read_to_string(&argv_file).unwrap();
+    assert!(
+        argv.lines().any(|l| l == "ordinary-prompt"),
+        "the prompt must still ride the argv:\n{argv}"
+    );
+    assert!(
+        !argv.lines().any(|l| l == "stream-json"),
+        "the ordinary argv must be unchanged:\n{argv}"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
 }

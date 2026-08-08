@@ -1,5 +1,12 @@
 /* Generated from oneharness-core. Do not edit. */
 
+/**
+ * Why a control request could not be served. Distinct reasons because a
+ * supervisor reacts differently to each: `unsupported` is permanent for the
+ * harness, `not_running` means the dispatch is gone, `no_active_turn` means
+ * the run is alive but between turns.
+ */
+export type ControlReason = "unsupported" | "no_active_turn" | "not_running";
 export type ToolCallStatus = "completed" | "failed" | "timeout" | "interrupted";
 /**
  * How a normalized tool interval was obtained.
@@ -50,6 +57,14 @@ export interface RunReport {
    * project last); empty under `--no-config` or when none exist.
    */
   config_files: string[];
+  /**
+   * Out-of-band turn control for this run (`--control`), or `null` when none
+   * was requested — which is every ordinary run. It records the socket a
+   * separate `oneharness interrupt` process could address, the harness
+   * mechanism behind it, and each request served, so a consumer can tell an
+   * interrupted turn from one that simply ended.
+   */
+  control: ControlReport | null;
   dry_run: boolean;
   /**
    * Fallback-mode metadata when this run drove the selected harnesses in
@@ -158,6 +173,48 @@ export interface BatchReport {
    * How the prompts were scheduled across the parallel runner.
    */
   strategy: "speed" | "min-tokens";
+  [k: string]: unknown;
+}
+/**
+ * The run report's `control` block: where the socket lived, which mechanism
+ * backed it, and every request served over the run's lifetime.
+ */
+export interface ControlReport {
+  /**
+   * Every control request served, in order.
+   */
+  interrupts: ControlEvent[];
+  /**
+   * The harness mechanism backing it.
+   */
+  mechanism: string;
+  /**
+   * Absolute path of the socket this run listened on.
+   */
+  socket: string;
+  [k: string]: unknown;
+}
+/**
+ * One interrupt the run served, recorded in the report so a consumer can tell
+ * an interrupted turn from one that simply ended.
+ */
+export interface ControlEvent {
+  /**
+   * RFC 3339 timestamp the request was served.
+   */
+  at: string;
+  /**
+   * Whether the mechanism accepted it.
+   */
+  ok: boolean;
+  /**
+   * Why it was refused; `null` when `ok`.
+   */
+  reason?: ControlReason | null | undefined;
+  /**
+   * The verb requested (`interrupt`).
+   */
+  verb: string;
   [k: string]: unknown;
 }
 /**

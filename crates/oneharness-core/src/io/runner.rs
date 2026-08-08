@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crate::domain::control::ControlShape;
 use crate::domain::report::{Capture, OutputObservation, Status};
+use crate::io::control::ControlHandle;
 use crate::io::process::{resolve_program, Finish, PipeEvent, Process};
 
 /// A fully-specified subprocess to run.
@@ -329,7 +331,38 @@ pub enum StreamStep {
 /// write to the consumer fails, i.e. the consumer closed the stream). On `Stop`
 /// or timeout the child is killed; on normal EOF its exit is awaited. Never
 /// panics on harness behavior — same contract as [`run_job`].
-pub fn run_job_streaming<F>(job: &Job, mut on_line: F) -> Capture
+pub fn run_job_streaming<F>(job: &Job, on_line: F) -> Capture
+where
+    F: FnMut(&str) -> StreamStep,
+{
+    run_job_streaming_controlled(job, None, on_line)
+}
+
+/// Everything the runner needs to keep a run's stdin open for out-of-band turn
+/// control (`run --control`).
+///
+/// The ordinary paths drop the child's stdin as soon as the prompt is written,
+/// which is exactly what makes a turn uninterruptible. Here the handle is
+/// *parked* in the shared [`ControlHandle`] instead, so the control socket's
+/// listener thread can push an interrupt frame into the same live process — and
+/// the runner closes it again the moment the harness emits its end-of-turn
+/// document, so a control-enabled run still terminates on its own.
+pub struct ControlledInput<'a> {
+    /// The shared handle the control socket serves requests through.
+    pub handle: &'a ControlHandle,
+    /// The harness's control mechanism, which decides the end-of-turn document.
+    pub shape: ControlShape,
+    /// The first stdin frame: the prompt, in the harness's message-stream shape.
+    pub first_frame: String,
+}
+
+/// [`run_job_streaming`], with the child's stdin held open for turn control when
+/// `control` is `Some`. `None` is byte-for-byte the ordinary streaming path.
+pub fn run_job_streaming_controlled<F>(
+    job: &Job,
+    control: Option<&ControlledInput>,
+    mut on_line: F,
+) -> Capture
 where
     F: FnMut(&str) -> StreamStep,
 {
@@ -337,7 +370,13 @@ where
     let start_epoch_ms = epoch_millis();
     let started_at = crate::domain::history::format_rfc3339_millis(start_epoch_ms);
     let (program, args) = spawn_target(&job.argv);
-    let (stdin_cfg, stdin_bytes) = stdin_stdio(job);
+    // A controlled run always pipes stdin — the handle is the control channel,
+    // not just a prompt delivery.
+    let (stdin_cfg, stdin_bytes) = if control.is_some() {
+        (Stdio::piped(), None)
+    } else {
+        stdin_stdio(job)
+    };
     let mut command = Command::new(program);
     command
         .args(&args)
@@ -385,6 +424,29 @@ where
     if let Some(bytes) = stdin_bytes {
         feed_stdin(&mut process, bytes);
     }
+    // Park stdin in the control handle and open the turn with the prompt frame.
+    // A failed hand-off is not fatal: the harness simply never receives the
+    // prompt and reports its own error, which is more useful than a panic.
+    if let Some(control) = control {
+        if let Some(stdin) = process.take_stdin() {
+            control.handle.begin_turn(stdin);
+            if let Err(err) = control.handle.write_line(&control.first_frame) {
+                eprintln!("oneharness: warning: could not write the control-mode prompt: {err}");
+            }
+        }
+    }
+
+    // Stdin was held open past the prompt, so a controlled harness waits for
+    // another message instead of exiting. Closing it on the end-of-turn document
+    // is what lets the run finish on its own, interrupted or not.
+    let mut on_line = |line: &str| {
+        if let Some(control) = control {
+            if crate::domain::control::is_turn_terminal(control.shape, line) {
+                control.handle.end_turn();
+            }
+        }
+        on_line(line)
+    };
 
     let deadline = start + job.timeout;
     let mut pending = Vec::new();

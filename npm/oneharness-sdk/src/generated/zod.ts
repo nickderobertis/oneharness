@@ -4,6 +4,9 @@ import { z } from "zod";
 import type {
   ActionEvent,
   BatchReport,
+  ControlEvent,
+  ControlReason,
+  ControlReport,
   FailureKind,
   FallThrough,
   FallbackReport,
@@ -63,6 +66,25 @@ export const BatchReportSchema: z.ZodType<BatchReport> = z.looseObject({
 
 export const BatchStrategySchema: z.ZodType<BatchStrategy> = z.union([z.literal("speed"), z.literal("min-tokens")]);
 
+export const ControlEventSchema: z.ZodType<ControlEvent> = z.looseObject({
+  at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  ok: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
+  reason: z.union([z.lazy(() => ControlReasonSchema), z.null()]).optional(),
+  verb: z.string().refine((value) => value !== undefined, { message: "Required" }),
+});
+
+export const ControlReasonSchema: z.ZodType<ControlReason> = z.union([
+  z.literal("unsupported"),
+  z.literal("no_active_turn"),
+  z.literal("not_running"),
+]);
+
+export const ControlReportSchema: z.ZodType<ControlReport> = z.looseObject({
+  interrupts: z.array(z.lazy(() => ControlEventSchema)).refine((value) => value !== undefined, { message: "Required" }),
+  mechanism: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  socket: z.string().refine((value) => value !== undefined, { message: "Required" }),
+});
+
 export const DetectInfoSchema: z.ZodType<DetectInfo> = z.looseObject({
   available: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   bin: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -97,6 +119,7 @@ export const FallbackReportSchema: z.ZodType<FallbackReport> = z.looseObject({
 });
 
 export const HarnessInfoSchema: z.ZodType<HarnessInfo> = z.looseObject({
+  control: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   default_bin: z.string().refine((value) => value !== undefined, { message: "Required" }),
   display: z.string().refine((value) => value !== undefined, { message: "Required" }),
   example_command: z.array(z.string()).refine((value) => value !== undefined, { message: "Required" }),
@@ -1533,6 +1556,9 @@ export const RunReportSchema: z.ZodType<RunReport> = z.looseObject({
     .refine((value) => value !== undefined, { message: "Required" }),
   bypass_permissions: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   config_files: z.array(z.string()).refine((value) => value !== undefined, { message: "Required" }),
+  control: z
+    .union([z.lazy(() => ControlReportSchema), z.null()])
+    .refine((value) => value !== undefined, { message: "Required" }),
   dry_run: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   fallback: z
     .union([z.lazy(() => FallbackReportSchema), z.null()])

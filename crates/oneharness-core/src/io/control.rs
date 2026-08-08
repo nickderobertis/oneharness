@@ -1,0 +1,539 @@
+//! Out-of-band turn control: the I/O half.
+//!
+//! Two sides of one unix socket:
+//!
+//! * [`ControlListener`] — opened by `oneharness run --control` for the run's
+//!   lifetime. It owns the socket file (0600, removed on drop, including on a
+//!   panic) and serves one newline-terminated request per connection against a
+//!   [`ControlHandle`], which knows how to reach the harness mechanism.
+//! * [`send`] — used by the separate `oneharness interrupt` process. It is a
+//!   different process from the run; that is the whole reason this is a socket
+//!   and not a flag.
+//!
+//! Unix only. `std` has no unix-socket type on Windows, so the command layer
+//! refuses `--control` there loudly rather than opening nothing and reporting
+//! success.
+
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use crate::domain::control::{
+    interrupt_frame, ControlEvent, ControlReason, ControlRequest, ControlResponse, ControlShape,
+    ControlVerb,
+};
+
+/// How long a client waits for a run to answer before giving up. Generous
+/// enough for a busy run, short enough that a wedged peer is not a hang.
+const CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The single clock read this module makes, kept here so
+/// [`crate::domain::control`] stays pure.
+fn now_rfc3339() -> String {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    crate::domain::history::format_rfc3339_millis(millis)
+}
+
+/// The live end of a stdin-borne control mechanism.
+///
+/// A control-enabled run parks the child's stdin here instead of dropping it
+/// after the prompt write, so the listener thread can push an interrupt frame
+/// into the *same* process the turn is running in. The state machine is what
+/// makes `no_active_turn` honest: before the prompt is written and after the
+/// turn's terminal document arrives, there is nothing to interrupt.
+enum TurnState {
+    /// No turn in flight (before the prompt, or after the turn ended).
+    Idle,
+    /// A turn is running; the child's stdin is held open for control frames.
+    Active(std::process::ChildStdin),
+}
+
+/// Shared, thread-safe access to a run's control mechanism plus the audit trail
+/// of everything it served (which the report echoes).
+pub struct ControlHandle {
+    shape: ControlShape,
+    state: Mutex<TurnState>,
+    events: Mutex<Vec<ControlEvent>>,
+    requests: Mutex<u64>,
+}
+
+impl ControlHandle {
+    #[must_use]
+    pub fn new(shape: ControlShape) -> Self {
+        ControlHandle {
+            shape,
+            state: Mutex::new(TurnState::Idle),
+            events: Mutex::new(Vec::new()),
+            requests: Mutex::new(0),
+        }
+    }
+
+    #[must_use]
+    pub fn shape(&self) -> ControlShape {
+        self.shape
+    }
+
+    /// Park the child's stdin and mark a turn in flight.
+    pub fn begin_turn(&self, stdin: std::process::ChildStdin) {
+        *self.state.lock().expect("control state poisoned") = TurnState::Active(stdin);
+    }
+
+    /// End the turn and close the child's stdin (dropping it signals EOF, which
+    /// is how a control-enabled child — whose stdin was deliberately held open
+    /// — learns it may exit).
+    pub fn end_turn(&self) {
+        *self.state.lock().expect("control state poisoned") = TurnState::Idle;
+    }
+
+    /// Write one raw line into the live turn's stdin, e.g. the prompt frame.
+    /// Errors when no turn is active or the child closed its end.
+    pub fn write_line(&self, line: &str) -> io::Result<()> {
+        let mut state = self.state.lock().expect("control state poisoned");
+        match &mut *state {
+            TurnState::Active(stdin) => {
+                use std::io::Write;
+                stdin.write_all(line.as_bytes())?;
+                stdin.flush()
+            }
+            TurnState::Idle => Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "no active turn to write to",
+            )),
+        }
+    }
+
+    /// Serve one request, recording it for the report either way.
+    pub fn serve(&self, request: ControlRequest) -> ControlResponse {
+        let response = match request.verb {
+            ControlVerb::Interrupt => self.interrupt(),
+        };
+        let event = ControlEvent {
+            verb: request.verb.as_str().to_string(),
+            at: now_rfc3339(),
+            ok: response.ok,
+            reason: response.reason,
+        };
+        self.events
+            .lock()
+            .expect("control events poisoned")
+            .push(event);
+        response
+    }
+
+    fn interrupt(&self) -> ControlResponse {
+        let Some(frame) = interrupt_frame(self.shape, &self.next_request_id()) else {
+            return ControlResponse::refused(
+                format!(
+                    "the `{}` control mechanism is not wired for stdin-borne interrupts",
+                    self.shape.as_str()
+                ),
+                ControlReason::Unsupported,
+            );
+        };
+        match self.write_line(&frame) {
+            Ok(()) => ControlResponse::served(self.shape),
+            Err(err) if err.kind() == io::ErrorKind::NotConnected => ControlResponse::refused(
+                "the run is alive but no turn is in flight",
+                ControlReason::NoActiveTurn,
+            ),
+            Err(err) => ControlResponse::refused(
+                format!("could not deliver the interrupt to the harness: {err}"),
+                ControlReason::NotRunning,
+            ),
+        }
+    }
+
+    fn next_request_id(&self) -> String {
+        let mut counter = self.requests.lock().expect("control counter poisoned");
+        *counter += 1;
+        format!("oh-control-{counter}")
+    }
+
+    /// Every request served so far, for the run report's `control` block.
+    #[must_use]
+    pub fn events(&self) -> Vec<ControlEvent> {
+        self.events.lock().expect("control events poisoned").clone()
+    }
+}
+
+/// A bound control socket, serving requests on a background thread until it is
+/// dropped.
+///
+/// Dropping it removes the socket file — the run's contract that the address
+/// disappears when the run does. A dispatch killed with `SIGKILL` cannot run
+/// `Drop`, so a stale socket can survive; a client then gets `ECONNREFUSED` and
+/// reports `not_running`, which is the same answer as a missing file.
+pub struct ControlListener {
+    path: PathBuf,
+    handle: Arc<ControlHandle>,
+    #[cfg(unix)]
+    shutdown: Option<std::sync::mpsc::Sender<()>>,
+    #[cfg(unix)]
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ControlListener {
+    /// The socket this run is listening on.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The mechanism handle the run writes prompts and turn boundaries through.
+    #[must_use]
+    pub fn handle(&self) -> Arc<ControlHandle> {
+        Arc::clone(&self.handle)
+    }
+
+    /// The same handle borrowed, for a caller that outlives the listener.
+    #[must_use]
+    pub fn handle_ref(&self) -> &ControlHandle {
+        &self.handle
+    }
+}
+
+#[cfg(unix)]
+mod imp {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::{UnixListener, UnixStream};
+
+    /// Bind the control socket at `path` (creating its directory) and start
+    /// serving. A pre-existing file is removed first only when nothing is
+    /// listening on it, so two concurrent runs of the same session name cannot
+    /// silently steal each other's address.
+    pub fn bind(path: &Path, shape: ControlShape) -> io::Result<ControlListener> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+            // The directory holds addressable control channels; keep it owner-only.
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+        }
+        if path.exists() {
+            if UnixStream::connect(path).is_ok() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    "another run is already listening on this session's control socket",
+                ));
+            }
+            std::fs::remove_file(path)?;
+        }
+        let listener = UnixListener::bind(path)?;
+        // 0600: the socket is a lever over a running agent, so only its owner
+        // may address it.
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        listener.set_nonblocking(true)?;
+
+        let handle = Arc::new(ControlHandle::new(shape));
+        let worker_handle = Arc::clone(&handle);
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || serve_loop(listener, worker_handle, &rx));
+
+        Ok(ControlListener {
+            path: path.to_path_buf(),
+            handle,
+            shutdown: Some(tx),
+            worker: Some(worker),
+        })
+    }
+
+    /// Accept connections until asked to stop. Non-blocking accept plus a short
+    /// sleep keeps the thread responsive to shutdown without a second socket.
+    fn serve_loop(
+        listener: UnixListener,
+        handle: Arc<ControlHandle>,
+        shutdown: &std::sync::mpsc::Receiver<()>,
+    ) {
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => serve_connection(stream, &handle),
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                    match shutdown.recv_timeout(std::time::Duration::from_millis(25)) {
+                        Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    }
+                }
+                // A failed accept is one client's problem, never the run's:
+                // control is a side channel and must not take results down.
+                Err(_) => return,
+            }
+        }
+    }
+
+    /// One request, one response, connection closed — the whole protocol.
+    fn serve_connection(stream: UnixStream, handle: &ControlHandle) {
+        use std::io::{BufRead, BufReader, Write};
+        let _ = stream.set_read_timeout(Some(CLIENT_TIMEOUT));
+        let _ = stream.set_write_timeout(Some(CLIENT_TIMEOUT));
+        let mut reader = BufReader::new(match stream.try_clone() {
+            Ok(clone) => clone,
+            Err(_) => return,
+        });
+        let mut line = String::new();
+        let response = match reader.read_line(&mut line) {
+            Ok(_) => match crate::domain::control::parse_request(&line) {
+                Ok(request) => handle.serve(request),
+                // A frame this version cannot parse is refused loudly rather
+                // than being mistaken for an interrupt.
+                Err(err) => ControlResponse::refused(err, ControlReason::Unsupported),
+            },
+            Err(err) => ControlResponse::refused(
+                format!("could not read the control request: {err}"),
+                ControlReason::NotRunning,
+            ),
+        };
+        let mut stream = stream;
+        let _ = stream.write_all(response.to_line().as_bytes());
+        let _ = stream.flush();
+    }
+
+    /// Send one request to a run listening at `path` and read its answer.
+    /// A missing socket, or one nothing is listening on, is `not_running` —
+    /// exactly what a supervisor needs to distinguish from a refusal.
+    pub fn send(path: &Path, request: ControlRequest) -> ControlResponse {
+        use std::io::{BufRead, BufReader, Write};
+        let mut stream = match UnixStream::connect(path) {
+            Ok(stream) => stream,
+            Err(err) => {
+                return ControlResponse::refused(
+                    format!(
+                        "no run is listening on `{}` ({err}). Suggestion: start the run with `--control --session <NAME>`",
+                        path.display()
+                    ),
+                    ControlReason::NotRunning,
+                )
+            }
+        };
+        let _ = stream.set_read_timeout(Some(CLIENT_TIMEOUT));
+        let _ = stream.set_write_timeout(Some(CLIENT_TIMEOUT));
+        let mut line = match serde_json::to_string(&request) {
+            Ok(line) => line,
+            Err(err) => {
+                return ControlResponse::refused(
+                    format!("could not encode the control request: {err}"),
+                    ControlReason::NotRunning,
+                )
+            }
+        };
+        line.push('\n');
+        if let Err(err) = stream
+            .write_all(line.as_bytes())
+            .and_then(|()| stream.flush())
+        {
+            return ControlResponse::refused(
+                format!("could not send the control request: {err}"),
+                ControlReason::NotRunning,
+            );
+        }
+        let mut reply = String::new();
+        match BufReader::new(&stream).read_line(&mut reply) {
+            Ok(0) => ControlResponse::refused(
+                "the run closed the control connection without answering",
+                ControlReason::NotRunning,
+            ),
+            Ok(_) => serde_json::from_str(reply.trim()).unwrap_or_else(|err| {
+                ControlResponse::refused(
+                    format!("the run sent an unreadable control response: {err}"),
+                    ControlReason::NotRunning,
+                )
+            }),
+            Err(err) => ControlResponse::refused(
+                format!("could not read the control response: {err}"),
+                ControlReason::NotRunning,
+            ),
+        }
+    }
+
+    pub fn shutdown(listener: &mut ControlListener) {
+        if let Some(tx) = listener.shutdown.take() {
+            let _ = tx.send(());
+        }
+        if let Some(worker) = listener.worker.take() {
+            let _ = worker.join();
+        }
+        let _ = std::fs::remove_file(&listener.path);
+    }
+}
+
+#[cfg(not(unix))]
+mod imp {
+    use super::*;
+
+    pub fn bind(_path: &Path, _shape: ControlShape) -> io::Result<ControlListener> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "unix domain sockets are unavailable on this platform",
+        ))
+    }
+
+    pub fn send(path: &Path, _request: ControlRequest) -> ControlResponse {
+        ControlResponse::refused(
+            format!(
+                "control sockets are unavailable on this platform (`{}`)",
+                path.display()
+            ),
+            ControlReason::NotRunning,
+        )
+    }
+
+    pub fn shutdown(_listener: &mut ControlListener) {}
+}
+
+/// Bind the run's control socket at `path`, serving `shape`'s mechanism.
+pub fn bind(path: &Path, shape: ControlShape) -> io::Result<ControlListener> {
+    imp::bind(path, shape)
+}
+
+/// Send one control request to the run listening at `path`.
+#[must_use]
+pub fn send(path: &Path, request: ControlRequest) -> ControlResponse {
+    imp::send(path, request)
+}
+
+/// Whether this platform can open a control socket at all.
+#[must_use]
+pub fn supported() -> bool {
+    cfg!(unix)
+}
+
+impl Drop for ControlListener {
+    fn drop(&mut self) {
+        imp::shutdown(self);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::domain::control::socket_path;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "oh-control-{}-{}-{:?}",
+            tag,
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn socket_is_created_owner_only_and_removed_on_drop() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("lifecycle");
+        let path = socket_path(&dir, "flow");
+        {
+            let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+            assert!(path.exists(), "socket should exist while the run is alive");
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "socket must be owner-only");
+            assert_eq!(listener.path(), path);
+        }
+        assert!(!path.exists(), "socket must be removed when the run exits");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn interrupt_without_an_active_turn_is_refused_with_no_active_turn() {
+        let dir = temp_dir("noturn");
+        let path = socket_path(&dir, "idle");
+        let _listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let response = send(&path, ControlRequest::interrupt());
+        assert!(!response.ok);
+        assert_eq!(response.reason, Some(ControlReason::NoActiveTurn));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn interrupt_against_a_missing_socket_is_not_running() {
+        let dir = temp_dir("missing");
+        let path = socket_path(&dir, "gone");
+        let response = send(&path, ControlRequest::interrupt());
+        assert!(!response.ok);
+        assert_eq!(response.reason, Some(ControlReason::NotRunning));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_stale_socket_file_is_reclaimed_by_the_next_run() {
+        let dir = temp_dir("stale");
+        let path = socket_path(&dir, "stale");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"").unwrap();
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        assert_eq!(listener.path(), path);
+        // And a live listener refuses to be displaced.
+        let conflict = bind(&path, ControlShape::ClaudeControlRequest);
+        assert!(conflict.is_err(), "a live socket must not be stolen");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_served_interrupt_is_recorded_and_reaches_the_child_stdin() {
+        use std::io::Read;
+        let dir = temp_dir("served");
+        let path = socket_path(&dir, "live");
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let handle = listener.handle();
+
+        // A real child process standing in for the harness: it echoes whatever
+        // reaches its stdin, so the assertion is on delivered bytes, not on an
+        // internal flag.
+        let mut child = std::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        handle.begin_turn(child.stdin.take().unwrap());
+
+        let response = send(&path, ControlRequest::interrupt());
+        assert!(response.ok, "{response:?}");
+        assert_eq!(
+            response.mechanism.as_deref(),
+            Some("claude-control-request")
+        );
+
+        handle.end_turn();
+        let mut delivered = String::new();
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut delivered)
+            .unwrap();
+        child.wait().ok();
+        let frame: serde_json::Value = serde_json::from_str(delivered.trim()).unwrap();
+        assert_eq!(frame["type"], "control_request");
+        assert_eq!(frame["request"]["subtype"], "interrupt");
+
+        let events = handle.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].verb, "interrupt");
+        assert!(events[0].ok);
+        assert!(!events[0].at.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_malformed_frame_is_refused_without_interrupting() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+        let dir = temp_dir("malformed");
+        let path = socket_path(&dir, "bad");
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let mut stream = UnixStream::connect(&path).unwrap();
+        stream
+            .write_all(b"{\"v\":9,\"verb\":\"interrupt\"}\n")
+            .unwrap();
+        let mut reply = String::new();
+        BufReader::new(&stream).read_line(&mut reply).unwrap();
+        let response: ControlResponse = serde_json::from_str(reply.trim()).unwrap();
+        assert!(!response.ok);
+        assert_eq!(response.reason, Some(ControlReason::Unsupported));
+        assert!(listener.handle().events().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

@@ -161,6 +161,38 @@ pub enum Command {
     /// binary, an unauthenticated harness, or a failed probe is reported as
     /// data, never as 0% used.
     Usage(UsageArgs),
+    /// Interrupt the in-flight turn of a running `run --control --session <NAME>`
+    /// without killing the dispatch or losing the session.
+    ///
+    /// This is a SEPARATE process from the run — which is the whole reason turn
+    /// control is a socket rather than a flag: a supervisor watching a long turn
+    /// go sideways can redirect it instead of destroying it. Emits the control
+    /// response frame as JSON on stdout and exits 0 when the interrupt was
+    /// served, 1 when it was refused (with `reason`: `unsupported`,
+    /// `not_running`, or `no_active_turn`).
+    Interrupt(InterruptArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct InterruptArgs {
+    /// The caller-owned session handle the target run was started with
+    /// (`run --control --session <NAME>`).
+    #[arg(long, value_name = "NAME")]
+    pub session: String,
+
+    /// Directory the `--session` store (and its `control/` sockets) lives in;
+    /// must match the run's. Default: <platform state dir>/oneharness/sessions.
+    #[arg(long, value_name = "DIR")]
+    pub session_dir: Option<PathBuf>,
+
+    /// Working directory used to resolve the project the session belongs to
+    /// (only used to report which harness the session is bound to).
+    #[arg(long, value_name = "DIR")]
+    pub cwd: Option<PathBuf>,
+
+    /// Emit compact single-line JSON instead of pretty-printed.
+    #[arg(long)]
+    pub compact: bool,
 }
 
 /// Per-probe timeout when `--timeout` is not given. Generous next to the
@@ -581,6 +613,21 @@ pub struct RunArgs {
     /// config/env layer; mainly for isolating the store in tests and scripts.
     #[arg(long, value_name = "DIR")]
     pub session_dir: Option<PathBuf>,
+
+    /// Open an out-of-band turn-control socket for the run's lifetime, so a
+    /// separate `oneharness interrupt --session <NAME>` process can abort the
+    /// in-flight turn without killing this dispatch or losing the session.
+    ///
+    /// Requires --session (the socket is addressed by that caller-owned name;
+    /// oneharness never infers one) and exactly one harness, which must declare
+    /// a control mechanism (see `control` in `oneharness list`) — an unsupported
+    /// harness is a loud usage error, never a socket that reports success while
+    /// the turn keeps running. The socket lives at
+    /// <session-dir>/control/<NAME>.sock, mode 0600, and is removed when the run
+    /// exits. Unix only. Without this flag nothing changes: no socket, no extra
+    /// process, and the same argv.
+    #[arg(long)]
+    pub control: bool,
 
     /// Override the output format requested from each harness (default: the
     /// per-harness default; see `oneharness list`). Affects both the emitted

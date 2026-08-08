@@ -39,6 +39,11 @@ pub struct HarnessInfo {
     /// Whether `run --resume <session> --fork` is supported — branching a new
     /// session from the resumed one. `false` means it resumes linearly only.
     supports_fork: bool,
+    /// How `run --control` + `oneharness interrupt` abort an in-flight turn on
+    /// this harness (the mechanism id), or `null` when it has no out-of-band
+    /// turn control at all — in which case `--control` is a loud usage error for
+    /// it, never a socket that reports success while the turn keeps running.
+    control: Option<&'static str>,
     /// Whether a forked run reuses the parent session's prompt-cache prefix, so a
     /// fork-based `--batch-strategy min-tokens` run actually reduces tokens. `true`
     /// only for Claude Code today; `false` (incl. OpenCode, whose fork re-sends the
@@ -131,6 +136,7 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 schema: None,
                 system_file: None,
                 prompt_stdin: false,
+                control: false,
             };
             let sync = spec.sync.as_ref();
             HarnessInfo {
@@ -142,6 +148,7 @@ pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
                 supports_resume: spec.supports_resume,
                 session_capable: spec.session_capable(),
                 supports_fork: spec.supports_fork,
+                control: spec.control.map(|shape| shape.as_str()),
                 fork_reuses_cache: spec.fork_reuses_cache,
                 modes: spec
                     .modes

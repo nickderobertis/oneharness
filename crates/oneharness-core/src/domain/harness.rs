@@ -8,6 +8,7 @@
 //! to drive each real CLI headlessly (deny prompts, pick the model, request a
 //! parseable format). Source new flags from a working driver, not by guessing.
 
+use crate::domain::control::{ControlShape, ServerSpec};
 use crate::domain::events::TelemetryTrace;
 use crate::domain::gate::DenyShape;
 use crate::domain::hooks::HookShape;
@@ -70,6 +71,18 @@ pub struct BuildCtx<'a> {
     /// `prompt` still holds the text so a non-stdin adapter and the report are
     /// unaffected. `false` keeps the ordinary argv path.
     pub prompt_stdin: bool,
+    /// When true, this run is **control-enabled** (`run --control`): its stdin
+    /// stays open for the run's lifetime so a separate `oneharness interrupt`
+    /// process can push an out-of-band frame into the live turn. An adapter
+    /// whose [`HarnessSpec::control`] rides its own stdin
+    /// ([`crate::domain::control::ControlShape::ClaudeControlRequest`]) selects
+    /// the message-stream input format here and omits the positional prompt (the
+    /// command layer delivers it as the first stdin frame instead). Every other
+    /// adapter ignores it — a server-backed mechanism carries the prompt over
+    /// its own protocol, and a harness with no control mechanism is refused
+    /// before `build_argv` is ever called. `false` keeps the ordinary argv path
+    /// byte for byte, which is what makes `--control`'s absence a no-op.
+    pub control: bool,
 }
 
 /// The CLI token for a format, as the harnesses spell it.
@@ -313,6 +326,21 @@ pub struct HarnessSpec {
     /// being omitted or rendered as 0% used. Sourced from `docs/harness-usage.md`
     /// — every probe and every negative there is an observation, never a guess.
     pub usage: UsageSupport,
+    /// How this harness accepts an **out-of-band interrupt** for an in-flight
+    /// turn (`oneharness run --control` + `oneharness interrupt`). `None` means
+    /// the lever does not exist for it: `--control` is a loud usage error rather
+    /// than a socket that reports success while the turn keeps running. Sourced
+    /// from a *proven* live interrupt against the real CLI — a declared shape
+    /// that was never exercised is the specific failure this field must not
+    /// have (see the capability matrix in `README.md` and
+    /// `scripts/explore-control.sh`, the drift alarm).
+    pub control: Option<ControlShape>,
+    /// The sidecar server this harness's control mechanism needs, when it needs
+    /// one. Declared per harness rather than special-casing the one that does
+    /// not (Claude Code, whose control rides the run process's own stdin), and
+    /// consumed by the generic pool in [`crate::io::server_pool`]. `None` for a
+    /// harness with no server, or with no proven control mechanism at all.
+    pub server: Option<ServerSpec>,
     /// Builds the full argv (argv[0] is the binary). Pure.
     pub build_argv: fn(&BuildCtx) -> Vec<String>,
 }
@@ -706,6 +734,14 @@ static REGISTRY: &[HarnessSpec] = &[
         // reports `num_turns: 0` / `total_cost_usd: 0`.
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::Probed(UsageProbe::ClaudeGetUsage),
+        // LIVE-VERIFIED (claude 2.1.220): with `-p --input-format stream-json`
+        // the run's own stdin stays open, and a `control_request` /
+        // `interrupt` frame aborts the turn (`control_response` success, then a
+        // `result` document) while the session survives. The alternative —
+        // writing a plain user message mid-turn — was tried and is *silently
+        // dropped*, so this is the only mechanism that works. No sidecar server.
+        control: Some(ControlShape::ClaudeControlRequest),
+        server: None,
         build_argv: argv_claude_code,
     },
     HarnessSpec {
@@ -809,6 +845,8 @@ static REGISTRY: &[HarnessSpec] = &[
         // own app-server probe rather than piggybacking on a dispatch.
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::Probed(UsageProbe::CodexAppServer),
+        control: None,
+        server: None,
         build_argv: argv_codex,
     },
     HarnessSpec {
@@ -898,6 +936,8 @@ static REGISTRY: &[HarnessSpec] = &[
         // different measurement that answers nothing about headroom.
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::NoPlanQuota,
+        control: None,
+        server: None,
         build_argv: argv_opencode,
     },
     HarnessSpec {
@@ -986,6 +1026,8 @@ static REGISTRY: &[HarnessSpec] = &[
         // GitHub token, so that headroom is readable under `copilot` instead.)
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::NoPlanQuota,
+        control: None,
+        server: None,
         build_argv: argv_goose,
     },
     HarnessSpec {
@@ -1078,6 +1120,8 @@ static REGISTRY: &[HarnessSpec] = &[
         // accessor. Nothing is readable here — not even the active auth mode.
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::NoHeadroomReader,
+        control: None,
+        server: None,
         build_argv: argv_qwen,
     },
     HarnessSpec {
@@ -1146,6 +1190,8 @@ static REGISTRY: &[HarnessSpec] = &[
         // stats` is local SQLite spend-to-date, not headroom.
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::NoHeadroomReader,
+        control: None,
+        server: None,
         build_argv: argv_crush,
     },
     HarnessSpec {
@@ -1224,6 +1270,8 @@ static REGISTRY: &[HarnessSpec] = &[
         // are unreachable as oneharness wires Copilot (text mode).
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::Probed(UsageProbe::CopilotUserEndpoint),
+        control: None,
+        server: None,
         build_argv: argv_copilot,
     },
     HarnessSpec {
@@ -1316,6 +1364,8 @@ static REGISTRY: &[HarnessSpec] = &[
         // the whole non-interactive surface.
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::Probed(UsageProbe::CursorAbout),
+        control: None,
+        server: None,
         build_argv: argv_cursor,
     },
 ];
@@ -1348,7 +1398,14 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     // and add `--input-format text` — claude then reads the prompt from stdin,
     // off the argv (no `E2BIG`). Sourced from `claude --help` (2.1.207).
     let mut a = vec![c.bin.into(), "-p".into()];
-    if c.prompt_stdin {
+    if c.control {
+        // A control-enabled run reads a *stream* of JSON messages from stdin
+        // rather than one blob, which is what lets the handle stay open past the
+        // prompt for an out-of-band `control_request`. The prompt is the first
+        // frame the command layer writes, so it leaves the positional off.
+        a.push("--input-format".into());
+        a.push("stream-json".into());
+    } else if c.prompt_stdin {
         a.push("--input-format".into());
         a.push("text".into());
     } else {
@@ -1783,6 +1840,7 @@ mod tests {
             schema: None,
             system_file: None,
             prompt_stdin: false,
+            control: false,
         }
     }
 
@@ -2320,6 +2378,7 @@ mod tests {
             schema: None,
             system_file: None,
             prompt_stdin: false,
+            control: false,
         };
         let argv = (spec.build_argv)(&ctx);
         assert!(
@@ -2400,6 +2459,7 @@ mod tests {
             schema: None,
             system_file: None,
             prompt_stdin: false,
+            control: false,
         }
     }
 

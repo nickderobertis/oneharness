@@ -284,6 +284,14 @@ live-cursor: _live-install
 live-schema: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-schema.sh
 
+# Per-FEATURE live check (not a harness): drive each control-capable harness
+# through `run --control` + a separate `oneharness interrupt` and assert the
+# real turn's work actually stops. Deliberately out of the per-harness suites:
+# every phase drives a multi-step turn then waits out a 15s freeze window, which
+# is far too slow for a per-PR job. See scripts/e2e-control.sh.
+live-control: _live-install
+    ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-control.sh
+
 live-variants: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-variants.sh
 

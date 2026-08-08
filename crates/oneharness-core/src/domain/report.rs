@@ -8,6 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::domain::batch::BatchStrategy;
+use crate::domain::control::ControlReport;
 use crate::domain::events::ActionEvent;
 use crate::domain::mode::PermissionMode;
 use crate::domain::session::SessionPhase;
@@ -20,11 +21,11 @@ use crate::domain::usage::UtcInstant;
 /// `sync`, and `config` — so one number describes the whole surface; the history
 /// records carry their own (`domain::history::SCHEMA_VERSION`).
 ///
-/// `0.4` adds the `config` report's `stream` field (the layered `--stream`
-/// value, with its provenance). Additive, so a reader of `0.3` keeps working —
-/// the bump is how a consumer *learns* the field exists rather than having to
-/// probe for it.
-pub const SCHEMA_VERSION: &str = "0.4";
+/// `0.5` adds the `run` report's `control` block (the out-of-band turn-control
+/// socket a `--control` run listened on, and every interrupt it served).
+/// Additive, so a reader of `0.4` keeps working — the bump is how a consumer
+/// *learns* the field exists rather than having to probe for it.
+pub const SCHEMA_VERSION: &str = "0.5";
 
 /// How a harness emits its result, which decides how `text` is extracted.
 ///
@@ -299,6 +300,12 @@ pub struct RunReport {
     /// Config files that shaped this run, in layering order (user first,
     /// project last); empty under `--no-config` or when none exist.
     pub config_files: Vec<String>,
+    /// Out-of-band turn control for this run (`--control`), or `null` when none
+    /// was requested — which is every ordinary run. It records the socket a
+    /// separate `oneharness interrupt` process could address, the harness
+    /// mechanism behind it, and each request served, so a consumer can tell an
+    /// interrupted turn from one that simply ended.
+    pub control: Option<ControlReport>,
     pub results: Vec<RunResult>,
 }
 

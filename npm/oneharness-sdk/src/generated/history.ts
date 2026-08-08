@@ -12,11 +12,11 @@ export type HistoryRecord = (
     }
   | ({
       error: string;
-      schema_version?: "1.3" | undefined;
+      schema_version?: "1.3" | "1.4" | undefined;
       [k: string]: unknown;
     } & (
       | {
-          status?: "nonzero" | "timeout" | "spawn-error" | "skipped" | undefined;
+          status?: "nonzero" | "timeout" | "cancelled" | "spawn-error" | "skipped" | undefined;
           [k: string]: unknown;
         }
       | {
@@ -25,6 +25,16 @@ export type HistoryRecord = (
         }
     ))
 ) &
+  (
+    | {
+        status?: "ok" | "nonzero" | "timeout" | "spawn-error" | "skipped" | "planned" | undefined;
+        [k: string]: unknown;
+      }
+    | {
+        schema_version?: "1.4" | undefined;
+        [k: string]: unknown;
+      }
+  ) &
   (
     | {
         duration_ms: number;
@@ -129,7 +139,7 @@ export type HistoryRecord = (
          * run's single prompt).
          */
         prompt: string;
-        schema_version: "1.2" | "1.3";
+        schema_version: "1.2" | "1.3" | "1.4";
         /**
          * The oneharness session id this run belongs to (the history file's stem).
          */
@@ -371,7 +381,7 @@ export type HistoryRecord = (
          * run's single prompt).
          */
         prompt: string;
-        schema_version: "1.2" | "1.3";
+        schema_version: "1.2" | "1.3" | "1.4";
         /**
          * The oneharness session id this run belongs to (the history file's stem).
          */
@@ -464,7 +474,7 @@ export type HistoryRecord = (
          * run's single prompt).
          */
         prompt: string;
-        schema_version: "1.2" | "1.3";
+        schema_version: "1.2" | "1.3" | "1.4";
         /**
          * The oneharness session id this run belongs to (the history file's stem).
          */
@@ -557,7 +567,7 @@ export type HistoryRecord = (
          * run's single prompt).
          */
         prompt: string;
-        schema_version: "1.2" | "1.3";
+        schema_version: "1.2" | "1.3" | "1.4";
         /**
          * The oneharness session id this run belongs to (the history file's stem).
          */
@@ -567,7 +577,7 @@ export type HistoryRecord = (
          */
         session_id: string | null;
         started_at?: never | undefined;
-        status: "nonzero" | "timeout" | "spawn-error" | "skipped";
+        status: "nonzero" | "timeout" | "cancelled" | "spawn-error" | "skipped";
         /**
          * Best-effort final assistant text; `null` when extraction was impossible.
          */
@@ -650,7 +660,7 @@ export type HistoryRecord = (
          * run's single prompt).
          */
         prompt: string;
-        schema_version: "1.3";
+        schema_version: "1.3" | "1.4";
         /**
          * The oneharness session id this run belongs to (the history file's stem).
          */
@@ -660,7 +670,7 @@ export type HistoryRecord = (
          */
         session_id: string | null;
         started_at: string;
-        status: "nonzero" | "timeout" | "spawn-error" | "skipped";
+        status: "nonzero" | "timeout" | "cancelled" | "spawn-error" | "skipped";
         /**
          * Best-effort final assistant text; `null` when extraction was impossible.
          */
@@ -758,7 +768,7 @@ export type HistoryRecord = (
          */
         session_id: string | null;
         started_at?: never | undefined;
-        status: "nonzero" | "timeout" | "spawn-error" | "skipped";
+        status: "nonzero" | "timeout" | "cancelled" | "spawn-error" | "skipped";
         /**
          * Best-effort final assistant text; `null` when extraction was impossible.
          */
@@ -1015,7 +1025,7 @@ export type FailureKind = "auth" | "rate_limit" | "model_not_found" | "quota" | 
 /**
  * The outcome of attempting to run one harness.
  */
-export type Status = "ok" | "nonzero" | "timeout" | "spawn-error" | "skipped" | "planned";
+export type Status = "ok" | "nonzero" | "timeout" | "cancelled" | "spawn-error" | "skipped" | "planned";
 
 /**
  * One normalized action a harness took, harness-agnostic so a single consumer

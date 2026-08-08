@@ -37,12 +37,15 @@ use crate::domain::signals::{FailureKind, Usage};
 /// newer reader. That is what lets an additive field ship without rewriting the
 /// shape of every record — and what makes each version constant below the exact
 /// gate for the one field it introduced.
-pub const SCHEMA_VERSION: &str = "1.3";
+pub const SCHEMA_VERSION: &str = "1.4";
+/// v1.4 introduced the `cancelled` run status — a record a v1.3 reader would
+/// refuse rather than misread, since its `status` enum has no such value.
+pub const FIRST_CANCELLED_SCHEMA_VERSION: &str = SCHEMA_VERSION;
 /// v1.3 introduced the normalized failure `error` text and invocation-bounds-only
 /// timing, so both name the same version — and both must, because an older
 /// reader refuses either shape rather than misreading it.
-pub const FIRST_ERROR_SCHEMA_VERSION: &str = SCHEMA_VERSION;
-pub const FIRST_PARTIAL_TIMING_SCHEMA_VERSION: &str = SCHEMA_VERSION;
+pub const FIRST_ERROR_SCHEMA_VERSION: &str = "1.3";
+pub const FIRST_PARTIAL_TIMING_SCHEMA_VERSION: &str = "1.3";
 /// v1.2 introduced stdout-observed tool timing (`observed_tool_ms`) and the
 /// `timing_source` provenance it puts on events.
 pub const OBSERVED_TIMING_SCHEMA_VERSION: &str = "1.2";
@@ -52,10 +55,11 @@ pub(crate) const FIRST_EVENT_SCHEMA_VERSION: &str = "1.0";
 /// Every event-sourced history version this build reads, oldest first. Order is
 /// the contract: a field introduced in version N is legible to N and everything
 /// after it, which is what [`version_at_least`] answers.
-pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 4] = [
+pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 5] = [
     FIRST_EVENT_SCHEMA_VERSION,
     PREVIOUS_CURRENT_SCHEMA_VERSION,
     OBSERVED_TIMING_SCHEMA_VERSION,
+    FIRST_ERROR_SCHEMA_VERSION,
     SCHEMA_VERSION,
 ];
 
@@ -63,6 +67,23 @@ fn version_rank(version: &str) -> Option<usize> {
     READABLE_SCHEMA_VERSIONS
         .iter()
         .position(|known| *known == version)
+}
+
+/// Every readable version at or after `minimum`, oldest first — the versions a
+/// field introduced in `minimum` may legitimately appear at.
+///
+/// Public because the generated SDK schemas describe such a field by listing
+/// exactly these versions. Deriving the list from [`READABLE_SCHEMA_VERSIONS`]
+/// is what keeps a *new* version from silently narrowing an older field's
+/// legality: a hand-written pair like `[introduced, current]` stops covering the
+/// versions in between the moment `current` moves.
+#[must_use]
+pub fn versions_from(minimum: &str) -> Vec<&'static str> {
+    READABLE_SCHEMA_VERSIONS
+        .iter()
+        .copied()
+        .filter(|version| version_at_least(version, minimum))
+        .collect()
 }
 
 /// Whether `version` is a readable version at or after `minimum`. An unreadable
@@ -771,7 +792,9 @@ impl HistoryRecord {
         HistoryRecord {
             // The oldest reader that can understand this record: only the shape a
             // record actually carries forces its version forward.
-            schema_version: if error.is_some() {
+            schema_version: if r.status == Status::Cancelled {
+                FIRST_CANCELLED_SCHEMA_VERSION
+            } else if error.is_some() {
                 FIRST_ERROR_SCHEMA_VERSION
             } else if partial.is_some() {
                 FIRST_PARTIAL_TIMING_SCHEMA_VERSION
@@ -825,6 +848,7 @@ impl HistoryRecord {
 
     pub(crate) fn complete(&self) -> bool {
         if !self.versioned_timing_valid()
+            || !status_version_valid(&self.schema_version, self.status)
             || !error_text_valid(
                 &self.schema_version,
                 self.error.as_ref(),
@@ -1137,7 +1161,11 @@ fn partial_trace_valid(
 pub fn run_failed(status: Status) -> bool {
     matches!(
         status,
-        Status::Nonzero | Status::Timeout | Status::SpawnError | Status::Skipped
+        Status::Nonzero
+            | Status::Timeout
+            | Status::SpawnError
+            | Status::Skipped
+            | Status::Cancelled
     )
 }
 
@@ -1283,6 +1311,15 @@ fn reported_failure(status: Status, failure_kind: Option<FailureKind>) -> bool {
 /// reported no failure has nothing to put in it. (Emptiness and length are not
 /// checked here — [`FailureText`] makes those unrepresentable, and the generated
 /// schema states them.)
+/// Whether `status` is a value a reader at `schema_version` has. A record's
+/// version is the promise "you can read this"; a status introduced later would
+/// break that promise, so it is refused rather than read back at a version that
+/// never had it. Stated here because the generated SDK schemas gate the same
+/// value the same way — one rule, two validators.
+fn status_version_valid(schema_version: &str, status: Status) -> bool {
+    status != Status::Cancelled || version_at_least(schema_version, FIRST_CANCELLED_SCHEMA_VERSION)
+}
+
 fn error_text_valid(
     schema_version: &str,
     error: Option<&FailureText>,
@@ -1980,6 +2017,31 @@ mod tests {
     }
 
     #[test]
+    fn a_cancelled_run_records_at_the_version_that_first_understood_it() {
+        // `cancelled` is a status value no v1.3 reader has, so a record carrying
+        // it must declare v1.4 — otherwise an older consumer would read the
+        // version as a promise it can parse the record, and then choke on it.
+        let cancelled = record_of(&RunResult {
+            status: Status::Cancelled,
+            exit_code: None,
+            error: Some("`codex` was cancelled".to_string()),
+            ..failed_traced_result()
+        });
+        assert_eq!(cancelled.status, Status::Cancelled);
+        assert_eq!(cancelled.schema_version, FIRST_CANCELLED_SCHEMA_VERSION);
+        assert_eq!(cancelled.schema_version, SCHEMA_VERSION);
+        assert!(run_failed(cancelled.status));
+        assert!(cancelled.complete());
+        // Round-trips: the writer's shape is the reader's shape.
+        let wire = serde_json::to_value(&cancelled).unwrap();
+        assert_eq!(wire["status"], "cancelled");
+        assert_eq!(
+            serde_json::from_value::<HistoryRecord>(wire).unwrap(),
+            cancelled
+        );
+    }
+
+    #[test]
     fn a_failed_run_records_with_whatever_telemetry_its_failure_left() {
         let failed = record_of(&failed_traced_result());
         // Absent timing: the run never reached the boundary a trace is measured
@@ -1992,7 +2054,7 @@ mod tests {
             failed.error.as_ref().map(FailureText::as_str),
             Some("Error: insufficient_quota")
         );
-        assert_eq!(failed.schema_version, SCHEMA_VERSION);
+        assert_eq!(failed.schema_version, FIRST_ERROR_SCHEMA_VERSION);
 
         // Events the failure interrupted keep their observed boundaries; the
         // "no run timing means no event timing" rule is a success-run rule.

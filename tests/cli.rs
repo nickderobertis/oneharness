@@ -256,7 +256,7 @@ fn every_report_carries_the_shared_schema_version() {
     // so a consumer reads any of them with one number — and a bump must move
     // every surface at once. Pinned literally on purpose: asserting against the
     // constant would pass through a bump nobody intended.
-    let version = "0.4";
+    let version = "0.5";
     let printed = run(
         &[
             "run",
@@ -299,7 +299,7 @@ fn list_describes_every_harness() {
     let output = run(&["list"], &[]);
     assert!(output.status.success());
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.4");
+    assert_eq!(value["schema_version"], "0.5");
     let ids: Vec<&str> = value["harnesses"]
         .as_array()
         .unwrap()
@@ -4002,6 +4002,99 @@ fn timeout_preserves_partial_telemetry_in_report_and_history() {
     let _ = std::fs::remove_dir_all(history);
 }
 
+#[cfg(unix)]
+#[test]
+fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
+    // The CLI face of cancellation. The harness writes nothing at all, so the run
+    // has no line to react to, and its descendant outlives a launcher kill. A
+    // SIGTERM to oneharness must therefore tear the whole tree down through the
+    // ordinary terminate path and still emit the machine-readable report, rather
+    // than dying and orphaning a harness that keeps working (and billing).
+    let history = hist_dir("cancel-signal");
+    let history_arg = history.display().to_string();
+    let ticks = native_tick_file("cancel-signal");
+    let _ = std::fs::remove_file(&ticks);
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        // No MOCK_STDOUT: the fixture is completely silent.
+        .env("MOCK_NATIVE_GRANDCHILD_MS", "20000")
+        .env("MOCK_TICK_FILE", ticks.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "cancel me",
+            "--bin",
+            &bin_override("claude-code"),
+            // Far beyond the teardown this test measures, so a run that only
+            // ended at its own deadline could never pass.
+            "--timeout",
+            "60",
+            "--history",
+            "--history-dir",
+            &history_arg,
+            "--compact",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn oneharness");
+
+    // Cancel only once the descendant has proven it is really running, so the
+    // teardown assertion below is about a live tree rather than a spawn race.
+    let alive_deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::fs::metadata(&ticks).map(|m| m.len()).unwrap_or(0) == 0 {
+        assert!(
+            std::time::Instant::now() < alive_deadline,
+            "the silent harness never started its descendant"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let signalled = std::time::Instant::now();
+    let sent = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("failed to signal oneharness");
+    assert!(sent.success(), "kill -TERM did not succeed");
+
+    let output = child.wait_with_output().expect("failed to reap oneharness");
+    assert!(
+        signalled.elapsed() < std::time::Duration::from_secs(15),
+        "the signalled run did not tear down promptly: {:?}",
+        signalled.elapsed()
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "oneharness did not exit through its own reporting path: {:?}",
+        output.status
+    );
+
+    // The report is still the contract: a cancelled run is a value a consumer
+    // reads, not a process that vanished.
+    let value = json_stdout(&output);
+    assert_eq!(value["schema_version"], "0.5");
+    let result = &value["results"][0];
+    assert_eq!(result["status"], "cancelled");
+    assert_eq!(result["exit_code"], Value::Null);
+    assert!(
+        result["error"].as_str().unwrap().contains("cancelled"),
+        "{}",
+        result["error"]
+    );
+
+    let record = first_history_run(Path::new(value["history_file"].as_str().unwrap()));
+    assert_eq!(record["status"], "cancelled");
+    assert_eq!(record["schema_version"], "1.4");
+
+    assert_native_descendant_stopped(&ticks);
+    let _ = std::fs::remove_file(ticks);
+    let _ = std::fs::remove_dir_all(history);
+}
+
 #[cfg(windows)]
 #[test]
 fn windows_streaming_stop_terminates_native_descendant() {
@@ -6253,7 +6346,7 @@ fn config_command_shows_values_with_sources() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.4");
+    assert_eq!(value["schema_version"], "0.5");
     assert_eq!(value["config_files"].as_array().unwrap().len(), 2);
 
     // The project file wins for model and is named as the source...
@@ -11949,7 +12042,7 @@ fn history_watch_streams_stdout_observed_event_at_the_current_version() {
     // Event lines are written by the current writer and read live, so they
     // always declare the current version (unlike a run record, whose version is
     // the oldest reader that can understand the fields it carries).
-    assert_eq!(envelope["line"]["schema_version"], "1.3");
+    assert_eq!(envelope["line"]["schema_version"], "1.4");
     assert_eq!(
         envelope["line"]["event"]["timing_source"],
         "stdout_observed"

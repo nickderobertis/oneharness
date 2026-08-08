@@ -22,6 +22,7 @@ use oneharness_core::domain::signals::Usage;
 use oneharness_core::domain::structured::{self, Schema};
 use oneharness_core::domain::{events, normalize, signals};
 use oneharness_core::errors::OneharnessError;
+use oneharness_core::io::cancel;
 use oneharness_core::io::config as config_io;
 use oneharness_core::io::detect::{self, BinOverrides};
 use oneharness_core::io::history::{self, HistoryWriter};
@@ -629,6 +630,26 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 model: unit_model.clone(),
             });
             job_plans.push(harness_plan);
+        }
+    }
+
+    // Own SIGINT/SIGTERM for the spawn phase only. A harness is its own
+    // process-group leader, so a signal that killed oneharness outright would
+    // leave the harness (and its descendants) running and billing; instead the
+    // signal cancels the in-flight runs, which tears each tree down and still
+    // emits the report — with the cut-short harnesses as `status: "cancelled"`.
+    // A second signal exits immediately, so an operator is never trapped.
+    //
+    // Installed *here*, not at the top of the verb: everything above may block on
+    // stdin (`--prompt-file -`), and a handler over a restarted read would swallow
+    // the interrupt instead of ending it. Skipped under `--print-command`, which
+    // spawns nothing to cancel.
+    if !args.print_command {
+        if let Err(err) = cancel::install_signal_cancel() {
+            eprintln!(
+                "oneharness: warning: could not install the cancellation signal handler ({err}); \
+                 an interrupt will kill oneharness and may leave a harness running"
+            );
         }
     }
 
@@ -2197,9 +2218,12 @@ fn executed_result(
     // Normalize them best-effort exactly like an exited run. SpawnError retains
     // its existing null-signal semantics because a failed wait cannot establish
     // that its captured output is complete or trustworthy.
+    // A run cut short still gets its captured bytes normalized: the same rule a
+    // timeout follows, for the same reason — output already produced is evidence,
+    // and discarding it would be the only thing that made the stop lossy.
     let normalize_capture = matches!(
         capture.status,
-        Status::Ok | Status::Nonzero | Status::Timeout
+        Status::Ok | Status::Nonzero | Status::Timeout | Status::Cancelled
     );
     let extracted = normalize_capture
         .then(|| normalize::extract(&capture.stdout, output_format))
@@ -2587,7 +2611,8 @@ fn load_schema(
 }
 
 /// A harness "failed" when it ran and did not exit cleanly, when it could not be
-/// spawned, when — under `--require-available` — it was skipped as missing, when
+/// spawned, when it was cancelled before finishing (no answer, whoever asked for
+/// the stop), when — under `--require-available` — it was skipped as missing, when
 /// a structured-output run never produced a schema-conforming answer (a run you
 /// asked for JSON from and didn't get is a failure, regardless of exit code), or
 /// when it dead-ended by deferring a tool call (`tool_deferred`) — a clean exit
@@ -2606,7 +2631,7 @@ fn is_failure(
         return true;
     }
     match status {
-        Status::Nonzero | Status::Timeout | Status::SpawnError => true,
+        Status::Nonzero | Status::Timeout | Status::SpawnError | Status::Cancelled => true,
         Status::Skipped => require_available && !available,
         Status::Ok | Status::Planned => false,
     }

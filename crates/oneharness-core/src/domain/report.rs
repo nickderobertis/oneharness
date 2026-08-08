@@ -20,11 +20,18 @@ use crate::domain::usage::UtcInstant;
 /// `sync`, and `config` — so one number describes the whole surface; the history
 /// records carry their own (`domain::history::SCHEMA_VERSION`).
 ///
-/// `0.4` adds the `config` report's `stream` field (the layered `--stream`
-/// value, with its provenance). Additive, so a reader of `0.3` keeps working —
-/// the bump is how a consumer *learns* the field exists rather than having to
-/// probe for it.
-pub const SCHEMA_VERSION: &str = "0.4";
+/// `0.5` adds two things to the `run` report: the measured
+/// [`ExecutionTelemetry`] on each result (previously internal, which forced a
+/// consumer to re-read the history file for numbers the run already knew), and
+/// the `cancelled` [`Status`] a run reaches when the caller — or a SIGINT/SIGTERM
+/// on the host — tore the harness tree down before it finished. Both are
+/// additive: every 0.4 field keeps its name, type, and meaning. The new *status
+/// value* is why the bump matters, since a consumer that exhaustively matches
+/// `status` learns from the version that a sixth value now exists.
+///
+/// `0.4` added the `config` report's `stream` field (the layered `--stream`
+/// value, with its provenance).
+pub const SCHEMA_VERSION: &str = "0.5";
 
 /// How a harness emits its result, which decides how `text` is extracted.
 ///
@@ -63,6 +70,15 @@ pub enum Status {
     Nonzero,
     /// Killed after exceeding the per-harness timeout.
     Timeout,
+    /// Terminated before it finished because the run was **cancelled** — a
+    /// library caller flipped its [`crate::io::cancel::CancelToken`], or the host
+    /// received SIGINT/SIGTERM while [`crate::io::cancel::install_signal_cancel`]
+    /// was in force. Distinct from `timeout` (the harness was given its full
+    /// deadline and exceeded it) and from a consumer-driven streaming stop (which
+    /// stays `ok`, because the consumer already got what it asked for). Any
+    /// output captured before the cancellation is still normalized, exactly as it
+    /// is for a timeout.
+    Cancelled,
     /// The binary was resolved but could not be executed.
     SpawnError,
     /// The harness was not run. Either the binary was not found (`available:
@@ -100,10 +116,24 @@ pub struct OutputObservation {
     pub bytes: Vec<u8>,
 }
 
-/// Measured execution telemetry carried internally from the runner/parser to
-/// the history writer. It is deliberately not part of the run-report contract.
-#[derive(Debug, Clone)]
+/// Measured execution telemetry for one harness run: when the invocation ran,
+/// and — when the harness's transcript supports it — how its wall clock split
+/// between provider latency and tool work.
+///
+/// Carried from the runner/parser to the history writer *and*, since report
+/// schema `0.5`, serialized on [`RunResult::telemetry`]. Exposing it there is
+/// what lets a consumer read the numbers off the run it just made instead of
+/// re-opening the history file the same run wrote.
+///
+/// Internally tagged by `source`, so the variant is a value a consumer switches
+/// on rather than a shape it has to sniff. Every variant states only what was
+/// actually measured — there is no variant meaning "no telemetry"; that is a
+/// `null` field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(tag = "source", rename_all = "snake_case")]
 pub enum ExecutionTelemetry {
+    /// The harness's own transcript carried a complete provider trace, so the
+    /// invocation bounds *and* the model/tool split are measured.
     ProviderMeasured {
         started_at: String,
         finished_at: Option<String>,
@@ -117,10 +147,69 @@ pub enum ExecutionTelemetry {
     /// itself started is, and it is what an operator reads off a failure. Typed
     /// as a [`UtcInstant`] so the one thing this variant claims to know cannot be
     /// empty or in some other offset by the time a record renders it.
-    PartialInvocation { started_at: UtcInstant },
-    /// History-only union observed at the stdout pipe. `RunResult::telemetry`
-    /// is skipped on the report wire; report provenance lives on `ActionEvent`.
+    PartialInvocation {
+        #[schemars(with = "String")]
+        started_at: UtcInstant,
+    },
+    /// The union of tool intervals observed at the stdout pipe, for a harness
+    /// whose transcript carries no provider trace to split. Not provider-measured
+    /// and with no model-latency counterpart, which is what the `source` tag tells
+    /// a consumer; per-event provenance lives on `ActionEvent`.
     StdoutObserved { tool_ms: u128 },
+}
+
+impl<'de> Deserialize<'de> for ExecutionTelemetry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // Serde's internally-tagged buffer cannot hold a u128, and these durations
+        // legitimately are u128 — the same constraint `RunStreamEnvelope` below
+        // documents. Read the tag off a `Value` first so each variant's numbers go
+        // through serde_json's number-aware deserializer instead.
+        let value = Value::deserialize(deserializer)?;
+        let source = value.get("source").and_then(Value::as_str).ok_or_else(|| {
+            serde::de::Error::custom("execution telemetry is missing string field `source`")
+        })?;
+        match source {
+            "provider_measured" => Ok(Self::ProviderMeasured {
+                started_at: required_str(&value, "started_at")?,
+                finished_at: optional_str(&value, "finished_at"),
+                model_ms: optional_u128(&value, "model_ms"),
+                tool_ms: optional_u128(&value, "tool_ms"),
+                time_to_first_token_ms: optional_u128(&value, "time_to_first_token_ms"),
+            }),
+            "partial_invocation" => Ok(Self::PartialInvocation {
+                started_at: required_str(&value, "started_at")?
+                    .parse()
+                    .map_err(serde::de::Error::custom)?,
+            }),
+            "stdout_observed" => Ok(Self::StdoutObserved {
+                tool_ms: optional_u128(&value, "tool_ms").ok_or_else(|| {
+                    serde::de::Error::custom("stdout-observed telemetry is missing `tool_ms`")
+                })?,
+            }),
+            other => Err(serde::de::Error::custom(format!(
+                "unknown execution telemetry source `{other}`"
+            ))),
+        }
+    }
+}
+
+fn required_str<E: serde::de::Error>(value: &Value, field: &str) -> Result<String, E> {
+    optional_str(value, field).ok_or_else(|| {
+        E::custom(format!(
+            "execution telemetry is missing string field `{field}`"
+        ))
+    })
+}
+
+fn optional_str(value: &Value, field: &str) -> Option<String> {
+    value.get(field).and_then(Value::as_str).map(str::to_string)
+}
+
+fn optional_u128(value: &Value, field: &str) -> Option<u128> {
+    value.get(field)?.as_number()?.as_u128()
 }
 
 /// One harness's entry in the report.
@@ -155,8 +244,12 @@ pub struct RunResult {
     pub exit_code: Option<i32>,
     /// Wall-clock duration of the run; `null` when not executed.
     pub duration_ms: Option<u128>,
-    #[serde(skip, default)]
-    #[schemars(skip)]
+    /// Measured execution telemetry for this run: the invocation bounds and, when
+    /// the harness's transcript carried a trace to read them from, the
+    /// model/tool split. `null` when nothing was measured — never estimated.
+    /// Added in report schema `0.5`; before that a consumer had to re-read the
+    /// history file for numbers the run itself already had.
+    #[serde(default)]
     pub telemetry: Option<ExecutionTelemetry>,
     /// The exact argv oneharness built (argv[0] is the binary).
     pub command: Vec<String>,
@@ -411,6 +504,125 @@ impl<'de> Deserialize<'de> for RunStreamEnvelope {
             other => Err(serde::de::Error::custom(format!(
                 "unknown run stream envelope type `{other}`"
             ))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn round_trip(telemetry: ExecutionTelemetry) -> Value {
+        let wire = serde_json::to_value(&telemetry).expect("telemetry serializes");
+        let back: ExecutionTelemetry =
+            serde_json::from_value(wire.clone()).expect("telemetry round-trips");
+        assert_eq!(back, telemetry);
+        wire
+    }
+
+    #[test]
+    fn provider_measured_telemetry_round_trips_its_millisecond_splits() {
+        // The u128 durations are the reason this enum hand-rolls `Deserialize`:
+        // serde's internally-tagged buffer cannot hold one, so a derived impl
+        // would serialize fine and then refuse to read its own output back.
+        let wire = round_trip(ExecutionTelemetry::ProviderMeasured {
+            started_at: "2026-01-01T00:00:00.000Z".to_string(),
+            finished_at: Some("2026-01-01T00:00:12.500Z".to_string()),
+            model_ms: Some(9_000),
+            tool_ms: Some(3_500),
+            time_to_first_token_ms: Some(420),
+        });
+        assert_eq!(wire["source"], "provider_measured");
+        assert_eq!(wire["model_ms"], 9_000);
+        assert_eq!(wire["time_to_first_token_ms"], 420);
+    }
+
+    #[test]
+    fn the_other_telemetry_variants_round_trip_under_their_own_source() {
+        let partial = round_trip(ExecutionTelemetry::PartialInvocation {
+            started_at: "2026-01-01T00:00:00Z".parse().expect("canonical instant"),
+        });
+        assert_eq!(partial["source"], "partial_invocation");
+        assert_eq!(partial["started_at"], "2026-01-01T00:00:00Z");
+
+        let observed = round_trip(ExecutionTelemetry::StdoutObserved { tool_ms: 77 });
+        assert_eq!(observed["source"], "stdout_observed");
+        assert_eq!(observed["tool_ms"], 77);
+    }
+
+    #[test]
+    fn unreadable_telemetry_is_an_error_not_a_guess() {
+        // A missing/unknown tag or a variant's own missing field must fail loudly:
+        // inventing a source would put a measurement in the report that nothing
+        // measured.
+        for bad in [
+            serde_json::json!({"tool_ms": 5}),
+            serde_json::json!({"source": "wall_clock", "tool_ms": 5}),
+            serde_json::json!({"source": "provider_measured"}),
+            serde_json::json!({"source": "stdout_observed"}),
+            serde_json::json!({"source": "partial_invocation", "started_at": "not a time"}),
+        ] {
+            assert!(
+                serde_json::from_value::<ExecutionTelemetry>(bad.clone()).is_err(),
+                "accepted {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_result_without_telemetry_still_deserializes() {
+        // The field was absent from the wire before schema 0.5, so a report
+        // captured by an older producer must still read back.
+        let mut wire = serde_json::to_value(sample_result()).expect("result serializes");
+        assert!(wire.get("telemetry").is_some(), "0.5 always writes the key");
+        wire.as_object_mut().unwrap().remove("telemetry");
+        let back: RunResult = serde_json::from_value(wire).expect("pre-0.5 result round-trips");
+        assert!(back.telemetry.is_none());
+    }
+
+    #[test]
+    fn the_cancelled_status_is_spelled_kebab_case_on_the_wire() {
+        assert_eq!(
+            serde_json::to_value(Status::Cancelled).unwrap(),
+            Value::String("cancelled".to_string())
+        );
+        assert_eq!(
+            serde_json::from_value::<Status>(Value::String("cancelled".to_string())).unwrap(),
+            Status::Cancelled
+        );
+    }
+
+    fn sample_result() -> RunResult {
+        RunResult {
+            harness: "claude-code".to_string(),
+            variant: None,
+            harness_id: "claude-code".to_string(),
+            bin: "claude".to_string(),
+            available: true,
+            status: Status::Cancelled,
+            prompt: None,
+            model: None,
+            exit_code: None,
+            duration_ms: Some(1_200),
+            telemetry: Some(ExecutionTelemetry::StdoutObserved { tool_ms: 12 }),
+            command: vec!["claude".to_string()],
+            output_format: OutputFormat::Json,
+            text: None,
+            text_source: None,
+            usage: Usage::default(),
+            usage_source: None,
+            session_id: None,
+            events: None,
+            events_source: None,
+            structured: None,
+            schema_valid: None,
+            schema_attempts: None,
+            schema_error: None,
+            failure_kind: None,
+            failure_kind_source: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            error: Some("cancelled".to_string()),
         }
     }
 }

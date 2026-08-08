@@ -96,7 +96,19 @@ Use the `just` recipes; do not hand-roll equivalents.
   owns `resolve_program`, so every spawn — runner and `usage` probe alike — takes
   a bare registry name through the PATHEXT-aware lookup that finds Windows's
   `codex.cmd`; a site that skips it reports an installed harness as
-  `program not found`. Timeout
+  `program not found`. **Cancellation** goes through that same
+  `Finish::Terminate` teardown: `io::cancel` holds a caller-owned `CancelToken`
+  plus a process-wide flag raised by `install_signal_cancel` (SIGINT/SIGTERM;
+  Windows console-control), which the CLI installs for `run` *after* any stdin
+  read. Because the launcher leads its own process group, a signal that killed
+  oneharness would orphan a live, billing harness — so both runner loops bound
+  their wait/pipe-read by `CANCEL_POLL_SLICE` and re-check the flag. That bound is
+  the whole mechanism for a **silent** harness: it emits no line, so `on_line`
+  (and therefore `StreamStep::Stop`) is unreachable, and a plain wait to the
+  deadline would hold the run for the entire timeout after the caller gave up.
+  A cancelled run is `Status::Cancelled` — its own value, never `timeout` (nothing
+  was exceeded) and never the streaming consumer-`Stop`'s `ok` — with its captured
+  bytes still normalized; queued jobs report cancelled without spawning. Timeout
   status is authoritative, but `commands::run::executed_result` still normalizes
   any complete captured records into text/usage/session/events (skipping a
   truncated JSONL tail), which history then preserves. A **same-prefix batch** is
@@ -416,7 +428,16 @@ aren't re-litigated each session:
   `src/commands/`. Never hide I/O in a helper that looks pure.
 - **Output is a contract.** The JSON report on stdout carries a `schema_version`;
   it is the interface consumers depend on. Add fields; do not repurpose or remove
-  them without bumping the version. Diagnostics go to stderr, never stdout.
+  them without bumping the version. Diagnostics go to stderr, never stdout. A new
+  *value* in an existing enum (a `Status` variant) is a bump too: a consumer that
+  matches exhaustively learns of it only from the version. On the history side
+  that means a new version constant, since a record's `schema_version` is the
+  oldest reader that can understand it — and `history::versions_from(minimum)`
+  is how every version-gated field/value states its legal range, so a bump can
+  never silently narrow an older one. State the gate in **both** the runtime
+  reader (`HistoryRecord::complete`) and `sdk_schema`, and pin it in
+  `tests/fixtures/sdk-contract-matrix.json`; the matrix test is what catches the
+  two disagreeing.
 - **Best-effort `text`, guaranteed envelope.** The execution envelope (command,
   exit code, stdout, stderr, duration, status) is guaranteed and identical across
   harnesses. The normalized `text` field is a convenience whose method is recorded

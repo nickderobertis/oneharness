@@ -11,7 +11,17 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::domain::report::{Capture, OutputObservation, Status};
+use crate::io::cancel::{cancellation_requested, CancelToken};
 use crate::io::process::{resolve_program, Finish, PipeEvent, Process};
+
+/// How long a wait/read blocks before the run re-checks for cancellation.
+///
+/// Cancellation is only as fast as this slice, and a harness that produces no
+/// output at all reaches the check no other way: without it the run stays parked
+/// in the pipe read until its own deadline, and a cancelled harness keeps
+/// running (and billing). Short enough to feel immediate, long enough that the
+/// wakeups cost nothing next to a model call.
+const CANCEL_POLL_SLICE: Duration = Duration::from_millis(50);
 
 /// A fully-specified subprocess to run.
 #[derive(Clone)]
@@ -54,6 +64,32 @@ pub fn run_jobs(jobs: &[Job], max_parallel: usize) -> Vec<Capture> {
         .collect()
 }
 
+/// A run cancelled before it ever spawned: the wave was torn down while this job
+/// was still queued. Reported rather than dropped, so a caller's results stay
+/// one-per-job and a cancelled batch is legible entry by entry.
+fn unstarted_capture(job: &Job) -> Capture {
+    Capture {
+        status: Status::Cancelled,
+        exit_code: None,
+        duration_ms: Some(0),
+        stdout: String::new(),
+        stderr: String::new(),
+        error: Some(cancelled_error(&job.argv[0])),
+        started_at: utc_now(),
+        finished_at: Some(utc_now()),
+        stdout_observations: Vec::new(),
+    }
+}
+
+/// The `error` text for a run oneharness terminated on a cancellation request.
+/// Distinct from the timeout message on purpose: nothing was exceeded, so
+/// pointing at `--timeout` would send the reader down the wrong path.
+fn cancelled_error(program: &str) -> String {
+    format!(
+        "`{program}` was cancelled: oneharness terminated it and its descendants before it finished. Suggestion: re-run when the work should complete"
+    )
+}
+
 /// Like [`run_jobs`], but after each run consults `retry` to decide whether to
 /// re-run the same job with a new argv. `retry(job_index, attempt, &capture)`
 /// returns `Some(next_argv)` to run again (e.g. structured-output validation
@@ -66,6 +102,27 @@ pub fn run_jobs(jobs: &[Job], max_parallel: usize) -> Vec<Capture> {
 /// `retry` is `Sync` because it is shared across worker threads; the domain
 /// validation it performs is pure, keeping this layer free of parsing logic.
 pub fn run_jobs_with<F>(jobs: &[Job], max_parallel: usize, retry: F) -> Vec<Outcome>
+where
+    F: Fn(usize, u32, &Capture) -> Option<NextRun> + Sync,
+{
+    run_jobs_with_cancel(jobs, max_parallel, &CancelToken::new(), retry)
+}
+
+/// [`run_jobs_with`] under a caller-owned [`CancelToken`].
+///
+/// Cancelling tears down every in-flight job's process tree through the same
+/// [`Finish::Terminate`] path a timeout uses, and leaves still-queued jobs
+/// unspawned — each reported as [`Status::Cancelled`] so the results stay
+/// one-per-job. A host SIGINT/SIGTERM does the same thing to *every* run once
+/// [`crate::io::cancel::install_signal_cancel`] is in force, so the plain
+/// [`run_jobs_with`] entry point is cancellable too; this overload exists for a
+/// library caller that cancels one run without touching the process.
+pub fn run_jobs_with_cancel<F>(
+    jobs: &[Job],
+    max_parallel: usize,
+    cancel: &CancelToken,
+    retry: F,
+) -> Vec<Outcome>
 where
     F: Fn(usize, u32, &Capture) -> Option<NextRun> + Sync,
 {
@@ -85,7 +142,14 @@ where
                 if i >= n {
                     break;
                 }
-                let outcome = run_job_with_retry(&jobs[i], i, retry);
+                let outcome = if cancellation_requested(cancel) {
+                    Outcome {
+                        capture: unstarted_capture(&jobs[i]),
+                        attempts: 0,
+                    }
+                } else {
+                    run_job_with_retry(&jobs[i], i, cancel, retry)
+                };
                 *slots[i].lock().expect("slot mutex poisoned") = Some(outcome);
             });
         }
@@ -102,13 +166,18 @@ where
 }
 
 /// Run one job, then loop while `retry` asks for another attempt with a new argv.
-fn run_job_with_retry<F>(job: &Job, index: usize, retry: &F) -> Outcome
+/// A cancellation ends the loop: re-prompting a run the caller has abandoned
+/// would spend another turn on an answer nobody is waiting for.
+fn run_job_with_retry<F>(job: &Job, index: usize, cancel: &CancelToken, retry: &F) -> Outcome
 where
     F: Fn(usize, u32, &Capture) -> Option<NextRun>,
 {
-    let mut capture = run_job(job);
+    let mut capture = run_job_cancellable(job, cancel);
     let mut attempts = 1u32;
-    while let Some(next) = retry(index, attempts, &capture) {
+    while !cancellation_requested(cancel) {
+        let Some(next) = retry(index, attempts, &capture) else {
+            break;
+        };
         let next = Job {
             argv: next.argv,
             cwd: job.cwd.clone(),
@@ -117,7 +186,7 @@ where
             timeout: job.timeout,
             stdin: next.stdin,
         };
-        capture = run_job(&next);
+        capture = run_job_cancellable(&next, cancel);
         attempts += 1;
     }
     Outcome { capture, attempts }
@@ -202,6 +271,14 @@ fn feed_stdin(process: &mut Process, bytes: String) {
 
 /// Run a single job, returning its raw capture. Never panics on harness behavior.
 pub fn run_job(job: &Job) -> Capture {
+    run_job_cancellable(job, &CancelToken::new())
+}
+
+/// [`run_job`] under a caller-owned [`CancelToken`]. Cancelling terminates the
+/// harness and its descendants through the same [`Finish::Terminate`] path a
+/// timeout uses, and the run comes back as [`Status::Cancelled`] with whatever
+/// output had already been captured.
+pub fn run_job_cancellable(job: &Job, cancel: &CancelToken) -> Capture {
     let start = Instant::now();
     let start_epoch_ms = epoch_millis();
     let started_at = crate::domain::history::format_rfc3339_millis(start_epoch_ms);
@@ -263,33 +340,29 @@ pub fn run_job(job: &Job) -> Capture {
     }
 
     let deadline = start + job.timeout;
-    let (status, exit_code, timed_out, finish) = match process.wait_until(deadline) {
-        Ok(Some(exit)) => {
+    let (status, exit_code, finish) = match wait_or_cancel(&mut process, deadline, cancel) {
+        Wait::Exited(exit) => {
             let code = exit.code();
             let status = if code == Some(0) {
                 Status::Ok
             } else {
                 Status::Nonzero
             };
-            (status, code, false, Finish::Exited)
+            (status, code, Finish::Exited)
         }
-        Ok(None) => (Status::Timeout, None, true, Finish::Terminate),
-        Err(_) => (Status::SpawnError, None, false, Finish::Terminate),
+        Wait::TimedOut => (Status::Timeout, None, Finish::Terminate),
+        Wait::Cancelled => (Status::Cancelled, None, Finish::Terminate),
+        Wait::Failed => (Status::SpawnError, None, Finish::Terminate),
     };
 
     let finished = process.finish(finish);
     let duration_ms = Some(start.elapsed().as_millis());
 
-    let error = if timed_out {
-        Some(format!(
-            "`{}` exceeded the {}s timeout and was killed. Suggestion: raise --timeout or simplify the prompt",
-            job.argv[0],
-            job.timeout.as_secs()
-        ))
-    } else if status == Status::SpawnError {
-        Some(format!("`{}` could not be waited on", job.argv[0]))
-    } else {
-        None
+    let error = match status {
+        Status::Timeout => Some(timeout_error(job)),
+        Status::Cancelled => Some(cancelled_error(&job.argv[0])),
+        Status::SpawnError => Some(format!("`{}` could not be waited on", job.argv[0])),
+        _ => None,
     };
 
     let observations = observations_since(start, start_epoch_ms, finished.stdout_observations);
@@ -329,7 +402,24 @@ pub enum StreamStep {
 /// write to the consumer fails, i.e. the consumer closed the stream). On `Stop`
 /// or timeout the child is killed; on normal EOF its exit is awaited. Never
 /// panics on harness behavior — same contract as [`run_job`].
-pub fn run_job_streaming<F>(job: &Job, mut on_line: F) -> Capture
+pub fn run_job_streaming<F>(job: &Job, on_line: F) -> Capture
+where
+    F: FnMut(&str) -> StreamStep,
+{
+    run_job_streaming_cancellable(job, &CancelToken::new(), on_line)
+}
+
+/// [`run_job_streaming`] under a caller-owned [`CancelToken`].
+///
+/// The cancellation check is what makes a **silent** harness stoppable. The
+/// stream loop is otherwise parked in the stdout pipe read until the deadline,
+/// and `on_line` — the only other way out — is never called for a harness that
+/// writes nothing. So the read is bounded by [`CANCEL_POLL_SLICE`] and the
+/// cancellation flag re-checked on each tick, which then tears the whole tree
+/// down through [`Finish::Terminate`]. Without it a cancelled run leaves a live
+/// harness behind, since the harness is its own process-group leader and does
+/// not die with the host.
+pub fn run_job_streaming_cancellable<F>(job: &Job, cancel: &CancelToken, mut on_line: F) -> Capture
 where
     F: FnMut(&str) -> StreamStep,
 {
@@ -389,7 +479,14 @@ where
     let deadline = start + job.timeout;
     let mut pending = Vec::new();
     let end = loop {
-        match process.recv_stdout_until(deadline) {
+        if cancellation_requested(cancel) {
+            break StreamEnd::Cancelled;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            break StreamEnd::TimedOut;
+        }
+        match process.recv_stdout_until(deadline.min(now + CANCEL_POLL_SLICE)) {
             PipeEvent::Data(chunk) => {
                 pending.extend_from_slice(&chunk);
                 if deliver_complete_lines(&mut pending, &mut on_line) == StreamStep::Stop {
@@ -400,13 +497,16 @@ where
                 if deliver_final_line(&mut pending, &mut on_line) == StreamStep::Stop {
                     break StreamEnd::Stopped;
                 }
-                break match process.wait_until(deadline) {
-                    Ok(Some(exit)) => StreamEnd::Exited(exit),
-                    Ok(None) => StreamEnd::TimedOut,
-                    Err(_) => StreamEnd::WaitFailed,
+                break match wait_or_cancel(&mut process, deadline, cancel) {
+                    Wait::Exited(exit) => StreamEnd::Exited(exit),
+                    Wait::TimedOut => StreamEnd::TimedOut,
+                    Wait::Cancelled => StreamEnd::Cancelled,
+                    Wait::Failed => StreamEnd::WaitFailed,
                 };
             }
-            PipeEvent::Deadline => break StreamEnd::TimedOut,
+            // A poll tick, not the run's deadline: loop back to re-check both
+            // cancellation and the real deadline.
+            PipeEvent::Deadline => {}
         }
     };
 
@@ -424,19 +524,15 @@ where
         // received what it needed, so the best-effort envelope remains Ok.
         StreamEnd::Stopped => (Status::Ok, None, Finish::Terminate),
         StreamEnd::TimedOut => (Status::Timeout, None, Finish::Terminate),
+        StreamEnd::Cancelled => (Status::Cancelled, None, Finish::Terminate),
         StreamEnd::WaitFailed => (Status::SpawnError, None, Finish::Terminate),
     };
-    let timed_out = matches!(end, StreamEnd::TimedOut);
     let finished = process.finish(finish);
 
-    let error = if timed_out {
-        Some(format!(
-            "`{}` exceeded the {}s timeout and was killed. Suggestion: raise --timeout or simplify the prompt",
-            job.argv[0],
-            job.timeout.as_secs()
-        ))
-    } else {
-        None
+    let error = match status {
+        Status::Timeout => Some(timeout_error(job)),
+        Status::Cancelled => Some(cancelled_error(&job.argv[0])),
+        _ => None,
     };
 
     let observations = observations_since(start, start_epoch_ms, finished.stdout_observations);
@@ -486,7 +582,47 @@ enum StreamEnd {
     Exited(std::process::ExitStatus),
     Stopped,
     TimedOut,
+    Cancelled,
     WaitFailed,
+}
+
+/// How a bounded wait for the direct child ended.
+enum Wait {
+    Exited(std::process::ExitStatus),
+    TimedOut,
+    Cancelled,
+    Failed,
+}
+
+/// Wait for the child until `deadline`, waking every [`CANCEL_POLL_SLICE`] to
+/// re-check cancellation. The slice is the only reason a cancellation is ever
+/// observed: a plain wait to the deadline would hold the run for the harness's
+/// whole timeout after the caller had already given up on it.
+fn wait_or_cancel(process: &mut Process, deadline: Instant, cancel: &CancelToken) -> Wait {
+    loop {
+        if cancellation_requested(cancel) {
+            return Wait::Cancelled;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Wait::TimedOut;
+        }
+        match process.wait_until(deadline.min(now + CANCEL_POLL_SLICE)) {
+            Ok(Some(exit)) => return Wait::Exited(exit),
+            // The slice elapsed; the loop decides whether that was the deadline.
+            Ok(None) => {}
+            Err(_) => return Wait::Failed,
+        }
+    }
+}
+
+/// The `error` text for a run killed at its own deadline.
+fn timeout_error(job: &Job) -> String {
+    format!(
+        "`{}` exceeded the {}s timeout and was killed. Suggestion: raise --timeout or simplify the prompt",
+        job.argv[0],
+        job.timeout.as_secs()
+    )
 }
 
 /// Deliver every newline-terminated line currently buffered, retaining an
@@ -764,6 +900,206 @@ mod tests {
         let after_grace = std::fs::metadata(&ticks).map(|m| m.len()).unwrap_or(0);
         assert_eq!(after_return, after_grace);
         let _ = std::fs::remove_file(ticks);
+    }
+
+    /// A harness that writes **nothing** while a TERM-ignoring descendant keeps
+    /// the inherited pipes open for `20s`. This is the shape the streaming loop
+    /// cannot see any other way: `on_line` never fires, so a consumer-driven
+    /// `Stop` is unreachable and only the cancellation poll ends the run.
+    #[cfg(unix)]
+    fn silent_descendant_job(timeout: Duration, tick_file: &std::path::Path) -> Job {
+        let script = r#"
+            trap '' TERM
+            sh -c '
+                trap "" TERM
+                i=0
+                while [ "$i" -lt 400 ]; do
+                    printf x >> "$TICK_FILE"
+                    i=$((i + 1))
+                    sleep 0.05
+                done
+            ' &
+            wait
+        "#;
+        Job {
+            argv: vec!["sh".to_string(), "-c".to_string(), script.to_string()],
+            cwd: None,
+            env: vec![("TICK_FILE".to_string(), tick_file.display().to_string())],
+            env_remove: Vec::new(),
+            timeout,
+            stdin: None,
+        }
+    }
+
+    /// Cancel `token` once `tick_file` proves the descendant is really running,
+    /// so the test cancels a live tree rather than racing the spawn.
+    #[cfg(unix)]
+    fn cancel_once_alive(token: CancelToken, tick_file: std::path::PathBuf) {
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                if std::fs::metadata(&tick_file).is_ok_and(|meta| meta.len() > 0) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            token.cancel();
+        });
+    }
+
+    /// The tick file must stop growing once the runner has returned.
+    #[cfg(unix)]
+    fn assert_descendant_stopped(tick_file: &std::path::Path) {
+        let after_return = std::fs::metadata(tick_file).map(|m| m.len()).unwrap_or(0);
+        assert!(
+            after_return > 0,
+            "the fixture never proved its descendant ran, so the teardown assertion is vacuous"
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        let after_grace = std::fs::metadata(tick_file).map(|m| m.len()).unwrap_or(0);
+        assert_eq!(
+            after_return, after_grace,
+            "a descendant kept ticking after the cancelled run returned"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelling_a_silent_run_terminates_it_and_its_descendants() {
+        // The blocking defect: a harness that produces no output never reaches
+        // `on_line`, so before the cancellation poll existed this run stayed
+        // parked in the pipe read for the whole 20s timeout and its descendants
+        // outlived the caller's cancel.
+        let ticks = unique_tick_file("cancel-silent-stream");
+        let _ = std::fs::remove_file(&ticks);
+        let cancel = CancelToken::new();
+        cancel_once_alive(cancel.clone(), ticks.clone());
+
+        let started = Instant::now();
+        let mut lines = 0u32;
+        let cap = run_job_streaming_cancellable(
+            &silent_descendant_job(Duration::from_secs(20), &ticks),
+            &cancel,
+            |_| {
+                lines += 1;
+                StreamStep::Continue
+            },
+        );
+
+        assert_eq!(
+            lines, 0,
+            "the fixture must be silent for this to be the test"
+        );
+        assert_eq!(cap.status, Status::Cancelled);
+        assert!(cap.exit_code.is_none());
+        assert!(
+            cap.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("cancelled"),
+            "{:?}",
+            cap.error
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "cancellation waited for the harness timeout instead of the poll: {:?}",
+            started.elapsed()
+        );
+        assert_descendant_stopped(&ticks);
+        let _ = std::fs::remove_file(ticks);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelling_a_buffered_run_terminates_it_and_its_descendants() {
+        // The same guarantee on the non-streaming path, which a batch run takes.
+        let ticks = unique_tick_file("cancel-silent-buffered");
+        let _ = std::fs::remove_file(&ticks);
+        let cancel = CancelToken::new();
+        cancel_once_alive(cancel.clone(), ticks.clone());
+
+        let started = Instant::now();
+        let cap = run_job_cancellable(
+            &silent_descendant_job(Duration::from_secs(20), &ticks),
+            &cancel,
+        );
+
+        assert_eq!(cap.status, Status::Cancelled);
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "cancellation waited for the harness timeout: {:?}",
+            started.elapsed()
+        );
+        assert_descendant_stopped(&ticks);
+        let _ = std::fs::remove_file(ticks);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelling_a_wave_leaves_queued_jobs_unspawned_but_reported() {
+        // One worker, two jobs: the second is still queued when the first is
+        // cancelled. It must never spawn, and must still occupy its own result
+        // slot so a caller's results stay one-per-job.
+        let ticks = unique_tick_file("cancel-wave");
+        let queued_ticks = unique_tick_file("cancel-wave-queued");
+        for path in [&ticks, &queued_ticks] {
+            let _ = std::fs::remove_file(path);
+        }
+        let cancel = CancelToken::new();
+        cancel_once_alive(cancel.clone(), ticks.clone());
+
+        let jobs = [
+            silent_descendant_job(Duration::from_secs(20), &ticks),
+            silent_descendant_job(Duration::from_secs(20), &queued_ticks),
+        ];
+        let outcomes = run_jobs_with_cancel(&jobs, 1, &cancel, |_, _, _| None);
+
+        assert_eq!(outcomes.len(), 2);
+        assert_eq!(outcomes[0].capture.status, Status::Cancelled);
+        assert_eq!(outcomes[0].attempts, 1);
+        assert_eq!(outcomes[1].capture.status, Status::Cancelled);
+        assert_eq!(
+            outcomes[1].attempts, 0,
+            "a queued job must not be invoked at all"
+        );
+        assert!(
+            !queued_ticks.exists(),
+            "the queued job spawned despite the cancellation"
+        );
+        assert_descendant_stopped(&ticks);
+        let _ = std::fs::remove_file(ticks);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cancelled_run_does_not_retry() {
+        // The structured-output loop must not spend another turn re-prompting a
+        // run whose caller has already walked away.
+        let cancel = CancelToken::new();
+        let trigger = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            trigger.cancel();
+        });
+        let jobs = [Job {
+            argv: vec!["sh".to_string(), "-c".to_string(), "sleep 20".to_string()],
+            ..job(&["sh"])
+        }];
+        let asked = AtomicUsize::new(0);
+        let outcomes = run_jobs_with_cancel(&jobs, 1, &cancel, |_, _, _| {
+            asked.fetch_add(1, Ordering::SeqCst);
+            Some(NextRun {
+                argv: vec!["/no/such/again".to_string()],
+                stdin: None,
+            })
+        });
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            0,
+            "the retry policy must not be consulted after a cancellation"
+        );
+        assert_eq!(outcomes[0].capture.status, Status::Cancelled);
+        assert_eq!(outcomes[0].attempts, 1);
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //! Everything that touches the process, filesystem, env, or clock lives here or
 //! in `commands`, never in `domain`.
 
+pub mod cancel;
 pub mod config;
 pub mod detect;
 pub mod history;

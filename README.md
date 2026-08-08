@@ -785,9 +785,9 @@ Which settings can reach which harness is the support table above: `model`,
 ### Exit codes
 
 - `0` — every selected harness was `ok` or `skipped` (or it was a dry run).
-- `1` — at least one harness `nonzero`/`timeout`/`spawn-error`ed (or, under
-  `--require-available`, was missing; or, under `--schema`, never produced a
-  schema-conforming answer).
+- `1` — at least one harness `nonzero`/`timeout`/`spawn-error`ed or was
+  `cancelled` (or, under `--require-available`, was missing; or, under
+  `--schema`, never produced a schema-conforming answer).
 - `2` — usage/configuration error (bad args, unknown harness, no prompt, an
   unreadable or invalid `--schema` file).
 
@@ -795,6 +795,34 @@ Under [`--run-mode fallback`](#fallback-mode-first-that-runs-wins) the rule is
 different: `0` when the harness that ran succeeded, `1` when it ran but failed
 **or** when no candidate could run at all — the fallen-through candidates never
 count against the run.
+
+### Cancelling a run (Ctrl-C, SIGINT/SIGTERM)
+
+A harness launcher runs in its **own process group** (Unix) / Job Object
+(Windows), so killing `oneharness` outright would not take the harness with it —
+and an agent left running keeps working and billing. `oneharness run` therefore
+handles `SIGINT`/`SIGTERM` itself while harnesses are in flight:
+
+1. every running harness — **including one that has printed nothing at all** —
+   and its whole descendant tree is terminated, the same teardown a `--timeout`
+   performs;
+2. any harnesses still queued are left unspawned;
+3. the ordinary JSON report is still written to stdout, with each cut-short
+   result as `"status": "cancelled"` (and an `error` saying so). Whatever output
+   the harness had already produced is still normalized into `text`/`usage`/
+   `events`, exactly as it is for a timeout;
+4. the process exits `1`.
+
+`cancelled` is distinct from `timeout` (the harness was given its whole deadline
+and exceeded it): nothing was exceeded, the run was stopped. A **second**
+`SIGINT`/`SIGTERM` exits immediately with `130` without waiting for teardown.
+
+Library consumers get the same guarantee without touching process signals:
+`oneharness_core::io::cancel::CancelToken` is passed to
+`runner::run_job_cancellable`, `run_job_streaming_cancellable`, or
+`run_jobs_with_cancel`, and cancelling it tears the tree down through the same
+path. `io::cancel::install_signal_cancel()` is the opt-in that wires the host's
+signals to it (the CLI calls it for `run`).
 
 ### The result envelope vs. the normalized signals
 
@@ -805,9 +833,10 @@ Alongside it, oneharness lifts a few **best-effort** signals out of each
 harness's bespoke stdout so consumers don't have to parse it per harness. Each is
 `null`/empty when it can't be found, is **never fabricated**, and (where there's
 more than one possible method) records how it was found. This also applies to
-bytes captured before a `timeout`: the result stays `timeout`, while complete
-records can still populate `text`, `usage`, `session_id`, and `events` (a
-truncated final JSONL record is ignored rather than invalidating earlier ones):
+bytes captured before a `timeout` or a cancellation: the result stays
+`timeout`/`cancelled`, while complete records can still populate `text`, `usage`,
+`session_id`, and `events` (a truncated final JSONL record is ignored rather than
+invalidating earlier ones):
 
 - `text` / `text_source` — the final assistant message, normalized to one clean
   string across harnesses (`json:result` for Claude Code's terminal event,
@@ -839,6 +868,22 @@ truncated final JSONL record is ignored rather than invalidating earlier ones):
   Each supported harness has a live drift alarm (`oh_cache_assert` in its
   `scripts/e2e-<id>.sh`): a second run within the cache TTL must surface
   `cache_read_tokens > 0`, proving the extraction matches the real output shape.
+- `telemetry` — the measured execution telemetry for the run, `null` when nothing
+  was measured (never estimated). Internally tagged by `source`, so a consumer
+  switches on one value:
+  - `provider_measured` — the harness's transcript carried a complete provider
+    trace: `{ started_at, finished_at, model_ms, tool_ms,
+    time_to_first_token_ms }`, the model/tool split of the run's wall clock.
+  - `stdout_observed` — `{ tool_ms }`, the union of tool intervals observed at
+    the stdout pipe, for a harness whose transcript has no provider trace to
+    split. Not provider-measured, and with no model-latency counterpart.
+  - `partial_invocation` — `{ started_at }` only: a trace-capable run that failed
+    before its trace completed. When it began is measured; a split read out of a
+    transcript that stopped mid-turn would not be.
+
+  The same numbers are frozen into the history record; the field is on the result
+  so a consumer reading a run it just made never has to re-open the history file
+  for them.
 - `session_id` — the handle a harness exposes for continuation, read from the
   snake_case `session_id` (Claude Code, Cursor, Qwen), camelCase `sessionID`
   (OpenCode), or Codex's `thread_id`; feed it back via `run --resume <session>`

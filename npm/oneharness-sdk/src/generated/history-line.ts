@@ -10,7 +10,7 @@ export type HistoryLine =
           harness: string;
           harness_id?: string | null | undefined;
           run_id: string;
-          schema_version: "1.2" | "1.3";
+          schema_version: "1.2" | "1.3" | "1.4";
           type: "event";
           variant?: string | null | undefined;
           [k: string]: unknown;
@@ -36,11 +36,11 @@ export type HistoryLine =
         }
       | ({
           error: string;
-          schema_version?: "1.3" | undefined;
+          schema_version?: "1.3" | "1.4" | undefined;
           [k: string]: unknown;
         } & (
           | {
-              status?: "nonzero" | "timeout" | "spawn-error" | "skipped" | undefined;
+              status?: "nonzero" | "timeout" | "cancelled" | "spawn-error" | "skipped" | undefined;
               [k: string]: unknown;
             }
           | {
@@ -49,6 +49,16 @@ export type HistoryLine =
             }
         ))
     ) &
+      (
+        | {
+            status?: "ok" | "nonzero" | "timeout" | "spawn-error" | "skipped" | "planned" | undefined;
+            [k: string]: unknown;
+          }
+        | {
+            schema_version?: "1.4" | undefined;
+            [k: string]: unknown;
+          }
+      ) &
       (
         | {
             duration_ms: number;
@@ -71,7 +81,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.0" | "1.1" | "1.2" | "1.3";
+            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4";
             session: string;
             session_id: string | null;
             started_at: string;
@@ -107,7 +117,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.0" | "1.1" | "1.2" | "1.3";
+            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4";
             session: string;
             session_id: string | null;
             started_at: string;
@@ -143,7 +153,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.2" | "1.3";
+            schema_version: "1.2" | "1.3" | "1.4";
             session: string;
             session_id: string | null;
             started_at?: never | undefined;
@@ -179,11 +189,11 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.0" | "1.1" | "1.2" | "1.3";
+            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4";
             session: string;
             session_id: string | null;
             started_at?: never | undefined;
-            status: "nonzero" | "timeout" | "spawn-error" | "skipped";
+            status: "nonzero" | "timeout" | "cancelled" | "spawn-error" | "skipped";
             text: string | null;
             text_source: string | null;
             time_to_first_token_ms?: never | undefined;
@@ -215,11 +225,11 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.3";
+            schema_version: "1.3" | "1.4";
             session: string;
             session_id: string | null;
             started_at: string;
-            status: "nonzero" | "timeout" | "spawn-error" | "skipped";
+            status: "nonzero" | "timeout" | "cancelled" | "spawn-error" | "skipped";
             text: string | null;
             text_source: string | null;
             time_to_first_token_ms?: number | null | undefined;
@@ -251,7 +261,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.0" | "1.1" | "1.2" | "1.3";
+            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4";
             session: string;
             session_id: string | null;
             started_at?: never | undefined;
@@ -293,7 +303,7 @@ export type PermissionMode = "read-only" | "plan" | "default" | "edit" | "auto" 
 /**
  * The outcome of attempting to run one harness.
  */
-export type Status = "ok" | "nonzero" | "timeout" | "spawn-error" | "skipped" | "planned";
+export type Status = "ok" | "nonzero" | "timeout" | "cancelled" | "spawn-error" | "skipped" | "planned";
 
 /**
  * One normalized action a harness took, harness-agnostic so a single consumer

@@ -209,6 +209,7 @@ pub struct RunResult {
     pub failure_kind: Option<FailureKind>,
     /// Where `failure_kind` was read (`stderr`/`stdout`, or `config:env_from`
     /// for a candidate refused before spawning); `null` when absent.
+    // llmlint: ignore[invalid_states_unrepresentable] This is a stable serialized string in the JSON/SDK contract, deliberately open so a new reading site is an additive value rather than a generated-type change for every consumer; the values are produced only by `domain::signals` and the pre-spawn refusal, and the report round-trip tests pin them.
     pub failure_kind_source: Option<String>,
     /// Raw captured stdout (empty for skipped/planned).
     pub stdout: String,

@@ -2159,6 +2159,7 @@ fn unprovisioned_result(
         available: true,
         status: Status::Skipped,
         failure_kind: Some(signals::FailureKind::Auth),
+        // llmlint: ignore[invalid_states_unrepresentable] `failure_kind_source` is an open serialized string by contract (see its field doc); this is its one pre-spawn producer, pinned by the integration test that reads the emitted value.
         failure_kind_source: Some("config:env_from".to_string()),
         error: Some(format!(
             "`{target}` (from `{source}`) points at `{path}`, which does not exist, so this \

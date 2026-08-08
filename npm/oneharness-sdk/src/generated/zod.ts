@@ -2,13 +2,11 @@
 
 import { z } from "zod";
 import type {
-  AbsolutePath,
   ActionEvent,
   BatchReport,
   ControlEvent,
   ControlReason,
   ControlReport,
-  ControlShape,
   ControlVerb,
   FailureKind,
   FallThrough,
@@ -36,7 +34,9 @@ import type { HistoryLabels, PermissionMode, RunOptions } from "./options.js";
 import type { HarnessInfo, ListReport, ModeInfo, VariantInfo } from "./registry.js";
 import type { RunStreamEnvelope } from "./run-stream-envelope.js";
 
+export type AbsolutePath = ControlReport["socket"];
 export type BatchStrategy = BatchReport["strategy"];
+export type ControlShape = ControlReport["mechanism"];
 export type ModeHeadless = ModeInfo["headless"];
 export type SessionPhase = SessionReport["phase"];
 

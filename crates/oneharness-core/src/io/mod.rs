@@ -7,7 +7,10 @@ pub mod control;
 pub mod detect;
 pub mod history;
 pub mod hooks;
-pub mod http;
+// The raw HTTP client is an implementation detail of the controlled-turn
+// driver, not a surface a consumer of this crate should depend on: it exists
+// only because these two control servers speak HTTP.
+pub(crate) mod http;
 pub mod http_turn;
 mod process;
 pub mod runner;

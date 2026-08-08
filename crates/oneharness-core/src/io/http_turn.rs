@@ -394,8 +394,8 @@ fn expect_ok(
     } else {
         Err(io::Error::other(format!(
             "could not {what} ({} {} answered {}): {}",
-            request.method.as_str(),
-            request.path,
+            request.method().as_str(),
+            request.path(),
             response.status,
             response.body.trim()
         )))

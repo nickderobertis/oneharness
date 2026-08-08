@@ -48,23 +48,72 @@ impl Method {
 }
 
 /// One HTTP request to a control server: everything but the socket.
+///
+/// Constructible only by this module's route functions, so a path is always
+/// assembled from a constant plus already-validated ids — there is no way for a
+/// caller to put a space or a CRLF on the request line, which would split it
+/// into a second request the server would answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpRequest {
-    pub method: Method,
-    pub path: String,
-    /// The JSON body, already serialized. `None` sends no body at all, which is
-    /// not the same as `{}` for a route that validates its shape.
-    pub body: Option<String>,
+    method: Method,
+    path: String,
+    body: Option<String>,
 }
 
 impl HttpRequest {
     fn new(method: Method, path: String, body: Option<Value>) -> Self {
+        debug_assert!(
+            is_request_target(&path),
+            "a route function built an unusable request path: {path}"
+        );
         HttpRequest {
             method,
             path,
             body: body.map(|value| value.to_string()),
         }
     }
+
+    /// The method to put on the request line.
+    #[must_use]
+    pub fn method(&self) -> Method {
+        self.method
+    }
+
+    /// The origin-form target to put on the request line.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// The JSON body, already serialized. `None` sends no body at all, which is
+    /// not the same as `{}` for a route that validates its shape.
+    #[must_use]
+    pub fn body(&self) -> Option<&str> {
+        self.body.as_deref()
+    }
+
+    /// A request built directly, so the socket layer can be exercised against a
+    /// server double. Test-only: in a real run the route functions above are
+    /// the only way a request exists, which is what keeps a raw path off the
+    /// request line.
+    #[cfg(test)]
+    #[must_use]
+    pub fn for_test(method: Method, path: &str, body: Option<&str>) -> Self {
+        HttpRequest {
+            method,
+            path: path.to_string(),
+            body: body.map(str::to_string),
+        }
+    }
+}
+
+/// Whether `path` is an origin-form target that cannot corrupt a request line.
+fn is_request_target(path: &str) -> bool {
+    path.starts_with('/')
+        && !path.is_empty()
+        && path
+            .chars()
+            .all(|c| !c.is_whitespace() && !c.is_control() && c.is_ascii())
 }
 
 /// What one line of a server's event stream tells the driver.
@@ -683,8 +732,7 @@ mod tests {
         // happened to start in.
         let opencode: Value = serde_json::from_str(
             open_request(HttpShape::Opencode, "/work/here", None)
-                .body
-                .as_ref()
+                .body()
                 .unwrap(),
         )
         .unwrap();
@@ -695,8 +743,7 @@ mod tests {
                 "/work/here",
                 Some(&ClientId::new("c").unwrap()),
             )
-            .body
-            .as_ref()
+            .body()
             .unwrap(),
         )
         .unwrap();
@@ -709,8 +756,8 @@ mod tests {
         // when it is got wrong.
         let client = ClientId::new("client-9").unwrap();
         let open = open_request(HttpShape::Crush, "/work", Some(&client));
-        assert_eq!(open.path, "/v1/workspaces");
-        let body: Value = serde_json::from_str(open.body.as_ref().unwrap()).unwrap();
+        assert_eq!(open.path(), "/v1/workspaces");
+        let body: Value = serde_json::from_str(open.body().unwrap()).unwrap();
         assert_eq!(body["client_id"], "client-9");
         assert_eq!(body["path"], "/work");
 
@@ -722,9 +769,9 @@ mod tests {
             skip_permissions_request(HttpShape::Crush, &address, true).unwrap(),
         ] {
             assert!(
-                request.path.contains("client_id=client-9"),
+                request.path().contains("client_id=client-9"),
                 "{} lost the client id",
-                request.path
+                request.path()
             );
         }
     }
@@ -733,11 +780,11 @@ mod tests {
     fn each_shape_addresses_its_own_routes() {
         let crush = crush_address();
         assert_eq!(
-            prompt_request(HttpShape::Crush, &crush, "hi").path,
+            prompt_request(HttpShape::Crush, &crush, "hi").path(),
             "/v1/workspaces/ws-1/agent?client_id=client-9"
         );
         assert_eq!(
-            interrupt_request(HttpShape::Crush, &crush).path,
+            interrupt_request(HttpShape::Crush, &crush).path(),
             "/v1/workspaces/ws-1/agent/sessions/ses-1/cancel?client_id=client-9"
         );
         // The session is created on the workspace, not under `/agent`.
@@ -747,17 +794,17 @@ mod tests {
             &ClientId::new("client-9").unwrap(),
         );
         assert_eq!(
-            session.unwrap().path,
+            session.unwrap().path(),
             "/v1/workspaces/ws-1/sessions?client_id=client-9"
         );
 
         let opencode = opencode_address();
         assert_eq!(
-            prompt_request(HttpShape::Opencode, &opencode, "hi").path,
+            prompt_request(HttpShape::Opencode, &opencode, "hi").path(),
             "/api/session/ses_abc/prompt"
         );
         assert_eq!(
-            interrupt_request(HttpShape::Opencode, &opencode).path,
+            interrupt_request(HttpShape::Opencode, &opencode).path(),
             "/api/session/ses_abc/interrupt"
         );
         // Opencode's open request already creates the session.
@@ -773,8 +820,7 @@ mod tests {
     fn the_prompt_rides_each_servers_own_field() {
         let opencode: Value = serde_json::from_str(
             prompt_request(HttpShape::Opencode, &opencode_address(), "do it")
-                .body
-                .as_ref()
+                .body()
                 .unwrap(),
         )
         .unwrap();
@@ -782,8 +828,7 @@ mod tests {
 
         let crush: Value = serde_json::from_str(
             prompt_request(HttpShape::Crush, &crush_address(), "do it")
-                .body
-                .as_ref()
+                .body()
                 .unwrap(),
         )
         .unwrap();
@@ -818,13 +863,16 @@ mod tests {
         };
         let reply =
             permission_reply_request(HttpShape::Opencode, &opencode_address(), &ask, true).unwrap();
-        assert_eq!(reply.path, "/api/session/ses_other/permission/per_1/reply");
-        let body: Value = serde_json::from_str(reply.body.as_ref().unwrap()).unwrap();
+        assert_eq!(
+            reply.path(),
+            "/api/session/ses_other/permission/per_1/reply"
+        );
+        let body: Value = serde_json::from_str(reply.body().unwrap()).unwrap();
         assert_eq!(body["reply"], "once");
         let denied =
             permission_reply_request(HttpShape::Opencode, &opencode_address(), &ask, false)
                 .unwrap();
-        let body: Value = serde_json::from_str(denied.body.as_ref().unwrap()).unwrap();
+        let body: Value = serde_json::from_str(denied.body().unwrap()).unwrap();
         assert_eq!(body["reply"], "reject");
 
         let event = classify_event(
@@ -837,10 +885,10 @@ mod tests {
         let reply =
             permission_reply_request(HttpShape::Crush, &crush_address(), &ask, true).unwrap();
         assert_eq!(
-            reply.path,
+            reply.path(),
             "/v1/workspaces/ws-1/permissions/grant?client_id=client-9"
         );
-        let body: Value = serde_json::from_str(reply.body.as_ref().unwrap()).unwrap();
+        let body: Value = serde_json::from_str(reply.body().unwrap()).unwrap();
         assert_eq!(body["action"], "allow");
         // Crush wants the request echoed back, not referenced by id.
         assert_eq!(body["permission"]["tool_name"], "bash");
@@ -945,6 +993,57 @@ mod tests {
             sse.feed(b": comment\n\ndata: one\ndata: two\n"),
             vec!["one".to_string(), "two".to_string()]
         );
+    }
+
+    #[test]
+    fn every_route_this_module_builds_is_safe_on_a_request_line() {
+        // A path is only ever a constant plus already-validated ids, and this is
+        // the property that follows: no space or control character can split the
+        // request line into a second request the server would also answer.
+        let crush = crush_address();
+        let opencode = opencode_address();
+        let ask = PermissionAsk {
+            id: ResourceId::new("per_1").unwrap(),
+            session: None,
+            payload: Value::Null,
+        };
+        let mut routes = vec![
+            open_request(
+                HttpShape::Crush,
+                "/a b/../c",
+                Some(&ClientId::new("c").unwrap()),
+            ),
+            open_request(HttpShape::Opencode, "/a b/../c", None),
+            readiness_request(HttpShape::Crush),
+            readiness_request(HttpShape::Opencode),
+        ];
+        for (shape, address) in [(HttpShape::Crush, &crush), (HttpShape::Opencode, &opencode)] {
+            routes.push(prompt_request(
+                shape,
+                address,
+                "a prompt with spaces\nand a newline",
+            ));
+            routes.push(interrupt_request(shape, address));
+            routes.push(event_stream_request(shape, address));
+            routes.extend(skip_permissions_request(shape, address, true));
+            routes.extend(permission_reply_request(shape, address, &ask, true));
+        }
+        routes.extend(session_request(
+            HttpShape::Crush,
+            crush.workspace.as_ref().unwrap(),
+            &ClientId::new("c").unwrap(),
+        ));
+        for route in routes {
+            assert!(
+                is_request_target(route.path()),
+                "`{}` is not usable on a request line",
+                route.path()
+            );
+        }
+        // The property itself, so the check above cannot pass vacuously.
+        assert!(!is_request_target("/has space"));
+        assert!(!is_request_target("/has\r\nCRLF"));
+        assert!(!is_request_target("relative"));
     }
 
     #[test]

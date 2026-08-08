@@ -255,12 +255,12 @@ fn write_request(
         ServerAddress::Tcp { port } => format!("127.0.0.1:{}", port.get()),
         _ => "localhost".to_string(),
     };
-    let body = request.body.clone().unwrap_or_default();
+    let body = request.body().unwrap_or_default().to_string();
     let head = format!(
         "{} {} HTTP/1.1\r\nHost: {host}\r\nAccept: text/event-stream, application/json\r\n\
          Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        request.method.as_str(),
-        request.path,
+        request.method().as_str(),
+        request.path(),
         body.len()
     );
     stream.write_all(head.as_bytes())?;
@@ -320,11 +320,11 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n10\r\n{\"id\":\"ses_01\"}\r\n\r\n0\r\n\r\n",
         );
         let response = client(port)
-            .send(&HttpRequest {
-                method: Method::Post,
-                path: "/api/session".to_string(),
-                body: Some("{}".to_string()),
-            })
+            .send(&HttpRequest::for_test(
+                Method::Post,
+                "/api/session",
+                Some("{}"),
+            ))
             .unwrap();
         assert_eq!(response.status, 200);
         assert_eq!(response.body.trim(), r#"{"id":"ses_01"}"#);
@@ -346,11 +346,11 @@ mod tests {
             b"HTTP/1.1 404 Not Found\r\nContent-Length: 21\r\n\r\n404 page not found\r\n\r\n",
         );
         let response = client(port)
-            .send(&HttpRequest {
-                method: Method::Post,
-                path: "/v1/workspaces/x/agent/sessions".to_string(),
-                body: None,
-            })
+            .send(&HttpRequest::for_test(
+                Method::Post,
+                "/v1/workspaces/x/agent/sessions",
+                None,
+            ))
             .unwrap();
         assert_eq!(response.status, 404);
         assert!(!response.ok());
@@ -362,11 +362,7 @@ mod tests {
     fn an_answer_that_is_not_http_is_an_error_rather_than_an_empty_body() {
         let (port, server) = serve_once(b"this is not a response");
         let err = client(port)
-            .send(&HttpRequest {
-                method: Method::Get,
-                path: "/api/app".to_string(),
-                body: None,
-            })
+            .send(&HttpRequest::for_test(Method::Get, "/api/app", None))
             .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         let _ = server.join();
@@ -381,11 +377,7 @@ mod tests {
         );
         let mut stream = client(port)
             .open_stream(
-                &HttpRequest {
-                    method: Method::Get,
-                    path: "/api/event".to_string(),
-                    body: None,
-                },
+                &HttpRequest::for_test(Method::Get, "/api/event", None),
                 Duration::from_secs(5),
             )
             .unwrap();
@@ -406,11 +398,7 @@ mod tests {
         // The pairing is a type error waiting to happen otherwise: a stdio
         // mechanism's "address" is its pipes, which no HTTP client can reach.
         let err = HttpClient::new(ServerAddress::Stdio, Duration::from_secs(1))
-            .send(&HttpRequest {
-                method: Method::Get,
-                path: "/".to_string(),
-                body: None,
-            })
+            .send(&HttpRequest::for_test(Method::Get, "/", None))
             .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }

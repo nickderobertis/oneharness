@@ -273,6 +273,13 @@ pub struct ServerSpec {
     /// The argv appended to the harness binary to start the server (e.g.
     /// `["serve"]`, `["app-server"]`, `["acp"]`). Never includes the binary.
     pub launch: &'static [&'static str],
+    /// How the chosen address reaches the server's argv, with `{address}`
+    /// standing for the port or socket path (`["--port", "{address}"]`,
+    /// `["-H", "unix://{address}"]`). Separate from `launch` because the
+    /// address is picked per pool entry, not declared: two dispatches sharing a
+    /// key must reach the SAME running server, so the address can never be part
+    /// of what makes their keys differ.
+    pub address_args: &'static [&'static str],
     /// The environment variables whose *values* make two servers different
     /// state (codex's `CODEX_HOME`). Per-turn and per-thread settings — model,
     /// effort, cwd, sandbox/approval policy, instructions — are deliberately

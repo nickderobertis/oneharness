@@ -13,6 +13,7 @@ use oneharness_core::domain::control::{self, ControlReport, ControlShape};
 use oneharness_core::domain::dialogue::{Dialogue, DialogueConfig};
 use oneharness_core::domain::fallback::{self, RunMode};
 use oneharness_core::domain::harness::{self, BuildCtx, HarnessSpec, PromptDelivery};
+use oneharness_core::domain::http::HttpShape;
 use oneharness_core::domain::mock::{self, MockDelivery};
 use oneharness_core::domain::mode::{ModeHeadless, PermissionMode};
 use oneharness_core::domain::report::{
@@ -29,7 +30,9 @@ use oneharness_core::io::control as control_io;
 use oneharness_core::io::detect::{self, BinOverrides};
 use oneharness_core::io::history::{self, HistoryWriter};
 use oneharness_core::io::hooks::{self as hooks_io, HookSnapshot, Scope};
+use oneharness_core::io::http_turn;
 use oneharness_core::io::runner::{self, Job, NextRun, Outcome};
+use oneharness_core::io::server_pool;
 use oneharness_core::io::session as session_io;
 use std::path::PathBuf;
 
@@ -759,6 +762,29 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             }
         }
         (streamed_results, streamed.fallback)
+    } else if let Some((shape, listener)) = control_shape
+        .and_then(HttpShape::of)
+        .filter(|_| !args.print_command)
+        .zip(control_listener.as_ref())
+    {
+        // The third execution model: the harness CLI is never spawned at all.
+        // Its interrupt only reaches a turn the SERVER is running (driving one
+        // from the CLI was live-refuted for both harnesses), so oneharness
+        // submits the turn over HTTP and the socket's interrupt is one more
+        // request against that same session.
+        let prompt = control_prompt
+            .as_deref()
+            .expect("a control run always has one assembled prompt");
+        let results = run_http_controlled(
+            shape,
+            listener.handle_ref(),
+            plan,
+            prompt,
+            &control_cwd(args)?,
+            mode,
+            Duration::from_secs(timeout),
+        );
+        (results, None)
     } else if let Some(input) = controlled.as_ref().filter(|_| !jobs.is_empty()) {
         // One turn, one capture: `--schema` (the only thing that re-runs a job)
         // is refused alongside `--control` up front.
@@ -1916,6 +1942,168 @@ fn validate_control(
         }
     }
     Ok(Some(shape))
+}
+
+/// Drive one turn on a pooled control server over HTTP, and shape it into the
+/// ordinary result envelope.
+///
+/// This is the third execution model: nothing about the harness's own CLI run
+/// is involved, because its interrupt does not reach one (live-REFUTED for both
+/// harnesses). The recorded `command` is therefore the SERVER's launch argv —
+/// what oneharness actually ran — rather than a headless invocation that never
+/// happened.
+///
+/// Every failure here is a result, never a panic: a server that will not start
+/// or a route that refuses is `spawn_error`/`nonzero` with the reason in
+/// `error`, exactly like a harness that could not be spawned.
+fn run_http_controlled(
+    shape: HttpShape,
+    handle: &control_io::ControlHandle,
+    plan: Vec<Plan>,
+    prompt: &str,
+    cwd: &control::AbsolutePath,
+    mode: PermissionMode,
+    timeout: Duration,
+) -> Vec<RunResult> {
+    plan.into_iter()
+        .map(|entry| match entry {
+            Plan::Ready(result) => *result,
+            Plan::Pending {
+                spec,
+                bin,
+                output_format,
+                prompt: result_prompt,
+                model,
+                ..
+            } => {
+                let outcome =
+                    drive_http_turn(shape, handle, spec, &bin, prompt, cwd, mode, timeout);
+                let (command, capture, session_id) = match outcome {
+                    Ok((command, outcome, session_id)) => (command, outcome, Some(session_id)),
+                    Err(err) => (vec![bin.clone()], http_turn::TurnOutcome::failed(err), None),
+                };
+                let mut result = executed_result(
+                    spec,
+                    bin,
+                    command,
+                    output_format,
+                    &capture.to_capture(),
+                    None,
+                    1,
+                    result_prompt,
+                    model,
+                );
+                // The turn's own signals: the server's session id, and the text
+                // the event stream carried. Both `None` rather than guessed when
+                // the turn produced neither.
+                result.session_id = session_id;
+                if let Some(text) = capture.text {
+                    result.text = Some(text);
+                    result.text_source = Some(format!("http:{}", shape.shape().as_str()));
+                }
+                result
+            }
+        })
+        .collect()
+}
+
+/// Bring up the harness's control server (reusing a pooled one where a live
+/// dispatch already has it), open a session on it, and run the turn.
+#[allow(clippy::too_many_arguments)] // llmlint: ignore[suppressions_justified] Every parameter is one input the server bring-up genuinely needs — harness identity, address, prompt, and posture — and grouping them into a struct used at one call site would hide the list rather than shorten it.
+fn drive_http_turn(
+    shape: HttpShape,
+    handle: &control_io::ControlHandle,
+    spec: &'static HarnessSpec,
+    bin: &str,
+    prompt: &str,
+    cwd: &control::AbsolutePath,
+    mode: PermissionMode,
+    timeout: Duration,
+) -> Result<(Vec<String>, http_turn::TurnOutcome, String), String> {
+    let server = spec.server.ok_or_else(|| {
+        format!(
+            "`{}` declares HTTP control but no server to run it",
+            spec.id
+        )
+    })?;
+    let root = server_pool::resolve_root(None)
+        .ok_or_else(|| "no state directory to keep the control-server pool in".to_string())?;
+    // Per-turn settings are deliberately not in the key: they are negotiated on
+    // the wire, and keying on them would start a fresh server per dispatch.
+    let key_env: Vec<(String, Option<String>)> = server
+        .key_env
+        .iter()
+        .map(|name| ((*name).to_string(), std::env::var(name).ok()))
+        .collect();
+    let key = control::pool_key(spec.id, &key_env, &[]);
+    let address = candidate_address(server.transport, &root, &key)?;
+    let plan = server_pool::LaunchPlan::new(bin, &server, &[], address, Vec::new())
+        .map_err(|err| format!("could not plan the control server launch: {err}"))?;
+    let lease = server_pool::acquire(&root, &key, &plan, server_pool::DEFAULT_LINGER)
+        .map_err(|err| format!("could not start the control server: {err}"))?;
+    let address = lease.record().address.clone();
+    let command = lease.record().argv.as_slice().to_vec();
+
+    http_turn::await_ready(shape, &address, Duration::from_secs(90))
+        .map_err(|err| format!("{err}"))?;
+    let turn = http_turn::open(
+        shape,
+        address,
+        &cwd.to_string(),
+        mode,
+        &http_turn::client_id(spec.id),
+    )
+    .map_err(|err| format!("{err}"))?;
+    let session_id = turn.session_id().to_string();
+
+    // Addressable from the socket thread only while the turn is in flight, so
+    // an interrupt before or after it is an honest `no_active_turn`.
+    handle.begin_http_turn(turn.clone());
+    let outcome = http_turn::run(&turn, prompt, mode, timeout);
+    handle.end_http_turn();
+    // The lease is released here (not at process exit), so a server nobody is
+    // using can be reclaimed once its linger expires.
+    drop(lease);
+    Ok((command, outcome, session_id))
+}
+
+/// Where a freshly launched server should listen. A reused one keeps its own
+/// address; this is only the candidate the pool uses if it has to start one.
+fn candidate_address(
+    transport: control::ServerTransport,
+    root: &std::path::Path,
+    key: &control::PoolKey,
+) -> Result<control::ServerAddress, String> {
+    match transport {
+        control::ServerTransport::Tcp => {
+            // Ask the OS for a free port by binding and immediately dropping:
+            // the same trick every test harness uses, and the only way to pick
+            // one that is not already taken.
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(|err| {
+                format!("could not find a free port for the control server: {err}")
+            })?;
+            let port = listener
+                .local_addr()
+                .map_err(|err| format!("could not read the chosen control-server port: {err}"))?
+                .port();
+            control::Port::new(port)
+                .map(|port| control::ServerAddress::Tcp { port })
+                .map_err(|err| format!("the OS offered no usable port: {err}"))
+        }
+        control::ServerTransport::UnixSocket => {
+            let path = root.join(key.as_str()).join("server.sock");
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|err| format!("could not prepare the control-server socket: {err}"))?;
+            }
+            control::AbsolutePath::new(&path)
+                .map(|path| control::ServerAddress::UnixSocket { path })
+                .map_err(|err| format!("the control-server socket path is unusable: {err}"))
+        }
+        control::ServerTransport::Stdio => {
+            Err("a stdio server is not reached over HTTP".to_string())
+        }
+    }
 }
 
 /// Take the normalized signals a protocol-driven control run produced from the

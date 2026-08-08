@@ -236,6 +236,19 @@ impl LaunchPlan {
         }
         let mut argv = vec![bin.to_string()];
         argv.extend(spec.launch.iter().map(|a| (*a).to_string()));
+        // The address the pool picked, in the spelling this server's CLI wants.
+        // Rendered here rather than by the caller so a pool entry's argv always
+        // names the address its record says the server is reachable at.
+        let rendered = match &address {
+            ServerAddress::Tcp { port } => port.get().to_string(),
+            ServerAddress::UnixSocket { path } => path.to_string(),
+            ServerAddress::Stdio => String::new(),
+        };
+        argv.extend(
+            spec.address_args
+                .iter()
+                .map(|arg| arg.replace("{address}", &rendered)),
+        );
         argv.extend(overrides.iter().cloned());
         let argv = LaunchArgv::new(argv)
             .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
@@ -604,6 +617,7 @@ mod tests {
             "sleep",
             &ServerSpec {
                 launch: &["120"],
+                address_args: &[],
                 key_env: &[],
                 transport: ServerTransport::Stdio,
             },
@@ -643,6 +657,7 @@ mod tests {
     fn launch_plan_appends_declared_args_then_overrides() {
         let spec = ServerSpec {
             launch: &["serve"],
+            address_args: &["--port", "{address}"],
             key_env: &[],
             transport: ServerTransport::Tcp,
         };
@@ -652,14 +667,24 @@ mod tests {
         let plan = LaunchPlan::new(
             "opencode",
             &spec,
-            &["--port".to_string(), "7777".to_string()],
+            &["--log-level".to_string(), "ERROR".to_string()],
             address.clone(),
             Vec::new(),
         )
         .unwrap();
+        // The address the POOL picked is rendered onto the argv, so an entry's
+        // command always names the address its record says it answers on;
+        // caller overrides follow it.
         assert_eq!(
             plan.argv().as_slice(),
-            ["opencode", "serve", "--port", "7777"]
+            [
+                "opencode",
+                "serve",
+                "--port",
+                "7777",
+                "--log-level",
+                "ERROR"
+            ]
         );
         assert_eq!(plan.address(), &address);
 

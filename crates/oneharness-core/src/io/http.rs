@@ -126,19 +126,42 @@ pub struct EventStream {
     ready: Vec<String>,
 }
 
+/// What one poll of an event stream found.
+///
+/// Quiet and closed are deliberately different answers: a turn that is thinking
+/// produces no events for many seconds, and treating that as the end of the
+/// stream would end the run while the agent was still working.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamPoll {
+    Event(String),
+    /// Nothing arrived within the read timeout; the stream is still open.
+    Idle,
+    /// The server closed the stream.
+    Closed,
+}
+
 impl EventStream {
-    /// The next event payload, or `None` once the server closed the stream (or
-    /// went quiet past the timeout, which for a control stream is the same
-    /// thing: there is nothing more to read).
-    pub fn next_event(&mut self) -> Option<String> {
+    /// The next event payload, or why there is none yet.
+    pub fn poll(&mut self) -> StreamPoll {
         loop {
             if !self.ready.is_empty() {
-                return Some(self.ready.remove(0));
+                return StreamPoll::Event(self.ready.remove(0));
             }
             let mut buffer = [0u8; 8192];
-            let read = self.stream.read(&mut buffer).ok()?;
+            let read = match self.stream.read(&mut buffer) {
+                Ok(read) => read,
+                Err(err)
+                    if matches!(
+                        err.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    return StreamPoll::Idle
+                }
+                Err(_) => return StreamPoll::Closed,
+            };
             if read == 0 {
-                return None;
+                return StreamPoll::Closed;
             }
             let bytes = &buffer[..read];
             if !self.head_seen {
@@ -347,11 +370,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            stream.next_event().as_deref(),
-            Some(r#"{"type":"session.idle"}"#)
+            stream.poll(),
+            StreamPoll::Event(r#"{"type":"session.idle"}"#.to_string())
         );
-        assert_eq!(stream.next_event().as_deref(), Some(r#"{"a":true}"#));
-        assert_eq!(stream.next_event(), None);
+        assert_eq!(
+            stream.poll(),
+            StreamPoll::Event(r#"{"a":true}"#.to_string())
+        );
+        assert_eq!(stream.poll(), StreamPoll::Closed);
         let _ = server.join();
     }
 

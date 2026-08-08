@@ -8,6 +8,7 @@ pub mod detect;
 pub mod history;
 pub mod hooks;
 pub mod http;
+pub mod http_turn;
 mod process;
 pub mod runner;
 pub mod server_pool;

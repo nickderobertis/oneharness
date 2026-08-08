@@ -23,7 +23,9 @@ use crate::domain::control::{
     ControlVerb,
 };
 use crate::domain::dialogue::Dialogue;
+use crate::domain::http::HttpShape;
 use crate::domain::usage::UtcInstant;
+use crate::io::http_turn::HttpTurn;
 
 /// How long a client waits for a run to answer before giving up. Generous
 /// enough for a busy run, short enough that a wedged peer is not a hang.
@@ -75,6 +77,11 @@ pub struct ControlHandle {
     /// paths that touch both (serving an interrupt, advancing on a line) can
     /// never deadlock against each other.
     dialogue: Mutex<Option<Dialogue>>,
+    /// The live HTTP turn, for a mechanism whose interrupt is a request to a
+    /// control server rather than a frame on any stdin. `Some` only between the
+    /// turn opening and ending, which is exactly the window in which there is
+    /// something to abort.
+    http: Mutex<Option<HttpTurn>>,
 }
 
 impl ControlHandle {
@@ -92,7 +99,27 @@ impl ControlHandle {
             events: Mutex::new(Vec::new()),
             requests: Mutex::new(0),
             dialogue: Mutex::new(dialogue),
+            http: Mutex::new(None),
         }
+    }
+
+    /// Bind the live HTTP turn this handle interrupts. Called once the session
+    /// exists on the control server — before that there is no turn to address,
+    /// and `interrupt` correctly answers `no_active_turn`.
+    pub fn begin_http_turn(&self, turn: HttpTurn) {
+        *self
+            .http
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(turn);
+    }
+
+    /// Release the HTTP turn: it is over, so a later interrupt is
+    /// `no_active_turn` rather than a request against a finished session.
+    pub fn end_http_turn(&self) {
+        *self
+            .http
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 
     /// The frames that open the turn: a dialogue's handshake, or the prompt
@@ -220,6 +247,29 @@ impl ControlHandle {
     }
 
     fn interrupt(&self) -> ControlResponse {
+        // A mechanism whose turn was submitted over HTTP is aborted the same
+        // way: one more request against the same session. There is no stdin in
+        // this path at all — the server is not even this process's child.
+        if HttpShape::of(self.shape).is_some() {
+            let turn = self
+                .http
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            return match turn {
+                Some(turn) => match turn.interrupt() {
+                    Ok(()) => ControlResponse::served(self.shape),
+                    Err(err) => ControlResponse::refused(
+                        format!("could not deliver the interrupt to the control server: {err}"),
+                        ControlReason::NotRunning,
+                    ),
+                },
+                None => ControlResponse::refused(
+                    "the run is alive but no turn is in flight",
+                    ControlReason::NoActiveTurn,
+                ),
+            };
+        }
         let frames = {
             let mut dialogue = self.dialogue();
             match dialogue.as_mut() {

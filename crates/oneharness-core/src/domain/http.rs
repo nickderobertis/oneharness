@@ -53,6 +53,13 @@ pub enum TurnEvent {
     /// The server is blocked on a permission decision and will not proceed
     /// until this exact request is answered.
     PermissionRequest(PermissionAsk),
+    /// The server admitted the prompt: the turn is now genuinely in flight.
+    ///
+    /// Load-bearing for opencode, which announces idleness whenever the session
+    /// is idle — including in the moment between the stream opening and the
+    /// prompt being admitted. Without this the first idle ends the run in under
+    /// a second, before the agent has done anything.
+    Started,
     /// Assistant text to accumulate.
     Text(String),
     /// The turn ended, however it ended (completed, failed, or cancelled).
@@ -193,9 +200,14 @@ pub fn permits_action(mode: PermissionMode) -> bool {
 #[must_use]
 pub fn open_request(shape: HttpShape, cwd: &str, client: Option<&str>) -> HttpRequest {
     match shape {
-        HttpShape::Opencode => {
-            HttpRequest::new("POST", "/api/session".to_string(), Some(json!({})))
-        }
+        // The session names its own working directory, so the server can be
+        // shared by dispatches in different projects — the cwd stays a per-turn
+        // setting and never widens the pool key.
+        HttpShape::Opencode => HttpRequest::new(
+            "POST",
+            "/api/session".to_string(),
+            Some(json!({"location": {"directory": cwd}})),
+        ),
         // The workspace is where crush's `client_id` travels in the BODY.
         HttpShape::Crush => HttpRequest::new(
             "POST",
@@ -351,6 +363,17 @@ pub fn permission_reply_request(
     }
 }
 
+/// A cheap request that answers as soon as the server is up, for the readiness
+/// wait after a launch. Any HTTP answer at all proves it is listening — the
+/// status does not matter, only that something spoke HTTP back.
+#[must_use]
+pub fn readiness_request(shape: HttpShape) -> HttpRequest {
+    match shape {
+        HttpShape::Opencode => HttpRequest::new("GET", "/api/app".to_string(), None),
+        HttpShape::Crush => HttpRequest::new("GET", "/v1/health".to_string(), None),
+    }
+}
+
 /// The event stream to follow for this turn.
 #[must_use]
 pub fn event_stream_request(shape: HttpShape, address: &TurnAddress) -> HttpRequest {
@@ -401,7 +424,12 @@ fn classify_opencode(kind: &str, value: &Value) -> TurnEvent {
                 None => TurnEvent::Ignored,
             }
         }
+        // Only the end of a turn that STARTED: opencode announces idleness
+        // whenever the session is idle, including before the prompt is
+        // admitted, and reading that as terminal ended every run in under a
+        // second. The driver holds this until it has seen `Started`.
         "session.idle" => TurnEvent::Finished,
+        "session.next.prompt.admitted" => TurnEvent::Started,
         "session.next.text.ended" => data
             .get("text")
             .and_then(Value::as_str)
@@ -432,6 +460,7 @@ fn classify_crush(kind: &str, value: &Value) -> TurnEvent {
         },
         // Emitted however the run ended — completed, errored, or cancelled.
         "run_complete" => TurnEvent::Finished,
+        "message" => TurnEvent::Started,
         _ => TurnEvent::Ignored,
     }
 }
@@ -592,6 +621,29 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_names_its_own_working_directory_on_the_shared_server() {
+        // Both servers are shared across dispatches, so a turn that did not say
+        // where it runs would do its work in whatever directory the server
+        // happened to start in.
+        let opencode: Value = serde_json::from_str(
+            open_request(HttpShape::Opencode, "/work/here", None)
+                .body
+                .as_ref()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(opencode["location"]["directory"], "/work/here");
+        let crush: Value = serde_json::from_str(
+            open_request(HttpShape::Crush, "/work/here", Some("c"))
+                .body
+                .as_ref()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(crush["path"], "/work/here");
+    }
+
+    #[test]
     fn crush_carries_its_client_id_in_the_body_then_the_query() {
         // The one detail that answers a bare `{"message":"invalid client_id"}`
         // when it is got wrong.
@@ -735,9 +787,20 @@ mod tests {
 
     #[test]
     fn the_end_of_a_turn_is_read_from_each_streams_own_document() {
+        // Opencode's idle event ends a turn only once one has STARTED: it fires
+        // before the prompt is admitted too, and a driver that acted on the
+        // first one ended every run in under a second.
         assert_eq!(
             classify_event(HttpShape::Opencode, r#"{"type":"session.idle","data":{}}"#),
             TurnEvent::Finished
+        );
+        // ...and only after the prompt was admitted, which is its own event.
+        assert_eq!(
+            classify_event(
+                HttpShape::Opencode,
+                r#"{"type":"session.next.prompt.admitted","data":{}}"#
+            ),
+            TurnEvent::Started
         );
         assert_eq!(
             classify_event(

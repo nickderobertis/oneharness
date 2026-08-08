@@ -8,7 +8,7 @@
 //! to drive each real CLI headlessly (deny prompts, pick the model, request a
 //! parseable format). Source new flags from a working driver, not by guessing.
 
-use crate::domain::control::{ControlShape, ServerSpec};
+use crate::domain::control::{ControlShape, ServerSpec, ServerTransport};
 use crate::domain::events::TelemetryTrace;
 use crate::domain::gate::DenyShape;
 use crate::domain::hooks::HookShape;
@@ -991,8 +991,13 @@ static REGISTRY: &[HarnessSpec] = &[
         // different measurement that answers nothing about headroom.
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::NoPlanQuota,
-        control: None,
-        server: None,
+        control: Some(ControlShape::OpencodeHttp),
+        server: Some(ServerSpec {
+            launch: &["serve"],
+            address_args: &["--port", "{address}"],
+            key_env: &[],
+            transport: ServerTransport::Tcp,
+        }),
         build_argv: argv_opencode,
     },
     HarnessSpec {
@@ -1253,8 +1258,13 @@ static REGISTRY: &[HarnessSpec] = &[
         // stats` is local SQLite spend-to-date, not headroom.
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::NoHeadroomReader,
-        control: None,
-        server: None,
+        control: Some(ControlShape::CrushHttp),
+        server: Some(ServerSpec {
+            launch: &["server"],
+            address_args: &["-H", "unix://{address}"],
+            key_env: &[],
+            transport: ServerTransport::UnixSocket,
+        }),
         build_argv: argv_crush,
     },
     HarnessSpec {

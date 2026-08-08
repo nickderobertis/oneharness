@@ -19400,6 +19400,113 @@ fn a_streamed_controlled_run_publishes_the_protocol_turns_own_signals() {
     let _ = std::fs::remove_dir_all(&cwd);
 }
 
+#[cfg(unix)]
+#[test]
+fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there() {
+    // The third execution model, end to end through the real CLI: the harness
+    // is never spawned as a run at all — oneharness leases its control server,
+    // opens a session on it, answers what the server blocks on, and a SEPARATE
+    // process aborts that same session.
+    let store = control_store_dir("http");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("http-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let log = store.join("server.log");
+    let pool = store.join("pool");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
+        // A pool root inside the test's own temp tree, so it can never reuse or
+        // disturb a real server on the developer's machine.
+        .env("XDG_STATE_HOME", pool.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--session",
+            "http",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("opencode"),
+            "--compact",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the HTTP controlled run");
+
+    wait_until("the control socket", || {
+        store.join("control").join("http.sock").exists()
+    });
+    // The server blocks on a permission decision; without an answer the turn
+    // never does any work and every assertion below would be vacuous.
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(&log)
+            .map(|text| text.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "http",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    assert_eq!(json_stdout(&interrupt)["mechanism"], "opencode-http");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+
+    let served = std::fs::read_to_string(&log).unwrap();
+    // The interrupt went to the SESSION's own route on the server, not to any
+    // process's stdin — there is no harness process here to write to.
+    assert!(
+        served
+            .lines()
+            .any(|line| line.starts_with("POST /api/session/ses_mock/interrupt")),
+        "{served}"
+    );
+    assert!(
+        served
+            .lines()
+            .any(|line| line.starts_with("POST /api/session/ses_mock/prompt")),
+        "{served}"
+    );
+
+    assert_eq!(report["control"]["mechanism"], "opencode-http");
+    assert_eq!(report["control"]["interrupts"][0]["outcome"], "served");
+    // The turn's own signals: the server's session id and the text its stream
+    // carried, plus the SERVER's launch argv as the command actually run.
+    assert_eq!(report["session"]["token"], "ses_mock");
+    assert_eq!(report["results"][0]["session_id"], "ses_mock");
+    assert_eq!(report["results"][0]["text"], "stopped");
+    assert_eq!(report["results"][0]["text_source"], "http:opencode-http");
+    let command = report["results"][0]["command"].as_array().unwrap();
+    assert_eq!(command[1], "serve", "{command:?}");
+    assert_eq!(command[2], "--port", "{command:?}");
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
 #[test]
 fn control_with_a_model_fan_out_is_a_usage_error() {
     // A fan-out multiplies the run into several (harness, model) units, and the

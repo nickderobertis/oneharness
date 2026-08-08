@@ -224,11 +224,18 @@ Use the `just` recipes; do not hand-roll equivalents.
   also becomes `--session`-capable only under `--control`
   (`session_capable_under`), because the id comes off the wire rather than out
   of an output format. A mechanism whose interrupt is an HTTP route on a
-  *separate server* (opencode, crush) needs a third execution model — the turn
-  submitted over that server, not through the harness's CLI — because
-  interrupting a CLI-driven run was live-REFUTED: opencode's `run --port` binds
-  nothing and `run --attach` leaves the server's `/api/session/active` empty
-  while the run works, so the route answers `2xx` and the turn carries on.
+  *separate server* (opencode, crush) uses a third execution model — the turn
+  submitted over that server (`domain::http` pure, `io::http`/`io::http_turn`
+  the sockets), never through the harness's CLI — because interrupting a
+  CLI-driven run was live-REFUTED: opencode's `run --port` binds nothing and
+  `run --attach` leaves the server's `/api/session/active` empty while the run
+  works, so the route answers `2xx` and the turn carries on. Three protocol
+  facts are load-bearing there: both servers block until the client answers a
+  permission request (as ACP does), opencode reports `session.idle` *before* the
+  prompt is admitted as well as after (acting on the first ends every run in
+  under a second — the turn ends on idle-after-admitted), and the working
+  directory is per turn on both, which is what keeps a shared server's pool key
+  from widening per dispatch.
   `gate <id>` is the odd one out: the runtime pre-tool gate an
   installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It

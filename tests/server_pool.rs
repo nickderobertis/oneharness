@@ -29,6 +29,7 @@ fn plan() -> LaunchPlan {
     LaunchPlan::new(
         "sleep",
         &ServerSpec {
+            address_args: &[],
             launch: &["120"],
             key_env: &[],
             transport: ServerTransport::Stdio,

@@ -343,6 +343,134 @@ fn run_native_descendant() -> ! {
     std::process::exit(0);
 }
 
+/// Act like an opencode-shaped HTTP control server: the third execution model,
+/// where the turn is submitted to a server rather than to a CLI.
+///
+/// Reproduces the two behaviors that decide whether the model works at all: the
+/// server blocks on a permission request until the client answers it, and it
+/// announces `session.idle` BEFORE the prompt is admitted as well as after the
+/// turn ends — so a driver that reads the first one ends the run having done
+/// nothing. The port comes off the argv the pool launched it with, exactly as
+/// `opencode serve --port N` takes it.
+fn run_http_control_server(log_path: &str) -> ! {
+    use std::io::{BufRead, Read};
+    let args: Vec<String> = std::env::args().collect();
+    let port: u16 = args
+        .windows(2)
+        .find(|w| w[0] == "--port")
+        .and_then(|w| w[1].parse().ok())
+        .unwrap_or(0);
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port))
+        .expect("the mock control server could not bind its port");
+    let log = std::sync::Arc::new(std::sync::Mutex::new(
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+            .expect("the mock control server could not open its log"),
+    ));
+    // Shared turn state: whether the prompt was admitted and whether the turn
+    // has been aborted. The event stream reads both.
+    let admitted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let aborted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    for connection in listener.incoming() {
+        let Ok(mut socket) = connection else { continue };
+        let log = std::sync::Arc::clone(&log);
+        let admitted = std::sync::Arc::clone(&admitted);
+        let aborted = std::sync::Arc::clone(&aborted);
+        std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(socket.try_clone().expect("clone"));
+            let mut request_line = String::new();
+            if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
+                return;
+            }
+            let mut length = 0usize;
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                    break;
+                }
+                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+                if header == "\r\n" {
+                    break;
+                }
+            }
+            let mut body = vec![0u8; length];
+            let _ = reader.read_exact(&mut body);
+            let line = request_line.trim().to_string();
+            {
+                let mut file = log.lock().unwrap_or_else(|e| e.into_inner());
+                let _ = writeln!(file, "{line} {}", String::from_utf8_lossy(&body));
+                let _ = file.flush();
+            }
+            let reply = |socket: &mut std::net::TcpStream, status: &str, body: &str| {
+                let _ = write!(
+                    socket,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.flush();
+            };
+            if line.starts_with("GET /api/event") {
+                // The stream a driver follows. The idle BEFORE admission is the
+                // trap: acting on it ends the run before any work happens.
+                let send = |socket: &mut std::net::TcpStream, payload: &str| {
+                    let _ = write!(socket, "data: {payload}\n\n");
+                    let _ = socket.flush();
+                };
+                let _ = write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: keep-alive\r\n\r\n"
+                );
+                send(&mut socket, "{\"type\":\"session.idle\",\"data\":{}}");
+                let mut asked = false;
+                loop {
+                    if admitted.load(std::sync::atomic::Ordering::SeqCst) && !asked {
+                        asked = true;
+                        send(
+                            &mut socket,
+                            "{\"type\":\"session.next.prompt.admitted\",\"data\":{}}",
+                        );
+                        send(
+                            &mut socket,
+                            "{\"type\":\"permission.requested\",\"data\":{\"id\":\"per_1\",\"sessionID\":\"ses_mock\"}}",
+                        );
+                    }
+                    if aborted.load(std::sync::atomic::Ordering::SeqCst) {
+                        send(
+                            &mut socket,
+                            "{\"type\":\"session.next.text.ended\",\"data\":{\"text\":\"stopped\"}}",
+                        );
+                        send(&mut socket, "{\"type\":\"session.idle\",\"data\":{}}");
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+            if line.starts_with("POST /api/session/") && line.contains("/interrupt") {
+                aborted.store(true, std::sync::atomic::Ordering::SeqCst);
+                reply(&mut socket, "204 No Content", "");
+            } else if line.starts_with("POST /api/session/") && line.contains("/prompt") {
+                admitted.store(true, std::sync::atomic::Ordering::SeqCst);
+                reply(&mut socket, "200 OK", "{\"data\":{\"admittedSeq\":1}}");
+            } else if line.starts_with("POST /api/session/") && line.contains("/permission/") {
+                let mut file = log.lock().unwrap_or_else(|e| e.into_inner());
+                let _ = writeln!(file, "PERMISSION_ANSWERED");
+                let _ = file.flush();
+                reply(&mut socket, "200 OK", "{}");
+            } else if line.starts_with("POST /api/session") {
+                reply(&mut socket, "200 OK", "{\"data\":{\"id\":\"ses_mock\"}}");
+            } else {
+                reply(&mut socket, "200 OK", "{}");
+            }
+        });
+    }
+    std::process::exit(0);
+}
+
 /// Act like an ACP server: the protocol `copilot --acp` and `goose acp` speak,
 /// including the two behaviors that decide whether a turn works at all or
 /// silently never starts — a mandatory `session/request_permission`, and a
@@ -581,6 +709,10 @@ pub fn run() -> ! {
 
     if let Ok(path) = std::env::var("MOCK_ACP_LOG") {
         run_acp_server(&path);
+    }
+
+    if let Ok(path) = std::env::var("MOCK_HTTP_CONTROL_LOG") {
+        run_http_control_server(&path);
     }
 
     if let Ok(count) = std::env::var("MOCK_REPLY_AFTER_LINES") {

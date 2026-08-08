@@ -1120,8 +1120,8 @@ that is only probe-verified is **not** declared in the registry, so
 | Codex | `codex-app-server` | `turn/interrupt {threadId,turnId}` over the `codex app-server` JSON-RPC stdio protocol | **LIVE** through oneharness |
 | Copilot | `acp-cancel` | The ACP `session/cancel` **notification** over `copilot --acp` | **LIVE** through oneharness |
 | Goose | `acp-cancel` | The same ACP `session/cancel` **notification** over `goose acp` | **LIVE** through oneharness |
-| OpenCode | — | `POST /api/session/{id}/interrupt` against `opencode serve` | REFUTED for a CLI-driven run; see below |
-| Crush | — | `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against `crush server` | UNVERIFIED — needs the same HTTP-driven turn OpenCode does |
+| OpenCode | `opencode-http` | `POST /api/session/{id}/interrupt` against a pooled `opencode serve` | **LIVE** through oneharness |
+| Crush | `crush-http` | `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against a pooled `crush server` | **LIVE** through oneharness |
 | Cursor | — | none | cursor-agent exposes no headless control surface |
 | Qwen | — | none | qwen exposes no headless control surface |
 
@@ -1134,22 +1134,43 @@ and approvals are negotiated on the wire, so they leave the argv entirely —
 which is also why Copilot and Goose can take `--session` under `--control` even
 though none of their ordinary output formats carries a session id.
 
-**OpenCode's interrupt only reaches a turn that was submitted over HTTP.** Its
-route works — driving `opencode serve` directly (create a session, `POST
-/prompt`, `POST /interrupt`) does stop the work. What does *not* work is
-interrupting an ordinary `opencode run`, and both ways of pointing one at a
-server were tried and refuted: `run --port <n>` binds nothing (the port never
-appears in `ss -ltn`), and `run --attach http://…` leaves the attached server's
-`/api/session/active` **empty while the run is creating files** — the agent loop
-stays in the CLI process, so the interrupt reaches a server that is not running
-the turn, answers `2xx`, and the work continues (measured: 3 → 9 step files in
-the 15s after a "successful" interrupt). Declaring it on that evidence is
-precisely the "reports success while the turn keeps running" failure this matrix
-exists to prevent. Supporting OpenCode therefore means driving the turn over
-HTTP end to end — create the session, post the prompt, follow the event stream —
-which is a third execution model alongside the ordinary run and the JSON-RPC
-protocols. Crush is in the same position with less discovered: its `run` has no
-attach flag at all, and its session route answered 404 in the probe.
+**OpenCode and Crush turns are submitted to their servers, not to their CLIs.**
+This is the third execution model, and the only one their interrupt reaches.
+Interrupting an ordinary `opencode run` was REFUTED both ways it can be pointed
+at a server: `run --port <n>` binds nothing (the port never appears in `ss
+-ltn`), and `run --attach http://…` leaves the attached server's
+`/api/session/active` **empty while the run is creating files** — so the
+interrupt answers `2xx` while the work continues (measured: 3 → 9 step files in
+the 15s after a "successful" interrupt). Crush's `run` has no attach flag at
+all. So under `--control` oneharness never spawns either CLI: it leases the
+harness's server from the pool, creates a session on it, follows its event
+stream, and answers what the server blocks on. The recorded `command` is
+therefore the *server's* launch argv, and the run's `stdout` is the event
+transcript oneharness actually saw.
+
+Four things that path has to get right, each learned from a run that got it
+wrong:
+
+- **Both servers block on a permission decision**, exactly as ACP does. Crush
+  emits `permission_request` and waits; opencode emits `permission.*`. A
+  permissive run tells crush once (`permissions/skip`) and answers opencode's
+  per request (`…/permission/{id}/reply`). Without an answer the agent never
+  runs a single tool.
+- **Opencode announces `session.idle` before the prompt is admitted**, not only
+  after the turn ends — and its `/wait` route returns immediately in the same
+  window. A driver that treats either as the end of the turn finishes every run
+  in under a second having done nothing. The end of the turn is idle *after*
+  `session.next.prompt.admitted`.
+- **The working directory is per turn on both** (opencode's
+  `location.directory`, crush's workspace `path`), which is what lets one server
+  be shared across dispatches in different projects without the cwd widening the
+  pool key.
+- **Crush's routes are not where they look.** A session is created on the
+  *workspace* (`POST /v1/workspaces/{id}/sessions`; `/agent/sessions` answers a
+  bare `404 page not found`) and the prompt goes to `POST
+  /v1/workspaces/{id}/agent` with the session in the **body**
+  (`/agent/sessions/{sid}` is GET-only and answers `405`), returning `202` with
+  the turn running in the background.
 
 **Goose takes its provider and model from the environment, in ACP too.**
 `goose acp` resolves `GOOSE_PROVIDER` / `GOOSE_MODEL` (plus the matching

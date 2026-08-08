@@ -464,7 +464,11 @@ def probe_opencode(bin_name: str) -> Tuple[str, str]:
 
         if not wait_for(up, 60):
             return Verdict.BLOCKED, f"opencode serve did not answer on port {port}"
-        status, text = http_request(address, None, "POST", "/api/session", {})
+        # The session names the directory it works in; without it the turn runs
+        # wherever the server was started and the verdict watches the wrong tree.
+        status, text = http_request(
+            address, None, "POST", "/api/session", {"location": {"directory": work}}
+        )
         if status >= 400:
             return Verdict.BLOCKED, f"session create failed ({status}): {text[:200]}"
         payload = json.loads(text)
@@ -475,13 +479,16 @@ def probe_opencode(bin_name: str) -> Tuple[str, str]:
         session_id = path_segment(session_id, "opencode session id")
 
         def prompt() -> None:
+            # `/prompt` with a `{"prompt":{"text":…}}` body — `/message` is not a
+            # route this server has, and an unmatched path falls through to the
+            # web UI, answering `200` with HTML while nothing runs.
             try:
                 http_request(
                     address,
                     None,
                     "POST",
-                    f"/api/session/{session_id}/message",
-                    {"parts": [{"type": "text", "text": PROMPT}]},
+                    f"/api/session/{session_id}/prompt",
+                    {"prompt": {"text": PROMPT}},
                     timeout=600,
                 )
             except OSError:

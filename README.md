@@ -1193,6 +1193,13 @@ Notes worth keeping, all from the probe rather than documentation:
   block indefinitely and never begin work otherwise, which is easy to mistake for
   a slow or broken harness — and cancel must be sent as a **notification** (with
   an `id`, goose answers `-32601 Method not found`).
+- **Opencode does not honor `Connection: close`** on every route — it answers in
+  full and leaves the socket open. A client that reads until EOF therefore times
+  out on an answer that already arrived, and reports the server as unreachable:
+  `--control` failed readiness against a server that was up and answering `200`.
+  The answer ends where its own framing says it does (the terminating chunk, or
+  `Content-Length` bytes), and only a server that framed it neither way is read
+  to EOF.
 - Crush's `client_id` is a self-assigned UUID that travels in the request **body**
   when creating a workspace but as a **query parameter** on every other route; a
   mismatch yields a bare `{"message":"invalid client_id"}`. Its prompt POST

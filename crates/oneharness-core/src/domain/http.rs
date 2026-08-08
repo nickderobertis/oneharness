@@ -580,6 +580,13 @@ pub struct ResponseHead {
     /// servers use it, and a reader that skips de-chunking reports a JSON
     /// decode error where the harness in fact answered correctly.
     pub chunked: bool,
+    /// The declared body length, when the server framed it that way.
+    ///
+    /// This is how a reader knows the answer is whole *without* the server
+    /// closing the connection. Opencode keeps a `Connection: close` request's
+    /// socket open on some routes, so a reader that waits for EOF reports a
+    /// complete answer as cut short.
+    pub content_length: Option<usize>,
 }
 
 /// Parse the head out of `raw`, or `None` while it is still incomplete.
@@ -594,13 +601,17 @@ pub fn parse_head(raw: &[u8]) -> Option<ResponseHead> {
         .nth(1)?
         .parse::<u16>()
         .ok()?;
-    let chunked = head
-        .to_ascii_lowercase()
-        .contains("transfer-encoding: chunked");
+    let lowered = head.to_ascii_lowercase();
+    let chunked = lowered.contains("transfer-encoding: chunked");
+    let content_length = lowered
+        .lines()
+        .find_map(|line| line.strip_prefix("content-length:"))
+        .and_then(|value| value.trim().parse::<usize>().ok());
     Some(ResponseHead {
         status,
         body_at: end,
         chunked,
+        content_length,
     })
 }
 
@@ -612,9 +623,20 @@ pub struct ChunkedDecoder {
     /// size header is an incomplete arrival to wait on — never a body to hand
     /// back raw, which would splice framing bytes into the caller's data.
     decoded_any: bool,
+    /// Whether the terminating zero-length chunk has arrived.
+    complete: bool,
 }
 
 impl ChunkedDecoder {
+    /// Whether the body is whole — the terminating chunk has been fed.
+    ///
+    /// A reader waiting on a socket needs this to stop *without* an EOF: a
+    /// server that keeps a connection open after a complete chunked answer
+    /// would otherwise be indistinguishable from one still writing it.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.complete
+    }
     /// Feed `bytes`, returning whatever is now completely decoded. Incomplete
     /// framing is retained for the next call rather than guessed at.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
@@ -655,6 +677,7 @@ impl ChunkedDecoder {
             };
             if size == 0 {
                 self.pending.clear();
+                self.complete = true;
                 return out;
             }
             if self.pending.len() < line_end + size {

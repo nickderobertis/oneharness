@@ -47,31 +47,65 @@ impl HttpClient {
     }
 
     /// Send `request` and read the whole answer.
+    ///
+    /// The answer ends where its own framing says it does — the terminating
+    /// chunk, or `Content-Length` bytes of body — and only falls back to reading
+    /// until EOF when the server framed it neither way. Waiting for the close
+    /// instead is what a `Connection: close` request seems to promise, and
+    /// opencode does not keep that promise on every route: it answers in full
+    /// and leaves the socket open, so a reader that waits for EOF times out and
+    /// reports a complete answer as cut short. A read that fails *before* the
+    /// framing is satisfied really is a truncated answer, and a truncated body
+    /// parsed as JSON is a wrong answer rather than a missing one.
     pub fn send(&self, request: &HttpRequest) -> io::Result<HttpResponse> {
         let mut stream = self.dial(self.timeout)?;
         write_request(&mut stream, request, &self.address)?;
-        let mut raw = Vec::new();
-        // The server closes the connection at the end of the body, so a read to
-        // EOF is the whole answer. A read that FAILED did not reach that end, so
-        // whatever arrived is a truncated answer rather than a short one — and a
-        // truncated body parsed as JSON is a wrong answer, not a missing one.
-        stream.read_to_end(&mut raw).map_err(|err| {
-            io::Error::new(
-                err.kind(),
-                format!("the control server's answer was cut short: {err}"),
-            )
-        })?;
-        let Some(head) = parse_head(&raw) else {
+        let mut pending = Vec::new();
+        let mut head: Option<crate::domain::http::ResponseHead> = None;
+        let mut chunks = ChunkedDecoder::default();
+        let mut body: Vec<u8> = Vec::new();
+        let mut buffer = [0u8; 8192];
+        loop {
+            // Completeness is decided BEFORE the next blocking read, so a whole
+            // answer never costs a read timeout.
+            if let Some(head) = head {
+                if head.chunked && chunks.is_complete() {
+                    break;
+                }
+                if let Some(length) = head.content_length {
+                    if !head.chunked && body.len() >= length {
+                        body.truncate(length);
+                        break;
+                    }
+                }
+            }
+            let read = stream.read(&mut buffer).map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!("the control server's answer was cut short: {err}"),
+                )
+            })?;
+            if read == 0 {
+                break;
+            }
+            let bytes = &buffer[..read];
+            match head {
+                Some(head) => absorb(bytes, head.chunked, &mut chunks, &mut body),
+                None => {
+                    pending.extend_from_slice(bytes);
+                    if let Some(parsed) = parse_head(&pending) {
+                        let rest = pending.split_off(parsed.body_at);
+                        absorb(&rest, parsed.chunked, &mut chunks, &mut body);
+                        head = Some(parsed);
+                    }
+                }
+            }
+        }
+        let Some(head) = head else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "the control server answered something that is not an HTTP response",
             ));
-        };
-        let body = &raw[head.body_at..];
-        let body = if head.chunked {
-            ChunkedDecoder::default().feed(body)
-        } else {
-            body.to_vec()
         };
         Ok(HttpResponse {
             status: head.status,
@@ -121,6 +155,18 @@ impl HttpClient {
                 "a stdio server has no address to dial",
             )),
         }
+    }
+}
+
+/// Add `bytes` to a response body, de-chunking on the way in when the server
+/// framed it that way. Shared by the one-shot reader and nothing else; the
+/// event stream keeps its own accumulator because it also splits SSE payloads.
+fn absorb(bytes: &[u8], chunked: bool, chunks: &mut ChunkedDecoder, body: &mut Vec<u8>) {
+    if chunked {
+        let decoded = chunks.feed(bytes);
+        body.extend_from_slice(&decoded);
+    } else {
+        body.extend_from_slice(bytes);
     }
 }
 
@@ -338,6 +384,64 @@ mod tests {
         );
         assert!(request.contains("Content-Length: 2\r\n"), "{request}");
         assert!(request.ends_with("{}"), "{request}");
+    }
+
+    /// A server that answers in full and then *keeps the connection open*,
+    /// ignoring the `Connection: close` the request asked for — which is what
+    /// `opencode serve` does on the readiness route. It holds the socket until
+    /// the CLIENT closes it, so a reader waiting for EOF waits out its whole
+    /// timeout and cannot pass by luck.
+    fn serve_once_without_closing(answer: &'static [u8]) -> (Port, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = Port::new(listener.local_addr().unwrap().port()).unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut reader = io::BufReader::new(socket.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            socket.write_all(answer).unwrap();
+            socket.flush().unwrap();
+            // Never closes; only the client hanging up releases this.
+            let mut drain = Vec::new();
+            let _ = reader.read_to_end(&mut drain);
+        });
+        (port, handle)
+    }
+
+    #[test]
+    fn a_complete_answer_is_returned_without_waiting_for_the_server_to_close() {
+        // Content-Length framing: the whole body is here, so the answer is
+        // whole — whatever the server then does with the socket.
+        let (port, server) = serve_once_without_closing(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n{\"id\":\"ses_01\"}",
+        );
+        let started = std::time::Instant::now();
+        let response = client(port)
+            .send(&HttpRequest::for_test(Method::Get, "/api/app", None))
+            .unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, r#"{"id":"ses_01"}"#);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the answer was framed as complete, so reading it must not cost a read timeout"
+        );
+        server.join().unwrap();
+
+        // The same for chunked framing, which ends at its terminating chunk.
+        let (port, server) = serve_once_without_closing(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n7\r\n{\"a\":1}\r\n0\r\n\r\n",
+        );
+        let started = std::time::Instant::now();
+        let response = client(port)
+            .send(&HttpRequest::for_test(Method::Post, "/api/session", None))
+            .unwrap();
+        assert_eq!(response.body, r#"{"a":1}"#);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        server.join().unwrap();
     }
 
     #[test]

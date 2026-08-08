@@ -19118,3 +19118,35 @@ fn the_readme_documents_the_control_protocol_version_in_force() {
         "README does not show the current control request frame ({expected})"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn interrupt_defaults_to_the_platform_session_store_and_prints_readable_json() {
+    // Without --session-dir the command must find the SAME default store a run
+    // uses; binding the socket under that default and getting `no_active_turn`
+    // (rather than `not_running`) is what proves it resolved there. Also covers
+    // the default pretty output — the form a human reads at a terminal.
+    use oneharness_core::domain::control::socket_path;
+    let state = control_store_dir("default-store");
+    let store = state.join("oneharness").join("sessions");
+    let _listener = oneharness_core::io::control::bind(
+        &socket_path(&store, "defaulted"),
+        oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
+    )
+    .unwrap();
+
+    let output = run(
+        &["interrupt", "--session", "defaulted"],
+        &[("XDG_STATE_HOME", &state.display().to_string())],
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.lines().count() > 1,
+        "the default output is pretty-printed:\n{text}"
+    );
+    let frame: Value = serde_json::from_str(&text).expect("pretty output is still JSON");
+    assert_eq!(frame["reason"], "no_active_turn");
+
+    let _ = std::fs::remove_dir_all(&state);
+}

@@ -288,6 +288,23 @@ mod tests {
     }
 
     #[test]
+    fn a_cancelled_candidate_does_not_fall_through() {
+        // Nothing about the candidate failed — the caller stopped it. Falling
+        // through would spawn the very next harness the cancellation was meant
+        // to prevent, which is the opposite of what was asked for.
+        assert_eq!(
+            startup_failure_reason(Status::Cancelled, None, false, RunWork::None),
+            None
+        );
+        assert!(!is_startup_failure(
+            Status::Cancelled,
+            None,
+            false,
+            RunWork::None
+        ));
+    }
+
+    #[test]
     fn a_real_failure_does_not_fall_through() {
         // A plain non-zero task failure (no classified reason) is a real run.
         assert_eq!(

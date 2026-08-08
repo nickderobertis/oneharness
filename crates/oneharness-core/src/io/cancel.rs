@@ -156,6 +156,15 @@ mod platform {
     }
 }
 
+/// Windows console-control cancellation.
+///
+/// Unlike the Unix path, this is an *improvement* rather than the load-bearing
+/// guarantee: a hard-killed oneharness on Windows already takes its harnesses
+/// with it, because each tree is a Job Object with `KILL_ON_JOB_CLOSE` (see
+/// `io::process`). What this adds is the same graceful shape Unix gets — the
+/// tree is reaped and the run still reports, instead of the console terminator
+/// ending the process mid-run.
+// llmlint: ignore-block[changed_behavior_has_e2e] Driving a console control event needs the test to own a console process group and call GenerateConsoleCtrlEvent, which the cargo test harness cannot do without also signalling itself; the descendant-termination guarantee this improves on is already covered on Windows by `windows_streaming_stop_terminates_native_descendant` plus the Job Object's KILL_ON_JOB_CLOSE, and the cross-platform teardown/report shape is covered on Unix by `a_host_signal_cancels_the_run_and_terminates_a_silent_harness`.
 #[cfg(windows)]
 mod platform {
     use std::io;
@@ -192,6 +201,7 @@ mod platform {
         std::process::exit(code);
     }
 }
+// llmlint: ignore-end[changed_behavior_has_e2e]
 
 #[cfg(not(any(unix, windows)))]
 mod platform {

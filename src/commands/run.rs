@@ -2305,15 +2305,24 @@ fn executed_result(
     let attempted_trace = timing.is_some();
     let telemetry = timing
         .filter(|timing| timing.trace_complete)
-        .map(
-            |timing| oneharness_core::domain::report::ExecutionTelemetry::ProviderMeasured {
-                started_at: capture.started_at.clone(),
-                finished_at: capture.finished_at.clone(),
-                model_ms: timing.model_ms,
-                tool_ms: timing.tool_ms,
-                time_to_first_token_ms: timing.time_to_first_token_ms,
-            },
-        )
+        // The runner mints both bounds, so parsing them is a boundary check
+        // rather than a doubt — the same one the partial arm below applies.
+        // Text that is not a millisecond-precision UTC instant yields no
+        // telemetry rather than a measurement nothing measured.
+        .and_then(|timing| {
+            capture.started_at.parse().ok().map(|started_at| {
+                oneharness_core::domain::report::ExecutionTelemetry::ProviderMeasured {
+                    started_at,
+                    finished_at: capture
+                        .finished_at
+                        .as_deref()
+                        .and_then(|text| text.parse().ok()),
+                    model_ms: timing.model_ms,
+                    tool_ms: timing.tool_ms,
+                    time_to_first_token_ms: timing.time_to_first_token_ms,
+                }
+            })
+        })
         .or_else(|| {
             observed_tool_ms.map(|observed_tool_ms| {
                 oneharness_core::domain::report::ExecutionTelemetry::StdoutObserved {

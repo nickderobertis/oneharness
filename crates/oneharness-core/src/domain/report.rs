@@ -3,6 +3,8 @@
 //! The JSON report carries a `schema_version`: consumers depend on it, so fields
 //! are added, never repurposed or removed, without bumping the version.
 
+use std::fmt;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -116,6 +118,104 @@ pub struct OutputObservation {
     pub bytes: Vec<u8>,
 }
 
+/// The exact text [`crate::domain::history::format_rfc3339_millis`] produces:
+/// `YYYY-MM-DDTHH:MM:SS.mmmZ`, always 24 characters.
+const RUN_INSTANT_LEN: u32 = 24;
+const RUN_INSTANT_PATTERN: &str = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$";
+
+/// The error returned when text is not a [`RunInstant`].
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("must be an RFC 3339 UTC instant with milliseconds, e.g. 2026-01-01T00:00:00.000Z")]
+pub struct RunInstantError;
+
+/// An RFC 3339 **UTC** instant at millisecond precision — a runner clock read.
+///
+/// Deliberately *not* [`UtcInstant`], which canonicalizes to whole seconds: the
+/// invocation bounds this carries are minted in milliseconds, and a type that
+/// silently truncated them would make a sub-second run report as instantaneous.
+/// Wrapping the text is what keeps a timestamp that is not UTC, not
+/// millisecond-precise, or not a timestamp at all out of a measurement — the same
+/// bar `UtcInstant` holds its own field to.
+///
+/// The `FromStr` rule and the [`JsonSchema`] below state one thing, so the Rust
+/// reader and every generated SDK validator accept exactly the same values. The
+/// length bound is load-bearing, not decorative: it is what makes a trailing
+/// newline fail even where a regex `$` would match before one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct RunInstant(String);
+
+impl RunInstant {
+    /// The canonical millisecond-precision UTC text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::str::FromStr for RunInstant {
+    type Err = RunInstantError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let bytes = text.as_bytes();
+        if bytes.len() != RUN_INSTANT_LEN as usize {
+            return Err(RunInstantError);
+        }
+        let shaped = bytes.iter().enumerate().all(|(index, byte)| match index {
+            4 | 7 => *byte == b'-',
+            10 => *byte == b'T',
+            13 | 16 => *byte == b':',
+            19 => *byte == b'.',
+            23 => *byte == b'Z',
+            _ => byte.is_ascii_digit(),
+        });
+        if !shaped {
+            return Err(RunInstantError);
+        }
+        // Reject a shape that reads as a time but is not one (month 13, hour 25),
+        // by the same rule the usage parser applies to its own instants.
+        crate::domain::usage::normalize_timestamp(text)
+            .ok_or(RunInstantError)
+            .map(|_| Self(text.to_string()))
+    }
+}
+
+impl fmt::Display for RunInstant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<'de> Deserialize<'de> for RunInstant {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for RunInstant {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("RunInstant")
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "minLength": RUN_INSTANT_LEN,
+            "maxLength": RUN_INSTANT_LEN,
+            "pattern": RUN_INSTANT_PATTERN,
+        })
+    }
+}
+
 /// Measured execution telemetry for one harness run: when the invocation ran,
 /// and — when the harness's transcript supports it — how its wall clock split
 /// between provider latency and tool work.
@@ -135,8 +235,8 @@ pub enum ExecutionTelemetry {
     /// The harness's own transcript carried a complete provider trace, so the
     /// invocation bounds *and* the model/tool split are measured.
     ProviderMeasured {
-        started_at: String,
-        finished_at: Option<String>,
+        started_at: RunInstant,
+        finished_at: Option<RunInstant>,
         model_ms: Option<u128>,
         tool_ms: Option<u128>,
         time_to_first_token_ms: Option<u128>,
@@ -165,51 +265,89 @@ impl<'de> Deserialize<'de> for ExecutionTelemetry {
     {
         // Serde's internally-tagged buffer cannot hold a u128, and these durations
         // legitimately are u128 — the same constraint `RunStreamEnvelope` below
-        // documents. Read the tag off a `Value` first so each variant's numbers go
-        // through serde_json's number-aware deserializer instead.
+        // documents. So the tag is read off a `Value` and each variant's body is
+        // then handed to serde_json's number-aware deserializer, whole. Deriving
+        // the bodies (rather than picking fields out of the `Value` by hand) is
+        // what keeps this reader exactly as strict as the schema generated from
+        // the same types: a missing or wrong-typed field is an error, never a
+        // silent `None`, and an additive field from a newer producer is ignored.
         let value = Value::deserialize(deserializer)?;
         let source = value.get("source").and_then(Value::as_str).ok_or_else(|| {
             serde::de::Error::custom("execution telemetry is missing string field `source`")
         })?;
-        match source {
-            "provider_measured" => Ok(Self::ProviderMeasured {
-                started_at: required_str(&value, "started_at")?,
-                finished_at: optional_str(&value, "finished_at"),
-                model_ms: optional_u128(&value, "model_ms"),
-                tool_ms: optional_u128(&value, "tool_ms"),
-                time_to_first_token_ms: optional_u128(&value, "time_to_first_token_ms"),
-            }),
-            "partial_invocation" => Ok(Self::PartialInvocation {
-                started_at: required_str(&value, "started_at")?
-                    .parse()
-                    .map_err(serde::de::Error::custom)?,
-            }),
-            "stdout_observed" => Ok(Self::StdoutObserved {
-                tool_ms: optional_u128(&value, "tool_ms").ok_or_else(|| {
-                    serde::de::Error::custom("stdout-observed telemetry is missing `tool_ms`")
-                })?,
-            }),
-            other => Err(serde::de::Error::custom(format!(
-                "unknown execution telemetry source `{other}`"
-            ))),
-        }
+        let variant = |name: &str| -> Result<Self, D::Error> {
+            match name {
+                "provider_measured" => {
+                    serde_json::from_value::<ProviderMeasuredWire>(value.clone())
+                        .map(|wire| Self::ProviderMeasured {
+                            started_at: wire.started_at,
+                            finished_at: wire.finished_at,
+                            model_ms: wire.model_ms,
+                            tool_ms: wire.tool_ms,
+                            time_to_first_token_ms: wire.time_to_first_token_ms,
+                        })
+                        .map_err(serde::de::Error::custom)
+                }
+                "partial_invocation" => {
+                    serde_json::from_value::<PartialInvocationWire>(value.clone())
+                        .map(|wire| Self::PartialInvocation {
+                            started_at: wire.started_at,
+                        })
+                        .map_err(serde::de::Error::custom)
+                }
+                "stdout_observed" => serde_json::from_value::<StdoutObservedWire>(value.clone())
+                    .map(|wire| Self::StdoutObserved {
+                        tool_ms: wire.tool_ms,
+                    })
+                    .map_err(serde::de::Error::custom),
+                other => Err(serde::de::Error::custom(format!(
+                    "unknown execution telemetry source `{other}`"
+                ))),
+            }
+        };
+        variant(source)
     }
 }
 
-fn required_str<E: serde::de::Error>(value: &Value, field: &str) -> Result<String, E> {
-    optional_str(value, field).ok_or_else(|| {
-        E::custom(format!(
-            "execution telemetry is missing string field `{field}`"
-        ))
-    })
+/// The `provider_measured` body, minus its tag. Every field is required and
+/// independently nullable, exactly as the generated schema states it.
+///
+/// `required_nullable` is what makes that true: serde otherwise fills a missing
+/// `Option` field with `None`, which would read an absent measurement as "not
+/// measured" — a claim the producer never made, and one every generated SDK
+/// validator refuses.
+#[derive(Deserialize)]
+struct ProviderMeasuredWire {
+    started_at: RunInstant,
+    #[serde(deserialize_with = "required_nullable")]
+    finished_at: Option<RunInstant>,
+    #[serde(deserialize_with = "required_nullable")]
+    model_ms: Option<u128>,
+    #[serde(deserialize_with = "required_nullable")]
+    tool_ms: Option<u128>,
+    #[serde(deserialize_with = "required_nullable")]
+    time_to_first_token_ms: Option<u128>,
 }
 
-fn optional_str(value: &Value, field: &str) -> Option<String> {
-    value.get(field).and_then(Value::as_str).map(str::to_string)
+/// Read an `Option<T>` that must be *present* (as a value or an explicit
+/// `null`). Naming a `deserialize_with` is what turns off serde's implicit
+/// missing-field default for an `Option`; the body is the ordinary decode.
+fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
 }
 
-fn optional_u128(value: &Value, field: &str) -> Option<u128> {
-    value.get(field)?.as_number()?.as_u128()
+#[derive(Deserialize)]
+struct PartialInvocationWire {
+    started_at: UtcInstant,
+}
+
+#[derive(Deserialize)]
+struct StdoutObservedWire {
+    tool_ms: u128,
 }
 
 /// One harness's entry in the report.
@@ -526,8 +664,8 @@ mod tests {
         // serde's internally-tagged buffer cannot hold one, so a derived impl
         // would serialize fine and then refuse to read its own output back.
         let wire = round_trip(ExecutionTelemetry::ProviderMeasured {
-            started_at: "2026-01-01T00:00:00.000Z".to_string(),
-            finished_at: Some("2026-01-01T00:00:12.500Z".to_string()),
+            started_at: "2026-01-01T00:00:00.000Z".parse().unwrap(),
+            finished_at: Some("2026-01-01T00:00:12.500Z".parse().unwrap()),
             model_ms: Some(9_000),
             tool_ms: Some(3_500),
             time_to_first_token_ms: Some(420),
@@ -551,6 +689,35 @@ mod tests {
     }
 
     #[test]
+    fn a_run_instant_accepts_only_millisecond_precision_utc() {
+        // The one rule the JsonSchema above also states. Milliseconds are the
+        // point: `UtcInstant` would canonicalize these to whole seconds and make
+        // a sub-second run read as instantaneous.
+        let ok: RunInstant = "2026-01-01T00:00:00.000Z".parse().unwrap();
+        assert_eq!(ok.as_str(), "2026-01-01T00:00:00.000Z");
+        assert_eq!(ok.to_string(), "2026-01-01T00:00:00.000Z");
+
+        for bad in [
+            "",
+            "2026-01-01T00:00:00Z",          // no milliseconds
+            "2026-01-01T00:00:00.000000Z",   // microseconds: not this shape
+            "2026-01-01T00:00:00.000+00:00", // an equivalent offset is still not `Z`
+            "2026-01-01T00:00:00.000-05:00", // and a real offset is not UTC at all
+            "2026-13-01T00:00:00.000Z",      // shaped like a time, is not one
+            "2026-01-01T25:00:00.000Z",
+            "2026-01-01 00:00:00.000Z", // the space form loses the length bound
+            "2026-01-01T00:00:00.000Z\n", // the trailing newline a `$` would admit
+        ] {
+            assert!(
+                bad.parse::<RunInstant>().is_err(),
+                "accepted {bad:?} as a run instant"
+            );
+        }
+        // And the same rule on the deserialization boundary, not just FromStr.
+        assert!(serde_json::from_value::<RunInstant>(serde_json::json!("nope")).is_err());
+    }
+
+    #[test]
     fn unreadable_telemetry_is_an_error_not_a_guess() {
         // A missing/unknown tag or a variant's own missing field must fail loudly:
         // inventing a source would put a measurement in the report that nothing
@@ -561,6 +728,32 @@ mod tests {
             serde_json::json!({"source": "provider_measured"}),
             serde_json::json!({"source": "stdout_observed"}),
             serde_json::json!({"source": "partial_invocation", "started_at": "not a time"}),
+            serde_json::json!({
+                "source": "provider_measured", "started_at": "2026-01-01T00:00:00Z"
+            }),
+            serde_json::json!({
+                "source": "provider_measured",
+                "started_at": "2026-01-01T00:00:00.000Z",
+                "finished_at": "whenever"
+            }),
+            // Required-and-nullable, not optional: the schema generated from the
+            // same type says so, and a reader that filled these in with `None`
+            // would accept telemetry the SDK validators refuse.
+            serde_json::json!({
+                "source": "provider_measured",
+                "started_at": "2026-01-01T00:00:00.000Z",
+                "finished_at": null,
+                "model_ms": 1
+            }),
+            serde_json::json!({
+                "source": "provider_measured",
+                "started_at": "2026-01-01T00:00:00.000Z",
+                "finished_at": null,
+                "model_ms": "soon",
+                "tool_ms": null,
+                "time_to_first_token_ms": null
+            }),
+            serde_json::json!({"source": "stdout_observed", "tool_ms": null}),
         ] {
             assert!(
                 serde_json::from_value::<ExecutionTelemetry>(bad.clone()).is_err(),

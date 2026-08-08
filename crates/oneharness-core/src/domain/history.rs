@@ -823,9 +823,11 @@ impl HistoryRecord {
             exit_code: r.exit_code,
             duration_ms: r.duration_ms,
             started_at: measured
-                .map(|timing| timing.0.clone())
+                .map(|timing| timing.0.as_str().to_string())
                 .or_else(|| partial.map(|started_at| started_at.as_str().to_string())),
-            finished_at: measured.and_then(|timing| timing.1.clone()),
+            finished_at: measured
+                .and_then(|timing| timing.1.as_ref())
+                .map(|finished_at| finished_at.as_str().to_string()),
             model_ms: measured.and_then(|timing| *timing.2),
             tool_ms: measured.and_then(|timing| *timing.3),
             time_to_first_token_ms: measured.and_then(|timing| *timing.4),
@@ -1305,12 +1307,6 @@ fn reported_failure(status: Status, failure_kind: Option<FailureKind>) -> bool {
     run_failed(status) || failure_kind == Some(FailureKind::ToolDeferred)
 }
 
-/// Whether a record's failure text agrees with the rest of the record: the field
-/// arrived in [`FIRST_ERROR_SCHEMA_VERSION`], so an older record carrying it was
-/// not written by any oneharness, and it is a *failure* signal, so a run that
-/// reported no failure has nothing to put in it. (Emptiness and length are not
-/// checked here — [`FailureText`] makes those unrepresentable, and the generated
-/// schema states them.)
 /// Whether `status` is a value a reader at `schema_version` has. A record's
 /// version is the promise "you can read this"; a status introduced later would
 /// break that promise, so it is refused rather than read back at a version that
@@ -1320,6 +1316,12 @@ fn status_version_valid(schema_version: &str, status: Status) -> bool {
     status != Status::Cancelled || version_at_least(schema_version, FIRST_CANCELLED_SCHEMA_VERSION)
 }
 
+/// Whether a record's failure text agrees with the rest of the record: the field
+/// arrived in [`FIRST_ERROR_SCHEMA_VERSION`], so an older record carrying it was
+/// not written by any oneharness, and it is a *failure* signal, so a run that
+/// reported no failure has nothing to put in it. (Emptiness and length are not
+/// checked here — [`FailureText`] makes those unrepresentable, and the generated
+/// schema states them.)
 fn error_text_valid(
     schema_version: &str,
     error: Option<&FailureText>,
@@ -1655,8 +1657,8 @@ mod tests {
             duration_ms: Some(42),
             telemetry: Some(
                 crate::domain::report::ExecutionTelemetry::ProviderMeasured {
-                    started_at: "2026-07-07T13:14:14.958Z".to_string(),
-                    finished_at: Some("2026-07-07T13:14:15.000Z".to_string()),
+                    started_at: "2026-07-07T13:14:14.958Z".parse().unwrap(),
+                    finished_at: Some("2026-07-07T13:14:15.000Z".parse().unwrap()),
                     model_ms: Some(42),
                     tool_ms: Some(0),
                     time_to_first_token_ms: Some(10),

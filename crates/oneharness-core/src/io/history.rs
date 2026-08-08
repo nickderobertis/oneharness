@@ -1269,8 +1269,8 @@ mod tests {
             exit_code: Some(0),
             duration_ms: Some(10),
             telemetry: Some(ExecutionTelemetry::ProviderMeasured {
-                started_at: "2026-07-19T00:00:00Z".to_string(),
-                finished_at: Some("2026-07-19T00:00:00Z".to_string()),
+                started_at: "2026-07-19T00:00:00.000Z".parse().unwrap(),
+                finished_at: Some("2026-07-19T00:00:00.000Z".parse().unwrap()),
                 model_ms: Some(7),
                 tool_ms: Some(0),
                 time_to_first_token_ms: None,

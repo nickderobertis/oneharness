@@ -79,10 +79,24 @@ export const DetectReportSchema: z.ZodType<DetectReport> = z.looseObject({
 
 export const ExecutionTelemetrySchema: z.ZodType<ExecutionTelemetry> = z.union([
   z.looseObject({
-    finished_at: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+    finished_at: z
+      .union([
+        z
+          .string()
+          .min(24)
+          .regex(new RegExp("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$", "u"))
+          .refine((value) => [...value].length <= 24, { message: "Too long: expected at most 24 characters" }),
+        z.null(),
+      ])
+      .refine((value) => value !== undefined, { message: "Required" }),
     model_ms: z.union([z.int().gte(0), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
     source: z.literal("provider_measured").refine((value) => value !== undefined, { message: "Required" }),
-    started_at: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    started_at: z
+      .string()
+      .min(24)
+      .regex(new RegExp("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$", "u"))
+      .refine((value) => [...value].length <= 24, { message: "Too long: expected at most 24 characters" })
+      .refine((value) => value !== undefined, { message: "Required" }),
     time_to_first_token_ms: z
       .union([z.int().gte(0), z.null()])
       .refine((value) => value !== undefined, { message: "Required" }),

@@ -300,7 +300,10 @@
                 "type": [
                   "string",
                   "null"
-                ]
+                ],
+                "maxLength": 24,
+                "minLength": 24,
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
               },
               "model_ms": {
                 "type": [
@@ -315,7 +318,10 @@
                 "const": "provider_measured"
               },
               "started_at": {
-                "type": "string"
+                "type": "string",
+                "maxLength": 24,
+                "minLength": 24,
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
               },
               "time_to_first_token_ms": {
                 "type": [
@@ -1092,7 +1098,10 @@
                 "type": [
                   "string",
                   "null"
-                ]
+                ],
+                "maxLength": 24,
+                "minLength": 24,
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
               },
               "model_ms": {
                 "type": [
@@ -1107,7 +1116,10 @@
                 "const": "provider_measured"
               },
               "started_at": {
-                "type": "string"
+                "type": "string",
+                "maxLength": 24,
+                "minLength": 24,
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
               },
               "time_to_first_token_ms": {
                 "type": [

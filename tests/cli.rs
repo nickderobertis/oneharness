@@ -18563,22 +18563,43 @@ fn interrupt_against_a_run_that_is_not_running_reports_not_running() {
 #[cfg(unix)]
 #[test]
 fn interrupt_between_turns_reports_no_active_turn() {
-    // The run is alive and listening, but its turn has not begun: the honest
-    // answer is `no_active_turn`, not a success a supervisor would misread.
-    use oneharness_core::domain::control::{socket_path, ControlRequest};
+    // A run that is alive and listening but has no turn in flight must answer
+    // `no_active_turn` — distinct from `not_running`, because a supervisor
+    // retries one and gives up on the other. Driven through the real
+    // `oneharness interrupt` command against a bound socket, so the CLI's own
+    // resolution and exit code are what is asserted.
+    use oneharness_core::domain::control::socket_path;
     let store = control_store_dir("noturn");
-    let socket = socket_path(&store, "idle");
     let listener = oneharness_core::io::control::bind(
-        &socket,
+        &socket_path(&store, "idle"),
         oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
     )
     .unwrap();
-    let response = oneharness_core::io::control::send(listener.path(), ControlRequest::interrupt());
-    assert!(!response.is_ok());
+
+    let output = run(
+        &[
+            "interrupt",
+            "--session",
+            "idle",
+            "--session-dir",
+            &store.display().to_string(),
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let frame = json_stdout(&output);
+    assert_eq!(frame["ok"], false);
+    assert_eq!(frame["reason"], "no_active_turn");
+    // Refused requests are recorded too, so a supervisor's failed attempt is
+    // visible in the run's own report rather than only in its own logs.
+    let events = listener.handle_ref().events();
+    assert_eq!(events.len(), 1);
     assert_eq!(
-        response.reason(),
+        events[0].reason(),
         Some(oneharness_core::domain::control::ControlReason::NoActiveTurn)
     );
+
     let _ = std::fs::remove_dir_all(&store);
 }
 

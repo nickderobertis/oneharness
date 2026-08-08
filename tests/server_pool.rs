@@ -37,6 +37,7 @@ fn plan() -> LaunchPlan {
         ServerAddress::Stdio,
         Vec::new(),
     )
+    .expect("a stdio address backs a stdio spec")
 }
 
 #[test]

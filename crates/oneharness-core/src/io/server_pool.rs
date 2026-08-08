@@ -135,23 +135,32 @@ pub struct LaunchPlan {
 impl LaunchPlan {
     /// The plan for `spec` against `bin`, with `overrides` appended after the
     /// declared launch args. Pure assembly; nothing is spawned.
-    #[must_use]
+    ///
+    /// Refuses an address that does not speak the transport the spec declares —
+    /// a TCP address for a stdio server names something no reader of that pool
+    /// entry could dial, and the mismatch would only surface as a connection
+    /// failure long after the server was started.
     pub fn new(
         bin: &str,
         spec: &ServerSpec,
         overrides: &[String],
         address: ServerAddress,
         env: Vec<(String, String)>,
-    ) -> Self {
-        debug_assert_eq!(
-            address.transport(),
-            spec.transport,
-            "a launch plan's address must speak the transport its spec declares"
-        );
+    ) -> io::Result<Self> {
+        if address.transport() != spec.transport {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "a `{:?}` address cannot back a server declared as `{:?}`",
+                    address.transport(),
+                    spec.transport
+                ),
+            ));
+        }
         let mut argv = vec![bin.to_string()];
         argv.extend(spec.launch.iter().map(|a| (*a).to_string()));
         argv.extend(overrides.iter().cloned());
-        LaunchPlan { argv, env, address }
+        Ok(LaunchPlan { argv, env, address })
     }
 
     /// The full argv the server is spawned with (argv[0] is the program).
@@ -527,6 +536,7 @@ mod tests {
             ServerAddress::Stdio,
             Vec::new(),
         )
+        .expect("a stdio address backs a stdio spec")
     }
 
     #[test]
@@ -564,9 +574,15 @@ mod tests {
             &["--port".to_string(), "7777".to_string()],
             address.clone(),
             Vec::new(),
-        );
+        )
+        .unwrap();
         assert_eq!(plan.argv(), ["opencode", "serve", "--port", "7777"]);
         assert_eq!(plan.address(), &address);
+
+        // An address that speaks a different transport is refused, not asserted
+        // away in debug builds only.
+        let mismatched = LaunchPlan::new("opencode", &spec, &[], ServerAddress::Stdio, Vec::new());
+        assert_eq!(mismatched.unwrap_err().kind(), io::ErrorKind::InvalidInput);
     }
 
     #[cfg(unix)]

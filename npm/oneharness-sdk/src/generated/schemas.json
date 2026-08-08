@@ -413,7 +413,7 @@
             "const": "claude-control-request"
           },
           {
-            "description": "Codex: `turn/interrupt` over the `codex app-server` JSON-RPC stdio\nprotocol, keyed on `CODEX_HOME`.",
+            "description": "Codex: `turn/interrupt {threadId,turnId}` over the `codex app-server`\nJSON-RPC stdio protocol, which oneharness spawns as the run's own child\nand drives the thread/turn lifecycle on — so the interrupt rides the same\nopen stdin and nothing is shared or pooled.",
             "type": "string",
             "const": "codex-app-server"
           },
@@ -1239,7 +1239,7 @@
             "const": "claude-control-request"
           },
           {
-            "description": "Codex: `turn/interrupt` over the `codex app-server` JSON-RPC stdio\nprotocol, keyed on `CODEX_HOME`.",
+            "description": "Codex: `turn/interrupt {threadId,turnId}` over the `codex app-server`\nJSON-RPC stdio protocol, which oneharness spawns as the run's own child\nand drives the thread/turn lifecycle on — so the interrupt rides the same\nopen stdin and nothing is shared or pooled.",
             "type": "string",
             "const": "codex-app-server"
           },

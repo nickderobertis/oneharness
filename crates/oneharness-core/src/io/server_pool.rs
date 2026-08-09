@@ -203,6 +203,11 @@ pub struct LaunchPlan {
     /// argv[0] is the harness binary; the rest is `ServerSpec::launch` plus any
     /// caller overrides and address flags. Never empty.
     argv: LaunchArgv,
+    /// The same argv with the address still spelled `{address}`, kept so a
+    /// persisted record can be checked against this plan at the address that
+    /// record names. The pool picks a fresh address per acquire, so comparing
+    /// the concrete argv would call every reusable server a stranger.
+    template: Vec<String>,
     /// Environment applied to the server process.
     env: Vec<(String, String)>,
     /// The address the server will be reachable at.
@@ -234,25 +239,39 @@ impl LaunchPlan {
                 ),
             ));
         }
-        let mut argv = vec![bin.to_string()];
-        argv.extend(spec.launch.iter().map(|a| (*a).to_string()));
+        let mut template = vec![bin.to_string()];
+        template.extend(spec.launch.iter().map(|a| (*a).to_string()));
+        template.extend(spec.address_args.iter().map(|a| (*a).to_string()));
+        template.extend(overrides.iter().cloned());
         // The address the pool picked, in the spelling this server's CLI wants.
         // Rendered here rather than by the caller so a pool entry's argv always
         // names the address its record says the server is reachable at.
-        let rendered = match &address {
-            ServerAddress::Tcp { port } => port.get().to_string(),
-            ServerAddress::UnixSocket { path } => path.to_string(),
-            ServerAddress::Stdio => String::new(),
-        };
-        argv.extend(
-            spec.address_args
-                .iter()
-                .map(|arg| arg.replace("{address}", &rendered)),
-        );
-        argv.extend(overrides.iter().cloned());
-        let argv = LaunchArgv::new(argv)
+        let argv = LaunchArgv::new(render(&template, &address))
             .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
-        Ok(LaunchPlan { argv, env, address })
+        Ok(LaunchPlan {
+            argv,
+            template,
+            env,
+            address,
+        })
+    }
+
+    /// Whether `record` describes the server this plan asks for: the same
+    /// program, launch arguments and overrides, at the address the record
+    /// itself names.
+    ///
+    /// The pool entry is the only thing claiming a pid is this key's server,
+    /// and it outlives every dispatch — so it can name a pid the OS has since
+    /// recycled onto something unrelated, or a launch from before this
+    /// harness's argv changed. Liveness alone does not make it ours.
+    ///
+    /// Checked at the record's own address rather than this plan's: a fresh
+    /// address is picked per acquire, so a reusable server is never listening
+    /// on the one this dispatch would have used.
+    #[must_use]
+    pub fn backs(&self, record: &ServerRecord) -> bool {
+        record.address.transport() == self.address.transport()
+            && render(&self.template, &record.address) == record.argv.as_slice()
     }
 
     /// The full argv the server is spawned with (argv[0] is the program).
@@ -266,6 +285,20 @@ impl LaunchPlan {
     pub fn address(&self) -> &ServerAddress {
         &self.address
     }
+}
+
+/// `template` with every `{address}` placeholder spelled the way this server's
+/// CLI takes `address`.
+fn render(template: &[String], address: &ServerAddress) -> Vec<String> {
+    let rendered = match address {
+        ServerAddress::Tcp { port } => port.get().to_string(),
+        ServerAddress::UnixSocket { path } => path.to_string(),
+        ServerAddress::Stdio => String::new(),
+    };
+    template
+        .iter()
+        .map(|arg| arg.replace("{address}", &rendered))
+        .collect()
 }
 
 /// Take a lease on the server for `key` under `root`, starting one if none is
@@ -282,7 +315,20 @@ pub fn acquire(
     let _guard = EntryLock::acquire(&entry)?;
 
     let record = match reconcile(&entry, linger)? {
-        Some(live) => live,
+        Some(live) if plan.backs(&live) => live,
+        // A live record this plan does not describe is not this plan's server:
+        // the entry outlives every dispatch, so its pid may have been recycled
+        // onto something unrelated, or its argv may predate a change to the
+        // launch. Reusing it would submit the turn to whatever answers at that
+        // address; the record is dropped and a server this dispatch can vouch
+        // for is started in its place.
+        //
+        // The process itself is deliberately NOT signalled: not being able to
+        // say what it is, is the whole reason it is not being reused.
+        Some(_) => {
+            let _ = fs::remove_file(entry.join(SERVER_FILE));
+            start(&entry, plan)?
+        }
         None => start(&entry, plan)?,
     };
 
@@ -800,9 +846,15 @@ mod tests {
         let marker = entry.join("started-in.txt");
         let mut started_in = None;
         for _ in 0..200 {
-            if let Ok(text) = fs::read_to_string(&marker) {
-                started_in = Some(text.trim().to_string());
-                break;
+            // A path only once there is one: the redirection creates the file
+            // before `pwd` writes into it, so an existing-but-empty marker is a
+            // read that arrived mid-write, not a server started in nowhere.
+            match fs::read_to_string(&marker) {
+                Ok(text) if !text.trim().is_empty() => {
+                    started_in = Some(text.trim().to_string());
+                    break;
+                }
+                _ => {}
             }
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -818,6 +870,52 @@ mod tests {
 
         drop(lease);
         sweep(&root, Duration::from_secs(0)).unwrap();
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_reusable_server_is_vouched_for_at_its_own_address_not_this_acquires() {
+        // The pool asks the OS for a free port on every acquire, so a reusable
+        // server is never listening on the address the next dispatch would have
+        // picked. A record checked against this plan's concrete argv would call
+        // every one of them a stranger, and each dispatch would start its own
+        // copy of a ~137MB process — the cost pooling exists to avoid.
+        let root = temp_root("address");
+        let spec = ServerSpec {
+            launch: &["-c", "sleep 120"],
+            address_args: &["--port", "{address}"],
+            key_env: &[],
+            transport: ServerTransport::Tcp,
+        };
+        let plan_at = |port: u16| {
+            LaunchPlan::new(
+                "sh",
+                &spec,
+                &[],
+                ServerAddress::Tcp {
+                    port: crate::domain::control::Port::new(port).unwrap(),
+                },
+                Vec::new(),
+            )
+            .expect("a tcp address backs a tcp spec")
+        };
+        let first = acquire(&root, &key(), &plan_at(7777), DEFAULT_LINGER).unwrap();
+        let second = acquire(&root, &key(), &plan_at(8888), DEFAULT_LINGER).unwrap();
+        assert_eq!(
+            first.record().pid,
+            second.record().pid,
+            "a second dispatch started its own server instead of reusing the pooled one"
+        );
+        // And it keeps the address it is actually listening on, not the one
+        // this acquire offered.
+        assert_eq!(second.record().address, *plan_at(7777).address());
+
+        let pid = first.record().pid;
+        drop(first);
+        drop(second);
+        sweep(&root, Duration::from_secs(0)).unwrap();
+        wait_until_dead(pid);
         fs::remove_dir_all(&root).ok();
     }
 

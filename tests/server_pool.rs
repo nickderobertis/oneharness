@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use oneharness_core::domain::control::{ServerAddress, ServerSpec, ServerTransport};
-use oneharness_core::io::server_pool::{self, LaunchPlan};
+use oneharness_core::io::server_pool::{self, LaunchArgv, LaunchPlan, Pid, ServerRecord};
 
 fn pool_root(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("oh-pool-e2e-{tag}-{}", std::process::id()));
@@ -55,6 +55,62 @@ fn the_pool_root_defaults_under_the_platform_state_dir_and_honors_an_override() 
     assert!(default.ends_with("oneharness/servers"), "{default:?}");
     // An empty override is not an override.
     assert_eq!(server_pool::resolve_root(Some("")), Some(default));
+}
+
+#[test]
+fn a_record_describing_a_different_launch_is_not_reused_for_its_live_pid() {
+    // A pool entry says a pid is this key's server. It is the only thing that
+    // says so, and it outlives every dispatch — so it can name a pid the OS has
+    // since recycled onto an unrelated process, or a launch from before the
+    // argv changed. Reusing it on liveness alone submits the turn to whatever
+    // answers there and later signals that pid.
+    let root = pool_root("foreign");
+    let key = oneharness_core::domain::control::pool_key("opencode", &[], &[]);
+    let entry = root.join(key.as_str());
+    std::fs::create_dir_all(entry.join("leases")).unwrap();
+
+    // A real, live process that is not this plan's server, recorded through the
+    // very types the pool persists — so the entry is one it would itself write.
+    let mut stranger = std::process::Command::new("sleep")
+        .arg("120")
+        .spawn()
+        .unwrap();
+    let stranger_pid = Pid::new(stranger.id()).unwrap();
+    std::fs::write(
+        entry.join("server.json"),
+        serde_json::to_string(&ServerRecord {
+            pid: stranger_pid,
+            argv: LaunchArgv::new(vec!["sleep".to_string(), "999".to_string()]).unwrap(),
+            address: ServerAddress::Stdio,
+            idle_since: None,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    let lease = server_pool::acquire(&root, &key, &plan(), server_pool::DEFAULT_LINGER).unwrap();
+    assert_ne!(
+        lease.record().pid,
+        stranger_pid,
+        "a live pid this plan did not launch was adopted as its server"
+    );
+    assert_eq!(
+        lease.record().argv.as_slice(),
+        ["sleep", "120"],
+        "the entry must now describe the server this dispatch started"
+    );
+    assert!(
+        server_pool::pid_alive(stranger_pid),
+        "a process the pool could not vouch for must not be signalled"
+    );
+
+    let started = lease.record().pid;
+    drop(lease);
+    server_pool::sweep(&root, Duration::from_secs(0)).unwrap();
+    assert!(!server_pool::pid_alive(started));
+    stranger.kill().unwrap();
+    stranger.wait().unwrap();
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

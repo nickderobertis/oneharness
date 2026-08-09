@@ -704,7 +704,10 @@ shape. When you add one:
   `scripts/explore-control.sh <id>` (the probe drives each harness's own control
   path, interrupts a real turn, and judges on the FILESYSTEM: goose and copilot
   both report a normal `end_turn` after a genuine cancellation, so the harness's
-  own stop reason proves nothing). Then add the `oh_control_enforce <id>` phase
+  own stop reason proves nothing; the probe restates the mechanism per harness
+  because it implements each path itself, so `scripts/check-control-probes.sh`
+  gates those tables against the registry rather than letting the alarm rot).
+  Then add the `oh_control_enforce <id>` phase
   to `scripts/e2e-control.sh` — a per-*feature* live suite (`just live-control`),
   deliberately outside the per-harness scripts because each phase drives a
   multi-step turn and then waits out a 15s freeze window. Update the control

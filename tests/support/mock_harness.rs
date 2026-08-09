@@ -113,7 +113,9 @@
 //!                   route `503`, and `no-session-id` answers it `200` with a body
 //!                   naming no id, and `foreign-permission` asks permission for a
 //!                   session this run does not own, and `close-stream` stops
-//!                   talking mid-turn with no end-of-turn event. Each exits once
+//!                   talking mid-turn with no end-of-turn event, and
+//!                   `redirect-interrupt` answers the interrupt route `302`
+//!                   without aborting anything. Each exits once
 //!                   it has served
 //!                   its fault, so nothing is left behind for the pool to reclaim.
 //!                   An unrecognized value is refused rather than run as no fault.
@@ -378,6 +380,7 @@ enum HttpControlFault {
     NoSessionId,
     ForeignPermission,
     CloseStream,
+    RedirectInterrupt,
 }
 
 impl HttpControlFault {
@@ -392,6 +395,7 @@ impl HttpControlFault {
             "no-session-id" => HttpControlFault::NoSessionId,
             "foreign-permission" => HttpControlFault::ForeignPermission,
             "close-stream" => HttpControlFault::CloseStream,
+            "redirect-interrupt" => HttpControlFault::RedirectInterrupt,
             other => panic!("mock harness: MOCK_HTTP_CONTROL_FAULT names no fault: `{other}`"),
         }
     }
@@ -544,6 +548,19 @@ fn run_http_control_server(log_path: &str) -> ! {
                 }
             }
             if line.starts_with("POST /api/session/") && line.contains("/interrupt") {
+                // A route that answers "ask elsewhere" has not aborted
+                // anything: the turn is deliberately left running, so a client
+                // that read a redirect as acceptance would report a stop that
+                // never happened.
+                if fault == HttpControlFault::RedirectInterrupt {
+                    let _ = write!(
+                        socket,
+                        "HTTP/1.1 302 Found\r\nLocation: /v2/session/ses_mock/interrupt\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = socket.flush();
+                    exit_shortly();
+                    return;
+                }
                 aborted.store(true, std::sync::atomic::Ordering::SeqCst);
                 reply(&mut socket, "204 No Content", "");
                 exit_shortly();

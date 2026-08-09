@@ -20657,6 +20657,107 @@ fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there()
     let _ = std::fs::remove_dir_all(&cwd);
 }
 
+#[cfg(unix)]
+#[test]
+fn a_control_server_that_redirects_the_interrupt_is_not_reported_as_having_served_it() {
+    let mock_profile = mock_profile_redirect();
+    // The route answers `302 Found` and aborts nothing. This client follows no
+    // redirect, so the turn is still running — and a supervisor told `served`
+    // would walk away from a turn that never stopped, which is strictly worse
+    // than being told the interrupt failed.
+    let store = control_store_dir("http-redirect");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("http-redirect-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let log = store.join("server.log");
+    let pool = store.join("pool");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
+        .env("MOCK_HTTP_CONTROL_FAULT", "redirect-interrupt")
+        .env("XDG_STATE_HOME", pool.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--session",
+            "redirect",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("opencode"),
+            "--timeout",
+            "60",
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the HTTP controlled run");
+
+    wait_until("the control socket", || {
+        store.join("control").join("redirect.sock").exists()
+    });
+    // Without the permission answer the turn never begins, and interrupting a
+    // turn that never started would pass for the wrong reason.
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(&log)
+            .map(|text| text.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "redirect",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    let answer = json_stdout(&interrupt);
+    assert_eq!(answer["ok"], false, "{answer}");
+    assert_eq!(interrupt.status.code(), Some(1), "{interrupt:?}");
+    let error = answer["error"].as_str().expect("a reason");
+    assert!(
+        error.contains("302"),
+        "the reason must carry the server's own answer: {error}"
+    );
+
+    let output = child.wait_with_output().expect("run did not finish");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    // Recorded as refused, and the turn's own end says the same: the server
+    // never sent the aborted turn's `stopped` text, because it never aborted.
+    assert_eq!(report["control"]["interrupts"][0]["outcome"], "refused");
+    assert!(report["results"][0]["text"].is_null(), "{report}");
+
+    let served = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        served
+            .lines()
+            .any(|line| line.starts_with("POST /api/session/ses_mock/interrupt")),
+        "the interrupt never reached the server:\n{served}"
+    );
+
+    wait_for_pooled_server_to_exit(&pool);
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
 /// Wait for the server the pool under `pool` started to be gone, reporting
 /// whether there was one to wait for.
 ///

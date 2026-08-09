@@ -28,9 +28,15 @@ pub struct HttpResponse {
 impl HttpResponse {
     /// Whether the server accepted the request. A control route that answers
     /// `4xx`/`5xx` has not done what was asked, however readable its body.
+    ///
+    /// A `3xx` has not either: this client follows no `Location`, so a redirect
+    /// is an answer saying where to ask, not the asking. Counted as success, a
+    /// redirected interrupt would be reported `served` while the turn ran on —
+    /// worse than any refusal, because a refusal is something a supervisor can
+    /// act on.
     #[must_use]
     pub fn ok(&self) -> bool {
-        (200..400).contains(&self.status)
+        (200..300).contains(&self.status)
     }
 }
 
@@ -500,6 +506,27 @@ mod tests {
         assert_eq!(response.status, 404);
         assert!(!response.ok());
         assert!(response.body.contains("404 page not found"));
+        let _ = server.join();
+    }
+
+    #[test]
+    fn a_redirect_this_client_never_follows_is_not_an_accepted_request() {
+        // Nothing here follows a `Location`, so a route that answered `3xx` did
+        // not do what was asked — it said where to ask instead. Counted as
+        // accepted, an interrupt redirected away would report `served` while
+        // the turn ran on, which is the one answer worse than a refusal.
+        let (port, server) = serve_once(
+            b"HTTP/1.1 302 Found\r\nLocation: /v2/session/ses_01/interrupt\r\nContent-Length: 0\r\n\r\n",
+        );
+        let response = client(port)
+            .send(&HttpRequest::for_test(
+                Method::Post,
+                "/api/session/ses_01/interrupt",
+                None,
+            ))
+            .unwrap();
+        assert_eq!(response.status, 302);
+        assert!(!response.ok(), "a redirect nobody follows is not a success");
         let _ = server.join();
     }
 

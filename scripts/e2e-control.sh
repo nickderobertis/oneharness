@@ -59,6 +59,13 @@ note "harnesses declaring turn control: ${CONTROLLABLE[*]}"
 # unauthenticated one silently unexercised — exactly the quiet skip the
 # capability-driven loop above exists to prevent. This returns instead, and the
 # suite reports at the end whether anything actually ran.
+#
+# Each phase also accepts a `<HARNESS>_E2E_AUTH` sentinel alongside the provider
+# keys CI supplies. Several of these CLIs authenticate from their own on-disk
+# credentials (`~/.claude/.credentials.json`, `~/.codex/auth.json`, a `copilot`
+# login) with no key in the environment at all, so on a developer host the key
+# check alone would retire a phase whose harness is in fact ready to run. The
+# sentinel is how that host says so; its value is never read.
 have_env() {
     local label="$1"
     shift
@@ -77,7 +84,7 @@ for declaration in "${CONTROLLABLE[@]}"; do
     IFS=$'\t' read -r id mechanism <<<"$declaration"
     case "$id" in
     claude-code)
-        have_env "Claude auth" CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY || {
+        have_env "Claude auth" CLAUDE_E2E_AUTH CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY || {
             skipped+=("$id")
             continue
         }

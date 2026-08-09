@@ -20670,6 +20670,169 @@ fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there()
     let _ = std::fs::remove_dir_all(&cwd);
 }
 
+/// Drive one controlled opencode run through a pooled server under `pool`,
+/// interrupt it from a separate process, and leave the pool quiet again.
+///
+/// `extra` carries the per-turn settings the caller wants to vary. The run is
+/// only allowed to finish once its server is gone, so the next call starts from
+/// the same state this one did — otherwise "did the key widen?" would be
+/// answered by whichever run happened to still hold a live server.
+#[cfg(unix)]
+fn pooled_controlled_run(
+    pool: &std::path::Path,
+    log: &std::path::Path,
+    session: &str,
+    store: &std::path::Path,
+    cwd: &std::path::Path,
+    extra: &[&str],
+) {
+    let mock_profile = mock_profile_redirect();
+    let store_arg = store.display().to_string();
+    let cwd_arg = cwd.display().to_string();
+    let bin = bin_override("opencode");
+    let mut args = vec![
+        "run",
+        "--harness",
+        "opencode",
+        "--control",
+        "--session",
+        session,
+        "--session-dir",
+        &store_arg,
+        "--cwd",
+        &cwd_arg,
+        "--bin",
+        &bin,
+        "--compact",
+        "--env",
+        mock_profile.as_str(),
+    ];
+    args.extend_from_slice(extra);
+
+    let served_before = std::fs::read_to_string(log)
+        .map(|text| text.matches("PERMISSION_ANSWERED").count())
+        .unwrap_or(0);
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
+        .env("XDG_STATE_HOME", pool.display().to_string())
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the pooled controlled run");
+
+    wait_until("the control socket", || {
+        store
+            .join("control")
+            .join(format!("{session}.sock"))
+            .exists()
+    });
+    // The turn only does work once the server's permission ask is answered, so
+    // interrupting before that would abort a turn that never started.
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(log)
+            .map(|text| text.matches("PERMISSION_ANSWERED").count() > served_before)
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            session,
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        wait_for_pooled_server_to_exit(pool),
+        "the pool recorded the server it started"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn per_turn_settings_do_not_widen_the_pool_key() {
+    // Two dispatches differing ONLY in what is negotiated per turn — working
+    // directory, model, permission mode, prompt, system prompt, timeout — must
+    // land on the same pool entry. The entry's directory name IS the key, so a
+    // second one would mean every dispatch starts its own ~137MB server and the
+    // pool buys nothing; the key is allowed to widen only on the harness id and
+    // the `key_env` its `ServerSpec` declares.
+    let pool = control_store_dir("pool-key-root");
+    let store = control_store_dir("pool-key-store");
+    let first_cwd = control_store_dir("pool-key-cwd-a");
+    let second_cwd = control_store_dir("pool-key-cwd-b");
+    let log = pool.join("server.log");
+
+    pooled_controlled_run(
+        &pool,
+        &log,
+        "key-one",
+        &store,
+        &first_cwd,
+        &[
+            "--prompt",
+            "first turn",
+            "--mode",
+            "bypass",
+            "--model",
+            "one-model",
+            "--system",
+            "first system",
+            "--timeout",
+            "60",
+        ],
+    );
+    pooled_controlled_run(
+        &pool,
+        &log,
+        "key-two",
+        &store,
+        &second_cwd,
+        &[
+            "--prompt",
+            "second turn",
+            "--mode",
+            "default",
+            "--model",
+            "another-model",
+            "--system",
+            "second system",
+            "--timeout",
+            "90",
+        ],
+    );
+
+    let entries: Vec<String> = pool
+        .join("oneharness")
+        .join("servers")
+        .read_dir()
+        .expect("the pool root the dispatches used")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        entries.len(),
+        1,
+        "per-turn settings forked the pool: {entries:?}"
+    );
+
+    for dir in [&pool, &store, &first_cwd, &second_cwd] {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn the_control_server_fixture_refuses_a_body_length_it_will_not_reserve_room_for() {

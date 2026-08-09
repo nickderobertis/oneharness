@@ -70,6 +70,19 @@ impl HttpClient {
         let mut body: Vec<u8> = Vec::new();
         let mut buffer = [0u8; 8192];
         loop {
+            // Framing the peer broke is decided here, before the next blocking
+            // read, because it is decided the same way wherever the bytes came
+            // from — the head's own trailing bytes or a later arrival — and
+            // nothing that arrives later makes it readable. Waiting instead
+            // spends the whole timeout and reports a malformed answer as a slow
+            // one.
+            if chunks.malformed() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "the control server's answer cannot be read: it declared \
+                     Transfer-Encoding: chunked and then sent something that is not chunk framing",
+                ));
+            }
             // Completeness is decided BEFORE the next blocking read, so a whole
             // answer never costs a read timeout.
             if let Some(head) = head {
@@ -254,13 +267,18 @@ pub enum StreamPoll {
 
 /// Why a stream will yield no payload.
 ///
-/// Two reasons rather than one, because a stream can fail at either end of its
-/// framing: the head it started with, or an event that never ends. Both are the
-/// peer's doing and neither is a close, so both are said out loud.
+/// Three reasons rather than one, because a stream can fail anywhere in its
+/// framing: the head it started with, the chunk framing that head declared, or
+/// an event that never ends. All three are the peer's doing and none is a
+/// close, so all three are said out loud.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamUnreadable {
     /// The head cannot be framed, so nothing after it can be either.
     Head(HeadUnreadable),
+    /// The head declared `Transfer-Encoding: chunked` and the body is not
+    /// chunk-framed. Reading it as an unframed body instead would splice the
+    /// peer's framing bytes into the events a caller acts on.
+    Framing,
     /// One event grew past the bytes a reader will hold without ending. Not a
     /// pause in a long turn: nothing that arrives later makes it readable.
     Payload(usize),
@@ -270,6 +288,11 @@ impl std::fmt::Display for StreamUnreadable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             StreamUnreadable::Head(why) => write!(f, "{why}"),
+            StreamUnreadable::Framing => write!(
+                f,
+                "it declared Transfer-Encoding: chunked and then sent something that is not \
+                 chunk framing"
+            ),
             StreamUnreadable::Payload(bound) => {
                 write!(
                     f,
@@ -322,22 +345,26 @@ impl EventStream {
                 let body: Vec<u8> = self.pending.split_off(head.body_at);
                 self.pending.clear();
                 self.absorb(&body);
-                if let Some(unreadable) = self.overflowed() {
+                if let Some(unreadable) = self.unreadable() {
                     return unreadable;
                 }
                 continue;
             }
             self.absorb(bytes);
-            if let Some(unreadable) = self.overflowed() {
+            if let Some(unreadable) = self.unreadable() {
                 return unreadable;
             }
         }
     }
 
-    /// The answer for a stream whose framing outgrew what a reader holds, or
+    /// The answer for a stream the peer's own framing has made unreadable, or
     /// `None` while it is still readable. A long turn is quiet, never endless:
-    /// the accumulators only overflow on framing that has no ending in it.
-    fn overflowed(&self) -> Option<StreamPoll> {
+    /// the accumulators only overflow on framing that has no ending in it, and
+    /// broken chunk framing is not an arrival to wait on at all.
+    fn unreadable(&self) -> Option<StreamPoll> {
+        if self.chunks.malformed() {
+            return Some(StreamPoll::Unreadable(StreamUnreadable::Framing));
+        }
         (self.chunks.overflowed() || self.sse.overflowed()).then_some(StreamPoll::Unreadable(
             StreamUnreadable::Payload(MAX_BODY_BYTES),
         ))
@@ -791,6 +818,59 @@ mod tests {
             stream.poll(),
             StreamPoll::Unreadable(StreamUnreadable::Payload(MAX_BODY_BYTES))
         );
+    }
+
+    #[test]
+    fn an_answer_declared_chunked_that_is_not_chunk_framed_is_refused_not_reinterpreted() {
+        // The peer declared `Transfer-Encoding: chunked` and then sent a bare
+        // JSON body. Reading it as an unframed body accepts a shape the server
+        // said it was not sending — and the same reader would then splice a
+        // real answer's size lines and terminators into the caller's data.
+        // The server never closes, so nothing here can pass by reaching EOF.
+        let (port, server) = serve_once_without_closing(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{\"id\":\"ses_01\"}\r\n",
+        );
+        let started = std::time::Instant::now();
+        let err = client(port)
+            .send(&HttpRequest::for_test(
+                Method::Post,
+                "/api/session",
+                Some("{}"),
+            ))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("not chunk framing"), "{err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "broken framing is not an arrival to wait on"
+        );
+        drop(server);
+    }
+
+    #[test]
+    fn a_subscription_whose_chunk_framing_is_broken_says_so_rather_than_going_quiet() {
+        // The streaming half of the same contradiction: a caller that read it
+        // as quiet would wait out its timeout on a stream that will never
+        // yield a payload, and one that read the raw bytes would act on events
+        // it never actually received whole.
+        let (port, server) = serve_once_without_closing(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\
+              \r\n\r\ndata: {\"type\":\"session.idle\"}\r\n\r\n",
+        );
+        let mut stream = client(port)
+            .open_stream(
+                &HttpRequest::for_test(Method::Get, "/api/event", None),
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(
+            stream.poll(),
+            StreamPoll::Unreadable(StreamUnreadable::Framing)
+        );
+        assert!(StreamUnreadable::Framing
+            .to_string()
+            .contains("not chunk framing"));
+        drop(server);
     }
 
     #[test]

@@ -947,10 +947,12 @@ fn parse_status_line(line: &str) -> Option<StatusCode> {
 #[derive(Debug, Default)]
 pub struct ChunkedDecoder {
     pending: Vec<u8>,
-    /// Whether any chunk has been decoded yet. Once one has, an unreadable
-    /// size header is an incomplete arrival to wait on — never a body to hand
-    /// back raw, which would splice framing bytes into the caller's data.
-    decoded_any: bool,
+    /// Whether a whole size-header line arrived that is not a chunk size.
+    ///
+    /// The peer said `Transfer-Encoding: chunked`; this is the peer then
+    /// contradicting itself, at a trust boundary. Sticky, because nothing
+    /// arriving later re-frames bytes already read at the wrong offset.
+    malformed: bool,
     /// Whether the terminating zero-length chunk has arrived.
     complete: bool,
     /// Whether framing that never completed grew past [`MAX_BODY_BYTES`].
@@ -984,13 +986,20 @@ impl ChunkedDecoder {
     pub fn overflowed(&self) -> bool {
         self.overflowed
     }
+    /// Whether the peer framed its answer as chunked and then sent something
+    /// that is not chunk framing, so there is no body here to hand back — only
+    /// bytes whose shape nobody can vouch for.
+    #[must_use]
+    pub fn malformed(&self) -> bool {
+        self.malformed
+    }
 
     /// Feed `bytes`, returning whatever is now completely decoded. Incomplete
     /// framing is retained for the next call rather than guessed at — but only
     /// up to [`MAX_BODY_BYTES`], because "retained" is memory a peer that never
     /// finishes a chunk gets to keep asking for.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
-        if self.overflowed {
+        if self.overflowed || self.malformed {
             return Vec::new();
         }
         self.pending.extend_from_slice(bytes);
@@ -1031,14 +1040,18 @@ impl ChunkedDecoder {
             let size =
                 usize::from_str_radix(header.split(';').next().unwrap_or_default().trim(), 16);
             let Ok(size) = size else {
-                if self.decoded_any {
-                    return out;
-                }
-                // Not chunk framing after all: hand back what is there rather
-                // than dropping a body a server sent unframed.
-                out.extend_from_slice(&self.pending);
+                // A whole line arrived where a chunk size belongs and it is not
+                // one. This decoder is fed only when the head SAID `chunked`, so
+                // that is the peer contradicting its own framing — and framing is
+                // what says where the body starts and stops. Handing the bytes
+                // back as an unframed body is the reader picking a framing on the
+                // peer's behalf: it splices size lines and terminators into the
+                // caller's data, and lets a server declare one shape and deliver
+                // another. Refused instead, and stickily: bytes already read at
+                // the wrong offset are not re-framed by anything arriving later.
                 self.pending.clear();
-                return out;
+                self.malformed = true;
+                return Vec::new();
             };
             if size == 0 {
                 self.pending.clear();
@@ -1050,7 +1063,6 @@ impl ChunkedDecoder {
             }
             out.extend_from_slice(&self.pending[line_end..line_end + size]);
             self.pending.drain(..line_end + size);
-            self.decoded_any = true;
         }
     }
 }
@@ -1492,13 +1504,35 @@ mod tests {
     }
 
     #[test]
-    fn an_unframed_body_survives_a_decoder_that_expected_chunks() {
-        // A server that answered without the framing must not lose its body.
+    fn a_body_declared_chunked_that_is_not_chunk_framed_is_refused() {
+        // This decoder is fed only when the head said `Transfer-Encoding:
+        // chunked`, so a first line that is not a chunk size is the peer
+        // contradicting its own framing. Reading it as an unframed body would
+        // let a server declare one shape and deliver another.
         let mut decoder = ChunkedDecoder::default();
-        assert_eq!(
-            decoder.feed(b"{\"id\":\"x\"}\r\n"),
-            b"{\"id\":\"x\"}\r\n".to_vec()
+        assert!(decoder.feed(b"{\"id\":\"x\"}\r\n").is_empty());
+        assert!(decoder.malformed());
+        assert!(
+            !decoder.is_complete(),
+            "unreadable framing is not an ending"
         );
+        // Sticky: a size header that arrives after the framing broke does not
+        // make the bytes before it readable.
+        assert!(decoder.feed(b"4\r\nabcd\r\n0\r\n\r\n").is_empty());
+        assert!(decoder.malformed());
+        assert!(!decoder.is_complete());
+    }
+
+    #[test]
+    fn framing_that_breaks_after_a_decoded_chunk_is_refused_rather_than_awaited() {
+        // The same contradiction, mid-body. Waiting on it instead spends the
+        // reader's whole timeout on bytes that will never frame, and reports a
+        // peer's malformed answer as a slow one.
+        let mut decoder = ChunkedDecoder::default();
+        assert_eq!(decoder.feed(b"4\r\nabcd\r\n"), b"abcd".to_vec());
+        assert!(!decoder.malformed());
+        assert!(decoder.feed(b"not-a-size\r\nmore\r\n").is_empty());
+        assert!(decoder.malformed());
     }
 
     #[test]

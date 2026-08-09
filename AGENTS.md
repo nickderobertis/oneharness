@@ -695,28 +695,18 @@ shape. When you add one:
   <!-- llmlint: ignore-end[no_redundant_instruction_pointers, agents_md_durable_and_terse, comments_earn_their_place] -->
 <!-- llmlint: ignore-block[no_redundant_instruction_pointers] The capability matrix is per-harness data that lives in `README.md` (like the mode, resume, and events tables above); naming the file an adapter author must edit is the instruction, not a deferral of one. -->
 - Declare its `control` ([`ControlShape`]) ONLY once a live interrupt through
-  **oneharness** is proven. `run --control --session <NAME>` opens a 0600 unix
-  socket (`<session-dir>/control/<name>.sock`) for the run's lifetime; the
-  separate `oneharness interrupt --session <NAME>` process addresses it. The
-  refusal a declared-but-unexercised shape produces — `ok:true` while the turn
-  keeps running — is strictly worse than `None` (a loud usage error), so
-  `None` is the honest default. Source the mechanism from
-  `scripts/explore-control.sh <id>` (the probe drives each harness's own control
-  path, interrupts a real turn, and judges on the FILESYSTEM: goose and copilot
-  both report a normal `end_turn` after a genuine cancellation, so the harness's
-  own stop reason proves nothing; the probe restates the mechanism per harness
-  because it implements each path itself, so `scripts/check-control-probes.sh`
-  gates those tables against the registry rather than letting the alarm rot).
-  Then add the `oh_control_enforce <id>` phase
-  to `scripts/e2e-control.sh` — a per-*feature* live suite (`just live-control`),
-  deliberately outside the per-harness scripts because each phase drives a
-  multi-step turn and then waits out a 15s freeze window. Update the control
-  matrix in `README.md`. A mechanism needing a sidecar server also declares
-  `server` ([`ServerSpec`]); the generic pool in `io::server_pool` keys it on
-  (harness id, resolved `key_env` values, launch overrides) — per-turn and
-  per-thread settings must NOT widen that key — and holds membership as a
-  **lease naming a live pid, never a counter**, because a counter leaks a
-  permanently-live server the first time a dispatch is SIGKILLed.
+  **oneharness** is proven: a declared-but-unexercised shape answers `ok:true`
+  while the turn keeps running, which is worse than the loud usage error `None`
+  gives, so `None` is the honest default. Source the mechanism from
+  `scripts/explore-control.sh <id>`, which judges on the FILESYSTEM — no
+  harness's own stop reason is evidence — and restates each mechanism it
+  drives, so update its tables too (`scripts/check-control-probes.sh` gates them
+  against the registry). Add the `oh_control_enforce <id>` phase to
+  `scripts/e2e-control.sh` (`just live-control`, opt-in and outside the gate),
+  and update the control matrix in `README.md`. A mechanism needing a sidecar
+  server also declares `server` ([`ServerSpec`]): per-turn and per-thread
+  settings must NOT widen its pool key, and pool membership is a **lease naming
+  a live pid, never a counter**.
 <!-- llmlint: ignore-end[no_redundant_instruction_pointers] -->
 - Give the harness its `global_hook` (the user-global hook location, for `sync
   --global` / `install` at `Scope::Global`) and its `gate_deny` (how it expresses

@@ -21,6 +21,7 @@ fi
 
 python3 - "$probe" <<'PY'
 import importlib.util
+import io
 import socket
 import sys
 import threading
@@ -80,6 +81,11 @@ def request(answer, hold=False, timeout=3.0):
         thread.join(timeout=5)
 
 
+# Each case below catches broadly on purpose: the reader under test is allowed
+# to refuse in more than one way, so an unexpected exception type is a result to
+# report through `check` rather than a traceback that ends the sweep and hides
+# every case after it.
+#
 # A whole, well-framed answer still reads — the positive control, without which
 # every refusal below could hold for the wrong reason.
 try:
@@ -87,7 +93,7 @@ try:
         b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n{\"id\":\"ses_01\"}", hold=True
     )
     check("framed answer", (status, body) == (200, '{"id":"ses_01"}'), f"{status} {body!r}")
-except Exception as err:  # noqa: BLE001
+except Exception as err:
     check("framed answer", False, f"{type(err).__name__}: {err}")
 
 # So does a chunked one, which is what crush answers with.
@@ -97,7 +103,7 @@ try:
         hold=True,
     )
     check("chunked answer", (status, body) == (200, '{"a":1}'), f"{status} {body!r}")
-except Exception as err:  # noqa: BLE001
+except Exception as err:
     check("chunked answer", False, f"{type(err).__name__}: {err}")
 
 # A body cut short of its own declaration is refused, not returned as half a
@@ -107,7 +113,7 @@ try:
     check("truncated body", False, "a short body was accepted as whole")
 except ValueError:
     pass
-except Exception as err:  # noqa: BLE001
+except Exception as err:
     check("truncated body", False, f"{type(err).__name__}: {err}")
 
 # A read that never completes is a timeout, not an answer. Held open with no
@@ -117,7 +123,7 @@ try:
     check("timed-out read", False, "a timed-out read was accepted as an answer")
 except socket.timeout:
     pass
-except Exception as err:  # noqa: BLE001
+except Exception as err:
     check("timed-out read", False, f"{type(err).__name__}: {err}")
 
 # A first line that is not a status line is not a `0` status either: promoting
@@ -132,7 +138,7 @@ for label, answer in [
         check(label, False, "a non-status line was read as a status")
     except ValueError:
         pass
-    except Exception as err:  # noqa: BLE001
+    except Exception as err:
         check(label, False, f"{type(err).__name__}: {err}")
 
 # A head that merely CARRIES the word must not frame the body as chunked: the
@@ -144,7 +150,7 @@ try:
         hold=True,
     )
     check("chunked lookalike", (status, body) == (200, '{"a":1}'), f"{status} {body!r}")
-except Exception as err:  # noqa: BLE001
+except Exception as err:
     check("chunked lookalike", False, f"{type(err).__name__}: {err}")
 
 # Chunked framing that never terminates is refused rather than handed back as
@@ -154,15 +160,13 @@ try:
     check("unterminated chunks", False, "an unterminated chunked body was accepted")
 except ValueError:
     pass
-except Exception as err:  # noqa: BLE001
+except Exception as err:
     check("unterminated chunks", False, f"{type(err).__name__}: {err}")
 
 # A JSON-RPC frame off a child's stdout is bounded the same way: the newline
 # that ends one is the child's to send, so a line with none in it must not be
 # held. The over-long frame is dropped whole and the reader resyncs, rather than
 # handing half a document to `json.loads`.
-import io  # noqa: E402
-
 limit = 64
 stream = io.StringIO('{"a":1}\n' + "x" * (limit * 3) + '\n{"b":2}\n')
 frames = list(probe.bounded_lines(stream, limit))
@@ -176,6 +180,14 @@ check(
 if failures:
     for failure in failures:
         print(f"check-control-probe-http: {failure}", file=sys.stderr)
+    print(
+        "check-control-probe-http: each line above is <check>: <what the reader did>. "
+        "Fix the boundary in scripts/explore_control.py — http_request (how much it "
+        "reads and when it stops), parse_response_head (status line, Content-Length, "
+        "Transfer-Encoding), dechunk (whether the body terminated), or bounded_lines "
+        "(per-frame ceiling) — then rerun: bash scripts/check-control-probe-http.sh",
+        file=sys.stderr,
+    )
     sys.exit(1)
 PY
 

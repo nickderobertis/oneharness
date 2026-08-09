@@ -350,7 +350,13 @@ mod tests {
                     break;
                 }
                 if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                    length = value.trim().parse().unwrap_or(0);
+                    // A declared length this double cannot read is a framing
+                    // error, not an empty body: reading none of a body that is
+                    // there would hand the test a truncated request.
+                    length = value
+                        .trim()
+                        .parse()
+                        .unwrap_or_else(|_| panic!("unreadable Content-Length: {value}"));
                 }
                 request.push_str(&line);
                 if line == "\r\n" {

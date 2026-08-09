@@ -412,11 +412,16 @@ fn run_http_control_server(log_path: &str) -> ! {
     if fault == HttpControlFault::NeverReady {
         std::process::exit(0);
     }
-    let port: u16 = args
-        .windows(2)
-        .find(|w| w[0] == "--port")
-        .and_then(|w| w[1].parse().ok())
-        .unwrap_or(0);
+    // The pool dials the port it put on the argv, so an absent or unreadable
+    // one is refused rather than defaulted: binding `0` would listen on some
+    // port nobody is going to connect to, which reads as a server that never
+    // came up rather than as a launch that was wrong.
+    let port: u16 = match args.windows(2).find(|w| w[0] == "--port") {
+        Some(pair) => pair[1]
+            .parse()
+            .unwrap_or_else(|_| panic!("mock harness: `--port {}` is not a port", pair[1])),
+        None => panic!("mock harness: the control server was launched with no --port"),
+    };
     let listener = std::net::TcpListener::bind(("127.0.0.1", port))
         .expect("the mock control server could not bind its port");
     let log = std::sync::Arc::new(std::sync::Mutex::new(
@@ -449,7 +454,14 @@ fn run_http_control_server(log_path: &str) -> ! {
                     break;
                 }
                 if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
-                    length = value.trim().parse().unwrap_or(0);
+                    // A length that cannot be read is not a zero-length body:
+                    // reading none of a body that is there leaves the next
+                    // request's bytes in the stream.
+                    let Ok(declared) = value.trim().parse() else {
+                        reply_bad_request(&mut socket);
+                        return;
+                    };
+                    length = declared;
                 }
                 if header == "\r\n" {
                     break;
@@ -560,6 +572,16 @@ fn run_http_control_server(log_path: &str) -> ! {
         });
     }
     std::process::exit(0);
+}
+
+/// Refuse a request whose framing this fixture could not read. Answering keeps
+/// the client from waiting out a timeout on a connection nobody will write to.
+fn reply_bad_request(socket: &mut std::net::TcpStream) {
+    let _ = write!(
+        socket,
+        "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    let _ = socket.flush();
 }
 
 /// Shut the mock control server down once it has served what it was standing up

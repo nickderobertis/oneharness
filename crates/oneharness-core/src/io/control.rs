@@ -29,6 +29,10 @@ use crate::io::http_turn::HttpTurn;
 
 /// How long a client waits for a run to answer before giving up. Generous
 /// enough for a busy run, short enough that a wedged peer is not a hang.
+///
+/// Unix-gated with the socket code it bounds: on Windows there is no socket to
+/// wait on, and [`imp::send`] refuses before it would ever have one.
+#[cfg(unix)]
 const CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The most one frame may be — in either direction — before it is refused
@@ -41,6 +45,11 @@ const CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// keeps writing. It binds the answer as well as the request — the client is
 /// the supervisor's process, and whatever is listening on that socket path is
 /// no more trusted by it than a caller is by the run.
+///
+/// Unix-gated with the two readers it bounds, for the same reason as
+/// [`CLIENT_TIMEOUT`]: neither reader is compiled on a platform with no unix
+/// socket to read from.
+#[cfg(unix)]
 const MAX_FRAME_BYTES: u64 = 64 * 1024;
 
 /// The single clock read this module makes, kept here so
@@ -657,8 +666,17 @@ mod tests {
     use super::*;
     use crate::domain::control::socket_path;
 
+    /// A private directory for one test's socket.
+    ///
+    /// Rooted at `/tmp` rather than `std::env::temp_dir()` because this path
+    /// becomes a socket *address*, not just a place to put files:
+    /// `sockaddr_un.sun_path` holds 104 bytes on macOS against Linux's 108, and
+    /// macOS's per-user `$TMPDIR` is a `/var/folders/…` path that [`bind`]
+    /// canonicalizes to `/private/var/folders/…` before binding — spending over
+    /// half the budget on the root alone, so the address overruns `sun_path`
+    /// there while fitting comfortably on Linux.
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = PathBuf::from("/tmp").join(format!(
             "oh-control-{}-{}-{:?}",
             tag,
             std::process::id(),

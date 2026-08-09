@@ -605,7 +605,7 @@ pub fn process_identity(pid: Pid) -> Option<ProcessIdentity> {
             }
             let ticks =
                 (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
-            return ProcessIdentity::new(ticks.to_string());
+            ProcessIdentity::new(ticks.to_string())
         }
     }
     #[cfg(target_os = "macos")]
@@ -856,10 +856,14 @@ impl Drop for EntryLock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::control::{pool_key, ServerTransport};
+    use crate::domain::control::ServerTransport;
 
+    /// Unix-gated with the lifecycle tests that use it: every acquire/sweep test
+    /// drives a real long-lived child through [`sleeper_plan`], so this key has
+    /// no consumer on a platform where that stand-in server does not exist.
+    #[cfg(unix)]
     fn key() -> PoolKey {
-        pool_key("test", &[], &[])
+        crate::domain::control::pool_key("test", &[], &[])
     }
 
     fn temp_root(tag: &str) -> PathBuf {
@@ -876,6 +880,12 @@ mod tests {
     /// A stand-in server: a real, long-lived child process. The pool only ever
     /// asks the OS about pids, so a `sleep` exercises exactly the same paths a
     /// `codex app-server` would.
+    ///
+    /// Unix-gated because `sleep` is the stand-in: Windows has no such program
+    /// on PATH, so every test that reaches for one is `#[cfg(unix)]` too. That
+    /// is a gap in where the pool's lifecycle is *proven*, not in where it
+    /// works — `pid_alive`/`process_identity` carry real Windows arms.
+    #[cfg(unix)]
     fn sleeper_plan() -> LaunchPlan {
         LaunchPlan::new(
             "sleep",

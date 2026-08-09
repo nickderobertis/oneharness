@@ -39,7 +39,8 @@ import tempfile
 import threading
 import time
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from types import FrameType
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 # Enough steps that the turn cannot finish before the probe interrupts it.
 STEPS = 60
@@ -150,6 +151,11 @@ class JsonRpc:
         self.notifications: List[dict] = []
         self.server_requests: List[dict] = []
         self.lock = threading.Lock()
+        # `Any` result: the handler answers a server->client request with a JSON
+        # `result`, whose shape is the *harness's* to define and differs per
+        # method (an ACP permission grant, an approval verdict). Narrowing it
+        # here would pin one harness's reply shape into the shared transport.
+        # `None` stays meaningful and separate: no answer, so none is sent.
         self.on_server_request: Optional[Callable[[dict], Optional[Any]]] = None
         threading.Thread(target=self._read_loop, daemon=True).start()
 
@@ -194,7 +200,11 @@ class JsonRpc:
     def notify(self, method: str, params: Optional[dict] = None) -> None:
         self._write({"jsonrpc": "2.0", "method": method, "params": params or {}})
 
-    def send_response(self, request_id: Any, result: Any) -> None:
+    # `result` is `Any` for the same reason the handler that produced it is: it
+    # is the harness's own reply payload, echoed back verbatim. `request_id`
+    # takes the real type JSON-RPC 2.0 gives it — a string or a number, copied
+    # from the request being answered.
+    def send_response(self, request_id: Union[int, str], result: Any) -> None:
         self._write({"jsonrpc": "2.0", "id": request_id, "result": result})
 
     def request(self, method: str, params: Optional[dict] = None, timeout: float = 120.0) -> dict:
@@ -220,7 +230,7 @@ class JsonRpc:
 
 
 def http_request(
-    address: Tuple[str, Any],
+    address: Tuple[str, int],
     unix_path: Optional[str],
     method: str,
     path: str,
@@ -526,7 +536,11 @@ def probe_codex(bin_name: str) -> Tuple[str, str]:
         thread_id = (started["result"].get("thread") or {}).get("id")
         if not thread_id:
             return Verdict.BLOCKED, f"thread/start returned no thread id: {started['result']}"
-        turn: Dict[str, Any] = {}
+        # The two outcomes the worker thread below can hand back, named rather
+        # than left as `Any`: the JSON-RPC response, or the fault that replaced
+        # it. The cell exists so a thrown turn is retained instead of dying with
+        # its thread.
+        turn: Dict[str, Union[dict, Exception]] = {}
 
         def start_turn() -> None:
             try:
@@ -758,6 +772,9 @@ def probe_acp(bin_name: str, launch: List[str]) -> Tuple[str, str]:
     try:
         rpc = JsonRpc(process)
 
+        # `Any` result: an ACP permission reply is the harness's own shape, and
+        # this probe is the drift alarm for it — pinning a shape here would
+        # assert the very thing the probe exists to observe.
         def answer(message: dict) -> Optional[Any]:
             if message.get("method") != "session/request_permission":
                 return None
@@ -843,7 +860,7 @@ NO_SURFACE = {
 def with_deadline(seconds: int, body: Callable[[], Tuple[str, str]]) -> Tuple[str, str]:
     """Run `body`, converting a wedged probe into a BLOCKED verdict."""
 
-    def expire(_signum: int, _frame: Any) -> None:
+    def expire(_signum: int, _frame: Optional[FrameType]) -> None:
         raise TimeoutError(f"probe exceeded {seconds}s")
 
     previous = signal.signal(signal.SIGALRM, expire)

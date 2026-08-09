@@ -18908,19 +18908,55 @@ fn interrupt_reports_a_failed_stdout_write_instead_of_panicking() {
 /// A private, per-test session store (which is also where the run's control
 /// socket lives, at `<dir>/control/<name>.sock`).
 fn control_store_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "oh-control-{tag}-{}-{}",
-        std::process::id(),
-        tag.len()
-    ));
+    let name = format!("oh-control-{tag}-{}-{}", std::process::id(), tag.len());
+    let dir = control_store_root(tag, &name).join(&name);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
 
+/// The root a control store goes under.
+///
+/// `/tmp` rather than `std::env::temp_dir()`, because on unix this path becomes
+/// a socket *address* and not just a place to put files: `sockaddr_un.sun_path`
+/// holds 104 bytes on macOS against Linux's 108, and macOS's per-user `$TMPDIR`
+/// is a `/var/folders/…` path the bind canonicalizes to `/private/var/folders/…`
+/// before binding — over half the budget spent on the root alone, so an address
+/// under it overruns `sun_path` on macOS while fitting comfortably on Linux.
+#[cfg(unix)]
+fn control_store_root(tag: &str, name: &str) -> PathBuf {
+    // Budget the part a caller controls against the TIGHTEST platform, so a
+    // too-long tag fails on Linux instead of only in macOS CI: `/tmp`
+    // canonicalizes to `/private/tmp` there, leaving 90 of the 103 usable bytes
+    // for `<name>/control/<session>.sock`. The session name is the caller's, so
+    // it is charged at the tag's length or 16 — whichever is larger — which
+    // every control test is comfortably inside.
+    const BUDGET: usize = 103 - "/private/tmp/".len();
+    let session = tag.len().max(16);
+    let longest = name.len() + "/control/".len() + session + ".sock".len();
+    assert!(
+        longest <= BUDGET,
+        "control store `{name}` leaves no room for a `sun_path`-sized socket \
+         address ({longest} > {BUDGET}) — shorten the tag"
+    );
+    PathBuf::from("/tmp")
+}
+
+/// No socket is ever bound under this root — `--control` is refused outright
+/// where there are no unix sockets — so the ordinary temp dir is right and
+/// there is no address length to budget for.
+#[cfg(not(unix))]
+fn control_store_root(_tag: &str, _name: &str) -> PathBuf {
+    std::env::temp_dir()
+}
+
 /// Poll until `condition` holds or the deadline passes. Control is inherently a
 /// race between two processes, so the tests wait on observable state (a socket
 /// appearing, a prompt frame reaching the harness) rather than on a sleep.
+///
+/// Unix-gated with the control tests that poll: control needs a unix socket, so
+/// there is nothing to wait on where there is none.
+#[cfg(unix)]
 fn wait_until(label: &str, mut condition: impl FnMut() -> bool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     while std::time::Instant::now() < deadline {

@@ -1432,13 +1432,22 @@ fn finalize_session(
     }
     // Report the fresh capture if any, else the token we resumed with.
     let token = captured.or_else(|| wiring.plan.resume_token.clone());
+    // The planned phase describes the *anchor*. A candidate that is not the anchor
+    // never received the stored token (the job loop's `session_anchor` filter), so
+    // it started a new conversation whatever the plan intended — reporting
+    // `continue` there would claim a continuation nothing performed.
+    let phase = if bound == wiring.harness {
+        wiring.plan.phase
+    } else {
+        session::SessionPhase::Create
+    };
     let store_file = std::path::absolute(&wiring.path)
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| wiring.path.display().to_string());
     Some(SessionReport {
         // Echo the sanitized handle — exactly what the store keyed the file on.
         name: oneharness_core::domain::history::sanitize_name(&wiring.name),
-        phase: wiring.plan.phase,
+        phase,
         token,
         store_file: Some(store_file),
     })

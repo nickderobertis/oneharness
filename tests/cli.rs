@@ -56,6 +56,27 @@ fn run(args: &[&str], envs: &[(&str, &str)]) -> Output {
     cmd.output().expect("failed to run oneharness")
 }
 
+/// `--env` for a mock-harness child this test is going to have killed.
+///
+/// A cancelled or timed-out run tears its harness process down with `SIGKILL`
+/// after the TERM grace, so that process never flushes its coverage profile and
+/// leaves a truncated `.profraw`. `just coverage` collects every such file from
+/// the target directory, and one bad header fails the whole `llvm-profdata
+/// merge` — taking the gate down over a *fixture* whose coverage nobody wanted.
+///
+/// This targets the harness child only (`--env` sets the environment of each
+/// harness process, not of oneharness), so the binary under test keeps
+/// contributing its own coverage exactly as before. Harmless when the fixture is
+/// not instrumented, which ignores the variable.
+fn mock_profile_redirect() -> String {
+    format!(
+        "LLVM_PROFILE_FILE={}",
+        std::env::temp_dir()
+            .join("oneharness-killed-mock-%p.profraw")
+            .display()
+    )
+}
+
 /// The `ONEHARNESS_*` env overrides recognized as a config layer. Cleared in
 /// `run_with_config` so a developer's ambient value can never reshape a
 /// config-layering assertion; a test that wants one passes it via `envs`.
@@ -4010,6 +4031,7 @@ fn timeout_preserves_partial_telemetry_in_report_and_history() {
 #[cfg(unix)]
 #[test]
 fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
+    let mock_profile = mock_profile_redirect();
     // The CLI face of cancellation. The harness writes nothing at all, so the run
     // has no line to react to, and its descendant outlives a launcher kill. A
     // SIGTERM to oneharness must therefore tear the whole tree down through the
@@ -4041,6 +4063,8 @@ fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
             "--history-dir",
             &history_arg,
             "--compact",
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -4103,6 +4127,7 @@ fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
 #[cfg(unix)]
 #[test]
 fn a_cancelled_batch_claims_no_invocation_for_its_queued_prompts() {
+    let mock_profile = mock_profile_redirect();
     // The queued half of cancellation, end to end. A batch of three prompts runs
     // one at a time, so when the signal lands only the first prompt has ever been
     // invoked — the other two are still queued. They are still the caller's
@@ -4145,6 +4170,8 @@ fn a_cancelled_batch_claims_no_invocation_for_its_queued_prompts() {
             "--history-dir",
             &history_arg,
             "--compact",
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -4238,6 +4265,7 @@ fn a_cancelled_batch_claims_no_invocation_for_its_queued_prompts() {
 #[cfg(unix)]
 #[test]
 fn a_cancelled_run_keeps_the_output_it_had_already_produced() {
+    let mock_profile = mock_profile_redirect();
     // Cancelling is not a reason to throw away evidence. The harness emits a
     // complete transcript and then keeps its descendant alive, so the run is cut
     // short *after* it produced parseable output — which must still normalize
@@ -4276,6 +4304,8 @@ fn a_cancelled_run_keeps_the_output_it_had_already_produced() {
             "--history-dir",
             &history_arg,
             "--compact",
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -4327,6 +4357,7 @@ fn a_cancelled_run_keeps_the_output_it_had_already_produced() {
 #[cfg(unix)]
 #[test]
 fn a_cancelled_fallback_candidate_stops_the_chain() {
+    let mock_profile = mock_profile_redirect();
     // Falling through a cancellation would spawn the very next harness the
     // cancellation was meant to prevent — so the chain stops, and `results`
     // holds only the candidate that was actually attempted.
@@ -4354,6 +4385,8 @@ fn a_cancelled_fallback_candidate_stops_the_chain() {
             "--timeout",
             "60",
             "--compact",
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -4498,6 +4531,7 @@ fn a_second_host_signal_stops_waiting_for_teardown() {
 #[cfg(unix)]
 #[test]
 fn a_host_signal_cancels_a_streaming_run_and_still_terminates_the_stream() {
+    let mock_profile = mock_profile_redirect();
     // Streaming is where a silent harness is hardest to stop: the loop reacts to
     // lines, and there are none. The consumer must still get its terminal
     // `result` envelope — a stream that simply stops is indistinguishable from a
@@ -4520,6 +4554,8 @@ fn a_host_signal_cancels_a_streaming_run_and_still_terminates_the_stream() {
             "--timeout",
             "60",
             "--stream",
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -19424,6 +19460,7 @@ fn a_run_without_control_opens_no_socket_and_keeps_its_argv() {
 #[cfg(unix)]
 #[test]
 fn a_host_signal_cancels_a_controlled_run_and_takes_its_socket_with_it() {
+    let mock_profile = mock_profile_redirect();
     // A controlled run is the one shape that holds the harness's stdin open past
     // the prompt, so a harness waiting for its next frame never reaches EOF on its
     // own — exactly the run a supervisor's SIGTERM must still be able to end. The
@@ -19465,6 +19502,8 @@ fn a_host_signal_cancels_a_controlled_run_and_takes_its_socket_with_it() {
             "--timeout",
             "60",
             "--compact",
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -20018,6 +20057,7 @@ fn interrupt_without_a_resolvable_store_is_a_usage_error() {
 #[cfg(unix)]
 #[test]
 fn an_acp_controlled_run_answers_permission_and_records_a_cancel_the_harness_calls_end_turn() {
+    let mock_profile = mock_profile_redirect();
     // The two ACP behaviors that decide whether this works at all, driven
     // through the real CLI against a server that reproduces both:
     //   * the turn does not begin until the client answers
@@ -20052,6 +20092,8 @@ fn an_acp_controlled_run_answers_permission_and_records_a_cancel_the_harness_cal
             "--bin",
             &bin_override("copilot"),
             "--compact",
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

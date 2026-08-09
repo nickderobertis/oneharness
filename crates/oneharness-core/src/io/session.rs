@@ -12,6 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::domain::harness::HarnessIdentity;
 use crate::domain::history::{format_rfc3339, project_slug, sanitize_name};
 use crate::domain::session::{SessionRecord, SCHEMA_VERSION};
 
@@ -66,7 +67,9 @@ pub fn session_path(dir: &Path, project: &Path, name: &str) -> PathBuf {
 
 /// Read the stored record at `path`, or `None` when it is absent or unreadable
 /// (a corrupt/unparseable record is treated as absent — the run starts fresh
-/// rather than aborting on a store fault).
+/// rather than aborting on a store fault). That includes a record whose `harness`
+/// no longer parses as a [`crate::domain::harness::HarnessIdentity`]: there is
+/// nothing to resume it against, so it reads as no record.
 #[must_use]
 pub fn read(path: &Path) -> Option<SessionRecord> {
     let text = fs::read_to_string(path).ok()?;
@@ -74,15 +77,15 @@ pub fn read(path: &Path) -> Option<SessionRecord> {
 }
 
 /// Create or update the record binding `name` → `token` for `harness` (the
-/// **variant-qualified** id — see [`SessionRecord::harness`]), preserving the
-/// original `created` when a prior record exists. The project
+/// **variant-qualified** identity — see [`SessionRecord::harness`]), preserving
+/// the original `created` when a prior record exists. The project
 /// subdirectory is created as needed and the file is written atomically (temp +
 /// rename). Returns the I/O error for the caller to warn on — the store is
 /// best-effort and never takes a run's results down.
 pub fn write(
     path: &Path,
     project: &Path,
-    harness: &str,
+    harness: &HarnessIdentity,
     name: &str,
     token: &str,
     existing: Option<&SessionRecord>,
@@ -93,7 +96,7 @@ pub fn write(
         schema_version: SCHEMA_VERSION.to_string(),
         name: sanitize_name(name),
         project: project.display().to_string(),
-        harness: harness.to_string(),
+        harness: harness.clone(),
         token: token.to_string(),
         created,
         updated: now,
@@ -164,33 +167,18 @@ mod tests {
         let project = Path::new("/home/me/proj");
         let path = session_path(&dir, project, "chat");
 
-        write(
-            &path,
-            project,
-            "claude-code:alternate",
-            "chat",
-            "sess-1",
-            None,
-        )
-        .unwrap();
+        let alternate: HarnessIdentity = "claude-code:alternate".parse().unwrap();
+        write(&path, project, &alternate, "chat", "sess-1", None).unwrap();
         let first = read(&path).unwrap();
         assert_eq!(first.token, "sess-1");
         // The whole identity, not the adapter: the token is only usable under the
         // variant that minted it.
-        assert_eq!(first.harness, "claude-code:alternate");
+        assert_eq!(first.harness, alternate);
         assert_eq!(first.schema_version, SCHEMA_VERSION);
         assert_eq!(first.name, "chat");
 
         // A later run refreshes the token but keeps the original `created`.
-        write(
-            &path,
-            project,
-            "claude-code:alternate",
-            "chat",
-            "sess-2",
-            Some(&first),
-        )
-        .unwrap();
+        write(&path, project, &alternate, "chat", "sess-2", Some(&first)).unwrap();
         let second = read(&path).unwrap();
         assert_eq!(second.token, "sess-2");
         assert_eq!(second.created, first.created);
@@ -204,6 +192,30 @@ mod tests {
         let path = dir.join("bad.json");
         fs::write(&path, b"{ not json").unwrap();
         assert!(read(&path).is_none());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_ignores_a_record_bound_to_an_unrunnable_identity() {
+        // Well-formed JSON whose `harness` names no selectable unit — a harness
+        // dropped from the registry, or a hand-edited store. There is nothing to
+        // resume it against, so it reads as absent and the run starts fresh
+        // rather than carrying an id no candidate can ever match.
+        let dir = temp_dir("unrunnable");
+        for harness in ["gone-harness", "claude-code:", "claude-code:a:b", ""] {
+            let path = dir.join("x.json");
+            let record = serde_json::json!({
+                "schema_version": SCHEMA_VERSION,
+                "name": "chat",
+                "project": "/home/me/proj",
+                "harness": harness,
+                "token": "sess-1",
+                "created": "2026-01-01T00:00:00Z",
+                "updated": "2026-01-01T00:00:00Z",
+            });
+            fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+            assert!(read(&path).is_none(), "`{harness}` must not read back");
+        }
         fs::remove_dir_all(&dir).ok();
     }
 }

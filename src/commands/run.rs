@@ -10,7 +10,7 @@ use crate::commands::{
 };
 use oneharness_core::domain::batch::{self, BatchStrategy};
 use oneharness_core::domain::fallback::{self, RunMode};
-use oneharness_core::domain::harness::{self, BuildCtx, HarnessSpec};
+use oneharness_core::domain::harness::{self, BuildCtx, HarnessIdentity, HarnessSpec};
 use oneharness_core::domain::mock::{self, MockDelivery};
 use oneharness_core::domain::mode::{ModeHeadless, PermissionMode};
 use oneharness_core::domain::report::{
@@ -271,7 +271,6 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // mapping. `None` when the flag was not passed.
     let session_wiring = setup_session(
         args,
-        &specs,
         &selected_ids,
         batch_run,
         fallback_mode,
@@ -284,7 +283,8 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // the single harness in parallel). The resume token is applied ONLY to this
     // unit's argv below, never to a different fallback candidate that happens to
     // win — and never to a *sibling variant*, whose identity cannot resolve it.
-    let session_anchor: Option<String> = session_wiring.as_ref().map(|w| w.harness.clone());
+    let session_anchor: Option<HarnessIdentity> =
+        session_wiring.as_ref().map(|w| w.harness.clone());
     // An explicitly selected format keeps its authority, but a named session can
     // use it only when that harness actually emits an id in the format. Refuse a
     // lossy pin before spawning instead of accepting `--session` and silently
@@ -464,7 +464,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                 telemetry.format
             } else if want_events {
                 spec.events_format.unwrap_or(spec.output_format)
-            } else if session_anchor.as_deref() == Some(selected_id.as_str()) {
+            } else if session_anchor.as_ref().map(HarnessIdentity::as_str) == Some(selected_id) {
                 spec.session_format()
                     .expect("setup_session selected only a harness with a session-bearing format")
             } else {
@@ -548,7 +548,10 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             // anchor is the only unit, so this filter is a no-op there.
             resume: session_resume
                 .clone()
-                .filter(|_| session_anchor.as_deref() == Some(selected_id.as_str()))
+                .filter(|_| {
+                    session_anchor.as_ref().map(HarnessIdentity::as_str)
+                        == Some(selected_id.as_str())
+                })
                 .or_else(|| resume.map(str::to_string)),
             fork: args.fork,
             mode,
@@ -1203,12 +1206,12 @@ fn build_report(
 /// what it already held, and the create-vs-continue plan.
 struct SessionWiring {
     name: String,
-    /// The anchor's **variant-qualified** id (`claude-code:alternate`) — the one
-    /// candidate whose argv carries the stored token, because that token exists
-    /// only in the session namespace of the identity that minted it.
-    harness: String,
-    /// The anchor's registry entry, for the session-bearing output format.
-    spec: &'static HarnessSpec,
+    /// The anchor's **variant-qualified** identity (`claude-code:alternate`) —
+    /// the one candidate whose argv carries the stored token, because that token
+    /// exists only in the session namespace of the identity that minted it. Its
+    /// registry entry (for the session-bearing output format) comes from
+    /// [`HarnessIdentity::spec`] rather than a second field that could disagree.
+    harness: HarnessIdentity,
     project: PathBuf,
     path: PathBuf,
     existing: Option<SessionRecord>,
@@ -1256,7 +1259,6 @@ fn session_capable_ids() -> String {
 /// ends up winning is never handed a token its identity cannot resolve.
 fn setup_session(
     args: &RunArgs,
-    specs: &[&'static HarnessSpec],
     selected_ids: &[String],
     batch_run: bool,
     fallback_mode: bool,
@@ -1274,32 +1276,32 @@ fn setup_session(
     // A record this build cannot resume is no record at all: the run creates a
     // fresh session rather than guessing which identity minted a legacy token.
     let existing = session::resumable(session_io::read(&path));
-    let candidates: Vec<(&'static HarnessSpec, &str)> = specs
+    // Selection already rejected an unknown harness or a malformed variant, so
+    // every composed id here parses; the typed identity is what the record binds
+    // to and what the argv filter matches on.
+    let candidates: Vec<HarnessIdentity> = selected_ids
         .iter()
-        .copied()
-        .zip(selected_ids.iter().map(String::as_str))
+        .map(|id| {
+            id.parse()
+                .expect("harness selection validated every composed id")
+        })
         .collect();
-    let (spec, id) = if fallback_mode {
+    let id = if fallback_mode {
         // Continue where the session already lives when that identity is still a
         // candidate; otherwise bind to the first session-capable one in priority
         // order. A chain with none cannot carry a named handle (list the whole
         // selection in the error, since no single harness is the offender).
         candidates
             .iter()
-            .copied()
-            .find(|(spec, id)| {
-                spec.session_capable() && existing.as_ref().is_some_and(|r| r.harness == *id)
+            .find(|id| {
+                id.spec().session_capable() && existing.as_ref().is_some_and(|r| &r.harness == *id)
             })
-            .or_else(|| {
-                candidates
-                    .iter()
-                    .copied()
-                    .find(|(spec, _)| spec.session_capable())
-            })
+            .or_else(|| candidates.iter().find(|id| id.spec().session_capable()))
             .ok_or_else(|| OneharnessError::SessionUnsupported {
                 id: selected_ids.join(", "),
                 supported: session_capable_ids(),
             })?
+            .clone()
     } else {
         if candidates.len() != 1 {
             return Err(OneharnessError::SessionMultipleHarnesses {
@@ -1307,16 +1309,16 @@ fn setup_session(
                 selected: selected_ids.join(", "),
             });
         }
-        let (spec, id) = candidates[0];
-        if !spec.session_capable() {
+        let id = candidates[0].clone();
+        if !id.spec().session_capable() {
             return Err(OneharnessError::SessionUnsupported {
                 id: id.to_string(),
                 supported: session_capable_ids(),
             });
         }
-        (spec, id)
+        id
     };
-    if let Some(was) = session::harness_conflict(existing.as_ref(), id) {
+    if let Some(was) = session::harness_conflict(existing.as_ref(), &id) {
         return Err(OneharnessError::SessionHarnessConflict {
             name: name.to_string(),
             was: was.to_string(),
@@ -1326,8 +1328,7 @@ fn setup_session(
     let plan = SessionPlan::decide(existing.as_ref());
     Ok(Some(SessionWiring {
         name: name.to_string(),
-        harness: id.to_string(),
-        spec,
+        harness: id,
         project: project.to_path_buf(),
         path,
         existing,
@@ -1346,7 +1347,7 @@ fn validate_session_output_format(
     let (Some(wiring), Some(format)) = (wiring, explicit_format) else {
         return Ok(());
     };
-    let (spec, id) = (wiring.spec, wiring.harness.as_str());
+    let (spec, id) = (wiring.harness.spec(), wiring.harness.as_str());
     if spec.format_carries_session(format) {
         return Ok(());
     }
@@ -1386,7 +1387,14 @@ fn finalize_session(
     let captured = ran.and_then(|r| r.session_id.clone());
     // The identity the record binds to: whoever ran. With nothing run there is no
     // new token either, so the anchor's binding stands unchanged.
-    let bound = ran.map_or(wiring.harness.clone(), |r| r.harness_id.clone());
+    let bound = ran.map_or_else(
+        || wiring.harness.clone(),
+        |r| {
+            r.harness_id
+                .parse()
+                .expect("a result's identity came from the validated selection")
+        },
+    );
     if !dry_run {
         match &captured {
             Some(token) => {
@@ -3655,12 +3663,8 @@ mod tests {
         // A fallback chain with more than one harness is ACCEPTED (unlike parallel)
         // and the session binds to the first *session-capable* harness in priority
         // order — here `codex`, skipping the non-capable `goose` ahead of it.
-        let goose = harness::by_id("goose").unwrap();
-        let codex = harness::by_id("codex").unwrap();
-        let claude = harness::by_id("claude-code").unwrap();
         let wiring = setup_session(
             &session_args("greet"),
-            &[goose, codex, claude],
             &ids(&["goose", "codex", "claude-code"]),
             false,
             true,
@@ -3668,7 +3672,7 @@ mod tests {
         )
         .expect("fallback + multi-harness --session is allowed")
         .expect("a wiring is returned when --session is set");
-        assert_eq!(wiring.harness, "codex");
+        assert_eq!(wiring.harness.as_str(), "codex");
         // A fresh store means a create plan (no token to resume).
         assert_eq!(wiring.plan.phase, session::SessionPhase::Create);
         assert!(wiring.plan.resume_token.is_none());
@@ -3678,12 +3682,9 @@ mod tests {
     fn setup_session_parallel_still_rejects_multiple_harnesses() {
         // Parallel mode is single-harness by contract: more than one selected
         // harness makes a single session name ambiguous, exactly as before.
-        let claude = harness::by_id("claude-code").unwrap();
-        let codex = harness::by_id("codex").unwrap();
         assert!(matches!(
             setup_session(
                 &session_args("x"),
-                &[claude, codex],
                 &ids(&["claude-code", "codex"]),
                 false,
                 false,
@@ -3698,12 +3699,9 @@ mod tests {
         // A fallback chain where NO harness exposes a session id headlessly cannot
         // carry a named handle — a loud SessionUnsupported, never a silent fresh
         // start on whichever harness happens to win.
-        let goose = harness::by_id("goose").unwrap();
-        let crush = harness::by_id("crush").unwrap();
         assert!(matches!(
             setup_session(
                 &session_args("x"),
-                &[goose, crush],
                 &ids(&["goose", "crush"]),
                 false,
                 true,

@@ -11,6 +11,7 @@
 //! [`crate::domain::harness::HarnessSpec::session_capable`]); for the rest the
 //! command layer refuses `--session` loudly rather than silently starting fresh.
 
+use crate::domain::harness::HarnessIdentity;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -41,14 +42,20 @@ pub struct SessionRecord {
     /// The project the session belongs to (its display path), so the same name
     /// in different projects never collides.
     pub project: String,
-    /// The **variant-qualified** harness id this session runs on
+    /// The **variant-qualified** harness identity this session runs on
     /// (`claude-code:alternate`, or plain `codex` when no variant is configured)
     /// — the whole id, because a variant is a whole identity: each one points the
     /// harness at its own home directory, so each keeps a *disjoint* session
     /// namespace and a token minted under one means nothing under another. A
     /// session is bound to the identity that created it; resuming it on another
     /// is a usage error ([`harness_conflict`]).
-    pub harness: String,
+    ///
+    /// Typed as [`HarnessIdentity`] rather than a `String` so the store cannot
+    /// hold text that names no selectable unit: a record whose `harness` does not
+    /// parse fails to deserialize, and [`crate::io::session::read`] reports no
+    /// record at all — the same fresh start a legacy record gets, never a resume
+    /// against an id nothing can run.
+    pub harness: HarnessIdentity,
     /// The harness's native continuation token (its emitted session id) — what
     /// the next run resumes with.
     pub token: String,
@@ -132,27 +139,35 @@ pub fn resumable(existing: Option<SessionRecord>) -> Option<SessionRecord> {
 /// usage error, since a named session cannot migrate between harnesses. `None`
 /// when there is no record or it already belongs to `harness`.
 ///
-/// Both sides are the **variant-qualified** id (see [`SessionRecord::harness`]),
-/// so a cross-*variant* migration conflicts exactly like a cross-harness one:
-/// `claude-code:alternate`'s token is no more usable by `claude-code:primary`
-/// than by `codex`, and comparing base ids would have called that a match.
+/// Both sides are the **variant-qualified** identity (see
+/// [`SessionRecord::harness`]), so a cross-*variant* migration conflicts exactly
+/// like a cross-harness one: `claude-code:alternate`'s token is no more usable by
+/// `claude-code:primary` than by `codex`, and comparing base ids would have
+/// called that a match.
 #[must_use]
-pub fn harness_conflict<'a>(existing: Option<&'a SessionRecord>, harness: &str) -> Option<&'a str> {
+pub fn harness_conflict<'a>(
+    existing: Option<&'a SessionRecord>,
+    harness: &HarnessIdentity,
+) -> Option<&'a HarnessIdentity> {
     existing
-        .filter(|record| record.harness != harness)
-        .map(|record| record.harness.as_str())
+        .filter(|record| &record.harness != harness)
+        .map(|record| &record.harness)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn id(text: &str) -> HarnessIdentity {
+        text.parse().expect("test identity parses")
+    }
+
     fn record(token: &str, harness: &str) -> SessionRecord {
         SessionRecord {
             schema_version: SCHEMA_VERSION.to_string(),
             name: "greet".to_string(),
             project: "/p".to_string(),
-            harness: harness.to_string(),
+            harness: id(harness),
             token: token.to_string(),
             created: "2026-07-10T00:00:00Z".to_string(),
             updated: "2026-07-10T00:00:00Z".to_string(),
@@ -183,11 +198,11 @@ mod tests {
     #[test]
     fn harness_conflict_flags_a_mismatch_only() {
         let claude = record("s", "claude-code");
-        assert_eq!(harness_conflict(None, "claude-code"), None);
-        assert_eq!(harness_conflict(Some(&claude), "claude-code"), None);
+        assert_eq!(harness_conflict(None, &id("claude-code")), None);
+        assert_eq!(harness_conflict(Some(&claude), &id("claude-code")), None);
         assert_eq!(
-            harness_conflict(Some(&claude), "codex"),
-            Some("claude-code")
+            harness_conflict(Some(&claude), &id("codex")),
+            Some(&id("claude-code"))
         );
     }
 
@@ -199,13 +214,13 @@ mod tests {
         // category of error as handing it to another harness entirely.
         let alternate = record("s", "claude-code:alternate");
         assert_eq!(
-            harness_conflict(Some(&alternate), "claude-code:alternate"),
+            harness_conflict(Some(&alternate), &id("claude-code:alternate")),
             None
         );
         for other in ["claude-code:primary", "claude-code", "codex"] {
             assert_eq!(
-                harness_conflict(Some(&alternate), other),
-                Some("claude-code:alternate"),
+                harness_conflict(Some(&alternate), &id(other)),
+                Some(&id("claude-code:alternate")),
                 "`{other}` must not inherit another identity's session"
             );
         }
@@ -225,7 +240,10 @@ mod tests {
         assert_eq!(plan.phase, SessionPhase::Create);
         assert_eq!(plan.resume_token, None);
         assert_eq!(
-            harness_conflict(resumable(Some(legacy)).as_ref(), "claude-code:alternate"),
+            harness_conflict(
+                resumable(Some(legacy)).as_ref(),
+                &id("claude-code:alternate")
+            ),
             None
         );
 

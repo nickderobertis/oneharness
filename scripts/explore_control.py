@@ -627,22 +627,27 @@ def probe_acp(bin_name: str, launch: List[str]) -> Tuple[str, str]:
         def answer(message: dict) -> Optional[Any]:
             if message.get("method") != "session/request_permission":
                 return None
-            # llmlint: ignore[least_privilege_grants] The option set is defined by
-            # the harness, not the client: ACP offers no way to narrow a grant, and
-            # declining is exactly the failure mode this probe must not create (a
-            # refused turn produces no work, so the freeze assertion proves nothing).
             options = (message.get("params") or {}).get("options") or []
-            # llmlint: ignore[least_privilege_grants] ACP lets a client accept or
-            # decline the harness's own options; there is no narrower grant to
-            # choose, and declining is the one outcome that makes the probe prove
-            # nothing (no work runs, so nothing can be observed to stop).
-            allow = next(
-                (o for o in options if "allow" in str(o.get("kind", "")).lower()),
-                options[0] if options else None,
-            )
-            if allow is None:
+
+            # The same closed read `domain::dialogue` applies, because the probe
+            # is the drift alarm for what oneharness itself does: only the ACP
+            # kinds that are known to allow, one-shot preferred, and never a
+            # fallback to whatever came first. A substring read would select
+            # `disallow_once`, and an unread kind is not an option to grant.
+            # llmlint: ignore[least_privilege_grants] ACP offers no way to narrow
+            # a grant — the option set is the harness's — so the narrowest choice
+            # available IS the one-shot allow this picks.
+            def of_kind(wanted: str) -> Optional[dict]:
+                return next(
+                    (o for o in options if str(o.get("kind", "")) == wanted),
+                    None,
+                )
+
+            allow = of_kind("allow_once") or of_kind("allow_always")
+            option_id = allow.get("optionId") if allow else None
+            if not isinstance(option_id, str) or not option_id:
                 return {"outcome": {"outcome": "cancelled"}}
-            return {"outcome": {"outcome": "selected", "optionId": allow.get("optionId")}}
+            return {"outcome": {"outcome": "selected", "optionId": option_id}}
 
         rpc.on_server_request = answer
         rpc.request(

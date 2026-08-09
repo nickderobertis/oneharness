@@ -1488,8 +1488,8 @@ fn claude_permission_mode(mode: PermissionMode) -> &'static str {
 /// `session_id`).
 fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     // `-p` is print mode. Normally the prompt is the positional after it; for a
-    // large prompt the command layer sets `prompt_stdin`, so we drop the positional
-    // and add `--input-format text` — claude then reads the prompt from stdin,
+    // large prompt the command layer selects `PromptDelivery::Stdin`, so we drop
+    // the positional and add `--input-format text` — claude then reads the prompt from stdin,
     // off the argv (no `E2BIG`). Sourced from `claude --help` (2.1.207).
     let mut a = vec![c.bin.into(), "-p".into()];
     if c.delivery.is_control_stream() {
@@ -1630,7 +1630,7 @@ fn argv_codex(c: &BuildCtx) -> Vec<String> {
     if let Some(sid) = c.resume {
         a.push(sid.into());
     }
-    // For a large prompt the command layer sets `prompt_stdin` and pipes the
+    // For a large prompt the command layer selects `PromptDelivery::Stdin` and pipes the
     // (system-prepended) prompt; the `-` sentinel forces `codex exec` to read it
     // from stdin (works with `resume <id> -` too). Otherwise the prompt is the
     // positional.
@@ -1675,7 +1675,7 @@ fn argv_opencode(c: &BuildCtx) -> Vec<String> {
             a.push("--fork".into());
         }
     }
-    // For a large prompt the command layer sets `prompt_stdin` and pipes the
+    // For a large prompt the command layer selects `PromptDelivery::Stdin` and pipes the
     // (system-prepended) prompt; `opencode run` reads stdin when the positional
     // message is omitted, so drop it. Otherwise the prompt is the positional.
     if !c.delivery.is_stdin_blob() {
@@ -1719,7 +1719,7 @@ fn argv_goose(c: &BuildCtx) -> Vec<String> {
         a.push("--name".into());
         a.push(name.into());
     }
-    // For a large prompt the command layer sets `prompt_stdin` and pipes it; the
+    // For a large prompt the command layer selects `PromptDelivery::Stdin` and pipes it; the
     // `-i -` sentinel (`--instructions -`) makes goose read the prompt from stdin,
     // off the argv. Otherwise the prompt rides `-t`. (`--system` stays inline
     // either way — goose has no per-run system file route.)
@@ -1778,7 +1778,7 @@ fn argv_qwen(c: &BuildCtx) -> Vec<String> {
         a.push("--resume".into());
         a.push(sid.into());
     }
-    // For a large prompt the command layer sets `prompt_stdin` and pipes the
+    // For a large prompt the command layer selects `PromptDelivery::Stdin` and pipes the
     // (system-prepended) prompt; qwen reads stdin as the prompt when `-p` is
     // omitted, so drop it. Otherwise the prompt rides `-p`.
     if !c.delivery.is_stdin_blob() {
@@ -1805,7 +1805,7 @@ fn argv_crush(c: &BuildCtx) -> Vec<String> {
         a.push("-m".into());
         a.push(m.into());
     }
-    // For a large prompt the command layer sets `prompt_stdin` and pipes the
+    // For a large prompt the command layer selects `PromptDelivery::Stdin` and pipes the
     // (system-prepended) prompt; `crush run` reads stdin when the positional is
     // omitted, so drop it. Otherwise the prompt is the positional.
     if !c.delivery.is_stdin_blob() {
@@ -1828,7 +1828,7 @@ fn argv_copilot(c: &BuildCtx) -> Vec<String> {
     if c.delivery.is_control_stream() {
         return vec![c.bin.into(), "--acp".into()];
     }
-    // For a large prompt the command layer sets `prompt_stdin` and pipes the
+    // For a large prompt the command layer selects `PromptDelivery::Stdin` and pipes the
     // (system-prepended) prompt; copilot reads stdin as the prompt only when `-p`
     // is ABSENT (a `-p` value makes the pipe be ignored), so drop `-p` entirely.
     // Otherwise the prompt rides `-p`.
@@ -1887,7 +1887,7 @@ fn argv_copilot(c: &BuildCtx) -> Vec<String> {
 /// --output-format stream-json` (Cursor continues a chat id with `--resume`; no
 /// system flag, so `--system` is prepended to the prompt)
 fn argv_cursor(c: &BuildCtx) -> Vec<String> {
-    // `-p` is print mode. For a large prompt the command layer sets `prompt_stdin`
+    // `-p` is print mode. For a large prompt the command layer selects `PromptDelivery::Stdin`
     // and pipes the (system-prepended) prompt; cursor reads stdin as the prompt
     // when the positional is omitted (probe-verified 2026-07-11 via
     // scripts/explore-cursor-stdin.sh — piped stdin with `-p` and no positional
@@ -2679,7 +2679,7 @@ mod tests {
 
     #[test]
     fn large_prompt_rides_stdin_off_the_argv_per_harness() {
-        // With `prompt_stdin` set (the command layer's large-prompt decision), a
+        // With `PromptDelivery::Stdin` selected (the command layer's large-prompt decision), a
         // stdin-capable adapter must omit the positional prompt — so the prompt
         // never touches the argv (`E2BIG`) — and add whatever stdin-selecting
         // flags its CLI needs. Sourced per-adapter (see each `build_argv` comment).

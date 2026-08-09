@@ -79,6 +79,27 @@ enum TurnState {
     Active(std::process::ChildStdin),
 }
 
+/// What drives — and therefore what interrupts — this run's turn.
+///
+/// Exactly one applies, fixed from the [`ControlShape`] before the turn starts:
+/// [`Dialogue::new`] answers `Some` only for the two protocol shapes, which are
+/// disjoint from the ones [`HttpShape::of`] recognizes. Modelling them as one
+/// value rather than a field each is what makes "a dialogue *and* an HTTP turn"
+/// unspellable instead of merely unreachable.
+enum Backend {
+    /// Control rides the harness's ordinary run: nothing to negotiate, and an
+    /// interrupt is a frame written to the child's own stdin.
+    Stdin,
+    /// A JSON-RPC conversation on the child's stdin drives the turn, and is the
+    /// only thing that knows the ids an interrupt has to address.
+    Dialogue(Dialogue),
+    /// The turn was submitted to a control server, so an interrupt is one more
+    /// request against the same session — there is no stdin in this path at
+    /// all. `Some` only between the turn opening and ending, which is exactly
+    /// the window in which there is something to abort.
+    Http(Option<HttpTurn>),
+}
+
 /// Shared, thread-safe access to a run's control mechanism plus the audit trail
 /// of everything it served (which the report echoes).
 ///
@@ -92,17 +113,10 @@ pub struct ControlHandle {
     state: Mutex<TurnState>,
     events: Mutex<Vec<ControlEvent>>,
     requests: Mutex<u64>,
-    /// The protocol conversation driving the turn, for a server-backed
-    /// mechanism. `None` for Claude Code, whose control rides its ordinary run
-    /// and needs no handshake. Locked *before* `state` everywhere, so the two
-    /// paths that touch both (serving an interrupt, advancing on a line) can
-    /// never deadlock against each other.
-    dialogue: Mutex<Option<Dialogue>>,
-    /// The live HTTP turn, for a mechanism whose interrupt is a request to a
-    /// control server rather than a frame on any stdin. `Some` only between the
-    /// turn opening and ending, which is exactly the window in which there is
-    /// something to abort.
-    http: Mutex<Option<HttpTurn>>,
+    /// The mechanism driving the turn. Locked *before* `state` everywhere, so
+    /// the two paths that touch both (serving an interrupt, advancing on a
+    /// line) can never deadlock against each other.
+    backend: Mutex<Backend>,
 }
 
 impl ControlHandle {
@@ -114,13 +128,17 @@ impl ControlHandle {
     /// A handle whose turn is driven by `dialogue` (a server-backed mechanism).
     #[must_use]
     pub fn with_dialogue(shape: ControlShape, dialogue: Option<Dialogue>) -> Self {
+        let backend = match dialogue {
+            Some(dialogue) => Backend::Dialogue(dialogue),
+            None if HttpShape::of(shape).is_some() => Backend::Http(None),
+            None => Backend::Stdin,
+        };
         ControlHandle {
             shape,
             state: Mutex::new(TurnState::Idle),
             events: Mutex::new(Vec::new()),
             requests: Mutex::new(0),
-            dialogue: Mutex::new(dialogue),
-            http: Mutex::new(None),
+            backend: Mutex::new(backend),
         }
     }
 
@@ -128,30 +146,25 @@ impl ControlHandle {
     /// exists on the control server — before that there is no turn to address,
     /// and `interrupt` correctly answers `no_active_turn`.
     pub fn begin_http_turn(&self, turn: HttpTurn) {
-        *self
-            .http
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(turn);
+        *self.backend() = Backend::Http(Some(turn));
     }
 
     /// Release the HTTP turn: it is over, so a later interrupt is
     /// `no_active_turn` rather than a request against a finished session.
     pub fn end_http_turn(&self) {
-        *self
-            .http
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *self.backend() = Backend::Http(None);
     }
 
     /// The frames that open the turn: a dialogue's handshake, or the prompt
     /// frame for a mechanism that rides the harness's ordinary run.
     pub fn open_frames(&self, prompt: &str) -> Vec<String> {
-        let mut dialogue = self.dialogue();
-        match dialogue.as_mut() {
-            Some(dialogue) => dialogue.open(),
-            None => crate::domain::control::prompt_frame(self.shape, prompt)
-                .into_iter()
-                .collect(),
+        match &mut *self.backend() {
+            Backend::Dialogue(dialogue) => dialogue.open(),
+            Backend::Stdin | Backend::Http(_) => {
+                crate::domain::control::prompt_frame(self.shape, prompt)
+                    .into_iter()
+                    .collect()
+            }
         }
     }
 
@@ -162,12 +175,12 @@ impl ControlHandle {
     /// exit and output will report far more usefully than a panic would.
     pub fn advance(&self, line: &str) -> bool {
         let step = {
-            let mut dialogue = self.dialogue();
-            match dialogue.as_mut() {
-                Some(dialogue) => dialogue.on_line(line),
-                // No dialogue: the harness's own end-of-turn document is the
-                // only signal, and there is nothing to write back.
-                None => {
+            match &mut *self.backend() {
+                Backend::Dialogue(dialogue) => dialogue.on_line(line),
+                // No conversation to advance: the harness's own end-of-turn
+                // document is the only signal, and there is nothing to write
+                // back.
+                Backend::Stdin | Backend::Http(_) => {
                     return crate::domain::control::is_turn_terminal(self.shape, line);
                 }
             }
@@ -186,18 +199,22 @@ impl ControlHandle {
     /// The harness's native session id, when the dialogue captured one.
     #[must_use]
     pub fn session_id(&self) -> Option<String> {
-        self.dialogue()
-            .as_ref()
-            .and_then(|dialogue| dialogue.session_id().map(str::to_string))
+        match &*self.backend() {
+            Backend::Dialogue(dialogue) => dialogue.session_id().map(str::to_string),
+            Backend::Stdin | Backend::Http(_) => None,
+        }
     }
 
     /// The assistant text the dialogue accumulated, with how it was obtained.
     /// `None` when the turn produced none — never fabricated.
     #[must_use]
     pub fn text(&self) -> Option<(String, &'static str)> {
-        let dialogue = self.dialogue();
-        let dialogue = dialogue.as_ref()?;
-        dialogue.text().map(|text| (text, dialogue.text_source()))
+        match &*self.backend() {
+            Backend::Dialogue(dialogue) => {
+                dialogue.text().map(|text| (text, dialogue.text_source()))
+            }
+            Backend::Stdin | Backend::Http(_) => None,
+        }
     }
 
     /// Whether this handle drives its turn over a JSON-RPC dialogue on the
@@ -209,11 +226,11 @@ impl ControlHandle {
     /// process — nothing about a spawned run applies to them.
     #[must_use]
     pub fn drives_turn_over_stdin(&self) -> bool {
-        self.dialogue().is_some()
+        matches!(&*self.backend(), Backend::Dialogue(_))
     }
 
-    fn dialogue(&self) -> std::sync::MutexGuard<'_, Option<Dialogue>> {
-        self.dialogue
+    fn backend(&self) -> std::sync::MutexGuard<'_, Backend> {
+        self.backend
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -274,67 +291,64 @@ impl ControlHandle {
     }
 
     fn interrupt(&self) -> ControlResponse {
-        // A mechanism whose turn was submitted over HTTP is aborted the same
-        // way: one more request against the same session. There is no stdin in
-        // this path at all — the server is not even this process's child.
-        if HttpShape::of(self.shape).is_some() {
-            let turn = self
-                .http
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone();
-            return match turn {
-                Some(turn) => match turn.interrupt() {
+        /// How the live backend delivers an abort, decided under the backend
+        /// lock and carried out after it is released: an HTTP abort is a
+        /// network request and a frame is a write to the child, and neither
+        /// should be held against the thread advancing the turn.
+        enum Delivery {
+            /// One more request against the same session — there is no stdin in
+            /// this path at all; the server is not even this process's child.
+            Request(HttpTurn),
+            /// Frames onto the live turn's stdin.
+            Frames(Vec<String>),
+        }
+        let no_active_turn = || {
+            ControlResponse::refused(
+                "the run is alive but no turn is in flight",
+                ControlReason::NoActiveTurn,
+            )
+        };
+        let delivery = match &mut *self.backend() {
+            Backend::Http(turn) => match turn.clone() {
+                Some(turn) => Delivery::Request(turn),
+                None => return no_active_turn(),
+            },
+            // A server-backed mechanism addresses the live thread/session by
+            // the ids the dialogue captured, so it alone knows whether there is
+            // a turn to abort at all.
+            Backend::Dialogue(dialogue) => match dialogue.interrupt() {
+                Some(frames) => Delivery::Frames(frames),
+                None => return no_active_turn(),
+            },
+            Backend::Stdin => match interrupt_frame(self.shape, &self.next_request_id()) {
+                Some(frame) => Delivery::Frames(vec![frame]),
+                None => {
+                    return ControlResponse::refused(
+                        format!(
+                            "the `{}` control mechanism is not wired for stdin-borne interrupts",
+                            self.shape.as_str()
+                        ),
+                        ControlReason::Unsupported,
+                    )
+                }
+            },
+        };
+        let frames = match delivery {
+            Delivery::Request(turn) => {
+                return match turn.interrupt() {
                     Ok(()) => ControlResponse::served(self.shape),
                     Err(err) => ControlResponse::refused(
                         format!("could not deliver the interrupt to the control server: {err}"),
                         ControlReason::NotRunning,
                     ),
-                },
-                None => ControlResponse::refused(
-                    "the run is alive but no turn is in flight",
-                    ControlReason::NoActiveTurn,
-                ),
-            };
-        }
-        let frames = {
-            let mut dialogue = self.dialogue();
-            match dialogue.as_mut() {
-                // A server-backed mechanism addresses the live thread/session
-                // by the ids the dialogue captured, so it alone knows whether
-                // there is a turn to abort at all.
-                Some(dialogue) => match dialogue.interrupt() {
-                    Some(frames) => frames,
-                    None => {
-                        return ControlResponse::refused(
-                            "the run is alive but no turn is in flight",
-                            ControlReason::NoActiveTurn,
-                        )
-                    }
-                },
-                None => match interrupt_frame(self.shape, &self.next_request_id()) {
-                    Some(frame) => vec![frame],
-                    None => {
-                        return ControlResponse::refused(
-                            format!(
-                            "the `{}` control mechanism is not wired for stdin-borne interrupts",
-                            self.shape.as_str()
-                        ),
-                            ControlReason::Unsupported,
-                        )
-                    }
-                },
+                }
             }
+            Delivery::Frames(frames) => frames,
         };
         for frame in &frames {
             match self.write_line(frame) {
                 Ok(()) => {}
-                Err(err) if err.kind() == io::ErrorKind::NotConnected => {
-                    return ControlResponse::refused(
-                        "the run is alive but no turn is in flight",
-                        ControlReason::NoActiveTurn,
-                    )
-                }
+                Err(err) if err.kind() == io::ErrorKind::NotConnected => return no_active_turn(),
                 Err(err) => {
                     return ControlResponse::refused(
                         format!("could not deliver the interrupt to the harness: {err}"),

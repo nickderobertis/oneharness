@@ -15,16 +15,18 @@
 //! **Membership is a lease held by a live process, never a counter.** A counter
 //! leaks a permanently-live server the first time a dispatch is `SIGKILL`ed
 //! before it can decrement — and dispatch trees are killed routinely. Each
-//! dispatch instead writes a lease file naming its own pid; reclamation asks
-//! the OS whether that pid is still alive, so a lease can never outlive its
-//! holder. Everything on disk is therefore self-healing: no shutdown hook is
-//! load-bearing.
+//! dispatch instead writes a lease file naming itself as a [`LeaseHolder`]:
+//! its pid *and* that incarnation's kernel birth identity, because a pid alone
+//! is recycled and would let an unrelated process inherit the lease. Both sides
+//! of an entry — the server it names and the dispatches holding it — are
+//! identified that same way. Everything on disk is therefore self-healing: no
+//! shutdown hook is load-bearing.
 //!
 //! Layout under `<state>/oneharness/servers/`:
 //!
 //! ```text
-//! <pool-key>/server.json     the running server: pid, launch argv, address
-//! <pool-key>/leases/<id>     one file per live dispatch, holding its pid
+//! <pool-key>/server.json     the running server: pid + identity, argv, address
+//! <pool-key>/leases/<id>     one file per live dispatch: its pid + identity
 //! <pool-key>/.lock           whole-entry mutex around start/stop decisions
 //! ```
 
@@ -154,11 +156,57 @@ impl<'de> Deserialize<'de> for ProcessIdentity {
     }
 }
 
+/// The process holding a lease on a pool entry.
+///
+/// A pid and the birth identity of the incarnation that took the lease, never
+/// the pid alone. A lease file outlives its writer only by accident — a holder
+/// that was `SIGKILL`ed leaves one behind — and by then the OS may have handed
+/// that pid to an unrelated process. Judged on liveness alone, that stranger
+/// holds a pooled server for as long as it happens to live: the one leak the
+/// reclamation sweep cannot close, because every sweep agrees the holder is
+/// alive. Pairing the pid with its incarnation is what makes "still held" a
+/// question about the process that actually took the lease.
+///
+/// This is the same ownership rule [`ServerRecord`] states for the server side
+/// of an entry, said once for the holder side.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeaseHolder {
+    /// The holding process's pid.
+    pub pid: Pid,
+    /// Kernel-assigned identity of the incarnation of `pid` that took it.
+    pub identity: ProcessIdentity,
+}
+
+impl LeaseHolder {
+    /// This process, as a lease holder.
+    ///
+    /// `None` where the platform has no readable birth identity: a lease that
+    /// cannot name *which* incarnation holds it is exactly the bare pid this
+    /// type exists to rule out, so the pool refuses to take one rather than
+    /// write one that a recycled pid could inherit.
+    #[must_use]
+    pub fn current() -> Option<Self> {
+        let pid = Pid::new(std::process::id()).ok()?;
+        Some(LeaseHolder {
+            pid,
+            identity: process_identity(pid)?,
+        })
+    }
+
+    /// Whether the process that took this lease is still running — the same
+    /// pid *and* the same incarnation of it.
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        pid_alive(self.pid) && process_identity(self.pid).as_ref() == Some(&self.identity)
+    }
+}
+
 /// A lease on a pooled server, released when dropped.
 ///
 /// The drop is a courtesy, not the correctness mechanism: reclamation verifies
-/// the holder pid is alive, so a lease whose holder was `SIGKILL`ed is
-/// reclaimed by the next pool operation regardless.
+/// the [`LeaseHolder`] is still running, so a lease whose holder was `SIGKILL`ed
+/// is reclaimed by the next pool operation regardless — including when the OS
+/// has since handed that pid to something else.
 #[derive(Debug)]
 pub struct ServerLease {
     entry: PathBuf,
@@ -338,6 +386,16 @@ pub fn acquire(
     fs::create_dir_all(entry.join(LEASE_DIR))?;
     let _guard = EntryLock::acquire(&entry)?;
 
+    // Resolved before anything is started: a dispatch that cannot say who it is
+    // cannot take a lease, and starting a server it could not then hold would
+    // leave one running that no sweep is allowed to reclaim.
+    let holder = LeaseHolder::current().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this process has no readable identity, so it cannot take a pool lease",
+        )
+    })?;
+
     let record = match reconcile(&entry, linger)? {
         Some(live)
             if plan.backs(&live) && process_identity(live.pid).as_ref() == Some(&live.identity) =>
@@ -361,7 +419,11 @@ pub fn acquire(
     };
 
     let lease_file = entry.join(LEASE_DIR).join(lease_id());
-    fs::write(&lease_file, std::process::id().to_string())?;
+    fs::write(
+        &lease_file,
+        serde_json::to_string(&holder)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
+    )?;
     // Now leased again: clear the idle stamp so the linger only ever measures
     // uninterrupted idleness.
     let cleared = ServerRecord {
@@ -391,12 +453,13 @@ fn reconcile(entry: &Path, linger: Duration) -> io::Result<Option<ServerRecord>>
             let path = lease.path();
             let holder = fs::read_to_string(&path)
                 .ok()
-                .and_then(|text| text.trim().parse::<u32>().ok())
-                .and_then(|raw| Pid::new(raw).ok());
+                .and_then(|text| serde_json::from_str::<LeaseHolder>(&text).ok());
             match holder {
-                Some(pid) if pid_alive(pid) => live_leases += 1,
-                // No readable pid, or a pid the OS no longer knows: the holder
-                // is gone, however it went.
+                Some(holder) if holder.is_live() => live_leases += 1,
+                // No readable holder, or one whose process is gone — including
+                // a pid the OS still knows but has since handed to something
+                // else, which is a stranger and not this lease's owner. The
+                // holder is gone, however it went.
                 _ => {
                     let _ = fs::remove_file(&path);
                 }
@@ -855,6 +918,23 @@ mod tests {
     }
 
     #[test]
+    fn a_lease_file_naming_only_a_pid_is_not_a_holder() {
+        // The shape a bare pid would have. It cannot say WHICH incarnation of
+        // that pid took the lease, which is the only question reclamation asks
+        // — so it is refused at the boundary rather than read as ownership.
+        assert!(serde_json::from_str::<LeaseHolder>("12345").is_err());
+        assert!(serde_json::from_str::<LeaseHolder>(r#"{"pid":12345}"#).is_err());
+        assert!(serde_json::from_str::<LeaseHolder>(r#"{"pid":0,"identity":"a"}"#).is_err());
+        let holder = LeaseHolder::current().expect("this process has a readable identity");
+        assert_eq!(holder.pid.get(), std::process::id());
+        assert!(holder.is_live());
+        assert_eq!(
+            serde_json::from_str::<LeaseHolder>(&serde_json::to_string(&holder).unwrap()).unwrap(),
+            holder
+        );
+    }
+
+    #[test]
     fn resolve_root_prefers_the_configured_path() {
         assert_eq!(
             resolve_root(Some("/custom/servers")),
@@ -951,7 +1031,11 @@ mod tests {
         let server_pid = ours.record().pid;
         fs::write(
             entry.join(LEASE_DIR).join("stray.lease"),
-            holder_pid.get().to_string(),
+            serde_json::to_string(&LeaseHolder {
+                pid: holder_pid,
+                identity: process_identity(holder_pid).expect("a live process has an identity"),
+            })
+            .unwrap(),
         )
         .unwrap();
         drop(ours);

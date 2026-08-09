@@ -4,9 +4,10 @@
 //!
 //! The in-crate unit tests cover the same reclamation rules; this exists because
 //! the pool is a *published* API whose whole promise is cross-process: a lease is
-//! held by a live pid, so the interesting failure — a dispatch that dies without
-//! releasing — can only be exercised with real processes and the public
-//! functions, not with in-module internals.
+//! held by a live process, so the interesting failures — a dispatch that dies
+//! without releasing, and the pid it left behind being handed to a stranger —
+//! can only be exercised with real processes and the public functions, not with
+//! in-module internals.
 
 #![cfg(unix)]
 
@@ -15,7 +16,7 @@ use std::time::Duration;
 
 use oneharness_core::domain::control::{ServerAddress, ServerSpec, ServerTransport};
 use oneharness_core::io::server_pool::{
-    self, LaunchArgv, LaunchPlan, Pid, ProcessIdentity, ServerRecord,
+    self, LaunchArgv, LaunchPlan, LeaseHolder, Pid, ProcessIdentity, ServerRecord,
 };
 
 fn pool_root(tag: &str) -> PathBuf {
@@ -119,6 +120,66 @@ fn a_record_with_a_recycled_live_pid_is_not_reused_even_when_argv_matches() {
 }
 
 #[test]
+fn a_lease_held_by_a_recycled_pid_does_not_retain_the_server() {
+    // A lease file outlives the dispatch that wrote it whenever that dispatch
+    // was `SIGKILL`ed, and the OS reuses pids. Judged on liveness alone, the
+    // lease is then held by whatever process inherited the number — for as long
+    // as that stranger lives, on an entry every sweep agrees is still held. So
+    // the leak a lease exists to prevent comes back, and unbounded.
+    //
+    // The stand-in is exactly that stranger: a live pid whose incarnation is
+    // not the one that took the lease.
+    let root = pool_root("recycled");
+    let key = oneharness_core::domain::control::pool_key("crush", &[], &[]);
+    let lease = server_pool::acquire(&root, &key, &plan(), server_pool::DEFAULT_LINGER).unwrap();
+    let server = lease.record().pid;
+    drop(lease);
+
+    let mut stranger = std::process::Command::new("sleep")
+        .arg("120")
+        .spawn()
+        .unwrap();
+    let stranger_pid = Pid::new(stranger.id()).unwrap();
+    let lease_file = root
+        .join(key.as_str())
+        .join("leases")
+        .join("recycled.lease");
+    std::fs::write(
+        &lease_file,
+        serde_json::to_string(&LeaseHolder {
+            pid: stranger_pid,
+            identity: ProcessIdentity::new("previous-incarnation".to_string()).unwrap(),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        server_pool::pid_alive(stranger_pid),
+        "the stand-in must be alive, or this proves nothing about liveness"
+    );
+
+    assert_eq!(
+        server_pool::sweep(&root, Duration::from_secs(0)).unwrap(),
+        1,
+        "a lease no living holder took must not retain the server"
+    );
+    assert!(!root.join(key.as_str()).join("server.json").exists());
+    assert!(
+        !lease_file.exists(),
+        "the stale lease must be dropped, not merely disbelieved once"
+    );
+    assert!(!server_pool::pid_alive(server));
+    assert!(
+        server_pool::pid_alive(stranger_pid),
+        "a process the pool could not vouch for must not be signalled"
+    );
+
+    stranger.kill().unwrap();
+    stranger.wait().unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn two_dispatches_sharing_a_key_share_one_server_and_a_dead_holder_cannot_leak_it() {
     let root = pool_root("shared");
     let key = oneharness_core::domain::control::pool_key(
@@ -154,10 +215,15 @@ fn two_dispatches_sharing_a_key_share_one_server_and_a_dead_holder_cannot_leak_i
         .arg("120")
         .spawn()
         .unwrap();
-    let holder_pid = holder.id();
+    let holder_pid = Pid::new(holder.id()).unwrap();
+    let stray = LeaseHolder {
+        pid: holder_pid,
+        identity: server_pool::process_identity(holder_pid)
+            .expect("a live process has an identity"),
+    };
     std::fs::write(
         root.join(key.as_str()).join("leases").join("stray.lease"),
-        holder_pid.to_string(),
+        serde_json::to_string(&stray).unwrap(),
     )
     .unwrap();
     drop(first);

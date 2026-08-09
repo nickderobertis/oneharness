@@ -75,25 +75,95 @@ impl HttpTurn {
     }
 }
 
+/// How a turn ended — the one decision `status` and `error` are both read off.
+///
+/// A sum type rather than the pair, because the pair has states that are not
+/// outcomes: an `ok` carrying a failure reason, or a failure carrying none. A
+/// timeout keeps whatever was noticed on the way, since its status is
+/// authoritative but a reason is still worth reporting.
+#[derive(Debug, Clone)]
+enum TurnEnd {
+    /// The turn ran to its own end.
+    Completed,
+    /// It outlasted the budget its caller set.
+    TimedOut(Option<String>),
+    /// Nothing ran: the server, the session or the event subscription could not
+    /// be opened.
+    CouldNotStart(String),
+    /// The turn began, and the server would not carry it through.
+    Refused(String),
+}
+
+impl TurnEnd {
+    fn status(&self) -> Status {
+        match self {
+            TurnEnd::Completed => Status::Ok,
+            TurnEnd::TimedOut(_) => Status::Timeout,
+            TurnEnd::CouldNotStart(_) => Status::SpawnError,
+            TurnEnd::Refused(_) => Status::Nonzero,
+        }
+    }
+
+    fn error(&self) -> Option<&str> {
+        match self {
+            TurnEnd::Completed => None,
+            TurnEnd::TimedOut(why) => why.as_deref(),
+            TurnEnd::CouldNotStart(why) | TurnEnd::Refused(why) => Some(why),
+        }
+    }
+}
+
 /// What one HTTP-submitted turn produced.
+///
+/// Built only through the constructors below, which take the ending as one
+/// value and stamp the whole timing themselves. A turn is only described once
+/// it is over, so "finished at nothing, for 40ms" has nowhere to come from
+/// either.
 #[derive(Debug, Clone)]
 pub struct TurnOutcome {
-    pub status: Status,
-    /// The assistant's answer, when the stream carried one. Never fabricated.
-    pub text: Option<String>,
+    end: TurnEnd,
+    /// The assistant's answer, when the stream carried one. Never fabricated,
+    /// and never the empty string standing in for one.
+    text: Option<String>,
     /// Every event payload observed, newline-joined — the run's `stdout`, so a
     /// consumer needing certainty can parse exactly what oneharness saw.
-    pub transcript: String,
-    pub error: Option<String>,
+    transcript: String,
     /// The invocation boundaries this turn was observed between, in the same
     /// shape a spawned run reports them — and in the same type, so text that is
     /// not a millisecond-precision UTC instant cannot reach a measurement.
-    pub started_at: RunInstant,
-    pub finished_at: Option<RunInstant>,
-    pub duration_ms: Option<u128>,
+    started_at: RunInstant,
+    finished_at: RunInstant,
+    duration_ms: u128,
 }
 
 impl TurnOutcome {
+    /// A finished turn: how it ended, what it said, and what was seen on the
+    /// wire. The end is one value, so the status and the reason are two views
+    /// of the same decision rather than two fields that can disagree.
+    fn ended(
+        end: TurnEnd,
+        text: &str,
+        transcript: String,
+        started_at: RunInstant,
+        elapsed: Duration,
+    ) -> Self {
+        let text = text.trim();
+        TurnOutcome {
+            end,
+            text: (!text.is_empty()).then(|| text.to_string()),
+            transcript,
+            started_at,
+            finished_at: utc_now(),
+            duration_ms: elapsed.as_millis(),
+        }
+    }
+
+    /// The assistant's answer, when the turn produced one.
+    #[must_use]
+    pub fn text(&self) -> Option<&str> {
+        self.text.as_deref()
+    }
+
     /// The execution envelope for a turn that had no subprocess of its own.
     ///
     /// The event transcript stands in for `stdout`: there was no child to
@@ -102,14 +172,14 @@ impl TurnOutcome {
     #[must_use]
     pub fn to_capture(&self) -> Capture {
         Capture {
-            status: self.status,
+            status: self.end.status(),
             exit_code: None,
-            duration_ms: self.duration_ms,
+            duration_ms: Some(self.duration_ms),
             stdout: self.transcript.clone(),
             stderr: String::new(),
-            error: self.error.clone(),
+            error: self.end.error().map(str::to_string),
             started_at: self.started_at.as_str().to_string(),
-            finished_at: self.finished_at.as_ref().map(|at| at.as_str().to_string()),
+            finished_at: Some(self.finished_at.as_str().to_string()),
             stdout_observations: Vec::new(),
         }
     }
@@ -121,13 +191,12 @@ impl TurnOutcome {
     pub fn failed(error: String) -> Self {
         let now = utc_now();
         TurnOutcome {
-            status: Status::SpawnError,
+            end: TurnEnd::CouldNotStart(error),
             text: None,
             transcript: String::new(),
-            error: Some(error),
             started_at: now.clone(),
-            finished_at: Some(now),
-            duration_ms: Some(0),
+            finished_at: now,
+            duration_ms: 0,
         }
     }
 }
@@ -238,17 +307,15 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
     let mut stream = match stream {
         Ok(stream) => stream,
         Err(err) => {
-            return TurnOutcome {
-                status: Status::SpawnError,
-                text: None,
-                transcript: String::new(),
-                error: Some(format!(
+            return TurnOutcome::ended(
+                TurnEnd::CouldNotStart(format!(
                     "could not follow the control server's events: {err}"
                 )),
+                "",
+                String::new(),
                 started_at,
-                finished_at: Some(utc_now()),
-                duration_ms: Some(started.elapsed().as_millis()),
-            }
+                started.elapsed(),
+            )
         }
     };
 
@@ -360,31 +427,20 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
                 "the control server closed the event stream before the turn ended".to_string()
             })
         });
-    let status = if timed_out {
-        Status::Timeout
-    } else if error.is_some() {
-        Status::Nonzero
-    } else {
-        Status::Ok
+    // A timeout's status stays authoritative — nothing else in the envelope
+    // says the budget was exceeded — while still carrying whatever was noticed
+    // on the way, which is the only place that reason survives.
+    let end = match (timed_out, error) {
+        (true, why) => TurnEnd::TimedOut(why),
+        (false, Some(why)) => TurnEnd::Refused(why),
+        (false, None) => TurnEnd::Completed,
     };
-    let text = text
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .trim()
-        .to_string();
+    let text = text.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let transcript = transcript
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .join("\n");
-    TurnOutcome {
-        status,
-        text: (!text.is_empty()).then_some(text),
-        transcript,
-        error,
-        started_at,
-        finished_at: Some(utc_now()),
-        duration_ms: Some(started.elapsed().as_millis()),
-    }
+    TurnOutcome::ended(end, &text, transcript, started_at, started.elapsed())
 }
 
 /// Answer one permission ask. A failure to answer is warned about rather than

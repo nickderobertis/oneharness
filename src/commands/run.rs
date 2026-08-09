@@ -2088,8 +2088,8 @@ fn run_http_controlled(
                 // the event stream carried. Both `None` rather than guessed when
                 // the turn produced neither.
                 result.session_id = session_id;
-                if let Some(text) = capture.text {
-                    result.text = Some(text);
+                if let Some(text) = capture.text() {
+                    result.text = Some(text.to_string());
                     result.text_source = Some(format!("http:{}", shape.shape().as_str()));
                 }
                 result

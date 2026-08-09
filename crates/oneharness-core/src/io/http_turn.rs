@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 
 use crate::domain::control::ServerAddress;
 use crate::domain::http::{
-    self, ClientId, HttpShape, PermissionAsk, ResourceId, TurnAddress, TurnEvent,
+    self, ClientId, HttpShape, PermissionAsk, PermissionDecision, ResourceId, TurnAddress,
+    TurnEvent,
 };
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::{Capture, Status};
@@ -144,7 +145,7 @@ pub fn open(
     client_id: &str,
 ) -> io::Result<HttpTurn> {
     let client = HttpClient::new(server, REQUEST_TIMEOUT);
-    let allow = http::permits_action(mode);
+    let decision = http::permits_action(mode);
     // Crush names its client on every route; opencode has no such notion, and
     // sending one would be a query parameter it never reads.
     let client_id = match shape {
@@ -157,7 +158,7 @@ pub fn open(
 
     let opened = expect_ok(
         &client,
-        &http::open_request(shape, cwd, client_id.as_ref(), allow),
+        &http::open_request(shape, cwd, client_id.as_ref(), decision),
         "open the control session",
     )?;
     let first = http::parse_id(&opened.body).ok_or_else(|| {
@@ -201,7 +202,7 @@ pub fn open(
         },
     };
 
-    if let Some(request) = http::skip_permissions_request(shape, &address, allow) {
+    if let Some(request) = http::skip_permissions_request(shape, &address, decision) {
         expect_ok(&client, &request, "set the permission posture")?;
     }
 
@@ -219,7 +220,7 @@ pub fn open(
 /// oneharness records the interrupt from its own side (the socket that served
 /// it), never from what the harness says about how the turn stopped.
 pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duration) -> TurnOutcome {
-    let allow = http::permits_action(mode);
+    let decision = http::permits_action(mode);
     let started = Instant::now();
     let started_at = utc_now();
     let deadline = started + timeout;
@@ -297,7 +298,7 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
                     .unwrap_or_else(|e| e.into_inner())
                     .push(payload.clone());
                 match http::classify_event(turn.shape, &payload) {
-                    TurnEvent::PermissionRequest(ask) => answer(turn, &ask, allow),
+                    TurnEvent::PermissionRequest(ask) => answer(turn, &ask, decision),
                     TurnEvent::Text(chunk) => {
                         text.lock()
                             .unwrap_or_else(|e| e.into_inner())
@@ -363,8 +364,8 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
 /// Answer one permission ask. A failure to answer is warned about rather than
 /// fatal: the turn then stalls until its timeout, which the envelope reports —
 /// and a panic here would take the run's results with it.
-fn answer(turn: &HttpTurn, ask: &PermissionAsk, allow: bool) {
-    let Some(request) = http::permission_reply_request(turn.shape, &turn.address, ask, allow)
+fn answer(turn: &HttpTurn, ask: &PermissionAsk, decision: PermissionDecision) {
+    let Some(request) = http::permission_reply_request(turn.shape, &turn.address, ask, decision)
     else {
         return;
     };

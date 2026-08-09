@@ -284,28 +284,56 @@ impl TurnAddress {
     }
 }
 
-/// Whether this run's posture means "act without asking" — the same rule the
-/// stdio dialogue applies, so an HTTP turn and a protocol turn answer a
-/// permission request the same way.
+/// What this run answers when a server asks whether an action may proceed.
+///
+/// A two-variant type rather than a `bool`, because it is threaded through
+/// every route that decides what an agent may do — the workspace's posture, the
+/// blanket skip, and each individual reply. At a call site `true`/`false` says
+/// nothing about which way round it is, and an inverted one does not fail: it
+/// quietly grants a run authority it was not given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionDecision {
+    /// Act without asking.
+    Allow,
+    /// Refuse the action.
+    Deny,
+}
+
+impl PermissionDecision {
+    /// This decision as the boolean a wire field wants. The one place the
+    /// mapping is written, so no route has to restate it.
+    #[must_use]
+    pub fn allows(self) -> bool {
+        matches!(self, PermissionDecision::Allow)
+    }
+}
+
+/// The decision this run's posture implies — the same rule the stdio dialogue
+/// applies, so an HTTP turn and a protocol turn answer a permission request the
+/// same way.
 #[must_use]
-pub fn permits_action(mode: PermissionMode) -> bool {
-    matches!(
-        mode,
-        PermissionMode::Bypass | PermissionMode::Auto | PermissionMode::Edit
-    )
+pub fn permits_action(mode: PermissionMode) -> PermissionDecision {
+    match mode {
+        PermissionMode::Bypass | PermissionMode::Auto | PermissionMode::Edit => {
+            PermissionDecision::Allow
+        }
+        // Deny is the safe default, so a mode added later refuses until someone
+        // decides otherwise rather than granting on arrival.
+        _ => PermissionDecision::Deny,
+    }
 }
 
 /// The request that creates the turn's own session (opencode), or the workspace
 /// everything else hangs off (crush).
 ///
-/// `allow` is this run's posture, which crush's workspace carries as a field of
-/// its own. Opencode has no equivalent and answers each ask as it arrives.
+/// `decision` is this run's posture, which crush's workspace carries as a field
+/// of its own. Opencode has no equivalent and answers each ask as it arrives.
 #[must_use]
 pub fn open_request(
     shape: HttpShape,
     cwd: &str,
     client: Option<&ClientId>,
-    allow: bool,
+    decision: PermissionDecision,
 ) -> HttpRequest {
     match shape {
         // The session names its own working directory, so the server can be
@@ -328,7 +356,7 @@ pub fn open_request(
             Some(json!({
                 "client_id": client.map(ClientId::as_str).unwrap_or_default(),
                 "path": cwd,
-                "yolo": allow,
+                "yolo": decision.allows(),
             })),
         ),
     }
@@ -422,11 +450,11 @@ pub fn interrupt_request(shape: HttpShape, address: &TurnAddress) -> HttpRequest
 pub fn skip_permissions_request(
     shape: HttpShape,
     address: &TurnAddress,
-    allow: bool,
+    decision: PermissionDecision,
 ) -> Option<HttpRequest> {
     match shape {
         HttpShape::Opencode => None,
-        HttpShape::Crush => allow.then(|| {
+        HttpShape::Crush => decision.allows().then(|| {
             HttpRequest::new(
                 Method::Post,
                 format!(
@@ -447,7 +475,7 @@ pub fn permission_reply_request(
     shape: HttpShape,
     address: &TurnAddress,
     ask: &PermissionAsk,
-    allow: bool,
+    decision: PermissionDecision,
 ) -> Option<HttpRequest> {
     match shape {
         HttpShape::Opencode => {
@@ -461,7 +489,10 @@ pub fn permission_reply_request(
                 ),
                 // `once` rather than `always`: a grant this run makes must not
                 // outlive it into the next one.
-                Some(json!({"reply": if allow { "once" } else { "reject" }})),
+                Some(json!({"reply": match decision {
+                    PermissionDecision::Allow => "once",
+                    PermissionDecision::Deny => "reject",
+                }})),
             ))
         }
         HttpShape::Crush => Some(HttpRequest::new(
@@ -472,7 +503,10 @@ pub fn permission_reply_request(
                 address.query()
             ),
             Some(json!({
-                "action": if allow { "allow" } else { "deny" },
+                "action": match decision {
+                    PermissionDecision::Allow => "allow",
+                    PermissionDecision::Deny => "deny",
+                },
                 "permission": ask.payload,
             })),
         )),
@@ -769,9 +803,14 @@ mod tests {
         // where it runs would do its work in whatever directory the server
         // happened to start in.
         let opencode: Value = serde_json::from_str(
-            open_request(HttpShape::Opencode, "/work/here", None, true)
-                .body()
-                .unwrap(),
+            open_request(
+                HttpShape::Opencode,
+                "/work/here",
+                None,
+                PermissionDecision::Allow,
+            )
+            .body()
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(opencode["location"]["directory"], "/work/here");
@@ -780,7 +819,7 @@ mod tests {
                 HttpShape::Crush,
                 "/work/here",
                 Some(&ClientId::new("c").unwrap()),
-                true,
+                PermissionDecision::Allow,
             )
             .body()
             .unwrap(),
@@ -794,7 +833,12 @@ mod tests {
         // The one detail that answers a bare `{"message":"invalid client_id"}`
         // when it is got wrong.
         let client = ClientId::new("client-9").unwrap();
-        let open = open_request(HttpShape::Crush, "/work", Some(&client), true);
+        let open = open_request(
+            HttpShape::Crush,
+            "/work",
+            Some(&client),
+            PermissionDecision::Allow,
+        );
         assert_eq!(open.path(), "/v1/workspaces");
         let body: Value = serde_json::from_str(open.body().unwrap()).unwrap();
         assert_eq!(body["client_id"], "client-9");
@@ -805,7 +849,8 @@ mod tests {
             prompt_request(HttpShape::Crush, &address, "hi"),
             interrupt_request(HttpShape::Crush, &address),
             event_stream_request(HttpShape::Crush, &address),
-            skip_permissions_request(HttpShape::Crush, &address, true).unwrap(),
+            skip_permissions_request(HttpShape::Crush, &address, PermissionDecision::Allow)
+                .unwrap(),
         ] {
             assert!(
                 request.path().contains("client_id=client-9"),
@@ -823,9 +868,14 @@ mod tests {
         // never briefly in a posture this run did not choose.
         let client = ClientId::new("client-9").unwrap();
         let permissive: Value = serde_json::from_str(
-            open_request(HttpShape::Crush, "/work", Some(&client), true)
-                .body()
-                .unwrap(),
+            open_request(
+                HttpShape::Crush,
+                "/work",
+                Some(&client),
+                PermissionDecision::Allow,
+            )
+            .body()
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(permissive["yolo"], true);
@@ -833,9 +883,14 @@ mod tests {
         // And a restrictive run says so rather than leaving it to the server's
         // default: an absent field is not a decision.
         let restrictive: Value = serde_json::from_str(
-            open_request(HttpShape::Crush, "/work", Some(&client), false)
-                .body()
-                .unwrap(),
+            open_request(
+                HttpShape::Crush,
+                "/work",
+                Some(&client),
+                PermissionDecision::Deny,
+            )
+            .body()
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(restrictive["yolo"], false);
@@ -843,9 +898,14 @@ mod tests {
         // Opencode has no such field, and inventing one would be a key its
         // session-create route does not read.
         let opencode: Value = serde_json::from_str(
-            open_request(HttpShape::Opencode, "/work", None, true)
-                .body()
-                .unwrap(),
+            open_request(
+                HttpShape::Opencode,
+                "/work",
+                None,
+                PermissionDecision::Allow,
+            )
+            .body()
+            .unwrap(),
         )
         .unwrap();
         assert!(opencode.get("yolo").is_none(), "{opencode}");
@@ -936,17 +996,26 @@ mod tests {
         let TurnEvent::PermissionRequest(ask) = event else {
             panic!("opencode permission ask not recognized");
         };
-        let reply =
-            permission_reply_request(HttpShape::Opencode, &opencode_address(), &ask, true).unwrap();
+        let reply = permission_reply_request(
+            HttpShape::Opencode,
+            &opencode_address(),
+            &ask,
+            PermissionDecision::Allow,
+        )
+        .unwrap();
         assert_eq!(
             reply.path(),
             "/api/session/ses_other/permission/per_1/reply"
         );
         let body: Value = serde_json::from_str(reply.body().unwrap()).unwrap();
         assert_eq!(body["reply"], "once");
-        let denied =
-            permission_reply_request(HttpShape::Opencode, &opencode_address(), &ask, false)
-                .unwrap();
+        let denied = permission_reply_request(
+            HttpShape::Opencode,
+            &opencode_address(),
+            &ask,
+            PermissionDecision::Deny,
+        )
+        .unwrap();
         let body: Value = serde_json::from_str(denied.body().unwrap()).unwrap();
         assert_eq!(body["reply"], "reject");
 
@@ -957,8 +1026,13 @@ mod tests {
         let TurnEvent::PermissionRequest(ask) = event else {
             panic!("crush permission ask not recognized");
         };
-        let reply =
-            permission_reply_request(HttpShape::Crush, &crush_address(), &ask, true).unwrap();
+        let reply = permission_reply_request(
+            HttpShape::Crush,
+            &crush_address(),
+            &ask,
+            PermissionDecision::Allow,
+        )
+        .unwrap();
         assert_eq!(
             reply.path(),
             "/v1/workspaces/ws-1/permissions/grant?client_id=client-9"
@@ -1008,13 +1082,34 @@ mod tests {
 
     #[test]
     fn only_a_permissive_run_skips_the_asking() {
-        assert!(permits_action(PermissionMode::Bypass));
-        assert!(!permits_action(PermissionMode::Default));
+        assert_eq!(
+            permits_action(PermissionMode::Bypass),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            permits_action(PermissionMode::Default),
+            PermissionDecision::Deny
+        );
+        // A mode nobody mapped denies rather than grants, so adding one cannot
+        // hand an agent authority by omission.
+        assert_eq!(
+            permits_action(PermissionMode::ReadOnly),
+            PermissionDecision::Deny
+        );
         // Crush can be told once; opencode has no such route and answers each.
         let address = crush_address();
-        assert!(skip_permissions_request(HttpShape::Crush, &address, true).is_some());
-        assert!(skip_permissions_request(HttpShape::Crush, &address, false).is_none());
-        assert!(skip_permissions_request(HttpShape::Opencode, &address, true).is_none());
+        assert!(
+            skip_permissions_request(HttpShape::Crush, &address, PermissionDecision::Allow)
+                .is_some()
+        );
+        assert!(
+            skip_permissions_request(HttpShape::Crush, &address, PermissionDecision::Deny)
+                .is_none()
+        );
+        assert!(
+            skip_permissions_request(HttpShape::Opencode, &address, PermissionDecision::Allow)
+                .is_none()
+        );
     }
 
     #[test]
@@ -1087,9 +1182,14 @@ mod tests {
                 HttpShape::Crush,
                 "/a b/../c",
                 Some(&ClientId::new("c").unwrap()),
-                true,
+                PermissionDecision::Allow,
             ),
-            open_request(HttpShape::Opencode, "/a b/../c", None, true),
+            open_request(
+                HttpShape::Opencode,
+                "/a b/../c",
+                None,
+                PermissionDecision::Allow,
+            ),
             readiness_request(HttpShape::Crush),
             readiness_request(HttpShape::Opencode),
         ];
@@ -1101,8 +1201,17 @@ mod tests {
             ));
             routes.push(interrupt_request(shape, address));
             routes.push(event_stream_request(shape, address));
-            routes.extend(skip_permissions_request(shape, address, true));
-            routes.extend(permission_reply_request(shape, address, &ask, true));
+            routes.extend(skip_permissions_request(
+                shape,
+                address,
+                PermissionDecision::Allow,
+            ));
+            routes.extend(permission_reply_request(
+                shape,
+                address,
+                &ask,
+                PermissionDecision::Allow,
+            ));
         }
         routes.extend(session_request(
             HttpShape::Crush,

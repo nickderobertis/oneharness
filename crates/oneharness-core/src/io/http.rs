@@ -54,9 +54,10 @@ impl HttpClient {
     /// instead is what a `Connection: close` request seems to promise, and
     /// opencode does not keep that promise on every route: it answers in full
     /// and leaves the socket open, so a reader that waits for EOF times out and
-    /// reports a complete answer as cut short. A read that fails *before* the
-    /// framing is satisfied really is a truncated answer, and a truncated body
-    /// parsed as JSON is a wrong answer rather than a missing one.
+    /// reports a complete answer as cut short. A read that fails — or a close
+    /// that arrives — *before* the declared framing is satisfied really is a
+    /// truncated answer, and a truncated body parsed as JSON is a wrong answer
+    /// rather than a missing one.
     pub fn send(&self, request: &HttpRequest) -> io::Result<HttpResponse> {
         let mut stream = self.dial(self.timeout)?;
         write_request(&mut stream, request, &self.address)?;
@@ -86,6 +87,18 @@ impl HttpClient {
                 )
             })?;
             if read == 0 {
+                // The close. A server that framed its answer and then hung up
+                // before delivering it cut the answer short just as surely as a
+                // failing read did, and half a JSON document is a wrong answer
+                // rather than a missing one. Only an answer the server framed
+                // neither way legitimately ends here.
+                if head.is_some_and(|head| head.chunked || head.content_length.is_some()) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "the control server's answer was cut short: it closed before the body \
+                         it declared had arrived",
+                    ));
+                }
                 break;
             }
             let bytes = &buffer[..read];
@@ -459,6 +472,41 @@ mod tests {
         assert_eq!(response.status, 404);
         assert!(!response.ok());
         assert!(response.body.contains("404 page not found"));
+        let _ = server.join();
+    }
+
+    #[test]
+    fn an_answer_the_server_closed_before_finishing_is_an_error_rather_than_half_a_body() {
+        // A control server that dies mid-answer (or a proxy that drops it)
+        // leaves a body its own head says is incomplete. Returning it would
+        // hand the caller half a JSON document to parse — a wrong answer,
+        // where the error is a missing one the caller can retry.
+        let (port, server) =
+            serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n{\"id\":\"ses");
+        let err = client(port)
+            .send(&HttpRequest::for_test(Method::Get, "/api/app", None))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(err.to_string().contains("cut short"), "{err}");
+        let _ = server.join();
+
+        // The same for chunked framing, whose terminating chunk never arrives.
+        let (port, server) =
+            serve_once(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n7\r\n{\"a\":1}\r\n");
+        let err = client(port)
+            .send(&HttpRequest::for_test(Method::Post, "/api/session", None))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        let _ = server.join();
+
+        // An answer the server framed NEITHER way still ends at the close:
+        // that is the one shape whose only end-of-body signal is the close.
+        let (port, server) =
+            serve_once(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"a\":1}");
+        let response = client(port)
+            .send(&HttpRequest::for_test(Method::Get, "/api/app", None))
+            .unwrap();
+        assert_eq!(response.body, r#"{"a":1}"#);
         let _ = server.join();
     }
 

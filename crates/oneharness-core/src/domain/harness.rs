@@ -364,12 +364,14 @@ pub struct HarnessSpec {
     /// that was never exercised is the specific failure this field must not
     /// have (see the capability matrix in `README.md` and
     /// `scripts/explore-control.sh`, the drift alarm).
-    // llmlint: ignore[invalid_states_unrepresentable] `control` and `server` are
-    // two fields by approved design (a mechanism is declared independently of the
-    // process that backs it, and Claude Code's needs none), so the relationship is
-    // enforced where it can also catch a future harness: the registry invariant
-    // test below fails if a server-backed mechanism declares no server, or a
-    // server is declared for a harness with no control.
+    // llmlint: ignore-block[invalid_states_unrepresentable] `control` and `server`
+    // are two fields by approved design (a mechanism is declared independently of
+    // the process that backs it, and Claude Code's needs none), so the
+    // relationship is enforced where it can also catch a future harness: the
+    // registry invariant test below fails if a server-backed mechanism declares no
+    // server, or a server is declared for a harness with no control. Scoped to
+    // both fields because the pairing IS the finding — an ignore on `control`
+    // alone leaves the half of it that lives on `server` unsuppressed.
     pub control: Option<ControlShape>,
     /// The sidecar server this harness's control mechanism needs, when it needs
     /// one. Declared per harness rather than special-casing the one that does
@@ -377,6 +379,7 @@ pub struct HarnessSpec {
     /// consumed by the generic pool in [`crate::io::server_pool`]. `None` for a
     /// harness with no server, or with no proven control mechanism at all.
     pub server: Option<ServerSpec>,
+    // llmlint: ignore-end[invalid_states_unrepresentable]
     /// Builds the full argv (argv[0] is the binary). Pure.
     pub build_argv: fn(&BuildCtx) -> Vec<String>,
 }

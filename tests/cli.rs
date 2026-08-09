@@ -20726,6 +20726,21 @@ fn the_control_server_fixture_refuses_a_body_length_it_will_not_reserve_room_for
         "a length no body could satisfy was accepted: {refused}"
     );
 
+    // A port that parses but names no address is refused before anything binds.
+    // `0` asks the kernel to pick, and the caller goes on dialing the port that
+    // is written down — so the fixture would be listening where nobody looks.
+    let refused_port = Command::new(mock_bin())
+        .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
+        .args(["serve", "--port", "0"])
+        .output()
+        .expect("failed to run the mock control server");
+    assert!(!refused_port.status.success(), "{refused_port:?}");
+    assert!(
+        String::from_utf8_lossy(&refused_port.stderr).contains("is not a dialable port"),
+        "{}",
+        String::from_utf8_lossy(&refused_port.stderr)
+    );
+
     // A header line with no ending in it: the same hazard one level up, where
     // the peer picks how much is accumulated before anything is validated.
     let long_header = status_of(

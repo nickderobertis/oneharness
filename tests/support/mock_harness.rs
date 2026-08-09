@@ -445,10 +445,15 @@ fn run_http_control_server(log_path: &str) -> ! {
     // one is refused rather than defaulted: binding `0` would listen on some
     // port nobody is going to connect to, which reads as a server that never
     // came up rather than as a launch that was wrong.
+    // `0` is refused with the rest: it parses as a `u16` but names no address —
+    // the kernel picks one, and the dispatch goes on dialing the port that is
+    // written down. Same rule the real [`crate::domain::control::Port`] holds.
     let port: u16 = match args.windows(2).find(|w| w[0] == "--port") {
         Some(pair) => pair[1]
-            .parse()
-            .unwrap_or_else(|_| panic!("mock harness: `--port {}` is not a port", pair[1])),
+            .parse::<u16>()
+            .ok()
+            .filter(|port| *port != 0)
+            .unwrap_or_else(|| panic!("mock harness: `--port {}` is not a dialable port", pair[1])),
         None => panic!("mock harness: the control server was launched with no --port"),
     };
     let listener = std::net::TcpListener::bind(("127.0.0.1", port))

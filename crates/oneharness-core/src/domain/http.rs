@@ -777,7 +777,22 @@ pub fn parse_head(raw: &[u8]) -> HeadScan {
         return HeadScan::Unreadable(HeadUnreadable::NotAStatusLine);
     };
     let lowered = head.to_ascii_lowercase();
-    let chunked = lowered.contains("transfer-encoding: chunked");
+    // Read off the header itself, never searched for in the head at large: a
+    // head that merely carries the words (an upstream note, a header whose name
+    // ends in the same one) would otherwise frame a body the server never
+    // declared, and the reader would de-chunk an answer that was never chunked.
+    // `chunked` is the last coding of a possibly-longer list, per the grammar.
+    let chunked = lowered
+        .lines()
+        .filter_map(|line| line.strip_prefix("transfer-encoding:"))
+        .any(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|coding| !coding.is_empty())
+                .next_back()
+                == Some("chunked")
+        });
     let mut content_length = None;
     for declared in lowered
         .lines()
@@ -1390,6 +1405,47 @@ mod tests {
             panic!("an unrelated header was read as a length declaration");
         };
         assert_eq!(head.content_length, None);
+    }
+
+    #[test]
+    fn chunked_framing_is_read_from_the_transfer_encoding_header_itself() {
+        // The declaration decides how the rest of the connection is framed, so
+        // it is read as a header rather than searched for anywhere in the head.
+        // A head merely CARRYING the words frames a body it never declared: the
+        // reader then de-chunks an unchunked answer, and hands back whatever
+        // survives that as the server's reply.
+        for head in [
+            &b"HTTP/1.1 200 OK\r\nX-Upstream-Note: transfer-encoding: chunked\r\n\r\n"[..],
+            b"HTTP/1.1 200 OK\r\nX-Transfer-Encoding: chunked\r\n\r\n",
+            b"HTTP/1.1 200 transfer-encoding: chunked\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\n",
+        ] {
+            let HeadScan::Whole(parsed) = parse_head(head) else {
+                panic!("a whole head was not read as one");
+            };
+            assert!(
+                !parsed.chunked,
+                "framed a body as chunked from `{}`",
+                String::from_utf8_lossy(head)
+            );
+        }
+        // And every spelling of the real declaration still frames one: the
+        // header is case-insensitive, its value may be unspaced, and `chunked`
+        // is the last coding of a list rather than the whole value.
+        for head in [
+            &b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"[..],
+            b"HTTP/1.1 200 OK\r\ntransfer-encoding:chunked\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nTRANSFER-ENCODING: gzip, chunked\r\n\r\n",
+        ] {
+            let HeadScan::Whole(parsed) = parse_head(head) else {
+                panic!("a whole head was not read as one");
+            };
+            assert!(
+                parsed.chunked,
+                "missed the framing in `{}`",
+                String::from_utf8_lossy(head)
+            );
+        }
     }
 
     #[test]

@@ -266,8 +266,10 @@ impl ServerAddress {
 /// A harness's sidecar server: how to launch it, what makes two launches
 /// interchangeable, and how it is reached.
 ///
-/// Declared per harness rather than special-cased, because "needs a server" is
-/// the common case and Claude Code (which does not) is the exception.
+/// Declared per harness rather than special-cased. Only the two HTTP mechanisms
+/// (opencode, crush) need one: their turn is submitted to a server that outlives
+/// the dispatch, so it is pooled. The stdio protocols spawn their server as the
+/// run's OWN child and Claude Code needs none at all, so both leave this `None`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServerSpec {
     /// The argv appended to the harness binary to start the server (e.g.

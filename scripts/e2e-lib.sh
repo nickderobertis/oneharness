@@ -1097,8 +1097,8 @@ TOML
 # destroyed).
 #
 # Only call this for a harness `oneharness list` reports a `control` mechanism
-# for. Retries once when the turn ended before the interrupt landed (a model
-# that refused or finished early is flakiness, not a control regression) — which
+# for. Retries when the turn ended before the interrupt landed (a model that
+# refused or finished early is flakiness, not a control regression) — which
 # includes a turn that produced EVERY step it was asked for: a count pinned at
 # the ceiling stays pinned whether or not anything was interrupted, so that
 # reading is inconclusive rather than a pass.

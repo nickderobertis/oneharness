@@ -184,10 +184,7 @@ impl HttpClient {
         write_request(&mut stream, request, &self.address)?;
         Ok(EventStream {
             stream,
-            status: None,
-            head_seen: false,
-            chunked: false,
-            pending: Vec::new(),
+            head: StreamHead::Arriving(Vec::new()),
             chunks: ChunkedDecoder::default(),
             sse: SseAccumulator::default(),
             ready: Vec::new(),
@@ -230,16 +227,27 @@ fn absorb(bytes: &[u8], chunked: bool, chunks: &mut ChunkedDecoder, body: &mut V
     }
 }
 
+/// Where a stream is in its own framing.
+///
+/// One value rather than a seen/status/chunked triple, so a reader can never be
+/// mid-head and already framed at the same time: until the head is whole the
+/// only thing that exists is the bytes it is being assembled from, and once it
+/// is whole the only thing that outlives it is the body framing it declared.
+/// A refused subscription never reaches [`StreamHead::Framed`] at all —
+/// [`EventStream::poll`] answers [`StreamPoll::Refused`] while still arriving,
+/// because a server that said `404` still sends a body and reading that body as
+/// events would report a turn that never streamed.
+enum StreamHead {
+    /// The head is still arriving; these are its bytes so far.
+    Arriving(Vec<u8>),
+    /// The head arrived naming a success status, and framed the body this way.
+    Framed(BodyFraming),
+}
+
 /// A live event stream, yielding one `data:` payload at a time.
 pub struct EventStream {
     stream: Socket,
-    /// The status the stream answered with, once its head arrived. A server
-    /// that refused the subscription (`404`, `401`) still sends a body, and
-    /// reading that body as events would report a turn that never streamed.
-    status: Option<StatusCode>,
-    head_seen: bool,
-    chunked: bool,
-    pending: Vec<u8>,
+    head: StreamHead,
     chunks: ChunkedDecoder,
     sse: SseAccumulator,
     ready: Vec<String>,
@@ -329,23 +337,20 @@ impl EventStream {
                 return StreamPoll::Closed;
             }
             let bytes = &buffer[..read];
-            if !self.head_seen {
-                self.pending.extend_from_slice(bytes);
-                let head = match parse_head(&self.pending) {
+            if let StreamHead::Arriving(pending) = &mut self.head {
+                pending.extend_from_slice(bytes);
+                let head = match parse_head(pending) {
                     HeadScan::Incomplete => continue,
                     HeadScan::Whole(head) => head,
                     HeadScan::Unreadable(why) => {
                         return StreamPoll::Unreadable(StreamUnreadable::Head(why))
                     }
                 };
-                self.head_seen = true;
-                self.status = Some(head.status);
                 if !head.status.is_success() {
                     return StreamPoll::Refused(head.status);
                 }
-                self.chunked = head.framing.is_chunked();
-                let body: Vec<u8> = self.pending.split_off(head.body_at);
-                self.pending.clear();
+                let body: Vec<u8> = pending.split_off(head.body_at);
+                self.head = StreamHead::Framed(head.framing);
                 self.absorb(&body);
                 if let Some(unreadable) = self.unreadable() {
                     return unreadable;
@@ -373,10 +378,11 @@ impl EventStream {
     }
 
     fn absorb(&mut self, bytes: &[u8]) {
-        let decoded = if self.chunked {
-            self.chunks.feed(bytes)
-        } else {
-            bytes.to_vec()
+        let decoded = match self.head {
+            StreamHead::Framed(framing) if framing.is_chunked() => self.chunks.feed(bytes),
+            // Nothing is absorbed before the head is framed — `poll` only ever
+            // calls this with the body it split off a whole head, or later.
+            _ => bytes.to_vec(),
         };
         self.ready.extend(self.sse.feed(&decoded));
     }

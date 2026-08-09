@@ -301,7 +301,8 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // `--session <name>`: resolve the uniform handle to the harness's native
     // token (via the session store) before building argv. Validates capability +
     // no-batch loudly; in parallel it is single-harness, in fallback it binds to
-    // the anchor (the first session-capable harness in the chain). On a continue it
+    // the anchor (the identity the stored record belongs to when it is still a
+    // candidate, else the first session-capable one). On a continue it
     // yields the token to resume with, reusing the harness's verified `--resume`
     // mapping. `None` when the flag was not passed.
     let session_wiring = setup_session(

@@ -1928,6 +1928,83 @@ fn a_resume_the_identity_cannot_resolve_falls_through_to_the_next_candidate() {
 }
 
 #[test]
+fn every_sourced_unknown_session_refusal_falls_through_its_own_chain() {
+    // One case per CLI whose refusal was captured from a real invocation (a bogus
+    // session id resumed against the installed binary). Each drives its own
+    // harness's dialect through a real fallback chain, so a phrase that stops
+    // matching stops the chain here rather than in a dispatch: exit 1, empty
+    // stdout, the message on stderr — the exact shape each CLI produces.
+    let mock = mock_bin().display().to_string();
+    let served =
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"served-by-codex"}}"#;
+    let cases = [
+        (
+            "claude-code",
+            "No conversation found with session ID: 019f-0000",
+        ),
+        (
+            "codex",
+            "Error: thread/resume: thread/resume failed: no rollout found for thread id 019f-0000 \
+             (code -32600)",
+        ),
+        ("opencode", "Error: Session not found"),
+        ("qwen", "No saved session found with title \"019f-0000\"."),
+    ];
+
+    for (first, refusal) in cases {
+        // codex is the healthy tail for every chain, so the refusing harness is
+        // always a different one.
+        let tail = if first == "codex" {
+            "opencode"
+        } else {
+            "codex"
+        };
+        let tail_stdout = if tail == "codex" {
+            served.to_string()
+        } else {
+            r#"{"type":"text","part":{"type":"text","text":"served-by-codex"}}"#.to_string()
+        };
+        let project = format!(
+            r#"
+            harnesses = ["{first}", "{tail}"]
+            run_mode = "fallback"
+
+            [harness.{first}]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "1", MOCK_STDERR = '{refusal}' }}
+
+            [harness.{tail}]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "0", MOCK_STDOUT = '{tail_stdout}' }}
+            "#
+        );
+        let fx = ConfigFixture::new(&format!("unknown-session-{first}"), &project, "");
+        let output = run_with_config(
+            &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+            &[],
+            &fx.user_config(),
+        );
+        assert!(
+            output.status.success(),
+            "{first}: exit {:?}, stderr {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value = json_stdout(&output);
+        assert_eq!(
+            value["results"][0]["failure_kind"], "session_not_found",
+            "{first} must classify its own refusal"
+        );
+        assert_eq!(
+            value["fallback"]["fell_through"][0]["reason"], "session-not-found",
+            "{first}"
+        );
+        assert_eq!(value["fallback"]["ran"], tail, "{first}");
+        assert_eq!(value["results"][1]["text"], "served-by-codex", "{first}");
+    }
+}
+
+#[test]
 fn a_named_session_refuses_to_migrate_between_identities_of_one_harness() {
     // The record binds to the whole identity, so continuing it on a sibling
     // variant is the same loud usage error as continuing it on another harness —

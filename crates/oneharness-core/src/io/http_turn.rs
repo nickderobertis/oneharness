@@ -22,7 +22,7 @@ use crate::domain::http::{
     TurnEvent,
 };
 use crate::domain::mode::PermissionMode;
-use crate::domain::report::{Capture, Status};
+use crate::domain::report::{Capture, RunInstant, Status};
 use crate::io::http::{HttpClient, StreamPoll};
 
 /// How long one control request may take before the turn is called broken.
@@ -81,9 +81,10 @@ pub struct TurnOutcome {
     pub transcript: String,
     pub error: Option<String>,
     /// The invocation boundaries this turn was observed between, in the same
-    /// shape a spawned run reports them.
-    pub started_at: String,
-    pub finished_at: Option<String>,
+    /// shape a spawned run reports them — and in the same type, so text that is
+    /// not a millisecond-precision UTC instant cannot reach a measurement.
+    pub started_at: RunInstant,
+    pub finished_at: Option<RunInstant>,
     pub duration_ms: Option<u128>,
 }
 
@@ -102,8 +103,8 @@ impl TurnOutcome {
             stdout: self.transcript.clone(),
             stderr: String::new(),
             error: self.error.clone(),
-            started_at: self.started_at.clone(),
-            finished_at: self.finished_at.clone(),
+            started_at: self.started_at.as_str().to_string(),
+            finished_at: self.finished_at.as_ref().map(|at| at.as_str().to_string()),
             stdout_observations: Vec::new(),
         }
     }
@@ -126,8 +127,8 @@ impl TurnOutcome {
     }
 }
 
-fn utc_now() -> String {
-    crate::domain::history::format_rfc3339_millis(
+fn utc_now() -> RunInstant {
+    RunInstant::from_epoch_millis(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()

@@ -161,6 +161,17 @@ pub struct RunInstantError;
 pub struct RunInstant(String);
 
 impl RunInstant {
+    /// The instant `millis` milliseconds after the UNIX epoch.
+    ///
+    /// The way a clock read enters this type, mirroring
+    /// [`UtcInstant::from_epoch`]: canonical by construction, so the io layer
+    /// never formats an instant only to parse it back — a round trip whose
+    /// failure arm could only ever be an unreachable panic.
+    #[must_use]
+    pub fn from_epoch_millis(millis: u128) -> Self {
+        Self(crate::domain::history::format_rfc3339_millis(millis))
+    }
+
     /// The canonical millisecond-precision UTC text.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -742,6 +753,28 @@ mod tests {
         assert!("2026-02-30T00:00:00.000Z".parse::<RunInstant>().is_err());
         // And the same rule on the deserialization boundary, not just FromStr.
         assert!(serde_json::from_value::<RunInstant>(serde_json::json!("nope")).is_err());
+    }
+
+    #[test]
+    fn a_clock_read_enters_a_run_instant_already_canonical() {
+        // The constructor and `FromStr` have to agree, because this is the
+        // arm that never gets parsed: an io-layer clock read goes straight in.
+        // If they disagreed, a value no reader would accept could still be
+        // written into a measurement, and nothing would say so.
+        let minted = RunInstant::from_epoch_millis(1_767_225_600_007);
+        assert_eq!(minted.as_str(), "2026-01-01T00:00:00.007Z");
+        assert_eq!(minted.as_str().parse::<RunInstant>().unwrap(), minted);
+
+        // Sub-second precision is the whole reason this type is not
+        // `UtcInstant`: the milliseconds must survive, not truncate away.
+        assert_eq!(
+            RunInstant::from_epoch_millis(1_767_225_600_999).as_str(),
+            "2026-01-01T00:00:00.999Z"
+        );
+        assert_eq!(
+            RunInstant::from_epoch_millis(0).as_str(),
+            "1970-01-01T00:00:00.000Z"
+        );
     }
 
     #[test]

@@ -12274,6 +12274,17 @@ fn interrupted_stream_preserves_events_without_a_closing_run() {
         .collect();
     let mut child = Command::new(oneharness_bin())
         .env("ONEHARNESS_NO_CONFIG", "1")
+        // This child is SIGKILLed below, so it never flushes its coverage
+        // profile and leaves a truncated `.profraw`. Under `just coverage` that
+        // file is collected from the target directory and fails the whole
+        // `llvm-profdata merge` ("file header is corrupt"), taking the gate down
+        // for a process whose coverage was never wanted. Send it and its
+        // inherited children somewhere the collector does not read. Harmless
+        // when the binary is not instrumented, which ignores the variable.
+        .env(
+            "LLVM_PROFILE_FILE",
+            std::env::temp_dir().join("oneharness-killed-%p.profraw"),
+        )
         .env("MOCK_STDOUT", lines.join("\n"))
         .env("MOCK_STREAM_DELAY_MS", "300")
         .args([

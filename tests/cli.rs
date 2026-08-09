@@ -18779,6 +18779,44 @@ fn usage_reports_a_failed_stdout_write_instead_of_panicking() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn interrupt_reports_a_failed_stdout_write_instead_of_panicking() {
+    // The answer frame IS this command's deliverable, and its reader is a
+    // supervisor that may pipe it into `head` or die between sending the
+    // interrupt and reading the reply. `println!` panics on that; the shared
+    // writer reports it, like every other JSON-emitting command.
+    //
+    // No run is addressed, so this answers `not_running` — which is the point:
+    // the write path is reached whatever the verdict, and no live turn is
+    // needed to exercise it.
+    let store = control_store_dir("brokenpipe");
+    let mut child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args([
+            "interrupt",
+            "--session",
+            "gone",
+            "--session-dir",
+            &store.display().to_string(),
+            "--compact",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn oneharness interrupt");
+    drop(child.stdout.take().expect("stdout was piped"));
+
+    let output = child.wait_with_output().expect("failed to wait");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("panicked"),
+        "interrupt panicked on a closed stdout:\n{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
 // --- out-of-band turn control (`run --control` + `oneharness interrupt`) ------
 
 /// A private, per-test session store (which is also where the run's control

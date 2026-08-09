@@ -43,12 +43,12 @@ pub fn run(args: &InterruptArgs) -> Result<i32, OneharnessError> {
     let response = refuse_unsupported(&dir, &cwd, &args.session)
         .unwrap_or_else(|| control::send(&socket_path(&dir, &args.session), interrupt()));
 
-    let text = if args.compact {
-        serde_json::to_string(&response)?
-    } else {
-        serde_json::to_string_pretty(&response)?
-    };
-    println!("{text}");
+    // Through the shared writer, not `println!`: a supervisor piping this into
+    // `head`, or dying between the interrupt and reading its answer, closes
+    // stdout — and `println!` panics on that instead of reporting it. The same
+    // writer every other JSON-emitting command uses, so the answer frame fails
+    // the way a report does.
+    crate::commands::print_json(&response, args.compact)?;
     Ok(i32::from(!response.is_ok()))
 }
 

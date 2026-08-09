@@ -265,7 +265,8 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // `--session <name>`: resolve the uniform handle to the harness's native
     // token (via the session store) before building argv. Validates capability +
     // no-batch loudly; in parallel it is single-harness, in fallback it binds to
-    // the anchor (the first session-capable harness in the chain). On a continue it
+    // the anchor (the identity the stored record belongs to when it is still a
+    // candidate, else the first session-capable one). On a continue it
     // yields the token to resume with, reusing the harness's verified `--resume`
     // mapping. `None` when the flag was not passed.
     let session_wiring = setup_session(
@@ -927,10 +928,6 @@ fn apply_result_identity(result: &mut RunResult, composed: &str) {
         .map(|(_, variant)| variant.to_string());
 }
 
-/// Assemble the top-level [`RunReport`] from the finished results and the shared
-/// run metadata. Extracted so the normal and streaming paths emit an identical
-/// envelope shape (the streaming path passes `batch: None`).
-#[allow(clippy::too_many_arguments)]
 /// What `--mock-rules`/`--spy-file` wired up before spawning, and how to undo
 /// it. Built by [`setup_mock`]; consumed by [`MockWiring::finish`] the moment
 /// every job is done — the restore must run on the same code path as the run
@@ -1149,6 +1146,12 @@ fn setup_mock(
     Ok(Some(wiring))
 }
 
+/// Assemble the top-level [`RunReport`] from the finished results and the shared
+/// run metadata. Extracted so the normal and streaming paths emit an identical
+/// envelope shape (the streaming path passes `batch: None`).
+// Every argument is a separately-resolved piece of the run's envelope, and the
+// two callers (buffered and streaming) assemble them from different places; a
+// parameter struct would only move the same list one call up.
 #[allow(clippy::too_many_arguments)]
 fn build_report(
     results: Vec<RunResult>,

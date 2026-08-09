@@ -1137,6 +1137,15 @@ silently is not there is worse than none:
 - **Exactly one harness**, which must declare a control mechanism (`control` in
   `oneharness list`).
 - **Unix only** (the socket has no Windows equivalent in `std`).
+- **No `--mode edit` on a driven turn** (every mechanism except
+  `claude-control-request`). Those turns negotiate approvals on the wire, so
+  oneharness answers each permission request itself rather than the harness's
+  own `edit` mapping applying — and `edit` means *auto-approve file edits, still
+  gate shell*, which no such request carries a sourced way to distinguish.
+  Answering yes to both would grant shell authority the mode denies; answering
+  no to both would silently downgrade `edit`. Use `--mode default` (deny and
+  continue) or `--mode bypass`. Claude Code is unaffected: its control frame
+  rides the ordinary `-p` run, whose argv carries the real `acceptEdits`.
 - **No `--stream` on a server-submitted mechanism** (`opencode-http`,
   `crush-http`): those turns never spawn the harness CLI, so there is no stdout
   to publish line by line — and accepting the flag would silently select the

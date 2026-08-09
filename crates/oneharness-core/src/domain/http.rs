@@ -311,12 +311,16 @@ impl PermissionDecision {
 /// The decision this run's posture implies — the same rule the stdio dialogue
 /// applies, so an HTTP turn and a protocol turn answer a permission request the
 /// same way.
+///
+/// `Edit` is not permissive here: it promises auto-approved edits with shell
+/// still gated, and neither server's permission ask carries a sourced way to
+/// tell those apart, so allowing it would grant shell authority the mode
+/// denies. The command layer refuses `edit` on a controlled turn before
+/// anything spawns; this is the safe answer if one ever arrives anyway.
 #[must_use]
 pub fn permits_action(mode: PermissionMode) -> PermissionDecision {
     match mode {
-        PermissionMode::Bypass | PermissionMode::Auto | PermissionMode::Edit => {
-            PermissionDecision::Allow
-        }
+        PermissionMode::Bypass | PermissionMode::Auto => PermissionDecision::Allow,
         // Deny is the safe default, so a mode added later refuses until someone
         // decides otherwise rather than granting on arrival.
         _ => PermissionDecision::Deny,
@@ -1094,6 +1098,14 @@ mod tests {
         // hand an agent authority by omission.
         assert_eq!(
             permits_action(PermissionMode::ReadOnly),
+            PermissionDecision::Deny
+        );
+        // `edit` gates shell, and a permission ask here carries no sourced way
+        // to tell an edit from a command, so a blanket allow would grant more
+        // than the mode promises. The command layer refuses it before spawning;
+        // denying is the safe answer if one ever arrives anyway.
+        assert_eq!(
+            permits_action(PermissionMode::Edit),
             PermissionDecision::Deny
         );
         // Crush can be told once; opencode has no such route and answers each.

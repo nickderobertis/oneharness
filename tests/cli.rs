@@ -19103,6 +19103,88 @@ fn control_on_a_harness_without_a_mechanism_is_a_usage_error() {
 }
 
 #[test]
+fn control_refuses_edit_mode_on_a_driven_turn_rather_than_over_granting() {
+    // A driven turn negotiates approvals on the wire, so oneharness answers each
+    // permission request itself. `edit` means auto-approved edits with shell
+    // still gated, and no protocol here carries a sourced way to tell those
+    // apart — so answering at all would either grant shell authority the mode
+    // denies or silently downgrade `edit`. Refuse before spawning instead.
+    // opencode declares `edit` AND a control mechanism, so it is exactly the
+    // combination that would otherwise reach the blanket grant.
+    let store = control_store_dir("edit-mode");
+    let store_arg = store.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--session",
+            "edits",
+            "--session-dir",
+            &store_arg,
+            "--prompt",
+            "hi",
+            "--mode",
+            "edit",
+            "--bin",
+            &bin_override("opencode"),
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("negotiates approvals on the wire")
+            && stderr.contains("--mode edit")
+            && stderr.contains("--mode bypass"),
+        "the refusal must name the mode and an expressible alternative; stderr:\n{stderr}"
+    );
+    // Refused *before* anything spawned, which is what makes it a usage error
+    // rather than a run that quietly acted with the wrong authority.
+    assert!(
+        !store.join("control").exists(),
+        "a refused control run must open no socket"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn control_still_accepts_edit_mode_where_the_argv_carries_it() {
+    // Claude Code's control frame rides its ordinary `-p` run, so `edit` is
+    // delivered by the same argv a plain dispatch uses (`acceptEdits`) and the
+    // refusal above must not reach it. `--print-command` proves the mapping
+    // survives without spawning.
+    let store = control_store_dir("edit-mode-claude");
+    let store_arg = store.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "edits",
+            "--session-dir",
+            &store_arg,
+            "--prompt",
+            "hi",
+            "--mode",
+            "edit",
+            "--print-command",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("acceptEdits"),
+        "claude-code must still deliver `edit` on its argv; stdout:\n{stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
 fn control_needs_exactly_one_harness() {
     let store = control_store_dir("multi");
     let store_arg = store.display().to_string();

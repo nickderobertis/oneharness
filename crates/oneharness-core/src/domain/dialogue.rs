@@ -229,13 +229,21 @@ impl Dialogue {
     }
 
     /// Whether this run's approval posture allows the server to act. The
-    /// permissive modes are exactly the ones that mean "act without asking";
-    /// everything else declines, which is the same deny-and-continue posture
-    /// `--mode default` gives an ordinary run.
+    /// permissive modes are exactly the ones that mean "act without asking" for
+    /// *any* action; everything else declines, which is the same
+    /// deny-and-continue posture `--mode default` gives an ordinary run.
+    ///
+    /// `Edit` is deliberately absent rather than grouped with them: it promises
+    /// auto-approved edits with shell still gated, and a permission request
+    /// here carries no sourced way to tell the two apart, so allowing it would
+    /// grant shell authority the mode denies. The command layer refuses `edit`
+    /// on a driven turn up front ([`OneharnessError::ControlModeUnsupported`]),
+    /// so it never reaches this decision — and if a later change lets it
+    /// through, declining is the safe way to be wrong.
     fn permits_action(&self) -> bool {
         matches!(
             self.config.mode,
-            PermissionMode::Bypass | PermissionMode::Auto | PermissionMode::Edit
+            PermissionMode::Bypass | PermissionMode::Auto
         )
     }
 
@@ -727,6 +735,33 @@ mod tests {
         assert_eq!(reply["id"], 41);
         assert_eq!(reply["result"]["outcome"]["outcome"], "selected");
         assert_eq!(reply["result"]["outcome"]["optionId"], "a");
+    }
+
+    #[test]
+    fn edit_mode_declines_rather_than_granting_shell_authority_it_denies() {
+        // `edit` promises auto-approved edits with shell still gated, and an ACP
+        // permission request carries no sourced way to tell those apart — so a
+        // blanket grant here would hand the agent authority the mode refuses.
+        // The command layer rejects `--mode edit` on a driven turn up front;
+        // this pins the safe answer if one ever reaches the dialogue.
+        let mut d = Dialogue::new(
+            ControlShape::AcpCancel,
+            DialogueConfig {
+                mode: PermissionMode::Edit,
+                ..config()
+            },
+        )
+        .unwrap();
+        let reply = parse(
+            &d.on_line(
+                r#"{"jsonrpc":"2.0","id":9,"method":"session/request_permission","params":{"options":[{"optionId":"a","kind":"allow_once"}]}}"#,
+            )
+            .send[0],
+        );
+        assert_eq!(
+            reply["result"]["outcome"]["outcome"], "cancelled",
+            "edit must not select an allow option it cannot narrow"
+        );
     }
 
     #[test]

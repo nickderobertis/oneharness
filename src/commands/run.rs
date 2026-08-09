@@ -257,6 +257,10 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // to be told which control rule they broke, not a session rule that happens
     // to catch the same shape first.
     let explicit_format = args.output_format.or(cfg.output_format);
+    // Resolved here rather than at its own use below because a driven turn
+    // negotiates approvals on the wire, so `--control` has its own rule about
+    // which modes it can express (see `validate_control`).
+    let mode = resolve_mode(args, cfg);
     let control_shape = validate_control(
         args,
         &specs,
@@ -265,6 +269,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         batch_run,
         multi_model,
         stream,
+        mode,
     )?;
     // A model fan-out multiplies the run into several (harness, model) units, so —
     // like a batch — it refuses every single-unit shape up front (loud usage
@@ -326,7 +331,6 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // be built); a mode that *might block on a prompt* is warned about but still
     // run, with the per-harness `--timeout` as the backstop (a hang becomes a
     // `timeout` result, never an infinite stall).
-    let mode = resolve_mode(args, cfg);
     validate_modes(mode, &specs)?;
     // A reasoning/effort setting for a harness that has no headless argv surface
     // for it is refused here (no way to deliver it) — a loud usage error rather
@@ -1916,8 +1920,9 @@ fn emit_stream_result(report: &RunReport) -> Result<(), OneharnessError> {
 /// `--session` is required), one prompt and exactly one harness (control drives
 /// one live turn; a batch or fan-out has no single turn to interrupt), a
 /// harness that declares a *proven* control mechanism, a platform with unix
-/// sockets, and an explicit output format compatible with the mechanism.
-#[allow(clippy::fn_params_excessive_bools)] // llmlint: ignore[suppressions_justified] Each flag is one independently-decided run property the control rules must check; folding them into a struct used at this single call site would hide the list rather than shorten it.
+/// sockets, an approval mode the mechanism can actually express, and an
+/// explicit output format compatible with the mechanism.
+#[allow(clippy::fn_params_excessive_bools, clippy::too_many_arguments)] // llmlint: ignore[suppressions_justified] The parameters ARE the list of independently-resolved run properties the control rules must check, each decided separately by the caller; folding them into a struct used at this single call site would hide the list rather than shorten it.
 fn validate_control(
     args: &RunArgs,
     specs: &[&'static HarnessSpec],
@@ -1926,6 +1931,7 @@ fn validate_control(
     batch_run: bool,
     multi_model: bool,
     stream: bool,
+    mode: PermissionMode,
 ) -> Result<Option<ControlShape>, OneharnessError> {
     if !args.control {
         return Ok(None);
@@ -1974,6 +1980,22 @@ fn validate_control(
             supported: control_capable_ids(),
         });
     };
+    // A driven turn negotiates its approvals on the wire, so the harness's own
+    // `edit` mapping — which lives on the argv or in its config file — is not
+    // what is in play; oneharness answers each permission request itself. `edit`
+    // promises auto-approved file edits with shell still gated, and no protocol
+    // here carries a *sourced* way to tell an edit request from a command one.
+    // Answering yes to both would grant shell authority the mode denies, and
+    // answering no to both would silently downgrade `edit` toward `default`, so
+    // this is refused before spawning like any other mode a harness cannot
+    // express. Claude Code is unaffected: its control frame rides the ordinary
+    // `-p` run, whose argv carries the real `acceptEdits` mapping.
+    if shape.drives_turn() && mode == PermissionMode::Edit {
+        return Err(OneharnessError::ControlModeUnsupported {
+            id: spec.id.to_string(),
+            mode: mode.as_str(),
+        });
+    }
     // A server-submitted turn never spawns the harness CLI, so there is no
     // stdout to publish line by line. Refusing is what keeps `--stream` from
     // silently selecting the ordinary run — whose interrupt does NOT reach the

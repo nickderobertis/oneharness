@@ -1487,8 +1487,20 @@ fn setup_session(
         }
         spec
     };
-    let dir = session_io::resolve_dir(args.session_dir.as_deref().and_then(|p| p.to_str()))
-        .ok_or(OneharnessError::SessionNoStore)?;
+    // A `--session-dir` that cannot be spelled as UTF-8 is refused rather than
+    // dropped, exactly as the `interrupt` verb refuses it: silently falling
+    // back to the default store would put the session handle somewhere the
+    // caller did not ask for, and leave the interrupt looking for it there.
+    let configured = match args.session_dir.as_deref() {
+        Some(path) => Some(
+            path.to_str()
+                .ok_or_else(|| OneharnessError::SessionDirInvalid {
+                    path: path.display().to_string(),
+                })?,
+        ),
+        None => None,
+    };
+    let dir = session_io::resolve_dir(configured).ok_or(OneharnessError::SessionNoStore)?;
     let path = session_io::session_path(&dir, project, name);
     let existing = session_io::read(&path);
     if let Some(was) = session::harness_conflict(existing.as_ref(), spec.id) {

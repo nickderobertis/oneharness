@@ -20090,6 +20090,35 @@ fn interrupt_refuses_a_session_dir_that_is_not_utf8() {
 
 #[cfg(unix)]
 #[test]
+fn a_run_refuses_a_session_dir_that_is_not_utf8() {
+    // The other half of the pair: dropping it here would write the handle to
+    // the DEFAULT store, and the `interrupt` that refuses the same path would
+    // then be looking somewhere the run never wrote.
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let output = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args([
+            OsStr::new("run"),
+            OsStr::new("--harness"),
+            OsStr::new("claude-code"),
+            OsStr::new("--session"),
+            OsStr::new("x"),
+            OsStr::new("--prompt"),
+            OsStr::new("hi"),
+            OsStr::new("--print-command"),
+        ])
+        .arg("--session-dir")
+        .arg(OsStr::from_bytes(b"/tmp/oh-\xff-store"))
+        .output()
+        .expect("failed to run oneharness");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("is not valid UTF-8"), "stderr:\n{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
 fn interrupt_without_a_resolvable_store_is_a_usage_error() {
     // No --session-dir and no platform state dir: there is no address to
     // resolve, which must be said rather than guessed at.

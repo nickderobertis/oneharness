@@ -573,14 +573,15 @@ shape. When you add one:
   usage error (no id to bind a name to) — never a silent fresh start. It is
   single-harness, refuses batch/`--resume`/`--fork`/`--all`, and echoes a `session`
   block `{name, phase, token, store_file}` in the report. The record binds to the
-  **variant-qualified** id, because a native token is scoped to one identity's
-  session store (each variant is its own `env_from` home): a base id cannot say
-  which identity minted the token, so `harness_conflict` compares the whole id, a
-  legacy `0.1` record starts fresh rather than guessing, and the token is captured
-  from — and rebound to — the candidate that actually ran, not the anchor. A
-  resume no identity can resolve is the `session_not_found` failure kind, which
-  falls through beside `auth`/`quota`; its four phrasings in `domain::signals` are
-  captures from real CLIs (cursor's is deliberately missing, never guessed).
+  **variant-qualified** id: a native token is scoped to one identity's session
+  store (each variant is its own `env_from` home), and a base id cannot say which
+  identity minted it. So `harness_conflict` compares the whole id, a legacy `0.1`
+  record starts fresh rather than guessing, the token is captured from — and
+  rebound to — the candidate that actually *ran*, and the fallback anchor prefers
+  the identity the record already belongs to. A resume no identity can resolve is
+  the `session_not_found` kind, which falls through beside `auth`/`quota`; its
+  phrasings in `domain::signals` are captures from real CLIs (cursor's is
+  deliberately missing, never guessed).
   Update the *Session
   handle* section + `session_capable`/`--session` mentions in `README.md`. Also
   declare `fork_reuses_cache` (implies `supports_fork`): true only if a forked run

@@ -31,6 +31,15 @@ use crate::io::http_turn::HttpTurn;
 /// enough for a busy run, short enough that a wedged peer is not a hang.
 const CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// The most one request frame may be before it is refused unread.
+///
+/// A request is a single small JSON object, so this is orders of magnitude of
+/// headroom. It exists because the reader is waiting for a newline the peer
+/// controls: without a bound, a client that connects and writes without ever
+/// terminating its line grows the run's buffer for as long as it keeps writing,
+/// and the run's memory is not a side channel's to spend.
+const MAX_REQUEST_BYTES: u64 = 64 * 1024;
+
 /// The single clock read this module makes, kept here so
 /// [`crate::domain::control`] stays pure. A pre-1970 clock falls back to the
 /// epoch rather than panicking — control is a side channel and never takes a
@@ -467,15 +476,24 @@ mod imp {
 
     /// One request, one response, connection closed — the whole protocol.
     fn serve_connection(stream: UnixStream, handle: &ControlHandle) {
-        use std::io::{BufRead, BufReader, Write};
+        use std::io::{BufRead, BufReader, Read, Write};
         let _ = stream.set_read_timeout(Some(CLIENT_TIMEOUT));
         let _ = stream.set_write_timeout(Some(CLIENT_TIMEOUT));
+        // Bounded before it is accumulated: the newline that ends a request is
+        // the peer's to send, so an unbounded read is the peer deciding how
+        // much of the run's memory this connection costs. One byte past the
+        // bound is enough to know the frame is not one this version parses.
         let mut reader = BufReader::new(match stream.try_clone() {
             Ok(clone) => clone,
             Err(_) => return,
-        });
+        })
+        .take(MAX_REQUEST_BYTES + 1);
         let mut line = String::new();
         let response = match reader.read_line(&mut line) {
+            Ok(read) if read as u64 > MAX_REQUEST_BYTES => ControlResponse::refused(
+                format!("the control request is longer than {MAX_REQUEST_BYTES} bytes"),
+                ControlReason::Unsupported,
+            ),
             Ok(_) => match crate::domain::control::parse_request(&line) {
                 Ok(request) => handle.serve(request),
                 // A frame this version cannot parse is refused loudly rather
@@ -729,6 +747,45 @@ mod tests {
         assert_eq!(events[0].verb(), ControlVerb::Interrupt);
         assert!(events[0].is_served());
         assert!(!events[0].at().as_str().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_frame_that_never_ends_is_refused_at_its_bound_rather_than_accumulated() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+        // A request is one small JSON object. A peer that writes without ever
+        // sending the newline is not sending one, so the reader stops at the
+        // bound instead of growing a buffer for as long as the peer keeps
+        // typing — and answers, rather than holding the connection until its
+        // read timeout expires.
+        let dir = temp_dir("unbounded");
+        let path = socket_path(&dir, "flood");
+        let listener = bind(&path, ControlShape::ClaudeControlRequest, None).unwrap();
+        let mut stream = UnixStream::connect(&path).unwrap();
+        stream
+            .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let started = std::time::Instant::now();
+        // Past the bound, with no newline anywhere in it. The write may be cut
+        // short by the refusal that closes the connection, which is the point.
+        let _ = stream.write_all(&vec![b'x'; 4 * MAX_REQUEST_BYTES as usize]);
+        let mut reply = String::new();
+        BufReader::new(&stream).read_line(&mut reply).unwrap();
+        let response: ControlResponse = serde_json::from_str(reply.trim()).unwrap();
+        assert!(!response.is_ok(), "{response:?}");
+        assert_eq!(response.reason(), Some(ControlReason::Unsupported));
+        assert!(
+            started.elapsed() < CLIENT_TIMEOUT,
+            "the reader waited out its timeout instead of stopping at the bound"
+        );
+        assert!(listener.handle().events().is_empty());
+
+        // And the listener is still serving: one flooding client must not cost
+        // the run its control lever.
+        drop(stream);
+        let response = send(&path, ControlRequest::interrupt());
+        assert_eq!(response.reason(), Some(ControlReason::NoActiveTurn));
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -105,8 +105,10 @@
 //!                   asserted: `never-ready` exits before binding at all (nothing
 //!                   ever answers), `refuse-session` answers the session-create
 //!                   route `503`, and `no-session-id` answers it `200` with a body
-//!                   naming no id. The last two exit once they have answered, so a
-//!                   faulted server leaves nothing behind for the pool to reclaim.
+//!                   naming no id, and `foreign-permission` asks permission for a
+//!                   session this run does not own. Each exits once it has served
+//!                   its fault, so nothing is left behind for the pool to reclaim.
+//!                   An unrecognized value is refused rather than run as no fault.
 //!   MOCK_LOG_FILE   if set, an append-only run log: each invocation appends `S\n`
 //!                   when it starts (before MOCK_SLEEP_MS) and `E\n` when it ends
 //!                   (after the sleep). With a sleep that exceeds spawn latency,
@@ -355,6 +357,36 @@ fn run_native_descendant() -> ! {
     std::process::exit(0);
 }
 
+/// How the mock control server is asked to break, parsed at the boundary.
+///
+/// An enum rather than the raw string: an unrecognized value read as "no fault"
+/// would turn a misspelled knob into a passing happy-path run, which is the one
+/// outcome a fault test must never quietly produce.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HttpControlFault {
+    None,
+    NeverReady,
+    RefuseSession,
+    NoSessionId,
+    ForeignPermission,
+}
+
+impl HttpControlFault {
+    fn from_env() -> Self {
+        match std::env::var("MOCK_HTTP_CONTROL_FAULT")
+            .unwrap_or_default()
+            .as_str()
+        {
+            "" => HttpControlFault::None,
+            "never-ready" => HttpControlFault::NeverReady,
+            "refuse-session" => HttpControlFault::RefuseSession,
+            "no-session-id" => HttpControlFault::NoSessionId,
+            "foreign-permission" => HttpControlFault::ForeignPermission,
+            other => panic!("mock harness: MOCK_HTTP_CONTROL_FAULT names no fault: `{other}`"),
+        }
+    }
+}
+
 /// Act like an opencode-shaped HTTP control server: the third execution model,
 /// where the turn is submitted to a server rather than to a CLI.
 ///
@@ -367,11 +399,11 @@ fn run_native_descendant() -> ! {
 fn run_http_control_server(log_path: &str) -> ! {
     use std::io::{BufRead, Read};
     let args: Vec<String> = std::env::args().collect();
-    let fault = std::env::var("MOCK_HTTP_CONTROL_FAULT").unwrap_or_default();
+    let fault = HttpControlFault::from_env();
     // A server the pool started and that then never listens — the shape a real
     // one takes when it dies on startup. Exiting before binding is what makes
     // the readiness wait, not a route, the thing under test.
-    if fault == "never-ready" {
+    if fault == HttpControlFault::NeverReady {
         std::process::exit(0);
     }
     let port: u16 = args
@@ -398,7 +430,6 @@ fn run_http_control_server(log_path: &str) -> ! {
         let log = std::sync::Arc::clone(&log);
         let admitted = std::sync::Arc::clone(&admitted);
         let aborted = std::sync::Arc::clone(&aborted);
-        let fault = fault.clone();
         std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(socket.try_clone().expect("clone"));
             let mut request_line = String::new();
@@ -454,6 +485,20 @@ fn run_http_control_server(log_path: &str) -> ! {
                             &mut socket,
                             "{\"type\":\"session.next.prompt.admitted\",\"data\":{}}",
                         );
+                        // The shared stream carries every session's asks, so a
+                        // faulted server asks about one this run does not own.
+                        // Nothing may answer it — and the turn then ends on its
+                        // own, rather than leaving the run to its timeout.
+                        if fault == HttpControlFault::ForeignPermission {
+                            send(
+                                &mut socket,
+                                "{\"type\":\"permission.requested\",\"data\":{\"id\":\"per_1\",\"sessionID\":\"ses_intruder\"}}",
+                            );
+                            std::thread::sleep(std::time::Duration::from_millis(400));
+                            send(&mut socket, "{\"type\":\"session.idle\",\"data\":{}}");
+                            exit_shortly();
+                            return;
+                        }
                         send(
                             &mut socket,
                             "{\"type\":\"permission.requested\",\"data\":{\"id\":\"per_1\",\"sessionID\":\"ses_mock\"}}",
@@ -488,8 +533,8 @@ fn run_http_control_server(log_path: &str) -> ! {
                 // Either way the run has no turn to drive, and the server then
                 // exits rather than lingering as a pooled orphan — a process
                 // reclaimed with SIGTERM leaves a truncated coverage profile.
-                match fault.as_str() {
-                    "refuse-session" => {
+                match fault {
+                    HttpControlFault::RefuseSession => {
                         reply(
                             &mut socket,
                             "503 Service Unavailable",
@@ -497,7 +542,7 @@ fn run_http_control_server(log_path: &str) -> ! {
                         );
                         exit_shortly();
                     }
-                    "no-session-id" => {
+                    HttpControlFault::NoSessionId => {
                         reply(&mut socket, "200 OK", "{\"data\":{\"kind\":\"session\"}}");
                         exit_shortly();
                     }

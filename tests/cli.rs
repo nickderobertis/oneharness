@@ -20474,14 +20474,15 @@ fn wait_for_pooled_server_to_exit(pool: &std::path::Path) -> bool {
 }
 
 /// Drive a controlled opencode run against a control server broken the way
-/// `fault` names, and hand back its report.
+/// `fault` names, and hand back its output, its report, and the server's own
+/// request log.
 ///
-/// Every one of these is a failure the run must report as DATA — a server that
+/// Most of these are a failure the run must report as DATA — a server that
 /// never comes up or a session that cannot be opened is `spawn_error` with the
-/// reason in `error`, exactly like a harness that could not be spawned. The
-/// turn never starts, so the run is synchronous and no interrupt is sent.
+/// reason in `error`, exactly like a harness that could not be spawned — so the
+/// turn never starts, the run is synchronous, and no interrupt is sent.
 #[cfg(unix)]
-fn http_control_run_with_fault(tag: &str, fault: &str, timeout: &str) -> (Output, Value) {
+fn http_control_run_with_fault(tag: &str, fault: &str, timeout: &str) -> (Output, Value, String) {
     let store = control_store_dir(tag);
     let store_arg = store.display().to_string();
     let cwd = control_store_dir(&format!("{tag}-cwd"));
@@ -20520,9 +20521,10 @@ fn http_control_run_with_fault(tag: &str, fault: &str, timeout: &str) -> (Output
     );
     let report = json_stdout(&output);
     wait_for_pooled_server_to_exit(&pool);
+    let served = std::fs::read_to_string(store.join("server.log")).unwrap_or_default();
     let _ = std::fs::remove_dir_all(&store);
     let _ = std::fs::remove_dir_all(&cwd);
-    (output, report)
+    (output, report, served)
 }
 
 #[cfg(unix)]
@@ -20532,7 +20534,7 @@ fn a_control_server_that_never_answers_is_reported_rather_than_waited_out() {
     // must say so within the budget its caller set — a bring-up that outlasts
     // `--timeout` is a hang as far as that caller is concerned.
     let started = std::time::Instant::now();
-    let (output, report) = http_control_run_with_fault("http-unready", "never-ready", "5");
+    let (output, report, _) = http_control_run_with_fault("http-unready", "never-ready", "5");
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let result = &report["results"][0];
     assert_eq!(result["status"], "spawn-error", "{report}");
@@ -20555,7 +20557,7 @@ fn a_control_server_that_never_answers_is_reported_rather_than_waited_out() {
 fn a_control_server_that_refuses_the_session_reports_its_refusal() {
     // The server is up and answers, but will not open a session — so there is
     // no turn to interrupt and nothing to drive.
-    let (output, report) = http_control_run_with_fault("http-refused", "refuse-session", "30");
+    let (output, report, _) = http_control_run_with_fault("http-refused", "refuse-session", "30");
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let result = &report["results"][0];
     assert_eq!(result["status"], "spawn-error", "{report}");
@@ -20577,7 +20579,7 @@ fn a_control_server_that_names_no_session_is_refused_rather_than_guessed_at() {
     // A 200 with no id in it: the answer parsed, but named nothing to address.
     // Addressing a guessed id would send the prompt — and later the interrupt —
     // at a route belonging to some other turn, or to none.
-    let (output, report) = http_control_run_with_fault("http-noid", "no-session-id", "30");
+    let (output, report, _) = http_control_run_with_fault("http-noid", "no-session-id", "30");
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let result = &report["results"][0];
     assert_eq!(result["status"], "spawn-error", "{report}");
@@ -20587,6 +20589,45 @@ fn a_control_server_that_names_no_session_is_refused_rather_than_guessed_at() {
         "the reason must name the unusable answer: {error}"
     );
     assert!(result["session_id"].is_null(), "{report}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_permission_ask_for_another_session_is_not_answered_by_a_controlled_run() {
+    // The pooled server's event stream carries every dispatch's asks, so a
+    // concurrent run's permission request lands on this turn's stream. Driven
+    // through the CLI because the reply is a real request to a real route:
+    // answering would spend this run's `--mode bypass` posture on a turn it
+    // does not own.
+    let (output, report, served) =
+        http_control_run_with_fault("http-foreign", "foreign-permission", "30");
+    assert!(output.status.success(), "{output:?}");
+    let result = &report["results"][0];
+    // The turn genuinely ran and the ask genuinely arrived — without both, the
+    // assertion below would hold for the wrong reason.
+    assert!(
+        served
+            .lines()
+            .any(|line| line.starts_with("POST /api/session/ses_mock/prompt")),
+        "the turn never started:\n{served}"
+    );
+    assert!(
+        result["stdout"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("ses_intruder"),
+        "the foreign ask never reached the run: {result}"
+    );
+    // Nothing answered it, and the run said why rather than skipping silently.
+    assert!(
+        !served.contains("PERMISSION_ANSWERED"),
+        "a permission for another session was answered:\n{served}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("ignored a permission request for another session (ses_intruder)"),
+        "stderr:\n{stderr}"
+    );
 }
 
 #[cfg(unix)]

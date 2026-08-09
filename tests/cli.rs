@@ -49,7 +49,8 @@ fn run(args: &[&str], envs: &[(&str, &str)]) -> Output {
     // never shape these assertions. Config behavior itself is tested through
     // `run_with_config`, which opts back in.
     cmd.env("ONEHARNESS_NO_CONFIG", "1");
-    cmd.args(args);
+    let redirect = mock_profile_redirect();
+    cmd.args(with_mock_profile_redirect(args, &redirect));
     for (key, value) in envs {
         cmd.env(key, value);
     }
@@ -75,6 +76,25 @@ fn mock_profile_redirect() -> String {
             .join("oneharness-killed-mock-%p.profraw")
             .display()
     )
+}
+
+/// `args` with that `--env` added, for any `run` invocation.
+///
+/// Applied to every run rather than only the tests that cancel on purpose: a
+/// harness process is also torn down by a timeout, and under a loaded parallel
+/// suite the TERM grace expires often enough that *which* run leaves the
+/// truncated profile is a race rather than a property of one test. Inserted
+/// before a raw `--` so a passthrough argument list keeps its meaning.
+fn with_mock_profile_redirect<'a>(args: &[&'a str], redirect: &'a str) -> Vec<&'a str> {
+    if args.first() != Some(&"run") {
+        return args.to_vec();
+    }
+    let at = args.iter().position(|a| *a == "--").unwrap_or(args.len());
+    let mut out = args[..at].to_vec();
+    out.push("--env");
+    out.push(redirect);
+    out.extend_from_slice(&args[at..]);
+    out
 }
 
 /// The `ONEHARNESS_*` env overrides recognized as a config layer. Cleared in
@@ -113,7 +133,8 @@ fn run_with_config(args: &[&str], envs: &[(&str, &str)], user_config: &std::path
     for var in ENV_OVERRIDE_VARS {
         cmd.env_remove(var);
     }
-    cmd.args(args);
+    let redirect = mock_profile_redirect();
+    cmd.args(with_mock_profile_redirect(args, &redirect));
     for (key, value) in envs {
         cmd.env(key, value);
     }

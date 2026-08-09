@@ -1258,27 +1258,26 @@ static REGISTRY: &[HarnessSpec] = &[
         // stats` is local SQLite spend-to-date, not headroom.
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::NoHeadroomReader,
-        // UNVERIFIED, so undeclared. The mechanism is implemented and its shape
-        // is probe-sourced — [`ControlShape::CrushHttp`] and [`HttpShape::Crush`]
-        // carry every route — but no interrupt has been proven to STOP a real
-        // crush turn through oneharness: the only provider reachable on the
-        // development host refuses with a classified auth failure (Bedrock `403
-        // Forbidden`, the role has no `bedrock:InvokeModelWithResponseStream`),
-        // so no turn ever does work there is anything to freeze. A declared
-        // mechanism that was never exercised answers `ok:true` while the turn
-        // keeps running, which is strictly worse than the loud usage error
-        // `None` gives. To declare it, restore this pair —
-        //   control: Some(ControlShape::CrushHttp),
-        //   server: Some(ServerSpec {
-        //       launch: &["server"],
-        //       address_args: &["-H", "unix://{address}"],
-        //       key_env: &[],
-        //       transport: ServerTransport::UnixSocket,
-        //   }),
-        // — with a provider crush can actually reach, and land the passing
-        // `oh_control_enforce crush` transcript as the evidence.
-        control: None,
-        server: None,
+        // LIVE-VERIFIED (crush v0.87.0): `POST
+        // /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against a pooled
+        // `crush server` stops the turn (step files frozen for 15s). The turn is
+        // submitted to that server, never to `crush run` — its `run` has no
+        // attach flag, so a CLI-driven turn is unreachable from the route. Two
+        // details the client must get right: `client_id` travels in the BODY
+        // creating the workspace and as a QUERY parameter everywhere else (a
+        // mismatch answers a bare `{"message":"invalid client_id"}`), and the
+        // prompt POST answers 202 with the turn running in the background, so
+        // completion is read off the event stream.
+        control: Some(ControlShape::CrushHttp),
+        server: Some(ServerSpec {
+            launch: &["server"],
+            address_args: &["-H", "unix://{address}"],
+            // Crush resolves its provider from the ambient environment, and no
+            // single variable selects one — so nothing here narrows the pool
+            // key beyond the harness itself.
+            key_env: &[],
+            transport: ServerTransport::UnixSocket,
+        }),
         build_argv: argv_crush,
     },
     HarnessSpec {
@@ -2638,7 +2637,10 @@ mod tests {
         // The other kind of turn-driving harness never spawns its CLI at all:
         // its turn goes to a pooled server, so the launch to pin is the
         // `ServerSpec` the pool starts, plus how the chosen address reaches it.
-        let servers = [("opencode", &["serve"][..], &["--port", "{address}"][..])];
+        let servers = [
+            ("opencode", &["serve"][..], &["--port", "{address}"][..]),
+            ("crush", &["server"][..], &["-H", "unix://{address}"][..]),
+        ];
         for (id, launch, address_args) in servers {
             let spec = by_id(id).unwrap();
             let server = spec

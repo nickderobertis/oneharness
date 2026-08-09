@@ -236,8 +236,7 @@ Use the `just` recipes; do not hand-roll equivalents.
   also becomes `--session`-capable only under `--control`
   (`session_capable_under`), because the id comes off the wire rather than out
   of an output format. A mechanism whose interrupt is an HTTP route on a
-  *separate server* (opencode; crush implemented but undeclared, its interrupt
-  unproven — the development host's only provider refuses it `403`) uses a third execution model — the turn
+  *separate server* (opencode, crush) uses a third execution model — the turn
   submitted over that server (`domain::http` pure, `io::http`/`io::http_turn`
   the sockets), never through the harness's CLI — because interrupting a
   CLI-driven run was live-REFUTED: opencode's `run --port` binds nothing and

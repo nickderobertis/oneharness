@@ -1171,29 +1171,19 @@ that is only probe-verified is **not** declared in the registry, so
 | Copilot | `acp-cancel` | The ACP `session/cancel` **notification** over `copilot --acp` | **LIVE** through oneharness |
 | Goose | `acp-cancel` | The same ACP `session/cancel` **notification** over `goose acp` | **LIVE** through oneharness |
 | OpenCode | `opencode-http` | `POST /api/session/{id}/interrupt` against a pooled `opencode serve` | **LIVE** through oneharness |
-| Crush | — | `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against a pooled `crush server` | **UNVERIFIED** — implemented but undeclared, blocked on provider auth (see below) |
+| Crush | `crush-http` | `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against a pooled `crush server` | **LIVE** through oneharness |
 | Cursor | — | none | cursor-agent exposes no headless control surface |
 | Qwen | — | none | qwen exposes no headless control surface |
 
-**Crush is implemented but not declared.** Its mechanism is probe-sourced and its
-whole path exists in the code (`ControlShape::CrushHttp`, `HttpShape::Crush`, the
-routes below), and a controlled crush run does reach the server, create the
-workspace and session, submit the prompt and follow the event stream. What has
-never been proven is the part that matters: an interrupt *stopping a real crush
-turn* through oneharness. The only provider reachable on the development host
-refuses with a classified auth failure —
-
-```
-403 Forbidden {"Message":"User: arn:aws:sts::…:assumed-role/… is not authorized to
-perform: bedrock:InvokeModelWithResponseStream …"}
-```
-
-— so the agent never runs a tool and there is no work whose freeze could be
-measured. Declaring it anyway would make `oneharness interrupt` answer
-`ok:true` while the turn kept running, which is worse than the loud usage error
-an undeclared harness gives. Re-declaring it is the one registry pair named in
-the comment at crush's `control` field, plus a passing `oh_control_enforce crush`
-transcript against a provider crush can actually reach.
+**Crush needs a provider its server can actually call.** It resolves one from the
+ambient environment, and no single variable selects it, so a host carrying AWS
+selectors and no `ANTHROPIC_API_KEY` falls through to Bedrock — where a role
+without `bedrock:InvokeModelWithResponseStream` answers `403 Forbidden`, the
+agent never runs a tool, and there is no work whose freeze could be measured.
+That is an unusable *credential*, not an absent mechanism: with
+`ANTHROPIC_API_KEY` present crush picks Anthropic even alongside an `AWS_PROFILE`,
+and the cancel route then freezes the turn. `oh_control_enforce crush` is what
+holds that proof.
 
 A declared mechanism means oneharness **drives the turn** over that protocol
 rather than through the harness's ordinary headless run: it spawns
@@ -1204,23 +1194,22 @@ and approvals are negotiated on the wire, so they leave the argv entirely —
 which is also why Copilot and Goose can take `--session` under `--control` even
 though none of their ordinary output formats carries a session id.
 
-**An OpenCode turn is submitted to its server, not to its CLI** (and a Crush one
-would be). This is the third execution model, and the only one their interrupt
-reaches. Interrupting an ordinary `opencode run` was REFUTED both ways it can be
-pointed at a server: `run --port <n>` binds nothing (the port never appears in
-`ss -ltn`), and `run --attach http://…` leaves the attached server's
+**OpenCode and Crush turns are submitted to their servers, not to their CLIs.**
+This is the third execution model, and the only one their interrupt reaches.
+Interrupting an ordinary `opencode run` was REFUTED both ways it can be pointed
+at a server: `run --port <n>` binds nothing (the port never appears in `ss
+-ltn`), and `run --attach http://…` leaves the attached server's
 `/api/session/active` **empty while the run is creating files** — so the
 interrupt answers `2xx` while the work continues (measured: 3 → 9 step files in
 the 15s after a "successful" interrupt). Crush's `run` has no attach flag at
-all. So under `--control` oneharness never spawns the CLI: it leases the
+all. So under `--control` oneharness never spawns either CLI: it leases the
 harness's server from the pool, creates a session on it, follows its event
 stream, and answers what the server blocks on. The recorded `command` is
 therefore the *server's* launch argv, and the run's `stdout` is the event
 transcript oneharness actually saw.
 
 Four things that path has to get right, each learned from a run that got it
-wrong (the Crush ones from driving its server, which works — it is only the
-*interrupt* that no reachable provider has let anyone prove):
+wrong:
 
 - **Both servers block on a permission decision**, exactly as ACP does. Crush
   emits `permission_request` and waits; opencode emits `permission.*`. A

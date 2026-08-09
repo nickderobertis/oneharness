@@ -109,10 +109,11 @@ for id in "${CONTROLLABLE[@]}"; do
         }
         export OH_MODEL=""
         ;;
-    # Dormant while crush declares no mechanism (the loop above reads the
-    # capability matrix), and ready for the run that proves one: it needs a
-    # provider crush can reach, which the Bedrock role on the development host
-    # is not — see the comment at crush's `control` field.
+    # Crush resolves its provider from the ambient environment, and an
+    # ANTHROPIC_API_KEY reaching the pooled server is what picks one it can
+    # actually call: without it a host carrying AWS selectors falls through to
+    # Bedrock, where a role lacking `bedrock:InvokeModelWithResponseStream`
+    # answers `403` and the turn does no work there is anything to freeze.
     crush)
         have_env "Crush auth" CRUSH_E2E_AUTH ANTHROPIC_API_KEY || {
             skipped+=("$id")

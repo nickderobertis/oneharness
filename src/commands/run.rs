@@ -3651,15 +3651,18 @@ mod tests {
         );
     }
 
+    /// The composed selection `setup_session` reads, in the owned form the run
+    /// path hands it — selection has already validated every id, so each one
+    /// parses into an identity.
+    fn ids(values: &[&str]) -> Vec<String> {
+        values.iter().map(|id| (*id).to_string()).collect()
+    }
+
     /// A `RunArgs` carrying a `--session <name>` request pointed at an isolated,
     /// non-existent store directory. `resolve_dir` returns the path verbatim and
     /// the (absent) record reads back as `None`, so `setup_session` resolves a
     /// fresh *create* without touching a real store — enough to assert which
     /// harness the session anchors to.
-    fn ids(values: &[&str]) -> Vec<String> {
-        values.iter().map(|id| (*id).to_string()).collect()
-    }
-
     fn session_args(name: &str) -> RunArgs {
         let mut a = run_args();
         a.session = Some(name.to_string());

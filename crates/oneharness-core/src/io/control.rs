@@ -163,13 +163,15 @@ impl ControlHandle {
                 }
             }
         };
-        for frame in &step.send {
-            if let Err(err) = self.write_line(frame) {
-                eprintln!("oneharness: warning: could not write a control frame: {err}");
-                return true;
+        if let crate::domain::dialogue::DialogueStep::Send(frames) = &step {
+            for frame in frames {
+                if let Err(err) = self.write_line(frame) {
+                    eprintln!("oneharness: warning: could not write a control frame: {err}");
+                    return true;
+                }
             }
         }
-        step.terminal
+        step == crate::domain::dialogue::DialogueStep::Terminal
     }
 
     /// The harness's native session id, when the dialogue captured one.

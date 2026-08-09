@@ -47,11 +47,29 @@ pub struct DialogueConfig {
 
 /// What the driver should do after one line.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct DialogueStep {
-    /// Lines to write to the server's stdin, in order. Each is newline-terminated.
-    pub send: Vec<String>,
+pub enum DialogueStep {
+    /// Keep driving the turn, writing these newline-terminated frames first.
+    #[default]
+    Continue,
+    /// Keep driving the turn after writing these newline-terminated frames.
+    Send(Vec<String>),
     /// The turn is over; the driver stops reading and tears the server down.
-    pub terminal: bool,
+    Terminal,
+}
+
+impl DialogueStep {
+    #[cfg(test)]
+    fn frames(&self) -> &[String] {
+        match self {
+            Self::Send(frames) => frames,
+            Self::Continue | Self::Terminal => &[],
+        }
+    }
+
+    #[cfg(test)]
+    fn is_terminal(&self) -> bool {
+        *self == Self::Terminal
+    }
 }
 
 /// How far along one turn's conversation is.
@@ -277,10 +295,7 @@ impl Dialogue {
             // reply that guarantees the turn never starts.
             _ => json!({}),
         };
-        DialogueStep {
-            send: vec![response(id, result)],
-            terminal: false,
-        }
+        DialogueStep::Send(vec![response(id, result)])
     }
 
     fn on_notification(&mut self, method: &str, message: &Value) -> DialogueStep {
@@ -341,9 +356,15 @@ impl Dialogue {
     }
 
     fn on_response(&mut self, id: Option<u64>, message: &Value) -> DialogueStep {
-        // An error at any stage ends the turn: there is nothing further to
-        // drive, and the run's envelope already carries the server's own output.
-        if message.get("error").is_some() {
+        // Only an error answering one of this dialogue's active requests ends
+        // it. A pooled/server stream may carry unrelated JSON-RPC responses;
+        // terminating on an uncorrelated error would abort the wrong turn.
+        let active_id = id.is_some_and(|id| {
+            (self.phase == Phase::Handshake && id == self.handshake_id)
+                || (self.phase == Phase::Opening && id == self.open_id)
+                || (self.phase == Phase::InTurn && Some(id) == self.turn_request_id)
+        });
+        if active_id && message.get("error").is_some() {
             return self.finish();
         }
         let result = message.get("result").unwrap_or(&Value::Null);
@@ -353,21 +374,15 @@ impl Dialogue {
                 let open_id = self.take_id();
                 self.open_id = open_id;
                 match self.shape {
-                    ControlShape::CodexAppServer => DialogueStep {
-                        send: vec![
-                            notification("initialized", json!({})),
-                            request(open_id, "thread/start", self.thread_start_params()),
-                        ],
-                        terminal: false,
-                    },
-                    _ => DialogueStep {
-                        send: vec![request(
-                            open_id,
-                            "session/new",
-                            json!({"cwd": self.config.cwd.to_string(), "mcpServers": []}),
-                        )],
-                        terminal: false,
-                    },
+                    ControlShape::CodexAppServer => DialogueStep::Send(vec![
+                        notification("initialized", json!({})),
+                        request(open_id, "thread/start", self.thread_start_params()),
+                    ]),
+                    _ => DialogueStep::Send(vec![request(
+                        open_id,
+                        "session/new",
+                        json!({"cwd": self.config.cwd.to_string(), "mcpServers": []}),
+                    )]),
                 }
             }
             Some(id) if id == self.open_id && self.phase == Phase::Opening => {
@@ -390,14 +405,11 @@ impl Dialogue {
                 self.phase = Phase::InTurn;
                 let turn_id = self.take_id();
                 self.turn_request_id = Some(turn_id);
-                DialogueStep {
-                    send: vec![request(
-                        turn_id,
-                        self.turn_method(),
-                        self.turn_params(&session),
-                    )],
-                    terminal: false,
-                }
+                DialogueStep::Send(vec![request(
+                    turn_id,
+                    self.turn_method(),
+                    self.turn_params(&session),
+                )])
             }
             Some(id) if Some(id) == self.turn_request_id => match self.shape {
                 // Codex answers `turn/start` IMMEDIATELY with the new turn's id
@@ -425,10 +437,7 @@ impl Dialogue {
 
     fn finish(&mut self) -> DialogueStep {
         self.phase = Phase::Done;
-        DialogueStep {
-            send: Vec::new(),
-            terminal: true,
-        }
+        DialogueStep::Terminal
     }
 
     fn turn_method(&self) -> &'static str {
@@ -622,19 +631,19 @@ mod tests {
         assert!(d.interrupt().is_none());
 
         let step = d.on_line(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
-        assert!(!step.terminal);
-        assert_eq!(step.send.len(), 2);
-        assert_eq!(parse(&step.send[0])["method"], "initialized");
-        let start = parse(&step.send[1]);
+        assert!(!step.is_terminal());
+        assert_eq!(step.frames().len(), 2);
+        assert_eq!(parse(&step.frames()[0])["method"], "initialized");
+        let start = parse(&step.frames()[1]);
         assert_eq!(start["method"], "thread/start");
         assert_eq!(start["params"]["cwd"], absolute_text_for_test(WORK));
         assert_eq!(start["params"]["approvalPolicy"], "never");
         assert_eq!(start["params"]["model"], "gpt-5-codex");
 
         let step = d.on_line(r#"{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"th-1"}}}"#);
-        assert!(!step.terminal);
+        assert!(!step.is_terminal());
         assert_eq!(d.session_id(), Some("th-1"));
-        let turn = parse(&step.send[0]);
+        let turn = parse(&step.frames()[0]);
         assert_eq!(turn["method"], "turn/start");
         assert_eq!(turn["params"]["threadId"], "th-1");
         assert_eq!(turn["params"]["input"][0]["text"], "do the thing");
@@ -672,14 +681,14 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":3,"result":{"turn":{"id":"tu-9","status":"inProgress"}}}"#,
         );
         assert!(
-            !step.terminal,
+            !step.is_terminal(),
             "codex acknowledges turn/start immediately — ending here would end every run instantly"
         );
         assert!(d.interrupt().is_some(), "the turn is still in flight");
 
         // `turn/completed` is what ends it.
         let step = d.on_line(r#"{"jsonrpc":"2.0","method":"turn/completed","params":{}}"#);
-        assert!(step.terminal);
+        assert!(step.is_terminal());
         assert!(d.interrupt().is_none(), "no turn left to interrupt");
     }
 
@@ -705,7 +714,7 @@ mod tests {
         d.on_line(r#"{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"th-1"}}}"#);
         let step = d
             .on_line(r#"{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"th-1"}}"#);
-        assert!(step.terminal);
+        assert!(step.is_terminal());
     }
 
     #[test]
@@ -721,13 +730,13 @@ mod tests {
         );
 
         let step = d.on_line(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#);
-        let new = parse(&step.send[0]);
+        let new = parse(&step.frames()[0]);
         assert_eq!(new["method"], "session/new");
         assert_eq!(new["params"]["cwd"], absolute_text_for_test(WORK));
 
         let step = d.on_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-7"}}"#);
         assert_eq!(d.session_id(), Some("sess-7"));
-        let prompt = parse(&step.send[0]);
+        let prompt = parse(&step.frames()[0]);
         assert_eq!(prompt["method"], "session/prompt");
         assert_eq!(prompt["params"]["sessionId"], "sess-7");
         assert_eq!(prompt["params"]["prompt"][0]["text"], "do the thing");
@@ -755,7 +764,7 @@ mod tests {
         // real cancellation, which is exactly why oneharness records the
         // interrupt from its own side instead of reading this.
         let step = d.on_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#);
-        assert!(step.terminal);
+        assert!(step.is_terminal());
     }
 
     #[test]
@@ -766,8 +775,8 @@ mod tests {
         let step = d.on_line(
             r#"{"jsonrpc":"2.0","id":41,"method":"session/request_permission","params":{"options":[{"optionId":"a","kind":"allow_once"},{"optionId":"r","kind":"reject_once"}]}}"#,
         );
-        assert_eq!(step.send.len(), 1, "a request must be answered");
-        let reply = parse(&step.send[0]);
+        assert_eq!(step.frames().len(), 1, "a request must be answered");
+        let reply = parse(&step.frames()[0]);
         assert_eq!(reply["id"], 41);
         assert_eq!(reply["result"]["outcome"]["outcome"], "selected");
         assert_eq!(reply["result"]["outcome"]["optionId"], "a");
@@ -792,7 +801,7 @@ mod tests {
             &d.on_line(
                 r#"{"jsonrpc":"2.0","id":9,"method":"session/request_permission","params":{"options":[{"optionId":"a","kind":"allow_once"}]}}"#,
             )
-            .send[0],
+            .frames()[0],
         );
         assert_eq!(
             reply["result"]["outcome"]["outcome"], "cancelled",
@@ -814,7 +823,7 @@ mod tests {
             &d.on_line(
                 r#"{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"options":[{"optionId":"a","kind":"allow_once"}]}}"#,
             )
-            .send[0],
+            .frames()[0],
         );
         assert_eq!(reply["result"]["outcome"]["outcome"], "cancelled");
 
@@ -829,7 +838,7 @@ mod tests {
         let reply = parse(
             &codex
                 .on_line(r#"{"jsonrpc":"2.0","id":5,"method":"execCommandApproval","params":{}}"#)
-                .send[0],
+                .frames()[0],
         );
         assert_eq!(reply["result"]["decision"], "denied");
         assert_eq!(codex.codex_sandbox_policy()["type"], "readOnly");
@@ -843,7 +852,7 @@ mod tests {
         let mut d = Dialogue::new(ControlShape::CodexAppServer, config()).unwrap();
         let reply = parse(
             &d.on_line(r#"{"jsonrpc":"2.0","id":8,"method":"attestation/generate","params":{}}"#)
-                .send[0],
+                .frames()[0],
         );
         assert_eq!(reply["id"], 8, "the request is still answered");
         assert!(
@@ -855,7 +864,7 @@ mod tests {
             &d.on_line(
                 r#"{"jsonrpc":"2.0","id":9,"method":"item/commandExecution/requestApproval","params":{}}"#,
             )
-            .send[0],
+            .frames()[0],
         );
         assert_eq!(approved["result"]["decision"], "approved");
     }
@@ -890,9 +899,22 @@ mod tests {
         let step = d.on_line(
             r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error"}}"#,
         );
-        assert!(step.terminal, "there is nothing further to drive");
+        assert!(step.is_terminal(), "there is nothing further to drive");
         assert_eq!(d.session_id(), None);
         assert_eq!(d.text(), None);
+    }
+
+    #[test]
+    fn an_uncorrelated_server_error_does_not_end_the_active_dialogue() {
+        let mut d = Dialogue::new(ControlShape::AcpCancel, config()).unwrap();
+        d.open();
+        let step = d.on_line(
+            r#"{"jsonrpc":"2.0","id":99,"error":{"code":-32603,"message":"other request"}}"#,
+        );
+        assert_eq!(step, DialogueStep::Continue);
+
+        let handshake = d.on_line(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
+        assert_eq!(handshake.frames().len(), 1, "the dialogue must remain live");
     }
 
     #[test]
@@ -903,8 +925,8 @@ mod tests {
         d.open();
         d.on_line(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
         let step = d.on_line(r#"{"jsonrpc":"2.0","id":2,"result":{}}"#);
-        assert!(step.terminal);
-        assert!(step.send.is_empty());
+        assert!(step.is_terminal());
+        assert!(step.frames().is_empty());
     }
 
     #[test]

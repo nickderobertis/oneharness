@@ -63,7 +63,7 @@ MAX_RPC_LINE_BYTES = 8 * 1024 * 1024
 
 PROMPT = (
     "You are a non-interactive test fixture in a scratch directory. Using your "
-    f"shell tool, create {STEPS} files named step-001.txt through step-060.txt in "
+    f"shell tool, create {STEPS} files named step-001.txt through step-{STEPS:03d}.txt in "
     "the current directory, ONE PER TOOL CALL, sleeping 1 second between each "
     "(for example: sleep 1 && touch step-001.txt). Do not use a loop and do not "
     "create them in one command - make a separate tool call for every file. "

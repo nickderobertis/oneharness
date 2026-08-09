@@ -384,6 +384,8 @@ enum HttpControlFault {
     CloseStream,
     RefusePrompt,
     HangPrompt,
+    RefuseEvents,
+    UnreadableEvents,
     RedirectInterrupt,
 }
 
@@ -401,6 +403,8 @@ impl HttpControlFault {
             "close-stream" => HttpControlFault::CloseStream,
             "refuse-prompt" => HttpControlFault::RefusePrompt,
             "hang-prompt" => HttpControlFault::HangPrompt,
+            "refuse-events" => HttpControlFault::RefuseEvents,
+            "unreadable-events" => HttpControlFault::UnreadableEvents,
             "redirect-interrupt" => HttpControlFault::RedirectInterrupt,
             other => panic!("mock harness: MOCK_HTTP_CONTROL_FAULT names no fault: `{other}`"),
         }
@@ -549,6 +553,24 @@ fn run_http_control_server(log_path: &str) -> ! {
                 let _ = socket.flush();
             };
             if line.starts_with("GET /api/event") {
+                if fault == HttpControlFault::RefuseEvents {
+                    reply(
+                        &mut socket,
+                        "503 Service Unavailable",
+                        "{\"error\":\"events unavailable\"}",
+                    );
+                    exit_shortly();
+                    return;
+                }
+                if fault == HttpControlFault::UnreadableEvents {
+                    let _ = write!(
+                        socket,
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 7\r\nContent-Length: 9\r\n\r\ndata: {{}}\n"
+                    );
+                    let _ = socket.flush();
+                    exit_shortly();
+                    return;
+                }
                 // The stream a driver follows. The idle BEFORE admission is the
                 // trap: acting on it ends the run before any work happens.
                 let send = |socket: &mut std::net::TcpStream, payload: &str| {

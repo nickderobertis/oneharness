@@ -21066,6 +21066,36 @@ fn a_control_server_that_refuses_the_prompt_reports_its_refusal() {
 
 #[cfg(unix)]
 #[test]
+fn a_control_server_that_refuses_event_subscription_reports_it_at_the_cli() {
+    let (output, report, _) =
+        http_control_run_with_fault("http-events-refused", "refuse-events", "30");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "nonzero", "{report}");
+    assert_eq!(
+        result["error"], "the control server refused the event subscription (503)",
+        "{report}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_event_subscription_reports_its_framing_error_at_the_cli() {
+    let (output, report, _) =
+        http_control_run_with_fault("http-events-unreadable", "unreadable-events", "30");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "nonzero", "{report}");
+    let error = result["error"].as_str().expect("a framing reason");
+    assert!(
+        error.contains("event subscription cannot be read")
+            && error.contains("two different Content-Length values"),
+        "{error}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn a_control_server_that_never_answers_the_prompt_cannot_outlast_the_run_budget() {
     // The prompt is sent on a worker so the event stream can be consumed at
     // the same time. Joining that worker must not turn a one-second run budget

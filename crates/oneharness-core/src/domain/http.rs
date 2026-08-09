@@ -626,13 +626,18 @@ fn classify_opencode(kind: &str, value: &Value) -> TurnEvent {
                 .get("id")
                 .or_else(|| data.get("requestID"))
                 .and_then(Value::as_str);
+            let session = match data.get("sessionID") {
+                Some(Value::String(session)) => match ResourceId::new(session) {
+                    Ok(session) => Some(session),
+                    Err(_) => return TurnEvent::Ignored,
+                },
+                Some(_) => return TurnEvent::Ignored,
+                None => None,
+            };
             match id.and_then(|id| ResourceId::new(id).ok()) {
                 Some(id) => TurnEvent::PermissionRequest(PermissionAsk {
                     id,
-                    session: data
-                        .get("sessionID")
-                        .and_then(Value::as_str)
-                        .and_then(|session| ResourceId::new(session).ok()),
+                    session,
                     payload: data,
                 }),
                 None => TurnEvent::Ignored,
@@ -1099,6 +1104,17 @@ mod tests {
         TurnAddress::Opencode {
             session: ResourceId::new("ses_abc").unwrap(),
         }
+    }
+
+    #[test]
+    fn an_invalid_supplied_permission_session_is_rejected() {
+        assert_eq!(
+            classify_event(
+                HttpShape::Opencode,
+                r#"{"type":"permission.requested","data":{"id":"per_1","sessionID":"../other"}}"#,
+            ),
+            TurnEvent::Ignored
+        );
     }
 
     /// A crush opening in `decision`'s posture. The client identity is not

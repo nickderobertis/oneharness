@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.10](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.6.9...oneharness-core-v0.6.10) - 2026-08-09
+
+### Added
+
+- out-of-band turn control via a socket and `oneharness interrupt` ([#1225](https://github.com/nickderobertis/oneharness/pull/1225))
+
 ## [0.6.9](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.6.8...oneharness-core-v0.6.9) - 2026-08-08
 
 ### Added

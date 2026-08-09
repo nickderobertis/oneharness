@@ -101,8 +101,22 @@ for id in "${CONTROLLABLE[@]}"; do
         # is mapped for it), exactly as `e2e-goose.sh` does — and `goose acp`
         # resolves them the same way an ordinary `goose run` would, so a missing
         # GOOSE_PROVIDER fails `session/new` rather than the turn.
-        export GOOSE_PROVIDER="${GOOSE_PROVIDER:-openai}"
-        export GOOSE_MODEL="${GOOSE_MODEL:-${GOOSE_E2E_MODEL:-gpt-4o-mini}}"
+        #
+        # The MODEL is load-bearing here in a way it is not in the other phases:
+        # this one needs a turn still in flight when the interrupt lands, so the
+        # agent has to spread its work over time. `gpt-4o-mini` does not — it
+        # ignores "one file per tool call" and writes all 60 in a single batched
+        # command (measured: zero files for 15s, then 60 at once, turn over), and
+        # work that is atomic can never be caught mid-flight. `claude-haiku`
+        # honors it (~1 file every 2s), so prefer Anthropic where its key is
+        # present. Either way an explicit GOOSE_MODEL/GOOSE_E2E_MODEL still wins.
+        if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+            export GOOSE_PROVIDER="${GOOSE_PROVIDER:-anthropic}"
+            export GOOSE_MODEL="${GOOSE_MODEL:-${GOOSE_E2E_MODEL:-claude-haiku-4-5-20251001}}"
+        else
+            export GOOSE_PROVIDER="${GOOSE_PROVIDER:-openai}"
+            export GOOSE_MODEL="${GOOSE_MODEL:-${GOOSE_E2E_MODEL:-gpt-4o-mini}}"
+        fi
         have_env "Goose provider key" OPENAI_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY || {
             skipped+=("$id")
             continue

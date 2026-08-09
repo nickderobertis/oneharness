@@ -1098,7 +1098,10 @@ TOML
 #
 # Only call this for a harness `oneharness list` reports a `control` mechanism
 # for. Retries once when the turn ended before the interrupt landed (a model
-# that refused or finished early is flakiness, not a control regression).
+# that refused or finished early is flakiness, not a control regression) — which
+# includes a turn that produced EVERY step it was asked for: a count pinned at
+# the ceiling stays pinned whether or not anything was interrupted, so that
+# reading is inconclusive rather than a pass.
 #
 #   $1 harness id
 # llmlint: ignore-block[tool_output_is_signal] The phase's progress lines are how a
@@ -1107,15 +1110,21 @@ TOML
 # here follows.
 oh_control_enforce() {
     local id="$1"
-    local attempt
-    for attempt in 1 2; do
+    # Three attempts, not two: an inconclusive attempt is a model that refused or
+    # raced, and opencode declines this fixture outright often enough (answers
+    # `ok` in under ten seconds having run no tool at all) that two attempts
+    # retire the phase on model mood rather than on control behavior. Retrying
+    # cannot hide a regression — every real contract violation below calls
+    # `fail` on the spot, and only a turn that proved NOTHING comes back here.
+    local attempt attempts=3
+    for attempt in $(seq 1 "$attempts"); do
         if _oh_control_enforce_once "$id" "$attempt"; then
             note "PASS: $id control enforcement"
             return 0
         fi
-        note "  control-enforce: attempt $attempt was inconclusive (the turn ended before the interrupt landed); retrying"
+        note "  control-enforce: attempt $attempt was inconclusive (the turn ended, or finished every step, before the interrupt landed); retrying"
     done
-    fail "$id: the turn never stayed in flight long enough to interrupt across 2 attempts"
+    fail "$id: the turn never stayed in flight long enough to interrupt across $attempts attempts"
 }
 
 # One attempt. Returns 0 on a proven interrupt, 1 when the turn ended too early
@@ -1140,7 +1149,11 @@ _oh_control_enforce_once() {
 
     # Many small steps with a pause between each: the turn must still be running
     # when the interrupt arrives, and each step must be individually observable.
-    local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create 60 files named step-001.txt through step-060.txt in the current directory, ONE PER TOOL CALL, sleeping 1 second between each (for example: sleep 1 && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
+    # `steps` is the ceiling the assertion below reads too, so the prompt and the
+    # "did it merely finish?" test can never drift apart.
+    local steps=60 last
+    last="$(printf 'step-%03d.txt' "$steps")"
+    local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create $steps files named step-001.txt through $last in the current directory, ONE PER TOOL CALL, sleeping 1 second between each (for example: sleep 1 && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
 
     # The turn must actually run shell commands for there to be work to stop, so a
     # narrower mode would make the freeze assertion vacuous. Confined to a fresh
@@ -1174,6 +1187,17 @@ _oh_control_enforce_once() {
     fi
     if ! kill -0 "$run_pid" 2>/dev/null; then
         rm -rf "$sandbox"
+        return 1
+    fi
+    # A turn that already wrote every file it was asked for has nothing left to
+    # stop, so a frozen count afterwards is what finishing looks like, not what
+    # an interrupt looks like. Inconclusive, never a pass.
+    count="$(_oh_step_count "$sandbox")"
+    if [ "$count" -ge "$steps" ]; then
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        rm -rf "$sandbox"
+        note "  control-enforce: the agent finished all $steps steps before the interrupt could land"
         return 1
     fi
 
@@ -1214,6 +1238,17 @@ _oh_control_enforce_once() {
     # a beat for an in-flight tool call to land), then again 15s later.
     sleep 3
     frozen="$(_oh_step_count "$sandbox")"
+    # Same trap on the other side of the interrupt: a turn that raced to the
+    # ceiling in the seconds it took to send the frame would hold at $steps for
+    # any window you cared to watch, and that reading is indistinguishable from a
+    # completed turn. Retry rather than bank it.
+    if [ "$frozen" -ge "$steps" ]; then
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        rm -rf "$sandbox"
+        note "  control-enforce: the count reached all $steps steps, so a freeze proves nothing"
+        return 1
+    fi
     sleep 15
     frozen_after="$(_oh_step_count "$sandbox")"
     if [ "$frozen_after" != "$frozen" ]; then

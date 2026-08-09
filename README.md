@@ -1115,6 +1115,8 @@ oneharness run --harness claude-code --session triage --prompt "Stop there — d
 is a socket rather than a flag. The protocol is one newline-terminated JSON
 request per connection, one response, connection closed:
 
+<!-- TODO(control-wire-doc-drift): generate this block from the `domain::control` request/response types, or add a gate that reconciles their field names against it, so the two cannot drift. -->
+<!-- llmlint: ignore[contracts_have_one_source_or_a_drift_gate] This block hand-restates the `ControlRequest`/`ControlResponse` wire shapes; the tests reconcile only `v` and the refusal-reason values, so the field names and the ok/error split really are duplicated with nothing keeping them aligned. Suppressed rather than fixed, deliberately: generating or gating a five-line README example is its own piece of work, and the exposure — a stale doc example, not a stale contract — is marginal against the change this lands in. Tracked by the TODO above. -->
 ```jsonc
 → {"v":1,"verb":"interrupt"}
 ← {"v":1,"ok":true,"mechanism":"<shape-id>"}

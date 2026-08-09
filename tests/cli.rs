@@ -2082,6 +2082,143 @@ fn a_named_session_refuses_to_migrate_between_identities_of_one_harness() {
 }
 
 #[test]
+fn a_sibling_variant_is_never_handed_the_anchors_resume_token() {
+    // The other half of the fall-through: the candidate that picks up the turn
+    // must run FRESH. Its config directory has never seen the anchor's token, so
+    // passing it along would only reproduce the refusal one identity down the
+    // chain — the token is scoped to the namespace that minted it, and the
+    // report's own `phase` must not claim a continuation nobody performed.
+    let store = session_store_dir("sibling-no-resume");
+    let store_arg = store.display().to_string();
+    let alternate_argv =
+        std::env::temp_dir().join(format!("oh-sibling-argv-{}", std::process::id()));
+    let _ = std::fs::remove_file(&alternate_argv);
+    let alternate_serves = format!(
+        r#"MOCK_EXIT = "0", MOCK_ARGV_FILE = '{}', MOCK_STDOUT = '{{"session_id":"sess-alt","result":"served-by-alternate"}}'"#,
+        alternate_argv.display()
+    );
+    let fx = ConfigFixture::new(
+        "session-sibling-no-resume",
+        &variant_fallback_project(
+            r#"MOCK_EXIT = "0", MOCK_STDOUT = '{"session_id":"sess-primary","result":"served-by-primary"}'"#,
+            &alternate_serves,
+        ),
+        "",
+    );
+    let args = [
+        "run",
+        "--prompt",
+        "hi",
+        "--cwd",
+        &fx.cwd(),
+        "--session",
+        "triage",
+        "--session-dir",
+        &store_arg,
+        "--compact",
+    ]
+    .map(str::to_string);
+    let turn = || {
+        run_with_config(
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+            &[],
+            &fx.user_config(),
+        )
+    };
+
+    // Turn one binds the handle to `primary`.
+    let first = turn();
+    assert!(first.status.success(), "{first:?}");
+    assert_eq!(json_stdout(&first)["session"]["token"], "sess-primary");
+
+    // Turn two: the anchor is out of quota, so `alternate` takes the turn.
+    std::fs::write(
+        PathBuf::from(fx.cwd()).join("oneharness.toml"),
+        variant_fallback_project(
+            r#"MOCK_EXIT = "1", MOCK_STDERR = "Error: insufficient_quota""#,
+            &alternate_serves,
+        ),
+    )
+    .unwrap();
+    let second = turn();
+    assert!(second.status.success(), "{second:?}");
+    let value = json_stdout(&second);
+    assert_eq!(value["fallback"]["ran"], "claude-code:alternate");
+
+    let argv = std::fs::read_to_string(&alternate_argv).unwrap();
+    assert!(
+        !argv.lines().any(|arg| arg == "--resume"),
+        "the sibling must run fresh, never carrying the anchor's token: {argv}"
+    );
+    assert!(
+        !argv.contains("sess-primary"),
+        "the anchor's token must not reach a sibling's argv at all: {argv}"
+    );
+
+    let _ = std::fs::remove_file(&alternate_argv);
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn a_lossy_output_format_is_refused_by_the_variant_qualified_identity() {
+    // `--session` needs a format that actually carries the native id. An explicit
+    // pin that drops it is refused BEFORE spawning (accepting it would leave the
+    // handle silently unstorable), and the error names the whole identity — a
+    // bare `claude-code` would not tell an operator running several which of
+    // their configured variants to re-run.
+    let mock = mock_bin().display().to_string();
+    let store = session_store_dir("variant-format");
+    let fx = ConfigFixture::new(
+        "session-variant-format",
+        &format!(
+            r#"
+        [harness.claude-code.variant.alternate]
+        bin = '{mock}'
+        "#
+        ),
+        "",
+    );
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--harness",
+            "claude-code:alternate",
+            "--session",
+            "triage",
+            "--session-dir",
+            &store.display().to_string(),
+            "--output-format",
+            "text",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("claude-code:alternate"),
+        "the error must name the variant-qualified identity: {stderr}"
+    );
+    assert!(
+        stderr.contains("text") && stderr.contains("json"),
+        "the error must name the refused format and the ones that work: {stderr}"
+    );
+    // Nothing spawned, so nothing was stored.
+    assert_eq!(
+        std::fs::read_dir(&store).unwrap().count(),
+        0,
+        "a refused run must leave the store untouched"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
 fn a_legacy_session_record_starts_fresh_instead_of_resuming_a_guessed_identity() {
     // A record written before the store bound sessions to a variant-qualified id
     // says only `claude-code` — which identity minted its token is unrecoverable.

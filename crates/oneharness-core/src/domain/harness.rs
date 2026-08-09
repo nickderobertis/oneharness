@@ -17,6 +17,7 @@ use crate::domain::mode::{ModeHeadless, PermissionMode};
 use crate::domain::report::OutputFormat;
 use crate::domain::structured::NativeSchema;
 use crate::domain::usage::{UsageProbe, UsageSupport};
+use serde::{Deserialize, Serialize};
 
 /// Everything `build_argv` needs, with no I/O: the resolved binary, the prompt,
 /// the optional model, whether to request the harness's "don't prompt" mode, and
@@ -702,6 +703,101 @@ pub fn by_id(id: &str) -> Option<&'static HarnessSpec> {
 /// Comma-joined list of valid ids, for error messages and help.
 pub fn valid_ids() -> String {
     REGISTRY.iter().map(|h| h.id).collect::<Vec<_>>().join(", ")
+}
+
+/// Text that does not name a selectable harness identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HarnessIdentityError;
+
+impl std::fmt::Display for HarnessIdentityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "expected a harness id, optionally qualified by `:<variant>` \
+             (`{}`; variant {})",
+            valid_ids(),
+            crate::domain::config::VARIANT_NAME_PATTERN
+        )
+    }
+}
+
+/// One selectable harness **identity**: a registry id, optionally qualified by
+/// the `:<variant>` naming one configured auth identity — `claude-code:alternate`,
+/// or plain `codex` where no variant is configured.
+///
+/// This is the granularity a native session token actually belongs to. Each
+/// variant points its harness at its own home directory (its own
+/// `CLAUDE_CONFIG_DIR`), so each keeps a *disjoint* session namespace and a token
+/// minted under one is meaningless under another.
+///
+/// An unqualified id is a legitimate identity, not a degenerate one: a harness
+/// with no `[harness.<id>.variant.*]` has exactly one identity and its selected
+/// id carries no suffix, so both spellings parse. What the type rules out is the
+/// text a bare `String` let into the session store and could never name a
+/// selectable unit — an unknown base id, an empty base or variant around the
+/// separator, a second separator, or a variant outside
+/// [`crate::domain::config::VARIANT_NAME_PATTERN`]. Parsing is the only
+/// constructor, so holding one is proof it was checked.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[serde(transparent)]
+pub struct HarnessIdentity(String);
+
+impl HarnessIdentity {
+    /// The composed id as written on the wire and matched against a run's
+    /// selected ids (`claude-code:alternate`).
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The registry id this identity belongs to, without any variant.
+    #[must_use]
+    pub fn base(&self) -> &str {
+        self.0.split_once(':').map_or(self.0.as_str(), |(b, _)| b)
+    }
+
+    /// The variant naming the auth identity, or `None` for the harness's single
+    /// unqualified identity.
+    #[must_use]
+    pub fn variant(&self) -> Option<&str> {
+        self.0.split_once(':').map(|(_, name)| name)
+    }
+
+    /// The registry entry, which parsing has already proven exists.
+    #[must_use]
+    pub fn spec(&self) -> &'static HarnessSpec {
+        by_id(self.base()).expect("a parsed identity names a registry harness")
+    }
+}
+
+impl std::str::FromStr for HarnessIdentity {
+    type Err = HarnessIdentityError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let (base, variant) = text
+            .split_once(':')
+            .map_or((text, None), |(base, name)| (base, Some(name)));
+        // A variant that itself contains the separator would re-split differently
+        // on the next read, so the charset rule (which excludes `:`) rejects it.
+        let variant_ok = variant.is_none_or(crate::domain::config::is_valid_variant_name);
+        if by_id(base).is_none() || !variant_ok {
+            return Err(HarnessIdentityError);
+        }
+        Ok(Self(text.to_string()))
+    }
+}
+
+impl std::fmt::Display for HarnessIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for HarnessIdentity {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        text.parse().map_err(serde::de::Error::custom)
+    }
 }
 
 static REGISTRY: &[HarnessSpec] = &[
@@ -1935,6 +2031,57 @@ fn argv_cursor(c: &BuildCtx) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_harness_identity_parses_only_a_selectable_unit() {
+        // Both legitimate spellings: a harness with no configured variant is one
+        // unqualified identity; a configured one carries its variant.
+        for (text, base, variant) in [
+            ("codex", "codex", None),
+            ("claude-code", "claude-code", None),
+            ("claude-code:alternate", "claude-code", Some("alternate")),
+            ("claude-code:alt_2", "claude-code", Some("alt_2")),
+        ] {
+            let id: HarnessIdentity = text.parse().unwrap_or_else(|_| panic!("{text}"));
+            assert_eq!(id.as_str(), text);
+            assert_eq!(id.base(), base);
+            assert_eq!(id.variant(), variant);
+            assert_eq!(id.spec().id, base);
+        }
+
+        // Text that names nothing runnable. A session record carrying any of
+        // these could never be matched against a candidate, so it must not be
+        // constructible — the store reads it back as no record instead.
+        for text in [
+            "",                   // no harness at all
+            "nope",               // not in the registry
+            "claude-code:",       // a separator with no identity after it
+            ":alternate",         // a variant with no harness
+            "claude-code:a:b",    // a second separator would re-split differently
+            "claude-code:-lead",  // variant must not lead with a separator char
+            "claude-code:has sp", // whitespace is not a variant character
+            "claude-code:UPPER!", // punctuation is not a variant character
+            "Claude-Code",        // ids are lowercase and exact
+            " codex",             // no surrounding whitespace
+        ] {
+            assert!(
+                text.parse::<HarnessIdentity>().is_err(),
+                "`{text}` must not parse as an identity"
+            );
+        }
+    }
+
+    #[test]
+    fn a_harness_identity_round_trips_through_json() {
+        // The session record's wire shape is the plain composed string, so the
+        // store stays readable by eye and by an older reader.
+        let id: HarnessIdentity = "claude-code:alternate".parse().unwrap();
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, "\"claude-code:alternate\"");
+        assert_eq!(serde_json::from_str::<HarnessIdentity>(&json).unwrap(), id);
+        // A wire value that names nothing runnable is refused, not silently kept.
+        assert!(serde_json::from_str::<HarnessIdentity>("\"gone:x\"").is_err());
+    }
 
     fn ctx<'a>(bin: &'a str, model: Option<&'a str>, mode: PermissionMode) -> BuildCtx<'a> {
         ctx_fmt(bin, model, mode, OutputFormat::Json)

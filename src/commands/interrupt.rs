@@ -70,7 +70,10 @@ fn refuse_unsupported(
     name: &str,
 ) -> Option<ControlResponse> {
     let record = session_io::read(&session_io::session_path(dir, cwd, name))?;
-    let spec = harness::by_id(&record.harness)?;
+    // The record's identity is variant-qualified (`claude-code:alternate`), and
+    // control is a property of the adapter, so read the registry entry off the
+    // identity rather than looking the whole composed id up as a bare harness id.
+    let spec = record.harness.spec();
     if spec.control.is_some() {
         return None;
     }

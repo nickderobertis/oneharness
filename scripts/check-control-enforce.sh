@@ -8,6 +8,7 @@ source "$root/scripts/e2e-lib.sh"
 
 fail() {
     echo "check-control-enforce: $1" >&2
+    echo "  Re-run with: bash -x scripts/check-control-enforce.sh" >&2
     exit 1
 }
 

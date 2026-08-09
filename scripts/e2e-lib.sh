@@ -1167,7 +1167,7 @@ _oh_control_enforce_once() {
     local run_pid=$!
 
     # The socket must appear at the documented path while the run is alive.
-    if ! _oh_wait_for 60 "test -S '$socket'"; then
+    if ! _oh_wait_for 60 test -S "$socket"; then
         kill "$run_pid" 2>/dev/null || true
         wait "$run_pid" 2>/dev/null || true
         sed 's/^/    /' "$sandbox/run.err" >&2 || true
@@ -1178,7 +1178,7 @@ _oh_control_enforce_once() {
 
     # Wait until the agent is demonstrably working: at least two steps done, so
     # a frozen count afterwards means something real stopped.
-    if ! _oh_wait_for 180 "[ \"\$(_oh_step_count '$sandbox')\" -ge 2 ]"; then
+    if ! _oh_wait_for 180 _oh_steps_at_least "$sandbox" 2; then
         kill "$run_pid" 2>/dev/null || true
         wait "$run_pid" 2>/dev/null || true
         rm -rf "$sandbox"
@@ -1294,13 +1294,25 @@ _oh_step_count() {
 
 # llmlint: ignore-end[tool_output_is_signal]
 
-# Poll `condition` (a shell expression) until it holds or `seconds` elapse.
-# Returns 1 on timeout. Control is a race between two processes, so every wait
-# here is on observable state rather than a fixed sleep.
+# Whether `dir` holds at least `want` work artifacts — the predicate form of
+# `_oh_step_count`, so waiting on it needs no shell expression.
+_oh_steps_at_least() {
+    [ "$(_oh_step_count "$1")" -ge "$2" ]
+}
+
+# Poll `command…` until it succeeds or `seconds` elapse. Returns 1 on timeout.
+# Control is a race between two processes, so every wait here is on observable
+# state rather than a fixed sleep.
+#
+# The condition is a command and its arguments, never a string this evals: the
+# things worth waiting on are named by sandbox paths, and a path is external
+# input — under `eval` any shell syntax in one stops being a path and becomes
+# part of the expression.
 _oh_wait_for() {
-    local seconds="$1" condition="$2" waited=0
+    local seconds="$1" waited=0
+    shift
     while [ "$waited" -lt "$seconds" ]; do
-        if eval "$condition"; then
+        if "$@"; then
             return 0
         fi
         sleep 1

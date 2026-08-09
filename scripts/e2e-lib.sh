@@ -1228,10 +1228,10 @@ _oh_control_enforce_once() {
         rm -rf "$sandbox"
         fail "$id: the interrupt response was not ok"
     }
-    [ -n "$mechanism" ] || {
+    if ! _oh_control_mechanism_matches "$id" "$mechanism"; then
         rm -rf "$sandbox"
-        fail "$id: the interrupt response carried no mechanism"
-    }
+        fail "$id: the interrupt response carried mechanism '$mechanism', expected '$(_oh_control_mechanism_for "$id")'"
+    fi
     note "  ok: interrupt served by mechanism '$mechanism'"
 
     # THE assertion: the work is frozen. Sample right after the interrupt (with
@@ -1280,6 +1280,26 @@ _oh_control_enforce_once() {
 
     rm -rf "$sandbox"
     return 0
+}
+
+# The live proof is also a wire-contract proof: accepting another harness's
+# nonempty mechanism would let a registry wiring regression pass while testing
+# a different path than the capability matrix declares.
+_oh_control_mechanism_for() {
+    case "$1" in
+    claude-code) printf '%s' claude-control-request ;;
+    codex) printf '%s' codex-app-server ;;
+    opencode) printf '%s' opencode-http ;;
+    goose | copilot) printf '%s' acp-cancel ;;
+    crush) printf '%s' crush-http ;;
+    *) return 1 ;;
+    esac
+}
+
+_oh_control_mechanism_matches() {
+    local expected
+    expected="$(_oh_control_mechanism_for "$1")" || return 1
+    [ "$2" = "$expected" ]
 }
 
 # How many observable work artifacts the agent has produced so far. A glob

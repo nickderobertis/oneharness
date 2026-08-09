@@ -804,6 +804,8 @@ pub enum HeadUnreadable {
     UnreadableLength(String),
     /// Two `Content-Length` declarations that frame different bodies.
     ConflictingLengths(usize, usize),
+    /// Both mutually exclusive HTTP/1.1 body-framing mechanisms were declared.
+    AmbiguousFraming,
     /// A `Content-Length` past what a reader will hold. Refused where it is
     /// declared rather than where the bytes run out: the declaration is what a
     /// reader would otherwise reserve and wait for.
@@ -825,6 +827,10 @@ impl std::fmt::Display for HeadUnreadable {
             HeadUnreadable::ConflictingLengths(first, second) => write!(
                 f,
                 "it declared two different Content-Length values ({first} and {second})"
+            ),
+            HeadUnreadable::AmbiguousFraming => write!(
+                f,
+                "it declared both Transfer-Encoding: chunked and Content-Length"
             ),
             HeadUnreadable::OversizedLength(declared) => write!(
                 f,
@@ -902,6 +908,12 @@ pub fn parse_head(raw: &[u8]) -> HeadScan {
             return HeadScan::Unreadable(HeadUnreadable::OversizedLength(length));
         }
         content_length = Some(length);
+    }
+    // RFC 9112 calls this combination ambiguous framing. Picking either field
+    // would let a peer make oneharness and an intermediary disagree about where
+    // this response ends, so reject it at the shared parser boundary.
+    if chunked && content_length.is_some() {
+        return HeadScan::Unreadable(HeadUnreadable::AmbiguousFraming);
     }
     HeadScan::Whole(ResponseHead {
         status,

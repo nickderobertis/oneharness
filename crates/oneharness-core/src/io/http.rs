@@ -670,6 +670,38 @@ mod tests {
         let _ = server.join();
     }
 
+    #[test]
+    fn an_answer_with_two_body_framings_is_refused_at_the_socket_boundary() {
+        let (port, server) = serve_once(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 7\r\n\r\n7\r\n{\"a\":1}\r\n0\r\n\r\n",
+        );
+        let err = client(port)
+            .send(&HttpRequest::for_test(Method::Get, "/api/app", None))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string()
+                .contains("both Transfer-Encoding: chunked and Content-Length"),
+            "{err}"
+        );
+        let _ = server.join();
+
+        let (port, server) = serve_once(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 9\r\n\r\n7\r\ndata: x\r\n0\r\n\r\n",
+        );
+        let mut stream = client(port)
+            .open_stream(
+                &HttpRequest::for_test(Method::Get, "/api/event", None),
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(
+            stream.poll(),
+            StreamPoll::Unreadable(StreamUnreadable::Head(HeadUnreadable::AmbiguousFraming))
+        );
+        let _ = server.join();
+    }
+
     /// A server that answers `head` and then streams `filler` forever, never
     /// ending and never closing — the shape a peer takes when what it costs the
     /// reader is unbounded rather than merely slow.

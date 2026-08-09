@@ -39,17 +39,22 @@ const POLL_SLICE: Duration = Duration::from_secs(2);
 #[derive(Debug, Clone)]
 pub struct HttpTurn {
     client: HttpClient,
-    shape: HttpShape,
     address: TurnAddress,
 }
 
 impl HttpTurn {
+    /// The protocol this turn is driven over, read off the coordinates it is
+    /// addressed by so the two can never disagree.
+    fn shape(&self) -> HttpShape {
+        self.address.shape()
+    }
+
     /// Abort the live turn. `Ok(())` means the server accepted the request;
     /// every other answer is reported rather than swallowed, because a
     /// supervisor told "ok" while the turn keeps running is worse off than one
     /// told it failed.
     pub fn interrupt(&self) -> io::Result<()> {
-        let request = http::interrupt_request(self.shape, &self.address);
+        let request = http::interrupt_request(&self.address);
         let response = self.client.send(&request)?;
         if response.ok() {
             Ok(())
@@ -66,7 +71,7 @@ impl HttpTurn {
     /// a later run resumes from.
     #[must_use]
     pub fn session_id(&self) -> &str {
-        self.address.session.as_str()
+        self.address.session().as_str()
     }
 }
 
@@ -147,70 +152,61 @@ pub fn open(
 ) -> io::Result<HttpTurn> {
     let client = HttpClient::new(server, REQUEST_TIMEOUT);
     let decision = http::permits_action(mode);
-    // Crush names its client on every route; opencode has no such notion, and
-    // sending one would be a query parameter it never reads.
-    let client_id = match shape {
-        HttpShape::Crush => Some(
-            ClientId::new(client_id)
-                .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?,
-        ),
-        HttpShape::Opencode => None,
-    };
 
-    let opened = expect_ok(
-        &client,
-        &http::open_request(shape, cwd, client_id.as_ref(), decision),
-        "open the control session",
-    )?;
-    let first = http::parse_id(&opened.body).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "the control server answered no usable id: {}",
-                opened.body.trim()
-            ),
-        )
-    })?;
-
-    // Opencode's branch never reads this, so a placeholder identity is only
-    // ever passed where it is ignored.
-    let unused = ClientId::new("none").expect("a constant client id is valid");
-    let address = match http::session_request(shape, &first, client_id.as_ref().unwrap_or(&unused))
-    {
-        // Crush: the first id was the workspace; the session hangs off it.
-        Some(request) => {
-            let created = expect_ok(&client, &request, "create the control session")?;
-            let session = http::parse_id(&created.body).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "the control server created no usable session: {}",
-                        created.body.trim()
-                    ),
-                )
-            })?;
-            TurnAddress {
-                workspace: Some(first),
-                session,
-                client: client_id.clone(),
+    // One arm per protocol, because the coordinates a turn is addressed by are
+    // per protocol: opencode's open request already IS its session, while
+    // crush's is a workspace the session then hangs off, named by a client
+    // identity opencode has no notion of.
+    let address = match shape {
+        HttpShape::Opencode => TurnAddress::Opencode {
+            session: created_id(
+                &expect_ok(
+                    &client,
+                    &http::open_request(shape, cwd, None, decision),
+                    "open the control session",
+                )?
+                .body,
+                "answered no usable id",
+            )?,
+        },
+        HttpShape::Crush => {
+            let identity = ClientId::new(client_id)
+                .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
+            let opened = expect_ok(
+                &client,
+                &http::open_request(shape, cwd, Some(&identity), decision),
+                "open the control session",
+            )?;
+            let workspace = created_id(&opened.body, "answered no usable id")?;
+            let created = expect_ok(
+                &client,
+                &http::session_request(&workspace, &identity),
+                "create the control session",
+            )?;
+            TurnAddress::Crush {
+                session: created_id(&created.body, "created no usable session")?,
+                workspace,
+                client: identity,
             }
         }
-        // Opencode: the first id was already the session.
-        None => TurnAddress {
-            workspace: None,
-            session: first,
-            client: client_id.clone(),
-        },
     };
 
-    if let Some(request) = http::skip_permissions_request(shape, &address, decision) {
+    if let Some(request) = http::skip_permissions_request(&address, decision) {
         expect_ok(&client, &request, "set the permission posture")?;
     }
 
-    Ok(HttpTurn {
-        client,
-        shape,
-        address,
+    Ok(HttpTurn { client, address })
+}
+
+/// The id a create response named, or the loud failure of a server that named
+/// none. Never guessed: an unrecognized answer fails the turn rather than
+/// addressing an id nobody returned.
+fn created_id(body: &str, what: &str) -> io::Result<ResourceId> {
+    http::parse_id(body).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("the control server {what}: {}", body.trim()),
+        )
     })
 }
 
@@ -232,10 +228,9 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
     // The stream is opened BEFORE the prompt: a turn that finishes quickly
     // would otherwise end before anything was listening, and the run would wait
     // out its whole timeout for an event that already happened.
-    let stream = turn.client.open_stream(
-        &http::event_stream_request(turn.shape, &turn.address),
-        POLL_SLICE,
-    );
+    let stream = turn
+        .client
+        .open_stream(&http::event_stream_request(&turn.address), POLL_SLICE);
     let mut stream = match stream {
         Ok(stream) => stream,
         Err(err) => {
@@ -260,7 +255,7 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
         let finished = Arc::clone(&finished);
         let submit_error = Arc::clone(&submit_error);
         std::thread::spawn(move || {
-            let request = http::prompt_request(turn.shape, &turn.address, &prompt);
+            let request = http::prompt_request(&turn.address, &prompt);
             // A prompt the server would not take means there is no turn to
             // follow, so the reader is released rather than left waiting out the
             // whole timeout for events that can never arrive.
@@ -298,7 +293,7 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .push(payload.clone());
-                match http::classify_event(turn.shape, &payload) {
+                match http::classify_event(turn.shape(), &payload) {
                     TurnEvent::PermissionRequest(ask) => answer(turn, &ask, decision),
                     TurnEvent::Text(chunk) => {
                         text.lock()
@@ -366,8 +361,16 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
 /// fatal: the turn then stalls until its timeout, which the envelope reports —
 /// and a panic here would take the run's results with it.
 fn answer(turn: &HttpTurn, ask: &PermissionAsk, decision: PermissionDecision) {
-    let Some(request) = http::permission_reply_request(turn.shape, &turn.address, ask, decision)
-    else {
+    let Some(request) = http::permission_reply_request(&turn.address, ask, decision) else {
+        // The ask belongs to another session on this shared server, so it is
+        // that run's decision to make. Said out loud because it is otherwise
+        // indistinguishable from a turn the server simply never asked about.
+        eprintln!(
+            "oneharness: warning: ignored a permission request for another session ({})",
+            ask.session
+                .as_ref()
+                .map_or("unnamed", |session| session.as_str())
+        );
         return;
     };
     match turn.client.send(&request) {

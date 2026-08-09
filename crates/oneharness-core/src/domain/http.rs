@@ -146,9 +146,10 @@ pub struct PermissionAsk {
     /// becomes: an ask carrying an unusable id is ignored rather than turned
     /// into a request at some other route.
     pub id: ResourceId,
-    /// The session the request belongs to, when the event names one — opencode
-    /// routes the answer through it, so a request for another session must not
-    /// be answered on this one's path.
+    /// The session the request belongs to, when the event names one. A server
+    /// whose event stream is shared across dispatches (opencode's is) can ask
+    /// about a session this turn does not own, and that ask is not this run's
+    /// to answer.
     pub session: Option<ResourceId>,
     /// The whole request payload, for a server (crush) that wants it echoed
     /// back rather than referenced by id.
@@ -257,31 +258,57 @@ impl ClientId {
 }
 
 /// The ids one HTTP turn is addressed by, as that server addresses it.
+///
+/// One variant per protocol rather than one struct of optional coordinates:
+/// crush addresses everything through a workspace and names its client on every
+/// route, opencode has neither. Independent `Option`s would let a caller build
+/// an opencode address carrying crush coordinates, or a crush address missing
+/// the ones its routes cannot be written without — and each route function
+/// would then have to guess what to do about it. Here every route reads exactly
+/// the coordinates its own protocol has.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TurnAddress {
-    /// Crush addresses everything through a workspace; opencode has none.
-    pub workspace: Option<ResourceId>,
-    pub session: ResourceId,
-    /// The client identity crush requires on every route (see the module note).
-    /// Validated, because it is interpolated into a query string: a value
-    /// carrying `&` or `#` would silently become other parameters.
-    pub client: Option<ClientId>,
+pub enum TurnAddress {
+    /// A session on `opencode serve`, which has no further coordinates.
+    Opencode { session: ResourceId },
+    /// A session under a crush workspace, addressed as one client identity.
+    /// That identity is validated because it is interpolated into a query
+    /// string: a value carrying `&` or `#` would silently become other
+    /// parameters.
+    Crush {
+        workspace: ResourceId,
+        session: ResourceId,
+        client: ClientId,
+    },
 }
 
 impl TurnAddress {
-    fn query(&self) -> String {
-        match &self.client {
-            Some(client) => format!("?client_id={}", client.as_str()),
-            None => String::new(),
+    /// The protocol these coordinates belong to. Derived rather than carried
+    /// alongside, so a shape and an address can never disagree.
+    #[must_use]
+    pub fn shape(&self) -> HttpShape {
+        match self {
+            TurnAddress::Opencode { .. } => HttpShape::Opencode,
+            TurnAddress::Crush { .. } => HttpShape::Crush,
         }
     }
 
-    fn workspace_path(&self) -> String {
-        match &self.workspace {
-            Some(workspace) => format!("/v1/workspaces/{}", workspace.as_str()),
-            None => String::new(),
+    /// The harness's own session id for this turn.
+    #[must_use]
+    pub fn session(&self) -> &ResourceId {
+        match self {
+            TurnAddress::Opencode { session } | TurnAddress::Crush { session, .. } => session,
         }
     }
+}
+
+/// A crush route: the workspace prefix, `tail`, and the client identity every
+/// one of its routes carries as a query parameter (see the module note).
+fn crush_path(workspace: &ResourceId, client: &ClientId, tail: &str) -> String {
+    format!(
+        "/v1/workspaces/{}{tail}?client_id={}",
+        workspace.as_str(),
+        client.as_str()
+    )
 }
 
 /// What this run answers when a server asks whether an action may proceed.
@@ -367,28 +394,18 @@ pub fn open_request(
 }
 
 /// Crush's session-create request, which hangs off the workspace the open
-/// request produced. Opencode's open request already made its session.
+/// request produced. Crush-only: opencode's open request already made its
+/// session, so there is no shape here to get wrong.
 #[must_use]
-pub fn session_request(
-    shape: HttpShape,
-    workspace: &ResourceId,
-    client: &ClientId,
-) -> Option<HttpRequest> {
-    match shape {
-        HttpShape::Opencode => None,
-        // Sessions are created on the WORKSPACE; `/agent/sessions` is where an
-        // EXISTING one is addressed, and creating there answers `404 page not
-        // found`.
-        HttpShape::Crush => Some(HttpRequest::new(
-            Method::Post,
-            format!(
-                "/v1/workspaces/{}/sessions?client_id={}",
-                workspace.as_str(),
-                client.as_str()
-            ),
-            Some(json!({"title": "oneharness"})),
-        )),
-    }
+pub fn session_request(workspace: &ResourceId, client: &ClientId) -> HttpRequest {
+    // Sessions are created on the WORKSPACE; `/agent/sessions` is where an
+    // EXISTING one is addressed, and creating there answers `404 page not
+    // found`.
+    HttpRequest::new(
+        Method::Post,
+        crush_path(workspace, client, "/sessions"),
+        Some(json!({"title": "oneharness"})),
+    )
 }
 
 /// The id in a create response, wherever that server puts it. Never guessed: an
@@ -405,21 +422,25 @@ pub fn parse_id(body: &str) -> Option<ResourceId> {
 
 /// The request that submits the prompt and starts the turn.
 #[must_use]
-pub fn prompt_request(shape: HttpShape, address: &TurnAddress, prompt: &str) -> HttpRequest {
-    match shape {
-        HttpShape::Opencode => HttpRequest::new(
+pub fn prompt_request(address: &TurnAddress, prompt: &str) -> HttpRequest {
+    match address {
+        TurnAddress::Opencode { session } => HttpRequest::new(
             Method::Post,
-            format!("/api/session/{}/prompt", address.session.as_str()),
+            format!("/api/session/{}/prompt", session.as_str()),
             Some(json!({"prompt": {"text": prompt}})),
         ),
         // The prompt goes to the workspace's agent with the session in the
         // BODY: `/agent/sessions/{sid}` is a GET-only resource and answers
         // `405 Method Not Allowed`. It returns 202 with the turn running in the
         // background, so completion is read off the event stream.
-        HttpShape::Crush => HttpRequest::new(
+        TurnAddress::Crush {
+            workspace,
+            session,
+            client,
+        } => HttpRequest::new(
             Method::Post,
-            format!("{}/agent{}", address.workspace_path(), address.query()),
-            Some(json!({"prompt": prompt, "session_id": address.session.as_str()})),
+            crush_path(workspace, client, "/agent"),
+            Some(json!({"prompt": prompt, "session_id": session.as_str()})),
         ),
     }
 }
@@ -427,20 +448,23 @@ pub fn prompt_request(shape: HttpShape, address: &TurnAddress, prompt: &str) -> 
 /// The request that aborts the in-flight turn — the whole point of the
 /// mechanism.
 #[must_use]
-pub fn interrupt_request(shape: HttpShape, address: &TurnAddress) -> HttpRequest {
-    match shape {
-        HttpShape::Opencode => HttpRequest::new(
+pub fn interrupt_request(address: &TurnAddress) -> HttpRequest {
+    match address {
+        TurnAddress::Opencode { session } => HttpRequest::new(
             Method::Post,
-            format!("/api/session/{}/interrupt", address.session.as_str()),
+            format!("/api/session/{}/interrupt", session.as_str()),
             Some(json!({})),
         ),
-        HttpShape::Crush => HttpRequest::new(
+        TurnAddress::Crush {
+            workspace,
+            session,
+            client,
+        } => HttpRequest::new(
             Method::Post,
-            format!(
-                "{}/agent/sessions/{}/cancel{}",
-                address.workspace_path(),
-                address.session.as_str(),
-                address.query()
+            crush_path(
+                workspace,
+                client,
+                &format!("/agent/sessions/{}/cancel", session.as_str()),
             ),
             Some(json!({})),
         ),
@@ -452,38 +476,43 @@ pub fn interrupt_request(shape: HttpShape, address: &TurnAddress) -> HttpRequest
 /// equivalent route, so it answers each request as it arrives.
 #[must_use]
 pub fn skip_permissions_request(
-    shape: HttpShape,
     address: &TurnAddress,
     decision: PermissionDecision,
 ) -> Option<HttpRequest> {
-    match shape {
-        HttpShape::Opencode => None,
-        HttpShape::Crush => decision.allows().then(|| {
+    match address {
+        TurnAddress::Opencode { .. } => None,
+        TurnAddress::Crush {
+            workspace, client, ..
+        } => decision.allows().then(|| {
             HttpRequest::new(
                 Method::Post,
-                format!(
-                    "{}/permissions/skip{}",
-                    address.workspace_path(),
-                    address.query()
-                ),
+                crush_path(workspace, client, "/permissions/skip"),
                 Some(json!({"skip": true})),
             )
         }),
     }
 }
 
-/// The request that answers one permission ask, or `None` when this server has
-/// no per-request answer route.
+/// The request that answers one permission ask, or `None` when the ask is not
+/// this turn's to answer.
+///
+/// Opencode's event stream is server-wide — a pooled server serves every
+/// dispatch that shares its key — so an ask can name a session belonging to
+/// another run entirely. Answering that one would spend this run's posture on a
+/// turn it does not own, and on a route it was never given, so an ask naming
+/// any other session is left for its owner. The route is always built from this
+/// turn's own validated session, never from the event's.
 #[must_use]
 pub fn permission_reply_request(
-    shape: HttpShape,
     address: &TurnAddress,
     ask: &PermissionAsk,
     decision: PermissionDecision,
 ) -> Option<HttpRequest> {
-    match shape {
-        HttpShape::Opencode => {
-            let session = ask.session.as_ref().unwrap_or(&address.session);
+    match address {
+        TurnAddress::Opencode { session } => {
+            if ask.session.as_ref().is_some_and(|asked| asked != session) {
+                return None;
+            }
             Some(HttpRequest::new(
                 Method::Post,
                 format!(
@@ -499,13 +528,14 @@ pub fn permission_reply_request(
                 }})),
             ))
         }
-        HttpShape::Crush => Some(HttpRequest::new(
+        // Crush's answer names no session at all: it goes to the workspace this
+        // run created, carrying the ask's own payload back. There is nothing an
+        // event could retarget, so there is nothing to check.
+        TurnAddress::Crush {
+            workspace, client, ..
+        } => Some(HttpRequest::new(
             Method::Post,
-            format!(
-                "{}/permissions/grant{}",
-                address.workspace_path(),
-                address.query()
-            ),
+            crush_path(workspace, client, "/permissions/grant"),
             Some(json!({
                 "action": match decision {
                     PermissionDecision::Allow => "allow",
@@ -530,14 +560,14 @@ pub fn readiness_request(shape: HttpShape) -> HttpRequest {
 
 /// The event stream to follow for this turn.
 #[must_use]
-pub fn event_stream_request(shape: HttpShape, address: &TurnAddress) -> HttpRequest {
-    match shape {
-        HttpShape::Opencode => HttpRequest::new(Method::Get, "/api/event".to_string(), None),
-        HttpShape::Crush => HttpRequest::new(
-            Method::Get,
-            format!("{}/events{}", address.workspace_path(), address.query()),
-            None,
-        ),
+pub fn event_stream_request(address: &TurnAddress) -> HttpRequest {
+    match address {
+        TurnAddress::Opencode { .. } => {
+            HttpRequest::new(Method::Get, "/api/event".to_string(), None)
+        }
+        TurnAddress::Crush {
+            workspace, client, ..
+        } => HttpRequest::new(Method::Get, crush_path(workspace, client, "/events"), None),
     }
 }
 
@@ -773,18 +803,16 @@ mod tests {
     use super::*;
 
     fn crush_address() -> TurnAddress {
-        TurnAddress {
-            workspace: Some(ResourceId::new("ws-1").unwrap()),
+        TurnAddress::Crush {
+            workspace: ResourceId::new("ws-1").unwrap(),
             session: ResourceId::new("ses-1").unwrap(),
-            client: Some(ClientId::new("client-9").unwrap()),
+            client: ClientId::new("client-9").unwrap(),
         }
     }
 
     fn opencode_address() -> TurnAddress {
-        TurnAddress {
-            workspace: None,
+        TurnAddress::Opencode {
             session: ResourceId::new("ses_abc").unwrap(),
-            client: None,
         }
     }
 
@@ -850,11 +878,10 @@ mod tests {
 
         let address = crush_address();
         for request in [
-            prompt_request(HttpShape::Crush, &address, "hi"),
-            interrupt_request(HttpShape::Crush, &address),
-            event_stream_request(HttpShape::Crush, &address),
-            skip_permissions_request(HttpShape::Crush, &address, PermissionDecision::Allow)
-                .unwrap(),
+            prompt_request(&address, "hi"),
+            interrupt_request(&address),
+            event_stream_request(&address),
+            skip_permissions_request(&address, PermissionDecision::Allow).unwrap(),
         ] {
             assert!(
                 request.path().contains("client_id=client-9"),
@@ -918,59 +945,51 @@ mod tests {
     #[test]
     fn each_shape_addresses_its_own_routes() {
         let crush = crush_address();
+        assert_eq!(crush.shape(), HttpShape::Crush);
         assert_eq!(
-            prompt_request(HttpShape::Crush, &crush, "hi").path(),
+            prompt_request(&crush, "hi").path(),
             "/v1/workspaces/ws-1/agent?client_id=client-9"
         );
         assert_eq!(
-            interrupt_request(HttpShape::Crush, &crush).path(),
+            interrupt_request(&crush).path(),
             "/v1/workspaces/ws-1/agent/sessions/ses-1/cancel?client_id=client-9"
         );
         // The session is created on the workspace, not under `/agent`.
-        let session = session_request(
-            HttpShape::Crush,
-            crush.workspace.as_ref().unwrap(),
-            &ClientId::new("client-9").unwrap(),
-        );
         assert_eq!(
-            session.unwrap().path(),
+            session_request(
+                &ResourceId::new("ws-1").unwrap(),
+                &ClientId::new("client-9").unwrap(),
+            )
+            .path(),
             "/v1/workspaces/ws-1/sessions?client_id=client-9"
         );
 
         let opencode = opencode_address();
+        assert_eq!(opencode.shape(), HttpShape::Opencode);
         assert_eq!(
-            prompt_request(HttpShape::Opencode, &opencode, "hi").path(),
+            prompt_request(&opencode, "hi").path(),
             "/api/session/ses_abc/prompt"
         );
         assert_eq!(
-            interrupt_request(HttpShape::Opencode, &opencode).path(),
+            interrupt_request(&opencode).path(),
             "/api/session/ses_abc/interrupt"
         );
-        // Opencode's open request already creates the session.
-        assert!(session_request(
-            HttpShape::Opencode,
-            &ResourceId::new("unused").unwrap(),
-            &ClientId::new("c").unwrap(),
-        )
-        .is_none());
+        // Each address names the session the report echoes and a later run
+        // resumes from, whichever protocol it belongs to.
+        assert_eq!(crush.session().as_str(), "ses-1");
+        assert_eq!(opencode.session().as_str(), "ses_abc");
     }
 
     #[test]
     fn the_prompt_rides_each_servers_own_field() {
-        let opencode: Value = serde_json::from_str(
-            prompt_request(HttpShape::Opencode, &opencode_address(), "do it")
-                .body()
-                .unwrap(),
-        )
-        .unwrap();
+        let opencode: Value =
+            serde_json::from_str(prompt_request(&opencode_address(), "do it").body().unwrap())
+                .unwrap();
         assert_eq!(opencode["prompt"]["text"], "do it");
 
-        let crush: Value = serde_json::from_str(
-            prompt_request(HttpShape::Crush, &crush_address(), "do it")
-                .body()
-                .unwrap(),
-        )
-        .unwrap();
+        let crush: Value =
+            serde_json::from_str(prompt_request(&crush_address(), "do it").body().unwrap())
+                .unwrap();
         // A missing `prompt` or `session_id` is a 500 naming the field.
         assert_eq!(crush["prompt"], "do it");
         assert_eq!(crush["session_id"], "ses-1");
@@ -990,36 +1009,23 @@ mod tests {
     }
 
     #[test]
-    fn a_permission_ask_is_recognized_and_answered_on_its_own_session() {
+    fn a_permission_ask_is_recognized_and_answered_on_this_turns_session() {
         // Without this the turn never starts work at all, so every downstream
         // assertion would pass vacuously.
         let event = classify_event(
             HttpShape::Opencode,
-            r#"{"type":"permission.requested","data":{"id":"per_1","sessionID":"ses_other"}}"#,
+            r#"{"type":"permission.requested","data":{"id":"per_1","sessionID":"ses_abc"}}"#,
         );
         let TurnEvent::PermissionRequest(ask) = event else {
             panic!("opencode permission ask not recognized");
         };
-        let reply = permission_reply_request(
-            HttpShape::Opencode,
-            &opencode_address(),
-            &ask,
-            PermissionDecision::Allow,
-        )
-        .unwrap();
-        assert_eq!(
-            reply.path(),
-            "/api/session/ses_other/permission/per_1/reply"
-        );
+        let reply =
+            permission_reply_request(&opencode_address(), &ask, PermissionDecision::Allow).unwrap();
+        assert_eq!(reply.path(), "/api/session/ses_abc/permission/per_1/reply");
         let body: Value = serde_json::from_str(reply.body().unwrap()).unwrap();
         assert_eq!(body["reply"], "once");
-        let denied = permission_reply_request(
-            HttpShape::Opencode,
-            &opencode_address(),
-            &ask,
-            PermissionDecision::Deny,
-        )
-        .unwrap();
+        let denied =
+            permission_reply_request(&opencode_address(), &ask, PermissionDecision::Deny).unwrap();
         let body: Value = serde_json::from_str(denied.body().unwrap()).unwrap();
         assert_eq!(body["reply"], "reject");
 
@@ -1030,21 +1036,55 @@ mod tests {
         let TurnEvent::PermissionRequest(ask) = event else {
             panic!("crush permission ask not recognized");
         };
-        let reply = permission_reply_request(
-            HttpShape::Crush,
-            &crush_address(),
-            &ask,
-            PermissionDecision::Allow,
-        )
-        .unwrap();
+        let reply =
+            permission_reply_request(&crush_address(), &ask, PermissionDecision::Allow).unwrap();
         assert_eq!(
             reply.path(),
             "/v1/workspaces/ws-1/permissions/grant?client_id=client-9"
         );
         let body: Value = serde_json::from_str(reply.body().unwrap()).unwrap();
         assert_eq!(body["action"], "allow");
-        // Crush wants the request echoed back, not referenced by id.
+        // Crush wants the request echoed back, not referenced by id — the
+        // answer names no session, so nothing about it can be retargeted.
         assert_eq!(body["permission"]["tool_name"], "bash");
+    }
+
+    #[test]
+    fn a_permission_ask_for_another_session_is_left_for_the_run_that_owns_it() {
+        // Opencode's event stream is server-wide and the server is pooled, so
+        // an ask for a concurrent dispatch's session arrives on this turn's
+        // stream. Answering it would spend this run's posture on a turn it does
+        // not own, at a route it was never given.
+        let event = classify_event(
+            HttpShape::Opencode,
+            r#"{"type":"permission.requested","data":{"id":"per_1","sessionID":"ses_other"}}"#,
+        );
+        let TurnEvent::PermissionRequest(ask) = event else {
+            panic!("opencode permission ask not recognized");
+        };
+        assert_eq!(ask.session.as_ref().unwrap().as_str(), "ses_other");
+        assert!(
+            permission_reply_request(&opencode_address(), &ask, PermissionDecision::Allow)
+                .is_none()
+        );
+        assert!(
+            permission_reply_request(&opencode_address(), &ask, PermissionDecision::Deny).is_none()
+        );
+
+        // An event that names no session at all is this turn's own: the only
+        // stream it could have arrived on is the one this turn opened, and the
+        // route is built from this turn's session either way.
+        let unnamed = PermissionAsk {
+            id: ResourceId::new("per_2").unwrap(),
+            session: None,
+            payload: Value::Null,
+        };
+        assert_eq!(
+            permission_reply_request(&opencode_address(), &unnamed, PermissionDecision::Allow)
+                .unwrap()
+                .path(),
+            "/api/session/ses_abc/permission/per_2/reply"
+        );
     }
 
     #[test]
@@ -1109,19 +1149,9 @@ mod tests {
             PermissionDecision::Deny
         );
         // Crush can be told once; opencode has no such route and answers each.
-        let address = crush_address();
-        assert!(
-            skip_permissions_request(HttpShape::Crush, &address, PermissionDecision::Allow)
-                .is_some()
-        );
-        assert!(
-            skip_permissions_request(HttpShape::Crush, &address, PermissionDecision::Deny)
-                .is_none()
-        );
-        assert!(
-            skip_permissions_request(HttpShape::Opencode, &address, PermissionDecision::Allow)
-                .is_none()
-        );
+        assert!(skip_permissions_request(&crush_address(), PermissionDecision::Allow).is_some());
+        assert!(skip_permissions_request(&crush_address(), PermissionDecision::Deny).is_none());
+        assert!(skip_permissions_request(&opencode_address(), PermissionDecision::Allow).is_none());
     }
 
     #[test]
@@ -1205,29 +1235,22 @@ mod tests {
             readiness_request(HttpShape::Crush),
             readiness_request(HttpShape::Opencode),
         ];
-        for (shape, address) in [(HttpShape::Crush, &crush), (HttpShape::Opencode, &opencode)] {
+        for address in [&crush, &opencode] {
             routes.push(prompt_request(
-                shape,
                 address,
                 "a prompt with spaces\nand a newline",
             ));
-            routes.push(interrupt_request(shape, address));
-            routes.push(event_stream_request(shape, address));
-            routes.extend(skip_permissions_request(
-                shape,
-                address,
-                PermissionDecision::Allow,
-            ));
+            routes.push(interrupt_request(address));
+            routes.push(event_stream_request(address));
+            routes.extend(skip_permissions_request(address, PermissionDecision::Allow));
             routes.extend(permission_reply_request(
-                shape,
                 address,
                 &ask,
                 PermissionDecision::Allow,
             ));
         }
-        routes.extend(session_request(
-            HttpShape::Crush,
-            crush.workspace.as_ref().unwrap(),
+        routes.push(session_request(
+            &ResourceId::new("ws-1").unwrap(),
             &ClientId::new("c").unwrap(),
         ));
         for route in routes {

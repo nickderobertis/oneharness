@@ -1775,6 +1775,7 @@ fn session_binds_to_the_variant_that_ran_not_the_one_that_fell_through() {
     assert_eq!(value["results"][1]["text"], "served-by-alternate");
     // The token the winner minted, not the anchor's (absent) one.
     assert_eq!(value["session"]["token"], "sess-alt");
+    assert_eq!(value["session"]["phase"], "create");
     let record = stored_session(&value);
     assert_eq!(record["token"], "sess-alt");
     assert_eq!(
@@ -1883,6 +1884,10 @@ fn a_resume_the_identity_cannot_resolve_falls_through_to_the_next_candidate() {
     assert_eq!(value["fallback"]["ran"], "claude-code:alternate");
     assert_eq!(value["results"][1]["text"], "served-by-alternate");
     assert_eq!(value["session"]["token"], "sess-alt");
+    assert_eq!(
+        value["session"]["phase"], "create",
+        "the winner never got the anchor's token, so it started a new conversation"
+    );
     assert_eq!(
         stored_session(&value)["harness"],
         "claude-code:alternate",
@@ -2144,6 +2149,10 @@ fn a_sibling_variant_is_never_handed_the_anchors_resume_token() {
     assert!(second.status.success(), "{second:?}");
     let value = json_stdout(&second);
     assert_eq!(value["fallback"]["ran"], "claude-code:alternate");
+    assert_eq!(
+        value["session"]["phase"], "create",
+        "a run that carried no token must not report a continuation"
+    );
 
     let argv = std::fs::read_to_string(&alternate_argv).unwrap();
     assert!(
@@ -2281,6 +2290,85 @@ fn a_legacy_session_record_starts_fresh_instead_of_resuming_a_guessed_identity()
         "the legacy token must never be resumed: {argv}"
     );
     // The replacement record is written at the current shape.
+    let record = stored_session(&value);
+    assert_eq!(record["token"], "sess-new");
+    assert_eq!(record["harness"], "claude-code");
+
+    let _ = std::fs::remove_file(&argv_file);
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn a_record_bound_to_an_unrunnable_identity_starts_fresh_rather_than_failing() {
+    // A current-version record whose `harness` names no harness this build has —
+    // a hand-edited store, or an adapter retired from the registry. It cannot
+    // even be spelled as an identity, so there is nothing to resume it against or
+    // to report a conflict with; the run recovers the same way it does for a
+    // legacy record: create a new session, never resume the orphaned token and
+    // never abort on a store fault.
+    let store = session_store_dir("orphan-record");
+    let store_arg = store.display().to_string();
+    let cwd = session_store_dir("orphan-record-cwd");
+    let argv_file = std::env::temp_dir().join(format!("oh-orphan-argv-{}", std::process::id()));
+    let _ = std::fs::remove_file(&argv_file);
+    let args = [
+        "run",
+        "--harness",
+        "claude-code",
+        "--session",
+        "triage",
+        "--session-dir",
+        &store_arg,
+        "--cwd",
+        &cwd.display().to_string(),
+        "--prompt",
+        "hi",
+        "--bin",
+        &bin_override("claude-code"),
+        "--compact",
+    ];
+
+    let dry = run(
+        &[args.as_slice(), &["--print-command"]].concat(),
+        &[("MOCK_STDOUT", r#"{"session_id":"sess-new","result":"ok"}"#)],
+    );
+    assert!(dry.status.success(), "{dry:?}");
+    let path = PathBuf::from(
+        json_stdout(&dry)["session"]["store_file"]
+            .as_str()
+            .expect("the handle reports its store file"),
+    );
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        format!(
+            r#"{{"schema_version":"{}","name":"triage","project":"/p","harness":"retired-harness",
+                "token":"sess-orphan","created":"2026-07-10T00:00:00Z","updated":"2026-07-10T00:00:00Z"}}"#,
+            session::SCHEMA_VERSION
+        ),
+    )
+    .unwrap();
+
+    let output = run(
+        &args,
+        &[
+            ("MOCK_STDOUT", r#"{"session_id":"sess-new","result":"ok"}"#),
+            ("MOCK_ARGV_FILE", &argv_file.display().to_string()),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "an orphaned record must not take the run down: {output:?}"
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["session"]["phase"], "create");
+    assert_eq!(value["session"]["token"], "sess-new");
+    let argv = std::fs::read_to_string(&argv_file).unwrap();
+    assert!(
+        !argv.contains("sess-orphan"),
+        "the orphaned token must never be resumed: {argv}"
+    );
     let record = stored_session(&value);
     assert_eq!(record["token"], "sess-new");
     assert_eq!(record["harness"], "claude-code");

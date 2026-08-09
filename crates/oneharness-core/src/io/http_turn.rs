@@ -90,8 +90,11 @@ enum TurnEnd {
     /// Nothing ran: the server, the session or the event subscription could not
     /// be opened.
     CouldNotStart(String),
-    /// The turn began, and the server would not carry it through.
-    Refused(String),
+    /// The turn began and did not get through: the server refused to carry it,
+    /// stopped talking mid-flight, or framed a stream the client cannot read.
+    /// Named for that outcome rather than for a refusal, which is only one of
+    /// the ways to reach it.
+    DidNotFinish(String),
 }
 
 impl TurnEnd {
@@ -100,7 +103,7 @@ impl TurnEnd {
             TurnEnd::Completed => Status::Ok,
             TurnEnd::TimedOut(_) => Status::Timeout,
             TurnEnd::CouldNotStart(_) => Status::SpawnError,
-            TurnEnd::Refused(_) => Status::Nonzero,
+            TurnEnd::DidNotFinish(_) => Status::Nonzero,
         }
     }
 
@@ -108,7 +111,7 @@ impl TurnEnd {
         match self {
             TurnEnd::Completed => None,
             TurnEnd::TimedOut(why) => why.as_deref(),
-            TurnEnd::CouldNotStart(why) | TurnEnd::Refused(why) => Some(why),
+            TurnEnd::CouldNotStart(why) | TurnEnd::DidNotFinish(why) => Some(why),
         }
     }
 }
@@ -432,7 +435,7 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
     // on the way, which is the only place that reason survives.
     let end = match (timed_out, error) {
         (true, why) => TurnEnd::TimedOut(why),
-        (false, Some(why)) => TurnEnd::Refused(why),
+        (false, Some(why)) => TurnEnd::DidNotFinish(why),
         (false, None) => TurnEnd::Completed,
     };
     let text = text.lock().unwrap_or_else(|e| e.into_inner()).clone();

@@ -596,8 +596,11 @@ shape. When you add one:
   the `session_not_found` kind, which falls through beside `auth`/`quota`; its
   phrasings in `domain::signals` are captures from real CLIs (cursor's is
   deliberately missing, never guessed).
+  <!-- llmlint: ignore-block[no_redundant_instruction_pointers] `README.md` is not in the agent-loaded instruction set (only this file is), so naming the sections that go stale is the instruction, not a redirect to one; dropping it is how the two documents drift. -->
   Update the *Session
-  handle* section + `session_capable`/`--session` mentions in `README.md`. Also
+  handle* section + `session_capable`/`--session` mentions in `README.md`.
+  <!-- llmlint: ignore-end[no_redundant_instruction_pointers] -->
+  Also
   declare `fork_reuses_cache` (implies `supports_fork`): true only if a forked run
   reuses
   the parent session's prompt-cache prefix, which is what makes a `min-tokens`

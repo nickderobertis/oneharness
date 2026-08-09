@@ -531,6 +531,12 @@ pub fn permission_reply_request(
         // Crush's answer names no session at all: it goes to the workspace this
         // run created, carrying the ask's own payload back. There is nothing an
         // event could retarget, so there is nothing to check.
+        // llmlint: ignore[boundary_inputs_validated] `permission` is crush's own
+        // request echoed verbatim, which is how its grant route identifies what
+        // is being answered — a shape oneharness deliberately does not model, so
+        // there is nothing here to validate against. It reaches the wire as a
+        // serialized JSON value, never as request-line or header text, and the
+        // route it goes to is built entirely from this run's validated ids.
         TurnAddress::Crush {
             workspace, client, ..
         } => Some(HttpRequest::new(

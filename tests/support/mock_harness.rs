@@ -710,8 +710,19 @@ fn run_acp_server(log_path: &str) -> ! {
     for line in std::io::BufRead::lines(std::io::stdin().lock()) {
         let Ok(line) = line else { break };
         append(&line);
-        let id = json_number(&line, "\"id\"");
-        let method = json_string(&line, "\"method\":\"");
+        // A real frame or nothing: a fixture that scanned the text for its
+        // fields would answer something that was never a JSON-RPC message.
+        let Ok(message) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        let id = message
+            .get("id")
+            .filter(|id| id.is_number())
+            .map(ToString::to_string);
+        let method = message
+            .get("method")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
         match method.as_deref() {
             Some("initialize") => send(&format!(
                 "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":{{\"protocolVersion\":1}}}}",
@@ -752,20 +763,6 @@ fn run_acp_server(log_path: &str) -> ! {
     std::process::exit(0);
 }
 
-/// The text after `key` in a JSON line, up to the next `"`. Enough for a fixture
-/// that never sees anything but the frames it wrote the other half of.
-fn json_string(line: &str, key: &str) -> Option<String> {
-    let rest = line.split_once(key)?.1;
-    Some(rest.split('"').next()?.to_string())
-}
-
-/// The digits after `key` in a JSON line (`"id":41`).
-fn json_number(line: &str, key: &str) -> Option<String> {
-    let rest = line.split_once(key)?.1.trim_start_matches([':', ' ']);
-    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    (!digits.is_empty()).then_some(digits)
-}
-
 /// Act like a harness whose turn is driven over an open stdin message stream and
 /// can be aborted out of band. Emits the in-turn transcript, then blocks reading
 /// stdin — so the turn is genuinely still running while a separate process sends
@@ -798,7 +795,15 @@ fn run_controlled_turn(log_path: &str) -> ! {
     for line in std::io::BufRead::lines(std::io::stdin().lock()) {
         let Ok(line) = line else { break };
         append(&line);
-        if line.contains("control_request") {
+        // A control frame, not a line that merely mentions one: a prompt whose
+        // text says `control_request` would otherwise end the turn nobody
+        // asked to stop.
+        let control = serde_json::from_str::<serde_json::Value>(&line)
+            .ok()
+            .is_some_and(|frame| {
+                frame.get("type").and_then(serde_json::Value::as_str) == Some("control_request")
+            });
+        if control {
             interrupted = true;
             append("INTERRUPTED");
             break;

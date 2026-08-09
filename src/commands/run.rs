@@ -2141,14 +2141,8 @@ fn drive_http_turn(
     // the caller is concerned.
     http_turn::await_ready(shape, &address, SERVER_READY_WINDOW.min(timeout))
         .map_err(|err| format!("{err}"))?;
-    let turn = http_turn::open(
-        shape,
-        address,
-        &cwd.to_string(),
-        mode,
-        &http_turn::client_id(spec.id),
-    )
-    .map_err(|err| format!("{err}"))?;
+    let turn = http_turn::open(shape, address, cwd, mode, &http_turn::client_id(spec.id))
+        .map_err(|err| format!("{err}"))?;
     let session_id = turn.session_id().to_string();
 
     // Addressable from the socket thread only while the turn is in flight, so

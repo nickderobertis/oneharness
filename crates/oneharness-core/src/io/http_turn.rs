@@ -16,10 +16,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::domain::control::ServerAddress;
+use crate::domain::control::{AbsolutePath, ServerAddress};
 use crate::domain::http::{
     self, ClientId, HttpShape, PermissionAsk, PermissionDecision, ResourceId, TurnAddress,
-    TurnEvent,
+    TurnEvent, TurnOpening,
 };
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::{Capture, RunInstant, Status};
@@ -146,7 +146,7 @@ fn utc_now() -> RunInstant {
 pub fn open(
     shape: HttpShape,
     server: ServerAddress,
-    cwd: &str,
+    cwd: &AbsolutePath,
     mode: PermissionMode,
     client_id: &str,
 ) -> io::Result<HttpTurn> {
@@ -162,7 +162,7 @@ pub fn open(
             session: created_id(
                 &expect_ok(
                     &client,
-                    &http::open_request(shape, cwd, None, decision),
+                    &http::open_request(&TurnOpening::Opencode { cwd }),
                     "open the control session",
                 )?
                 .body,
@@ -174,7 +174,11 @@ pub fn open(
                 .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
             let opened = expect_ok(
                 &client,
-                &http::open_request(shape, cwd, Some(&identity), decision),
+                &http::open_request(&TurnOpening::Crush {
+                    cwd,
+                    client: &identity,
+                    decision,
+                }),
                 "open the control session",
             )?;
             let workspace = created_id(&opened.body, "answered no usable id")?;
@@ -320,6 +324,15 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
             StreamPoll::Refused(status) => {
                 *submit_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!(
                     "the control server refused the event subscription ({status})"
+                ));
+                break;
+            }
+            // Nor is a head the client cannot frame a body from: no payload
+            // will ever be read off this stream, so the run says why instead of
+            // waiting out its timeout on bytes it refuses to interpret.
+            StreamPoll::Unreadable(why) => {
+                *submit_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!(
+                    "the control server's event subscription cannot be read: {why}"
                 ));
                 break;
             }

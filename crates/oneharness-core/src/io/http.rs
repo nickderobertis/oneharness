@@ -14,7 +14,9 @@ use std::time::Duration;
 use crate::domain::control::ServerAddress;
 #[cfg(test)]
 use crate::domain::http::Method;
-use crate::domain::http::{parse_head, ChunkedDecoder, HttpRequest, SseAccumulator};
+use crate::domain::http::{
+    parse_head, ChunkedDecoder, HeadScan, HeadUnreadable, HttpRequest, SseAccumulator,
+};
 
 /// A server's answer to one request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,10 +108,23 @@ impl HttpClient {
                 Some(head) => absorb(bytes, head.chunked, &mut chunks, &mut body),
                 None => {
                     pending.extend_from_slice(bytes);
-                    if let Some(parsed) = parse_head(&pending) {
-                        let rest = pending.split_off(parsed.body_at);
-                        absorb(&rest, parsed.chunked, &mut chunks, &mut body);
-                        head = Some(parsed);
+                    match parse_head(&pending) {
+                        HeadScan::Incomplete => {}
+                        HeadScan::Whole(parsed) => {
+                            let rest = pending.split_off(parsed.body_at);
+                            absorb(&rest, parsed.chunked, &mut chunks, &mut body);
+                            head = Some(parsed);
+                        }
+                        // Refused where it arrives rather than read on: the
+                        // head is what says how much of this connection is the
+                        // answer, so anything read past an unreadable one is a
+                        // guess dressed up as a body.
+                        HeadScan::Unreadable(why) => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!("the control server's answer cannot be read: {why}"),
+                            ))
+                        }
                     }
                 }
             }
@@ -211,6 +226,11 @@ pub enum StreamPoll {
     /// The server answered the subscription with a non-success status, so its
     /// body is an error document rather than a stream of events.
     Refused(u16),
+    /// The subscription's head cannot be read, so nothing after it can be
+    /// framed as an event. Its own answer, not a close: the socket is still
+    /// open and a caller that read this as quiet would wait out its timeout on
+    /// a stream that will never yield a payload.
+    Unreadable(HeadUnreadable),
     /// The server closed the stream.
     Closed,
 }
@@ -241,8 +261,10 @@ impl EventStream {
             let bytes = &buffer[..read];
             if !self.head_seen {
                 self.pending.extend_from_slice(bytes);
-                let Some(head) = parse_head(&self.pending) else {
-                    continue;
+                let head = match parse_head(&self.pending) {
+                    HeadScan::Incomplete => continue,
+                    HeadScan::Whole(head) => head,
+                    HeadScan::Unreadable(why) => return StreamPoll::Unreadable(why),
                 };
                 self.head_seen = true;
                 self.status = Some(head.status);
@@ -513,6 +535,53 @@ mod tests {
             .send(&HttpRequest::for_test(Method::Get, "/api/app", None))
             .unwrap();
         assert_eq!(response.body, r#"{"a":1}"#);
+        let _ = server.join();
+    }
+
+    #[test]
+    fn an_answer_whose_framing_cannot_be_read_is_refused_rather_than_read_to_the_close() {
+        // The server declares a length no reader can frame a body from, then
+        // keeps writing. Read as unframed, the answer would end at the close
+        // and hand back the declared body WITH the trailer appended — a JSON
+        // document that parses, which is a wrong answer rather than a loud one.
+        let (port, server) = serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Length: banana\r\n\r\n{\"id\":\"ses_01\"}TRAILING",
+        );
+        let err = client(port)
+            .send(&HttpRequest::for_test(Method::Post, "/api/session", None))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("Content-Length"), "{err}");
+        let _ = server.join();
+
+        // The same for a head whose first line is not a status line at all,
+        // which is otherwise indistinguishable from a head still arriving.
+        let (port, server) = serve_once(b"NOT-HTTP\r\nContent-Type: application/json\r\n\r\n{}");
+        let err = client(port)
+            .send(&HttpRequest::for_test(Method::Get, "/api/app", None))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        let _ = server.join();
+    }
+
+    #[test]
+    fn an_event_subscription_whose_head_cannot_be_read_says_so_rather_than_going_quiet() {
+        // Nothing after an unreadable head can be framed as an event, so the
+        // stream reports why. Read as idle, the turn would wait out its whole
+        // timeout on a subscription that will never yield a payload.
+        let (port, server) = serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 7\r\nContent-Length: 9\r\n\r\ndata: {}\n",
+        );
+        let mut stream = client(port)
+            .open_stream(
+                &HttpRequest::for_test(Method::Get, "/api/event", None),
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(
+            stream.poll(),
+            StreamPoll::Unreadable(HeadUnreadable::ConflictingLengths(7, 9))
+        );
         let _ = server.join();
     }
 

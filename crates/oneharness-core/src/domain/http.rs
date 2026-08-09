@@ -24,7 +24,7 @@
 
 use serde_json::{json, Value};
 
-use crate::domain::control::ControlShape;
+use crate::domain::control::{AbsolutePath, ControlShape};
 use crate::domain::mode::PermissionMode;
 
 /// The HTTP methods these control protocols use. A closed set rather than a
@@ -281,6 +281,34 @@ pub enum TurnAddress {
     },
 }
 
+/// The coordinates one protocol's *open* request is written from, before there
+/// is a [`TurnAddress`] to address anything by.
+///
+/// One variant per protocol for the reason [`TurnAddress`] has them: crush's
+/// workspace cannot be written without the client identity every later route
+/// carries, and it declares this run's permission posture at creation, while
+/// opencode's session-create has neither. A shape plus an optional client would
+/// let a caller ask for a crush workspace with no identity — a request that
+/// reaches the wire and answers a bare `{"message":"invalid client_id"}`, which
+/// reads as a server that is broken rather than a call that was never valid.
+///
+/// The working directory is an [`AbsolutePath`] on both, because the server is
+/// shared: a relative one would be resolved by the server against wherever it
+/// was started, which is another dispatch's project as often as this one's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnOpening<'a> {
+    /// A session on `opencode serve`, which has no client identity and answers
+    /// each permission ask as it arrives rather than declaring a posture.
+    Opencode { cwd: &'a AbsolutePath },
+    /// The workspace every other crush route hangs off, opened as one client
+    /// identity and in one permission posture.
+    Crush {
+        cwd: &'a AbsolutePath,
+        client: &'a ClientId,
+        decision: PermissionDecision,
+    },
+}
+
 impl TurnAddress {
     /// The protocol these coordinates belong to. Derived rather than carried
     /// alongside, so a shape and an address can never disagree.
@@ -356,24 +384,16 @@ pub fn permits_action(mode: PermissionMode) -> PermissionDecision {
 
 /// The request that creates the turn's own session (opencode), or the workspace
 /// everything else hangs off (crush).
-///
-/// `decision` is this run's posture, which crush's workspace carries as a field
-/// of its own. Opencode has no equivalent and answers each ask as it arrives.
 #[must_use]
-pub fn open_request(
-    shape: HttpShape,
-    cwd: &str,
-    client: Option<&ClientId>,
-    decision: PermissionDecision,
-) -> HttpRequest {
-    match shape {
+pub fn open_request(opening: &TurnOpening) -> HttpRequest {
+    match opening {
         // The session names its own working directory, so the server can be
         // shared by dispatches in different projects — the cwd stays a per-turn
         // setting and never widens the pool key.
-        HttpShape::Opencode => HttpRequest::new(
+        TurnOpening::Opencode { cwd } => HttpRequest::new(
             Method::Post,
             "/api/session".to_string(),
-            Some(json!({"location": {"directory": cwd}})),
+            Some(json!({"location": {"directory": cwd.to_string()}})),
         ),
         // The workspace is where crush's `client_id` travels in the BODY — and
         // where its permission posture is declared: `yolo` is the same "act
@@ -381,12 +401,16 @@ pub fn open_request(
         // workspace never exists in a posture this run did not choose. Sent
         // either way, because `false` is a decision too and leaving it to the
         // server's default would make a restrictive run's posture implicit.
-        HttpShape::Crush => HttpRequest::new(
+        TurnOpening::Crush {
+            cwd,
+            client,
+            decision,
+        } => HttpRequest::new(
             Method::Post,
             "/v1/workspaces".to_string(),
             Some(json!({
-                "client_id": client.map(ClientId::as_str).unwrap_or_default(),
-                "path": cwd,
+                "client_id": client.as_str(),
+                "path": cwd.to_string(),
                 "yolo": decision.allows(),
             })),
         ),
@@ -678,30 +702,124 @@ pub struct ResponseHead {
     pub content_length: Option<usize>,
 }
 
-/// Parse the head out of `raw`, or `None` while it is still incomplete.
+/// What the front of a response turned out to be.
+///
+/// Three answers rather than an `Option`, because "not all here yet" and "here
+/// and unreadable" call for opposite actions: the first is read on, the second
+/// is stop. Collapsing them makes a malformed head an arrival that never comes,
+/// which a reader spends its whole timeout waiting for and then reports as a
+/// server that went quiet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeadScan {
+    /// The blank line that ends the head has not arrived yet.
+    Incomplete,
+    /// A whole head, with everything a reader needs to frame the body.
+    Whole(ResponseHead),
+    /// A whole head oneharness will not frame a body from, and why.
+    Unreadable(HeadUnreadable),
+}
+
+/// Why a whole head has no body a reader may frame from it.
+///
+/// A closed set rather than a message, so every reader reports the same answers
+/// in the same words, and a shape nobody has decided about has to be added here
+/// before it can be reported as anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeadUnreadable {
+    /// The first line is not an HTTP status line, so this is not a response at
+    /// all — and nothing after it is a head to read headers out of.
+    NotAStatusLine,
+    /// A `Content-Length` that names no number of bytes, carrying the value as
+    /// declared: what a proxy or server actually sent is the whole diagnostic.
+    UnreadableLength(String),
+    /// Two `Content-Length` declarations that frame different bodies.
+    ConflictingLengths(usize, usize),
+}
+
+impl std::fmt::Display for HeadUnreadable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HeadUnreadable::NotAStatusLine => {
+                write!(f, "its first line is not an HTTP status line")
+            }
+            HeadUnreadable::UnreadableLength(declared) => write!(
+                f,
+                "it declared a Content-Length no reader can frame a body from (`{declared}`)"
+            ),
+            HeadUnreadable::ConflictingLengths(first, second) => write!(
+                f,
+                "it declared two different Content-Length values ({first} and {second})"
+            ),
+        }
+    }
+}
+
+/// Scan the head at the front of `raw`.
+///
+/// The head is external input from another program: its framing decides how
+/// many bytes of the connection belong to this answer, so a declaration that
+/// cannot be read is refused rather than dropped. Dropping it leaves the answer
+/// looking unframed, which ends it at the close of the connection — so a body
+/// the server framed as 12 bytes would be handed back with whatever followed it
+/// appended, and a JSON document that parses is a wrong answer where the
+/// refusal is a loud one.
 #[must_use]
-pub fn parse_head(raw: &[u8]) -> Option<ResponseHead> {
-    let end = raw.windows(4).position(|w| w == b"\r\n\r\n")? + 4;
+pub fn parse_head(raw: &[u8]) -> HeadScan {
+    let Some(end) = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|at| at + 4)
+    else {
+        return HeadScan::Incomplete;
+    };
     let head = String::from_utf8_lossy(&raw[..end]);
-    let status = head
-        .lines()
-        .next()?
-        .split_whitespace()
-        .nth(1)?
-        .parse::<u16>()
-        .ok()?;
+    let Some(status) = parse_status_line(head.lines().next().unwrap_or_default()) else {
+        return HeadScan::Unreadable(HeadUnreadable::NotAStatusLine);
+    };
     let lowered = head.to_ascii_lowercase();
     let chunked = lowered.contains("transfer-encoding: chunked");
-    let content_length = lowered
+    let mut content_length = None;
+    for declared in lowered
         .lines()
-        .find_map(|line| line.strip_prefix("content-length:"))
-        .and_then(|value| value.trim().parse::<usize>().ok());
-    Some(ResponseHead {
+        .filter_map(|line| line.strip_prefix("content-length:"))
+        .map(str::trim)
+    {
+        let Ok(length) = declared.parse::<usize>() else {
+            return HeadScan::Unreadable(HeadUnreadable::UnreadableLength(declared.to_string()));
+        };
+        // Two disagreeing declarations frame two different bodies, and whichever
+        // one a reader picks, the remainder is read as something it is not.
+        if let Some(first) = content_length.filter(|first| *first != length) {
+            return HeadScan::Unreadable(HeadUnreadable::ConflictingLengths(first, length));
+        }
+        content_length = Some(length);
+    }
+    HeadScan::Whole(ResponseHead {
         status,
         body_at: end,
         chunked,
         content_length,
     })
+}
+
+/// The status `line` states, or `None` when it is not a status line.
+///
+/// Checked in full rather than "whatever second token parses as a number": a
+/// line like `NOT-HTTP 200 fine` would otherwise be read as a `200`, which
+/// promotes something that is not a response at all into a head whose headers
+/// then decide how the rest of the connection is read.
+fn parse_status_line(line: &str) -> Option<u16> {
+    let mut tokens = line.split_whitespace();
+    if !tokens.next()?.starts_with("HTTP/") {
+        return None;
+    }
+    // Exactly three digits, per the grammar: a shorter or longer run of digits
+    // is a different field that happens to be numeric.
+    let code = tokens.next()?;
+    if code.len() != 3 || !code.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    code.parse::<u16>().ok().filter(|s| (100..600).contains(s))
 }
 
 /// Reassembles a `Transfer-Encoding: chunked` body as its bytes arrive.
@@ -822,6 +940,29 @@ mod tests {
         }
     }
 
+    /// A crush opening in `decision`'s posture. The client identity is not
+    /// optional here — the type has no variant without one — so every test
+    /// builds the request the way the wire requires it.
+    fn crush_opening<'a>(
+        cwd: &'a AbsolutePath,
+        client: &'a ClientId,
+        decision: PermissionDecision,
+    ) -> TurnOpening<'a> {
+        TurnOpening::Crush {
+            cwd,
+            client,
+            decision,
+        }
+    }
+
+    /// `path` as a working directory the host counts as absolute. Windows needs
+    /// a prefix before one does, so a bare `/work` is not portable here.
+    fn cwd(path: &str) -> AbsolutePath {
+        #[cfg(windows)]
+        let path = format!("C:{path}");
+        AbsolutePath::new(path).unwrap()
+    }
+
     #[test]
     fn an_id_that_could_retarget_a_request_is_refused() {
         // Every id here comes out of another program's JSON and goes straight
@@ -839,31 +980,24 @@ mod tests {
     fn a_turn_names_its_own_working_directory_on_the_shared_server() {
         // Both servers are shared across dispatches, so a turn that did not say
         // where it runs would do its work in whatever directory the server
-        // happened to start in.
+        // happened to start in — and an absolute one is the only kind that
+        // names the same place from the server's process as from this one.
+        let here = cwd("/work/here");
         let opencode: Value = serde_json::from_str(
-            open_request(
-                HttpShape::Opencode,
-                "/work/here",
-                None,
-                PermissionDecision::Allow,
-            )
-            .body()
-            .unwrap(),
+            open_request(&TurnOpening::Opencode { cwd: &here })
+                .body()
+                .unwrap(),
         )
         .unwrap();
-        assert_eq!(opencode["location"]["directory"], "/work/here");
+        assert_eq!(opencode["location"]["directory"], here.to_string());
+        let client = ClientId::new("c").unwrap();
         let crush: Value = serde_json::from_str(
-            open_request(
-                HttpShape::Crush,
-                "/work/here",
-                Some(&ClientId::new("c").unwrap()),
-                PermissionDecision::Allow,
-            )
-            .body()
-            .unwrap(),
+            open_request(&crush_opening(&here, &client, PermissionDecision::Allow))
+                .body()
+                .unwrap(),
         )
         .unwrap();
-        assert_eq!(crush["path"], "/work/here");
+        assert_eq!(crush["path"], here.to_string());
     }
 
     #[test]
@@ -871,12 +1005,11 @@ mod tests {
         // The one detail that answers a bare `{"message":"invalid client_id"}`
         // when it is got wrong.
         let client = ClientId::new("client-9").unwrap();
-        let open = open_request(
-            HttpShape::Crush,
-            "/work",
-            Some(&client),
+        let open = open_request(&crush_opening(
+            &cwd("/work"),
+            &client,
             PermissionDecision::Allow,
-        );
+        ));
         assert_eq!(open.path(), "/v1/workspaces");
         let body: Value = serde_json::from_str(open.body().unwrap()).unwrap();
         assert_eq!(body["client_id"], "client-9");
@@ -904,15 +1037,11 @@ mod tests {
         // workspace itself — the same thing `--yolo` sets — so the workspace is
         // never briefly in a posture this run did not choose.
         let client = ClientId::new("client-9").unwrap();
+        let work = cwd("/work");
         let permissive: Value = serde_json::from_str(
-            open_request(
-                HttpShape::Crush,
-                "/work",
-                Some(&client),
-                PermissionDecision::Allow,
-            )
-            .body()
-            .unwrap(),
+            open_request(&crush_opening(&work, &client, PermissionDecision::Allow))
+                .body()
+                .unwrap(),
         )
         .unwrap();
         assert_eq!(permissive["yolo"], true);
@@ -920,32 +1049,24 @@ mod tests {
         // And a restrictive run says so rather than leaving it to the server's
         // default: an absent field is not a decision.
         let restrictive: Value = serde_json::from_str(
-            open_request(
-                HttpShape::Crush,
-                "/work",
-                Some(&client),
-                PermissionDecision::Deny,
-            )
-            .body()
-            .unwrap(),
+            open_request(&crush_opening(&work, &client, PermissionDecision::Deny))
+                .body()
+                .unwrap(),
         )
         .unwrap();
         assert_eq!(restrictive["yolo"], false);
 
-        // Opencode has no such field, and inventing one would be a key its
+        // Opencode has no such field — nor a posture, nor a client identity, so
+        // its opening carries none of them and inventing one would be a key its
         // session-create route does not read.
         let opencode: Value = serde_json::from_str(
-            open_request(
-                HttpShape::Opencode,
-                "/work",
-                None,
-                PermissionDecision::Allow,
-            )
-            .body()
-            .unwrap(),
+            open_request(&TurnOpening::Opencode { cwd: &work })
+                .body()
+                .unwrap(),
         )
         .unwrap();
         assert!(opencode.get("yolo").is_none(), "{opencode}");
+        assert!(opencode.get("client_id").is_none(), "{opencode}");
     }
 
     #[test]
@@ -1165,7 +1286,9 @@ mod tests {
         // The framing both servers answer with. A reader that skipped this
         // reported a JSON decode error where the harness answered correctly.
         let raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
-        let head = parse_head(raw).unwrap();
+        let HeadScan::Whole(head) = parse_head(raw) else {
+            panic!("a chunked head was not read as one");
+        };
         assert_eq!(head.status, 200);
         assert!(head.chunked);
 
@@ -1194,12 +1317,81 @@ mod tests {
 
     #[test]
     fn a_head_is_only_parsed_once_it_is_whole() {
-        assert!(parse_head(b"HTTP/1.1 200 OK\r\n").is_none());
-        let head = parse_head(b"HTTP/1.1 204 No Content\r\n\r\n").unwrap();
+        assert_eq!(parse_head(b"HTTP/1.1 200 OK\r\n"), HeadScan::Incomplete);
+        let HeadScan::Whole(head) = parse_head(b"HTTP/1.1 204 No Content\r\n\r\n") else {
+            panic!("a whole head was not read as one");
+        };
         assert_eq!(head.status, 204);
         assert!(!head.chunked);
         assert_eq!(head.body_at, 27);
-        assert!(parse_head(b"garbage\r\n\r\n").is_none());
+        assert_eq!(head.content_length, None);
+        // A whole head that is not a response is not an arrival to wait on: a
+        // reader told to wait would spend its whole timeout on bytes that are
+        // all already here.
+        assert_eq!(
+            parse_head(b"garbage\r\n\r\n"),
+            HeadScan::Unreadable(HeadUnreadable::NotAStatusLine)
+        );
+        // Nor is a line that merely CARRIES a number where a status goes: read
+        // as a `200`, something that is not a response at all would decide how
+        // the rest of the connection is framed.
+        for impostor in [
+            &b"NOT-HTTP 200 fine\r\n\r\n"[..],
+            b"HTTP/1.1 20 OK\r\n\r\n",
+            b"HTTP/1.1 0200 OK\r\n\r\n",
+            b"HTTP/1.1 999 OK\r\n\r\n",
+            b"HTTP/1.1\r\n\r\n",
+        ] {
+            assert_eq!(
+                parse_head(impostor),
+                HeadScan::Unreadable(HeadUnreadable::NotAStatusLine),
+                "accepted `{}`",
+                String::from_utf8_lossy(impostor)
+            );
+        }
+    }
+
+    #[test]
+    fn a_length_declaration_no_reader_can_frame_a_body_from_is_refused() {
+        // `Content-Length` is external input that decides how many bytes of the
+        // connection are this answer. Dropping an unreadable one leaves the
+        // answer looking unframed, which ends it at the close — so the body
+        // would be handed back with whatever followed it appended.
+        for head in [
+            &b"HTTP/1.1 200 OK\r\nContent-Length: banana\r\n\r\n"[..],
+            b"HTTP/1.1 200 OK\r\nContent-Length: \r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: -1\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 7, 7\r\n\r\n",
+        ] {
+            assert!(
+                matches!(
+                    parse_head(head),
+                    HeadScan::Unreadable(HeadUnreadable::UnreadableLength(_))
+                ),
+                "accepted `{}`",
+                String::from_utf8_lossy(head)
+            );
+        }
+        // Two declarations that disagree frame two different bodies, and
+        // whichever one a reader picks the remainder is read as something it is
+        // not. Repeating the SAME length says one thing, so it still reads.
+        assert_eq!(
+            parse_head(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nContent-Length: 9\r\n\r\n"),
+            HeadScan::Unreadable(HeadUnreadable::ConflictingLengths(7, 9))
+        );
+        let HeadScan::Whole(head) =
+            parse_head(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nContent-Length: 7\r\n\r\n")
+        else {
+            panic!("two agreeing declarations are one length");
+        };
+        assert_eq!(head.content_length, Some(7));
+        // A header that merely ENDS in the name is a different header.
+        let HeadScan::Whole(head) =
+            parse_head(b"HTTP/1.1 200 OK\r\nX-Original-Content-Length: nope\r\n\r\n")
+        else {
+            panic!("an unrelated header was read as a length declaration");
+        };
+        assert_eq!(head.content_length, None);
     }
 
     #[test]
@@ -1225,19 +1417,13 @@ mod tests {
             session: None,
             payload: Value::Null,
         };
+        let client = ClientId::new("c").unwrap();
+        // A working directory whose own text would corrupt a request line if it
+        // ever reached one; it rides the BODY, so no route may carry it.
+        let awkward = cwd("/a b/../c");
         let mut routes = vec![
-            open_request(
-                HttpShape::Crush,
-                "/a b/../c",
-                Some(&ClientId::new("c").unwrap()),
-                PermissionDecision::Allow,
-            ),
-            open_request(
-                HttpShape::Opencode,
-                "/a b/../c",
-                None,
-                PermissionDecision::Allow,
-            ),
+            open_request(&crush_opening(&awkward, &client, PermissionDecision::Allow)),
+            open_request(&TurnOpening::Opencode { cwd: &awkward }),
             readiness_request(HttpShape::Crush),
             readiness_request(HttpShape::Opencode),
         ];

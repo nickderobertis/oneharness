@@ -503,8 +503,22 @@ mod imp {
     }
 
     /// One request, one response, connection closed — the whole protocol.
-    fn serve_connection(stream: UnixStream, handle: &ControlHandle) {
+    ///
+    /// `pub(super)` so the tests can drive it over a connection they put in the
+    /// state a BSD accept leaves one in (see the blocking reset below), which is
+    /// otherwise unreachable from Linux.
+    pub(super) fn serve_connection(stream: UnixStream, handle: &ControlHandle) {
         use std::io::{BufRead, BufReader, Read, Write};
+        // Explicitly blocking, because the accept that produced this stream is
+        // not portable about it: the listener is non-blocking (so the accept
+        // loop can notice a shutdown), and a BSD accept — macOS's — hands back a
+        // socket that INHERITED that flag, while Linux's does not. Left
+        // inherited, a read that has to wait for the rest of a frame answers
+        // `WouldBlock` instead of waiting, which the reader below reports as a
+        // run that could not be read from — an interrupt silently lost on one
+        // platform. The timeouts are what bound the wait; this is what makes
+        // there be one.
+        let _ = stream.set_nonblocking(false);
         let _ = stream.set_read_timeout(Some(CLIENT_TIMEOUT));
         let _ = stream.set_write_timeout(Some(CLIENT_TIMEOUT));
         // Bounded before it is accumulated: the newline that ends a request is
@@ -689,8 +703,15 @@ mod tests {
     /// canonicalizes to `/private/var/folders/…` before binding — spending over
     /// half the budget on the root alone, so the address overruns `sun_path`
     /// there while fitting comfortably on Linux.
+    /// Resolved, because a bound socket path IS resolved: [`bind`] canonicalizes
+    /// the directory before binding (the address is handed to another process),
+    /// so on macOS — where `/tmp` is a symlink to `/private/tmp` — a listener
+    /// asked for `/tmp/…` reports `/private/tmp/…`. Rooting the tests at the
+    /// unresolved path still binds and still interrupts, but no longer matches
+    /// the address the listener names.
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = PathBuf::from("/tmp").join(format!(
+        let root = std::fs::canonicalize("/tmp").expect("/tmp must exist to root a control socket");
+        let dir = root.join(format!(
             "oh-control-{}-{}-{:?}",
             tag,
             std::process::id(),
@@ -909,6 +930,65 @@ mod tests {
         assert!(!response.is_ok());
         assert_eq!(response.reason(), Some(ControlReason::Unsupported));
         assert!(listener.handle().events().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_request_that_arrives_in_pieces_is_waited_for_on_a_non_blocking_connection() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::{UnixListener, UnixStream};
+        // A supervisor's frame is one write, but a socket does not promise it
+        // arrives as one, so the run has to wait for the rest of a request it
+        // has only part of. The accept it comes from does not promise a
+        // connection that CAN wait: the listener is non-blocking, and a BSD
+        // accept — macOS's — returns a socket that inherited that flag while
+        // Linux's returns one that did not. So the state is set here
+        // explicitly; it is the only way this platform can drive the shape
+        // macOS is always in, and without it the run answers "could not read"
+        // and the interrupt is lost.
+        let dir = temp_dir("pieces");
+        let path = socket_path(&dir, "split");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let listener = UnixListener::bind(&path).unwrap();
+
+        let client_path = path.clone();
+        // `None` for an exchange the run broke off — the supervisor's side of a
+        // reader that gave up is a hang-up, not an answer, so it is reported as
+        // that rather than as a panicked thread.
+        let client = std::thread::spawn(move || -> Option<String> {
+            let mut stream = UnixStream::connect(&client_path).ok()?;
+            let mut frame = serde_json::to_string(&ControlRequest::interrupt()).ok()?;
+            frame.push('\n');
+            let (head, tail) = frame.split_at(frame.len() / 2);
+            stream.write_all(head.as_bytes()).ok()?;
+            stream.flush().ok()?;
+            // Long enough that the reader cannot have the rest yet, so a
+            // connection that will not wait has to answer without it.
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            stream.write_all(tail.as_bytes()).ok()?;
+            stream.flush().ok()?;
+            let mut reply = String::new();
+            BufReader::new(&stream).read_line(&mut reply).ok()?;
+            Some(reply)
+        });
+
+        let (accepted, _) = listener.accept().unwrap();
+        accepted.set_nonblocking(true).unwrap();
+        let handle = ControlHandle::new(ControlShape::ClaudeControlRequest);
+        imp::serve_connection(accepted, &handle);
+
+        let reply = client.join().unwrap().expect(
+            "the run broke off the exchange instead of waiting for the rest of the request",
+        );
+        let response: ControlResponse = serde_json::from_str(reply.trim()).unwrap();
+        // The run's own verdict on a whole request — there is no turn in flight
+        // — rather than the refusal a reader that gave up mid-frame reports.
+        assert_eq!(
+            response.reason(),
+            Some(ControlReason::NoActiveTurn),
+            "{}",
+            response.to_line()
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

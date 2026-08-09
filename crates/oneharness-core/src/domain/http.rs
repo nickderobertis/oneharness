@@ -698,10 +698,60 @@ pub const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 /// blank line coming, and every byte read is memory a peer chose to spend.
 pub const MAX_HEAD_BYTES: usize = 64 * 1024;
 
+/// A status code a response can actually carry.
+///
+/// A newtype for the same reason [`crate::domain::control::Port`] is one: the
+/// range check belongs to the boundary that reads the status line, and every
+/// reader after it should be handed a value that has already passed. Both the
+/// success test and the refusal test branch on this, so a `0` or a `9999`
+/// reaching them is a decision taken about a number no server sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatusCode(u16);
+
+impl StatusCode {
+    /// Accept `raw` as a status a response can carry, or say why it cannot be
+    /// one. The range is the grammar's: `100` through `599`.
+    pub fn new(raw: u16) -> Result<Self, String> {
+        if (100..600).contains(&raw) {
+            Ok(StatusCode(raw))
+        } else {
+            Err(format!("{raw} is not an HTTP status code"))
+        }
+    }
+
+    #[must_use]
+    pub fn get(self) -> u16 {
+        self.0
+    }
+
+    /// Whether the server accepted the request. A control route that answers
+    /// `4xx`/`5xx` has not done what was asked, however readable its body.
+    ///
+    /// A `3xx` has not either: this client follows no `Location`, so a redirect
+    /// is an answer saying where to ask, not the asking. Counted as success, a
+    /// redirected interrupt would be reported `served` while the turn ran on —
+    /// worse than any refusal, because a refusal is something a supervisor can
+    /// act on.
+    ///
+    /// Defined here rather than at each caller so the answered-or-not question
+    /// has one answer: a response's `ok` and a stream's refusal cannot drift
+    /// into disagreeing about the same code.
+    #[must_use]
+    pub fn is_success(self) -> bool {
+        (200..300).contains(&self.0)
+    }
+}
+
+impl std::fmt::Display for StatusCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// A response's head, as far as a reader must understand it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResponseHead {
-    pub status: u16,
+    pub status: StatusCode,
     /// Where the body starts in the buffer the head was parsed from.
     pub body_at: usize,
     /// Whether the body arrives in `Transfer-Encoding: chunked` framing. Both
@@ -862,7 +912,7 @@ pub fn parse_head(raw: &[u8]) -> HeadScan {
 /// line like `NOT-HTTP 200 fine` would otherwise be read as a `200`, which
 /// promotes something that is not a response at all into a head whose headers
 /// then decide how the rest of the connection is read.
-fn parse_status_line(line: &str) -> Option<u16> {
+fn parse_status_line(line: &str) -> Option<StatusCode> {
     let mut tokens = line.split_whitespace();
     if !tokens.next()?.starts_with("HTTP/") {
         return None;
@@ -873,7 +923,7 @@ fn parse_status_line(line: &str) -> Option<u16> {
     if code.len() != 3 || !code.chars().all(|c| c.is_ascii_digit()) {
         return None;
     }
-    code.parse::<u16>().ok().filter(|s| (100..600).contains(s))
+    StatusCode::new(code.parse::<u16>().ok()?).ok()
 }
 
 /// Reassembles a `Transfer-Encoding: chunked` body as its bytes arrive.
@@ -1397,7 +1447,7 @@ mod tests {
         let HeadScan::Whole(head) = parse_head(raw) else {
             panic!("a chunked head was not read as one");
         };
-        assert_eq!(head.status, 200);
+        assert_eq!(head.status.get(), 200);
         assert!(head.chunked);
 
         let wire = b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
@@ -1429,7 +1479,7 @@ mod tests {
         let HeadScan::Whole(head) = parse_head(b"HTTP/1.1 204 No Content\r\n\r\n") else {
             panic!("a whole head was not read as one");
         };
-        assert_eq!(head.status, 204);
+        assert_eq!(head.status.get(), 204);
         assert!(!head.chunked);
         assert_eq!(head.body_at, 27);
         assert_eq!(head.content_length, None);
@@ -1455,6 +1505,33 @@ mod tests {
                 HeadScan::Unreadable(HeadUnreadable::NotAStatusLine),
                 "accepted `{}`",
                 String::from_utf8_lossy(impostor)
+            );
+        }
+    }
+
+    #[test]
+    fn a_status_code_carries_its_range_and_answers_whether_it_succeeded() {
+        // The range belongs to the type, so a reader downstream of the status
+        // line never branches on a number no server could have sent.
+        for outside in [0, 99, 600, 9999] {
+            assert!(
+                StatusCode::new(outside).is_err(),
+                "accepted {outside} as a status"
+            );
+        }
+        for edge in [100, 599] {
+            assert_eq!(StatusCode::new(edge).unwrap().get(), edge);
+        }
+        // And success is decided in one place. A `3xx` is not it: this client
+        // follows no `Location`, so a redirected interrupt that counted as
+        // success would be reported `served` while the turn ran on.
+        for accepted in [200, 204, 299] {
+            assert!(StatusCode::new(accepted).unwrap().is_success());
+        }
+        for refused in [100, 300, 302, 404, 500] {
+            assert!(
+                !StatusCode::new(refused).unwrap().is_success(),
+                "{refused} counted as the server having done what was asked"
             );
         }
     }

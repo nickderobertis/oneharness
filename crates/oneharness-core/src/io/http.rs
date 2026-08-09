@@ -15,29 +15,23 @@ use crate::domain::control::ServerAddress;
 #[cfg(test)]
 use crate::domain::http::Method;
 use crate::domain::http::{
-    parse_head, ChunkedDecoder, HeadScan, HeadUnreadable, HttpRequest, SseAccumulator,
+    parse_head, ChunkedDecoder, HeadScan, HeadUnreadable, HttpRequest, SseAccumulator, StatusCode,
     MAX_BODY_BYTES,
 };
 
 /// A server's answer to one request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpResponse {
-    pub status: u16,
+    pub status: StatusCode,
     pub body: String,
 }
 
 impl HttpResponse {
-    /// Whether the server accepted the request. A control route that answers
-    /// `4xx`/`5xx` has not done what was asked, however readable its body.
-    ///
-    /// A `3xx` has not either: this client follows no `Location`, so a redirect
-    /// is an answer saying where to ask, not the asking. Counted as success, a
-    /// redirected interrupt would be reported `served` while the turn ran on —
-    /// worse than any refusal, because a refusal is something a supervisor can
-    /// act on.
+    /// Whether the server accepted the request — see [`StatusCode::is_success`],
+    /// which is where that question is decided for every reader.
     #[must_use]
     pub fn ok(&self) -> bool {
-        (200..300).contains(&self.status)
+        self.status.is_success()
     }
 }
 
@@ -227,7 +221,7 @@ pub struct EventStream {
     /// The status the stream answered with, once its head arrived. A server
     /// that refused the subscription (`404`, `401`) still sends a body, and
     /// reading that body as events would report a turn that never streamed.
-    status: Option<u16>,
+    status: Option<StatusCode>,
     head_seen: bool,
     chunked: bool,
     pending: Vec<u8>,
@@ -248,7 +242,7 @@ pub enum StreamPoll {
     Idle,
     /// The server answered the subscription with a non-success status, so its
     /// body is an error document rather than a stream of events.
-    Refused(u16),
+    Refused(StatusCode),
     /// The subscription cannot be read, so nothing after it can be framed as an
     /// event. Its own answer, not a close: the socket is still open and a
     /// caller that read this as quiet would wait out its timeout on a stream
@@ -321,7 +315,7 @@ impl EventStream {
                 };
                 self.head_seen = true;
                 self.status = Some(head.status);
-                if !(200..300).contains(&head.status) {
+                if !head.status.is_success() {
                     return StreamPoll::Refused(head.status);
                 }
                 self.chunked = head.chunked;
@@ -481,7 +475,7 @@ mod tests {
                 Some("{}"),
             ))
             .unwrap();
-        assert_eq!(response.status, 200);
+        assert_eq!(response.status.get(), 200);
         assert_eq!(response.body.trim(), r#"{"id":"ses_01"}"#);
         assert!(response.ok());
 
@@ -532,7 +526,7 @@ mod tests {
         let response = client(port)
             .send(&HttpRequest::for_test(Method::Get, "/api/app", None))
             .unwrap();
-        assert_eq!(response.status, 200);
+        assert_eq!(response.status.get(), 200);
         assert_eq!(response.body, r#"{"id":"ses_01"}"#);
         assert!(
             started.elapsed() < Duration::from_secs(5),
@@ -565,7 +559,7 @@ mod tests {
                 None,
             ))
             .unwrap();
-        assert_eq!(response.status, 404);
+        assert_eq!(response.status.get(), 404);
         assert!(!response.ok());
         assert!(response.body.contains("404 page not found"));
         let _ = server.join();
@@ -587,7 +581,7 @@ mod tests {
                 None,
             ))
             .unwrap();
-        assert_eq!(response.status, 302);
+        assert_eq!(response.status.get(), 302);
         assert!(!response.ok(), "a redirect nobody follows is not a success");
         let _ = server.join();
     }

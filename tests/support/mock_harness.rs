@@ -585,15 +585,17 @@ fn exit_shortly() {
 /// naming both the thread and the turn arrives.
 fn run_codex_app_server(log_path: &str) -> ! {
     use serde_json::{json, Value};
-    let append = |line: &str| {
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)
-        {
-            let _ = writeln!(file, "{line}");
-            let _ = file.flush();
-        }
+    // Opened once, up front: a log path that cannot be written is a fixture
+    // that answers correctly while recording nothing, which reads as a client
+    // that never sent the frames the test is looking for.
+    let mut log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .expect("the mock app-server could not open its log");
+    let mut append = |line: &str| {
+        let _ = writeln!(log, "{line}");
+        let _ = log.flush();
     };
     let mut out = std::io::stdout();
     let mut send = |value: &Value| {
@@ -629,7 +631,24 @@ fn run_codex_app_server(log_path: &str) -> ! {
                     "params": {"itemId": "item_1", "delta": "still working"},
                 }));
             }
+            // Only an interrupt that names BOTH coordinates stops the turn:
+            // the real app-server takes `{threadId, turnId}`, and a fixture
+            // that ends on the method alone would pass a client that addressed
+            // no particular turn.
             Some("turn/interrupt") => {
+                let params = message.get("params").unwrap_or(&Value::Null);
+                let names = |key: &str, expected: &str| {
+                    params.get(key).and_then(Value::as_str) == Some(expected)
+                };
+                if !names("threadId", "mock-codex-thread") || !names("turnId", "mock-codex-turn") {
+                    append("INTERRUPT_MISADDRESSED");
+                    send(&json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {"code": -32602, "message": "invalid interrupt coordinates"},
+                    }));
+                    continue;
+                }
                 send(&json!({"jsonrpc": "2.0", "id": id, "result": {}}));
                 send(&json!({
                     "jsonrpc": "2.0",

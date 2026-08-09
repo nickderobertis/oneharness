@@ -20295,10 +20295,15 @@ fn a_codex_controlled_run_drives_its_thread_and_interrupts_the_live_turn() {
         .lines()
         .find(|line| line.contains("turn/interrupt"))
         .expect("an interrupt reached the app-server");
-    // It addresses both coordinates: a thread alone names no turn to stop.
+    // It addresses both coordinates: a thread alone names no turn to stop, and
+    // the fixture refuses an interrupt that misses either.
     assert!(
         abort.contains("mock-codex-thread") && abort.contains("mock-codex-turn"),
         "the interrupt must name the thread and the turn: {abort}"
+    );
+    assert!(
+        !served.contains("INTERRUPT_MISADDRESSED"),
+        "the app-server rejected the interrupt's coordinates:\n{served}"
     );
 
     assert_eq!(report["control"]["mechanism"], "codex-app-server");

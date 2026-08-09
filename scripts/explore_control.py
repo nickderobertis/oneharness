@@ -51,6 +51,11 @@ WARMUP_TIMEOUT = 180
 # else's protocol, so any of them can wedge; a wedged probe must report BLOCKED
 # rather than hang the investigation it exists to speed up.
 PROBE_TIMEOUT = 420
+# The most of one HTTP answer this probe will hold before calling it unending.
+# Every route it calls answers a small JSON document, and the bytes come off
+# someone else's socket — so the peer must not get to decide how much memory a
+# probe spends waiting for a framing that is never coming.
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 PROMPT = (
     "You are a non-interactive test fixture in a scratch directory. Using your "
@@ -194,7 +199,20 @@ def http_request(
     body: Optional[dict] = None,
     timeout: float = 60.0,
 ) -> Tuple[int, str]:
-    """One HTTP/1.1 request over TCP or a unix socket, no dependencies."""
+    """One HTTP/1.1 request over TCP or a unix socket, no dependencies.
+
+    The answer is read until *its own framing* says it is whole, and refused
+    otherwise. A probe that returned whatever had arrived when the read timed
+    out, or that took the second token of any first line as a status, would
+    publish a LIVE/REFUTED verdict about bytes it never finished reading — and
+    this file is where a `ControlShape` gets sourced from, so a wrong verdict
+    here becomes a declared capability nobody exercised.
+
+    Raises `socket.timeout` (an `OSError`, which the readiness poll already
+    treats as "not up yet") when the answer never completes, and `ValueError`
+    when it is not one this probe will interpret. Both reach the caller's
+    handler and land as BLOCKED rather than as a confident wrong answer.
+    """
     if unix_path:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(timeout)
@@ -212,45 +230,127 @@ def http_request(
         f"Content-Length: {len(payload)}\r\n\r\n"
     ).encode()
     sock.sendall(head + payload)
-    chunks = []
+    raw = bytearray()
+    parsed: Optional[Tuple[int, bool, Optional[int]]] = None
+    body_at = 0
+    closed = False
     try:
         while True:
+            if parsed is None:
+                end = raw.find(b"\r\n\r\n")
+                if end >= 0:
+                    parsed = parse_response_head(bytes(raw[:end]))
+                    body_at = end + 4
+            if parsed is not None and body_is_whole(bytes(raw[body_at:]), parsed):
+                break
             chunk = sock.recv(65536)
             if not chunk:
+                closed = True
                 break
-            chunks.append(chunk)
-    except socket.timeout:
-        pass
+            raw.extend(chunk)
+            if len(raw) > MAX_RESPONSE_BYTES:
+                raise ValueError(
+                    f"the server's answer passed {MAX_RESPONSE_BYTES} bytes without ending"
+                )
     finally:
         sock.close()
-    raw = b"".join(chunks)
-    head, _, body = raw.partition(b"\r\n\r\n")
-    header = head.decode("utf-8", "replace")
-    status = 0
-    first = header.split("\r\n", 1)[0].split(" ")
-    if len(first) > 1 and first[1].isdigit():
-        status = int(first[1])
-    if "chunked" in header.lower():
-        body = dechunk(body)
+    if parsed is None:
+        raise ValueError(f"the server answered no readable HTTP head: {bytes(raw[:80])!r}")
+    status, chunked, length = parsed
+    body = bytes(raw[body_at:])
+    if chunked:
+        decoded, whole = dechunk(body)
+        if not whole:
+            raise ValueError("the server's chunked answer never reached its terminating chunk")
+        body = decoded
+    elif length is not None:
+        # Half a JSON document is a wrong answer where a refusal is a loud one.
+        if len(body) < length:
+            raise ValueError(
+                f"the server declared {length} bytes of body and sent {len(body)}"
+            )
+        body = body[:length]
+    elif not closed:
+        # Unframed answers end at the close and nowhere else, so reaching here
+        # without one means the loop stopped for a reason that is not an ending.
+        raise ValueError("the server framed no body and did not close the connection")
     return status, body.decode("utf-8", "replace")
 
 
-def dechunk(body: bytes) -> bytes:
-    """Reassemble a `Transfer-Encoding: chunked` body.
+def parse_response_head(head: bytes) -> Tuple[int, bool, Optional[int]]:
+    """A response head as `(status, chunked, content_length)`, or a refusal.
+
+    Every field is read as the header it is. A status taken from "the second
+    token that looks numeric" promotes a line that is not a status line into one;
+    a `chunked` found by searching the whole head is set by any header that
+    merely carries the word, and the body then gets de-chunked framing bytes and
+    all.
+    """
+    text = head.decode("utf-8", "replace")
+    lines = text.split("\r\n")
+    first = lines[0].split(" ")
+    if len(first) < 2 or not first[0].startswith("HTTP/"):
+        raise ValueError(f"not an HTTP status line: {lines[0][:80]!r}")
+    code = first[1]
+    if len(code) != 3 or not (code.isascii() and code.isdigit()) or not 100 <= int(code) < 600:
+        raise ValueError(f"not an HTTP status code: {code[:16]!r}")
+    chunked = False
+    length: Optional[int] = None
+    for line in lines[1:]:
+        name, sep, value = line.partition(":")
+        if not sep:
+            continue
+        name = name.strip().lower()
+        if name == "transfer-encoding":
+            # `chunked` is the LAST coding of the list, per the grammar.
+            codings = [c.strip().lower() for c in value.split(",") if c.strip()]
+            chunked = bool(codings) and codings[-1] == "chunked"
+        elif name == "content-length":
+            declared = value.strip()
+            if not (declared.isascii() and declared.isdigit()):
+                raise ValueError(f"unreadable Content-Length: {declared[:32]!r}")
+            if length is not None and length != int(declared):
+                raise ValueError("two Content-Length headers framing different bodies")
+            length = int(declared)
+    return int(code), chunked, length
+
+
+def body_is_whole(body: bytes, parsed: Tuple[int, bool, Optional[int]]) -> bool:
+    """Whether `body` is all of the body the head framed.
+
+    An unframed answer is never whole here: its only ending is the close, which
+    the read loop notices for itself.
+    """
+    _, chunked, length = parsed
+    if chunked:
+        return dechunk(body)[1]
+    if length is not None:
+        return len(body) >= length
+    return False
+
+
+def dechunk(body: bytes) -> Tuple[bytes, bool]:
+    """Reassemble a `Transfer-Encoding: chunked` body, and whether it is whole.
 
     Not optional: crush's server answers chunked, and a probe that fed the raw
     framing to `json.loads` reported a decode error where the harness had in
-    fact answered correctly.
+    fact answered correctly. Framing it cannot read is "not yet", never "here is
+    what I made of it" — the caller refuses an answer that never terminates
+    rather than handing back a body with size headers spliced into it.
     """
     out = bytearray()
     while True:
-        line, _, rest = body.partition(b"\r\n")
+        line, sep, rest = body.partition(b"\r\n")
+        if not sep:
+            return bytes(out), False
         try:
             size = int(line.split(b";")[0].strip() or b"0", 16)
         except ValueError:
-            return bytes(out) or body
+            return bytes(out), False
         if size == 0:
-            return bytes(out)
+            return bytes(out), True
+        if len(rest) < size:
+            return bytes(out), False
         out += rest[:size]
         body = rest[size:].lstrip(b"\r\n")
 

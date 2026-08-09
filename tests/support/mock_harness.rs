@@ -401,6 +401,11 @@ impl HttpControlFault {
     }
 }
 
+/// The largest request body the mock control server will reserve room for. A
+/// control request is a small JSON object; the bound exists because the number
+/// that sizes the allocation arrives on the socket.
+const MAX_REQUEST_BODY: usize = 1 << 20;
+
 /// Act like an opencode-shaped HTTP control server: the third execution model,
 /// where the turn is submitted to a server rather than to a CLI.
 ///
@@ -465,10 +470,20 @@ fn run_http_control_server(log_path: &str) -> ! {
                     // A length that cannot be read is not a zero-length body:
                     // reading none of a body that is there leaves the next
                     // request's bytes in the stream.
-                    let Ok(declared) = value.trim().parse() else {
+                    let Ok(declared) = value.trim().parse::<usize>() else {
                         reply_bad_request(&mut socket);
                         return;
                     };
+                    // The declaration is a number off a socket, and it is about
+                    // to size an allocation. A control request is a small JSON
+                    // object, so anything past the bound is refused rather than
+                    // reserved — otherwise the peer, not this fixture, decides
+                    // how much memory it commits and how long it then blocks
+                    // waiting for a body that is never coming.
+                    if declared > MAX_REQUEST_BODY {
+                        reply_bad_request(&mut socket);
+                        return;
+                    }
                     length = declared;
                 }
                 if header == "\r\n" {

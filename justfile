@@ -84,6 +84,7 @@ lint-workflows: build build-mock-harness
     @bash scripts/check-codex-usage-schema-test.sh >/dev/null
     @bash scripts/check-usage-enforce.sh >/dev/null
     @bash scripts/check-control-probes.sh >/dev/null
+    @bash scripts/check-control-probe-http.sh >/dev/null
     @bash scripts/e2e-variants-test.sh >/dev/null
     @echo 'lint-workflows: ok'
 

@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# Boundary self-test for scripts/explore_control.py's HTTP reader.
+#
+# The probe is what sources a `ControlShape` from real behavior, so its verdicts
+# become declared capabilities. That makes its reader a trust boundary: an
+# answer it accepts as complete when it is not — a read that timed out, a first
+# line that is not a status line, a head that merely carries the word `chunked`
+# — turns into a LIVE/REFUTED claim about bytes it never finished reading.
+#
+# Driven against real sockets rather than a stub, because the failure modes are
+# arrival-shaped: bytes that stop coming, and framing that never terminates.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+probe="$root/scripts/explore_control.py"
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "check-control-probe-http: skipped (python3 is not installed; the probe it checks needs it)"
+    exit 0
+fi
+
+python3 - "$probe" <<'PY'
+import importlib.util
+import socket
+import sys
+import threading
+
+probe_path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("explore_control", probe_path)
+probe = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(probe)
+
+failures = []
+
+
+def check(name, ok, detail=""):
+    if not ok:
+        failures.append(f"{name}: {detail}")
+
+
+def serve_once(answer: bytes, hold: bool = False):
+    """A one-connection server answering `answer` verbatim.
+
+    `hold` keeps the socket open afterwards, which is how a real server that
+    ignores `Connection: close` (opencode does, on some routes) looks to a
+    reader waiting for an ending.
+    """
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+
+    def serve():
+        conn, _ = listener.accept()
+        try:
+            conn.recv(65536)
+            conn.sendall(answer)
+            if hold:
+                # Never closes; only the client hanging up releases this.
+                try:
+                    conn.settimeout(20)
+                    while conn.recv(65536):
+                        pass
+                except OSError:
+                    pass
+        finally:
+            conn.close()
+            listener.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    return ("127.0.0.1", port), thread
+
+
+def request(answer, hold=False, timeout=3.0):
+    address, thread = serve_once(answer, hold)
+    try:
+        return probe.http_request(address, None, "GET", "/api/app", timeout=timeout)
+    finally:
+        thread.join(timeout=5)
+
+
+# A whole, well-framed answer still reads — the positive control, without which
+# every refusal below could hold for the wrong reason.
+try:
+    status, body = request(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n{\"id\":\"ses_01\"}", hold=True
+    )
+    check("framed answer", (status, body) == (200, '{"id":"ses_01"}'), f"{status} {body!r}")
+except Exception as err:  # noqa: BLE001
+    check("framed answer", False, f"{type(err).__name__}: {err}")
+
+# So does a chunked one, which is what crush answers with.
+try:
+    status, body = request(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n7\r\n{\"a\":1}\r\n0\r\n\r\n",
+        hold=True,
+    )
+    check("chunked answer", (status, body) == (200, '{"a":1}'), f"{status} {body!r}")
+except Exception as err:  # noqa: BLE001
+    check("chunked answer", False, f"{type(err).__name__}: {err}")
+
+# A body cut short of its own declaration is refused, not returned as half a
+# document for `json.loads` to make a verdict out of.
+try:
+    request(b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n{\"id\":\"ses")
+    check("truncated body", False, "a short body was accepted as whole")
+except ValueError:
+    pass
+except Exception as err:  # noqa: BLE001
+    check("truncated body", False, f"{type(err).__name__}: {err}")
+
+# A read that never completes is a timeout, not an answer. Held open with no
+# ending in sight, this is the shape a wedged server takes.
+try:
+    request(b"HTTP/1.1 200 OK\r\nContent-Length: 99\r\n\r\n{}", hold=True, timeout=1.0)
+    check("timed-out read", False, "a timed-out read was accepted as an answer")
+except socket.timeout:
+    pass
+except Exception as err:  # noqa: BLE001
+    check("timed-out read", False, f"{type(err).__name__}: {err}")
+
+# A first line that is not a status line is not a `0` status either: promoting
+# it would let something that is not a response decide the verdict.
+for label, answer in [
+    ("not http", b"NOT-HTTP 200 fine\r\nContent-Length: 0\r\n\r\n"),
+    ("no status", b"HTTP/1.1\r\nContent-Length: 0\r\n\r\n"),
+    ("short code", b"HTTP/1.1 20 OK\r\nContent-Length: 0\r\n\r\n"),
+]:
+    try:
+        request(answer)
+        check(label, False, "a non-status line was read as a status")
+    except ValueError:
+        pass
+    except Exception as err:  # noqa: BLE001
+        check(label, False, f"{type(err).__name__}: {err}")
+
+# A head that merely CARRIES the word must not frame the body as chunked: the
+# de-chunker would then eat the answer and hand back whatever survived.
+try:
+    status, body = request(
+        b"HTTP/1.1 200 OK\r\nX-Upstream: transfer-encoding: chunked\r\n"
+        b"Content-Length: 7\r\n\r\n{\"a\":1}",
+        hold=True,
+    )
+    check("chunked lookalike", (status, body) == (200, '{"a":1}'), f"{status} {body!r}")
+except Exception as err:  # noqa: BLE001
+    check("chunked lookalike", False, f"{type(err).__name__}: {err}")
+
+# Chunked framing that never terminates is refused rather than handed back as
+# whatever chunks happened to arrive.
+try:
+    request(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n7\r\n{\"a\":1}\r\n")
+    check("unterminated chunks", False, "an unterminated chunked body was accepted")
+except ValueError:
+    pass
+except Exception as err:  # noqa: BLE001
+    check("unterminated chunks", False, f"{type(err).__name__}: {err}")
+
+if failures:
+    for failure in failures:
+        print(f"check-control-probe-http: {failure}", file=sys.stderr)
+    sys.exit(1)
+PY
+
+echo "check-control-probe-http: ok"

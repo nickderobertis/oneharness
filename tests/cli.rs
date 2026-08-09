@@ -20659,6 +20659,78 @@ fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there()
 
 #[cfg(unix)]
 #[test]
+fn the_control_server_fixture_refuses_a_body_length_it_will_not_reserve_room_for() {
+    // The fixture is a real HTTP server reading real sockets, so the number in
+    // `Content-Length` is external input that sizes an allocation. Unbounded,
+    // the peer decides how much memory it commits and then how long it blocks
+    // waiting for a body that never comes — and a fixture that hangs reads as
+    // the feature under test being broken.
+    use std::io::{BufRead, BufReader, Write};
+    let store = control_store_dir("mock-length");
+    let log = store.join("server.log");
+    let port = {
+        let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        probe.local_addr().unwrap().port()
+    };
+    let mut server = Command::new(mock_bin())
+        .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
+        .args(["serve", "--port", &port.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn the mock control server");
+
+    let dial = || {
+        for _ in 0..200 {
+            if let Ok(stream) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                    .unwrap();
+                return stream;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!("the mock control server never accepted a connection");
+    };
+    let status_of = |mut stream: std::net::TcpStream, request: String| -> String {
+        stream.write_all(request.as_bytes()).unwrap();
+        stream.flush().unwrap();
+        let mut line = String::new();
+        BufReader::new(&stream)
+            .read_line(&mut line)
+            .expect("the mock control server never answered");
+        line.trim().to_string()
+    };
+
+    // Four gigabytes declared, one byte sent.
+    let refused = status_of(
+        dial(),
+        format!(
+            "POST /api/session HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 4294967296\r\n\r\n{{"
+        ),
+    );
+    assert!(
+        refused.starts_with("HTTP/1.1 400"),
+        "a length no body could satisfy was accepted: {refused}"
+    );
+
+    // And the server is still there: refusing one framing must not cost it the
+    // next caller, or the bound would just be a different way of falling over.
+    let served = status_of(
+        dial(),
+        format!(
+            "POST /api/session HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 2\r\n\r\n{{}}"
+        ),
+    );
+    assert!(served.starts_with("HTTP/1.1 200"), "{served}");
+
+    server.kill().ok();
+    server.wait().ok();
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
 fn a_control_server_that_redirects_the_interrupt_is_not_reported_as_having_served_it() {
     let mock_profile = mock_profile_redirect();
     // The route answers `302 Found` and aborts nothing. This client follows no

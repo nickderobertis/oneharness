@@ -31,14 +31,17 @@ use crate::io::http_turn::HttpTurn;
 /// enough for a busy run, short enough that a wedged peer is not a hang.
 const CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// The most one request frame may be before it is refused unread.
+/// The most one frame may be — in either direction — before it is refused
+/// unread.
 ///
-/// A request is a single small JSON object, so this is orders of magnitude of
-/// headroom. It exists because the reader is waiting for a newline the peer
-/// controls: without a bound, a client that connects and writes without ever
-/// terminating its line grows the run's buffer for as long as it keeps writing,
-/// and the run's memory is not a side channel's to spend.
-const MAX_REQUEST_BYTES: u64 = 64 * 1024;
+/// A control frame is a single small JSON object, so this is orders of
+/// magnitude of headroom. It exists because both readers are waiting for a
+/// newline the *peer* controls: without a bound, a peer that writes without
+/// ever terminating its line grows this process's buffer for as long as it
+/// keeps writing. It binds the answer as well as the request — the client is
+/// the supervisor's process, and whatever is listening on that socket path is
+/// no more trusted by it than a caller is by the run.
+const MAX_FRAME_BYTES: u64 = 64 * 1024;
 
 /// The single clock read this module makes, kept here so
 /// [`crate::domain::control`] stays pure. A pre-1970 clock falls back to the
@@ -487,11 +490,11 @@ mod imp {
             Ok(clone) => clone,
             Err(_) => return,
         })
-        .take(MAX_REQUEST_BYTES + 1);
+        .take(MAX_FRAME_BYTES + 1);
         let mut line = String::new();
         let response = match reader.read_line(&mut line) {
-            Ok(read) if read as u64 > MAX_REQUEST_BYTES => ControlResponse::refused(
-                format!("the control request is longer than {MAX_REQUEST_BYTES} bytes"),
+            Ok(read) if read as u64 > MAX_FRAME_BYTES => ControlResponse::refused(
+                format!("the control request is longer than {MAX_FRAME_BYTES} bytes"),
                 ControlReason::Unsupported,
             ),
             Ok(_) => match crate::domain::control::parse_request(&line) {
@@ -514,7 +517,7 @@ mod imp {
     /// A missing socket, or one nothing is listening on, is `not_running` —
     /// exactly what a supervisor needs to distinguish from a refusal.
     pub fn send(path: &Path, request: ControlRequest) -> ControlResponse {
-        use std::io::{BufRead, BufReader, Write};
+        use std::io::{BufRead, BufReader, Read, Write};
         let mut stream = match UnixStream::connect(path) {
             Ok(stream) => stream,
             Err(err) => {
@@ -549,9 +552,19 @@ mod imp {
             );
         }
         let mut reply = String::new();
-        match BufReader::new(&stream).read_line(&mut reply) {
+        // Bounded exactly like the request the run reads: the answer arrives
+        // from whatever is listening on that path, and the newline ending it is
+        // that peer's to withhold.
+        match BufReader::new(&stream)
+            .take(MAX_FRAME_BYTES + 1)
+            .read_line(&mut reply)
+        {
             Ok(0) => ControlResponse::refused(
                 "the run closed the control connection without answering",
+                ControlReason::NotRunning,
+            ),
+            Ok(read) if read as u64 > MAX_FRAME_BYTES => ControlResponse::refused(
+                format!("the control answer is longer than {MAX_FRAME_BYTES} bytes"),
                 ControlReason::NotRunning,
             ),
             Ok(_) => serde_json::from_str(reply.trim()).unwrap_or_else(|err| {
@@ -769,7 +782,7 @@ mod tests {
         let started = std::time::Instant::now();
         // Past the bound, with no newline anywhere in it. The write may be cut
         // short by the refusal that closes the connection, which is the point.
-        let _ = stream.write_all(&vec![b'x'; 4 * MAX_REQUEST_BYTES as usize]);
+        let _ = stream.write_all(&vec![b'x'; 4 * MAX_FRAME_BYTES as usize]);
         let mut reply = String::new();
         BufReader::new(&stream).read_line(&mut reply).unwrap();
         let response: ControlResponse = serde_json::from_str(reply.trim()).unwrap();
@@ -786,6 +799,62 @@ mod tests {
         drop(stream);
         let response = send(&path, ControlRequest::interrupt());
         assert_eq!(response.reason(), Some(ControlReason::NoActiveTurn));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_answer_that_never_ends_is_refused_at_its_bound_too() {
+        use std::io::Write;
+        use std::os::unix::net::UnixListener;
+        // The other direction: `oneharness interrupt` is a separate process
+        // reading whatever is listening on that path. It waits for a newline
+        // that peer controls, so the answer is bounded exactly like the request
+        // — otherwise a wedged or hostile listener decides how much memory the
+        // supervisor's process spends before anything is parsed.
+        let dir = temp_dir("flood-reply");
+        let path = socket_path(&dir, "loud");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let listener = UnixListener::bind(&path).unwrap();
+        let written = Arc::new(Mutex::new(0usize));
+        let counted = Arc::clone(&written);
+        let flooder = std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            // Never a newline, and it keeps going until the reader hangs up:
+            // the client has to stop on its own terms. Capped so a regression
+            // is a failed assertion rather than a test that runs out of memory.
+            let blob = vec![b'y'; 8 * 1024];
+            for _ in 0..4096 {
+                if stream.write_all(&blob).is_err() {
+                    return;
+                }
+                *counted.lock().unwrap_or_else(|e| e.into_inner()) += blob.len();
+            }
+        });
+
+        let started = std::time::Instant::now();
+        let response = send(&path, ControlRequest::interrupt());
+        assert!(!response.is_ok(), "{response:?}");
+        assert_eq!(response.reason(), Some(ControlReason::NotRunning));
+        // Refused *as oversized* rather than parsed and found unreadable: the
+        // second answer is what a reader that swallowed the whole flood gives.
+        assert!(
+            response.to_line().contains("longer than"),
+            "the answer was accumulated instead of bounded: {}",
+            response.to_line()
+        );
+        assert!(
+            started.elapsed() < CLIENT_TIMEOUT,
+            "the client waited out its timeout instead of stopping at the bound"
+        );
+        let _ = flooder.join();
+        // The peer was cut off near the bound rather than drained to its cap.
+        let written = *written.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            (written as u64) < 8 * MAX_FRAME_BYTES,
+            "the client read {written} bytes of an unterminated answer"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -210,36 +210,16 @@ Use the `just` recipes; do not hand-roll equivalents.
   `CURSOR_API_KEY` from its child: passing it authenticates rather than selects,
   a hazard any future Cursor dispatch also hits.
   <!-- llmlint: ignore-end[agents_md_durable_and_terse, no_redundant_instruction_pointers, comments_earn_their_place] -->
-  `run --control` + the separate `interrupt` verb are out-of-band **turn
-  control**: a supervisor aborts an in-flight turn without killing the dispatch
-  or losing the session. Pure frames/capability/pool-key in `domain::control`,
-  the socket and client in `io::control`, the sidecar-server pool in
-  `io::server_pool`. Three constraints are load-bearing. `--control` requires
-  `--session` (a run with no caller-owned handle has no address) and exactly one
-  harness, both loud usage errors — a control lever that silently is not there is
-  worse than none. A stdin-borne mechanism holds the child's stdin open past the
-  prompt, so the runner must close it on the harness's end-of-turn document
-  (`is_turn_terminal`) or a control-enabled run never exits. And a `ControlShape`
-  is declared only for a harness whose interrupt was proven live *through
-  oneharness*. A shape that `drives_turn` runs the turn over its own JSON-RPC
-  protocol (`domain::dialogue`, a pure state machine the runner pumps lines
-  through) instead of the harness's headless run: oneharness spawns that
-  protocol server as the run's OWN child, so the interrupt rides the same stdin
-  and nothing is pooled. Two protocol facts are load-bearing: codex's
-  `turn/start` response is NOT terminal (the turn ends on `turn/completed`), and
-  an ACP client MUST answer `session/request_permission` or the turn never
-  begins. Such a harness is `--session`-capable only under `--control`
-  (`session_capable_under`), because the id comes off the wire rather than out
-  of an output format. A mechanism whose interrupt is an HTTP route on a
-  *separate server* (opencode, crush) uses a third execution model — the turn
-  submitted over that server (`domain::http` pure, `io::http`/`io::http_turn`
-  the sockets), never through the harness's CLI, whose interrupt was
-  live-REFUTED for both. Three protocol facts are load-bearing there: both
-  servers block until the client answers a permission request (as ACP does),
-  opencode's terminal signal is idle-*after*-admitted (it announces
-  `session.idle` before the prompt is admitted too), and the working directory
-  is per turn on both, which is what keeps a shared server's pool key from
-  widening per dispatch.
+  `run --control` requires `--session` and exactly one harness; both violations
+  are loud usage errors. Declare `ControlShape` only after a live interrupt
+  through oneharness. Stdin control keeps the child stdin open, then closes it
+  on `is_turn_terminal`. Dialogue control owns its JSON-RPC child per dispatch:
+  codex ends on `turn/completed`, not the `turn/start` response, and ACP must
+  answer `session/request_permission`. Dialogue-derived session ids are usable
+  only under `--control` (`session_capable_under`). HTTP control submits turns
+  through the pooled server, not the harness CLI: permission requests must be
+  answered; opencode is terminal only on idle after admission; and cwd stays a
+  per-turn value. Pool keys exclude all per-turn and per-thread settings.
   `gate <id>` is the odd one out: the runtime pre-tool gate an
   installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It
@@ -686,19 +666,12 @@ shape. When you add one:
   capture; a probe that sends a user message or completes a turn is disqualified.
   <!-- llmlint: ignore-end[no_redundant_instruction_pointers, agents_md_durable_and_terse, comments_earn_their_place] -->
 <!-- llmlint: ignore-block[no_redundant_instruction_pointers] The capability matrix is per-harness data that lives in `README.md` (like the mode, resume, and events tables above); naming the file an adapter author must edit is the instruction, not a deferral of one. -->
-- Declare its `control` ([`ControlShape`]) ONLY once a live interrupt through
-  **oneharness** is proven: a declared-but-unexercised shape answers `ok:true`
-  while the turn keeps running, which is worse than the loud usage error `None`
-  gives, so `None` is the honest default. Source the mechanism from
-  `scripts/explore-control.sh <id>`, which judges on the FILESYSTEM — no
-  harness's own stop reason is evidence — and restates each mechanism it
-  drives, so update its tables too (`scripts/check-control-probes.sh` gates them
-  against the registry). Add the `oh_control_enforce <id>` phase to
-  `scripts/e2e-control.sh` (`just live-control`, opt-in and outside the gate),
-  and update the control matrix in `README.md`. A mechanism needing a sidecar
-  server also declares `server` ([`ServerSpec`]): per-turn and per-thread
-  settings must NOT widen its pool key, and pool membership is a **lease naming
-  a live pid, never a counter**.
+- Declare `control` ([`ControlShape`]) only after `scripts/explore-control.sh
+  <id>` and `oh_control_enforce <id>` prove a filesystem-level interrupt through
+  oneharness; `None` is the default. Keep the probe tables, registry, live suite,
+  and README matrix aligned. A sidecar also declares `server` ([`ServerSpec`]).
+  Its pool key excludes per-turn and per-thread settings; membership is a lease
+  naming a live process identity, never a counter or a bare pid.
 <!-- llmlint: ignore-end[no_redundant_instruction_pointers] -->
 - Give the harness its `global_hook` (the user-global hook location, for `sync
   --global` / `install` at `Scope::Global`) and its `gate_deny` (how it expresses

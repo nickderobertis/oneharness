@@ -14,7 +14,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use oneharness_core::domain::control::{ServerAddress, ServerSpec, ServerTransport};
-use oneharness_core::io::server_pool::{self, LaunchArgv, LaunchPlan, Pid, ServerRecord};
+use oneharness_core::io::server_pool::{
+    self, LaunchArgv, LaunchPlan, Pid, ProcessIdentity, ServerRecord,
+};
 
 fn pool_root(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("oh-pool-e2e-{tag}-{}", std::process::id()));
@@ -58,7 +60,7 @@ fn the_pool_root_defaults_under_the_platform_state_dir_and_honors_an_override() 
 }
 
 #[test]
-fn a_record_describing_a_different_launch_is_not_reused_for_its_live_pid() {
+fn a_record_with_a_recycled_live_pid_is_not_reused_even_when_argv_matches() {
     // A pool entry says a pid is this key's server. It is the only thing that
     // says so, and it outlives every dispatch — so it can name a pid the OS has
     // since recycled onto an unrelated process, or a launch from before the
@@ -80,7 +82,10 @@ fn a_record_describing_a_different_launch_is_not_reused_for_its_live_pid() {
         entry.join("server.json"),
         serde_json::to_string(&ServerRecord {
             pid: stranger_pid,
-            argv: LaunchArgv::new(vec!["sleep".to_string(), "999".to_string()]).unwrap(),
+            // A recycled pid can belong to the exact same executable and argv;
+            // only its kernel birth identity distinguishes the incarnation.
+            identity: ProcessIdentity::new("previous-incarnation".to_string()).unwrap(),
+            argv: LaunchArgv::new(vec!["sleep".to_string(), "120".to_string()]).unwrap(),
             address: ServerAddress::Stdio,
             idle_since: None,
         })

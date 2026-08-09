@@ -121,6 +121,10 @@ impl<'de> Deserialize<'de> for LaunchArgv {
 pub struct ServerRecord {
     /// The server process's pid.
     pub pid: Pid,
+    /// Kernel-assigned identity for this incarnation of `pid`. Pids are
+    /// recycled, so liveness alone cannot prove the record still names the
+    /// process that the pool started.
+    pub identity: ProcessIdentity,
     /// The full argv it was launched with (for diagnostics and drift).
     pub argv: LaunchArgv,
     /// How it is reached — the transport and its coordinates together, so a
@@ -128,6 +132,18 @@ pub struct ServerRecord {
     pub address: ServerAddress,
     /// Epoch seconds the entry last had no live lease; `None` while leased.
     pub idle_since: Option<u64>,
+}
+
+/// An OS-derived process birth identity, compared together with a pid.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProcessIdentity(String);
+
+impl ProcessIdentity {
+    #[must_use]
+    pub fn new(value: String) -> Option<Self> {
+        (!value.is_empty()).then_some(Self(value))
+    }
 }
 
 /// A lease on a pooled server, released when dropped.
@@ -315,7 +331,11 @@ pub fn acquire(
     let _guard = EntryLock::acquire(&entry)?;
 
     let record = match reconcile(&entry, linger)? {
-        Some(live) if plan.backs(&live) => live,
+        Some(live)
+            if plan.backs(&live) && process_identity(live.pid).as_ref() == Some(&live.identity) =>
+        {
+            live
+        }
         // A live record this plan does not describe is not this plan's server:
         // the entry outlives every dispatch, so its pid may have been recycled
         // onto something unrelated, or its argv may predate a change to the
@@ -459,15 +479,132 @@ fn start(entry: &Path, plan: &LaunchPlan) -> io::Result<ServerRecord> {
     let child = command.spawn()?;
     let pid =
         Pid::new(child.id()).map_err(|message| io::Error::new(io::ErrorKind::Other, message))?;
+    let identity = process_identity(pid).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!(
+                "could not read the identity of spawned server pid {}",
+                pid.get()
+            ),
+        )
+    })?;
     remember_spawned(child);
     let record = ServerRecord {
         pid,
+        identity,
         argv: plan.argv.clone(),
         address: plan.address.clone(),
         idle_since: None,
     };
     write_record(entry, &record)?;
     Ok(record)
+}
+
+/// Read a kernel value that changes when a pid is recycled.
+#[must_use]
+pub fn process_identity(pid: Pid) -> Option<ProcessIdentity> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = fs::read_to_string(format!("/proc/{}/stat", pid.get())).ok()?;
+        // The command name is parenthesized and may contain spaces. Fields
+        // after its final ')' begin at field 3; starttime is field 22.
+        let tail = stat.rsplit_once(')')?.1;
+        let start_ticks = tail.split_whitespace().nth(19)?;
+        ProcessIdentity::new(start_ticks.to_string())
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+        use windows_sys::Win32::System::Threading::{
+            GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid.get());
+            if handle.is_null() {
+                return None;
+            }
+            let mut creation = FILETIME::default();
+            let mut exit = FILETIME::default();
+            let mut kernel = FILETIME::default();
+            let mut user = FILETIME::default();
+            let ok = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user);
+            CloseHandle(handle);
+            if ok == 0 {
+                return None;
+            }
+            let ticks =
+                (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
+            return ProcessIdentity::new(ticks.to_string());
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::c_void;
+
+        const PROC_PIDTBSDINFO: libc::c_int = 3;
+        #[repr(C)]
+        #[derive(Default)]
+        struct ProcBsdInfo {
+            flags: u32,
+            status: u32,
+            xstatus: u32,
+            pid: u32,
+            ppid: u32,
+            uid: u32,
+            gid: u32,
+            ruid: u32,
+            rgid: u32,
+            svuid: u32,
+            svgid: u32,
+            reserved: u32,
+            comm: [u8; 16],
+            name: [u8; 32],
+            nfiles: u32,
+            pgid: u32,
+            pjobc: u32,
+            ttydev: u32,
+            tpgid: u32,
+            nice: i32,
+            start_seconds: u64,
+            start_microseconds: u64,
+        }
+        #[link(name = "proc")]
+        unsafe extern "C" {
+            fn proc_pidinfo(
+                pid: libc::c_int,
+                flavor: libc::c_int,
+                arg: u64,
+                buffer: *mut c_void,
+                buffer_size: libc::c_int,
+            ) -> libc::c_int;
+        }
+
+        let mut info = ProcBsdInfo::default();
+        let size = std::mem::size_of::<ProcBsdInfo>();
+        let read = unsafe {
+            proc_pidinfo(
+                pid.get() as libc::c_int,
+                PROC_PIDTBSDINFO,
+                0,
+                (&raw mut info).cast(),
+                size as libc::c_int,
+            )
+        };
+        if read != size as libc::c_int {
+            return None;
+        }
+        ProcessIdentity::new(format!(
+            "{}:{}",
+            info.start_seconds, info.start_microseconds
+        ))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        // Refusing reuse is safe on platforms where this crate does not yet
+        // have a kernel birth-token reader; adopting a recycled pid is not.
+        let _ = pid;
+        None
+    }
 }
 
 #[cfg(unix)]

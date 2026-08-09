@@ -1881,6 +1881,7 @@ fn session_survives_an_unwritable_store() {
 
 #[test]
 fn session_without_a_resolvable_store_is_a_usage_error() {
+    let mock_profile = mock_profile_redirect();
     // With no --session-dir and no platform state dir (HOME / XDG / LOCALAPPDATA
     // all unset), the store can't be located — a loud usage error up front.
     let output = Command::new(oneharness_bin())
@@ -1899,6 +1900,8 @@ fn session_without_a_resolvable_store_is_a_usage_error() {
             "hi",
             "--print-command",
             "--compact",
+            "--env",
+            mock_profile.as_str(),
         ])
         .output()
         .expect("failed to run oneharness");
@@ -3438,6 +3441,7 @@ bin = "{bin}"
 
 #[test]
 fn stream_short_circuit_tears_down_the_child_when_the_consumer_closes() {
+    let mock_profile = mock_profile_redirect();
     // The flagship streaming behavior: when the consumer stops reading (closes
     // oneharness's stdout), oneharness's next event write fails (broken pipe) and
     // it tears the harness child down — so a bad turn is cut off, not paid for in
@@ -3473,6 +3477,8 @@ fn stream_short_circuit_tears_down_the_child_when_the_consumer_closes() {
             "--bin",
             &bin_override("opencode"),
             "--stream",
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -4479,6 +4485,7 @@ fn term_ignoring_harness(label: &str) -> PathBuf {
 #[cfg(unix)]
 #[test]
 fn a_second_host_signal_stops_waiting_for_teardown() {
+    let mock_profile = mock_profile_redirect();
     // Teardown is bounded but not instant, and an operator pressing Ctrl-C twice
     // is asking to stop waiting for it: the second signal exits 130 straight from
     // the handler, without the report the first one would have produced.
@@ -4505,6 +4512,8 @@ fn a_second_host_signal_stops_waiting_for_teardown() {
             "--timeout",
             "60",
             "--compact",
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -12322,6 +12331,7 @@ fn streamed_history_falls_back_to_events_only_extractable_at_completion() {
 
 #[test]
 fn interrupted_stream_preserves_events_without_a_closing_run() {
+    let mock_profile = mock_profile_redirect();
     use std::io::BufReader;
 
     let dir = hist_dir("interrupted-stream");
@@ -12356,6 +12366,8 @@ fn interrupted_stream_preserves_events_without_a_closing_run() {
             "--history",
             "--history-dir",
             &ds,
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -12421,6 +12433,7 @@ fn interrupted_stream_preserves_events_without_a_closing_run() {
 
 #[test]
 fn history_watch_event_mode_observes_event_before_stream_finishes() {
+    let mock_profile = mock_profile_redirect();
     use std::io::BufReader;
 
     let dir = hist_dir("watch-live-events");
@@ -12503,6 +12516,8 @@ fn history_watch_event_mode_observes_event_before_stream_finishes() {
             "--history",
             "--history-dir",
             &ds,
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -13139,6 +13154,7 @@ fn history_watch_scopes_to_explicit_and_current_project() {
 
 #[test]
 fn concurrent_processes_append_complete_history_index_lines() {
+    let mock_profile = mock_profile_redirect();
     let dir = hist_dir("concurrent-process-index");
     let ds = dir.display().to_string();
     let mut children = Vec::new();
@@ -13162,6 +13178,8 @@ fn concurrent_processes_append_complete_history_index_lines() {
                     &format!("process-{index}"),
                     "--bypass",
                     "--compact",
+                    "--env",
+                    mock_profile.as_str(),
                 ])
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())
@@ -18917,6 +18935,7 @@ fn wait_until(label: &str, mut condition: impl FnMut() -> bool) {
 #[cfg(unix)]
 #[test]
 fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
+    let mock_profile = mock_profile_redirect();
     // The whole contract in one exchange: a `run --control --session` process
     // opens an addressable socket, a SEPARATE `oneharness interrupt` process
     // resolves it and aborts the in-flight turn, and the run finishes normally
@@ -18952,6 +18971,8 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
             "--bin",
             &bin_override("claude-code"),
             "--compact",
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -19026,6 +19047,7 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
 #[cfg(unix)]
 #[test]
 fn control_run_pins_the_message_stream_argv_and_leaves_the_prompt_off_it() {
+    let mock_profile = mock_profile_redirect();
     // The control channel IS the run's stdin, so the prompt cannot ride the
     // argv: `--input-format stream-json` replaces the positional.
     let store = control_store_dir("argv");
@@ -19055,6 +19077,8 @@ fn control_run_pins_the_message_stream_argv_and_leaves_the_prompt_off_it() {
             "--bin",
             &bin_override("claude-code"),
             "--compact",
+            "--env",
+            mock_profile.as_str(),
         ])
         .output()
         .expect("failed to run oneharness");
@@ -19425,6 +19449,7 @@ fn interrupt_on_a_harness_without_a_mechanism_reports_unsupported() {
 
 #[test]
 fn a_run_without_control_opens_no_socket_and_keeps_its_argv() {
+    let mock_profile = mock_profile_redirect();
     // The non-breaking guarantee: absent `--control`, nothing changes — no
     // socket directory, and the prompt still rides the argv as a positional.
     let store = control_store_dir("absent");
@@ -19454,6 +19479,8 @@ fn a_run_without_control_opens_no_socket_and_keeps_its_argv() {
             "--bin",
             &bin_override("claude-code"),
             "--compact",
+            "--env",
+            mock_profile.as_str(),
         ])
         .output()
         .expect("failed to run oneharness");
@@ -19584,6 +19611,7 @@ fn a_host_signal_cancels_a_controlled_run_and_takes_its_socket_with_it() {
 #[cfg(unix)]
 #[test]
 fn control_works_alongside_streaming_so_a_supervisor_can_watch_and_interrupt() {
+    let mock_profile = mock_profile_redirect();
     // The supervisor use case: read normalized events as they arrive and cut the
     // turn short on what you see. Streaming and control share one open stdin, so
     // this pins that they compose.
@@ -19616,6 +19644,8 @@ fn control_works_alongside_streaming_so_a_supervisor_can_watch_and_interrupt() {
             "keep working",
             "--bin",
             &bin_override("claude-code"),
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -19851,6 +19881,7 @@ fn control_under_print_command_shows_the_control_argv_and_opens_nothing() {
 #[cfg(unix)]
 #[test]
 fn a_second_controlled_run_cannot_steal_a_live_sessions_socket() {
+    let mock_profile = mock_profile_redirect();
     // The socket is a lever over a running agent, so a second run of the same
     // session name must not displace the first — the supervisor's `interrupt`
     // would otherwise silently address the wrong dispatch. A bind failure is a
@@ -19881,6 +19912,8 @@ fn a_second_controlled_run_cannot_steal_a_live_sessions_socket() {
             "--bin",
             &bin_override("claude-code"),
             "--compact",
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -20183,6 +20216,7 @@ fn an_acp_controlled_run_answers_permission_and_records_a_cancel_the_harness_cal
 #[cfg(unix)]
 #[test]
 fn a_streamed_controlled_run_publishes_the_protocol_turns_own_signals() {
+    let mock_profile = mock_profile_redirect();
     // Streaming and a turn-driving mechanism are two different sources of the
     // run's signals: the streamed envelope is assembled as the turn goes, while
     // the session id and text come off the protocol dialogue rather than the
@@ -20215,6 +20249,8 @@ fn a_streamed_controlled_run_publishes_the_protocol_turns_own_signals() {
             "keep working",
             "--bin",
             &bin_override("copilot"),
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -20284,6 +20320,7 @@ fn a_streamed_controlled_run_publishes_the_protocol_turns_own_signals() {
 #[cfg(unix)]
 #[test]
 fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there() {
+    let mock_profile = mock_profile_redirect();
     // The third execution model, end to end through the real CLI: the harness
     // is never spawned as a run at all — oneharness leases its control server,
     // opens a session on it, answers what the server blocks on, and a SEPARATE
@@ -20319,6 +20356,8 @@ fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there()
             "--bin",
             &bin_override("opencode"),
             "--compact",
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

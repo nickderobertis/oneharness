@@ -307,6 +307,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let session_wiring = setup_session(
         args,
         &specs,
+        &selected_ids,
         batch_run,
         fallback_mode,
         &project_start,
@@ -315,10 +316,11 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let session_resume: Option<String> = session_wiring
         .as_ref()
         .and_then(|w| w.plan.resume_token.clone());
-    // The harness the session is bound to (the anchor in fallback, the single
-    // harness in parallel). The resume token is applied ONLY to this harness's
-    // argv below, never to a different fallback candidate that happens to win.
-    let session_anchor: Option<&'static str> = session_wiring.as_ref().map(|w| w.harness);
+    // The variant-qualified id the session is bound to (the anchor in fallback,
+    // the single harness in parallel). The resume token is applied ONLY to this
+    // unit's argv below, never to a different fallback candidate that happens to
+    // win — and never to a *sibling variant*, whose identity cannot resolve it.
+    let session_anchor: Option<String> = session_wiring.as_ref().map(|w| w.harness.clone());
     // An explicitly selected format keeps its authority, but a named session can
     // use it only when that harness actually emits an id in the format. Refuse a
     // lossy pin before spawning instead of accepting `--session` and silently
@@ -328,7 +330,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // session id on the wire, so the harness's stdout format has no bearing on
     // it — checking one here would refuse a perfectly good pairing.
     if !control_shape.is_some_and(ControlShape::drives_turn) {
-        validate_session_output_format(session_anchor, explicit_format)?;
+        validate_session_output_format(session_wiring.as_ref(), explicit_format)?;
     }
     validate_stream(stream, &specs, batch_run, schema.is_some(), fallback_mode)?;
     // Resolve the approval mode (CLI --mode > --bypass/--no-bypass > config
@@ -507,7 +509,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                         telemetry.format
                     } else if want_events {
                         spec.events_format.unwrap_or(spec.output_format)
-                    } else if session_anchor == Some(spec.id) {
+                    } else if session_anchor.as_deref() == Some(selected_id.as_str()) {
                         // A control run on a protocol-driven harness may have no
                         // session-bearing format at all: its id comes off the
                         // wire, not out of the harness's stdout document.
@@ -586,14 +588,15 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             // reusing the harness's verified `--resume` mapping; a create (or no
             // session) leaves it to the explicit `--resume` value (they are
             // mutually exclusive, so at most one is `Some`). The session token is
-            // scoped to the anchor harness: in fallback the chain holds several
-            // harnesses, but a native token belongs to exactly one of them, so a
+            // scoped to the anchor *identity*: in fallback the chain holds several
+            // candidates, but a native token belongs to exactly one of them, so a
             // *different* candidate that ends up winning must never be handed it
-            // (it would resume the wrong harness with a foreign id). In parallel
-            // the anchor is the only harness, so this filter is a no-op there.
+            // (it would resume the wrong harness — or the same harness under a
+            // different home directory — with a foreign id). In parallel the
+            // anchor is the only unit, so this filter is a no-op there.
             resume: session_resume
                 .clone()
-                .filter(|_| session_anchor == Some(spec.id))
+                .filter(|_| session_anchor.as_deref() == Some(selected_id.as_str()))
                 .or_else(|| resume.map(str::to_string)),
             fork: args.fork,
             mode,
@@ -1008,8 +1011,17 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         record_history(&history_writer, mode, &prompts[0], &results);
     }
     // Persist the captured session token (if `--session` was in play) and build
-    // its report block. A session run is single-harness, so `results` holds one.
-    let session_report = finalize_session(session_wiring, &results, args.print_command);
+    // its report block, binding it to the candidate that actually did the turn:
+    // the one the fallback chain stopped at, or — in parallel, which `--session`
+    // holds to one harness — the single result.
+    let session_ran = match &fallback_report {
+        Some(fb) => fb
+            .ran
+            .as_deref()
+            .and_then(|id| results.iter().find(|result| result.harness_id == id)),
+        None => results.first(),
+    };
+    let session_report = finalize_session(session_wiring, session_ran, args.print_command);
     // Every interrupt this run served, read off the live handle before the
     // listener is dropped (which removes the socket).
     // `bind` canonicalized the socket path, so it is absolute by construction;
@@ -1400,7 +1412,12 @@ fn build_report(
 /// what it already held, and the create-vs-continue plan.
 struct SessionWiring {
     name: String,
-    harness: &'static str,
+    /// The anchor's **variant-qualified** id (`claude-code:alternate`) — the one
+    /// candidate whose argv carries the stored token, because that token exists
+    /// only in the session namespace of the identity that minted it.
+    harness: String,
+    /// The anchor's registry entry, for the session-bearing output format.
+    spec: &'static HarnessSpec,
     project: PathBuf,
     /// The resolved session store directory — also the anchor for the run's
     /// `control/<name>.sock`, so both addresses come from one resolution.
@@ -1435,19 +1452,24 @@ fn session_capable_ids() -> String {
 ///   ([`OneharnessError::SessionMultipleHarnesses`]).
 /// * **Fallback** — the whole priority chain is selected, but exactly ONE harness
 ///   ultimately runs (fallback stops at the first that runs), so `--session` is
-///   allowed. It binds to the *anchor*: the first session-capable harness in the
-///   chain. Fallback deterministically settles on the same harness across repeated
-///   runs given stable availability, so the anchor is the harness the session
-///   naturally lives on. A chain with no session-capable harness at all cannot
-///   carry a named handle ([`OneharnessError::SessionUnsupported`]).
+///   allowed. It binds to the *anchor*: the candidate the stored record already
+///   belongs to when that candidate is still in the chain, else the first
+///   session-capable one. Preferring the record's own identity is what keeps a
+///   session that moved (see [`finalize_session`]) continuing where it lives
+///   instead of conflicting with the head of the chain. A chain with no
+///   session-capable harness at all cannot carry a named handle
+///   ([`OneharnessError::SessionUnsupported`]).
 ///
-/// The anchor's native token is applied to the anchor's argv *only* (see the job
-/// loop's `session_anchor` filter) and captured from the anchor's own result only
-/// (see [`finalize_session`]), so a transient fall-through to a different harness
-/// never resumes it with the anchor's token.
+/// The anchor is a **variant-qualified** id, because that is the granularity a
+/// native token actually belongs to: each variant points its harness at its own
+/// home directory, so `claude-code:alternate`'s session store knows nothing of
+/// `claude-code:primary`'s ids. The token is applied to the anchor's argv *only*
+/// (see the job loop's `session_anchor` filter), so a different candidate that
+/// ends up winning is never handed a token its identity cannot resolve.
 fn setup_session(
     args: &RunArgs,
     specs: &[&'static HarnessSpec],
+    selected_ids: &[String],
     batch_run: bool,
     fallback_mode: bool,
     project: &std::path::Path,
@@ -1459,34 +1481,6 @@ fn setup_session(
     if batch_run {
         return Err(OneharnessError::SessionBatch);
     }
-    let spec = if fallback_mode {
-        // Bind to the first session-capable harness in the priority chain; a chain
-        // with none cannot carry a named handle (list the whole selection in the
-        // error, since no single harness is the offender).
-        specs
-            .iter()
-            .copied()
-            .find(|s| s.session_capable_under(control))
-            .ok_or_else(|| OneharnessError::SessionUnsupported {
-                id: specs.iter().map(|s| s.id).collect::<Vec<_>>().join(", "),
-                supported: session_capable_ids(),
-            })?
-    } else {
-        if specs.len() != 1 {
-            return Err(OneharnessError::SessionMultipleHarnesses {
-                count: specs.len(),
-                selected: specs.iter().map(|s| s.id).collect::<Vec<_>>().join(", "),
-            });
-        }
-        let spec = specs[0];
-        if !spec.session_capable_under(control) {
-            return Err(OneharnessError::SessionUnsupported {
-                id: spec.id.to_string(),
-                supported: session_capable_ids(),
-            });
-        }
-        spec
-    };
     // A `--session-dir` that cannot be spelled as UTF-8 is refused rather than
     // dropped, exactly as the `interrupt` verb refuses it: silently falling
     // back to the default store would put the session handle somewhere the
@@ -1502,18 +1496,64 @@ fn setup_session(
     };
     let dir = session_io::resolve_dir(configured).ok_or(OneharnessError::SessionNoStore)?;
     let path = session_io::session_path(&dir, project, name);
-    let existing = session_io::read(&path);
-    if let Some(was) = session::harness_conflict(existing.as_ref(), spec.id) {
+    // A record this build cannot resume is no record at all: the run creates a
+    // fresh session rather than guessing which identity minted a legacy token.
+    let existing = session::resumable(session_io::read(&path));
+    let candidates: Vec<(&'static HarnessSpec, &str)> = specs
+        .iter()
+        .copied()
+        .zip(selected_ids.iter().map(String::as_str))
+        .collect();
+    let (spec, id) = if fallback_mode {
+        // Continue where the session already lives when that identity is still a
+        // candidate; otherwise bind to the first session-capable one in priority
+        // order. A chain with none cannot carry a named handle (list the whole
+        // selection in the error, since no single harness is the offender).
+        candidates
+            .iter()
+            .copied()
+            .find(|(spec, id)| {
+                spec.session_capable_under(control)
+                    && existing.as_ref().is_some_and(|r| r.harness == *id)
+            })
+            .or_else(|| {
+                candidates
+                    .iter()
+                    .copied()
+                    .find(|(spec, _)| spec.session_capable_under(control))
+            })
+            .ok_or_else(|| OneharnessError::SessionUnsupported {
+                id: selected_ids.join(", "),
+                supported: session_capable_ids(),
+            })?
+    } else {
+        if candidates.len() != 1 {
+            return Err(OneharnessError::SessionMultipleHarnesses {
+                count: candidates.len(),
+                selected: selected_ids.join(", "),
+            });
+        }
+        let (spec, id) = candidates[0];
+        if !spec.session_capable_under(control) {
+            return Err(OneharnessError::SessionUnsupported {
+                id: id.to_string(),
+                supported: session_capable_ids(),
+            });
+        }
+        (spec, id)
+    };
+    if let Some(was) = session::harness_conflict(existing.as_ref(), id) {
         return Err(OneharnessError::SessionHarnessConflict {
             name: name.to_string(),
             was: was.to_string(),
-            now: spec.id.to_string(),
+            now: id.to_string(),
         });
     }
     let plan = SessionPlan::decide(existing.as_ref());
     Ok(Some(SessionWiring {
         name: name.to_string(),
-        harness: spec.id,
+        harness: id.to_string(),
+        spec,
         project: project.to_path_buf(),
         dir,
         path,
@@ -1527,13 +1567,13 @@ fn setup_session(
 /// Only the session anchor is checked: in fallback mode the other candidates do
 /// not own this named session and must retain their ordinary format behavior.
 fn validate_session_output_format(
-    session_anchor: Option<&str>,
+    wiring: Option<&SessionWiring>,
     explicit_format: Option<OutputFormat>,
 ) -> Result<(), OneharnessError> {
-    let (Some(id), Some(format)) = (session_anchor, explicit_format) else {
+    let (Some(wiring), Some(format)) = (wiring, explicit_format) else {
         return Ok(());
     };
-    let spec = harness::by_id(id).expect("session anchor came from the harness registry");
+    let (spec, id) = (wiring.spec, wiring.harness.as_str());
     if spec.format_carries_session(format) {
         return Ok(());
     }
@@ -1555,35 +1595,46 @@ fn validate_session_output_format(
 /// `--print-command` nothing ran, so nothing is written and the block echoes the
 /// stored token (or null on a fresh create). A create run that exposed no session
 /// id warns — the handle cannot be continued — rather than storing an empty one.
+///
+/// `ran` is the result of the candidate that **did the turn**, which is what the
+/// record must bind to. In parallel single-harness mode that is the only result.
+/// In fallback it is the one the chain stopped at — *not* necessarily the anchor:
+/// when the anchor falls through (its identity is out of quota, or the stored
+/// token predates it), a later candidate does the work and exposes a token in its
+/// own session namespace. Storing the anchor's id beside that token, or picking
+/// the first result that shares the anchor's *base* id (a fell-through variant),
+/// is exactly the "wrong token" this function exists to rule out.
 fn finalize_session(
     wiring: Option<SessionWiring>,
-    results: &[RunResult],
+    ran: Option<&RunResult>,
     dry_run: bool,
 ) -> Option<SessionReport> {
     let wiring = wiring?;
-    // Capture the token from the *anchor* harness's own result — the harness the
-    // session is bound to (`wiring.harness`). In parallel single-harness mode the
-    // anchor is the only result, so this is exactly `results.first()`. In fallback
-    // `results` lists every *attempted* harness in priority order (fell-through
-    // candidates first), so `results.first()` would be a candidate that ran
-    // nothing and exposed no id; find the anchor's result instead. If the anchor
-    // never ran (it fell through, or a non-session-capable harness earlier in the
-    // chain won), there is no new token: nothing is captured, the existing stored
-    // token is preserved, and the no-id warning below fires — never a wrong token.
-    let captured = results
-        .iter()
-        .find(|r| r.harness == wiring.harness)
-        .and_then(|r| r.session_id.clone());
+    let captured = ran.and_then(|r| r.session_id.clone());
+    // The identity the record binds to: whoever ran. With nothing run there is no
+    // new token either, so the anchor's binding stands unchanged.
+    let bound = ran.map_or(wiring.harness.clone(), |r| r.harness_id.clone());
     if !dry_run {
         match &captured {
             Some(token) => {
+                if bound != wiring.harness {
+                    eprintln!(
+                        "oneharness: warning: session `{}` was bound to `{}`, but `{bound}` ran \
+                         this turn, so the handle now continues on `{bound}` (a native session \
+                         token is not portable between identities)",
+                        wiring.name, wiring.harness
+                    );
+                }
                 if let Err(err) = session_io::write(
                     &wiring.path,
                     &wiring.project,
-                    wiring.harness,
+                    &bound,
                     &wiring.name,
                     token,
-                    wiring.existing.as_ref(),
+                    wiring
+                        .existing
+                        .as_ref()
+                        .filter(|record| record.harness == bound),
                 ) {
                     eprintln!(
                         "oneharness: warning: could not write session store `{}`: {err}",
@@ -1594,7 +1645,7 @@ fn finalize_session(
             None => eprintln!(
                 "oneharness: warning: harness `{}` exposed no session id, so `--session {}` \
                  cannot be continued (nothing was stored)",
-                wiring.harness, wiring.name
+                bound, wiring.name
             ),
         }
     }
@@ -4200,6 +4251,10 @@ mod tests {
     /// the (absent) record reads back as `None`, so `setup_session` resolves a
     /// fresh *create* without touching a real store — enough to assert which
     /// harness the session anchors to.
+    fn ids(values: &[&str]) -> Vec<String> {
+        values.iter().map(|id| (*id).to_string()).collect()
+    }
+
     fn session_args(name: &str) -> RunArgs {
         let mut a = run_args();
         a.session = Some(name.to_string());
@@ -4218,6 +4273,7 @@ mod tests {
         let wiring = setup_session(
             &session_args("greet"),
             &[goose, codex, claude],
+            &ids(&["goose", "codex", "claude-code"]),
             false,
             true,
             std::path::Path::new("/proj"),
@@ -4241,6 +4297,7 @@ mod tests {
             setup_session(
                 &session_args("x"),
                 &[claude, codex],
+                &ids(&["claude-code", "codex"]),
                 false,
                 false,
                 std::path::Path::new("/proj"),
@@ -4261,6 +4318,7 @@ mod tests {
             setup_session(
                 &session_args("x"),
                 &[goose, crush],
+                &ids(&["goose", "crush"]),
                 false,
                 true,
                 std::path::Path::new("/proj"),

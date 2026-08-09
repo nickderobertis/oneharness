@@ -23,7 +23,15 @@ use crate::domain::usage::UtcInstant;
 /// `sync`, and `config` — so one number describes the whole surface; the history
 /// records carry their own (`domain::history::SCHEMA_VERSION`).
 ///
-/// `0.6` adds the `run` report's `control` block (the out-of-band turn-control
+/// `0.7` adds the `session_not_found` [`FailureKind`] — the refusal a harness
+/// returns when asked to continue a session its identity has never seen — and,
+/// with it, the `"session-not-found"` reason a fallback run reports for a
+/// candidate it routed around. Purely additive: every 0.6 field keeps its name,
+/// type, and meaning. The new *enum value* is why the bump matters, since a
+/// consumer that exhaustively matches `failure_kind` learns from the version that
+/// a sixth value now exists.
+///
+/// `0.6` added the `run` report's `control` block (the out-of-band turn-control
 /// socket a `--control` run listened on, and every interrupt it served).
 /// Additive, so a reader of `0.5` keeps working — the bump is how a consumer
 /// *learns* the field exists rather than having to probe for it.
@@ -39,7 +47,7 @@ use crate::domain::usage::UtcInstant;
 ///
 /// `0.4` added the `config` report's `stream` field (the layered `--stream`
 /// value, with its provenance).
-pub const SCHEMA_VERSION: &str = "0.6";
+pub const SCHEMA_VERSION: &str = "0.7";
 
 /// How a harness emits its result, which decides how `text` is extracted.
 ///
@@ -467,7 +475,7 @@ pub struct RunResult {
     /// Best-effort failure reason; `null` when unclassified. Distinct from
     /// `status`, which records oneharness's relationship to the process. Two
     /// families: coarse reasons for a non-zero run (`auth`, `rate_limit`,
-    /// `model_not_found`, `quota`), and `tool_deferred` — a run that exited
+    /// `model_not_found`, `quota`, `session_not_found`), and `tool_deferred` — a run that exited
     /// *cleanly* but only deferred a builtin tool call instead of executing it
     /// (Claude Code bridge/managed deployments), so it did no useful work. The
     /// deferred case is the only `failure_kind` that can appear on a `status: ok`

@@ -104,7 +104,7 @@ export type HistoryRecord =
        * run's single prompt).
        */
       prompt: string;
-      schema_version: "1.2" | "1.3" | "1.4";
+      schema_version: "1.2" | "1.3" | "1.4" | "1.5";
       /**
        * The oneharness session id this run belongs to (the history file's stem).
        */
@@ -346,7 +346,7 @@ export type HistoryRecord =
        * run's single prompt).
        */
       prompt: string;
-      schema_version: "1.2" | "1.3" | "1.4";
+      schema_version: "1.2" | "1.3" | "1.4" | "1.5";
       /**
        * The oneharness session id this run belongs to (the history file's stem).
        */
@@ -439,7 +439,7 @@ export type HistoryRecord =
        * run's single prompt).
        */
       prompt: string;
-      schema_version: "1.2" | "1.3" | "1.4";
+      schema_version: "1.2" | "1.3" | "1.4" | "1.5";
       /**
        * The oneharness session id this run belongs to (the history file's stem).
        */
@@ -532,7 +532,7 @@ export type HistoryRecord =
        * run's single prompt).
        */
       prompt: string;
-      schema_version: "1.2" | "1.3" | "1.4";
+      schema_version: "1.2" | "1.3" | "1.4" | "1.5";
       /**
        * The oneharness session id this run belongs to (the history file's stem).
        */
@@ -625,7 +625,7 @@ export type HistoryRecord =
        * run's single prompt).
        */
       prompt: string;
-      schema_version: "1.3" | "1.4";
+      schema_version: "1.3" | "1.4" | "1.5";
       /**
        * The oneharness session id this run belongs to (the history file's stem).
        */
@@ -979,13 +979,14 @@ export type TimingSource = "provider_measured" | "stdout_observed";
  * The normalized, closed set of failure reasons oneharness can classify from a
  * harness's output. It is the single source for the `failure_kind` contract
  * value: serialized as the snake_case token a consumer reads in the report
- * (`auth`, `rate_limit`, `model_not_found`, `quota`, `tool_deferred`), so the
- * wire shape is unchanged — modeling it as an enum keeps a misspelled or
- * invalid kind unrepresentable and gives every producer/consumer (classifier,
- * `is_failure`, the fallback fall-through rule, the report, history) one
- * definition to share instead of scattered string literals.
+ * (`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,
+ * `tool_deferred`), so the wire shape is unchanged — modeling it as an enum
+ * keeps a misspelled or invalid kind unrepresentable and gives every
+ * producer/consumer (classifier, `is_failure`, the fallback fall-through rule,
+ * the report, history) one definition to share instead of scattered string
+ * literals.
  */
-export type FailureKind = "auth" | "rate_limit" | "model_not_found" | "quota" | "tool_deferred";
+export type FailureKind = "auth" | "rate_limit" | "model_not_found" | "quota" | "session_not_found" | "tool_deferred";
 /**
  * The outcome of attempting to run one harness.
  */
@@ -997,7 +998,7 @@ export type HistoryRecords = ((
     }
   | ({
       error: string;
-      schema_version?: "1.3" | "1.4" | undefined;
+      schema_version?: "1.3" | "1.4" | "1.5" | undefined;
       [k: string]: unknown;
     } & (
       | {
@@ -1016,7 +1017,17 @@ export type HistoryRecords = ((
         [k: string]: unknown;
       }
     | {
-        schema_version?: "1.4" | undefined;
+        schema_version?: "1.4" | "1.5" | undefined;
+        [k: string]: unknown;
+      }
+  ) &
+  (
+    | {
+        failure_kind?: "auth" | "rate_limit" | "model_not_found" | "quota" | "tool_deferred" | null | undefined;
+        [k: string]: unknown;
+      }
+    | {
+        schema_version?: "1.5" | undefined;
         [k: string]: unknown;
       }
   ) &

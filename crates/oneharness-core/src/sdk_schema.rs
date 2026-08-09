@@ -11,7 +11,8 @@ use crate::domain::history::{requires_provider_finish, run_failed, versions_from
 use crate::domain::history::{
     HistoryLine, HistoryRecord, HistoryStreamEnvelope, FIRST_CANCELLED_SCHEMA_VERSION,
     FIRST_ERROR_SCHEMA_VERSION, FIRST_EVENT_SCHEMA_VERSION, FIRST_PARTIAL_TIMING_SCHEMA_VERSION,
-    OBSERVED_TIMING_SCHEMA_VERSION, PREVIOUS_CURRENT_SCHEMA_VERSION, PRE_LIFECYCLE_RECORD_VERSIONS,
+    FIRST_SESSION_NOT_FOUND_SCHEMA_VERSION, OBSERVED_TIMING_SCHEMA_VERSION,
+    PREVIOUS_CURRENT_SCHEMA_VERSION, PRE_LIFECYCLE_RECORD_VERSIONS,
 };
 use crate::domain::report::{RunReport, RunStreamEnvelope, Status};
 use crate::domain::sdk::{
@@ -238,7 +239,11 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                 );
                 object.insert(
                     "allOf".to_string(),
-                    serde_json::json!([error_placement_gate(), cancelled_version_gate()]),
+                    serde_json::json!([
+                        error_placement_gate(),
+                        cancelled_version_gate(),
+                        failure_kind_version_gate()
+                    ]),
                 );
                 return;
             }
@@ -427,6 +432,56 @@ fn cancelled_version_gate() -> serde_json::Value {
             }
         ]
     })
+}
+
+/// The `session_not_found` failure kind is legible only to a reader at or after
+/// the version that introduced it — the same promise [`cancelled_version_gate`]
+/// makes for the `cancelled` status, on the other gated enum. Stated as its own
+/// gate so every timing branch inherits it once.
+///
+/// The allowed list carries `null` alongside the other kinds because
+/// `failure_kind` is optional: an unclassified record must satisfy this branch
+/// without having to fall back on the version one.
+fn failure_kind_version_gate() -> serde_json::Value {
+    // llmlint: ignore[no_panics_on_recoverable_errors] Schema generation is a build-time codegen boundary like every sibling transformation here; a `FailureKind` that no longer serializes to its wire token is a generator invariant, and emitting a gate that accepts the value at any version would ship an SDK looser than the reader it describes.
+    let gated = serde_json::to_value(FailureKind::SessionNotFound)
+        .expect("FailureKind serializes to its wire token");
+    let mut others: Vec<_> = failure_kind_values()
+        .into_iter()
+        .filter(|value| *value != gated)
+        .collect();
+    others.push(serde_json::Value::Null);
+    serde_json::json!({
+        "anyOf": [
+            {
+                "type": "object",
+                "properties": {"failure_kind": {"enum": others}}
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "schema_version": versions_schema(
+                        &versions_from(FIRST_SESSION_NOT_FOUND_SCHEMA_VERSION)
+                    )
+                }
+            }
+        ]
+    })
+}
+
+/// Every [`FailureKind`] as its serialized wire token, read out of the enum's own
+/// generated schema so no list here can drift from the kinds a record can carry —
+/// the [`status_values`] rule, applied to the other gated enum.
+fn failure_kind_values() -> Vec<serde_json::Value> {
+    // llmlint: ignore[no_panics_on_recoverable_errors] Schema generation is a build-time codegen boundary like every sibling transformation in this module; a `FailureKind` that no longer renders as a union of serialized consts is a generator invariant a caller cannot recover from, and emitting an empty list would ship an SDK that silently accepts anything.
+    let rendered =
+        serde_json::to_value(schema_for!(FailureKind)).expect("FailureKind schema serializes");
+    rendered["oneOf"]
+        .as_array()
+        .expect("FailureKind renders as a union of serialized consts")
+        .iter()
+        .map(|variant| variant["const"].clone())
+        .collect()
 }
 
 fn set_history_identity_version(
@@ -682,7 +737,11 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                 );
                 object.insert(
                     "allOf".to_string(),
-                    serde_json::json!([error_placement_gate(), cancelled_version_gate()]),
+                    serde_json::json!([
+                        error_placement_gate(),
+                        cancelled_version_gate(),
+                        failure_kind_version_gate()
+                    ]),
                 );
                 return;
             }

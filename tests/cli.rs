@@ -20222,6 +20222,48 @@ fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there()
     let _ = std::fs::remove_dir_all(&cwd);
 }
 
+#[cfg(unix)]
+#[test]
+fn a_server_submitted_controlled_run_skips_a_harness_whose_binary_is_missing() {
+    // "Never panic on a harness's behavior": a missing binary is `skipped` data
+    // in the report. This path is the one place that could break the rule — an
+    // unavailable harness never reaches the branch that assembles a prompt, so
+    // the HTTP-control branch has no turn to submit and must decline to take
+    // over rather than unwrap a prompt nobody built.
+    let store = control_store_dir("http-missing");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "crush",
+            "--control",
+            "--session",
+            "gone",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "keep working",
+            "--bin",
+            "crush=/no/such/oneharness-binary-xyz",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let report = json_stdout(&output);
+    assert_eq!(report["results"][0]["status"], "skipped", "{report}");
+    assert_eq!(report["results"][0]["available"], false, "{report}");
+    // No turn ran, so no interrupt could have been served — and the socket the
+    // run opened is gone with it.
+    assert!(report["control"]["interrupts"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(!store.join("control").join("gone.sock").exists());
+
+    let _ = std::fs::remove_dir_all(&store);
+}
+
 #[test]
 fn a_dry_run_of_a_server_submitted_controlled_turn_shows_the_server_it_would_launch() {
     // `--print-command` answers "what would run". For these mechanisms that is

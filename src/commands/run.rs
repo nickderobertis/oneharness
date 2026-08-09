@@ -799,19 +799,22 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             }
         }
         (streamed_results, streamed.fallback)
-    } else if let Some((shape, listener)) = control_shape
+    } else if let Some(((shape, listener), prompt)) = control_shape
         .and_then(HttpShape::of)
         .filter(|_| !args.print_command)
         .zip(control_listener.as_ref())
+        .zip(control_prompt.as_deref())
     {
         // The third execution model: the harness CLI is never spawned at all.
         // Its interrupt only reaches a turn the SERVER is running (driving one
         // from the CLI was live-refuted for both harnesses), so oneharness
         // submits the turn over HTTP and the socket's interrupt is one more
         // request against that same session.
-        let prompt = control_prompt
-            .as_deref()
-            .expect("a control run always has one assembled prompt");
+        //
+        // The prompt is part of the pattern, not an `expect`: a harness whose
+        // binary is missing never reaches the branch that assembles one, and its
+        // plan holds a `skipped` row already. Falling through publishes that row
+        // — an absent CLI is data in the report, never a panic.
         let results = run_http_controlled(
             shape,
             listener.handle_ref(),

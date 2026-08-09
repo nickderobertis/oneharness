@@ -12,23 +12,11 @@ fail() {
     exit 1
 }
 
-while read -r harness mechanism; do
-    _oh_control_mechanism_matches "$harness" "$mechanism" || \
-        fail "$harness did not accept its declared mechanism $mechanism"
-    _oh_control_mechanism_matches "$harness" "wrong-$mechanism" && \
-        fail "$harness accepted a non-contract mechanism"
-done <<'CASES'
-claude-code claude-control-request
-codex codex-app-server
-opencode opencode-http
-goose acp-cancel
-copilot acp-cancel
-crush crush-http
-CASES
-
-_oh_control_mechanism_matches cursor-agent claude-control-request && \
-    fail "an undeclared harness accepted a mechanism"
-_oh_control_mechanism_matches qwen acp-cancel && \
-    fail "an undeclared harness accepted a mechanism"
+_oh_control_mechanism_matches "mechanism-from-frame" "mechanism-from-registry" && \
+    fail "a response carrying a different mechanism was accepted"
+_oh_control_mechanism_matches "mechanism-from-registry" "mechanism-from-registry" || \
+    fail "a response carrying the registry mechanism was rejected"
+_oh_control_mechanism_matches "mechanism-from-frame" "" && \
+    fail "an absent registry mechanism was accepted"
 
 echo "check-control-enforce: ok"

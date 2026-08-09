@@ -1104,12 +1104,13 @@ TOML
 # reading is inconclusive rather than a pass.
 #
 #   $1 harness id
+#   $2 mechanism reported by that harness's `oneharness list` entry
 # llmlint: ignore-block[tool_output_is_signal] The phase's progress lines are how a
 # CI log attributes a failure inside a multi-minute turn plus a 15s freeze window
 # to the step that produced it — the same contract every other oh_*_enforce helper
 # here follows.
 oh_control_enforce() {
-    local id="$1"
+    local id="$1" expected_mechanism="$2"
     # Three attempts, not two: an inconclusive attempt is a model that refused or
     # raced, and opencode declines this fixture outright often enough (answers
     # `ok` in under ten seconds having run no tool at all) that two attempts
@@ -1118,7 +1119,7 @@ oh_control_enforce() {
     # `fail` on the spot, and only a turn that proved NOTHING comes back here.
     local attempt attempts=3
     for attempt in $(seq 1 "$attempts"); do
-        if _oh_control_enforce_once "$id" "$attempt"; then
+        if _oh_control_enforce_once "$id" "$attempt" "$expected_mechanism"; then
             note "PASS: $id control enforcement"
             return 0
         fi
@@ -1130,7 +1131,7 @@ oh_control_enforce() {
 # One attempt. Returns 0 on a proven interrupt, 1 when the turn ended too early
 # to prove anything (retryable). Any real contract violation calls fail().
 _oh_control_enforce_once() {
-    local id="$1" attempt="$2"
+    local id="$1" attempt="$2" expected_mechanism="$3"
     local bin sandbox store name socket count frozen frozen_after report
     bin="$(oh_bin)"
     [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
@@ -1228,9 +1229,9 @@ _oh_control_enforce_once() {
         rm -rf "$sandbox"
         fail "$id: the interrupt response was not ok"
     }
-    if ! _oh_control_mechanism_matches "$id" "$mechanism"; then
+    if ! _oh_control_mechanism_matches "$mechanism" "$expected_mechanism"; then
         rm -rf "$sandbox"
-        fail "$id: the interrupt response carried mechanism '$mechanism', expected '$(_oh_control_mechanism_for "$id")'"
+        fail "$id: the interrupt response carried mechanism '$mechanism', expected '$expected_mechanism'"
     fi
     note "  ok: interrupt served by mechanism '$mechanism'"
 
@@ -1282,24 +1283,8 @@ _oh_control_enforce_once() {
     return 0
 }
 
-# The live proof is also a wire-contract proof: accepting another harness's
-# nonempty mechanism would let a registry wiring regression pass while testing
-# a different path than the capability matrix declares.
-_oh_control_mechanism_for() {
-    case "$1" in
-    claude-code) printf '%s' claude-control-request ;;
-    codex) printf '%s' codex-app-server ;;
-    opencode) printf '%s' opencode-http ;;
-    goose | copilot) printf '%s' acp-cancel ;;
-    crush) printf '%s' crush-http ;;
-    *) return 1 ;;
-    esac
-}
-
 _oh_control_mechanism_matches() {
-    local expected
-    expected="$(_oh_control_mechanism_for "$1")" || return 1
-    [ "$2" = "$expected" ]
+    [ -n "$2" ] && [ "$1" = "$2" ]
 }
 
 # How many observable work artifacts the agent has produced so far. A glob

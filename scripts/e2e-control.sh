@@ -47,7 +47,7 @@ BIN="$(oh_bin)"
 # The capability matrix is the script's input: every harness declaring a
 # mechanism must prove it here.
 mapfile -t CONTROLLABLE < <(ONEHARNESS_NO_CONFIG=1 "$BIN" list --compact \
-    | jq -r '.harnesses[] | select(.control != null) | .id')
+    | jq -r '.harnesses[] | select(.control != null) | [.id, .control] | @tsv')
 
 if [ "${#CONTROLLABLE[@]}" -eq 0 ]; then
     fail "no harness declares a control mechanism, so this suite would prove nothing"
@@ -73,7 +73,8 @@ have_env() {
 proven=()
 skipped=()
 
-for id in "${CONTROLLABLE[@]}"; do
+for declaration in "${CONTROLLABLE[@]}"; do
+    IFS=$'\t' read -r id mechanism <<<"$declaration"
     case "$id" in
     claude-code)
         have_env "Claude auth" CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY || {
@@ -147,7 +148,7 @@ for id in "${CONTROLLABLE[@]}"; do
         ;;
     esac
     note "» $id: a real turn must actually STOP when interrupted"
-    oh_control_enforce "$id"
+    oh_control_enforce "$id" "$mechanism"
     proven+=("$id")
 done
 

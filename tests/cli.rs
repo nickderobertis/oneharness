@@ -20215,6 +20215,109 @@ fn an_acp_controlled_run_answers_permission_and_records_a_cancel_the_harness_cal
 
 #[cfg(unix)]
 #[test]
+fn a_codex_controlled_run_drives_its_thread_and_interrupts_the_live_turn() {
+    let mock_profile = mock_profile_redirect();
+    // Codex's control is its own execution model: the turn runs over the
+    // app-server's JSON-RPC protocol rather than `codex exec`, and the one
+    // protocol fact that decides whether it works at all is that `turn/start`
+    // answers immediately with an in-progress turn. A client reading that
+    // response as the end of the turn ends every run in under half a second,
+    // with nothing left to interrupt — so this drives the whole lifecycle
+    // through the CLI and aborts it from a separate process.
+    let store = control_store_dir("codex");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("codex-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let log = store.join("app-server.log");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_CODEX_APP_SERVER_LOG", log.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "codex",
+            "--control",
+            "--session",
+            "codex",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the codex controlled run");
+
+    wait_until("the control socket", || {
+        store.join("control").join("codex.sock").exists()
+    });
+    // The turn must be genuinely in flight before the interrupt, or the
+    // assertions below would hold for a turn that had already ended.
+    wait_until("the turn to start", || {
+        std::fs::read_to_string(&log)
+            .map(|text| text.contains("turn/start"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "codex",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    assert_eq!(json_stdout(&interrupt)["mechanism"], "codex-app-server");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+
+    let served = std::fs::read_to_string(&log).unwrap();
+    let abort = served
+        .lines()
+        .find(|line| line.contains("turn/interrupt"))
+        .expect("an interrupt reached the app-server");
+    // It addresses both coordinates: a thread alone names no turn to stop.
+    assert!(
+        abort.contains("mock-codex-thread") && abort.contains("mock-codex-turn"),
+        "the interrupt must name the thread and the turn: {abort}"
+    );
+
+    assert_eq!(report["control"]["mechanism"], "codex-app-server");
+    assert_eq!(report["control"]["interrupts"][0]["outcome"], "served");
+    // The turn's own signals come off the wire, not out of an output format.
+    assert_eq!(report["session"]["token"], "mock-codex-thread");
+    assert_eq!(report["results"][0]["session_id"], "mock-codex-thread");
+    assert_eq!(report["results"][0]["text"], "still working");
+    assert_eq!(
+        report["results"][0]["text_source"],
+        "jsonrpc:codex-app-server"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
 fn a_restrictive_controlled_run_declines_the_permission_it_is_asked_for() {
     let mock_profile = mock_profile_redirect();
     // A driven turn negotiates its approvals on the wire, so the run's posture

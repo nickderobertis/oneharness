@@ -95,6 +95,12 @@
 //!                   to the log, so a test can assert the client answered the
 //!                   permission request (without which a real turn never starts)
 //!                   and that cancel carried no `id`.
+//!   MOCK_CODEX_APP_SERVER_LOG  if set to a path, act like **`codex app-server`**
+//!                   on stdio: answer `initialize` and `thread/start`, answer
+//!                   `turn/start` with an in-progress turn (which is NOT the end
+//!                   of the turn), and end it on `turn/completed` only once a
+//!                   `turn/interrupt` naming the thread and turn arrives. Every
+//!                   received line is appended to the log.
 //!   MOCK_HTTP_CONTROL_LOG  if set to a path, act like an **opencode-shaped HTTP
 //!                   control server** on the `--port` from its own argv: create a
 //!                   session, block the turn on a permission request, and abort it
@@ -569,6 +575,74 @@ fn exit_shortly() {
     });
 }
 
+/// Act like `codex app-server`: the JSON-RPC protocol a codex turn is driven
+/// over, including the fact that decides whether a controlled run works at all.
+///
+/// `turn/start` answers IMMEDIATELY with the new turn's id and
+/// `status:"inProgress"` — a client that reads that response as the end of the
+/// turn finishes in under half a second having done nothing. The turn ends only
+/// on the `turn/completed` notification, which this emits once the interrupt
+/// naming both the thread and the turn arrives.
+fn run_codex_app_server(log_path: &str) -> ! {
+    use serde_json::{json, Value};
+    let append = |line: &str| {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+        {
+            let _ = writeln!(file, "{line}");
+            let _ = file.flush();
+        }
+    };
+    let mut out = std::io::stdout();
+    let mut send = |value: &Value| {
+        let _ = writeln!(out, "{value}");
+        let _ = out.flush();
+    };
+
+    for line in std::io::BufRead::lines(std::io::stdin().lock()) {
+        let Ok(line) = line else { break };
+        append(&line);
+        // A real frame or nothing: the fixture answers what it can parse rather
+        // than scanning the text for fields that may not be there.
+        let Ok(message) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let id = message.get("id").cloned().unwrap_or(Value::Null);
+        match message.get("method").and_then(Value::as_str) {
+            Some("initialize") => send(&json!({"jsonrpc": "2.0", "id": id, "result": {}})),
+            Some("thread/start") => send(&json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {"thread": {"id": "mock-codex-thread"}},
+            })),
+            Some("turn/start") => {
+                send(&json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {"turn": {"id": "mock-codex-turn", "status": "inProgress"}},
+                }));
+                send(&json!({
+                    "jsonrpc": "2.0",
+                    "method": "item/agentMessage/delta",
+                    "params": {"itemId": "item_1", "delta": "still working"},
+                }));
+            }
+            Some("turn/interrupt") => {
+                send(&json!({"jsonrpc": "2.0", "id": id, "result": {}}));
+                send(&json!({
+                    "jsonrpc": "2.0",
+                    "method": "turn/completed",
+                    "params": {"turnId": "mock-codex-turn"},
+                }));
+            }
+            _ => {}
+        }
+    }
+    std::process::exit(0);
+}
+
 /// Act like an ACP server: the protocol `copilot --acp` and `goose acp` speak,
 /// including the two behaviors that decide whether a turn works at all or
 /// silently never starts — a mandatory `session/request_permission`, and a
@@ -805,6 +879,9 @@ pub fn run() -> ! {
         run_controlled_turn(&path);
     }
 
+    if let Ok(path) = std::env::var("MOCK_CODEX_APP_SERVER_LOG") {
+        run_codex_app_server(&path);
+    }
     if let Ok(path) = std::env::var("MOCK_ACP_LOG") {
         run_acp_server(&path);
     }

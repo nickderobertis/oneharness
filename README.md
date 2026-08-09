@@ -1139,7 +1139,11 @@ silently is not there is worse than none:
   nobody can interrupt.
 - **Exactly one harness**, which must declare a control mechanism (`control` in
   `oneharness list`).
-- **Unix only** (the socket has no Windows equivalent in `std`).
+- **Unix only** (the socket has no Windows equivalent in `std`). Checked last, so
+  a request that is *also* wrong in a platform-independent way — an unsupported
+  harness, mode, or output format — is refused with that reason instead, which is
+  the one that survives changing machines. `--print-command` is exempt: it opens
+  no socket and spawns nothing, and the argv it prints is the same everywhere.
 - **No `--mode edit` on a driven turn** (every mechanism except
   `claude-control-request`). Those turns negotiate approvals on the wire, so
   oneharness answers each permission request itself rather than the harness's

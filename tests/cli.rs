@@ -18939,7 +18939,15 @@ fn control_store_root(tag: &str, name: &str) -> PathBuf {
         "control store `{name}` leaves no room for a `sun_path`-sized socket \
          address ({longest} > {BUDGET}) — shorten the tag"
     );
-    PathBuf::from("/tmp")
+    // Canonical, because a bound socket path IS canonical: `bind` resolves the
+    // directory before binding — the address is handed to a separate process,
+    // and a symlinked one resolves differently depending on where that process
+    // runs — so the run reports `/private/tmp/…` on macOS whatever was passed
+    // in. A store rooted at the uncanonicalized `/tmp` still binds and still
+    // interrupts (the symlink resolves either way), but its path no longer
+    // matches the one the report echoes. Resolving here is also what makes the
+    // budget above the real one rather than an estimate.
+    std::fs::canonicalize("/tmp").expect("/tmp must exist to root a control store")
 }
 
 /// No socket is ever bound under this root — `--control` is refused outright
@@ -19142,6 +19150,62 @@ fn control_run_pins_the_message_stream_argv_and_leaves_the_prompt_off_it() {
 
     let _ = std::fs::remove_dir_all(&store);
     let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_controlled_run_reports_the_resolved_socket_address_not_the_one_passed_in() {
+    // The socket path is an ADDRESS a separate `oneharness interrupt` process
+    // resolves, so `bind` canonicalizes it and the report must echo what was
+    // actually bound — a supervisor that stores the reported path and hands it
+    // to another process needs the resolved one.
+    //
+    // A symlinked store is the shape macOS puts every control test in for free:
+    // `/tmp` is a symlink to `/private/tmp` there, so a run told `--session-dir
+    // /tmp/…` binds and reports `/private/tmp/…`. Reproducing it with an
+    // explicit symlink is what lets Linux prove the contract macOS exercises.
+    let mock_profile = mock_profile_redirect();
+    let store = control_store_dir("symlink");
+    let real = store.join("real");
+    std::fs::create_dir_all(&real).unwrap();
+    let link = store.join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let output = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "resolved",
+            "--session-dir",
+            &link.display().to_string(),
+            "--cwd",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .output()
+        .expect("failed to run oneharness");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("run report was not JSON");
+    assert_eq!(
+        report["control"]["socket"],
+        real.join("control")
+            .join("resolved.sock")
+            .display()
+            .to_string(),
+        "the report must name the bound address, not the symlink it was given"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(not(unix))]

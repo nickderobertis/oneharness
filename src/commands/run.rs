@@ -1937,9 +1937,9 @@ fn emit_stream_result(report: &RunReport) -> Result<(), OneharnessError> {
 /// by (oneharness never infers one — an unaddressable run is the whole reason
 /// `--session` is required), one prompt and exactly one harness (control drives
 /// one live turn; a batch or fan-out has no single turn to interrupt), a
-/// harness that declares a *proven* control mechanism, a platform with unix
-/// sockets, an approval mode the mechanism can actually express, and an
-/// explicit output format compatible with the mechanism.
+/// harness that declares a *proven* control mechanism, an approval mode the
+/// mechanism can actually express, an explicit output format compatible with
+/// the mechanism, and — last — a platform with unix sockets.
 #[allow(clippy::fn_params_excessive_bools, clippy::too_many_arguments)] // llmlint: ignore[suppressions_justified] The parameters ARE the list of independently-resolved run properties the control rules must check, each decided separately by the caller; folding them into a struct used at this single call site would hide the list rather than shorten it.
 fn validate_control(
     args: &RunArgs,
@@ -1988,9 +1988,6 @@ fn validate_control(
                 .join(", "),
         });
     }
-    if !control_io::supported() {
-        return Err(OneharnessError::ControlPlatform);
-    }
     let spec = specs[0];
     let Some(shape) = spec.control else {
         return Err(OneharnessError::ControlUnsupported {
@@ -2031,6 +2028,21 @@ fn validate_control(
                 selected: explicit.as_str().to_string(),
             });
         }
+    }
+    // Last, and only for a run that would actually open one. Every check above
+    // states something about the REQUEST — this harness has no control surface,
+    // this mode is not expressible, this format is incompatible — and each is
+    // true on every platform, so answering with the platform first would hand a
+    // supervisor the one reason that disappears when they change machines while
+    // hiding the one that does not.
+    //
+    // A dry run is exempt outright: `--print-command` opens no socket and spawns
+    // nothing (the listener is bound only when it is absent), and the argv it
+    // answers with — the control-stream flags, or the server a submitted turn
+    // would be launched against — is a platform-independent fact. The report
+    // still carries a null `control` block, so nothing claims a channel exists.
+    if !args.print_command && !control_io::supported() {
+        return Err(OneharnessError::ControlPlatform);
     }
     Ok(Some(shape))
 }

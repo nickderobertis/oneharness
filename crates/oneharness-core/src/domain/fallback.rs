@@ -119,9 +119,12 @@ impl RunWork {
 ///   every other kind is read out of a process that ran.
 /// - [`Status::Nonzero`] or [`Status::Ok`] with `failure_kind == "quota"` → `"quota"` (the account
 ///   has no credit/quota to do work — a provisioning problem like `auth`).
-/// - [`Status::Nonzero`] or [`Status::Ok`] with `failure_kind == "session_not_found"` →
+/// - [`Status::Nonzero`] with `failure_kind == "session_not_found"` →
 ///   `"session-not-found"` (the run asked to continue a session this identity's
-///   store has never seen, so it refused before doing anything). It belongs with
+///   store has never seen, so it refused before doing anything). Non-zero only,
+///   unlike `quota`: every CLI observed refusing an unknown session exits 1, and
+///   the classifier reads that refusal only off a non-zero run — a clean-exit arm
+///   would be behavior no harness can produce. It belongs with
 ///   `auth` and `quota` for the same reason: the *task* is fine and the next
 ///   candidate can still do it. Leaving it unclassified is what stranded a chain
 ///   of five identities on the one that minted the token — the token is scoped to
@@ -167,11 +170,7 @@ pub fn startup_failure_reason(
         (_, Some(FailureKind::Quota)) if matches!(status, Status::Ok | Status::Nonzero) => {
             Some("quota")
         }
-        (_, Some(FailureKind::SessionNotFound))
-            if matches!(status, Status::Ok | Status::Nonzero) =>
-        {
-            Some("session-not-found")
-        }
+        (Status::Nonzero, Some(FailureKind::SessionNotFound)) => Some("session-not-found"),
         (Status::Skipped, _) => Some("not-installed"),
         (Status::SpawnError, _) => Some("spawn-error"),
         (Status::Nonzero, _) => match failure_kind {
@@ -292,7 +291,8 @@ mod tests {
             false,
             RunWork::None
         ));
-        // Some harnesses report the same refusal on a zero exit.
+        // Non-zero only: no observed CLI refuses an unknown session on a clean
+        // exit, so a zero-exit run keeps whatever its own record said.
         assert_eq!(
             startup_failure_reason(
                 Status::Ok,
@@ -300,7 +300,7 @@ mod tests {
                 false,
                 RunWork::None
             ),
-            Some("session-not-found")
+            None
         );
     }
 

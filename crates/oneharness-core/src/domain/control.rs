@@ -294,9 +294,9 @@ pub struct ServerSpec {
 /// The identity two dispatches must share to reuse one sidecar server.
 ///
 /// A validated value rather than a loose string: the pool joins it straight
-/// into a filesystem path, so a key carrying a separator or `..` would place a
-/// lease tree outside the pool root. Constructed by [`pool_key`], or parsed
-/// from text with [`PoolKey::parse`].
+/// into a filesystem path, so a key carrying a separator, `..`, or `.` would
+/// name a directory other than an entry under the pool root. Constructed by
+/// [`pool_key`], or parsed from text with [`PoolKey::parse`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct PoolKey(String);
@@ -308,7 +308,8 @@ impl PoolKey {
             Ok(PoolKey(text.to_string()))
         } else {
             Err(format!(
-                "`{text}` is not a valid pool key (it must be a single path segment of                  alphanumerics, `-`, `_`, or `.`, at most 128 characters)"
+                "`{text}` is not a valid pool key (it must be a single path segment of \
+                 alphanumerics, `-`, or `_`, at most 128 characters)"
             ))
         }
     }
@@ -375,13 +376,20 @@ pub fn pool_key(
 
 /// Whether `key` is shaped like a [`pool_key`] result — the single rule behind
 /// [`PoolKey`].
+///
+/// `.` is excluded rather than merely guarded against `..`: [`pool_key`] never
+/// emits one (its prefix filter keeps alphanumerics, `-`, and `_`, and the
+/// digest is hex), so accepting one could only admit a segment that names a
+/// directory other than an entry — `.` is the pool root itself, which a
+/// dispatch would then lease and reclaim wholesale. Excluding the character
+/// makes both `.` and `..` unrepresentable, so no separate traversal check is
+/// needed.
 fn is_pool_key(key: &str) -> bool {
     !key.is_empty()
         && key.len() <= 128
         && key
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
-        && !key.contains("..")
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// FNV-1a, 64-bit. A tiny, dependency-free, *stable* digest — `DefaultHasher`
@@ -1083,6 +1091,9 @@ mod tests {
             "../escape",
             "a/b",
             "a\\b",
+            // `.` names the pool root rather than an entry under it, so a
+            // dispatch parsing it would lease and reclaim the whole pool.
+            ".",
             "..",
             "x..y",
             &"a".repeat(129),

@@ -157,7 +157,7 @@ pub fn open(
 
     let opened = expect_ok(
         &client,
-        &http::open_request(shape, cwd, client_id.as_ref()),
+        &http::open_request(shape, cwd, client_id.as_ref(), allow),
         "open the control session",
     )?;
     let first = http::parse_id(&opened.body).ok_or_else(|| {

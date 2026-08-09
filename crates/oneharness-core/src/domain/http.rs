@@ -297,8 +297,16 @@ pub fn permits_action(mode: PermissionMode) -> bool {
 
 /// The request that creates the turn's own session (opencode), or the workspace
 /// everything else hangs off (crush).
+///
+/// `allow` is this run's posture, which crush's workspace carries as a field of
+/// its own. Opencode has no equivalent and answers each ask as it arrives.
 #[must_use]
-pub fn open_request(shape: HttpShape, cwd: &str, client: Option<&ClientId>) -> HttpRequest {
+pub fn open_request(
+    shape: HttpShape,
+    cwd: &str,
+    client: Option<&ClientId>,
+    allow: bool,
+) -> HttpRequest {
     match shape {
         // The session names its own working directory, so the server can be
         // shared by dispatches in different projects — the cwd stays a per-turn
@@ -308,13 +316,20 @@ pub fn open_request(shape: HttpShape, cwd: &str, client: Option<&ClientId>) -> H
             "/api/session".to_string(),
             Some(json!({"location": {"directory": cwd}})),
         ),
-        // The workspace is where crush's `client_id` travels in the BODY.
+        // The workspace is where crush's `client_id` travels in the BODY — and
+        // where its permission posture is declared: `yolo` is the same "act
+        // without asking" the `--yolo` flag sets, applied at creation so the
+        // workspace never exists in a posture this run did not choose. Sent
+        // either way, because `false` is a decision too and leaving it to the
+        // server's default would make a restrictive run's posture implicit.
         HttpShape::Crush => HttpRequest::new(
             Method::Post,
             "/v1/workspaces".to_string(),
-            Some(
-                json!({"client_id": client.map(ClientId::as_str).unwrap_or_default(), "path": cwd}),
-            ),
+            Some(json!({
+                "client_id": client.map(ClientId::as_str).unwrap_or_default(),
+                "path": cwd,
+                "yolo": allow,
+            })),
         ),
     }
 }
@@ -754,7 +769,7 @@ mod tests {
         // where it runs would do its work in whatever directory the server
         // happened to start in.
         let opencode: Value = serde_json::from_str(
-            open_request(HttpShape::Opencode, "/work/here", None)
+            open_request(HttpShape::Opencode, "/work/here", None, true)
                 .body()
                 .unwrap(),
         )
@@ -765,6 +780,7 @@ mod tests {
                 HttpShape::Crush,
                 "/work/here",
                 Some(&ClientId::new("c").unwrap()),
+                true,
             )
             .body()
             .unwrap(),
@@ -778,7 +794,7 @@ mod tests {
         // The one detail that answers a bare `{"message":"invalid client_id"}`
         // when it is got wrong.
         let client = ClientId::new("client-9").unwrap();
-        let open = open_request(HttpShape::Crush, "/work", Some(&client));
+        let open = open_request(HttpShape::Crush, "/work", Some(&client), true);
         assert_eq!(open.path(), "/v1/workspaces");
         let body: Value = serde_json::from_str(open.body().unwrap()).unwrap();
         assert_eq!(body["client_id"], "client-9");
@@ -797,6 +813,42 @@ mod tests {
                 request.path()
             );
         }
+    }
+
+    #[test]
+    fn a_crush_workspace_declares_the_runs_permission_posture_when_it_is_created() {
+        // Crush's server blocks on a permission decision, so the posture is what
+        // decides whether the agent ever runs a tool. `yolo` carries it on the
+        // workspace itself — the same thing `--yolo` sets — so the workspace is
+        // never briefly in a posture this run did not choose.
+        let client = ClientId::new("client-9").unwrap();
+        let permissive: Value = serde_json::from_str(
+            open_request(HttpShape::Crush, "/work", Some(&client), true)
+                .body()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(permissive["yolo"], true);
+
+        // And a restrictive run says so rather than leaving it to the server's
+        // default: an absent field is not a decision.
+        let restrictive: Value = serde_json::from_str(
+            open_request(HttpShape::Crush, "/work", Some(&client), false)
+                .body()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(restrictive["yolo"], false);
+
+        // Opencode has no such field, and inventing one would be a key its
+        // session-create route does not read.
+        let opencode: Value = serde_json::from_str(
+            open_request(HttpShape::Opencode, "/work", None, true)
+                .body()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(opencode.get("yolo").is_none(), "{opencode}");
     }
 
     #[test]
@@ -1035,8 +1087,9 @@ mod tests {
                 HttpShape::Crush,
                 "/a b/../c",
                 Some(&ClientId::new("c").unwrap()),
+                true,
             ),
-            open_request(HttpShape::Opencode, "/a b/../c", None),
+            open_request(HttpShape::Opencode, "/a b/../c", None, true),
             readiness_request(HttpShape::Crush),
             readiness_request(HttpShape::Opencode),
         ];

@@ -212,8 +212,7 @@ Use the `just` recipes; do not hand-roll equivalents.
   <!-- llmlint: ignore-end[agents_md_durable_and_terse, no_redundant_instruction_pointers, comments_earn_their_place] -->
   `run --control` + the separate `interrupt` verb are out-of-band **turn
   control**: a supervisor aborts an in-flight turn without killing the dispatch
-  or losing the session (the lever that did not exist while a 600-2000s turn
-  could only be destroyed). Pure frames/capability/pool-key in `domain::control`,
+  or losing the session. Pure frames/capability/pool-key in `domain::control`,
   the socket and client in `io::control`, the sidecar-server pool in
   `io::server_pool`. Three constraints are load-bearing. `--control` requires
   `--session` (a run with no caller-owned handle has no address) and exactly one
@@ -222,32 +221,25 @@ Use the `just` recipes; do not hand-roll equivalents.
   prompt, so the runner must close it on the harness's end-of-turn document
   (`is_turn_terminal`) or a control-enabled run never exits. And a `ControlShape`
   is declared only for a harness whose interrupt was proven live *through
-  oneharness*: a declared-but-unexercised shape answers `ok:true` while the turn
-  keeps running, which is strictly worse than the loud usage error `None` gives.
-  A shape that `drives_turn` runs the turn over its own JSON-RPC protocol
-  (`domain::dialogue`, a pure state machine the runner just pumps lines through)
-  instead of the harness's headless run: oneharness spawns the protocol server
-  its adapter builds under `--control` as the run's OWN child, so the interrupt rides the same stdin
-  and nothing is pooled. Two protocol facts are load-bearing and cost real time
-  to find: codex answers `turn/start` immediately with `status:"inProgress"`
-  (the turn ends on `turn/completed`, and treating the response as terminal ends
-  every run in under half a second), and an ACP client MUST answer
-  `session/request_permission` or the turn never begins at all. Such a harness
-  also becomes `--session`-capable only under `--control`
+  oneharness*. A shape that `drives_turn` runs the turn over its own JSON-RPC
+  protocol (`domain::dialogue`, a pure state machine the runner pumps lines
+  through) instead of the harness's headless run: oneharness spawns that
+  protocol server as the run's OWN child, so the interrupt rides the same stdin
+  and nothing is pooled. Two protocol facts are load-bearing: codex's
+  `turn/start` response is NOT terminal (the turn ends on `turn/completed`), and
+  an ACP client MUST answer `session/request_permission` or the turn never
+  begins. Such a harness is `--session`-capable only under `--control`
   (`session_capable_under`), because the id comes off the wire rather than out
   of an output format. A mechanism whose interrupt is an HTTP route on a
   *separate server* (opencode, crush) uses a third execution model — the turn
   submitted over that server (`domain::http` pure, `io::http`/`io::http_turn`
-  the sockets), never through the harness's CLI — because interrupting a
-  CLI-driven run was live-REFUTED: opencode's `run --port` binds nothing and
-  `run --attach` leaves the server's `/api/session/active` empty while the run
-  works, so the route answers `2xx` and the turn carries on. Three protocol
-  facts are load-bearing there: both servers block until the client answers a
-  permission request (as ACP does), opencode reports `session.idle` *before* the
-  prompt is admitted as well as after (acting on the first ends every run in
-  under a second — the turn ends on idle-after-admitted), and the working
-  directory is per turn on both, which is what keeps a shared server's pool key
-  from widening per dispatch.
+  the sockets), never through the harness's CLI, whose interrupt was
+  live-REFUTED for both. Three protocol facts are load-bearing there: both
+  servers block until the client answers a permission request (as ACP does),
+  opencode's terminal signal is idle-*after*-admitted (it announces
+  `session.idle` before the prompt is admitted too), and the working directory
+  is per turn on both, which is what keeps a shared server's pool key from
+  widening per dispatch.
   `gate <id>` is the odd one out: the runtime pre-tool gate an
   installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It

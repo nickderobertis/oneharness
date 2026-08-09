@@ -488,13 +488,44 @@ impl Dialogue {
     }
 }
 
+/// What one ACP permission option does, read off its `kind`.
+///
+/// A closed set parsed at the boundary rather than substring checks on the
+/// server's raw string: the four ACP kinds happen to be distinguishable by
+/// substring, but an invented one need not be — `disallow_once` contains
+/// "allow" and would be selected as a grant. An unknown kind is never
+/// selected, because an option whose meaning cannot be read is not one to
+/// grant.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(from = "String")]
+enum OptionKind {
+    AllowOnce,
+    AllowAlways,
+    RejectOnce,
+    RejectAlways,
+    #[default]
+    Unknown,
+}
+
+impl From<String> for OptionKind {
+    fn from(raw: String) -> Self {
+        match raw.as_str() {
+            "allow_once" => OptionKind::AllowOnce,
+            "allow_always" => OptionKind::AllowAlways,
+            "reject_once" => OptionKind::RejectOnce,
+            "reject_always" => OptionKind::RejectAlways,
+            _ => OptionKind::Unknown,
+        }
+    }
+}
+
 /// An ACP permission option the client may select, as the server offers it.
 #[derive(Debug, Deserialize)]
 struct PermissionOption {
     #[serde(rename = "optionId")]
     option_id: String,
     #[serde(default)]
-    kind: String,
+    kind: OptionKind,
 }
 
 /// The option to select for a `session/request_permission` under a permissive
@@ -508,11 +539,9 @@ struct PermissionOption {
 #[must_use]
 pub fn acp_allow_option(options: &Value) -> Option<String> {
     let options: Vec<PermissionOption> = serde_json::from_value(options.clone()).ok()?;
-    let allowing = |option: &&PermissionOption| option.kind.contains("allow");
-    let once = options
-        .iter()
-        .find(|option| allowing(option) && option.kind.contains("once"));
-    once.or_else(|| options.iter().find(allowing))
+    let of_kind = |wanted: OptionKind| options.iter().find(move |o| o.kind == wanted);
+    of_kind(OptionKind::AllowOnce)
+        .or_else(|| of_kind(OptionKind::AllowAlways))
         .map(|option| option.option_id.clone())
 }
 
@@ -836,10 +865,13 @@ mod tests {
         assert_eq!(acp_allow_option(&only_always).as_deref(), Some("always"));
         assert_eq!(acp_allow_option(&json!([])), None);
         // No option says it allows anything, so nothing is granted — picking
-        // the first would grant a permission nobody chose.
+        // the first would grant a permission nobody chose. `disallow_once` is
+        // the trap a substring read falls into: it contains "allow".
         let none_allow = json!([
             {"optionId": "reject", "kind": "reject_once"},
             {"optionId": "mystery", "kind": "something_new"},
+            {"optionId": "no", "kind": "disallow_once"},
+            {"optionId": "unnamed"},
         ]);
         assert_eq!(acp_allow_option(&none_allow), None);
     }

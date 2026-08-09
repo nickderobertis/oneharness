@@ -20215,6 +20215,92 @@ fn an_acp_controlled_run_answers_permission_and_records_a_cancel_the_harness_cal
 
 #[cfg(unix)]
 #[test]
+fn a_restrictive_controlled_run_declines_the_permission_it_is_asked_for() {
+    let mock_profile = mock_profile_redirect();
+    // A driven turn negotiates its approvals on the wire, so the run's posture
+    // reaches the harness only through what oneharness answers. Under a
+    // restrictive mode that answer must decline — and it must still BE an
+    // answer, because both ACP harnesses block forever on an unanswered
+    // request, which would look like a slow harness rather than a denial.
+    let store = control_store_dir("acp-deny");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("acp-deny-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let acp_log = store.join("acp.log");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_ACP_LOG", acp_log.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "copilot",
+            "--control",
+            "--session",
+            "acp-deny",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "default",
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("copilot"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the restrictive ACP controlled run");
+
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(&acp_log)
+            .map(|log| log.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+    let answered = std::fs::read_to_string(&acp_log).unwrap();
+    let reply = answered
+        .lines()
+        .find(|line| line.contains("outcome"))
+        .expect("a permission answer reached the server");
+    assert!(
+        reply.contains("\"outcome\":\"cancelled\""),
+        "a restrictive run must decline rather than select an option: {reply}"
+    );
+    assert!(
+        !reply.contains("optionId"),
+        "a declined permission selects nothing: {reply}"
+    );
+
+    // The turn is still open (the harness waits out a declined permission), so
+    // end it the way a supervisor would rather than leaving the run hanging.
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "acp-deny",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
 fn a_streamed_controlled_run_publishes_the_protocol_turns_own_signals() {
     let mock_profile = mock_profile_redirect();
     // Streaming and a turn-driving mechanism are two different sources of the

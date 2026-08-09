@@ -1754,6 +1754,10 @@ fn a_resume_the_identity_cannot_resolve_falls_through_to_the_next_candidate() {
         ),
         "",
     );
+    // History is on so the refusal's own record can be read back: a
+    // `session_not_found` record is legible only to a v1.5 reader, and it must
+    // say so.
+    let history = hist_dir("stale-resume");
     let args = [
         "run",
         "--prompt",
@@ -1764,6 +1768,9 @@ fn a_resume_the_identity_cannot_resolve_falls_through_to_the_next_candidate() {
         "triage",
         "--session-dir",
         &store_arg,
+        "--history",
+        "--history-dir",
+        &history.display().to_string(),
         "--compact",
     ]
     .map(str::to_string);
@@ -1826,8 +1833,55 @@ fn a_resume_the_identity_cannot_resolve_falls_through_to_the_next_candidate() {
         "claude-code:alternate",
         "a session that moved identities says so"
     );
+    // A move is not silent: the handle now continues somewhere else, and an
+    // operator reading only the report would not know the thread was dropped.
+    let moved = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        moved.contains("session `triage` was bound to `claude-code:primary`")
+            && moved.contains("`claude-code:alternate` ran this turn"),
+        "the rebind must be announced: {moved}"
+    );
+    // The refusal's history record declares the version that first understood it.
+    let refused = first_history_run(Path::new(value["history_file"].as_str().unwrap()));
+    assert_eq!(refused["harness_id"], "claude-code:primary");
+    assert_eq!(refused["failure_kind"], "session_not_found");
+    assert_eq!(refused["schema_version"], "1.5");
 
+    // Turn three: the handle lives on `alternate` now, so *it* is the anchor and
+    // resumes `sess-alt` — even though `primary` still leads the priority chain.
+    // Binding to the head of the chain instead would hand the token back to the
+    // identity that cannot resolve it, every turn from here on.
+    let alternate_argv = std::env::temp_dir().join(format!("oh-stale-alt-{}", std::process::id()));
+    let _ = std::fs::remove_file(&alternate_argv);
+    std::fs::write(
+        PathBuf::from(fx.cwd()).join("oneharness.toml"),
+        variant_fallback_project(
+            r#"MOCK_EXIT = "1", MOCK_STDERR = "Error: insufficient_quota""#,
+            &format!(
+                r#"MOCK_EXIT = "0", MOCK_ARGV_FILE = '{}', MOCK_STDOUT = '{{"session_id":"sess-alt","result":"served-by-alternate"}}'"#,
+                alternate_argv.display()
+            ),
+        ),
+    )
+    .unwrap();
+    let third = turn();
+    assert!(third.status.success(), "{third:?}");
+    let continued = json_stdout(&third);
+    assert_eq!(continued["session"]["phase"], "continue");
+    assert_eq!(continued["fallback"]["ran"], "claude-code:alternate");
+    let alternate_resumed = std::fs::read_to_string(&alternate_argv).unwrap();
+    assert!(
+        alternate_resumed
+            .lines()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .any(|pair| pair == ["--resume", "sess-alt"]),
+        "the identity holding the session must be the one that resumes it: {alternate_resumed}"
+    );
+
+    let _ = std::fs::remove_file(&alternate_argv);
     let _ = std::fs::remove_file(&argv_file);
+    let _ = std::fs::remove_dir_all(&history);
     let _ = std::fs::remove_dir_all(&store);
 }
 

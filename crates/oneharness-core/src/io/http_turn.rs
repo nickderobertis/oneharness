@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::domain::control::{AbsolutePath, ServerAddress};
+use crate::domain::control::{AbsolutePath, DialAddress};
 use crate::domain::http::{
     self, ClientId, HttpShape, PermissionAsk, PermissionDecision, ResourceId, TurnAddress,
     TurnEvent, TurnOpening,
@@ -217,7 +217,7 @@ fn utc_now() -> RunInstant {
 /// it hangs off), and tell a permissive server once that it need not ask.
 pub fn open(
     shape: HttpShape,
-    server: ServerAddress,
+    server: DialAddress,
     cwd: &AbsolutePath,
     mode: PermissionMode,
     client_id: &str,
@@ -508,7 +508,7 @@ fn expect_ok(
 /// and crush's socket file appears before it accepts. Every request after this
 /// would otherwise fail as "connection refused" and read like a broken
 /// mechanism rather than a slow start.
-pub fn await_ready(shape: HttpShape, address: &ServerAddress, within: Duration) -> io::Result<()> {
+pub fn await_ready(shape: HttpShape, address: &DialAddress, within: Duration) -> io::Result<()> {
     let client = HttpClient::new(address.clone(), Duration::from_secs(5));
     let request = http::readiness_request(shape);
     let deadline = Instant::now() + within;

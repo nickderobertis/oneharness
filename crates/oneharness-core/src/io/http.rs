@@ -11,12 +11,12 @@ use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
-use crate::domain::control::ServerAddress;
+use crate::domain::control::DialAddress;
 #[cfg(test)]
 use crate::domain::http::Method;
 use crate::domain::http::{
-    parse_head, ChunkedDecoder, HeadScan, HeadUnreadable, HttpRequest, SseAccumulator, StatusCode,
-    MAX_BODY_BYTES,
+    parse_head, BodyFraming, ChunkedDecoder, HeadScan, HeadUnreadable, HttpRequest, SseAccumulator,
+    StatusCode, MAX_BODY_BYTES,
 };
 
 /// A server's answer to one request.
@@ -37,15 +37,22 @@ impl HttpResponse {
 
 /// A connection to one control server, dialed fresh per request (both servers
 /// answer `Connection: close`, and a pooled socket buys nothing at this rate).
+///
+/// Addressed by a [`DialAddress`], not the general
+/// [`ServerAddress`](crate::domain::control::ServerAddress): a stdio
+/// server is reached over pipes its parent already holds, so there is no
+/// address for this client to connect to. Narrowing at construction turns
+/// "an HTTP client for a stdio server" from a dial-time error into a value
+/// nobody can build.
 #[derive(Debug, Clone)]
 pub struct HttpClient {
-    address: ServerAddress,
+    address: DialAddress,
     timeout: Duration,
 }
 
 impl HttpClient {
     #[must_use]
-    pub fn new(address: ServerAddress, timeout: Duration) -> Self {
+    pub fn new(address: DialAddress, timeout: Duration) -> Self {
         HttpClient { address, timeout }
     }
 
@@ -86,14 +93,13 @@ impl HttpClient {
             // Completeness is decided BEFORE the next blocking read, so a whole
             // answer never costs a read timeout.
             if let Some(head) = head {
-                if head.chunked && chunks.is_complete() {
-                    break;
-                }
-                if let Some(length) = head.content_length {
-                    if !head.chunked && body.len() >= length {
+                match head.framing {
+                    BodyFraming::Chunked if chunks.is_complete() => break,
+                    BodyFraming::Length(length) if body.len() >= length => {
                         body.truncate(length);
                         break;
                     }
+                    _ => {}
                 }
             }
             let read = stream.read(&mut buffer).map_err(|err| {
@@ -108,7 +114,7 @@ impl HttpClient {
                 // failing read did, and half a JSON document is a wrong answer
                 // rather than a missing one. Only an answer the server framed
                 // neither way legitimately ends here.
-                if head.is_some_and(|head| head.chunked || head.content_length.is_some()) {
+                if head.is_some_and(|head| head.framing.ends_before_close()) {
                     return Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "the control server's answer was cut short: it closed before the body \
@@ -120,7 +126,7 @@ impl HttpClient {
             let bytes = &buffer[..read];
             match head {
                 Some(head) => {
-                    absorb(bytes, head.chunked, &mut chunks, &mut body);
+                    absorb(bytes, head.framing.is_chunked(), &mut chunks, &mut body);
                     // Both ways a framed-looking answer keeps costing memory:
                     // chunk framing that never terminates, and a body (chunked
                     // or unframed) that simply never stops. Neither ends on its
@@ -142,7 +148,7 @@ impl HttpClient {
                         HeadScan::Incomplete => {}
                         HeadScan::Whole(parsed) => {
                             let rest = pending.split_off(parsed.body_at);
-                            absorb(&rest, parsed.chunked, &mut chunks, &mut body);
+                            absorb(&rest, parsed.framing.is_chunked(), &mut chunks, &mut body);
                             head = Some(parsed);
                         }
                         // Refused where it arrives rather than read on: the
@@ -190,27 +196,23 @@ impl HttpClient {
 
     fn dial(&self, timeout: Duration) -> io::Result<Socket> {
         match &self.address {
-            ServerAddress::Tcp { port } => {
+            DialAddress::Tcp { port } => {
                 let stream = TcpStream::connect(("127.0.0.1", port.get()))?;
                 stream.set_read_timeout(Some(timeout))?;
                 stream.set_write_timeout(Some(timeout))?;
                 Ok(Socket::Tcp(stream))
             }
             #[cfg(unix)]
-            ServerAddress::UnixSocket { path } => {
+            DialAddress::UnixSocket { path } => {
                 let stream = std::os::unix::net::UnixStream::connect(path.as_path())?;
                 stream.set_read_timeout(Some(timeout))?;
                 stream.set_write_timeout(Some(timeout))?;
                 Ok(Socket::Unix(stream))
             }
             #[cfg(not(unix))]
-            ServerAddress::UnixSocket { .. } => Err(io::Error::new(
+            DialAddress::UnixSocket { .. } => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "unix-socket control servers are not available on this platform",
-            )),
-            ServerAddress::Stdio => Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "a stdio server has no address to dial",
             )),
         }
     }
@@ -341,7 +343,7 @@ impl EventStream {
                 if !head.status.is_success() {
                     return StreamPoll::Refused(head.status);
                 }
-                self.chunked = head.chunked;
+                self.chunked = head.framing.is_chunked();
                 let body: Vec<u8> = self.pending.split_off(head.body_at);
                 self.pending.clear();
                 self.absorb(&body);
@@ -419,11 +421,11 @@ impl Write for Socket {
 fn write_request(
     stream: &mut Socket,
     request: &HttpRequest,
-    address: &ServerAddress,
+    address: &DialAddress,
 ) -> io::Result<()> {
     let host = match address {
-        ServerAddress::Tcp { port } => format!("127.0.0.1:{}", port.get()),
-        _ => "localhost".to_string(),
+        DialAddress::Tcp { port } => format!("127.0.0.1:{}", port.get()),
+        DialAddress::UnixSocket { .. } => "localhost".to_string(),
     };
     let body = request.body().unwrap_or_default().to_string();
     let head = format!(
@@ -485,7 +487,7 @@ mod tests {
     }
 
     fn client(port: Port) -> HttpClient {
-        HttpClient::new(ServerAddress::Tcp { port }, Duration::from_secs(5))
+        HttpClient::new(DialAddress::Tcp { port }, Duration::from_secs(5))
     }
 
     #[test]
@@ -906,15 +908,5 @@ mod tests {
         );
         assert_eq!(stream.poll(), StreamPoll::Closed);
         let _ = server.join();
-    }
-
-    #[test]
-    fn a_stdio_server_has_no_address_to_dial() {
-        // The pairing is a type error waiting to happen otherwise: a stdio
-        // mechanism's "address" is its pipes, which no HTTP client can reach.
-        let err = HttpClient::new(ServerAddress::Stdio, Duration::from_secs(1))
-            .send(&HttpRequest::for_test(Method::Get, "/", None))
-            .unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 }

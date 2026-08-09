@@ -284,6 +284,70 @@ impl ServerAddress {
     }
 }
 
+/// A [`ServerAddress`] a socket can actually be opened to.
+///
+/// The dialable subset, as its own type, because [`ServerAddress::Stdio`] names
+/// a server reached over pipes its parent already holds — there is no address
+/// there for anyone to connect to. A client built from the general type has to
+/// carry that impossibility to dial time and fail there, which is a socket error
+/// raised on a value that was never dialable in the first place; taking this
+/// type instead means such a client cannot be constructed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DialAddress {
+    /// A unix domain socket the server bound.
+    UnixSocket { path: AbsolutePath },
+    /// A loopback TCP port the server bound.
+    Tcp { port: Port },
+}
+
+impl DialAddress {
+    /// The transport this address speaks — never [`ServerTransport::Stdio`],
+    /// which is the whole point of the type.
+    #[must_use]
+    pub fn transport(&self) -> ServerTransport {
+        match self {
+            DialAddress::UnixSocket { .. } => ServerTransport::UnixSocket,
+            DialAddress::Tcp { .. } => ServerTransport::Tcp,
+        }
+    }
+}
+
+/// Why an address cannot be dialed.
+///
+/// Its own error rather than a bare `()`, so the one caller that turns it into
+/// an `io::Error` says the same thing everywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotDialable;
+
+impl std::fmt::Display for NotDialable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "a stdio server has no address to dial")
+    }
+}
+
+impl std::error::Error for NotDialable {}
+
+impl TryFrom<ServerAddress> for DialAddress {
+    type Error = NotDialable;
+
+    fn try_from(address: ServerAddress) -> Result<Self, NotDialable> {
+        match address {
+            ServerAddress::UnixSocket { path } => Ok(DialAddress::UnixSocket { path }),
+            ServerAddress::Tcp { port } => Ok(DialAddress::Tcp { port }),
+            ServerAddress::Stdio => Err(NotDialable),
+        }
+    }
+}
+
+impl From<DialAddress> for ServerAddress {
+    fn from(address: DialAddress) -> Self {
+        match address {
+            DialAddress::UnixSocket { path } => ServerAddress::UnixSocket { path },
+            DialAddress::Tcp { port } => ServerAddress::Tcp { port },
+        }
+    }
+}
+
 /// A harness's sidecar server: how to launch it, what makes two launches
 /// interchangeable, and how it is reached.
 ///
@@ -941,6 +1005,37 @@ mod tests {
         assert_eq!(value["transport"], "tcp");
         assert_eq!(value["port"], 7777);
         assert_eq!(serde_json::from_value::<ServerAddress>(value).unwrap(), tcp);
+    }
+
+    #[test]
+    fn only_an_address_with_something_to_connect_to_narrows_to_a_dialable_one() {
+        // A stdio server is reached over pipes its parent already holds, so
+        // there is no address for a socket client to open. Refusing here is
+        // what keeps an HTTP client for one from being constructible at all,
+        // rather than failing later on the first dial.
+        assert_eq!(
+            DialAddress::try_from(ServerAddress::Stdio),
+            Err(NotDialable)
+        );
+        assert_eq!(
+            NotDialable.to_string(),
+            "a stdio server has no address to dial"
+        );
+
+        // Both dialable transports narrow, and narrowing loses nothing: each
+        // one widens back to the address it came from.
+        for address in [
+            ServerAddress::UnixSocket {
+                path: absolute_for_test("/tmp/x.sock"),
+            },
+            ServerAddress::Tcp {
+                port: Port::new(7777).unwrap(),
+            },
+        ] {
+            let dialable = DialAddress::try_from(address.clone()).unwrap();
+            assert_eq!(dialable.transport(), address.transport());
+            assert_eq!(ServerAddress::from(dialable), address);
+        }
     }
 
     #[test]

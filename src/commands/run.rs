@@ -9,7 +9,7 @@ use crate::commands::{
     UnprovisionedIdentity,
 };
 use oneharness_core::domain::batch::{self, BatchStrategy};
-use oneharness_core::domain::control::{self, ControlReport, ControlShape};
+use oneharness_core::domain::control::{self, ControlReport, ControlShape, DialAddress};
 use oneharness_core::domain::dialogue::{Dialogue, DialogueConfig};
 use oneharness_core::domain::fallback::{self, RunMode};
 use oneharness_core::domain::harness::{self, BuildCtx, HarnessSpec, PromptDelivery};
@@ -2132,7 +2132,15 @@ fn drive_http_turn(
         .map_err(|err| format!("could not plan the control server launch: {err}"))?;
     let lease = server_pool::acquire(&root, &key, &plan, server_pool::DEFAULT_LINGER)
         .map_err(|err| format!("could not start the control server: {err}"))?;
-    let address = lease.record().address.clone();
+    // Narrowed to a dialable address once, here, where the HTTP control path
+    // takes hold of the running server: everything downstream is then handed an
+    // address it can actually open a socket to.
+    let address = DialAddress::try_from(lease.record().address.clone()).map_err(|err| {
+        format!(
+            "the control server for `{}` cannot be reached over HTTP: {err}",
+            spec.id
+        )
+    })?;
     let command = lease.record().argv.as_slice().to_vec();
 
     // Bounded by the run's own timeout as well as the window, because a server

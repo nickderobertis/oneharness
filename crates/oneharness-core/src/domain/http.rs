@@ -753,23 +753,56 @@ impl std::fmt::Display for StatusCode {
     }
 }
 
+/// How a response says where its body ends.
+///
+/// One value rather than a `chunked` flag beside a `content_length`, because
+/// HTTP/1.1's framing mechanisms are a *choice* and not two independent
+/// switches. Declaring both is the ambiguity RFC 9112 refuses, and as two
+/// fields that refusal is only a rule [`parse_head`] remembers to enforce —
+/// every reader downstream still has to defend against the combination, and
+/// the guard that does it (`if !head.chunked` beside a length check) reads
+/// like an ordinary condition rather than the invariant it is. Choosing here
+/// means no reader can be handed the ambiguous state at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyFraming {
+    /// `Transfer-Encoding: chunked`: the body ends at its terminating chunk.
+    /// Both servers use it, and a reader that skips de-chunking reports a JSON
+    /// decode error where the harness in fact answered correctly.
+    Chunked,
+    /// `Content-Length`: the body is exactly this many bytes.
+    ///
+    /// This is how a reader knows the answer is whole *without* the server
+    /// closing the connection. Opencode keeps a `Connection: close` request's
+    /// socket open on some routes, so a reader that waits for EOF reports a
+    /// complete answer as cut short.
+    Length(usize),
+    /// Neither was declared: the body ends when the connection does.
+    UntilClose,
+}
+
+impl BodyFraming {
+    /// Whether the body arrives in chunk framing, and so must be de-chunked.
+    #[must_use]
+    pub fn is_chunked(self) -> bool {
+        matches!(self, BodyFraming::Chunked)
+    }
+
+    /// Whether the head declares where the body ends, so a close arriving
+    /// first is an answer cut short rather than an answer.
+    #[must_use]
+    pub fn ends_before_close(self) -> bool {
+        !matches!(self, BodyFraming::UntilClose)
+    }
+}
+
 /// A response's head, as far as a reader must understand it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResponseHead {
     pub status: StatusCode,
     /// Where the body starts in the buffer the head was parsed from.
     pub body_at: usize,
-    /// Whether the body arrives in `Transfer-Encoding: chunked` framing. Both
-    /// servers use it, and a reader that skips de-chunking reports a JSON
-    /// decode error where the harness in fact answered correctly.
-    pub chunked: bool,
-    /// The declared body length, when the server framed it that way.
-    ///
-    /// This is how a reader knows the answer is whole *without* the server
-    /// closing the connection. Opencode keeps a `Connection: close` request's
-    /// socket open on some routes, so a reader that waits for EOF reports a
-    /// complete answer as cut short.
-    pub content_length: Option<usize>,
+    /// Where this response's body ends, as the server framed it.
+    pub framing: BodyFraming,
 }
 
 /// What the front of a response turned out to be.
@@ -909,17 +942,21 @@ pub fn parse_head(raw: &[u8]) -> HeadScan {
         }
         content_length = Some(length);
     }
-    // RFC 9112 calls this combination ambiguous framing. Picking either field
-    // would let a peer make oneharness and an intermediary disagree about where
-    // this response ends, so reject it at the shared parser boundary.
-    if chunked && content_length.is_some() {
-        return HeadScan::Unreadable(HeadUnreadable::AmbiguousFraming);
-    }
+    // The one place a response's framing is chosen. RFC 9112 calls declaring
+    // both mechanisms ambiguous framing: picking either would let a peer make
+    // oneharness and an intermediary disagree about where this response ends,
+    // so it is refused here rather than travelling on as a state every reader
+    // has to keep refusing for itself.
+    let framing = match (chunked, content_length) {
+        (true, Some(_)) => return HeadScan::Unreadable(HeadUnreadable::AmbiguousFraming),
+        (true, None) => BodyFraming::Chunked,
+        (false, Some(length)) => BodyFraming::Length(length),
+        (false, None) => BodyFraming::UntilClose,
+    };
     HeadScan::Whole(ResponseHead {
         status,
         body_at: end,
-        chunked,
-        content_length,
+        framing,
     })
 }
 
@@ -1488,7 +1525,7 @@ mod tests {
             panic!("a chunked head was not read as one");
         };
         assert_eq!(head.status.get(), 200);
-        assert!(head.chunked);
+        assert_eq!(head.framing, BodyFraming::Chunked);
 
         let wire = b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
         let mut whole = ChunkedDecoder::default();
@@ -1542,9 +1579,8 @@ mod tests {
             panic!("a whole head was not read as one");
         };
         assert_eq!(head.status.get(), 204);
-        assert!(!head.chunked);
+        assert_eq!(head.framing, BodyFraming::UntilClose);
         assert_eq!(head.body_at, 27);
-        assert_eq!(head.content_length, None);
         // A whole head that is not a response is not an arrival to wait on: a
         // reader told to wait would spend its whole timeout on bytes that are
         // all already here.
@@ -1631,14 +1667,14 @@ mod tests {
         else {
             panic!("two agreeing declarations are one length");
         };
-        assert_eq!(head.content_length, Some(7));
+        assert_eq!(head.framing, BodyFraming::Length(7));
         // A header that merely ENDS in the name is a different header.
         let HeadScan::Whole(head) =
             parse_head(b"HTTP/1.1 200 OK\r\nX-Original-Content-Length: nope\r\n\r\n")
         else {
             panic!("an unrelated header was read as a length declaration");
         };
-        assert_eq!(head.content_length, None);
+        assert_eq!(head.framing, BodyFraming::UntilClose);
     }
 
     #[test]
@@ -1658,7 +1694,7 @@ mod tests {
                 panic!("a whole head was not read as one");
             };
             assert!(
-                !parsed.chunked,
+                !parsed.framing.is_chunked(),
                 "framed a body as chunked from `{}`",
                 String::from_utf8_lossy(head)
             );
@@ -1675,7 +1711,7 @@ mod tests {
                 panic!("a whole head was not read as one");
             };
             assert!(
-                parsed.chunked,
+                parsed.framing.is_chunked(),
                 "missed the framing in `{}`",
                 String::from_utf8_lossy(head)
             );

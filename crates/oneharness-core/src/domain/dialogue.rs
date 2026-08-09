@@ -581,11 +581,15 @@ fn line(value: Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::control::{absolute_for_test, absolute_text_for_test};
+
+    /// The one working directory every fixture turn runs in.
+    const WORK: &str = "/work";
 
     fn config() -> DialogueConfig {
         DialogueConfig {
             prompt: "do the thing".to_string(),
-            cwd: AbsolutePath::new("/work").unwrap(),
+            cwd: absolute_for_test(WORK),
             model: Some("gpt-5-codex".to_string()),
             mode: PermissionMode::Bypass,
         }
@@ -623,7 +627,7 @@ mod tests {
         assert_eq!(parse(&step.send[0])["method"], "initialized");
         let start = parse(&step.send[1]);
         assert_eq!(start["method"], "thread/start");
-        assert_eq!(start["params"]["cwd"], "/work");
+        assert_eq!(start["params"]["cwd"], absolute_text_for_test(WORK));
         assert_eq!(start["params"]["approvalPolicy"], "never");
         assert_eq!(start["params"]["model"], "gpt-5-codex");
 
@@ -637,7 +641,10 @@ mod tests {
         // A permissive mode confines writes to the working directory rather
         // than handing over full access.
         assert_eq!(turn["params"]["sandboxPolicy"]["type"], "workspaceWrite");
-        assert_eq!(turn["params"]["sandboxPolicy"]["writableRoots"][0], "/work");
+        assert_eq!(
+            turn["params"]["sandboxPolicy"]["writableRoots"][0],
+            absolute_text_for_test(WORK)
+        );
 
         // The turn id arrives on the event stream and is what interrupt addresses.
         d.on_line(r#"{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"th-1","turn":{"id":"tu-9"}}}"#);
@@ -716,7 +723,7 @@ mod tests {
         let step = d.on_line(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#);
         let new = parse(&step.send[0]);
         assert_eq!(new["method"], "session/new");
-        assert_eq!(new["params"]["cwd"], "/work");
+        assert_eq!(new["params"]["cwd"], absolute_text_for_test(WORK));
 
         let step = d.on_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-7"}}"#);
         assert_eq!(d.session_id(), Some("sess-7"));

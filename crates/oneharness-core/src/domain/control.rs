@@ -68,6 +68,27 @@ impl AbsolutePath {
     }
 }
 
+/// The text a unix-shaped fixture path takes to be absolute on this host.
+///
+/// Windows needs a prefix before a path is absolute, so a bare `/work` is not
+/// portable: [`AbsolutePath::new`] refuses it there and every fixture built on
+/// it panics. Tests assert against this rather than the literal so the wire
+/// text they check is the one this host would really send.
+#[cfg(test)]
+pub(crate) fn absolute_text_for_test(path: &str) -> String {
+    if cfg!(windows) {
+        format!("C:{path}")
+    } else {
+        path.to_string()
+    }
+}
+
+/// [`absolute_text_for_test`] as the wrapped type.
+#[cfg(test)]
+pub(crate) fn absolute_for_test(path: &str) -> AbsolutePath {
+    AbsolutePath::new(absolute_text_for_test(path)).expect("fixture path is absolute on this host")
+}
+
 impl std::fmt::Display for AbsolutePath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0.display())
@@ -892,12 +913,10 @@ mod tests {
     #[test]
     fn an_address_must_be_absolute_to_exist() {
         assert!(AbsolutePath::new("relative/x.sock").is_err());
-        let ok = AbsolutePath::new("/tmp/x.sock").unwrap();
-        assert_eq!(ok.to_string(), "/tmp/x.sock");
-        assert_eq!(
-            serde_json::to_value(&ok).unwrap(),
-            serde_json::json!("/tmp/x.sock")
-        );
+        let text = absolute_text_for_test("/tmp/x.sock");
+        let ok = absolute_for_test("/tmp/x.sock");
+        assert_eq!(ok.to_string(), text);
+        assert_eq!(serde_json::to_value(&ok).unwrap(), serde_json::json!(text));
         assert!(serde_json::from_value::<AbsolutePath>(serde_json::json!("rel")).is_err());
     }
 
@@ -906,7 +925,7 @@ mod tests {
         assert_eq!(ServerAddress::Stdio.transport(), ServerTransport::Stdio);
         assert_eq!(
             ServerAddress::UnixSocket {
-                path: AbsolutePath::new("/tmp/x.sock").unwrap()
+                path: absolute_for_test("/tmp/x.sock")
             }
             .transport(),
             ServerTransport::UnixSocket

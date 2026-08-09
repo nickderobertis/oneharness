@@ -925,6 +925,7 @@ impl SseAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::control::{absolute_for_test, absolute_text_for_test};
 
     fn crush_address() -> TurnAddress {
         TurnAddress::Crush {
@@ -955,12 +956,9 @@ mod tests {
         }
     }
 
-    /// `path` as a working directory the host counts as absolute. Windows needs
-    /// a prefix before one does, so a bare `/work` is not portable here.
+    /// `path` as a working directory the host counts as absolute.
     fn cwd(path: &str) -> AbsolutePath {
-        #[cfg(windows)]
-        let path = format!("C:{path}");
-        AbsolutePath::new(path).unwrap()
+        absolute_for_test(path)
     }
 
     #[test]
@@ -1013,7 +1011,7 @@ mod tests {
         assert_eq!(open.path(), "/v1/workspaces");
         let body: Value = serde_json::from_str(open.body().unwrap()).unwrap();
         assert_eq!(body["client_id"], "client-9");
-        assert_eq!(body["path"], "/work");
+        assert_eq!(body["path"], absolute_text_for_test("/work"));
 
         let address = crush_address();
         for request in [

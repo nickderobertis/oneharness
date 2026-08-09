@@ -263,9 +263,13 @@ def path_segment(value: str, what: str) -> str:
     probe never meant to call, and the resulting verdict would describe
     something else entirely.
     """
-    if not value or len(value) > 128 or not all(
-        c.isalnum() or c in "-_." for c in value
-    ):
+    # ASCII alphanumerics only, matching `domain::http::ResourceId`: `isalnum`
+    # alone admits every Unicode letter and digit, which a server percent-encodes
+    # into a path the probe never meant to call.
+    def usable(c: str) -> bool:
+        return (c.isalnum() and c.isascii()) or c in "-_."
+
+    if not value or len(value) > 128 or not all(usable(c) for c in value):
         raise ValueError(f"{what} `{value}` is not a usable path segment")
     # A segment of nothing but dots (`.`, `..`) carries no `/` and so clears the
     # character check above, yet a server still resolves it as a traversal —

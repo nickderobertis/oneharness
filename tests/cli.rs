@@ -20787,6 +20787,31 @@ fn a_control_server_that_names_no_session_is_refused_rather_than_guessed_at() {
 
 #[cfg(unix)]
 #[test]
+fn a_control_server_that_stops_talking_mid_turn_is_not_reported_as_a_clean_finish() {
+    // The stream ending is not the turn ending. A server that dies mid-flight
+    // would otherwise hand a supervisor an `ok` for work that was cut short —
+    // and unlike a timeout or a refusal, there is nothing else in the envelope
+    // to notice it by.
+    let (output, report, served) = http_control_run_with_fault("http-cutoff", "close-stream", "30");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result = &report["results"][0];
+    // The turn genuinely started, so this is a cut-off turn rather than one
+    // that never began.
+    assert!(
+        served
+            .lines()
+            .any(|line| line.starts_with("POST /api/session/ses_mock/prompt")),
+        "the turn never started:\n{served}"
+    );
+    assert_eq!(result["status"], "nonzero", "{report}");
+    assert_eq!(
+        result["error"], "the control server closed the event stream before the turn ended",
+        "{report}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn a_permission_ask_for_another_session_is_not_answered_by_a_controlled_run() {
     // The pooled server's event stream carries every dispatch's asks, so a
     // concurrent run's permission request lands on this turn's stream. Driven

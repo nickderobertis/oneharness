@@ -112,7 +112,9 @@
 //!                   ever answers), `refuse-session` answers the session-create
 //!                   route `503`, and `no-session-id` answers it `200` with a body
 //!                   naming no id, and `foreign-permission` asks permission for a
-//!                   session this run does not own. Each exits once it has served
+//!                   session this run does not own, and `close-stream` stops
+//!                   talking mid-turn with no end-of-turn event. Each exits once
+//!                   it has served
 //!                   its fault, so nothing is left behind for the pool to reclaim.
 //!                   An unrecognized value is refused rather than run as no fault.
 //!   MOCK_LOG_FILE   if set, an append-only run log: each invocation appends `S\n`
@@ -375,6 +377,7 @@ enum HttpControlFault {
     RefuseSession,
     NoSessionId,
     ForeignPermission,
+    CloseStream,
 }
 
 impl HttpControlFault {
@@ -388,6 +391,7 @@ impl HttpControlFault {
             "refuse-session" => HttpControlFault::RefuseSession,
             "no-session-id" => HttpControlFault::NoSessionId,
             "foreign-permission" => HttpControlFault::ForeignPermission,
+            "close-stream" => HttpControlFault::CloseStream,
             other => panic!("mock harness: MOCK_HTTP_CONTROL_FAULT names no fault: `{other}`"),
         }
     }
@@ -503,6 +507,12 @@ fn run_http_control_server(log_path: &str) -> ! {
                             &mut socket,
                             "{\"type\":\"session.next.prompt.admitted\",\"data\":{}}",
                         );
+                        // A server that stops talking mid-turn: the stream ends
+                        // with no end-of-turn event on it at all.
+                        if fault == HttpControlFault::CloseStream {
+                            exit_shortly();
+                            return;
+                        }
                         // The shared stream carries every session's asks, so a
                         // faulted server asks about one this run does not own.
                         // Nothing may answer it — and the turn then ends on its

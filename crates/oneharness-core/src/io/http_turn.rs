@@ -276,6 +276,10 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
     };
 
     let mut timed_out = false;
+    // Whether the stream ended before the turn did. Buffered events are handed
+    // over before a close is ever reported, so this is only true of a server
+    // that really did stop mid-turn.
+    let mut closed_early = false;
     // The turn is only over once it has begun: see `TurnEvent::Started`.
     let mut in_flight = false;
     let mut ended = false;
@@ -321,15 +325,28 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
             }
             // The server closed the stream: nothing more will arrive, so the
             // only remaining end-of-turn signal is the submitting thread's.
-            StreamPoll::Closed => break,
+            StreamPoll::Closed => {
+                closed_early = true;
+                break;
+            }
         }
     }
     let _ = submitter.join();
 
+    // A stream that ended before the turn did is not a turn that ended: the
+    // server stopped talking mid-flight. Reported rather than passed off as a
+    // clean finish, which would hand a supervisor an `ok` for work that was
+    // cut short — and, unlike a timeout or a refusal, leaves nothing else in
+    // the envelope to notice it by.
     let error = submit_error
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .clone();
+        .clone()
+        .or_else(|| {
+            (closed_early && !ended).then(|| {
+                "the control server closed the event stream before the turn ended".to_string()
+            })
+        });
     let status = if timed_out {
         Status::Timeout
     } else if error.is_some() {

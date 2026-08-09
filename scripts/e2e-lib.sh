@@ -1081,6 +1081,251 @@ TOML
     note "PASS: $id hook enforcement"
 }
 
+# Live proof that out-of-band turn control actually STOPS work: drive a real
+# turn that produces one observable artifact per step, interrupt it from a
+# SEPARATE process mid-flight, and prove the artifact count is frozen afterwards.
+#
+# The assertion is deliberately at the filesystem, not at the harness's own
+# report: goose and copilot both report a normal `end_turn` after a real
+# cancellation, so a report-trusting check passes for the wrong reason. Files on
+# disk are the one signal a harness cannot fake.
+#
+# Also asserts the contract around the stop: the socket exists at the documented
+# path while the run lives and is gone after it, the interrupt response carries
+# the harness's mechanism, the run's own report records the served interrupt,
+# and the SESSION survives (the whole point — the dispatch is redirected, not
+# destroyed).
+#
+# Only call this for a harness `oneharness list` reports a `control` mechanism
+# for. Retries when the turn ended before the interrupt landed (a model that
+# refused or finished early is flakiness, not a control regression) — which
+# includes a turn that produced EVERY step it was asked for: a count pinned at
+# the ceiling stays pinned whether or not anything was interrupted, so that
+# reading is inconclusive rather than a pass.
+#
+#   $1 harness id
+#   $2 mechanism reported by that harness's `oneharness list` entry
+# llmlint: ignore-block[tool_output_is_signal] The phase's progress lines are how a
+# CI log attributes a failure inside a multi-minute turn plus a 15s freeze window
+# to the step that produced it — the same contract every other oh_*_enforce helper
+# here follows.
+oh_control_enforce() {
+    local id="$1" expected_mechanism="$2"
+    # Three attempts, not two: an inconclusive attempt is a model that refused or
+    # raced, and opencode declines this fixture outright often enough (answers
+    # `ok` in under ten seconds having run no tool at all) that two attempts
+    # retire the phase on model mood rather than on control behavior. Retrying
+    # cannot hide a regression — every real contract violation below calls
+    # `fail` on the spot, and only a turn that proved NOTHING comes back here.
+    local attempt attempts=3
+    for attempt in $(seq 1 "$attempts"); do
+        if _oh_control_enforce_once "$id" "$attempt" "$expected_mechanism"; then
+            note "PASS: $id control enforcement"
+            return 0
+        fi
+        note "  control-enforce: attempt $attempt was inconclusive (the turn ended, or finished every step, before the interrupt landed); retrying"
+    done
+    fail "$id: the turn never stayed in flight long enough to interrupt across $attempts attempts"
+}
+
+# One attempt. Returns 0 on a proven interrupt, 1 when the turn ended too early
+# to prove anything (retryable). Any real contract violation calls fail().
+_oh_control_enforce_once() {
+    local id="$1" attempt="$2" expected_mechanism="$3"
+    local bin sandbox store name socket count frozen frozen_after report
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    sandbox="$(mktemp -d)"
+    sandbox="$(oh_native_path "$sandbox")"
+    oh_sandbox_prepare "$id" "$sandbox"
+    git init -q "$sandbox" 2>/dev/null || true
+    store="$sandbox/sessions"
+    name="ohctl${attempt}${RANDOM}"
+    socket="$store/control/$name.sock"
+    report="$sandbox/report.json"
+
+    local model_args=()
+    [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+
+    # Many small steps with a pause between each: the turn must still be running
+    # when the interrupt arrives, and each step must be individually observable.
+    # `steps` is the ceiling the assertion below reads too, so the prompt and the
+    # "did it merely finish?" test can never drift apart.
+    local steps=60 last
+    last="$(printf 'step-%03d.txt' "$steps")"
+    local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create $steps files named step-001.txt through $last in the current directory, ONE PER TOOL CALL, sleeping 1 second between each (for example: sleep 1 && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
+
+    # The turn must actually run shell commands for there to be work to stop, so a
+    # narrower mode would make the freeze assertion vacuous. Confined to a fresh
+    # mktemp sandbox, like every other oh_*_enforce phase.
+    local grant=(--mode bypass) # llmlint: ignore[least_privilege_grants] see above
+    note "  control-enforce: starting a controlled run ($id, session $name)"
+    ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --prompt "$prompt" \
+        --control --session "$name" --session-dir "$store" --cwd "$sandbox" \
+        "${grant[@]}" --timeout "${OH_TIMEOUT:-300}" --compact \
+        "${model_args[@]+"${model_args[@]}"}" >"$report" 2>"$sandbox/run.err" &
+    local run_pid=$!
+
+    # The socket must appear at the documented path while the run is alive.
+    if ! _oh_wait_for 60 test -S "$socket"; then
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        sed 's/^/    /' "$sandbox/run.err" >&2 || true
+        rm -rf "$sandbox"
+        fail "$id: no control socket appeared at $socket (--control did not open one)"
+    fi
+    note "  ok: control socket present at $socket"
+
+    # Wait until the agent is demonstrably working: at least two steps done, so
+    # a frozen count afterwards means something real stopped.
+    if ! _oh_wait_for 180 _oh_steps_at_least "$sandbox" 2; then
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        rm -rf "$sandbox"
+        note "  control-enforce: the agent never produced two steps"
+        return 1
+    fi
+    if ! kill -0 "$run_pid" 2>/dev/null; then
+        rm -rf "$sandbox"
+        return 1
+    fi
+    # A turn that already wrote every file it was asked for has nothing left to
+    # stop, so a frozen count afterwards is what finishing looks like, not what
+    # an interrupt looks like. Inconclusive, never a pass.
+    count="$(_oh_step_count "$sandbox")"
+    if [ "$count" -ge "$steps" ]; then
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        rm -rf "$sandbox"
+        note "  control-enforce: the agent finished all $steps steps before the interrupt could land"
+        return 1
+    fi
+
+    note "  control-enforce: interrupting from a separate process"
+    local frame
+    frame="$(ONEHARNESS_NO_CONFIG=1 "$bin" interrupt --session "$name" --session-dir "$store" --cwd "$sandbox" --compact 2>&1)" || {
+        # A turn that ended between the count check and the interrupt answers
+        # `no_active_turn` — retryable, not a regression.
+        if printf '%s' "$frame" | grep -q no_active_turn; then
+            kill "$run_pid" 2>/dev/null || true
+            wait "$run_pid" 2>/dev/null || true
+            rm -rf "$sandbox"
+            return 1
+        fi
+        printf '%s\n' "$frame" >&2
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        rm -rf "$sandbox"
+        fail "$id: the interrupt was refused"
+    }
+    local ok mechanism
+    ok="$(printf '%s' "$frame" | jq -r '.ok')"
+    mechanism="$(printf '%s' "$frame" | jq -r '.mechanism // ""')"
+    [ "$ok" = "true" ] || {
+        printf '%s\n' "$frame" >&2
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        rm -rf "$sandbox"
+        fail "$id: the interrupt response was not ok"
+    }
+    if ! _oh_control_mechanism_matches "$mechanism" "$expected_mechanism"; then
+        rm -rf "$sandbox"
+        fail "$id: the interrupt response carried mechanism '$mechanism', expected '$expected_mechanism'"
+    fi
+    note "  ok: interrupt served by mechanism '$mechanism'"
+
+    # THE assertion: the work is frozen. Sample right after the interrupt (with
+    # a beat for an in-flight tool call to land), then again 15s later.
+    sleep 3
+    frozen="$(_oh_step_count "$sandbox")"
+    # Same trap on the other side of the interrupt: a turn that raced to the
+    # ceiling in the seconds it took to send the frame would hold at $steps for
+    # any window you cared to watch, and that reading is indistinguishable from a
+    # completed turn. Retry rather than bank it.
+    if [ "$frozen" -ge "$steps" ]; then
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        rm -rf "$sandbox"
+        note "  control-enforce: the count reached all $steps steps, so a freeze proves nothing"
+        return 1
+    fi
+    sleep 15
+    frozen_after="$(_oh_step_count "$sandbox")"
+    if [ "$frozen_after" != "$frozen" ]; then
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        rm -rf "$sandbox"
+        fail "$id: work did NOT stop — step files went from $frozen to $frozen_after in the 15s after the interrupt, so the '$mechanism' interrupt is not honored"
+    fi
+    note "  ok: work frozen at $frozen step files for 15s after the interrupt"
+
+    wait "$run_pid" 2>/dev/null || true
+    # The run must have ended on its own (not been killed) and recorded the
+    # interrupt, and the session must have survived.
+    if ! jq -e '.control.interrupts | length >= 1 and (.[0].outcome == "served")' "$report" >/dev/null 2>&1; then
+        sed 's/^/    /' "$sandbox/run.err" >&2 || true
+        head -c 2000 "$report" >&2 || true
+        rm -rf "$sandbox"
+        fail "$id: the run report did not record a served interrupt"
+    fi
+    if ! jq -e '.session.token != null' "$report" >/dev/null 2>&1; then
+        rm -rf "$sandbox"
+        fail "$id: the session did not survive the interrupt (no token was captured), so the turn was destroyed rather than redirected"
+    fi
+    if [ -e "$socket" ]; then
+        rm -rf "$sandbox"
+        fail "$id: the control socket outlived the run ($socket still present)"
+    fi
+    note "  ok: report records the interrupt, session survived, socket removed"
+
+    rm -rf "$sandbox"
+    return 0
+}
+
+_oh_control_mechanism_matches() {
+    [ -n "$2" ] && [ "$1" = "$2" ]
+}
+
+# How many observable work artifacts the agent has produced so far. A glob
+# rather than `ls | grep` so a name shellcheck worries about can never miscount.
+_oh_step_count() {
+    local dir="$1" file count=0
+    for file in "$dir"/step-*; do
+        [ -e "$file" ] && count=$((count + 1))
+    done
+    printf '%s' "$count"
+}
+
+# llmlint: ignore-end[tool_output_is_signal]
+
+# Whether `dir` holds at least `want` work artifacts — the predicate form of
+# `_oh_step_count`, so waiting on it needs no shell expression.
+_oh_steps_at_least() {
+    [ "$(_oh_step_count "$1")" -ge "$2" ]
+}
+
+# Poll `command…` until it succeeds or `seconds` elapse. Returns 1 on timeout.
+# Control is a race between two processes, so every wait here is on observable
+# state rather than a fixed sleep.
+#
+# The condition is a command and its arguments, never a string this evals: the
+# things worth waiting on are named by sandbox paths, and a path is external
+# input — under `eval` any shell syntax in one stops being a path and becomes
+# part of the expression.
+_oh_wait_for() {
+    local seconds="$1" waited=0
+    shift
+    while [ "$waited" -lt "$seconds" ]; do
+        if "$@"; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    return 1
+}
+
 # Live proof that `run --mock-rules` — the single-flag ephemeral mock — is
 # honored end to end by the real harness: the hook is delivered for THIS run
 # only (claude: a per-run --settings temp file; the rest: a project-scope

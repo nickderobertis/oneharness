@@ -1091,6 +1091,201 @@ This is the substrate a multi-turn driver (e.g. a simulated-user / skill-testing
 framework) builds on: thread one handle, get faithful state, read `events` for what
 the agent *did*.
 
+### Turn control (interrupt a running turn)
+
+A dispatched turn can run for many minutes. Without a control channel the only
+way to redirect one that has gone the wrong way is to kill the dispatch — which
+throws away the whole turn *and* its session. `--control` gives a supervisor a
+lever that keeps the session:
+
+```bash
+# The dispatch. Opens <session-dir>/control/triage.sock for the run's lifetime.
+oneharness run --harness claude-code --control --session triage \
+  --prompt "Refactor the parser." &
+
+# A SEPARATE process, whenever the supervisor decides to redirect it.
+oneharness interrupt --session triage
+# {"v":1,"ok":true,"mechanism":"claude-control-request"}
+
+# The turn aborted, the session survived: the next turn continues with full context.
+oneharness run --harness claude-code --session triage --prompt "Stop there — do X instead."
+```
+
+`interrupt` being a separate process is the whole point, and is why the channel
+is a socket rather than a flag. The protocol is one newline-terminated JSON
+request per connection, one response, connection closed:
+
+<!-- TODO(control-wire-doc-drift): generate this block from the `domain::control` request/response types, or add a gate that reconciles their field names against it, so the two cannot drift. -->
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This block hand-restates the `ControlRequest`/`ControlResponse` wire shapes; the tests reconcile only `v` and the refusal-reason values, so the field names and the ok/error split really are duplicated with nothing keeping them aligned. Suppressed rather than fixed, deliberately: generating or gating a five-line README example is its own piece of work, and the exposure — a stale doc example, not a stale contract — is marginal against the change this lands in. Scoped to the fenced block because the duplication is the shape lines themselves. Tracked by the TODO above. -->
+```jsonc
+→ {"v":1,"verb":"interrupt"}
+← {"v":1,"ok":true,"mechanism":"<shape-id>"}
+← {"v":1,"ok":false,"error":"<msg>","reason":"unsupported"|"no_active_turn"|"not_running"}
+```
+<!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
+
+`interrupt` is the only verb; `v` is what leaves room to add one later (some
+harnesses can also *steer* a turn without ending it, which is deliberately out of
+scope). The three refusal reasons are distinct because a supervisor reacts
+differently to each: `unsupported` is permanent for the harness, `not_running`
+means the dispatch is gone, `no_active_turn` means the run is alive but between
+turns. `interrupt` exits 0 when the request was served and 1 when it was refused.
+
+Requirements, all loud usage errors before anything spawns — a control lever that
+silently is not there is worse than none:
+
+- **`--session <NAME>` is required.** The socket is addressed by the caller-owned
+  handle; oneharness never infers one, because a run nobody can name is a run
+  nobody can interrupt.
+- **Exactly one harness**, which must declare a control mechanism (`control` in
+  `oneharness list`).
+- **Unix only** (the socket has no Windows equivalent in `std`). Checked last, so
+  a request that is *also* wrong in a platform-independent way — an unsupported
+  harness, mode, or output format — is refused with that reason instead, which is
+  the one that survives changing machines. `--print-command` is exempt: it opens
+  no socket and spawns nothing, and the argv it prints is the same everywhere.
+- **No `--mode edit` on a driven turn** (every mechanism except
+  `claude-control-request`). Those turns negotiate approvals on the wire, so
+  oneharness answers each permission request itself rather than the harness's
+  own `edit` mapping applying — and `edit` means *auto-approve file edits, still
+  gate shell*, which no such request carries a sourced way to distinguish.
+  Answering yes to both would grant shell authority the mode denies; answering
+  no to both would silently downgrade `edit`. Use `--mode default` (deny and
+  continue) or `--mode bypass`. Claude Code is unaffected: its control frame
+  rides the ordinary `-p` run, whose argv carries the real `acceptEdits`.
+- **No `--stream` on a server-submitted mechanism** (`opencode-http`,
+  `crush-http`): those turns never spawn the harness CLI, so there is no stdout
+  to publish line by line — and accepting the flag would silently select the
+  ordinary run, whose interrupt does not reach the turn. The report still
+  carries the whole event transcript as the result's `stdout`.
+
+The socket is created mode `0600` under a `0700` directory and removed when the
+run exits. A dispatch killed with `SIGKILL` cannot run its cleanup, so a stale
+socket file can survive; a client then gets `ECONNREFUSED` and reports
+`not_running`, the same answer as a missing file. The run report gains a
+`control` block recording the socket, the mechanism, and every request served, so
+a consumer can tell an interrupted turn from one that simply ended.
+
+**Without `--control` nothing changes**: no socket, no extra process, and a
+byte-identical argv.
+
+#### Control support matrix
+
+Every entry is sourced from a real interrupt against the real CLI —
+`scripts/explore-control.sh <id>` stands up each harness's control path, drives a
+multi-step turn, interrupts it, and reports whether work actually *stopped*
+(measured on the filesystem, because several harnesses report a normal
+`end_turn` after a genuine cancellation). `LIVE` means an interrupt through
+**oneharness** was proven end to end by `scripts/e2e-control.sh`; a mechanism
+that is only probe-verified is **not** declared in the registry, so
+`oneharness interrupt` can never report success on a path nobody exercised.
+
+| Harness | `control` | Mechanism | Status |
+| --- | --- | --- | --- |
+| Claude Code | `claude-control-request` | A `control_request` frame on the run's own stdin (`-p --input-format stream-json`) | **LIVE** through oneharness |
+| Codex | `codex-app-server` | `turn/interrupt {threadId,turnId}` over the `codex app-server` JSON-RPC stdio protocol | **LIVE** through oneharness |
+| Copilot | `acp-cancel` | The ACP `session/cancel` **notification** over `copilot --acp` | **LIVE** through oneharness |
+| Goose | `acp-cancel` | The same ACP `session/cancel` **notification** over `goose acp` | **LIVE** through oneharness |
+| OpenCode | `opencode-http` | `POST /api/session/{id}/interrupt` against a pooled `opencode serve` | **LIVE** through oneharness |
+| Crush | `crush-http` | `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against a pooled `crush server` | **LIVE** through oneharness |
+| Cursor | — | none | cursor-agent exposes no headless control surface |
+| Qwen | — | none | qwen exposes no headless control surface |
+
+**Crush needs a provider its server can actually call.** It resolves one from the
+ambient environment, and no single variable selects it, so a host carrying AWS
+selectors and no `ANTHROPIC_API_KEY` falls through to Bedrock — where a role
+without `bedrock:InvokeModelWithResponseStream` answers `403 Forbidden`, the
+agent never runs a tool, and there is no work whose freeze could be measured.
+That is an unusable *credential*, not an absent mechanism: with
+`ANTHROPIC_API_KEY` present crush picks Anthropic even alongside an `AWS_PROFILE`,
+and the cancel route then freezes the turn. `oh_control_enforce crush` is what
+holds that proof.
+
+A declared mechanism means oneharness **drives the turn** over that protocol
+rather than through the harness's ordinary headless run: it spawns
+`codex app-server` / `copilot --acp` / `goose acp` as the run's own child,
+negotiates the thread or session, sends the prompt, and holds that same stdin
+open so the interrupt reaches the live turn. Model, working directory, sandbox
+and approvals are negotiated on the wire, so they leave the argv entirely —
+which is also why Copilot and Goose can take `--session` under `--control` even
+though none of their ordinary output formats carries a session id.
+
+**OpenCode and Crush turns are submitted to their servers, not to their CLIs.**
+This is the third execution model, and the only one their interrupt reaches.
+Interrupting an ordinary `opencode run` was REFUTED both ways it can be pointed
+at a server: `run --port <n>` binds nothing (the port never appears in `ss
+-ltn`), and `run --attach http://…` leaves the attached server's
+`/api/session/active` **empty while the run is creating files** — so the
+interrupt answers `2xx` while the work continues (measured: 3 → 9 step files in
+the 15s after a "successful" interrupt). Crush's `run` has no attach flag at
+all. So under `--control` oneharness never spawns either CLI: it leases the
+harness's server from the pool, creates a session on it, follows its event
+stream, and answers what the server blocks on. The recorded `command` is
+therefore the *server's* launch argv, and the run's `stdout` is the event
+transcript oneharness actually saw.
+
+Four things that path has to get right, each learned from a run that got it
+wrong:
+
+- **Both servers block on a permission decision**, exactly as ACP does. Crush
+  emits `permission_request` and waits; opencode emits `permission.*`. A
+  permissive run tells crush once (`permissions/skip`) and answers opencode's
+  per request (`…/permission/{id}/reply`). Without an answer the agent never
+  runs a single tool.
+- **Opencode announces `session.idle` before the prompt is admitted**, not only
+  after the turn ends — and its `/wait` route returns immediately in the same
+  window. A driver that treats either as the end of the turn finishes every run
+  in under a second having done nothing. The end of the turn is idle *after*
+  `session.next.prompt.admitted`.
+- **The working directory is per turn on both** (opencode's
+  `location.directory`, crush's workspace `path`), which is what lets one server
+  be shared across dispatches in different projects without the cwd widening the
+  pool key.
+- **Crush's routes are not where they look.** A session is created on the
+  *workspace* (`POST /v1/workspaces/{id}/sessions`; `/agent/sessions` answers a
+  bare `404 page not found`) and the prompt goes to `POST
+  /v1/workspaces/{id}/agent` with the session in the **body**
+  (`/agent/sessions/{sid}` is GET-only and answers `405`), returning `202` with
+  the turn running in the background.
+
+**Goose takes its provider and model from the environment, in ACP too.**
+`goose acp` resolves `GOOSE_PROVIDER` / `GOOSE_MODEL` (plus the matching
+provider key) exactly as an ordinary `goose run` does, and neither travels on
+the argv or the wire — so with none set, `session/new` fails `-32603 Internal
+error: Failed to resolve provider` and the run never reaches a turn to
+interrupt. `scripts/e2e-control.sh` exports them for the goose phase like
+`e2e-goose.sh` does.
+
+Notes worth keeping, all from the probe rather than documentation:
+
+- Claude Code **silently drops** a plain user message written mid-turn, so the
+  `control_request` frame is the only mechanism that works.
+- The ACP client **must answer `session/request_permission`** — goose and copilot
+  block indefinitely and never begin work otherwise, which is easy to mistake for
+  a slow or broken harness — and cancel must be sent as a **notification** (with
+  an `id`, goose answers `-32601 Method not found`).
+- **Opencode does not honor `Connection: close`** on every route — it answers in
+  full and leaves the socket open. A client that reads until EOF therefore times
+  out on an answer that already arrived, and reports the server as unreachable:
+  `--control` failed readiness against a server that was up and answering `200`.
+  The answer ends where its own framing says it does (the terminating chunk, or
+  `Content-Length` bytes), and only a server that framed it neither way is read
+  to EOF.
+- Crush's `client_id` is a self-assigned UUID that travels in the request **body**
+  when creating a workspace but as a **query parameter** on every other route; a
+  mismatch yields a bare `{"message":"invalid client_id"}`. Its prompt POST
+  returns `202` immediately, so control is fire-and-forget against the event
+  stream rather than request-scoped, and its server answers
+  `Transfer-Encoding: chunked` (an HTTP client that skips de-chunking reports a
+  JSON decode error where the harness in fact answered correctly).
+- Codex must **not** be driven through `codex app-server daemon`: it requires a
+  managed standalone install this project does not use and self-updates from a
+  fixed path, which conflicts with pinning an exact version.
+- Codex answers `turn/start` **immediately** with the new turn's id and
+  `status: "inProgress"`. That response is the acknowledgement, not the end of
+  the turn — reading it as terminal ends every controlled run in under half a
+  second, before the agent does anything. `turn/completed` is the end.
+
 ### Fallback mode (first that runs wins)
 
 By default `run` drives every selected harness in **parallel** and reports them

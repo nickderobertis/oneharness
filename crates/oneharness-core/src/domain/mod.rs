@@ -4,12 +4,15 @@
 
 pub mod batch;
 pub mod config;
+pub mod control;
+pub mod dialogue;
 pub mod events;
 pub mod fallback;
 pub mod gate;
 pub mod harness;
 pub mod history;
 pub mod hooks;
+pub mod http;
 pub mod mock;
 pub mod mode;
 pub mod normalize;

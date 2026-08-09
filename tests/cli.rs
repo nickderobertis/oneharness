@@ -49,11 +49,52 @@ fn run(args: &[&str], envs: &[(&str, &str)]) -> Output {
     // never shape these assertions. Config behavior itself is tested through
     // `run_with_config`, which opts back in.
     cmd.env("ONEHARNESS_NO_CONFIG", "1");
-    cmd.args(args);
+    let redirect = mock_profile_redirect();
+    cmd.args(with_mock_profile_redirect(args, &redirect));
     for (key, value) in envs {
         cmd.env(key, value);
     }
     cmd.output().expect("failed to run oneharness")
+}
+
+/// `--env` for a mock-harness child this test is going to have killed.
+///
+/// A cancelled or timed-out run tears its harness process down with `SIGKILL`
+/// after the TERM grace, so that process never flushes its coverage profile and
+/// leaves a truncated `.profraw`. `just coverage` collects every such file from
+/// the target directory, and one bad header fails the whole `llvm-profdata
+/// merge` — taking the gate down over a *fixture* whose coverage nobody wanted.
+///
+/// This targets the harness child only (`--env` sets the environment of each
+/// harness process, not of oneharness), so the binary under test keeps
+/// contributing its own coverage exactly as before. Harmless when the fixture is
+/// not instrumented, which ignores the variable.
+fn mock_profile_redirect() -> String {
+    format!(
+        "LLVM_PROFILE_FILE={}",
+        std::env::temp_dir()
+            .join("oneharness-killed-mock-%p.profraw")
+            .display()
+    )
+}
+
+/// `args` with that `--env` added, for any `run` invocation.
+///
+/// Applied to every run rather than only the tests that cancel on purpose: a
+/// harness process is also torn down by a timeout, and under a loaded parallel
+/// suite the TERM grace expires often enough that *which* run leaves the
+/// truncated profile is a race rather than a property of one test. Inserted
+/// before a raw `--` so a passthrough argument list keeps its meaning.
+fn with_mock_profile_redirect<'a>(args: &[&'a str], redirect: &'a str) -> Vec<&'a str> {
+    if args.first() != Some(&"run") {
+        return args.to_vec();
+    }
+    let at = args.iter().position(|a| *a == "--").unwrap_or(args.len());
+    let mut out = args[..at].to_vec();
+    out.push("--env");
+    out.push(redirect);
+    out.extend_from_slice(&args[at..]);
+    out
 }
 
 /// The `ONEHARNESS_*` env overrides recognized as a config layer. Cleared in
@@ -92,7 +133,8 @@ fn run_with_config(args: &[&str], envs: &[(&str, &str)], user_config: &std::path
     for var in ENV_OVERRIDE_VARS {
         cmd.env_remove(var);
     }
-    cmd.args(args);
+    let redirect = mock_profile_redirect();
+    cmd.args(with_mock_profile_redirect(args, &redirect));
     for (key, value) in envs {
         cmd.env(key, value);
     }
@@ -256,7 +298,7 @@ fn every_report_carries_the_shared_schema_version() {
     // so a consumer reads any of them with one number — and a bump must move
     // every surface at once. Pinned literally on purpose: asserting against the
     // constant would pass through a bump nobody intended.
-    let version = "0.5";
+    let version = "0.6";
     let printed = run(
         &[
             "run",
@@ -299,7 +341,7 @@ fn list_describes_every_harness() {
     let output = run(&["list"], &[]);
     assert!(output.status.success());
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.5");
+    assert_eq!(value["schema_version"], "0.6");
     let ids: Vec<&str> = value["harnesses"]
         .as_array()
         .unwrap()
@@ -1839,6 +1881,7 @@ fn session_survives_an_unwritable_store() {
 
 #[test]
 fn session_without_a_resolvable_store_is_a_usage_error() {
+    let mock_profile = mock_profile_redirect();
     // With no --session-dir and no platform state dir (HOME / XDG / LOCALAPPDATA
     // all unset), the store can't be located — a loud usage error up front.
     let output = Command::new(oneharness_bin())
@@ -1857,6 +1900,8 @@ fn session_without_a_resolvable_store_is_a_usage_error() {
             "hi",
             "--print-command",
             "--compact",
+            "--env",
+            mock_profile.as_str(),
         ])
         .output()
         .expect("failed to run oneharness");
@@ -3396,6 +3441,7 @@ bin = "{bin}"
 
 #[test]
 fn stream_short_circuit_tears_down_the_child_when_the_consumer_closes() {
+    let mock_profile = mock_profile_redirect();
     // The flagship streaming behavior: when the consumer stops reading (closes
     // oneharness's stdout), oneharness's next event write fails (broken pipe) and
     // it tears the harness child down — so a bad turn is cut off, not paid for in
@@ -3431,6 +3477,8 @@ fn stream_short_circuit_tears_down_the_child_when_the_consumer_closes() {
             "--bin",
             &bin_override("opencode"),
             "--stream",
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -4010,6 +4058,7 @@ fn timeout_preserves_partial_telemetry_in_report_and_history() {
 #[cfg(unix)]
 #[test]
 fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
+    let mock_profile = mock_profile_redirect();
     // The CLI face of cancellation. The harness writes nothing at all, so the run
     // has no line to react to, and its descendant outlives a launcher kill. A
     // SIGTERM to oneharness must therefore tear the whole tree down through the
@@ -4041,6 +4090,8 @@ fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
             "--history-dir",
             &history_arg,
             "--compact",
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -4081,7 +4132,7 @@ fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
     // The report is still the contract: a cancelled run is a value a consumer
     // reads, not a process that vanished.
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.5");
+    assert_eq!(value["schema_version"], "0.6");
     let result = &value["results"][0];
     assert_eq!(result["status"], "cancelled");
     assert_eq!(result["exit_code"], Value::Null);
@@ -4103,6 +4154,7 @@ fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
 #[cfg(unix)]
 #[test]
 fn a_cancelled_batch_claims_no_invocation_for_its_queued_prompts() {
+    let mock_profile = mock_profile_redirect();
     // The queued half of cancellation, end to end. A batch of three prompts runs
     // one at a time, so when the signal lands only the first prompt has ever been
     // invoked — the other two are still queued. They are still the caller's
@@ -4145,6 +4197,8 @@ fn a_cancelled_batch_claims_no_invocation_for_its_queued_prompts() {
             "--history-dir",
             &history_arg,
             "--compact",
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -4238,6 +4292,7 @@ fn a_cancelled_batch_claims_no_invocation_for_its_queued_prompts() {
 #[cfg(unix)]
 #[test]
 fn a_cancelled_run_keeps_the_output_it_had_already_produced() {
+    let mock_profile = mock_profile_redirect();
     // Cancelling is not a reason to throw away evidence. The harness emits a
     // complete transcript and then keeps its descendant alive, so the run is cut
     // short *after* it produced parseable output — which must still normalize
@@ -4276,6 +4331,8 @@ fn a_cancelled_run_keeps_the_output_it_had_already_produced() {
             "--history-dir",
             &history_arg,
             "--compact",
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -4327,6 +4384,7 @@ fn a_cancelled_run_keeps_the_output_it_had_already_produced() {
 #[cfg(unix)]
 #[test]
 fn a_cancelled_fallback_candidate_stops_the_chain() {
+    let mock_profile = mock_profile_redirect();
     // Falling through a cancellation would spawn the very next harness the
     // cancellation was meant to prevent — so the chain stops, and `results`
     // holds only the candidate that was actually attempted.
@@ -4354,6 +4412,8 @@ fn a_cancelled_fallback_candidate_stops_the_chain() {
             "--timeout",
             "60",
             "--compact",
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -4425,6 +4485,7 @@ fn term_ignoring_harness(label: &str) -> PathBuf {
 #[cfg(unix)]
 #[test]
 fn a_second_host_signal_stops_waiting_for_teardown() {
+    let mock_profile = mock_profile_redirect();
     // Teardown is bounded but not instant, and an operator pressing Ctrl-C twice
     // is asking to stop waiting for it: the second signal exits 130 straight from
     // the handler, without the report the first one would have produced.
@@ -4451,6 +4512,8 @@ fn a_second_host_signal_stops_waiting_for_teardown() {
             "--timeout",
             "60",
             "--compact",
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -4498,6 +4561,7 @@ fn a_second_host_signal_stops_waiting_for_teardown() {
 #[cfg(unix)]
 #[test]
 fn a_host_signal_cancels_a_streaming_run_and_still_terminates_the_stream() {
+    let mock_profile = mock_profile_redirect();
     // Streaming is where a silent harness is hardest to stop: the loop reacts to
     // lines, and there are none. The consumer must still get its terminal
     // `result` envelope — a stream that simply stops is indistinguishable from a
@@ -4520,6 +4584,8 @@ fn a_host_signal_cancels_a_streaming_run_and_still_terminates_the_stream() {
             "--timeout",
             "60",
             "--stream",
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -6817,7 +6883,7 @@ fn config_command_shows_values_with_sources() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.5");
+    assert_eq!(value["schema_version"], "0.6");
     assert_eq!(value["config_files"].as_array().unwrap().len(), 2);
 
     // The project file wins for model and is named as the source...
@@ -12265,6 +12331,7 @@ fn streamed_history_falls_back_to_events_only_extractable_at_completion() {
 
 #[test]
 fn interrupted_stream_preserves_events_without_a_closing_run() {
+    let mock_profile = mock_profile_redirect();
     use std::io::BufReader;
 
     let dir = hist_dir("interrupted-stream");
@@ -12274,6 +12341,17 @@ fn interrupted_stream_preserves_events_without_a_closing_run() {
         .collect();
     let mut child = Command::new(oneharness_bin())
         .env("ONEHARNESS_NO_CONFIG", "1")
+        // This child is SIGKILLed below, so it never flushes its coverage
+        // profile and leaves a truncated `.profraw`. Under `just coverage` that
+        // file is collected from the target directory and fails the whole
+        // `llvm-profdata merge` ("file header is corrupt"), taking the gate down
+        // for a process whose coverage was never wanted. Send it and its
+        // inherited children somewhere the collector does not read. Harmless
+        // when the binary is not instrumented, which ignores the variable.
+        .env(
+            "LLVM_PROFILE_FILE",
+            std::env::temp_dir().join("oneharness-killed-%p.profraw"),
+        )
         .env("MOCK_STDOUT", lines.join("\n"))
         .env("MOCK_STREAM_DELAY_MS", "300")
         .args([
@@ -12288,6 +12366,8 @@ fn interrupted_stream_preserves_events_without_a_closing_run() {
             "--history",
             "--history-dir",
             &ds,
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -12353,6 +12433,7 @@ fn interrupted_stream_preserves_events_without_a_closing_run() {
 
 #[test]
 fn history_watch_event_mode_observes_event_before_stream_finishes() {
+    let mock_profile = mock_profile_redirect();
     use std::io::BufReader;
 
     let dir = hist_dir("watch-live-events");
@@ -12435,6 +12516,8 @@ fn history_watch_event_mode_observes_event_before_stream_finishes() {
             "--history",
             "--history-dir",
             &ds,
+            "--env",
+            mock_profile.as_str(),
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -13071,6 +13154,7 @@ fn history_watch_scopes_to_explicit_and_current_project() {
 
 #[test]
 fn concurrent_processes_append_complete_history_index_lines() {
+    let mock_profile = mock_profile_redirect();
     let dir = hist_dir("concurrent-process-index");
     let ds = dir.display().to_string();
     let mut children = Vec::new();
@@ -13094,6 +13178,8 @@ fn concurrent_processes_append_complete_history_index_lines() {
                     &format!("process-{index}"),
                     "--bypass",
                     "--compact",
+                    "--env",
+                    mock_profile.as_str(),
                 ])
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())
@@ -18777,4 +18863,2807 @@ fn usage_reports_a_failed_stdout_write_instead_of_panicking() {
             "`{label}` must name what failed, stderr:\n{stderr}"
         );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn interrupt_reports_a_failed_stdout_write_instead_of_panicking() {
+    // The answer frame IS this command's deliverable, and its reader is a
+    // supervisor that may pipe it into `head` or die between sending the
+    // interrupt and reading the reply. `println!` panics on that; the shared
+    // writer reports it, like every other JSON-emitting command.
+    //
+    // No run is addressed, so this answers `not_running` — which is the point:
+    // the write path is reached whatever the verdict, and no live turn is
+    // needed to exercise it.
+    let store = control_store_dir("brokenpipe");
+    let mut child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args([
+            "interrupt",
+            "--session",
+            "gone",
+            "--session-dir",
+            &store.display().to_string(),
+            "--compact",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn oneharness interrupt");
+    drop(child.stdout.take().expect("stdout was piped"));
+
+    let output = child.wait_with_output().expect("failed to wait");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("panicked"),
+        "interrupt panicked on a closed stdout:\n{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+// --- out-of-band turn control (`run --control` + `oneharness interrupt`) ------
+
+/// A private, per-test session store (which is also where the run's control
+/// socket lives, at `<dir>/control/<name>.sock`).
+fn control_store_dir(tag: &str) -> PathBuf {
+    let name = format!("oh-control-{tag}-{}-{}", std::process::id(), tag.len());
+    let dir = control_store_root(tag, &name).join(&name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// The root a control store goes under.
+///
+/// `/tmp` rather than `std::env::temp_dir()`, because on unix this path becomes
+/// a socket *address* and not just a place to put files: `sockaddr_un.sun_path`
+/// holds 104 bytes on macOS against Linux's 108, and macOS's per-user `$TMPDIR`
+/// is a `/var/folders/…` path the bind canonicalizes to `/private/var/folders/…`
+/// before binding — over half the budget spent on the root alone, so an address
+/// under it overruns `sun_path` on macOS while fitting comfortably on Linux.
+#[cfg(unix)]
+fn control_store_root(tag: &str, name: &str) -> PathBuf {
+    // Budget the part a caller controls against the TIGHTEST platform, so a
+    // too-long tag fails on Linux instead of only in macOS CI: `/tmp`
+    // canonicalizes to `/private/tmp` there, leaving 90 of the 103 usable bytes
+    // for `<name>/control/<session>.sock`. The session name is the caller's, so
+    // it is charged at the tag's length or 16 — whichever is larger — which
+    // every control test is comfortably inside.
+    const BUDGET: usize = 103 - "/private/tmp/".len();
+    let session = tag.len().max(16);
+    let longest = name.len() + "/control/".len() + session + ".sock".len();
+    assert!(
+        longest <= BUDGET,
+        "control store `{name}` leaves no room for a `sun_path`-sized socket \
+         address ({longest} > {BUDGET}) — shorten the tag"
+    );
+    // Canonical, because a bound socket path IS canonical: `bind` resolves the
+    // directory before binding — the address is handed to a separate process,
+    // and a symlinked one resolves differently depending on where that process
+    // runs — so the run reports `/private/tmp/…` on macOS whatever was passed
+    // in. A store rooted at the uncanonicalized `/tmp` still binds and still
+    // interrupts (the symlink resolves either way), but its path no longer
+    // matches the one the report echoes. Resolving here is also what makes the
+    // budget above the real one rather than an estimate.
+    std::fs::canonicalize("/tmp").expect("/tmp must exist to root a control store")
+}
+
+/// No socket is ever bound under this root — `--control` is refused outright
+/// where there are no unix sockets — so the ordinary temp dir is right and
+/// there is no address length to budget for.
+#[cfg(not(unix))]
+fn control_store_root(_tag: &str, _name: &str) -> PathBuf {
+    std::env::temp_dir()
+}
+
+/// Poll until `condition` holds or the deadline passes. Control is inherently a
+/// race between two processes, so the tests wait on observable state (a socket
+/// appearing, a prompt frame reaching the harness) rather than on a sleep.
+///
+/// Unix-gated with the control tests that poll: control needs a unix socket, so
+/// there is nothing to wait on where there is none.
+#[cfg(unix)]
+fn wait_until(label: &str, mut condition: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::time::Instant::now() < deadline {
+        if condition() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    panic!("timed out waiting for {label}");
+}
+
+#[cfg(unix)]
+#[test]
+fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
+    let mock_profile = mock_profile_redirect();
+    // The whole contract in one exchange: a `run --control --session` process
+    // opens an addressable socket, a SEPARATE `oneharness interrupt` process
+    // resolves it and aborts the in-flight turn, and the run finishes normally
+    // (session intact) with the interrupt recorded in its report.
+    let store = control_store_dir("interrupt");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("interrupt-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let turn_log = store.join("turn.log");
+    let turn_log_arg = turn_log.display().to_string();
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_TURN_LOG", &turn_log_arg)
+        .env("MOCK_TURN_HOLD", "1")
+        .env(
+            "MOCK_STDOUT",
+            r#"{"type":"system","subtype":"init","session_id":"sess-ctl"}"#,
+        )
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "watched",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the controlled run");
+
+    let socket = store.join("control").join("watched.sock");
+    wait_until("the control socket to appear", || socket.exists());
+    // 0600: the socket is a lever over a running agent.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "control socket must be owner-only");
+    }
+    // The turn is genuinely in flight once the harness has the prompt frame.
+    wait_until("the turn to start", || {
+        std::fs::read_to_string(&turn_log)
+            .map(|log| log.contains("keep working"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "watched",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    let frame = json_stdout(&interrupt);
+    assert_eq!(frame["v"], 1);
+    assert_eq!(frame["ok"], true);
+    assert_eq!(frame["mechanism"], "claude-control-request");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("run report was not JSON");
+    assert_eq!(report["schema_version"], "0.6");
+    assert_eq!(report["control"]["mechanism"], "claude-control-request");
+    assert_eq!(report["control"]["socket"], socket.display().to_string());
+    let interrupts = report["control"]["interrupts"].as_array().unwrap();
+    assert_eq!(interrupts.len(), 1);
+    assert_eq!(interrupts[0]["verb"], "interrupt");
+    assert_eq!(interrupts[0]["outcome"], "served");
+    assert!(!interrupts[0]["at"].as_str().unwrap().is_empty());
+
+    // The harness really received the control frame — asserted at the harness,
+    // not from oneharness's own bookkeeping.
+    let log = std::fs::read_to_string(&turn_log).unwrap();
+    assert!(log.contains("control_request"), "turn log:\n{log}");
+    assert!(log.contains("INTERRUPTED"), "turn log:\n{log}");
+
+    // The socket is gone with the run, and the session survived the interrupt.
+    assert!(
+        !socket.exists(),
+        "socket must be removed when the run exits"
+    );
+    assert_eq!(report["results"][0]["status"], "ok");
+    assert_eq!(report["session"]["name"], "watched");
+    assert_eq!(report["session"]["token"], "sess-ctl");
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
+fn control_run_pins_the_message_stream_argv_and_leaves_the_prompt_off_it() {
+    let mock_profile = mock_profile_redirect();
+    // The control channel IS the run's stdin, so the prompt cannot ride the
+    // argv: `--input-format stream-json` replaces the positional.
+    let store = control_store_dir("argv");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("argv-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let turn_log = store.join("turn.log");
+    let argv_file = store.join("argv.txt");
+
+    let output = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_TURN_LOG", turn_log.display().to_string())
+        .env("MOCK_ARGV_FILE", argv_file.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "argvcheck",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "secret-prompt-text",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .output()
+        .expect("failed to run oneharness");
+    assert!(output.status.success(), "{output:?}");
+
+    let argv = std::fs::read_to_string(&argv_file).unwrap();
+    let args: Vec<&str> = argv.lines().collect();
+    assert!(
+        args.windows(2)
+            .any(|w| w == ["--input-format", "stream-json"]),
+        "argv:\n{argv}"
+    );
+    assert!(
+        args.windows(2)
+            .any(|w| w == ["--output-format", "stream-json"]),
+        "argv:\n{argv}"
+    );
+    assert!(
+        !args.contains(&"secret-prompt-text"),
+        "the prompt must ride the control stream, not the argv:\n{argv}"
+    );
+    // It reached the harness over stdin instead.
+    let log = std::fs::read_to_string(&turn_log).unwrap();
+    assert!(log.contains("secret-prompt-text"), "turn log:\n{log}");
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_controlled_run_reports_the_resolved_socket_address_not_the_one_passed_in() {
+    // The socket path is an ADDRESS a separate `oneharness interrupt` process
+    // resolves, so `bind` canonicalizes it and the report must echo what was
+    // actually bound — a supervisor that stores the reported path and hands it
+    // to another process needs the resolved one.
+    //
+    // A symlinked store is the shape macOS puts every control test in for free:
+    // `/tmp` is a symlink to `/private/tmp` there, so a run told `--session-dir
+    // /tmp/…` binds and reports `/private/tmp/…`. Reproducing it with an
+    // explicit symlink is what lets Linux prove the contract macOS exercises.
+    let mock_profile = mock_profile_redirect();
+    let store = control_store_dir("symlink");
+    let real = store.join("real");
+    std::fs::create_dir_all(&real).unwrap();
+    let link = store.join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let output = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "resolved",
+            "--session-dir",
+            &link.display().to_string(),
+            "--cwd",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .output()
+        .expect("failed to run oneharness");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("run report was not JSON");
+    assert_eq!(
+        report["control"]["socket"],
+        real.join("control")
+            .join("resolved.sock")
+            .display()
+            .to_string(),
+        "the report must name the bound address, not the symlink it was given"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(not(unix))]
+#[test]
+fn control_on_a_platform_without_unix_sockets_is_a_usage_error() {
+    // There is no socket to open on Windows, so `--control` must say so before
+    // spawning rather than running a turn nobody can address.
+    let store = control_store_dir("platform");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "win",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--control needs a unix domain socket"),
+        "stderr:\n{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn control_without_a_session_is_a_usage_error_naming_the_reason() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--control requires --session"),
+        "stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn control_on_a_harness_without_a_mechanism_is_a_usage_error() {
+    let store = control_store_dir("unsupported");
+    let store_arg = store.display().to_string();
+    // cursor-agent was probed and has no headless control surface at all.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "cursor",
+            "--control",
+            "--session",
+            "nope",
+            "--session-dir",
+            &store_arg,
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("cursor"),
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("has no out-of-band turn control"),
+        "stderr:\n{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn control_refuses_edit_mode_on_a_driven_turn_rather_than_over_granting() {
+    // A driven turn negotiates approvals on the wire, so oneharness answers each
+    // permission request itself. `edit` means auto-approved edits with shell
+    // still gated, and no protocol here carries a sourced way to tell those
+    // apart — so answering at all would either grant shell authority the mode
+    // denies or silently downgrade `edit`. Refuse before spawning instead.
+    // opencode declares `edit` AND a control mechanism, so it is exactly the
+    // combination that would otherwise reach the blanket grant.
+    let store = control_store_dir("edit-mode");
+    let store_arg = store.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--session",
+            "edits",
+            "--session-dir",
+            &store_arg,
+            "--prompt",
+            "hi",
+            "--mode",
+            "edit",
+            "--bin",
+            &bin_override("opencode"),
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("negotiates approvals on the wire")
+            && stderr.contains("--mode edit")
+            && stderr.contains("--mode bypass"),
+        "the refusal must name the mode and an expressible alternative; stderr:\n{stderr}"
+    );
+    // Refused *before* anything spawned, which is what makes it a usage error
+    // rather than a run that quietly acted with the wrong authority.
+    assert!(
+        !store.join("control").exists(),
+        "a refused control run must open no socket"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn control_still_accepts_edit_mode_where_the_argv_carries_it() {
+    // Claude Code's control frame rides its ordinary `-p` run, so `edit` is
+    // delivered by the same argv a plain dispatch uses (`acceptEdits`) and the
+    // refusal above must not reach it. `--print-command` proves the mapping
+    // survives without spawning.
+    let store = control_store_dir("edit-mode-claude");
+    let store_arg = store.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "edits",
+            "--session-dir",
+            &store_arg,
+            "--prompt",
+            "hi",
+            "--mode",
+            "edit",
+            "--print-command",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("acceptEdits"),
+        "claude-code must still deliver `edit` on its argv; stdout:\n{stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn control_needs_exactly_one_harness() {
+    let store = control_store_dir("multi");
+    let store_arg = store.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--harness",
+            "codex",
+            "--control",
+            "--session",
+            "many",
+            "--session-dir",
+            &store_arg,
+            "--prompt",
+            "hi",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("needs exactly one harness"),
+        "stderr:\n{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn control_rejects_an_output_format_the_mechanism_cannot_use() {
+    let store = control_store_dir("format");
+    let store_arg = store.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "fmt",
+            "--session-dir",
+            &store_arg,
+            "--output-format",
+            "json",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("needs output format `stream-json` for --control"),
+        "stderr:\n{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn interrupt_against_a_run_that_is_not_running_reports_not_running() {
+    let store = control_store_dir("notrunning");
+    let store_arg = store.display().to_string();
+    let output = run(
+        &[
+            "interrupt",
+            "--session",
+            "ghost",
+            "--session-dir",
+            &store_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let frame = json_stdout(&output);
+    assert_eq!(frame["ok"], false);
+    assert_eq!(frame["reason"], "not_running");
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
+fn interrupt_between_turns_reports_no_active_turn() {
+    // A run that is alive and listening but has no turn in flight must answer
+    // `no_active_turn` — distinct from `not_running`, because a supervisor
+    // retries one and gives up on the other. Driven through the real
+    // `oneharness interrupt` command against a bound socket, so the CLI's own
+    // resolution and exit code are what is asserted.
+    use oneharness_core::domain::control::socket_path;
+    let store = control_store_dir("noturn");
+    let listener = oneharness_core::io::control::bind(
+        &socket_path(&store, "idle"),
+        oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
+        None,
+    )
+    .unwrap();
+
+    let output = run(
+        &[
+            "interrupt",
+            "--session",
+            "idle",
+            "--session-dir",
+            &store.display().to_string(),
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let frame = json_stdout(&output);
+    assert_eq!(frame["ok"], false);
+    assert_eq!(frame["reason"], "no_active_turn");
+    // Refused requests are recorded too, so a supervisor's failed attempt is
+    // visible in the run's own report rather than only in its own logs.
+    let events = listener.handle_ref().events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].reason(),
+        Some(oneharness_core::domain::control::ControlReason::NoActiveTurn)
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn interrupt_on_a_harness_without_a_mechanism_reports_unsupported() {
+    // The store binds the session to a harness with no control mechanism, so
+    // the refusal is knowable without a live run — the one refusal a supervisor
+    // can learn before spending a dispatch.
+    let store = control_store_dir("unsupported-interrupt");
+    let cwd = control_store_dir("unsupported-interrupt-cwd");
+    let record = serde_json::json!({
+        "schema_version": "0.1",
+        "name": "bound",
+        "project": cwd.display().to_string(),
+        "harness": "cursor",
+        "token": "th-1",
+        "created": "2026-08-08T00:00:00Z",
+        "updated": "2026-08-08T00:00:00Z",
+    });
+    let path = oneharness_core::io::session::session_path(&store, &cwd, "bound");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, serde_json::to_string(&record).unwrap()).unwrap();
+
+    let output = run(
+        &[
+            "interrupt",
+            "--session",
+            "bound",
+            "--session-dir",
+            &store.display().to_string(),
+            "--cwd",
+            &cwd.display().to_string(),
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let frame = json_stdout(&output);
+    assert_eq!(frame["ok"], false);
+    assert_eq!(frame["reason"], "unsupported");
+    assert!(frame["error"].as_str().unwrap().contains("cursor"));
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn a_run_without_control_opens_no_socket_and_keeps_its_argv() {
+    let mock_profile = mock_profile_redirect();
+    // The non-breaking guarantee: absent `--control`, nothing changes — no
+    // socket directory, and the prompt still rides the argv as a positional.
+    let store = control_store_dir("absent");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("absent-cwd");
+    let argv_file = store.join("argv.txt");
+
+    let output = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_ARGV_FILE", argv_file.display().to_string())
+        .env(
+            "MOCK_STDOUT",
+            r#"{"type":"result","result":"hi","session_id":"sess-plain"}"#,
+        )
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--session",
+            "plain",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd.display().to_string(),
+            "--prompt",
+            "ordinary-prompt",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .output()
+        .expect("failed to run oneharness");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(report["control"].is_null(), "{report}");
+    assert!(
+        !store.join("control").exists(),
+        "no control directory should be created"
+    );
+    let argv = std::fs::read_to_string(&argv_file).unwrap();
+    assert!(
+        argv.lines().any(|l| l == "ordinary-prompt"),
+        "the prompt must still ride the argv:\n{argv}"
+    );
+    assert!(
+        !argv.lines().any(|l| l == "stream-json"),
+        "the ordinary argv must be unchanged:\n{argv}"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_host_signal_cancels_a_controlled_run_and_takes_its_socket_with_it() {
+    let mock_profile = mock_profile_redirect();
+    // A controlled run is the one shape that holds the harness's stdin open past
+    // the prompt, so a harness waiting for its next frame never reaches EOF on its
+    // own — exactly the run a supervisor's SIGTERM must still be able to end. The
+    // signal has to tear the tree down through the ordinary cancel path, emit the
+    // report, and take the 0600 socket with it; a lever left addressable after the
+    // run is gone is worse than none.
+    let store = control_store_dir("signal");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("signal-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let turn_log = store.join("turn.log");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_TURN_LOG", turn_log.display().to_string())
+        // The turn never ends by itself, so only the cancellation can end it.
+        .env("MOCK_TURN_HOLD", "1")
+        .env(
+            "MOCK_STDOUT",
+            r#"{"type":"system","subtype":"init","session_id":"sess-signal"}"#,
+        )
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "signalled",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("claude-code"),
+            // Far beyond the teardown measured below, so a run that only ended at
+            // its own deadline could never pass.
+            "--timeout",
+            "60",
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the controlled run");
+
+    let socket = store.join("control").join("signalled.sock");
+    wait_until("the control socket to appear", || socket.exists());
+    // Signal a genuinely in-flight turn, not a spawn race.
+    wait_until("the turn to start", || {
+        std::fs::read_to_string(&turn_log)
+            .map(|log| log.contains("keep working"))
+            .unwrap_or(false)
+    });
+
+    let signalled = std::time::Instant::now();
+    let sent = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("failed to signal oneharness");
+    assert!(sent.success(), "kill -TERM did not succeed");
+
+    let output = child.wait_with_output().expect("failed to reap oneharness");
+    assert!(
+        signalled.elapsed() < std::time::Duration::from_secs(15),
+        "the signalled controlled run did not tear down promptly: {:?}",
+        signalled.elapsed()
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "oneharness did not exit through its own reporting path: {:?}",
+        output.status
+    );
+
+    let report = json_stdout(&output);
+    assert_eq!(report["results"][0]["status"], "cancelled");
+    // The control block still describes the run that was cut short, rather than
+    // vanishing with it.
+    assert_eq!(report["control"]["mechanism"], "claude-control-request");
+    assert!(
+        report["control"]["interrupts"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{report}"
+    );
+    assert!(
+        !socket.exists(),
+        "the socket must be removed when a cancelled run exits"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
+fn control_works_alongside_streaming_so_a_supervisor_can_watch_and_interrupt() {
+    let mock_profile = mock_profile_redirect();
+    // The supervisor use case: read normalized events as they arrive and cut the
+    // turn short on what you see. Streaming and control share one open stdin, so
+    // this pins that they compose.
+    let store = control_store_dir("stream");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("stream-cwd");
+    let turn_log = store.join("turn.log");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_TURN_LOG", turn_log.display().to_string())
+        .env("MOCK_TURN_HOLD", "1")
+        .env(
+            "MOCK_STDOUT",
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"step"}}]},"session_id":"sess-stream"}"#,
+        )
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--stream",
+            "--session",
+            "streamed",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd.display().to_string(),
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("claude-code"),
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the streamed controlled run");
+
+    let socket = store.join("control").join("streamed.sock");
+    wait_until("the control socket to appear", || socket.exists());
+    wait_until("the turn to start", || {
+        std::fs::read_to_string(&turn_log)
+            .map(|log| log.contains("keep working"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "streamed",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd.display().to_string(),
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stdout);
+    // The incremental event envelope arrived before the closing report.
+    let mut envelopes = text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<RunStreamEnvelope>(line).ok());
+    assert!(
+        matches!(envelopes.next(), Some(RunStreamEnvelope::Event { .. })),
+        "expected a streamed event first:\n{text}"
+    );
+    let report = match envelopes.next_back() {
+        Some(RunStreamEnvelope::Result { report }) => report,
+        other => panic!("expected a closing result envelope, got {other:?}\n{text}"),
+    };
+    let control = report.control.expect("streamed run should report control");
+    assert_eq!(
+        control.mechanism,
+        oneharness_core::domain::control::ControlShape::ClaudeControlRequest
+    );
+    assert_eq!(control.interrupts.len(), 1);
+    assert!(control.interrupts[0].is_served());
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn control_with_a_schema_is_a_usage_error() {
+    // The structured-output loop re-prompts, which is a second turn; the control
+    // channel owns the one open stdin. Refused up front rather than silently
+    // running with retries disabled.
+    let store = control_store_dir("schema");
+    let schema = store.join("schema.json");
+    std::fs::write(&schema, r#"{"type":"object"}"#).unwrap();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "sch",
+            "--session-dir",
+            &store.display().to_string(),
+            "--schema",
+            &schema.display().to_string(),
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--control cannot be combined with --schema"),
+        "stderr:\n{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+/// Every row of the README's control support matrix: the harness id and the
+/// `control` cell (a mechanism id, or the em dash meaning "none").
+fn readme_control_matrix() -> Vec<(String, String)> {
+    let readme = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md"))
+        .expect("README.md is readable");
+    let table = readme
+        .split("#### Control support matrix")
+        .nth(1)
+        .expect("README has a control support matrix");
+    table
+        .lines()
+        .skip_while(|line| !line.starts_with("| Harness "))
+        .skip(2)
+        .take_while(|line| line.starts_with('|'))
+        .map(|line| {
+            let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
+            (
+                cells[0].to_lowercase().replace(' ', "-"),
+                cells[1].trim_matches('`').to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_readme_control_matrix_matches_the_registry() {
+    // The matrix is the capability's public face, and a stale row is exactly the
+    // decay this feature exists to prevent (a supervisor reading support that
+    // was removed). Pin it to `oneharness list`, the registry's own report.
+    let listed = json_stdout(&run(&["list"], &[]));
+    let mut declared: Vec<(String, String)> = listed["harnesses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| {
+            (
+                h["id"].as_str().unwrap().to_string(),
+                h["control"].as_str().unwrap_or("—").to_string(),
+            )
+        })
+        .collect();
+    declared.sort();
+
+    let mut documented = readme_control_matrix();
+    // The matrix names harnesses by display-ish name; map them to registry ids.
+    for row in &mut documented {
+        row.0 = match row.0.as_str() {
+            "claude-code" => "claude-code",
+            "opencode" => "opencode",
+            "codex" => "codex",
+            "crush" => "crush",
+            "goose" => "goose",
+            "copilot" => "copilot",
+            "cursor" => "cursor",
+            "qwen" => "qwen",
+            other => panic!("unknown harness `{other}` in the README control matrix"),
+        }
+        .to_string();
+    }
+    documented.sort();
+
+    assert_eq!(
+        documented, declared,
+        "the README control matrix has drifted from the registry (`oneharness list`)"
+    );
+}
+
+#[test]
+fn the_readme_documents_every_control_refusal_reason() {
+    // The three reasons are a wire contract a supervisor branches on; a reason
+    // added to the enum but missing from the docs is an undocumented branch.
+    let readme =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md")).unwrap();
+    let section = readme
+        .split("### Turn control")
+        .nth(1)
+        .expect("README documents turn control");
+    for reason in [
+        oneharness_core::domain::control::ControlReason::Unsupported,
+        oneharness_core::domain::control::ControlReason::NoActiveTurn,
+        oneharness_core::domain::control::ControlReason::NotRunning,
+    ] {
+        assert!(
+            section.contains(reason.as_str()),
+            "README does not document the `{}` refusal reason",
+            reason.as_str()
+        );
+    }
+}
+
+#[test]
+fn control_under_print_command_shows_the_control_argv_and_opens_nothing() {
+    // A dry run must still show what a control run WOULD spawn (the message
+    // stream replaces the positional prompt), while opening no socket — the
+    // rule `--print-command` follows everywhere else: nothing executes, so
+    // nothing is created.
+    let store = control_store_dir("dryrun");
+    let store_arg = store.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "dry",
+            "--session-dir",
+            &store_arg,
+            "--prompt",
+            "dry-run-prompt",
+            "--bin",
+            &bin_override("claude-code"),
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let report = json_stdout(&output);
+    assert_eq!(report["dry_run"], true);
+    assert!(report["control"].is_null(), "a dry run opens no socket");
+    let command: Vec<String> = serde_json::from_value(report["results"][0]["command"].clone())
+        .expect("the planned command");
+    assert!(
+        command
+            .windows(2)
+            .any(|w| w == ["--input-format", "stream-json"]),
+        "command: {command:?}"
+    );
+    assert!(
+        !command.contains(&"dry-run-prompt".to_string()),
+        "the prompt rides the control stream, not the argv: {command:?}"
+    );
+    assert!(
+        !store.join("control").exists(),
+        "a dry run must create no control directory"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_second_controlled_run_cannot_steal_a_live_sessions_socket() {
+    let mock_profile = mock_profile_redirect();
+    // The socket is a lever over a running agent, so a second run of the same
+    // session name must not displace the first — the supervisor's `interrupt`
+    // would otherwise silently address the wrong dispatch. A bind failure is a
+    // loud usage error before the second run spawns anything.
+    let store = control_store_dir("conflict");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("conflict-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let turn_log = store.join("turn.log");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_TURN_LOG", turn_log.display().to_string())
+        .env("MOCK_TURN_HOLD", "1")
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "taken",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the first controlled run");
+
+    wait_until("the first run's socket", || {
+        store.join("control").join("taken.sock").exists()
+    });
+    wait_until("the first turn to start", || {
+        std::fs::read_to_string(&turn_log)
+            .map(|log| log.contains("keep working"))
+            .unwrap_or(false)
+    });
+
+    let second = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "taken",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "me too",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(second.status.code(), Some(2), "{second:?}");
+    let stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        stderr.contains("could not open the control socket")
+            && stderr.contains("already listening"),
+        "stderr:\n{stderr}"
+    );
+
+    // The first run is untouched and still interruptible.
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "taken",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    let output = child.wait_with_output().expect("first run did not finish");
+    assert!(output.status.success(), "{output:?}");
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn control_with_more_than_one_prompt_is_a_usage_error() {
+    // A batch fans one harness over N prompts, so there is no single live turn
+    // for a supervisor to address.
+    let store = control_store_dir("batch");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "batched",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "one",
+            "--prompt",
+            "two",
+            "--bin",
+            &bin_override("claude-code"),
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--control drives one live turn") && stderr.contains("batch run"),
+        "stderr:\n{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn the_readme_documents_the_control_protocol_version_in_force() {
+    // The frames in the README are what a supervisor copies; a `v` that drifted
+    // from the constant would have them writing frames the run refuses.
+    let readme =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md")).unwrap();
+    let section = readme
+        .split("### Turn control")
+        .nth(1)
+        .expect("README documents turn control");
+    let expected = format!(
+        r#"{{"v":{},"verb":"interrupt"}}"#,
+        oneharness_core::domain::control::PROTOCOL_VERSION
+    );
+    assert!(
+        section.contains(&expected),
+        "README does not show the current control request frame ({expected})"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn interrupt_defaults_to_the_platform_session_store_and_prints_readable_json() {
+    // Without --session-dir the command must find the SAME default store a run
+    // uses; binding the socket under that default and getting `no_active_turn`
+    // (rather than `not_running`) is what proves it resolved there. Also covers
+    // the default pretty output — the form a human reads at a terminal.
+    use oneharness_core::domain::control::socket_path;
+    let state = control_store_dir("default-store");
+    let store = state.join("oneharness").join("sessions");
+    let _listener = oneharness_core::io::control::bind(
+        &socket_path(&store, "defaulted"),
+        oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
+        None,
+    )
+    .unwrap();
+
+    let output = run(
+        &["interrupt", "--session", "defaulted"],
+        &[("XDG_STATE_HOME", &state.display().to_string())],
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.lines().count() > 1,
+        "the default output is pretty-printed:\n{text}"
+    );
+    let frame: Value = serde_json::from_str(&text).expect("pretty output is still JSON");
+    assert_eq!(frame["reason"], "no_active_turn");
+
+    let _ = std::fs::remove_dir_all(&state);
+}
+
+#[cfg(unix)]
+#[test]
+fn interrupt_refuses_a_session_dir_that_is_not_utf8() {
+    // Silently dropping it would resolve the DEFAULT store, so the command
+    // would report `not_running` for a run that is very much running.
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let output = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args([
+            OsStr::new("interrupt"),
+            OsStr::new("--session"),
+            OsStr::new("x"),
+        ])
+        .arg("--session-dir")
+        .arg(OsStr::from_bytes(b"/tmp/oh-\xff-store"))
+        .output()
+        .expect("failed to run oneharness");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("is not valid UTF-8"), "stderr:\n{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_run_refuses_a_session_dir_that_is_not_utf8() {
+    // The other half of the pair: dropping it here would write the handle to
+    // the DEFAULT store, and the `interrupt` that refuses the same path would
+    // then be looking somewhere the run never wrote.
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let output = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args([
+            OsStr::new("run"),
+            OsStr::new("--harness"),
+            OsStr::new("claude-code"),
+            OsStr::new("--session"),
+            OsStr::new("x"),
+            OsStr::new("--prompt"),
+            OsStr::new("hi"),
+            OsStr::new("--print-command"),
+        ])
+        .arg("--session-dir")
+        .arg(OsStr::from_bytes(b"/tmp/oh-\xff-store"))
+        .output()
+        .expect("failed to run oneharness");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("is not valid UTF-8"), "stderr:\n{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn interrupt_without_a_resolvable_store_is_a_usage_error() {
+    // No --session-dir and no platform state dir: there is no address to
+    // resolve, which must be said rather than guessed at.
+    let output = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env_remove("HOME")
+        .env_remove("XDG_STATE_HOME")
+        .args(["interrupt", "--session", "homeless"])
+        .output()
+        .expect("failed to run oneharness");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no session store directory"),
+        "stderr:\n{stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_acp_controlled_run_answers_permission_and_records_a_cancel_the_harness_calls_end_turn() {
+    let mock_profile = mock_profile_redirect();
+    // The two ACP behaviors that decide whether this works at all, driven
+    // through the real CLI against a server that reproduces both:
+    //   * the turn does not begin until the client answers
+    //     `session/request_permission` — so an unanswered request would leave
+    //     every downstream assertion vacuous; and
+    //   * after a genuine cancel the harness reports `stopReason: "end_turn"`,
+    //     so the interrupt has to be recorded from oneharness's own side.
+    let store = control_store_dir("acp");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("acp-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let acp_log = store.join("acp.log");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_ACP_LOG", acp_log.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "copilot",
+            "--control",
+            "--session",
+            "acp",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("copilot"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the ACP controlled run");
+
+    wait_until("the control socket", || {
+        store.join("control").join("acp.sock").exists()
+    });
+    // The server asked for permission and oneharness answered — without that
+    // reply a real ACP harness never begins work.
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(&acp_log)
+            .map(|log| log.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "acp",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    assert_eq!(json_stdout(&interrupt)["mechanism"], "acp-cancel");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+
+    let log = std::fs::read_to_string(&acp_log).unwrap();
+    let cancel = log
+        .lines()
+        .find(|line| line.contains("session/cancel"))
+        .expect("a cancel reached the server");
+    // A cancel sent as a REQUEST gets `-32601 Method not found` from goose and
+    // the work carries on, so the absence of an id is the contract.
+    assert!(
+        !cancel.contains("\"id\""),
+        "cancel must be a notification: {cancel}"
+    );
+    assert!(cancel.contains("mock-acp-session"), "{cancel}");
+
+    // The harness reported a normal stop reason; oneharness still records the
+    // interrupt, because it records what IT did rather than what it was told.
+    assert_eq!(report["control"]["mechanism"], "acp-cancel");
+    assert_eq!(report["control"]["interrupts"][0]["outcome"], "served");
+    assert_eq!(report["session"]["token"], "mock-acp-session");
+    assert_eq!(report["results"][0]["session_id"], "mock-acp-session");
+    assert_eq!(
+        report["results"][0]["text_source"],
+        "jsonrpc:acp-session-update"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_codex_controlled_run_drives_its_thread_and_interrupts_the_live_turn() {
+    let mock_profile = mock_profile_redirect();
+    // Codex's control is its own execution model: the turn runs over the
+    // app-server's JSON-RPC protocol rather than `codex exec`, and the one
+    // protocol fact that decides whether it works at all is that `turn/start`
+    // answers immediately with an in-progress turn. A client reading that
+    // response as the end of the turn ends every run in under half a second,
+    // with nothing left to interrupt — so this drives the whole lifecycle
+    // through the CLI and aborts it from a separate process.
+    let store = control_store_dir("codex");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("codex-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let log = store.join("app-server.log");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_CODEX_APP_SERVER_LOG", log.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "codex",
+            "--control",
+            "--session",
+            "codex",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the codex controlled run");
+
+    wait_until("the control socket", || {
+        store.join("control").join("codex.sock").exists()
+    });
+    // The turn must be genuinely in flight before the interrupt, or the
+    // assertions below would hold for a turn that had already ended.
+    wait_until("the turn to start", || {
+        std::fs::read_to_string(&log)
+            .map(|text| text.contains("turn/start"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "codex",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    assert_eq!(json_stdout(&interrupt)["mechanism"], "codex-app-server");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+
+    let served = std::fs::read_to_string(&log).unwrap();
+    let abort = served
+        .lines()
+        .find(|line| line.contains("turn/interrupt"))
+        .expect("an interrupt reached the app-server");
+    // It addresses both coordinates: a thread alone names no turn to stop, and
+    // the fixture refuses an interrupt that misses either.
+    assert!(
+        abort.contains("mock-codex-thread") && abort.contains("mock-codex-turn"),
+        "the interrupt must name the thread and the turn: {abort}"
+    );
+    assert!(
+        !served.contains("INTERRUPT_MISADDRESSED"),
+        "the app-server rejected the interrupt's coordinates:\n{served}"
+    );
+
+    assert_eq!(report["control"]["mechanism"], "codex-app-server");
+    assert_eq!(report["control"]["interrupts"][0]["outcome"], "served");
+    // The turn's own signals come off the wire, not out of an output format.
+    assert_eq!(report["session"]["token"], "mock-codex-thread");
+    assert_eq!(report["results"][0]["session_id"], "mock-codex-thread");
+    assert_eq!(report["results"][0]["text"], "still working");
+    assert_eq!(
+        report["results"][0]["text_source"],
+        "jsonrpc:codex-app-server"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_restrictive_controlled_run_declines_the_permission_it_is_asked_for() {
+    let mock_profile = mock_profile_redirect();
+    // A driven turn negotiates its approvals on the wire, so the run's posture
+    // reaches the harness only through what oneharness answers. Under a
+    // restrictive mode that answer must decline — and it must still BE an
+    // answer, because both ACP harnesses block forever on an unanswered
+    // request, which would look like a slow harness rather than a denial.
+    let store = control_store_dir("acp-deny");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("acp-deny-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let acp_log = store.join("acp.log");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_ACP_LOG", acp_log.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "copilot",
+            "--control",
+            "--session",
+            "acp-deny",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "default",
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("copilot"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the restrictive ACP controlled run");
+
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(&acp_log)
+            .map(|log| log.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+    let answered = std::fs::read_to_string(&acp_log).unwrap();
+    let reply = answered
+        .lines()
+        .find(|line| line.contains("outcome"))
+        .expect("a permission answer reached the server");
+    assert!(
+        reply.contains("\"outcome\":\"cancelled\""),
+        "a restrictive run must decline rather than select an option: {reply}"
+    );
+    assert!(
+        !reply.contains("optionId"),
+        "a declined permission selects nothing: {reply}"
+    );
+
+    // The turn is still open (the harness waits out a declined permission), so
+    // end it the way a supervisor would rather than leaving the run hanging.
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "acp-deny",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_streamed_controlled_run_publishes_the_protocol_turns_own_signals() {
+    let mock_profile = mock_profile_redirect();
+    // Streaming and a turn-driving mechanism are two different sources of the
+    // run's signals: the streamed envelope is assembled as the turn goes, while
+    // the session id and text come off the protocol dialogue rather than the
+    // harness's output format. A consumer reading the stream must still see the
+    // dialogue's own answers — and the interrupt it asked for — on the wire.
+    let store = control_store_dir("acp-stream");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("acp-stream-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let acp_log = store.join("acp.log");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_ACP_LOG", acp_log.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "copilot",
+            "--control",
+            "--stream",
+            "--session",
+            "acps",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("copilot"),
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the streamed ACP controlled run");
+
+    wait_until("the control socket", || {
+        store.join("control").join("acps.sock").exists()
+    });
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(&acp_log)
+            .map(|log| log.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "acps",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    assert_eq!(json_stdout(&interrupt)["mechanism"], "acp-cancel");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    // Every published line is the typed envelope contract, and the terminal one
+    // carries the report.
+    let typed: Vec<RunStreamEnvelope> = lines
+        .iter()
+        .map(|l| serde_json::from_str(l).expect("each stream line matches the Rust contract"))
+        .collect();
+    assert!(
+        matches!(typed.last(), Some(RunStreamEnvelope::Result { .. })),
+        "the stream must end with a result envelope: {text}"
+    );
+    let last: Value = serde_json::from_str(lines.last().expect("a terminal line")).unwrap();
+    let report = &last["report"];
+    assert_eq!(report["control"]["mechanism"], "acp-cancel");
+    assert_eq!(report["control"]["interrupts"][0]["outcome"], "served");
+    // The signals a streamed run would otherwise read out of an output format
+    // the ACP turn never produces.
+    assert_eq!(report["session"]["token"], "mock-acp-session");
+    assert_eq!(report["results"][0]["session_id"], "mock-acp-session");
+    assert_eq!(
+        report["results"][0]["text_source"],
+        "jsonrpc:acp-session-update"
+    );
+    assert_eq!(
+        report["results"][0]["text"],
+        "Info: Operation cancelled by user"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there() {
+    let mock_profile = mock_profile_redirect();
+    // The third execution model, end to end through the real CLI: the harness
+    // is never spawned as a run at all — oneharness leases its control server,
+    // opens a session on it, answers what the server blocks on, and a SEPARATE
+    // process aborts that same session.
+    let store = control_store_dir("http");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("http-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let log = store.join("server.log");
+    let pool = store.join("pool");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
+        // A pool root inside the test's own temp tree, so it can never reuse or
+        // disturb a real server on the developer's machine.
+        .env("XDG_STATE_HOME", pool.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--session",
+            "http",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--system",
+            "preserve this controlled system prompt",
+            "--bin",
+            &bin_override("opencode"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the HTTP controlled run");
+
+    wait_until("the control socket", || {
+        store.join("control").join("http.sock").exists()
+    });
+    // The server blocks on a permission decision; without an answer the turn
+    // never does any work and every assertion below would be vacuous.
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(&log)
+            .map(|text| text.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "http",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    assert_eq!(json_stdout(&interrupt)["mechanism"], "opencode-http");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+
+    let served = std::fs::read_to_string(&log).unwrap();
+    // The interrupt went to the SESSION's own route on the server, not to any
+    // process's stdin — there is no harness process here to write to.
+    assert!(
+        served
+            .lines()
+            .any(|line| line.starts_with("POST /api/session/ses_mock/interrupt")),
+        "{served}"
+    );
+    assert!(
+        served
+            .lines()
+            .any(|line| line.starts_with("POST /api/session/ses_mock/prompt")),
+        "{served}"
+    );
+    let prompt_request = served
+        .lines()
+        .find(|line| line.starts_with("POST /api/session/ses_mock/prompt"))
+        .expect("the prompt reached the control server");
+    let system_at = prompt_request
+        .find("preserve this controlled system prompt")
+        .expect("the system prompt reached the server-driven turn");
+    let prompt_at = prompt_request
+        .find("keep working")
+        .expect("the user prompt reached the server-driven turn");
+    assert!(system_at < prompt_at, "{prompt_request}");
+
+    assert_eq!(report["control"]["mechanism"], "opencode-http");
+    assert_eq!(report["control"]["interrupts"][0]["outcome"], "served");
+    // The turn's own signals: the server's session id and the text its stream
+    // carried, plus the SERVER's launch argv as the command actually run.
+    assert_eq!(report["session"]["token"], "ses_mock");
+    assert_eq!(report["results"][0]["session_id"], "ses_mock");
+    assert_eq!(report["results"][0]["text"], "stopped");
+    assert_eq!(report["results"][0]["text_source"], "http:opencode-http");
+    let command = report["results"][0]["command"].as_array().unwrap();
+    assert_eq!(command[1], "serve", "{command:?}");
+    assert_eq!(command[2], "--port", "{command:?}");
+
+    // The pooled server outlives the dispatch by design and shuts itself down
+    // once the turn it served is over.
+    assert!(
+        wait_for_pooled_server_to_exit(&pool),
+        "the pool recorded the server it started"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+/// Drive one controlled opencode run through a pooled server under `pool`,
+/// interrupt it from a separate process, and leave the pool quiet again.
+///
+/// `extra` carries the per-turn settings the caller wants to vary. The run is
+/// only allowed to finish once its server is gone, so the next call starts from
+/// the same state this one did — otherwise "did the key widen?" would be
+/// answered by whichever run happened to still hold a live server.
+#[cfg(unix)]
+fn pooled_controlled_run(
+    pool: &std::path::Path,
+    log: &std::path::Path,
+    session: &str,
+    store: &std::path::Path,
+    cwd: &std::path::Path,
+    extra: &[&str],
+) {
+    let mock_profile = mock_profile_redirect();
+    let store_arg = store.display().to_string();
+    let cwd_arg = cwd.display().to_string();
+    let bin = bin_override("opencode");
+    let mut args = vec![
+        "run",
+        "--harness",
+        "opencode",
+        "--control",
+        "--session",
+        session,
+        "--session-dir",
+        &store_arg,
+        "--cwd",
+        &cwd_arg,
+        "--bin",
+        &bin,
+        "--compact",
+        "--env",
+        mock_profile.as_str(),
+    ];
+    args.extend_from_slice(extra);
+
+    let served_before = std::fs::read_to_string(log)
+        .map(|text| text.matches("PERMISSION_ANSWERED").count())
+        .unwrap_or(0);
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
+        .env("XDG_STATE_HOME", pool.display().to_string())
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the pooled controlled run");
+
+    wait_until("the control socket", || {
+        store
+            .join("control")
+            .join(format!("{session}.sock"))
+            .exists()
+    });
+    // The turn only does work once the server's permission ask is answered, so
+    // interrupting before that would abort a turn that never started.
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(log)
+            .map(|text| text.matches("PERMISSION_ANSWERED").count() > served_before)
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            session,
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        wait_for_pooled_server_to_exit(pool),
+        "the pool recorded the server it started"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn per_turn_settings_do_not_widen_the_pool_key() {
+    // Two dispatches differing ONLY in what is negotiated per turn — working
+    // directory, model, permission mode, prompt, system prompt, timeout — must
+    // land on the same pool entry. The entry's directory name IS the key, so a
+    // second one would mean every dispatch starts its own ~137MB server and the
+    // pool buys nothing; the key is allowed to widen only on the harness id and
+    // the `key_env` its `ServerSpec` declares.
+    let pool = control_store_dir("pool-key-root");
+    let store = control_store_dir("pool-key-store");
+    let first_cwd = control_store_dir("pool-key-cwd-a");
+    let second_cwd = control_store_dir("pool-key-cwd-b");
+    let log = pool.join("server.log");
+
+    pooled_controlled_run(
+        &pool,
+        &log,
+        "key-one",
+        &store,
+        &first_cwd,
+        &[
+            "--prompt",
+            "first turn",
+            "--mode",
+            "bypass",
+            "--model",
+            "one-model",
+            "--system",
+            "first system",
+            "--timeout",
+            "60",
+        ],
+    );
+    pooled_controlled_run(
+        &pool,
+        &log,
+        "key-two",
+        &store,
+        &second_cwd,
+        &[
+            "--prompt",
+            "second turn",
+            "--mode",
+            "default",
+            "--model",
+            "another-model",
+            "--system",
+            "second system",
+            "--timeout",
+            "90",
+        ],
+    );
+
+    let entries: Vec<String> = pool
+        .join("oneharness")
+        .join("servers")
+        .read_dir()
+        .expect("the pool root the dispatches used")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        entries.len(),
+        1,
+        "per-turn settings forked the pool: {entries:?}"
+    );
+
+    for dir in [&pool, &store, &first_cwd, &second_cwd] {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn the_control_server_fixture_refuses_a_body_length_it_will_not_reserve_room_for() {
+    // The fixture is a real HTTP server reading real sockets, so the number in
+    // `Content-Length` is external input that sizes an allocation. Unbounded,
+    // the peer decides how much memory it commits and then how long it blocks
+    // waiting for a body that never comes — and a fixture that hangs reads as
+    // the feature under test being broken.
+    use std::io::{BufRead, BufReader, Write};
+    let store = control_store_dir("mock-length");
+    let log = store.join("server.log");
+    let port = {
+        let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        probe.local_addr().unwrap().port()
+    };
+    // Reaped on the way out however this test ends: an assertion below fires
+    // between the spawn and the teardown, and a fixture left running would
+    // hold its port against the rest of the suite.
+    struct Reaped(std::process::Child);
+    impl Drop for Reaped {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let _server = Reaped(
+        Command::new(mock_bin())
+            .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
+            .args(["serve", "--port", &port.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn the mock control server"),
+    );
+
+    let dial = || {
+        for _ in 0..200 {
+            if let Ok(stream) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                    .unwrap();
+                return stream;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!("the mock control server never accepted a connection");
+    };
+    let status_of = |mut stream: std::net::TcpStream, request: String| -> String {
+        stream.write_all(request.as_bytes()).unwrap();
+        stream.flush().unwrap();
+        let mut line = String::new();
+        BufReader::new(&stream)
+            .read_line(&mut line)
+            .expect("the mock control server never answered");
+        line.trim().to_string()
+    };
+
+    // Four gigabytes declared, one byte sent.
+    let refused = status_of(
+        dial(),
+        format!(
+            "POST /api/session HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 4294967296\r\n\r\n{{"
+        ),
+    );
+    assert!(
+        refused.starts_with("HTTP/1.1 400"),
+        "a length no body could satisfy was accepted: {refused}"
+    );
+
+    // A port that parses but names no address is refused before anything binds.
+    // `0` asks the kernel to pick, and the caller goes on dialing the port that
+    // is written down — so the fixture would be listening where nobody looks.
+    let refused_port = Command::new(mock_bin())
+        .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
+        .args(["serve", "--port", "0"])
+        .output()
+        .expect("failed to run the mock control server");
+    assert!(!refused_port.status.success(), "{refused_port:?}");
+    assert!(
+        String::from_utf8_lossy(&refused_port.stderr).contains("is not a dialable port"),
+        "{}",
+        String::from_utf8_lossy(&refused_port.stderr)
+    );
+
+    // A header line with no ending in it: the same hazard one level up, where
+    // the peer picks how much is accumulated before anything is validated.
+    let long_header = status_of(
+        dial(),
+        format!(
+            "POST /api/session HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Pad: {}",
+            "p".repeat(32 * 1024)
+        ),
+    );
+    assert!(
+        long_header.starts_with("HTTP/1.1 400"),
+        "an unterminated header line was accumulated: {long_header}"
+    );
+
+    // And a request line that never ends, which is the same again one level up.
+    let long_line = status_of(
+        dial(),
+        format!("POST /api/session/{} HTTP/1.1\r\n", "x".repeat(32 * 1024)),
+    );
+    assert!(
+        long_line.starts_with("HTTP/1.1 400"),
+        "an unterminated request line was accumulated: {long_line}"
+    );
+
+    // And the server is still there: refusing one framing must not cost it the
+    // next caller, or the bound would just be a different way of falling over.
+    let served = status_of(
+        dial(),
+        format!(
+            "POST /api/session HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 2\r\n\r\n{{}}"
+        ),
+    );
+    assert!(served.starts_with("HTTP/1.1 200"), "{served}");
+
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_server_that_redirects_the_interrupt_is_not_reported_as_having_served_it() {
+    let mock_profile = mock_profile_redirect();
+    // The route answers `302 Found` and aborts nothing. This client follows no
+    // redirect, so the turn is still running — and a supervisor told `served`
+    // would walk away from a turn that never stopped, which is strictly worse
+    // than being told the interrupt failed.
+    let store = control_store_dir("http-redirect");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("http-redirect-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let log = store.join("server.log");
+    let pool = store.join("pool");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
+        .env("MOCK_HTTP_CONTROL_FAULT", "redirect-interrupt")
+        .env("XDG_STATE_HOME", pool.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--session",
+            "redirect",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("opencode"),
+            "--timeout",
+            "60",
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the HTTP controlled run");
+
+    wait_until("the control socket", || {
+        store.join("control").join("redirect.sock").exists()
+    });
+    // Without the permission answer the turn never begins, and interrupting a
+    // turn that never started would pass for the wrong reason.
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(&log)
+            .map(|text| text.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "redirect",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    let answer = json_stdout(&interrupt);
+    assert_eq!(answer["ok"], false, "{answer}");
+    assert_eq!(interrupt.status.code(), Some(1), "{interrupt:?}");
+    let error = answer["error"].as_str().expect("a reason");
+    assert!(
+        error.contains("302"),
+        "the reason must carry the server's own answer: {error}"
+    );
+
+    let output = child.wait_with_output().expect("run did not finish");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    // Recorded as refused, and the turn's own end says the same: the server
+    // never sent the aborted turn's `stopped` text, because it never aborted.
+    assert_eq!(report["control"]["interrupts"][0]["outcome"], "refused");
+    assert!(report["results"][0]["text"].is_null(), "{report}");
+
+    let served = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        served
+            .lines()
+            .any(|line| line.starts_with("POST /api/session/ses_mock/interrupt")),
+        "the interrupt never reached the server:\n{served}"
+    );
+
+    wait_for_pooled_server_to_exit(&pool);
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+/// Wait for the server the pool under `pool` started to be gone, reporting
+/// whether there was one to wait for.
+///
+/// This waits for the PROCESS, not merely for its port to close: a detached
+/// process still finishing its exit is one whose coverage profile is still
+/// being written, and a profile half-written while the coverage merge reads the
+/// directory corrupts the whole run's data. A pool holding no record has
+/// nothing to wait for — a server that died before it ever listened is already
+/// reclaimed by the time the dispatch releases its lease.
+#[cfg(unix)]
+fn wait_for_pooled_server_to_exit(pool: &std::path::Path) -> bool {
+    let Some(record) = pool
+        .join("oneharness")
+        .join("servers")
+        .read_dir()
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("server.json"))
+        .find(|path| path.exists())
+    else {
+        return false;
+    };
+    let pid: u32 = serde_json::from_str::<Value>(&std::fs::read_to_string(&record).unwrap())
+        .unwrap()["pid"]
+        .as_u64()
+        .expect("a recorded pid") as u32;
+    wait_until("the pooled server process to exit", || {
+        !std::path::Path::new(&format!("/proc/{pid}")).exists()
+            && std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .output()
+                .map(|out| !out.status.success())
+                .unwrap_or(true)
+    });
+    true
+}
+
+/// Drive a controlled opencode run against a control server broken the way
+/// `fault` names, and hand back its output, its report, and the server's own
+/// request log.
+///
+/// Most of these are a failure the run must report as DATA — a server that
+/// never comes up or a session that cannot be opened is `spawn_error` with the
+/// reason in `error`, exactly like a harness that could not be spawned — so the
+/// turn never starts, the run is synchronous, and no interrupt is sent.
+#[cfg(unix)]
+fn http_control_run_with_fault(tag: &str, fault: &str, timeout: &str) -> (Output, Value, String) {
+    let store = control_store_dir(tag);
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir(&format!("{tag}-cwd"));
+    let cwd_arg = cwd.display().to_string();
+    let pool = store.join("pool");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--session",
+            tag,
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("opencode"),
+            "--timeout",
+            timeout,
+            "--compact",
+        ],
+        &[
+            (
+                "MOCK_HTTP_CONTROL_LOG",
+                store.join("server.log").display().to_string().as_str(),
+            ),
+            ("MOCK_HTTP_CONTROL_FAULT", fault),
+            ("XDG_STATE_HOME", pool.display().to_string().as_str()),
+        ],
+    );
+    let report = json_stdout(&output);
+    wait_for_pooled_server_to_exit(&pool);
+    let served = std::fs::read_to_string(store.join("server.log")).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+    (output, report, served)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_server_that_never_answers_is_reported_rather_than_waited_out() {
+    // The pool started a process and it died before binding anything. The run
+    // must say so within the budget its caller set — a bring-up that outlasts
+    // `--timeout` is a hang as far as that caller is concerned.
+    let started = std::time::Instant::now();
+    let (output, report, _) = http_control_run_with_fault("http-unready", "never-ready", "5");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "spawn-error", "{report}");
+    let error = result["error"].as_str().expect("a reason");
+    assert!(
+        error.contains("did not answer within 5s"),
+        "the reason must name the readiness wait: {error}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(60),
+        "the readiness wait outlasted the run's own timeout"
+    );
+    // Nothing ran, so nothing is claimed: no session token, no answer text.
+    assert!(report["session"]["token"].is_null(), "{report}");
+    assert!(result["text"].is_null(), "{report}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_server_that_refuses_the_session_reports_its_refusal() {
+    // The server is up and answers, but will not open a session — so there is
+    // no turn to interrupt and nothing to drive.
+    let (output, report, _) = http_control_run_with_fault("http-refused", "refuse-session", "30");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "spawn-error", "{report}");
+    let error = result["error"].as_str().expect("a reason");
+    assert!(
+        error.contains("could not open the control session")
+            && error.contains("503")
+            && error.contains("no provider configured"),
+        "the reason must carry the server's own refusal: {error}"
+    );
+    // No turn ran, so no signal is invented for one.
+    assert!(result["session_id"].is_null(), "{report}");
+    assert!(result["text"].is_null(), "{report}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_server_that_names_no_session_is_refused_rather_than_guessed_at() {
+    // A 200 with no id in it: the answer parsed, but named nothing to address.
+    // Addressing a guessed id would send the prompt — and later the interrupt —
+    // at a route belonging to some other turn, or to none.
+    let (output, report, _) = http_control_run_with_fault("http-noid", "no-session-id", "30");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "spawn-error", "{report}");
+    let error = result["error"].as_str().expect("a reason");
+    assert!(
+        error.contains("answered no usable id"),
+        "the reason must name the unusable answer: {error}"
+    );
+    assert!(result["session_id"].is_null(), "{report}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_server_that_refuses_the_prompt_reports_its_refusal() {
+    // Session creation succeeded, but no turn exists unless the prompt itself
+    // was admitted. Drive the real HTTP boundary so a refusal cannot be lost
+    // behind an event stream that will never announce a turn.
+    let (output, report, served) =
+        http_control_run_with_fault("http-prompt-refused", "refuse-prompt", "30");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "nonzero", "{report}");
+    let error = result["error"].as_str().expect("a reason");
+    assert!(
+        error.contains("refused the prompt")
+            && error.contains("503")
+            && error.contains("model unavailable"),
+        "the reason must carry the prompt route's refusal: {error}"
+    );
+    assert!(
+        served
+            .lines()
+            .any(|line| line.starts_with("POST /api/session/ses_mock/prompt")),
+        "the prompt request never reached the server:\n{served}"
+    );
+    assert_eq!(result["session_id"], "ses_mock", "{report}");
+    assert!(result["text"].is_null(), "{report}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_server_that_refuses_event_subscription_reports_it_at_the_cli() {
+    let (output, report, _) =
+        http_control_run_with_fault("http-events-refused", "refuse-events", "30");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "nonzero", "{report}");
+    assert_eq!(
+        result["error"], "the control server refused the event subscription (503)",
+        "{report}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_event_subscription_reports_its_framing_error_at_the_cli() {
+    let (output, report, _) =
+        http_control_run_with_fault("http-events-unreadable", "unreadable-events", "30");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "nonzero", "{report}");
+    let error = result["error"].as_str().expect("a framing reason");
+    assert!(
+        error.contains("event subscription cannot be read")
+            && error.contains("two different Content-Length values"),
+        "{error}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_server_that_never_answers_the_prompt_cannot_outlast_the_run_budget() {
+    // The prompt is sent on a worker so the event stream can be consumed at
+    // the same time. Joining that worker must not turn a one-second run budget
+    // into the HTTP client's otherwise fixed sixty-second wait.
+    let started = std::time::Instant::now();
+    let (output, report, served) =
+        http_control_run_with_fault("http-prompt-hang", "hang-prompt", "1");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "timeout", "{report}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "a blocked prompt submission outlasted the run's own timeout"
+    );
+    assert!(
+        served
+            .lines()
+            .any(|line| line.starts_with("POST /api/session/ses_mock/prompt")),
+        "the blocked prompt request never reached the server:\n{served}"
+    );
+    // The worker is still blocked when the timeout is recorded, so no later
+    // socket error is fabricated as though it had already been observed.
+    assert!(result["error"].is_null(), "{report}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_server_that_stops_talking_mid_turn_is_not_reported_as_a_clean_finish() {
+    // The stream ending is not the turn ending. A server that dies mid-flight
+    // would otherwise hand a supervisor an `ok` for work that was cut short —
+    // and unlike a timeout or a refusal, there is nothing else in the envelope
+    // to notice it by.
+    let (output, report, served) = http_control_run_with_fault("http-cutoff", "close-stream", "30");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result = &report["results"][0];
+    // The turn genuinely started, so this is a cut-off turn rather than one
+    // that never began.
+    assert!(
+        served
+            .lines()
+            .any(|line| line.starts_with("POST /api/session/ses_mock/prompt")),
+        "the turn never started:\n{served}"
+    );
+    assert_eq!(result["status"], "nonzero", "{report}");
+    assert_eq!(
+        result["error"], "the control server closed the event stream before the turn ended",
+        "{report}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_permission_ask_for_another_session_is_not_answered_by_a_controlled_run() {
+    // The pooled server's event stream carries every dispatch's asks, so a
+    // concurrent run's permission request lands on this turn's stream. Driven
+    // through the CLI because the reply is a real request to a real route:
+    // answering would spend this run's `--mode bypass` posture on a turn it
+    // does not own.
+    let (output, report, served) =
+        http_control_run_with_fault("http-foreign", "foreign-permission", "30");
+    assert!(output.status.success(), "{output:?}");
+    let result = &report["results"][0];
+    // The turn genuinely ran and the ask genuinely arrived — without both, the
+    // assertion below would hold for the wrong reason.
+    assert!(
+        served
+            .lines()
+            .any(|line| line.starts_with("POST /api/session/ses_mock/prompt")),
+        "the turn never started:\n{served}"
+    );
+    assert!(
+        result["stdout"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("ses_intruder"),
+        "the foreign ask never reached the run: {result}"
+    );
+    // Nothing answered it, and the run said why rather than skipping silently.
+    assert!(
+        !served.contains("PERMISSION_ANSWERED"),
+        "a permission for another session was answered:\n{served}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("ignored a permission request for another session (ses_intruder)"),
+        "stderr:\n{stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_server_submitted_controlled_run_skips_a_harness_whose_binary_is_missing() {
+    // "Never panic on a harness's behavior": a missing binary is `skipped` data
+    // in the report. This path is the one place that could break the rule — an
+    // unavailable harness never reaches the branch that assembles a prompt, so
+    // the HTTP-control branch has no turn to submit and must decline to take
+    // over rather than unwrap a prompt nobody built.
+    let store = control_store_dir("http-missing");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "crush",
+            "--control",
+            "--session",
+            "gone",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "keep working",
+            "--bin",
+            "crush=/no/such/oneharness-binary-xyz",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let report = json_stdout(&output);
+    assert_eq!(report["results"][0]["status"], "skipped", "{report}");
+    assert_eq!(report["results"][0]["available"], false, "{report}");
+    // No turn ran, so no interrupt could have been served — and the socket the
+    // run opened is gone with it.
+    assert!(report["control"]["interrupts"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(!store.join("control").join("gone.sock").exists());
+
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn a_dry_run_of_a_server_submitted_controlled_turn_shows_the_server_it_would_launch() {
+    // `--print-command` answers "what would run". For these mechanisms that is
+    // the harness's SERVER, never its CLI — printing `opencode run …` would name
+    // a process this run never starts and whose interrupt was refuted.
+    let store = control_store_dir("dry-http");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--session",
+            "dry",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--bin",
+            &bin_override("opencode"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let report = json_stdout(&output);
+    let command: Vec<String> = report["results"][0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        command[1..],
+        ["serve", "--port", "{address}"],
+        "{command:?}"
+    );
+    assert_eq!(report["results"][0]["status"], "planned");
+    // Nothing was launched and no socket opened: a dry run stays dry.
+    assert!(!store.join("control").join("dry.sock").exists());
+
+    // The same dry run on a stdin-borne mechanism still shows its CLI.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "dry2",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let command = json_stdout(&output)["results"][0]["command"].clone();
+    let command = command.as_array().unwrap();
+    assert!(
+        command.iter().any(|arg| arg == "--input-format"),
+        "{command:?}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn streaming_a_server_submitted_controlled_turn_is_a_usage_error() {
+    // `--stream` publishes a spawned run's stdout line by line, and a turn
+    // submitted to a control server has no such run. Refusing is what keeps the
+    // combination from silently selecting the ordinary CLI run — whose
+    // interrupt does not reach the turn, which is why this mechanism exists.
+    let store = control_store_dir("stream-http");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--stream",
+            "--session",
+            "s",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("opencode"),
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("submits its controlled turn to a server"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("--stream"), "{stderr}");
+    // A stdin-borne mechanism still streams: the refusal is about the execution
+    // model, not about `--control`.
+    let ok = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--stream",
+            "--session",
+            "s2",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--bin",
+            &bin_override("claude-code"),
+        ],
+        &[],
+    );
+    assert!(ok.status.success(), "{ok:?}");
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn control_with_a_model_fan_out_is_a_usage_error() {
+    // A fan-out multiplies the run into several (harness, model) units, and the
+    // controlled path drives exactly one live turn — so there is no single turn
+    // for a supervisor to address.
+    let store = control_store_dir("fanout");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "fan",
+            "--session-dir",
+            &store.display().to_string(),
+            "--model",
+            "one",
+            "--model",
+            "two",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("incompatible with --control"),
+        "stderr:\n{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
 }

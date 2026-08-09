@@ -84,7 +84,9 @@ export const SDK_SCHEMA_ROOTS = Object.freeze([
 ]);
 
 export const SDK_SCHEMA_ALIASES = Object.freeze({
+	AbsolutePath: 'ControlReport["socket"]',
 	BatchStrategy: 'BatchReport["strategy"]',
+	ControlShape: 'ControlReport["mechanism"]',
 	ModeHeadless: 'ModeInfo["headless"]',
 	SessionPhase: 'SessionReport["phase"]',
 });

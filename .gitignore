@@ -19,6 +19,12 @@ __pycache__/
 /npm/oneharness-sdk/dist
 node_modules/
 
+# `just`'s tempdir (justfile `set tempdir`). The directory IS committed so a
+# clean clone has it; the per-recipe `just-XXXXXX/` scratch it fills with is not,
+# and a recipe killed mid-run leaves some behind for the next `git add -A`.
+/.just-tmp/*
+!/.just-tmp/.gitkeep
+
 # Local secrets synced from Bitwarden (gh-secrets.json -> env_file destination)
 # and the manifest sync-state log. The manifest itself IS committed; these aren't.
 .env

@@ -6,6 +6,7 @@ pub mod detect;
 pub mod gate;
 pub mod history;
 pub mod init;
+pub mod interrupt;
 pub mod list;
 pub mod mock;
 pub mod run;

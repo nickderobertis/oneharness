@@ -69,6 +69,58 @@
 //!                   through it to the next (the `model_not_found` classification).
 //!                   MOCK_FAIL_STDERR overrides the emitted stderr (so the same
 //!                   hook can simulate a rate limit instead of a missing model).
+//!   MOCK_TURN_LOG   if set to a path, act like a *control-capable* harness whose
+//!                   stdin is a message stream: emit MOCK_STDOUT immediately (the
+//!                   in-turn transcript), then keep reading stdin, appending each
+//!                   received line to the log verbatim. A line containing
+//!                   `control_request` ends the turn — the log gains an
+//!                   `INTERRUPTED` line and MOCK_TURN_RESULT is emitted — as does
+//!                   EOF. This is the hermetic stand-in for Claude Code's
+//!                   `-p --input-format stream-json` control channel: the turn is
+//!                   observably in flight (the prompt frame appears in the log),
+//!                   so a test can drive a *separate* `oneharness interrupt`
+//!                   process against the live run.
+//!   MOCK_TURN_RESULT  with MOCK_TURN_LOG, the terminal document emitted when the
+//!                   turn ends (default: a stream-json `result` document).
+//!   MOCK_TURN_HOLD  with MOCK_TURN_LOG, keep the turn running after the prompt
+//!                   instead of completing it, so a test can interrupt a turn
+//!                   that is genuinely still in flight.
+//!   MOCK_ACP_LOG    if set to a path, act like an **ACP JSON-RPC server** on
+//!                   stdio (the shape `copilot --acp` / `goose acp` speak):
+//!                   answer `initialize` and `session/new`, hold `session/prompt`
+//!                   open, ask one `session/request_permission`, and end the turn
+//!                   only when a `session/cancel` NOTIFICATION arrives — reporting
+//!                   `stopReason: "end_turn"`, exactly as the real harnesses do
+//!                   after a genuine cancellation. Every received line is appended
+//!                   to the log, so a test can assert the client answered the
+//!                   permission request (without which a real turn never starts)
+//!                   and that cancel carried no `id`.
+//!   MOCK_CODEX_APP_SERVER_LOG  if set to a path, act like **`codex app-server`**
+//!                   on stdio: answer `initialize` and `thread/start`, answer
+//!                   `turn/start` with an in-progress turn (which is NOT the end
+//!                   of the turn), and end it on `turn/completed` only once a
+//!                   `turn/interrupt` naming the thread and turn arrives. Every
+//!                   received line is appended to the log.
+//!   MOCK_HTTP_CONTROL_LOG  if set to a path, act like an **opencode-shaped HTTP
+//!                   control server** on the `--port` from its own argv: create a
+//!                   session, block the turn on a permission request, and abort it
+//!                   on the session's interrupt route. Every request line (and its
+//!                   body) is appended to the log.
+//!   MOCK_HTTP_CONTROL_FAULT  with MOCK_HTTP_CONTROL_LOG, break the server the way
+//!                   a real one breaks, so the run's user-visible failure can be
+//!                   asserted: `never-ready` exits before binding at all (nothing
+//!                   ever answers), `refuse-session` answers the session-create
+//!                   route `503`, and `no-session-id` answers it `200` with a body
+//!                   naming no id, and `foreign-permission` asks permission for a
+//!                   session this run does not own, and `close-stream` stops
+//!                   the event stream mid-turn, `refuse-prompt` rejects prompt
+//!                   submission, and `hang-prompt` never answers that request,
+//!                   talking mid-turn with no end-of-turn event, and
+//!                   `redirect-interrupt` answers the interrupt route `302`
+//!                   without aborting anything. Each exits once
+//!                   it has served
+//!                   its fault, so nothing is left behind for the pool to reclaim.
+//!                   An unrecognized value is refused rather than run as no fault.
 //!   MOCK_LOG_FILE   if set, an append-only run log: each invocation appends `S\n`
 //!                   when it starts (before MOCK_SLEEP_MS) and `E\n` when it ends
 //!                   (after the sleep). With a sleep that exceeds spawn latency,
@@ -317,6 +369,592 @@ fn run_native_descendant() -> ! {
     std::process::exit(0);
 }
 
+/// How the mock control server is asked to break, parsed at the boundary.
+///
+/// An enum rather than the raw string: an unrecognized value read as "no fault"
+/// would turn a misspelled knob into a passing happy-path run, which is the one
+/// outcome a fault test must never quietly produce.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HttpControlFault {
+    None,
+    NeverReady,
+    RefuseSession,
+    NoSessionId,
+    ForeignPermission,
+    CloseStream,
+    RefusePrompt,
+    HangPrompt,
+    RefuseEvents,
+    UnreadableEvents,
+    RedirectInterrupt,
+}
+
+impl HttpControlFault {
+    fn from_env() -> Self {
+        match std::env::var("MOCK_HTTP_CONTROL_FAULT")
+            .unwrap_or_default()
+            .as_str()
+        {
+            "" => HttpControlFault::None,
+            "never-ready" => HttpControlFault::NeverReady,
+            "refuse-session" => HttpControlFault::RefuseSession,
+            "no-session-id" => HttpControlFault::NoSessionId,
+            "foreign-permission" => HttpControlFault::ForeignPermission,
+            "close-stream" => HttpControlFault::CloseStream,
+            "refuse-prompt" => HttpControlFault::RefusePrompt,
+            "hang-prompt" => HttpControlFault::HangPrompt,
+            "refuse-events" => HttpControlFault::RefuseEvents,
+            "unreadable-events" => HttpControlFault::UnreadableEvents,
+            "redirect-interrupt" => HttpControlFault::RedirectInterrupt,
+            other => panic!("mock harness: MOCK_HTTP_CONTROL_FAULT names no fault: `{other}`"),
+        }
+    }
+}
+
+/// The largest request body the mock control server will reserve room for. A
+/// control request is a small JSON object; the bound exists because the number
+/// that sizes the allocation arrives on the socket.
+const MAX_REQUEST_BODY: usize = 1 << 20;
+
+/// The largest request line or header line it will hold. Both end at a newline
+/// the *peer* sends, so without a bound the peer chooses how much this fixture
+/// accumulates before it has validated anything at all.
+const MAX_HEAD_LINE: usize = 16 * 1024;
+
+/// Read one head line into `line`, or `None` when it outgrew [`MAX_HEAD_LINE`]
+/// before ending. `Some(0)` is the end of the stream.
+fn read_bounded_line<R: std::io::BufRead>(reader: &mut R, line: &mut String) -> Option<usize> {
+    use std::io::Read;
+    match std::io::BufRead::read_line(&mut reader.take(MAX_HEAD_LINE as u64), line) {
+        Ok(read) if read == MAX_HEAD_LINE && !line.ends_with('\n') => None,
+        Ok(read) => Some(read),
+        Err(_) => Some(0),
+    }
+}
+
+/// Act like an opencode-shaped HTTP control server: the third execution model,
+/// where the turn is submitted to a server rather than to a CLI.
+///
+/// Reproduces the two behaviors that decide whether the model works at all: the
+/// server blocks on a permission request until the client answers it, and it
+/// announces `session.idle` BEFORE the prompt is admitted as well as after the
+/// turn ends — so a driver that reads the first one ends the run having done
+/// nothing. The port comes off the argv the pool launched it with, exactly as
+/// `opencode serve --port N` takes it.
+fn run_http_control_server(log_path: &str) -> ! {
+    use std::io::Read;
+    let args: Vec<String> = std::env::args().collect();
+    let fault = HttpControlFault::from_env();
+    // A server the pool started and that then never listens — the shape a real
+    // one takes when it dies on startup. Exiting before binding is what makes
+    // the readiness wait, not a route, the thing under test.
+    if fault == HttpControlFault::NeverReady {
+        std::process::exit(0);
+    }
+    // The pool dials the port it put on the argv, so an absent or unreadable
+    // one is refused rather than defaulted: binding `0` would listen on some
+    // port nobody is going to connect to, which reads as a server that never
+    // came up rather than as a launch that was wrong.
+    // `0` is refused with the rest: it parses as a `u16` but names no address —
+    // the kernel picks one, and the dispatch goes on dialing the port that is
+    // written down. Same rule the real [`crate::domain::control::Port`] holds.
+    let port: u16 = match args.windows(2).find(|w| w[0] == "--port") {
+        Some(pair) => pair[1]
+            .parse::<u16>()
+            .ok()
+            .filter(|port| *port != 0)
+            .unwrap_or_else(|| panic!("mock harness: `--port {}` is not a dialable port", pair[1])),
+        None => panic!("mock harness: the control server was launched with no --port"),
+    };
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port))
+        .expect("the mock control server could not bind its port");
+    let log = std::sync::Arc::new(std::sync::Mutex::new(
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+            .expect("the mock control server could not open its log"),
+    ));
+    // Shared turn state: whether the prompt was admitted and whether the turn
+    // has been aborted. The event stream reads both.
+    let admitted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let aborted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    for connection in listener.incoming() {
+        let Ok(mut socket) = connection else { continue };
+        let log = std::sync::Arc::clone(&log);
+        let admitted = std::sync::Arc::clone(&admitted);
+        let aborted = std::sync::Arc::clone(&aborted);
+        std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(socket.try_clone().expect("clone"));
+            let mut request_line = String::new();
+            match read_bounded_line(&mut reader, &mut request_line) {
+                Some(0) | None => {
+                    // Nothing, or more of a request line than this fixture will
+                    // hold before it has even seen the end of it.
+                    if request_line.len() >= MAX_HEAD_LINE {
+                        reply_bad_request(&mut socket);
+                    }
+                    return;
+                }
+                Some(_) => {}
+            }
+            let mut length = 0usize;
+            loop {
+                let mut header = String::new();
+                match read_bounded_line(&mut reader, &mut header) {
+                    Some(0) => break,
+                    // A header line with no ending in it is the same hazard as
+                    // an endless request line, and refused the same way.
+                    None => {
+                        reply_bad_request(&mut socket);
+                        return;
+                    }
+                    Some(_) => {}
+                }
+                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                    // A length that cannot be read is not a zero-length body:
+                    // reading none of a body that is there leaves the next
+                    // request's bytes in the stream.
+                    let Ok(declared) = value.trim().parse::<usize>() else {
+                        reply_bad_request(&mut socket);
+                        return;
+                    };
+                    // The declaration is a number off a socket, and it is about
+                    // to size an allocation. A control request is a small JSON
+                    // object, so anything past the bound is refused rather than
+                    // reserved — otherwise the peer, not this fixture, decides
+                    // how much memory it commits and how long it then blocks
+                    // waiting for a body that is never coming.
+                    if declared > MAX_REQUEST_BODY {
+                        reply_bad_request(&mut socket);
+                        return;
+                    }
+                    length = declared;
+                }
+                if header == "\r\n" {
+                    break;
+                }
+            }
+            let mut body = vec![0u8; length];
+            let _ = reader.read_exact(&mut body);
+            let line = request_line.trim().to_string();
+            {
+                let mut file = log.lock().unwrap_or_else(|e| e.into_inner());
+                let _ = writeln!(file, "{line} {}", String::from_utf8_lossy(&body));
+                let _ = file.flush();
+            }
+            let reply = |socket: &mut std::net::TcpStream, status: &str, body: &str| {
+                let _ = write!(
+                    socket,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.flush();
+            };
+            if line.starts_with("GET /api/event") {
+                if fault == HttpControlFault::RefuseEvents {
+                    reply(
+                        &mut socket,
+                        "503 Service Unavailable",
+                        "{\"error\":\"events unavailable\"}",
+                    );
+                    exit_shortly();
+                    return;
+                }
+                if fault == HttpControlFault::UnreadableEvents {
+                    let _ = write!(
+                        socket,
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 7\r\nContent-Length: 9\r\n\r\ndata: {{}}\n"
+                    );
+                    let _ = socket.flush();
+                    exit_shortly();
+                    return;
+                }
+                // The stream a driver follows. The idle BEFORE admission is the
+                // trap: acting on it ends the run before any work happens.
+                let send = |socket: &mut std::net::TcpStream, payload: &str| {
+                    let _ = write!(socket, "data: {payload}\n\n");
+                    let _ = socket.flush();
+                };
+                let _ = write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: keep-alive\r\n\r\n"
+                );
+                send(&mut socket, "{\"type\":\"session.idle\",\"data\":{}}");
+                let mut asked = false;
+                loop {
+                    if admitted.load(std::sync::atomic::Ordering::SeqCst) && !asked {
+                        asked = true;
+                        send(
+                            &mut socket,
+                            "{\"type\":\"session.next.prompt.admitted\",\"data\":{}}",
+                        );
+                        // A server that stops talking mid-turn: the stream ends
+                        // with no end-of-turn event on it at all.
+                        if fault == HttpControlFault::CloseStream {
+                            exit_shortly();
+                            return;
+                        }
+                        // The shared stream carries every session's asks, so a
+                        // faulted server asks about one this run does not own.
+                        // Nothing may answer it — and the turn then ends on its
+                        // own, rather than leaving the run to its timeout.
+                        if fault == HttpControlFault::ForeignPermission {
+                            send(
+                                &mut socket,
+                                "{\"type\":\"permission.requested\",\"data\":{\"id\":\"per_1\",\"sessionID\":\"ses_intruder\"}}",
+                            );
+                            std::thread::sleep(std::time::Duration::from_millis(400));
+                            send(&mut socket, "{\"type\":\"session.idle\",\"data\":{}}");
+                            exit_shortly();
+                            return;
+                        }
+                        send(
+                            &mut socket,
+                            "{\"type\":\"permission.requested\",\"data\":{\"id\":\"per_1\",\"sessionID\":\"ses_mock\"}}",
+                        );
+                    }
+                    if aborted.load(std::sync::atomic::Ordering::SeqCst) {
+                        send(
+                            &mut socket,
+                            "{\"type\":\"session.next.text.ended\",\"data\":{\"text\":\"stopped\"}}",
+                        );
+                        send(&mut socket, "{\"type\":\"session.idle\",\"data\":{}}");
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+            if line.starts_with("POST /api/session/") && line.contains("/interrupt") {
+                // A route that answers "ask elsewhere" has not aborted
+                // anything: the turn is deliberately left running, so a client
+                // that read a redirect as acceptance would report a stop that
+                // never happened.
+                if fault == HttpControlFault::RedirectInterrupt {
+                    let _ = write!(
+                        socket,
+                        "HTTP/1.1 302 Found\r\nLocation: /v2/session/ses_mock/interrupt\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = socket.flush();
+                    exit_shortly();
+                    return;
+                }
+                aborted.store(true, std::sync::atomic::Ordering::SeqCst);
+                reply(&mut socket, "204 No Content", "");
+                exit_shortly();
+            } else if line.starts_with("POST /api/session/") && line.contains("/prompt") {
+                match fault {
+                    HttpControlFault::RefusePrompt => {
+                        reply(
+                            &mut socket,
+                            "503 Service Unavailable",
+                            "{\"error\":\"model unavailable\"}",
+                        );
+                        exit_shortly();
+                    }
+                    HttpControlFault::HangPrompt => {
+                        // Keep the request blocked past the run's one-second
+                        // budget, then let the fixture process exit cleanly so
+                        // its coverage profile is complete.
+                        std::thread::spawn(|| {
+                            std::thread::sleep(std::time::Duration::from_secs(3));
+                            std::process::exit(0);
+                        });
+                        std::thread::sleep(std::time::Duration::from_secs(120));
+                    }
+                    _ => {
+                        admitted.store(true, std::sync::atomic::Ordering::SeqCst);
+                        reply(&mut socket, "200 OK", "{\"data\":{\"admittedSeq\":1}}");
+                    }
+                }
+            } else if line.starts_with("POST /api/session/") && line.contains("/permission/") {
+                let mut file = log.lock().unwrap_or_else(|e| e.into_inner());
+                let _ = writeln!(file, "PERMISSION_ANSWERED");
+                let _ = file.flush();
+                reply(&mut socket, "200 OK", "{}");
+            } else if line.starts_with("POST /api/session") {
+                // The two ways session creation fails against a server that IS
+                // up: it refuses, or it answers something with no id in it.
+                // Either way the run has no turn to drive, and the server then
+                // exits rather than lingering as a pooled orphan — a process
+                // reclaimed with SIGTERM leaves a truncated coverage profile.
+                match fault {
+                    HttpControlFault::RefuseSession => {
+                        reply(
+                            &mut socket,
+                            "503 Service Unavailable",
+                            "{\"error\":\"no provider configured\"}",
+                        );
+                        exit_shortly();
+                    }
+                    HttpControlFault::NoSessionId => {
+                        reply(&mut socket, "200 OK", "{\"data\":{\"kind\":\"session\"}}");
+                        exit_shortly();
+                    }
+                    _ => reply(&mut socket, "200 OK", "{\"data\":{\"id\":\"ses_mock\"}}"),
+                }
+            } else {
+                reply(&mut socket, "200 OK", "{}");
+            }
+        });
+    }
+    std::process::exit(0);
+}
+
+/// Refuse a request whose framing this fixture could not read. Answering keeps
+/// the client from waiting out a timeout on a connection nobody will write to.
+fn reply_bad_request(socket: &mut std::net::TcpStream) {
+    let _ = write!(
+        socket,
+        "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    let _ = socket.flush();
+}
+
+/// Shut the mock control server down once it has served what it was standing up
+/// for, rather than waiting to be reclaimed: the pool stops a server with
+/// SIGTERM, whose default disposition skips the at-exit handlers — including the
+/// one that writes this binary's coverage profile, leaving a truncated file that
+/// fails the whole coverage merge. The delay lets the answer just written (and,
+/// for an aborted turn, its final events) reach the client first.
+fn exit_shortly() {
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        std::process::exit(0);
+    });
+}
+
+/// Act like `codex app-server`: the JSON-RPC protocol a codex turn is driven
+/// over, including the fact that decides whether a controlled run works at all.
+///
+/// `turn/start` answers IMMEDIATELY with the new turn's id and
+/// `status:"inProgress"` — a client that reads that response as the end of the
+/// turn finishes in under half a second having done nothing. The turn ends only
+/// on the `turn/completed` notification, which this emits once the interrupt
+/// naming both the thread and the turn arrives.
+fn run_codex_app_server(log_path: &str) -> ! {
+    use serde_json::{json, Value};
+    // Opened once, up front: a log path that cannot be written is a fixture
+    // that answers correctly while recording nothing, which reads as a client
+    // that never sent the frames the test is looking for.
+    let mut log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .expect("the mock app-server could not open its log");
+    let mut append = |line: &str| {
+        let _ = writeln!(log, "{line}");
+        let _ = log.flush();
+    };
+    let mut out = std::io::stdout();
+    let mut send = |value: &Value| {
+        let _ = writeln!(out, "{value}");
+        let _ = out.flush();
+    };
+
+    for line in std::io::BufRead::lines(std::io::stdin().lock()) {
+        let Ok(line) = line else { break };
+        append(&line);
+        // A real frame or nothing: the fixture answers what it can parse rather
+        // than scanning the text for fields that may not be there.
+        let Ok(message) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let id = message.get("id").cloned().unwrap_or(Value::Null);
+        match message.get("method").and_then(Value::as_str) {
+            Some("initialize") => send(&json!({"jsonrpc": "2.0", "id": id, "result": {}})),
+            Some("thread/start") => send(&json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {"thread": {"id": "mock-codex-thread"}},
+            })),
+            Some("turn/start") => {
+                send(&json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {"turn": {"id": "mock-codex-turn", "status": "inProgress"}},
+                }));
+                send(&json!({
+                    "jsonrpc": "2.0",
+                    "method": "item/agentMessage/delta",
+                    "params": {"itemId": "item_1", "delta": "still working"},
+                }));
+            }
+            // Only an interrupt that names BOTH coordinates stops the turn:
+            // the real app-server takes `{threadId, turnId}`, and a fixture
+            // that ends on the method alone would pass a client that addressed
+            // no particular turn.
+            Some("turn/interrupt") => {
+                let params = message.get("params").unwrap_or(&Value::Null);
+                let names = |key: &str, expected: &str| {
+                    params.get(key).and_then(Value::as_str) == Some(expected)
+                };
+                if !names("threadId", "mock-codex-thread") || !names("turnId", "mock-codex-turn") {
+                    append("INTERRUPT_MISADDRESSED");
+                    send(&json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {"code": -32602, "message": "invalid interrupt coordinates"},
+                    }));
+                    continue;
+                }
+                send(&json!({"jsonrpc": "2.0", "id": id, "result": {}}));
+                send(&json!({
+                    "jsonrpc": "2.0",
+                    "method": "turn/completed",
+                    "params": {"turnId": "mock-codex-turn"},
+                }));
+            }
+            _ => {}
+        }
+    }
+    std::process::exit(0);
+}
+
+/// Act like an ACP server: the protocol `copilot --acp` and `goose acp` speak,
+/// including the two behaviors that decide whether a turn works at all or
+/// silently never starts — a mandatory `session/request_permission`, and a
+/// cancel that is a notification rather than a request.
+fn run_acp_server(log_path: &str) -> ! {
+    let append = |line: &str| {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+        {
+            let _ = writeln!(file, "{line}");
+            let _ = file.flush();
+        }
+    };
+    let mut out = std::io::stdout();
+    let mut send = |value: &str| {
+        let _ = writeln!(out, "{value}");
+        let _ = out.flush();
+    };
+
+    let mut prompt_id: Option<String> = None;
+    let mut asked_permission = false;
+    for line in std::io::BufRead::lines(std::io::stdin().lock()) {
+        let Ok(line) = line else { break };
+        append(&line);
+        // A real frame or nothing: a fixture that scanned the text for its
+        // fields would answer something that was never a JSON-RPC message.
+        let Ok(message) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        let id = message
+            .get("id")
+            .filter(|id| id.is_number())
+            .map(ToString::to_string);
+        let method = message
+            .get("method")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        match method.as_deref() {
+            Some("initialize") => send(&format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":{{\"protocolVersion\":1}}}}",
+                id.unwrap_or_else(|| "1".to_string())
+            )),
+            Some("session/new") => send(&format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":{{\"sessionId\":\"mock-acp-session\"}}}}",
+                id.unwrap_or_else(|| "2".to_string())
+            )),
+            Some("session/prompt") => {
+                prompt_id = id.clone();
+                // The turn does not begin until the client answers this.
+                asked_permission = true;
+                send(
+                    "{\"jsonrpc\":\"2.0\",\"id\":9001,\"method\":\"session/request_permission\",\"params\":{\"sessionId\":\"mock-acp-session\",\"options\":[{\"optionId\":\"allow\",\"kind\":\"allow_once\"},{\"optionId\":\"deny\",\"kind\":\"reject_once\"}]}}",
+                );
+            }
+            // A cancel carries no `id`. The turn then ends reporting a NORMAL
+            // stop reason — the lie oneharness must not read as the truth.
+            Some("session/cancel") => {
+                send("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"mock-acp-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"Info: Operation cancelled by user\"}}}}");
+                if let Some(prompt_id) = prompt_id.take() {
+                    send(&format!(
+                        "{{\"jsonrpc\":\"2.0\",\"id\":{prompt_id},\"result\":{{\"stopReason\":\"end_turn\"}}}}"
+                    ));
+                }
+                break;
+            }
+            _ => {
+                // A permission answer arrives as a plain response; record it so
+                // a test can assert the client actually sent one.
+                if method.is_none() && id.is_some() && asked_permission {
+                    append("PERMISSION_ANSWERED");
+                }
+            }
+        }
+    }
+    std::process::exit(0);
+}
+
+/// Act like a harness whose turn is driven over an open stdin message stream and
+/// can be aborted out of band. Emits the in-turn transcript, then blocks reading
+/// stdin — so the turn is genuinely still running while a separate process sends
+/// the interrupt — and ends on either a control frame or EOF.
+fn run_controlled_turn(log_path: &str) -> ! {
+    let append = |line: &str| {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+        {
+            let _ = writeln!(file, "{line}");
+            let _ = file.flush();
+        }
+    };
+    let mut out = std::io::stdout();
+    if let Ok(stdout) = std::env::var("MOCK_STDOUT") {
+        if !stdout.is_empty() {
+            let _ = writeln!(out, "{}", stdout.trim_end_matches('\n'));
+            let _ = out.flush();
+        }
+    }
+    append("TURN_STARTED");
+
+    // A turn that completes on its own ends as soon as it has the prompt (the
+    // ordinary case); MOCK_TURN_HOLD keeps it running so a test can interrupt a
+    // genuinely in-flight turn.
+    let hold = std::env::var_os("MOCK_TURN_HOLD").is_some();
+    let mut interrupted = false;
+    for line in std::io::BufRead::lines(std::io::stdin().lock()) {
+        let Ok(line) = line else { break };
+        append(&line);
+        // A control frame, not a line that merely mentions one: a prompt whose
+        // text says `control_request` would otherwise end the turn nobody
+        // asked to stop.
+        let control = serde_json::from_str::<serde_json::Value>(&line)
+            .ok()
+            .is_some_and(|frame| {
+                frame.get("type").and_then(serde_json::Value::as_str) == Some("control_request")
+            });
+        if control {
+            interrupted = true;
+            append("INTERRUPTED");
+            break;
+        }
+        if !hold {
+            break;
+        }
+    }
+    let result = std::env::var("MOCK_TURN_RESULT").unwrap_or_else(|_| {
+        format!(
+            r#"{{"type":"result","subtype":"{}","session_id":"mock-session","result":"mock turn"}}"#,
+            if interrupted {
+                "error_during_execution"
+            } else {
+                "success"
+            }
+        )
+    });
+    let _ = writeln!(out, "{result}");
+    let _ = out.flush();
+    std::process::exit(0);
+}
+
 pub fn run() -> ! {
     #[cfg(windows)]
     if std::env::var_os("ONEHARNESS_MOCK_NATIVE_DESCENDANT").is_some() {
@@ -411,6 +1049,21 @@ pub fn run() -> ! {
 
     // An early stdin EOF still answers, so a probe that writes fewer lines than
     // expected sees a real response rather than a hang.
+    if let Ok(path) = std::env::var("MOCK_TURN_LOG") {
+        run_controlled_turn(&path);
+    }
+
+    if let Ok(path) = std::env::var("MOCK_CODEX_APP_SERVER_LOG") {
+        run_codex_app_server(&path);
+    }
+    if let Ok(path) = std::env::var("MOCK_ACP_LOG") {
+        run_acp_server(&path);
+    }
+
+    if let Ok(path) = std::env::var("MOCK_HTTP_CONTROL_LOG") {
+        run_http_control_server(&path);
+    }
+
     if let Ok(count) = std::env::var("MOCK_REPLY_AFTER_LINES") {
         // Loud on a malformed value: silently reading it as 1 would let a
         // typo'd test drive the wrong exchange and still report success.

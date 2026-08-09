@@ -135,7 +135,7 @@ pub struct ServerRecord {
 }
 
 /// An OS-derived process birth identity, compared together with a pid.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct ProcessIdentity(String);
 
@@ -143,6 +143,14 @@ impl ProcessIdentity {
     #[must_use]
     pub fn new(value: String) -> Option<Self> {
         (!value.is_empty()).then_some(Self(value))
+    }
+}
+
+impl<'de> Deserialize<'de> for ProcessIdentity {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        ProcessIdentity::new(String::deserialize(deserializer)?)
+            .ok_or_else(|| D::Error::custom("a process identity must not be empty"))
     }
 }
 
@@ -835,6 +843,15 @@ mod tests {
         assert!(LaunchArgv::new(vec!["  ".to_string(), "serve".to_string()]).is_err());
         let argv = LaunchArgv::new(vec!["opencode".to_string(), "serve".to_string()]).unwrap();
         assert_eq!(argv.split().0, "opencode");
+    }
+
+    #[test]
+    fn a_persisted_process_identity_must_not_be_empty() {
+        assert!(serde_json::from_str::<ProcessIdentity>(r#"""#).is_err());
+        assert_eq!(
+            serde_json::from_str::<ProcessIdentity>(r#""12345""#).unwrap(),
+            ProcessIdentity::new("12345".to_string()).unwrap()
+        );
     }
 
     #[test]

@@ -414,7 +414,13 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
             }
         }
     }
-    let _ = submitter.join();
+    // A peer can hold the prompt request open longer than the run's budget.
+    // Once that budget expires, joining the request thread would turn a timeout
+    // into an additional REQUEST_TIMEOUT wait. Dropping the handle detaches the
+    // worker; releasing the dispatch's server lease tears down its socket.
+    if !timed_out {
+        let _ = submitter.join();
+    }
 
     // A stream that ended before the turn did is not a turn that ended: the
     // server stopped talking mid-flight. Reported rather than passed off as a

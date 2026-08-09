@@ -21038,6 +21038,61 @@ fn a_control_server_that_names_no_session_is_refused_rather_than_guessed_at() {
 
 #[cfg(unix)]
 #[test]
+fn a_control_server_that_refuses_the_prompt_reports_its_refusal() {
+    // Session creation succeeded, but no turn exists unless the prompt itself
+    // was admitted. Drive the real HTTP boundary so a refusal cannot be lost
+    // behind an event stream that will never announce a turn.
+    let (output, report, served) =
+        http_control_run_with_fault("http-prompt-refused", "refuse-prompt", "30");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "nonzero", "{report}");
+    let error = result["error"].as_str().expect("a reason");
+    assert!(
+        error.contains("refused the prompt")
+            && error.contains("503")
+            && error.contains("model unavailable"),
+        "the reason must carry the prompt route's refusal: {error}"
+    );
+    assert!(
+        served
+            .lines()
+            .any(|line| line.starts_with("POST /api/session/ses_mock/prompt")),
+        "the prompt request never reached the server:\n{served}"
+    );
+    assert_eq!(result["session_id"], "ses_mock", "{report}");
+    assert!(result["text"].is_null(), "{report}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_server_that_never_answers_the_prompt_cannot_outlast_the_run_budget() {
+    // The prompt is sent on a worker so the event stream can be consumed at
+    // the same time. Joining that worker must not turn a one-second run budget
+    // into the HTTP client's otherwise fixed sixty-second wait.
+    let started = std::time::Instant::now();
+    let (output, report, served) =
+        http_control_run_with_fault("http-prompt-hang", "hang-prompt", "1");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "timeout", "{report}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "a blocked prompt submission outlasted the run's own timeout"
+    );
+    assert!(
+        served
+            .lines()
+            .any(|line| line.starts_with("POST /api/session/ses_mock/prompt")),
+        "the blocked prompt request never reached the server:\n{served}"
+    );
+    // The worker is still blocked when the timeout is recorded, so no later
+    // socket error is fabricated as though it had already been observed.
+    assert!(result["error"].is_null(), "{report}");
+}
+
+#[cfg(unix)]
+#[test]
 fn a_control_server_that_stops_talking_mid_turn_is_not_reported_as_a_clean_finish() {
     // The stream ending is not the turn ending. A server that dies mid-flight
     // would otherwise hand a supervisor an `ok` for work that was cut short —

@@ -113,6 +113,8 @@
 //!                   route `503`, and `no-session-id` answers it `200` with a body
 //!                   naming no id, and `foreign-permission` asks permission for a
 //!                   session this run does not own, and `close-stream` stops
+//!                   the event stream mid-turn, `refuse-prompt` rejects prompt
+//!                   submission, and `hang-prompt` never answers that request,
 //!                   talking mid-turn with no end-of-turn event, and
 //!                   `redirect-interrupt` answers the interrupt route `302`
 //!                   without aborting anything. Each exits once
@@ -380,6 +382,8 @@ enum HttpControlFault {
     NoSessionId,
     ForeignPermission,
     CloseStream,
+    RefusePrompt,
+    HangPrompt,
     RedirectInterrupt,
 }
 
@@ -395,6 +399,8 @@ impl HttpControlFault {
             "no-session-id" => HttpControlFault::NoSessionId,
             "foreign-permission" => HttpControlFault::ForeignPermission,
             "close-stream" => HttpControlFault::CloseStream,
+            "refuse-prompt" => HttpControlFault::RefusePrompt,
+            "hang-prompt" => HttpControlFault::HangPrompt,
             "redirect-interrupt" => HttpControlFault::RedirectInterrupt,
             other => panic!("mock harness: MOCK_HTTP_CONTROL_FAULT names no fault: `{other}`"),
         }
@@ -616,8 +622,30 @@ fn run_http_control_server(log_path: &str) -> ! {
                 reply(&mut socket, "204 No Content", "");
                 exit_shortly();
             } else if line.starts_with("POST /api/session/") && line.contains("/prompt") {
-                admitted.store(true, std::sync::atomic::Ordering::SeqCst);
-                reply(&mut socket, "200 OK", "{\"data\":{\"admittedSeq\":1}}");
+                match fault {
+                    HttpControlFault::RefusePrompt => {
+                        reply(
+                            &mut socket,
+                            "503 Service Unavailable",
+                            "{\"error\":\"model unavailable\"}",
+                        );
+                        exit_shortly();
+                    }
+                    HttpControlFault::HangPrompt => {
+                        // Keep the request blocked past the run's one-second
+                        // budget, then let the fixture process exit cleanly so
+                        // its coverage profile is complete.
+                        std::thread::spawn(|| {
+                            std::thread::sleep(std::time::Duration::from_secs(3));
+                            std::process::exit(0);
+                        });
+                        std::thread::sleep(std::time::Duration::from_secs(120));
+                    }
+                    _ => {
+                        admitted.store(true, std::sync::atomic::Ordering::SeqCst);
+                        reply(&mut socket, "200 OK", "{\"data\":{\"admittedSeq\":1}}");
+                    }
+                }
             } else if line.starts_with("POST /api/session/") && line.contains("/permission/") {
                 let mut file = log.lock().unwrap_or_else(|e| e.into_inner());
                 let _ = writeln!(file, "PERMISSION_ANSWERED");

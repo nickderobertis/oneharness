@@ -683,6 +683,21 @@ fn classify_crush(kind: &str, value: &Value) -> TurnEvent {
     }
 }
 
+/// The most of one answer's body — or of one event — a reader will hold.
+///
+/// Every route here answers a small JSON document, and the bytes arrive from
+/// another program's socket. Without a ceiling the *peer* decides how much
+/// memory a run spends: a declared length nobody could satisfy, framing that
+/// never terminates, or a line with no newline in it are all the same spend.
+/// Orders of magnitude above anything these servers actually send.
+pub const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
+
+/// The most of one response head a reader will hold before refusing it.
+///
+/// A head is a status line and a handful of headers; past this there is no
+/// blank line coming, and every byte read is memory a peer chose to spend.
+pub const MAX_HEAD_BYTES: usize = 64 * 1024;
+
 /// A response's head, as far as a reader must understand it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResponseHead {
@@ -734,6 +749,12 @@ pub enum HeadUnreadable {
     UnreadableLength(String),
     /// Two `Content-Length` declarations that frame different bodies.
     ConflictingLengths(usize, usize),
+    /// A `Content-Length` past what a reader will hold. Refused where it is
+    /// declared rather than where the bytes run out: the declaration is what a
+    /// reader would otherwise reserve and wait for.
+    OversizedLength(usize),
+    /// No blank line ended the head within [`MAX_HEAD_BYTES`].
+    OversizedHead(usize),
 }
 
 impl std::fmt::Display for HeadUnreadable {
@@ -750,6 +771,13 @@ impl std::fmt::Display for HeadUnreadable {
                 f,
                 "it declared two different Content-Length values ({first} and {second})"
             ),
+            HeadUnreadable::OversizedLength(declared) => write!(
+                f,
+                "it declared a {declared}-byte body, past the {MAX_BODY_BYTES} bytes a reader will hold"
+            ),
+            HeadUnreadable::OversizedHead(bound) => {
+                write!(f, "no blank line ended its head within {bound} bytes")
+            }
         }
     }
 }
@@ -770,6 +798,12 @@ pub fn parse_head(raw: &[u8]) -> HeadScan {
         .position(|w| w == b"\r\n\r\n")
         .map(|at| at + 4)
     else {
+        // "Not all here yet" only holds while a blank line is still plausible.
+        // Past the bound it is not: the reader would go on holding whatever the
+        // peer keeps sending, waiting for an ending nobody is going to send.
+        if raw.len() > MAX_HEAD_BYTES {
+            return HeadScan::Unreadable(HeadUnreadable::OversizedHead(MAX_HEAD_BYTES));
+        }
         return HeadScan::Incomplete;
     };
     let head = String::from_utf8_lossy(&raw[..end]);
@@ -806,6 +840,11 @@ pub fn parse_head(raw: &[u8]) -> HeadScan {
         // one a reader picks, the remainder is read as something it is not.
         if let Some(first) = content_length.filter(|first| *first != length) {
             return HeadScan::Unreadable(HeadUnreadable::ConflictingLengths(first, length));
+        }
+        // A number a reader would reserve for and then wait on. Refused here so
+        // no caller has to decide what to do half-way through spending it.
+        if length > MAX_BODY_BYTES {
+            return HeadScan::Unreadable(HeadUnreadable::OversizedLength(length));
         }
         content_length = Some(length);
     }
@@ -847,6 +886,18 @@ pub struct ChunkedDecoder {
     decoded_any: bool,
     /// Whether the terminating zero-length chunk has arrived.
     complete: bool,
+    /// Whether framing that never completed grew past [`MAX_BODY_BYTES`].
+    /// Retained rather than held: the bytes are dropped, and the reader is told
+    /// so, because a body that silently lost its middle is a wrong answer.
+    overflowed: bool,
+    /// How far into `pending` the search for a size header's `\r\n` has already
+    /// looked and found none.
+    ///
+    /// Without it every arrival re-searches the whole buffer, so a peer sending
+    /// a size header it never terminates costs quadratic time in what it sends
+    /// — which is a second thing it gets to spend on this reader's behalf, and
+    /// a cheaper one to spend than memory.
+    scanned: usize,
 }
 
 impl ChunkedDecoder {
@@ -859,31 +910,56 @@ impl ChunkedDecoder {
     pub fn is_complete(&self) -> bool {
         self.complete
     }
+    /// Whether framing that never completed grew past what this will hold, so
+    /// a reader can say the answer is unreadable rather than hand back a body
+    /// with a hole in it.
+    #[must_use]
+    pub fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+
     /// Feed `bytes`, returning whatever is now completely decoded. Incomplete
-    /// framing is retained for the next call rather than guessed at.
+    /// framing is retained for the next call rather than guessed at — but only
+    /// up to [`MAX_BODY_BYTES`], because "retained" is memory a peer that never
+    /// finishes a chunk gets to keep asking for.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
+        if self.overflowed {
+            return Vec::new();
+        }
         self.pending.extend_from_slice(bytes);
+        if self.pending.len() > MAX_BODY_BYTES {
+            self.pending = Vec::new();
+            self.overflowed = true;
+            return Vec::new();
+        }
         let mut out = Vec::new();
         loop {
             // A chunk's terminating CRLF can arrive in a later read than its
             // body, so it is skipped here rather than after the body: leaving
             // it in front of the next size header parses as an empty size and
             // ends the stream early.
-            while self
+            let strip = self
                 .pending
-                .first()
-                .is_some_and(|b| matches!(b, b'\r' | b'\n'))
-            {
-                self.pending.remove(0);
+                .iter()
+                .position(|b| !matches!(b, b'\r' | b'\n'))
+                .unwrap_or(self.pending.len());
+            if strip > 0 {
+                self.pending.drain(..strip);
+                self.scanned = 0;
             }
-            let Some(line_end) = self
-                .pending
+            // Searched from where the last search left off: a size header that
+            // never terminates would otherwise be re-scanned in full on every
+            // arrival. The overlap of one byte is what keeps a `\r\n` split
+            // across two arrivals from being missed.
+            let Some(line_end) = self.pending[self.scanned.min(self.pending.len())..]
                 .windows(2)
                 .position(|w| w == b"\r\n")
-                .map(|at| at + 2)
+                .map(|at| at + self.scanned + 2)
             else {
+                self.scanned = self.pending.len().saturating_sub(1);
                 return out;
             };
+            self.scanned = 0;
             let header = String::from_utf8_lossy(&self.pending[..line_end - 2]).to_string();
             let size =
                 usize::from_str_radix(header.split(';').next().unwrap_or_default().trim(), 16);
@@ -916,13 +992,32 @@ impl ChunkedDecoder {
 #[derive(Debug, Default)]
 pub struct SseAccumulator {
     pending: String,
+    /// Whether one payload grew past [`MAX_BODY_BYTES`] without a newline.
+    overflowed: bool,
 }
 
 impl SseAccumulator {
+    /// Whether one payload grew past what this will hold before ending. A
+    /// stream is long-lived by design, so an event with no newline in it is the
+    /// one arrival that never stops costing memory.
+    #[must_use]
+    pub fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+
     /// Feed decoded body bytes, returning every complete `data:` payload in
-    /// them. A partial line is held back, never emitted half-parsed.
+    /// them. A partial line is held back, never emitted half-parsed — bounded,
+    /// because the newline that ends it is the peer's to send.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<String> {
+        if self.overflowed {
+            return Vec::new();
+        }
         self.pending.push_str(&String::from_utf8_lossy(bytes));
+        if self.pending.len() > MAX_BODY_BYTES {
+            self.pending = String::new();
+            self.overflowed = true;
+            return Vec::new();
+        }
         let mut out = Vec::new();
         while let Some(at) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=at).collect();
@@ -1446,6 +1541,52 @@ mod tests {
                 String::from_utf8_lossy(head)
             );
         }
+    }
+
+    #[test]
+    fn framing_that_never_ends_is_bounded_rather_than_held() {
+        // Everything here arrives from another program's socket, and each of
+        // these shapes has no ending in it: a declared length nobody could
+        // satisfy, chunk framing whose size header never arrives, and an event
+        // line with no newline. Unbounded, the peer decides how much memory the
+        // run spends — so each is refused at its bound instead of accumulated.
+        let declared = MAX_BODY_BYTES + 1;
+        assert_eq!(
+            parse_head(format!("HTTP/1.1 200 OK\r\nContent-Length: {declared}\r\n\r\n").as_bytes()),
+            HeadScan::Unreadable(HeadUnreadable::OversizedLength(declared))
+        );
+        // A head that never reaches its blank line stops being "not here yet".
+        let endless = format!(
+            "HTTP/1.1 200 OK\r\nX-Pad: {}\r\n",
+            "p".repeat(MAX_HEAD_BYTES)
+        );
+        assert_eq!(
+            parse_head(endless.as_bytes()),
+            HeadScan::Unreadable(HeadUnreadable::OversizedHead(MAX_HEAD_BYTES))
+        );
+        // And one that is merely still arriving is still just that.
+        assert_eq!(parse_head(b"HTTP/1.1 200 OK\r\n"), HeadScan::Incomplete);
+
+        // Chunk framing: a size header that never arrives behind a growing body.
+        let mut chunks = ChunkedDecoder::default();
+        assert!(chunks.feed(b"4\r\nabcd\r\n").len() == 4);
+        assert!(!chunks.overflowed());
+        assert!(chunks.feed(&vec![b'x'; MAX_BODY_BYTES + 1]).is_empty());
+        assert!(chunks.overflowed(), "unterminated framing was held");
+        // Once overflowed it stays that way: the bytes it dropped are gone, so
+        // decoding on would splice a hole into the middle of a body.
+        assert!(chunks.feed(b"0\r\n\r\n").is_empty());
+        assert!(!chunks.is_complete());
+
+        // An SSE payload with no newline in it, on a stream that is long-lived
+        // by design — the one arrival that never stops costing memory.
+        let mut sse = SseAccumulator::default();
+        assert_eq!(sse.feed(b"data: one\n"), vec!["one".to_string()]);
+        assert!(sse
+            .feed(format!("data: {}", "y".repeat(MAX_BODY_BYTES + 1)).as_bytes())
+            .is_empty());
+        assert!(sse.overflowed(), "an endless event line was held");
+        assert!(sse.feed(b"\n").is_empty());
     }
 
     #[test]

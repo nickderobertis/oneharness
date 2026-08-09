@@ -16,6 +16,7 @@ use crate::domain::control::ServerAddress;
 use crate::domain::http::Method;
 use crate::domain::http::{
     parse_head, ChunkedDecoder, HeadScan, HeadUnreadable, HttpRequest, SseAccumulator,
+    MAX_BODY_BYTES,
 };
 
 /// A server's answer to one request.
@@ -111,7 +112,23 @@ impl HttpClient {
             }
             let bytes = &buffer[..read];
             match head {
-                Some(head) => absorb(bytes, head.chunked, &mut chunks, &mut body),
+                Some(head) => {
+                    absorb(bytes, head.chunked, &mut chunks, &mut body);
+                    // Both ways a framed-looking answer keeps costing memory:
+                    // chunk framing that never terminates, and a body (chunked
+                    // or unframed) that simply never stops. Neither ends on its
+                    // own, so the read does.
+                    if chunks.overflowed() || body.len() > MAX_BODY_BYTES {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "the control server's answer passed the {} bytes a reader will \
+                                 hold without ending",
+                                MAX_BODY_BYTES
+                            ),
+                        ));
+                    }
+                }
                 None => {
                     pending.extend_from_slice(bytes);
                     match parse_head(&pending) {
@@ -232,13 +249,41 @@ pub enum StreamPoll {
     /// The server answered the subscription with a non-success status, so its
     /// body is an error document rather than a stream of events.
     Refused(u16),
-    /// The subscription's head cannot be read, so nothing after it can be
-    /// framed as an event. Its own answer, not a close: the socket is still
-    /// open and a caller that read this as quiet would wait out its timeout on
-    /// a stream that will never yield a payload.
-    Unreadable(HeadUnreadable),
+    /// The subscription cannot be read, so nothing after it can be framed as an
+    /// event. Its own answer, not a close: the socket is still open and a
+    /// caller that read this as quiet would wait out its timeout on a stream
+    /// that will never yield a payload.
+    Unreadable(StreamUnreadable),
     /// The server closed the stream.
     Closed,
+}
+
+/// Why a stream will yield no payload.
+///
+/// Two reasons rather than one, because a stream can fail at either end of its
+/// framing: the head it started with, or an event that never ends. Both are the
+/// peer's doing and neither is a close, so both are said out loud.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamUnreadable {
+    /// The head cannot be framed, so nothing after it can be either.
+    Head(HeadUnreadable),
+    /// One event grew past the bytes a reader will hold without ending. Not a
+    /// pause in a long turn: nothing that arrives later makes it readable.
+    Payload(usize),
+}
+
+impl std::fmt::Display for StreamUnreadable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StreamUnreadable::Head(why) => write!(f, "{why}"),
+            StreamUnreadable::Payload(bound) => {
+                write!(
+                    f,
+                    "one event passed the {bound} bytes a reader will hold without ending"
+                )
+            }
+        }
+    }
 }
 
 impl EventStream {
@@ -270,7 +315,9 @@ impl EventStream {
                 let head = match parse_head(&self.pending) {
                     HeadScan::Incomplete => continue,
                     HeadScan::Whole(head) => head,
-                    HeadScan::Unreadable(why) => return StreamPoll::Unreadable(why),
+                    HeadScan::Unreadable(why) => {
+                        return StreamPoll::Unreadable(StreamUnreadable::Head(why))
+                    }
                 };
                 self.head_seen = true;
                 self.status = Some(head.status);
@@ -281,10 +328,25 @@ impl EventStream {
                 let body: Vec<u8> = self.pending.split_off(head.body_at);
                 self.pending.clear();
                 self.absorb(&body);
+                if let Some(unreadable) = self.overflowed() {
+                    return unreadable;
+                }
                 continue;
             }
             self.absorb(bytes);
+            if let Some(unreadable) = self.overflowed() {
+                return unreadable;
+            }
         }
+    }
+
+    /// The answer for a stream whose framing outgrew what a reader holds, or
+    /// `None` while it is still readable. A long turn is quiet, never endless:
+    /// the accumulators only overflow on framing that has no ending in it.
+    fn overflowed(&self) -> Option<StreamPoll> {
+        (self.chunks.overflowed() || self.sse.overflowed()).then_some(StreamPoll::Unreadable(
+            StreamUnreadable::Payload(MAX_BODY_BYTES),
+        ))
     }
 
     fn absorb(&mut self, bytes: &[u8]) {
@@ -607,9 +669,102 @@ mod tests {
             .unwrap();
         assert_eq!(
             stream.poll(),
-            StreamPoll::Unreadable(HeadUnreadable::ConflictingLengths(7, 9))
+            StreamPoll::Unreadable(StreamUnreadable::Head(HeadUnreadable::ConflictingLengths(
+                7, 9
+            )))
         );
         let _ = server.join();
+    }
+
+    /// A server that answers `head` and then streams `filler` forever, never
+    /// ending and never closing — the shape a peer takes when what it costs the
+    /// reader is unbounded rather than merely slow.
+    fn serve_endlessly(head: &'static [u8], filler: u8) -> Port {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = Port::new(listener.local_addr().unwrap().port()).unwrap();
+        std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut reader = io::BufReader::new(socket.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            if socket.write_all(head).is_err() {
+                return;
+            }
+            let blob = vec![filler; 64 * 1024];
+            // Bounded only so a regression fails instead of running forever.
+            for _ in 0..1024 {
+                if socket.write_all(&blob).is_err() {
+                    return;
+                }
+            }
+        });
+        port
+    }
+
+    #[test]
+    fn an_answer_that_never_ends_is_refused_instead_of_held() {
+        // An unframed body is the one shape whose only ending is the close, so
+        // a peer that never closes would otherwise be read until it stopped —
+        // it decides the memory, and the reader just waits.
+        let port = serve_endlessly(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n",
+            b'x',
+        );
+        let err = client(port)
+            .send(&HttpRequest::for_test(Method::Get, "/api/app", None))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("without ending"), "{err}");
+
+        // The same for chunk framing whose size header never arrives: valid so
+        // far, terminating never.
+        let port = serve_endlessly(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+            b'7',
+        );
+        let err = client(port)
+            .send(&HttpRequest::for_test(Method::Post, "/api/session", None))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn a_subscription_whose_head_never_ends_says_so_rather_than_going_quiet() {
+        // A head with no blank line in it: read as "still arriving", the turn
+        // waits out its whole timeout while the stream keeps growing.
+        let port = serve_endlessly(b"HTTP/1.1 200 OK\r\nX-Pad: ", b'p');
+        let mut stream = client(port)
+            .open_stream(
+                &HttpRequest::for_test(Method::Get, "/api/event", None),
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(
+            stream.poll(),
+            StreamPoll::Unreadable(StreamUnreadable::Head(HeadUnreadable::OversizedHead(
+                crate::domain::http::MAX_HEAD_BYTES
+            )))
+        );
+
+        // And one event that never ends is its own answer, not a quiet turn.
+        let port = serve_endlessly(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\ndata: ",
+            b'z',
+        );
+        let mut stream = client(port)
+            .open_stream(
+                &HttpRequest::for_test(Method::Get, "/api/event", None),
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(
+            stream.poll(),
+            StreamPoll::Unreadable(StreamUnreadable::Payload(MAX_BODY_BYTES))
+        );
     }
 
     #[test]

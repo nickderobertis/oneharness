@@ -406,6 +406,22 @@ impl HttpControlFault {
 /// that sizes the allocation arrives on the socket.
 const MAX_REQUEST_BODY: usize = 1 << 20;
 
+/// The largest request line or header line it will hold. Both end at a newline
+/// the *peer* sends, so without a bound the peer chooses how much this fixture
+/// accumulates before it has validated anything at all.
+const MAX_HEAD_LINE: usize = 16 * 1024;
+
+/// Read one head line into `line`, or `None` when it outgrew [`MAX_HEAD_LINE`]
+/// before ending. `Some(0)` is the end of the stream.
+fn read_bounded_line<R: std::io::BufRead>(reader: &mut R, line: &mut String) -> Option<usize> {
+    use std::io::Read;
+    match std::io::BufRead::read_line(&mut reader.take(MAX_HEAD_LINE as u64), line) {
+        Ok(read) if read == MAX_HEAD_LINE && !line.ends_with('\n') => None,
+        Ok(read) => Some(read),
+        Err(_) => Some(0),
+    }
+}
+
 /// Act like an opencode-shaped HTTP control server: the third execution model,
 /// where the turn is submitted to a server rather than to a CLI.
 ///
@@ -416,7 +432,7 @@ const MAX_REQUEST_BODY: usize = 1 << 20;
 /// nothing. The port comes off the argv the pool launched it with, exactly as
 /// `opencode serve --port N` takes it.
 fn run_http_control_server(log_path: &str) -> ! {
-    use std::io::{BufRead, Read};
+    use std::io::Read;
     let args: Vec<String> = std::env::args().collect();
     let fault = HttpControlFault::from_env();
     // A server the pool started and that then never listens — the shape a real
@@ -457,14 +473,29 @@ fn run_http_control_server(log_path: &str) -> ! {
         std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(socket.try_clone().expect("clone"));
             let mut request_line = String::new();
-            if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
-                return;
+            match read_bounded_line(&mut reader, &mut request_line) {
+                Some(0) | None => {
+                    // Nothing, or more of a request line than this fixture will
+                    // hold before it has even seen the end of it.
+                    if request_line.len() >= MAX_HEAD_LINE {
+                        reply_bad_request(&mut socket);
+                    }
+                    return;
+                }
+                Some(_) => {}
             }
             let mut length = 0usize;
             loop {
                 let mut header = String::new();
-                if reader.read_line(&mut header).unwrap_or(0) == 0 {
-                    break;
+                match read_bounded_line(&mut reader, &mut header) {
+                    Some(0) => break,
+                    // A header line with no ending in it is the same hazard as
+                    // an endless request line, and refused the same way.
+                    None => {
+                        reply_bad_request(&mut socket);
+                        return;
+                    }
+                    Some(_) => {}
                 }
                 if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
                     // A length that cannot be read is not a zero-length body:

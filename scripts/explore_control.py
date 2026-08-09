@@ -56,6 +56,10 @@ PROBE_TIMEOUT = 420
 # someone else's socket — so the peer must not get to decide how much memory a
 # probe spends waiting for a framing that is never coming.
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+# The most of one JSON-RPC frame read off a harness's stdout. Same reasoning as
+# above, on the other transport: the newline ending a frame is the child's to
+# send, so a line with none in it must not be held.
+MAX_RPC_LINE_BYTES = 8 * 1024 * 1024
 
 PROMPT = (
     "You are a non-interactive test fixture in a scratch directory. Using your "
@@ -112,6 +116,30 @@ def judge(work: str, interrupt: Callable[[], None]) -> Tuple[str, str]:
     return Verdict.LIVE, f"work froze at {after} step files for {FREEZE_SECONDS}s after the interrupt"
 
 
+def bounded_lines(stream, limit: int):
+    """Yield newline-terminated lines from `stream`, dropping any that outgrows
+    `limit` before ending.
+
+    A harness's stdout is external input and a frame is one small JSON object,
+    so the newline that ends one is the *child's* to send. Iterating the stream
+    directly lets it decide how much memory this probe holds before anything is
+    parsed. An over-long frame is dropped whole and the reader resyncs at the
+    next newline: half a JSON document is not a message, and handing its pieces
+    to a parser one at a time would be worse than missing it.
+    """
+    while True:
+        line = stream.readline(limit + 1)
+        if not line:
+            return
+        if len(line) > limit:
+            while not line.endswith("\n"):
+                line = stream.readline(limit + 1)
+                if not line:
+                    return
+            continue
+        yield line
+
+
 class JsonRpc:
     """Minimal newline-delimited JSON-RPC client over a child's stdio."""
 
@@ -127,7 +155,7 @@ class JsonRpc:
 
     def _read_loop(self) -> None:
         assert self.process.stdout is not None
-        for line in self.process.stdout:
+        for line in bounded_lines(self.process.stdout, MAX_RPC_LINE_BYTES):
             line = line.strip()
             if not line:
                 continue

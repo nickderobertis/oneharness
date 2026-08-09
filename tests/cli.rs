@@ -20672,13 +20672,25 @@ fn the_control_server_fixture_refuses_a_body_length_it_will_not_reserve_room_for
         let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         probe.local_addr().unwrap().port()
     };
-    let mut server = Command::new(mock_bin())
-        .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
-        .args(["serve", "--port", &port.to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn the mock control server");
+    // Reaped on the way out however this test ends: an assertion below fires
+    // between the spawn and the teardown, and a fixture left running would
+    // hold its port against the rest of the suite.
+    struct Reaped(std::process::Child);
+    impl Drop for Reaped {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let _server = Reaped(
+        Command::new(mock_bin())
+            .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
+            .args(["serve", "--port", &port.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn the mock control server"),
+    );
 
     let dial = || {
         for _ in 0..200 {
@@ -20714,6 +20726,30 @@ fn the_control_server_fixture_refuses_a_body_length_it_will_not_reserve_room_for
         "a length no body could satisfy was accepted: {refused}"
     );
 
+    // A header line with no ending in it: the same hazard one level up, where
+    // the peer picks how much is accumulated before anything is validated.
+    let long_header = status_of(
+        dial(),
+        format!(
+            "POST /api/session HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Pad: {}",
+            "p".repeat(32 * 1024)
+        ),
+    );
+    assert!(
+        long_header.starts_with("HTTP/1.1 400"),
+        "an unterminated header line was accumulated: {long_header}"
+    );
+
+    // And a request line that never ends, which is the same again one level up.
+    let long_line = status_of(
+        dial(),
+        format!("POST /api/session/{} HTTP/1.1\r\n", "x".repeat(32 * 1024)),
+    );
+    assert!(
+        long_line.starts_with("HTTP/1.1 400"),
+        "an unterminated request line was accumulated: {long_line}"
+    );
+
     // And the server is still there: refusing one framing must not cost it the
     // next caller, or the bound would just be a different way of falling over.
     let served = status_of(
@@ -20724,8 +20760,6 @@ fn the_control_server_fixture_refuses_a_body_length_it_will_not_reserve_room_for
     );
     assert!(served.starts_with("HTTP/1.1 200"), "{served}");
 
-    server.kill().ok();
-    server.wait().ok();
     let _ = std::fs::remove_dir_all(&store);
 }
 

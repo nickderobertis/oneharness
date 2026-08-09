@@ -157,6 +157,22 @@ except ValueError:
 except Exception as err:  # noqa: BLE001
     check("unterminated chunks", False, f"{type(err).__name__}: {err}")
 
+# A JSON-RPC frame off a child's stdout is bounded the same way: the newline
+# that ends one is the child's to send, so a line with none in it must not be
+# held. The over-long frame is dropped whole and the reader resyncs, rather than
+# handing half a document to `json.loads`.
+import io  # noqa: E402
+
+limit = 64
+stream = io.StringIO('{"a":1}\n' + "x" * (limit * 3) + '\n{"b":2}\n')
+frames = list(probe.bounded_lines(stream, limit))
+check("bounded frames", frames == ['{"a":1}\n', '{"b":2}\n'], f"{frames!r}")
+# A last line with no newline is still a frame, as long as it is within bounds.
+check(
+    "unterminated tail",
+    list(probe.bounded_lines(io.StringIO('{"a":1}'), limit)) == ['{"a":1}'],
+)
+
 if failures:
     for failure in failures:
         print(f"check-control-probe-http: {failure}", file=sys.stderr)

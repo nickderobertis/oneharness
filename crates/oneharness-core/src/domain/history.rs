@@ -37,7 +37,12 @@ use crate::domain::signals::{FailureKind, Usage};
 /// newer reader. That is what lets an additive field ship without rewriting the
 /// shape of every record — and what makes each version constant below the exact
 /// gate for the one field it introduced.
-pub const SCHEMA_VERSION: &str = "1.4";
+pub const SCHEMA_VERSION: &str = "1.5";
+/// v1.5 introduced the `session_not_found` failure kind — the refusal a harness
+/// returns when asked to continue a session its identity has never seen. A v1.4
+/// reader's `failure_kind` enum has no such value, so it refuses the record
+/// rather than misreading it.
+pub const FIRST_SESSION_NOT_FOUND_SCHEMA_VERSION: &str = "1.5";
 /// v1.4 introduced the `cancelled` run status — a record a v1.3 reader would
 /// refuse rather than misread, since its `status` enum has no such value. Spelled
 /// literally, like every constant here: aliasing [`SCHEMA_VERSION`] would move
@@ -57,11 +62,12 @@ pub(crate) const FIRST_EVENT_SCHEMA_VERSION: &str = "1.0";
 /// Every event-sourced history version this build reads, oldest first. Order is
 /// the contract: a field introduced in version N is legible to N and everything
 /// after it, which is what [`version_at_least`] answers.
-pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 5] = [
+pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 6] = [
     FIRST_EVENT_SCHEMA_VERSION,
     PREVIOUS_CURRENT_SCHEMA_VERSION,
     OBSERVED_TIMING_SCHEMA_VERSION,
     FIRST_ERROR_SCHEMA_VERSION,
+    FIRST_CANCELLED_SCHEMA_VERSION,
     SCHEMA_VERSION,
 ];
 
@@ -248,6 +254,7 @@ impl HistoryRunRecord {
             return false;
         }
         if !status_version_valid(&self.schema_version, self.status)
+            || !failure_kind_version_valid(&self.schema_version, self.failure_kind)
             || !error_text_valid(
                 &self.schema_version,
                 self.error.as_ref(),
@@ -795,7 +802,9 @@ impl HistoryRecord {
         HistoryRecord {
             // The oldest reader that can understand this record: only the shape a
             // record actually carries forces its version forward.
-            schema_version: if r.status == Status::Cancelled {
+            schema_version: if r.failure_kind == Some(FailureKind::SessionNotFound) {
+                FIRST_SESSION_NOT_FOUND_SCHEMA_VERSION
+            } else if r.status == Status::Cancelled {
                 FIRST_CANCELLED_SCHEMA_VERSION
             } else if error.is_some() {
                 FIRST_ERROR_SCHEMA_VERSION
@@ -854,6 +863,7 @@ impl HistoryRecord {
     pub(crate) fn complete(&self) -> bool {
         if !self.versioned_timing_valid()
             || !status_version_valid(&self.schema_version, self.status)
+            || !failure_kind_version_valid(&self.schema_version, self.failure_kind)
             || !error_text_valid(
                 &self.schema_version,
                 self.error.as_ref(),
@@ -1330,6 +1340,16 @@ fn reported_failure(status: Status, failure_kind: Option<FailureKind>) -> bool {
 /// value the same way — one rule, two validators.
 fn status_version_valid(schema_version: &str, status: Status) -> bool {
     status != Status::Cancelled || version_at_least(schema_version, FIRST_CANCELLED_SCHEMA_VERSION)
+}
+
+/// The same promise for `failure_kind`: a kind introduced after `schema_version`
+/// is refused rather than read back at a version whose enum never had it. Only
+/// [`FailureKind::SessionNotFound`] is gated — every other kind predates the
+/// oldest readable version. Stated here because the generated SDK schemas gate
+/// the same value the same way — one rule, two validators.
+fn failure_kind_version_valid(schema_version: &str, failure_kind: Option<FailureKind>) -> bool {
+    failure_kind != Some(FailureKind::SessionNotFound)
+        || version_at_least(schema_version, FIRST_SESSION_NOT_FOUND_SCHEMA_VERSION)
 }
 
 /// Whether a record's failure text agrees with the rest of the record: the field
@@ -2056,6 +2076,35 @@ mod tests {
             serde_json::from_value::<HistoryRecord>(wire).unwrap(),
             cancelled
         );
+    }
+
+    #[test]
+    fn an_unknown_session_run_records_at_the_version_that_first_understood_it() {
+        // `session_not_found` is a `failure_kind` value no v1.4 reader has, so a
+        // record carrying it must declare v1.5 — the same promise the `cancelled`
+        // status makes, on the other gated enum.
+        let refused = record_of(&RunResult {
+            failure_kind: Some(FailureKind::SessionNotFound),
+            failure_kind_source: Some("stderr".to_string()),
+            error: Some("No conversation found with session ID: s-1".to_string()),
+            ..failed_traced_result()
+        });
+        assert_eq!(refused.failure_kind, Some(FailureKind::SessionNotFound));
+        assert_eq!(
+            refused.schema_version,
+            FIRST_SESSION_NOT_FOUND_SCHEMA_VERSION
+        );
+        assert!(refused.complete());
+        let wire = serde_json::to_value(&refused).unwrap();
+        assert_eq!(wire["failure_kind"], "session_not_found");
+        assert_eq!(
+            serde_json::from_value::<HistoryRecord>(wire.clone()).unwrap(),
+            refused
+        );
+        // A record that claims an older reader can parse it is refused, not read.
+        let mut backdated = wire;
+        backdated["schema_version"] = Value::String(FIRST_CANCELLED_SCHEMA_VERSION.to_string());
+        assert!(serde_json::from_value::<HistoryRecord>(backdated).is_err());
     }
 
     #[test]

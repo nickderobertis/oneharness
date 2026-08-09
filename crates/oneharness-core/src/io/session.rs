@@ -73,8 +73,9 @@ pub fn read(path: &Path) -> Option<SessionRecord> {
     serde_json::from_str(&text).ok()
 }
 
-/// Create or update the record binding `name` → `token` for `harness`,
-/// preserving the original `created` when a prior record exists. The project
+/// Create or update the record binding `name` → `token` for `harness` (the
+/// **variant-qualified** id — see [`SessionRecord::harness`]), preserving the
+/// original `created` when a prior record exists. The project
 /// subdirectory is created as needed and the file is written atomically (temp +
 /// rename). Returns the I/O error for the caller to warn on — the store is
 /// best-effort and never takes a run's results down.
@@ -163,17 +164,28 @@ mod tests {
         let project = Path::new("/home/me/proj");
         let path = session_path(&dir, project, "chat");
 
-        write(&path, project, "claude-code", "chat", "sess-1", None).unwrap();
+        write(
+            &path,
+            project,
+            "claude-code:alternate",
+            "chat",
+            "sess-1",
+            None,
+        )
+        .unwrap();
         let first = read(&path).unwrap();
         assert_eq!(first.token, "sess-1");
-        assert_eq!(first.harness, "claude-code");
+        // The whole identity, not the adapter: the token is only usable under the
+        // variant that minted it.
+        assert_eq!(first.harness, "claude-code:alternate");
+        assert_eq!(first.schema_version, SCHEMA_VERSION);
         assert_eq!(first.name, "chat");
 
         // A later run refreshes the token but keeps the original `created`.
         write(
             &path,
             project,
-            "claude-code",
+            "claude-code:alternate",
             "chat",
             "sess-2",
             Some(&first),

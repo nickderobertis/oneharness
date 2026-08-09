@@ -170,6 +170,57 @@
       }
     },
     {
+      "name": "history record v1.5 accepts the session_not_found failure kind",
+      "root": "history_record",
+      "accepted": true,
+      "value": {
+        "schema_version": "1.5", "history_id": "0198f0d0-7b31-7000-8000-00000000001b",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-07-19T00:00:01Z", "harness": "claude-code",
+        "harness_id": "claude-code:alternate", "variant": "alternate", "model": null, "prompt": "test",
+        "permission_mode": "default", "status": "nonzero", "exit_code": 1, "duration_ms": 1000,
+        "finished_at": null, "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "events": null,
+        "failure_kind": "session_not_found",
+        "error": "No conversation found with session ID: 0198f0d0-7b31-7000-8000-000000000000"
+      }
+    },
+    {
+      "name": "history record v1.4 rejects the session_not_found failure kind, which arrived in v1.5",
+      "root": "history_record",
+      "accepted": false,
+      "value": {
+        "schema_version": "1.4", "history_id": "0198f0d0-7b31-7000-8000-00000000001c",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-07-19T00:00:01Z", "harness": "claude-code",
+        "harness_id": "claude-code:alternate", "variant": "alternate", "model": null, "prompt": "test",
+        "permission_mode": "default", "status": "nonzero", "exit_code": 1, "duration_ms": 1000,
+        "finished_at": null, "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "events": null,
+        "failure_kind": "session_not_found",
+        "error": "No conversation found with session ID: 0198f0d0-7b31-7000-8000-000000000000"
+      }
+    },
+    {
+      "name": "history line run rejects the session_not_found failure kind at v1.4",
+      "root": "history_line",
+      "accepted": false,
+      "value": {
+        "type": "run", "schema_version": "1.4",
+        "history_id": "0198f0d0-7b31-7000-8000-00000000001d",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-07-19T00:00:01Z", "harness": "codex", "harness_id": "codex",
+        "model": null, "prompt": "test", "permission_mode": "default",
+        "status": "nonzero", "exit_code": 1, "duration_ms": 1000, "finished_at": null,
+        "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "failure_kind": "session_not_found",
+        "error": "no rollout found for thread id 0198f0d0-7b31-7000-8000-000000000000"
+      }
+    },
+    {
       "name": "history record v1.3 rejects empty failure error text",
       "root": "history_record",
       "accepted": false,

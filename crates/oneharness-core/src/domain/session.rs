@@ -16,7 +16,18 @@ use serde::{Deserialize, Serialize};
 
 /// The on-disk session record's schema version, independent of the report's and
 /// the history's — the session store shape versions on its own cadence.
-pub const SCHEMA_VERSION: &str = "0.1";
+///
+/// `0.2` binds [`SessionRecord::harness`] to the **variant-qualified** harness id
+/// (`claude-code:alternate`) rather than the base id. The field name and type are
+/// unchanged, which is exactly why the version has to move: a `0.1` record's
+/// `"claude-code"` is indistinguishable from a `0.2` record's for a harness with
+/// no variants, so nothing in the value itself says which identity minted the
+/// token. See [`resumable`] for what a reader does about that.
+pub const SCHEMA_VERSION: &str = "0.2";
+
+/// The one prior store shape, kept named so [`resumable`] documents what it is
+/// declining to resume rather than comparing against an anonymous literal.
+pub const LEGACY_SCHEMA_VERSION: &str = "0.1";
 
 /// One named conversation's persisted state: the harness it runs on and that
 /// harness's native token to resume it with. Written after a run captures a
@@ -30,8 +41,13 @@ pub struct SessionRecord {
     /// The project the session belongs to (its display path), so the same name
     /// in different projects never collides.
     pub project: String,
-    /// The harness id this session runs on. A session is bound to the harness
-    /// that created it; resuming it on another is a usage error.
+    /// The **variant-qualified** harness id this session runs on
+    /// (`claude-code:alternate`, or plain `codex` when no variant is configured)
+    /// — the whole id, because a variant is a whole identity: each one points the
+    /// harness at its own home directory, so each keeps a *disjoint* session
+    /// namespace and a token minted under one means nothing under another. A
+    /// session is bound to the identity that created it; resuming it on another
+    /// is a usage error ([`harness_conflict`]).
     pub harness: String,
     /// The harness's native continuation token (its emitted session id) — what
     /// the next run resumes with.
@@ -92,9 +108,34 @@ impl SessionPlan {
     }
 }
 
+/// The stored record a run may build on: `Some` only for one this build can
+/// resume, `None` for one it must replace with a fresh session.
+///
+/// The only rejection today is a record at [`LEGACY_SCHEMA_VERSION`], whose
+/// `harness` is a base id that predates variant qualification. Which identity
+/// minted its token is unrecoverable — `"claude-code"` names the adapter, not the
+/// `CLAUDE_CONFIG_DIR` the conversation lives in — and *guessing* reproduces the
+/// bug the qualification exists to fix: handing one identity's token to another
+/// yields an unresumable session at best, and at worst strands a whole fallback
+/// chain on the resume that can never succeed. So the run starts fresh. That
+/// costs one conversation's continuity, once, on records written before this
+/// version.
+///
+/// Applied at the store boundary, so [`SessionPlan::decide`] and
+/// [`harness_conflict`] see a legacy record as no record at all.
+#[must_use]
+pub fn resumable(existing: Option<SessionRecord>) -> Option<SessionRecord> {
+    existing.filter(|record| record.schema_version == SCHEMA_VERSION)
+}
+
 /// The harness a prior record is bound to when it differs from `harness` — a
 /// usage error, since a named session cannot migrate between harnesses. `None`
 /// when there is no record or it already belongs to `harness`.
+///
+/// Both sides are the **variant-qualified** id (see [`SessionRecord::harness`]),
+/// so a cross-*variant* migration conflicts exactly like a cross-harness one:
+/// `claude-code:alternate`'s token is no more usable by `claude-code:primary`
+/// than by `codex`, and comparing base ids would have called that a match.
 #[must_use]
 pub fn harness_conflict<'a>(existing: Option<&'a SessionRecord>, harness: &str) -> Option<&'a str> {
     existing
@@ -148,6 +189,49 @@ mod tests {
             harness_conflict(Some(&claude), "codex"),
             Some("claude-code")
         );
+    }
+
+    #[test]
+    fn harness_conflict_rejects_a_cross_variant_migration() {
+        // Two identities of the same harness are two disjoint session
+        // namespaces, so the token binds to the qualified id: handing
+        // `alternate`'s token to `primary` (or to the bare base id) is the same
+        // category of error as handing it to another harness entirely.
+        let alternate = record("s", "claude-code:alternate");
+        assert_eq!(
+            harness_conflict(Some(&alternate), "claude-code:alternate"),
+            None
+        );
+        for other in ["claude-code:primary", "claude-code", "codex"] {
+            assert_eq!(
+                harness_conflict(Some(&alternate), other),
+                Some("claude-code:alternate"),
+                "`{other}` must not inherit another identity's session"
+            );
+        }
+    }
+
+    #[test]
+    fn a_legacy_record_is_not_resumable_and_starts_fresh() {
+        // A v0.1 record's `harness` is a base id: nothing in it says which
+        // identity minted the token, so it is dropped rather than guessed at —
+        // the run creates a new session and conflicts with nothing.
+        let legacy = SessionRecord {
+            schema_version: LEGACY_SCHEMA_VERSION.to_string(),
+            ..record("sess-1", "claude-code")
+        };
+        assert_eq!(resumable(Some(legacy.clone())), None);
+        let plan = SessionPlan::decide(resumable(Some(legacy.clone())).as_ref());
+        assert_eq!(plan.phase, SessionPhase::Create);
+        assert_eq!(plan.resume_token, None);
+        assert_eq!(
+            harness_conflict(resumable(Some(legacy)).as_ref(), "claude-code:alternate"),
+            None
+        );
+
+        // A record at the current version keeps resuming.
+        let current = record("sess-1", "claude-code:alternate");
+        assert_eq!(resumable(Some(current.clone())), Some(current));
     }
 
     #[test]

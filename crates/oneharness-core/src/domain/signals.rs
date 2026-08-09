@@ -87,11 +87,12 @@ pub struct UsageReading {
 /// The normalized, closed set of failure reasons oneharness can classify from a
 /// harness's output. It is the single source for the `failure_kind` contract
 /// value: serialized as the snake_case token a consumer reads in the report
-/// (`auth`, `rate_limit`, `model_not_found`, `quota`, `tool_deferred`), so the
-/// wire shape is unchanged — modeling it as an enum keeps a misspelled or
-/// invalid kind unrepresentable and gives every producer/consumer (classifier,
-/// `is_failure`, the fallback fall-through rule, the report, history) one
-/// definition to share instead of scattered string literals.
+/// (`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,
+/// `tool_deferred`), so the wire shape is unchanged — modeling it as an enum
+/// keeps a misspelled or invalid kind unrepresentable and gives every
+/// producer/consumer (classifier, `is_failure`, the fallback fall-through rule,
+/// the report, history) one definition to share instead of scattered string
+/// literals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureKind {
@@ -106,6 +107,12 @@ pub enum FailureKind {
     ModelNotFound,
     /// Out of quota / credits, or a billing problem — a provisioning failure.
     Quota,
+    /// The session this run asked to continue does not exist for the identity it
+    /// ran as, so the harness refused before doing any work (see
+    /// [`unknown_session_rejection`]). Distinct from every other kind because the
+    /// task itself is fine: another identity — or a fresh session on this one —
+    /// can still run it.
+    SessionNotFound,
     /// The harness deferred a builtin tool call instead of executing it, so a
     /// clean-exit run did no useful work (Claude Code bridge deployments; issue
     /// #1114). The only kind that can appear on a `status: ok` run.
@@ -121,6 +128,7 @@ impl FailureKind {
             FailureKind::RateLimit => "rate_limit",
             FailureKind::ModelNotFound => "model_not_found",
             FailureKind::Quota => "quota",
+            FailureKind::SessionNotFound => "session_not_found",
             FailureKind::ToolDeferred => "tool_deferred",
         }
     }
@@ -310,15 +318,26 @@ pub fn extract_session(stdout: &str) -> Option<String> {
 /// broken request (unknown model). It never changes exit-code semantics and is
 /// `None` when no known signal matches.
 pub fn classify_failure(stdout: &str, stderr: &str) -> Option<FailureReading> {
-    for (source, text) in [("stderr", stderr), ("stdout", stdout)] {
-        if let Some(kind) = match_failure(text) {
-            return Some(FailureReading {
+    scan_failure(stdout, stderr, match_failure)
+}
+
+/// The first reading `read` yields over stderr then stdout, tagged with the
+/// stream it came from. Every text classifier scans that same pair in that same
+/// order — stderr first, because a harness that refuses before running says so
+/// there — so they share one traversal rather than restating it.
+fn scan_failure(
+    stdout: &str,
+    stderr: &str,
+    read: impl Fn(&str) -> Option<FailureKind>,
+) -> Option<FailureReading> {
+    [("stderr", stderr), ("stdout", stdout)]
+        .into_iter()
+        .find_map(|(source, text)| {
+            read(text).map(|kind| FailureReading {
                 kind,
                 source: source.to_string(),
-            });
-        }
-    }
-    None
+            })
+        })
 }
 
 /// Harness-aware failure classification for adapter-specific text surfaces.
@@ -333,7 +352,10 @@ pub fn classify_failure(stdout: &str, stderr: &str) -> Option<FailureReading> {
 /// as exhaustion and silently re-running the task on another account.
 ///
 /// The adapter signal is checked **before** the generic vocabulary — see
-/// [`harness_quota_failure`] for why that order is load-bearing.
+/// [`harness_quota_failure`] for why that order is load-bearing — and the
+/// unknown-session refusal ([`unknown_session_rejection`]) sits between them, so
+/// a rejection that names a missing conversation is read as one rather than
+/// falling to a coarser match.
 pub fn classify_harness_failure(
     dialect: FailureDialect,
     stdout: &str,
@@ -343,15 +365,52 @@ pub fn classify_harness_failure(
     // stderr says nothing about whether the run got anywhere, so the work
     // evidence has to come from the transcript, not from the matched text.
     let worked = stdout_reports_work(stdout);
-    for (source, text) in [("stderr", stderr), ("stdout", stdout)] {
-        if let Some(kind) = harness_quota_failure(dialect, text, worked) {
-            return Some(FailureReading {
-                kind,
-                source: source.to_string(),
-            });
-        }
-    }
-    classify_failure(stdout, stderr)
+    scan_failure(stdout, stderr, |text| {
+        harness_quota_failure(dialect, text, worked)
+    })
+    .or_else(|| scan_failure(stdout, stderr, unknown_session_rejection))
+    .or_else(|| classify_failure(stdout, stderr))
+}
+
+/// A harness's refusal to continue a session it cannot find — the
+/// [`FailureKind::SessionNotFound`] rejection a `--resume`/`--session` run gets
+/// when the stored token belongs to some *other* identity's session namespace
+/// (each Claude Code `CLAUDE_CONFIG_DIR`, each Codex home, is disjoint).
+///
+/// Dialect-agnostic, like [`is_provider_failure_envelope`]: each phrase below
+/// says the same thing — *this conversation does not exist here* — whichever CLI
+/// printed it, and no harness emits another harness's wording. Every one was read
+/// from a real invocation (a bogus session id resumed against the installed CLI),
+/// never guessed:
+///
+/// - claude-code: `No conversation found with session ID: <id>`
+/// - codex: `thread/resume failed: no rollout found for thread id <id>`
+/// - opencode: `Error: Session not found`
+/// - qwen: `No saved session found with title "<id>"`
+///
+/// cursor is deliberately absent: its wording could not be captured (the probe
+/// machine's cursor-agent refuses at authentication before reading the session),
+/// and a guessed phrase is exactly the drift this list exists to avoid. Its
+/// unknown-session run therefore stays unclassified — a chain-stopping real
+/// failure, the honest default.
+///
+/// Checked *after* the quota reading and *before* the generic vocabulary, the
+/// specific-first order [`harness_quota_failure`] documents. Over-reading is
+/// bounded by the same rule that bounds every fall-through kind: a candidate with
+/// work evidence never falls through ([`crate::domain::fallback::RunWork`]), so
+/// an agent that merely *wrote* one of these sentences mid-run cannot hand its
+/// task to the next candidate.
+fn unknown_session_rejection(text: &str) -> Option<FailureKind> {
+    let text = text.to_lowercase();
+    [
+        "no conversation found with session id",
+        "no rollout found for thread id",
+        "session not found",
+        "no saved session found with title",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
+    .then_some(FailureKind::SessionNotFound)
 }
 
 /// The adapter-specific subscription-limit signature in `text` — a [`FailureKind::Quota`]
@@ -915,12 +974,72 @@ mod tests {
             FailureKind::RateLimit,
             FailureKind::ModelNotFound,
             FailureKind::Quota,
+            FailureKind::SessionNotFound,
             FailureKind::ToolDeferred,
         ] {
             let json = serde_json::to_string(&kind).unwrap();
             assert_eq!(json, format!("\"{}\"", kind.as_str()));
         }
         assert_eq!(FailureKind::ToolDeferred.as_str(), "tool_deferred");
+        assert_eq!(FailureKind::SessionNotFound.as_str(), "session_not_found");
+    }
+
+    #[test]
+    fn an_unknown_session_refusal_classifies_as_session_not_found() {
+        // Every phrase is a real capture: each installed CLI was asked to resume
+        // a session id it had never minted. All four exit non-zero with an empty
+        // stdout, so the reading has to come from stderr.
+        for (dialect, stderr) in [
+            (
+                FailureDialect::ClaudeCode,
+                "No conversation found with session ID: 00000000-0000-0000-0000-000000000000",
+            ),
+            (
+                FailureDialect::Codex,
+                "Error: thread/resume: thread/resume failed: no rollout found for thread id \
+                 00000000-0000-0000-0000-000000000000 (code -32600)",
+            ),
+            (FailureDialect::Generic, "Error: Session not found"),
+            (
+                FailureDialect::Generic,
+                "No saved session found with title \"00000000-0000-0000-0000-000000000000\".",
+            ),
+        ] {
+            let got = classify_harness_failure(dialect, "", stderr)
+                .unwrap_or_else(|| panic!("unclassified: {stderr}"));
+            assert_eq!(got.kind, FailureKind::SessionNotFound, "{stderr}");
+            assert_eq!(got.source, "stderr", "{stderr}");
+        }
+    }
+
+    #[test]
+    fn a_quota_rejection_still_outranks_an_unknown_session_phrase() {
+        // Specific-first order: an exhausted subscription that also mentions a
+        // missing session must stay `quota`, the reading the whole chain's
+        // provisioning logic keys on.
+        let got = classify_harness_failure(
+            FailureDialect::ClaudeCode,
+            "",
+            "You've hit your session limit. Session not found",
+        )
+        .unwrap();
+        assert_eq!(got.kind, FailureKind::Quota);
+    }
+
+    #[test]
+    fn an_ordinary_failure_is_not_read_as_a_missing_session() {
+        // The phrases are specific on purpose: a run that merely mentions a
+        // session stays unclassified, so the chain stops at it as a real failure.
+        for stderr in [
+            "the session ended",
+            "no conversation history",
+            "file not found",
+        ] {
+            assert!(
+                classify_harness_failure(FailureDialect::Generic, "", stderr).is_none(),
+                "{stderr} must not read as a missing session"
+            );
+        }
     }
 
     #[test]

@@ -92,7 +92,8 @@ pub struct Dialogue {
     config: DialogueConfig,
     phase: Phase,
     next_id: u64,
-    /// The request id whose *response* ends the turn.
+    /// The prompt request id, whose response ends ACP turns but only acknowledges
+    /// Codex turn creation; Codex ends on its later `turn/completed` notification.
     turn_request_id: Option<u64>,
     handshake_id: u64,
     open_id: u64,

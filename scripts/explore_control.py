@@ -340,6 +340,8 @@ def parse_response_head(head: bytes) -> Tuple[int, bool, Optional[int]]:
             if length is not None and length != int(declared):
                 raise ValueError("two Content-Length headers framing different bodies")
             length = int(declared)
+    if chunked and length is not None:
+        raise ValueError("both Transfer-Encoding: chunked and Content-Length declared")
     return int(code), chunked, length
 
 

@@ -3140,6 +3140,12 @@ impl HarnessPlan {
         };
         let mut argv = (self.spec.build_argv)(&ctx);
         argv.extend(self.extra.iter().cloned());
+        let prompt =
+            if self.delivery.is_control_stream() && self.spec.large_input.system_rides_prompt {
+                harness::prompt_with_system_text(self.system.as_deref(), &prompt)
+            } else {
+                prompt
+            };
         BuiltCommand {
             argv,
             stdin,

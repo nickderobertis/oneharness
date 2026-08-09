@@ -153,6 +153,19 @@ try:
 except Exception as err:
     check("chunked lookalike", False, f"{type(err).__name__}: {err}")
 
+# Two simultaneous body framings are ambiguous external input, even when both
+# happen to describe the bytes in this fixture consistently.
+try:
+    request(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 7\r\n\r\n"
+        b"7\r\n{\"a\":1}\r\n0\r\n\r\n"
+    )
+    check("ambiguous framing", False, "chunked plus Content-Length was accepted")
+except ValueError:
+    pass
+except Exception as err:
+    check("ambiguous framing", False, f"{type(err).__name__}: {err}")
+
 # Chunked framing that never terminates is refused rather than handed back as
 # whatever chunks happened to arrive.
 try:

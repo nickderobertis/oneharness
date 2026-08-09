@@ -20576,6 +20576,8 @@ fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there()
             "bypass",
             "--prompt",
             "keep working",
+            "--system",
+            "preserve this controlled system prompt",
             "--bin",
             &bin_override("opencode"),
             "--compact",
@@ -20633,6 +20635,17 @@ fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there()
             .any(|line| line.starts_with("POST /api/session/ses_mock/prompt")),
         "{served}"
     );
+    let prompt_request = served
+        .lines()
+        .find(|line| line.starts_with("POST /api/session/ses_mock/prompt"))
+        .expect("the prompt reached the control server");
+    let system_at = prompt_request
+        .find("preserve this controlled system prompt")
+        .expect("the system prompt reached the server-driven turn");
+    let prompt_at = prompt_request
+        .find("keep working")
+        .expect("the user prompt reached the server-driven turn");
+    assert!(system_at < prompt_at, "{prompt_request}");
 
     assert_eq!(report["control"]["mechanism"], "opencode-http");
     assert_eq!(report["control"]["interrupts"][0]["outcome"], "served");

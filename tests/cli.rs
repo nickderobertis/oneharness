@@ -12,6 +12,7 @@ use std::process::{Command, Output, Stdio};
 use oneharness_core::domain::events::{ActionEvent, TimingSource, ToolCallStatus};
 use oneharness_core::domain::history::{HistoryLabels, HistoryLine, HistoryStreamEnvelope};
 use oneharness_core::domain::report::{RunStreamEnvelope, Status};
+use oneharness_core::domain::session;
 use oneharness_core::domain::signals::FailureKind;
 use oneharness_core::domain::usage::{UsageProbe, UsageSupport};
 use oneharness_core::io::history::HistoryWriter;
@@ -1647,14 +1648,26 @@ fn session_in_fallback_mode_anchors_to_the_first_session_capable_harness() {
 
 /// The stored record for a named session, read back off the report's own
 /// `session.store_file` handle (the path a consumer is told to look at).
+///
+/// Every record the CLI writes is asserted to carry the current store schema
+/// version here rather than in each caller: the version is what tells a reader
+/// whether `harness` is a variant-qualified id or a pre-`0.2` base name it must
+/// decline to resume, so a record written without the bump would be read back as
+/// legacy and silently start fresh forever.
 fn stored_session(report: &Value) -> Value {
     let path = report["session"]["store_file"]
         .as_str()
         .expect("a session run reports its store file");
-    serde_json::from_str(
+    let record: Value = serde_json::from_str(
         &std::fs::read_to_string(path).unwrap_or_else(|err| panic!("reading {path}: {err}")),
     )
-    .expect("the session store holds one JSON record")
+    .expect("the session store holds one JSON record");
+    assert_eq!(
+        record["schema_version"],
+        session::SCHEMA_VERSION,
+        "a CLI-written record must carry the current store schema version"
+    );
+    record
 }
 
 /// Two identities of one harness (mocked): the first refuses, the second serves.

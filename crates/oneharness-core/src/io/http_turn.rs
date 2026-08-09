@@ -299,6 +299,7 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
     let deadline = started + timeout;
     let transcript = Arc::new(Mutex::new(Vec::<String>::new()));
     let text = Arc::new(Mutex::new(String::new()));
+    // llmlint: ignore[names_match_behavior] Accurate finding, deferred by the planner rather than fixed here: this flag is raised only when the submitter gives up (the prompt was refused or could not be sent), never when the turn ends — that is `ended`, off `TurnEvent::Finished`. Renaming it touches four sites in a path this change does not otherwise enter, and this branch is closing two named cross-platform test failures.
     let finished = Arc::new(AtomicBool::new(false));
 
     // The stream is opened BEFORE the prompt: a turn that finishes quickly

@@ -95,6 +95,18 @@
 //!                   to the log, so a test can assert the client answered the
 //!                   permission request (without which a real turn never starts)
 //!                   and that cancel carried no `id`.
+//!   MOCK_HTTP_CONTROL_LOG  if set to a path, act like an **opencode-shaped HTTP
+//!                   control server** on the `--port` from its own argv: create a
+//!                   session, block the turn on a permission request, and abort it
+//!                   on the session's interrupt route. Every request line (and its
+//!                   body) is appended to the log.
+//!   MOCK_HTTP_CONTROL_FAULT  with MOCK_HTTP_CONTROL_LOG, break the server the way
+//!                   a real one breaks, so the run's user-visible failure can be
+//!                   asserted: `never-ready` exits before binding at all (nothing
+//!                   ever answers), `refuse-session` answers the session-create
+//!                   route `503`, and `no-session-id` answers it `200` with a body
+//!                   naming no id. The last two exit once they have answered, so a
+//!                   faulted server leaves nothing behind for the pool to reclaim.
 //!   MOCK_LOG_FILE   if set, an append-only run log: each invocation appends `S\n`
 //!                   when it starts (before MOCK_SLEEP_MS) and `E\n` when it ends
 //!                   (after the sleep). With a sleep that exceeds spawn latency,
@@ -355,6 +367,13 @@ fn run_native_descendant() -> ! {
 fn run_http_control_server(log_path: &str) -> ! {
     use std::io::{BufRead, Read};
     let args: Vec<String> = std::env::args().collect();
+    let fault = std::env::var("MOCK_HTTP_CONTROL_FAULT").unwrap_or_default();
+    // A server the pool started and that then never listens — the shape a real
+    // one takes when it dies on startup. Exiting before binding is what makes
+    // the readiness wait, not a route, the thing under test.
+    if fault == "never-ready" {
+        std::process::exit(0);
+    }
     let port: u16 = args
         .windows(2)
         .find(|w| w[0] == "--port")
@@ -379,6 +398,7 @@ fn run_http_control_server(log_path: &str) -> ! {
         let log = std::sync::Arc::clone(&log);
         let admitted = std::sync::Arc::clone(&admitted);
         let aborted = std::sync::Arc::clone(&aborted);
+        let fault = fault.clone();
         std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(socket.try_clone().expect("clone"));
             let mut request_line = String::new();
@@ -453,17 +473,7 @@ fn run_http_control_server(log_path: &str) -> ! {
             if line.starts_with("POST /api/session/") && line.contains("/interrupt") {
                 aborted.store(true, std::sync::atomic::Ordering::SeqCst);
                 reply(&mut socket, "204 No Content", "");
-                // Shut down cleanly once the turn it was serving is over, rather
-                // than waiting to be reclaimed: the pool stops a server with
-                // SIGTERM, whose default disposition skips the at-exit handlers
-                // — including the one that writes this binary's coverage
-                // profile, leaving a truncated file that fails the whole
-                // coverage merge. The delay lets the aborted turn's final events
-                // reach the client first.
-                std::thread::spawn(|| {
-                    std::thread::sleep(std::time::Duration::from_millis(1500));
-                    std::process::exit(0);
-                });
+                exit_shortly();
             } else if line.starts_with("POST /api/session/") && line.contains("/prompt") {
                 admitted.store(true, std::sync::atomic::Ordering::SeqCst);
                 reply(&mut socket, "200 OK", "{\"data\":{\"admittedSeq\":1}}");
@@ -473,13 +483,45 @@ fn run_http_control_server(log_path: &str) -> ! {
                 let _ = file.flush();
                 reply(&mut socket, "200 OK", "{}");
             } else if line.starts_with("POST /api/session") {
-                reply(&mut socket, "200 OK", "{\"data\":{\"id\":\"ses_mock\"}}");
+                // The two ways session creation fails against a server that IS
+                // up: it refuses, or it answers something with no id in it.
+                // Either way the run has no turn to drive, and the server then
+                // exits rather than lingering as a pooled orphan — a process
+                // reclaimed with SIGTERM leaves a truncated coverage profile.
+                match fault.as_str() {
+                    "refuse-session" => {
+                        reply(
+                            &mut socket,
+                            "503 Service Unavailable",
+                            "{\"error\":\"no provider configured\"}",
+                        );
+                        exit_shortly();
+                    }
+                    "no-session-id" => {
+                        reply(&mut socket, "200 OK", "{\"data\":{\"kind\":\"session\"}}");
+                        exit_shortly();
+                    }
+                    _ => reply(&mut socket, "200 OK", "{\"data\":{\"id\":\"ses_mock\"}}"),
+                }
             } else {
                 reply(&mut socket, "200 OK", "{}");
             }
         });
     }
     std::process::exit(0);
+}
+
+/// Shut the mock control server down once it has served what it was standing up
+/// for, rather than waiting to be reclaimed: the pool stops a server with
+/// SIGTERM, whose default disposition skips the at-exit handlers — including the
+/// one that writes this binary's coverage profile, leaving a truncated file that
+/// fails the whole coverage merge. The delay lets the answer just written (and,
+/// for an aborted turn, its final events) reach the client first.
+fn exit_shortly() {
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        std::process::exit(0);
+    });
 }
 
 /// Act like an ACP server: the protocol `copilot --acp` and `goose acp` speak,

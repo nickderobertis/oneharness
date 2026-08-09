@@ -51,6 +51,12 @@ const EXIT_FAILURE: i32 = 1;
 /// issue #1115.
 const LARGE_INPUT_THRESHOLD: usize = 64 * 1024;
 
+/// How long a freshly launched control server is given to start answering. A
+/// launched server is not a reachable one — opencode takes seconds to bind, and
+/// crush's socket file appears before it accepts — so this is generous; the
+/// run's own timeout bounds it further.
+const SERVER_READY_WINDOW: Duration = Duration::from_secs(90);
+
 /// Temp files holding off-argv prompt/system text for the duration of a run,
 /// removed on drop — so every early return (stream path, an I/O error, normal
 /// completion) cleans them up, like the mock hook's snapshot-and-restore. Writes
@@ -2117,7 +2123,11 @@ fn drive_http_turn(
     let address = lease.record().address.clone();
     let command = lease.record().argv.as_slice().to_vec();
 
-    http_turn::await_ready(shape, &address, Duration::from_secs(90))
+    // Bounded by the run's own timeout as well as the window, because a server
+    // that never comes up must not hold a dispatch past the budget its caller
+    // set: a `--timeout 5` run waiting 90s for a bring-up is a hang as far as
+    // the caller is concerned.
+    http_turn::await_ready(shape, &address, SERVER_READY_WINDOW.min(timeout))
         .map_err(|err| format!("{err}"))?;
     let turn = http_turn::open(
         shape,

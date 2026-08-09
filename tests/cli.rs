@@ -20424,20 +20424,40 @@ fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there()
     assert_eq!(command[2], "--port", "{command:?}");
 
     // The pooled server outlives the dispatch by design and shuts itself down
-    // once the turn it served is over. This waits for the PROCESS to be gone,
-    // not merely for its port to close: a detached process still finishing its
-    // exit is one whose coverage profile is still being written, and a profile
-    // half-written while the coverage merge reads the directory corrupts the
-    // whole run's data.
-    let record = pool
+    // once the turn it served is over.
+    assert!(
+        wait_for_pooled_server_to_exit(&pool),
+        "the pool recorded the server it started"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+/// Wait for the server the pool under `pool` started to be gone, reporting
+/// whether there was one to wait for.
+///
+/// This waits for the PROCESS, not merely for its port to close: a detached
+/// process still finishing its exit is one whose coverage profile is still
+/// being written, and a profile half-written while the coverage merge reads the
+/// directory corrupts the whole run's data. A pool holding no record has
+/// nothing to wait for — a server that died before it ever listened is already
+/// reclaimed by the time the dispatch releases its lease.
+#[cfg(unix)]
+fn wait_for_pooled_server_to_exit(pool: &std::path::Path) -> bool {
+    let Some(record) = pool
         .join("oneharness")
         .join("servers")
         .read_dir()
-        .expect("the pool root exists once a server was started")
+        .ok()
+        .into_iter()
+        .flatten()
         .filter_map(Result::ok)
         .map(|entry| entry.path().join("server.json"))
         .find(|path| path.exists())
-        .expect("the pool recorded the server it started");
+    else {
+        return false;
+    };
     let pid: u32 = serde_json::from_str::<Value>(&std::fs::read_to_string(&record).unwrap())
         .unwrap()["pid"]
         .as_u64()
@@ -20450,9 +20470,123 @@ fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there()
                 .map(|out| !out.status.success())
                 .unwrap_or(true)
     });
+    true
+}
 
+/// Drive a controlled opencode run against a control server broken the way
+/// `fault` names, and hand back its report.
+///
+/// Every one of these is a failure the run must report as DATA — a server that
+/// never comes up or a session that cannot be opened is `spawn_error` with the
+/// reason in `error`, exactly like a harness that could not be spawned. The
+/// turn never starts, so the run is synchronous and no interrupt is sent.
+#[cfg(unix)]
+fn http_control_run_with_fault(tag: &str, fault: &str, timeout: &str) -> (Output, Value) {
+    let store = control_store_dir(tag);
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir(&format!("{tag}-cwd"));
+    let cwd_arg = cwd.display().to_string();
+    let pool = store.join("pool");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--session",
+            tag,
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("opencode"),
+            "--timeout",
+            timeout,
+            "--compact",
+        ],
+        &[
+            (
+                "MOCK_HTTP_CONTROL_LOG",
+                store.join("server.log").display().to_string().as_str(),
+            ),
+            ("MOCK_HTTP_CONTROL_FAULT", fault),
+            ("XDG_STATE_HOME", pool.display().to_string().as_str()),
+        ],
+    );
+    let report = json_stdout(&output);
+    wait_for_pooled_server_to_exit(&pool);
     let _ = std::fs::remove_dir_all(&store);
     let _ = std::fs::remove_dir_all(&cwd);
+    (output, report)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_server_that_never_answers_is_reported_rather_than_waited_out() {
+    // The pool started a process and it died before binding anything. The run
+    // must say so within the budget its caller set — a bring-up that outlasts
+    // `--timeout` is a hang as far as that caller is concerned.
+    let started = std::time::Instant::now();
+    let (output, report) = http_control_run_with_fault("http-unready", "never-ready", "5");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "spawn-error", "{report}");
+    let error = result["error"].as_str().expect("a reason");
+    assert!(
+        error.contains("did not answer within 5s"),
+        "the reason must name the readiness wait: {error}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(60),
+        "the readiness wait outlasted the run's own timeout"
+    );
+    // Nothing ran, so nothing is claimed: no session token, no answer text.
+    assert!(report["session"]["token"].is_null(), "{report}");
+    assert!(result["text"].is_null(), "{report}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_server_that_refuses_the_session_reports_its_refusal() {
+    // The server is up and answers, but will not open a session — so there is
+    // no turn to interrupt and nothing to drive.
+    let (output, report) = http_control_run_with_fault("http-refused", "refuse-session", "30");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "spawn-error", "{report}");
+    let error = result["error"].as_str().expect("a reason");
+    assert!(
+        error.contains("could not open the control session")
+            && error.contains("503")
+            && error.contains("no provider configured"),
+        "the reason must carry the server's own refusal: {error}"
+    );
+    // No turn ran, so no signal is invented for one.
+    assert!(result["session_id"].is_null(), "{report}");
+    assert!(result["text"].is_null(), "{report}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_server_that_names_no_session_is_refused_rather_than_guessed_at() {
+    // A 200 with no id in it: the answer parsed, but named nothing to address.
+    // Addressing a guessed id would send the prompt — and later the interrupt —
+    // at a route belonging to some other turn, or to none.
+    let (output, report) = http_control_run_with_fault("http-noid", "no-session-id", "30");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "spawn-error", "{report}");
+    let error = result["error"].as_str().expect("a reason");
+    assert!(
+        error.contains("answered no usable id"),
+        "the reason must name the unusable answer: {error}"
+    );
+    assert!(result["session_id"].is_null(), "{report}");
 }
 
 #[cfg(unix)]

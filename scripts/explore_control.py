@@ -513,11 +513,14 @@ def probe_opencode(bin_name: str) -> Tuple[str, str]:
 def probe_crush(bin_name: str) -> Tuple[str, str]:
     """`POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against `crush server`.
 
-    Two details that are easy to get wrong: the ``client_id`` is a self-assigned
+    Three details that are easy to get wrong: the ``client_id`` is a self-assigned
     UUID that travels in the *body* when creating a workspace but as a *query
     parameter* on every other route (a mismatch yields a bare
-    ``{"message":"invalid client_id"}``), and the prompt POST returns 202
-    immediately with the turn running in the background.
+    ``{"message":"invalid client_id"}``), the prompt POST returns 202
+    immediately with the turn running in the background, and the server blocks on
+    a permission decision — so a probe that never posts ``permissions/skip``
+    watches an agent that is waiting rather than working, and reports BLOCKED for
+    its own omission.
     """
     work = scratch()
     sock_path = os.path.join(tempfile.mkdtemp(prefix="oh-crush-"), "crush.sock")
@@ -563,6 +566,14 @@ def probe_crush(bin_name: str) -> Tuple[str, str]:
         if not session_id:
             return Verdict.BLOCKED, f"session create returned no id: {text[:200]}"
         session_id = path_segment(session_id, "crush session id")
+
+        # `permissions/skip` is crush's `--yolo`, and it is what oneharness posts
+        # for a permissive run. Without it the agent asks and waits, so the
+        # freeze the verdict measures would be a permission prompt rather than an
+        # interrupt.
+        status, text = call("POST", f"/v1/workspaces/{workspace_id}/permissions/skip", {"skip": True})
+        if status >= 400:
+            return Verdict.BLOCKED, f"permissions/skip failed ({status}): {text[:200]}"
 
         # The prompt goes to the workspace's agent with the session named in the
         # BODY — `/agent/sessions/{sid}` is a GET-only resource, and posting

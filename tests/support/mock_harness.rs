@@ -125,7 +125,11 @@
 //!   MOCK_HTTP_CONTROL_FAULT  with MOCK_HTTP_CONTROL_LOG, break the server the way
 //!                   a real one breaks, so the run's user-visible failure can be
 //!                   asserted: `never-ready` exits before binding at all (nothing
-//!                   ever answers), `refuse-session` answers the session-create
+//!                   ever answers), appending one `LAUNCHED never-ready` line per
+//!                   launch so a relaunch is countable, `lose-port` dies on its
+//!                   first launch the way a server that lost its reserved port
+//!                   does and comes up healthy on the relaunch,
+//!                   `refuse-session` answers the session-create
 //!                   route `503`, and `no-session-id` answers it `200` with a body
 //!                   naming no id, and `foreign-permission` asks permission for a
 //!                   session this run does not own, and `close-stream` stops
@@ -394,6 +398,7 @@ fn run_native_descendant() -> ! {
 enum HttpControlFault {
     None,
     NeverReady,
+    LosePort,
     RefuseSession,
     NoSessionId,
     ForeignPermission,
@@ -415,6 +420,7 @@ impl HttpControlFault {
         {
             "" => HttpControlFault::None,
             "never-ready" => HttpControlFault::NeverReady,
+            "lose-port" => HttpControlFault::LosePort,
             "refuse-session" => HttpControlFault::RefuseSession,
             "no-session-id" => HttpControlFault::NoSessionId,
             "foreign-permission" => HttpControlFault::ForeignPermission,
@@ -452,6 +458,19 @@ fn read_bounded_line<R: std::io::BufRead>(reader: &mut R, line: &mut String) -> 
     }
 }
 
+/// Record that a control server launch happened and which fault it was serving,
+/// so a test can count the launches a dispatch made. The line is all a fault
+/// that exits before binding ever gets to say.
+fn note_launch(log_path: &str, fault: &str) {
+    if let Ok(mut log) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        let _ = writeln!(log, "LAUNCHED {fault}");
+    }
+}
+
 /// Act like an opencode-shaped HTTP control server: the third execution model,
 /// where the turn is submitted to a server rather than to a CLI.
 ///
@@ -467,10 +486,33 @@ fn run_http_control_server(log_path: &str) -> ! {
     let fault = HttpControlFault::from_env();
     // A server the pool started and that then never listens — the shape a real
     // one takes when it dies on startup. Exiting before binding is what makes
-    // the readiness wait, not a route, the thing under test.
+    // the bring-up, not a route, the thing under test. The launch is logged
+    // first, and it is the only thing this fault ever writes: a dispatch that
+    // relaunches a server which died leaves one line per attempt, so the log
+    // counts the attempts.
     if fault == HttpControlFault::NeverReady {
+        note_launch(log_path, "never-ready");
         std::process::exit(0);
     }
+    // A server that lost its reserved port to whoever asked the kernel next.
+    // The port is reserved by binding and letting go, so the loser dies on
+    // `EADDRINUSE` through no fault of its own — and only the FIRST launch
+    // does: the relaunch it is owed comes up healthy, which is the whole
+    // behavior under test. The log is what tells the two launches apart, since
+    // nothing else survives the exit.
+    let fault = if fault == HttpControlFault::LosePort {
+        if std::fs::read_to_string(log_path)
+            .unwrap_or_default()
+            .contains("LAUNCHED lose-port")
+        {
+            HttpControlFault::None
+        } else {
+            note_launch(log_path, "lose-port");
+            std::process::exit(1);
+        }
+    } else {
+        fault
+    };
     // The pool dials the port it put on the argv, so an absent or unreadable
     // one is refused rather than defaulted: binding `0` would listen on some
     // port nobody is going to connect to, which reads as a server that never

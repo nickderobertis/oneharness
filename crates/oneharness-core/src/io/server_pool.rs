@@ -136,6 +136,22 @@ pub struct ServerRecord {
     pub idle_since: Option<u64>,
 }
 
+impl ServerRecord {
+    /// Whether the server this record names is still running — the same pid
+    /// *and* the same incarnation of it, which is the rule
+    /// [`LeaseHolder::is_live`] states for the holder side of an entry.
+    ///
+    /// This process's own finished servers are reaped first. A server that
+    /// exited a moment ago stays a zombie until its parent waits on it, and a
+    /// zombie still answers signal 0 — so without the reap, "did the server we
+    /// just launched die?" would answer "no" for the life of the dispatch.
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        reap_finished();
+        pid_alive(self.pid) && process_identity(self.pid).as_ref() == Some(&self.identity)
+    }
+}
+
 /// An OS-derived process birth identity, compared together with a pid.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]

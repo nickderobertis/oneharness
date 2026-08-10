@@ -22694,15 +22694,35 @@ fn a_control_server_that_never_answers_is_reported_rather_than_waited_out() {
     // The pool started a process and it died before binding anything. The run
     // must say so within the budget its caller set — a bring-up that outlasts
     // `--timeout` is a hang as far as that caller is concerned.
+    //
+    // Read off the PROCESS, not off a window, which is what makes this
+    // deterministic. A TCP port is reserved by binding and letting go, so a
+    // sibling test's server can be listening at this run's address by the time
+    // it dials; judged by "did anything answer in 5s", this run would then be
+    // driven against a stranger and end as whatever that stranger does — the
+    // `timeout` this assertion used to see at random. Judged by "is the server
+    // we launched still running", both spellings of the same failure — ours
+    // died, or ours lost the address and died — are the one outcome below.
     let started = std::time::Instant::now();
-    let (output, report, _) = http_control_run_with_fault("http-unready", "never-ready", "5");
+    let (output, report, served) = http_control_run_with_fault("http-unready", "never-ready", "5");
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let result = &report["results"][0];
     assert_eq!(result["status"], "spawn-error", "{report}");
     let error = result["error"].as_str().expect("a reason");
     assert!(
-        error.contains("did not answer within 5s"),
-        "the reason must name the readiness wait: {error}"
+        error.contains("the control server exited before it answered"),
+        "the reason must name the launched server's exit: {error}"
+    );
+    // Losing a reserved port is one of the ways a server dies at once, so a
+    // server that exited earns exactly one relaunch at a fresh address. The
+    // fault logs one line per launch; two attempts is the whole budget.
+    assert_eq!(
+        served
+            .lines()
+            .filter(|line| *line == "LAUNCHED never-ready")
+            .count(),
+        2,
+        "a server that died during bring-up must be relaunched once:\n{served}"
     );
     assert!(
         started.elapsed() < std::time::Duration::from_secs(60),
@@ -22711,6 +22731,105 @@ fn a_control_server_that_never_answers_is_reported_rather_than_waited_out() {
     // Nothing ran, so nothing is claimed: no session token, no answer text.
     assert!(report["session"]["token"].is_null(), "{report}");
     assert!(result["text"].is_null(), "{report}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_server_that_lost_its_reserved_port_is_relaunched_rather_than_reported() {
+    // The race the readiness wait used to lose, made deterministic: a control
+    // server's TCP port is reserved by binding and letting go, so between the
+    // reservation and the launch it belongs to whoever asks the kernel next,
+    // and the loser dies on `EADDRINUSE`. A dispatch that noticed only "nothing
+    // answered" would either report a failure the harness never had or — worse —
+    // drive whatever stranger now owns that address. Noticing the SERVER is
+    // gone earns it one relaunch, and the run does its work.
+    let mock_profile = mock_profile_redirect();
+    let store = control_store_dir("http-lostport");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("http-lostport-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let log = store.join("server.log");
+    let pool = store.join("pool");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
+        .env("MOCK_HTTP_CONTROL_FAULT", "lose-port")
+        .env("XDG_STATE_HOME", pool.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--session",
+            "lostport",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("opencode"),
+            "--timeout",
+            "60",
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the HTTP controlled run");
+
+    wait_until("the control socket", || {
+        store.join("control").join("lostport.sock").exists()
+    });
+    // The second server is a healthy one, so the turn really starts: without
+    // the permission answer nothing below would be evidence of a working run.
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(&log)
+            .map(|text| text.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "lostport",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    assert_eq!(report["results"][0]["status"], "ok", "{report}");
+    assert_eq!(report["control"]["interrupts"][0]["outcome"], "served");
+
+    let served = std::fs::read_to_string(&log).unwrap();
+    // Exactly one launch died: the relaunch is a budget, not a retry loop.
+    assert_eq!(
+        served
+            .lines()
+            .filter(|line| *line == "LAUNCHED lose-port")
+            .count(),
+        1,
+        "{served}"
+    );
+
+    wait_for_pooled_server_to_exit(&pool);
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[cfg(unix)]

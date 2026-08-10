@@ -583,33 +583,90 @@ fn expect_ok(
     }
 }
 
-/// Wait until the server at `address` answers, or say it never did.
+/// Why a launched control server never became reachable.
+///
+/// Two outcomes rather than one, because they are two different facts and only
+/// one of them is about the address. A server that is GONE is a fact about the
+/// process oneharness itself started; a server that is SILENT is a verdict a
+/// clock rendered at an address. Keeping them apart is what lets the caller
+/// relaunch the first without ever re-rolling the second.
+#[derive(Debug, Clone)]
+pub enum NotReady {
+    /// The process oneharness launched is no longer running: it exited before
+    /// it ever answered. Worth one relaunch — a fresh address included, since
+    /// losing the one it was given is among the reasons a server dies at once.
+    Exited(String),
+    /// It is still running and simply never answered within the window.
+    Silent(String),
+}
+
+impl NotReady {
+    /// Whether the launched server is gone, as opposed to merely quiet.
+    #[must_use]
+    pub fn exited(&self) -> bool {
+        matches!(self, NotReady::Exited(_))
+    }
+}
+
+impl std::fmt::Display for NotReady {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NotReady::Exited(why) | NotReady::Silent(why) => f.write_str(why),
+        }
+    }
+}
+
+/// Wait until the server at `address` answers, or say why it never did.
 ///
 /// A launched server is not a reachable one: opencode takes seconds to bind,
 /// and crush's socket file appears before it accepts. Every request after this
 /// would otherwise fail as "connection refused" and read like a broken
 /// mechanism rather than a slow start.
-pub fn await_ready(shape: HttpShape, address: &DialAddress, within: Duration) -> io::Result<()> {
+///
+/// `still_running` is asked before every dial and again after one that
+/// answered, because an address is not an identity. A TCP port is reserved by
+/// binding and letting go, so between the reservation and the launch it belongs
+/// to whoever asks next: a server that lost that race dies on `EADDRINUSE`, and
+/// the stranger now listening there would otherwise be dialed, admitted and
+/// driven as though it were ours. Asking about the process turns "it is not
+/// there" into something the launch knows rather than something the window
+/// guesses — and asking again after an answer keeps a stranger's `200` from
+/// standing in for a server that is already gone.
+pub fn await_ready(
+    shape: HttpShape,
+    address: &DialAddress,
+    within: Duration,
+    still_running: &dyn Fn() -> bool,
+) -> Result<(), NotReady> {
     let client = HttpClient::new(address.clone(), Duration::from_secs(5));
     let request = http::readiness_request(shape);
     let deadline = Instant::now() + within;
     let mut last = String::from("it never accepted a connection");
-    while Instant::now() < deadline {
+    loop {
+        if !still_running() {
+            return Err(NotReady::Exited(format!(
+                "the control server exited before it answered: {last}"
+            )));
+        }
         match client.send(&request) {
             // Any HTTP answer proves it is listening; a 404 from a server that
             // moved this route still means "up".
-            Ok(_) => return Ok(()),
+            Ok(_) if still_running() => return Ok(()),
+            Ok(_) => {
+                return Err(NotReady::Exited(
+                    "the control server exited before it answered: something else answered at its address".to_string(),
+                ))
+            }
             Err(err) => last = err.to_string(),
+        }
+        if Instant::now() >= deadline {
+            return Err(NotReady::Silent(format!(
+                "the control server did not answer within {}s: {last}",
+                within.as_secs()
+            )));
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-    Err(io::Error::new(
-        io::ErrorKind::TimedOut,
-        format!(
-            "the control server did not answer within {}s: {last}",
-            within.as_secs()
-        ),
-    ))
 }
 
 /// A client identity for a server that requires one (crush).
@@ -658,6 +715,106 @@ mod tests {
             "{first}"
         );
         assert!(first.chars().all(|c| c.is_ascii_hexdigit() || c == '-'));
+    }
+
+    /// An address nothing can ever answer at: a unix socket path inside a
+    /// directory this test alone names, which no other process can bind.
+    /// Deliberately not a TCP port — one picked by binding and letting go is a
+    /// port anybody may take next, and a stranger answering there is exactly
+    /// what these two outcomes exist to tell apart.
+    #[cfg(unix)]
+    fn unserved_address(tag: &str) -> DialAddress {
+        let path = std::env::temp_dir().join(format!("oh-ready-{tag}-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        DialAddress::UnixSocket {
+            path: crate::domain::control::AbsolutePath::new(path).expect("an absolute path"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_server_still_running_but_silent_is_reported_against_the_window() {
+        let failure = await_ready(
+            HttpShape::Opencode,
+            &unserved_address("silent"),
+            Duration::from_secs(1),
+            &|| true,
+        )
+        .expect_err("nothing is listening there");
+        assert!(!failure.exited(), "{failure}");
+        assert!(
+            failure.to_string().contains("did not answer within 1s"),
+            "{failure}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_launched_server_that_is_gone_is_reported_without_waiting_the_window_out() {
+        // A ninety-second window and no wait at all: the answer is a fact about
+        // the process, so there is nothing to wait for once it is gone.
+        let started = Instant::now();
+        let failure = await_ready(
+            HttpShape::Opencode,
+            &unserved_address("gone"),
+            Duration::from_secs(90),
+            &|| false,
+        )
+        .expect_err("the server it launched is gone");
+        assert!(failure.exited(), "{failure}");
+        assert!(
+            failure
+                .to_string()
+                .contains("the control server exited before it answered"),
+            "{failure}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(5), "{failure}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_answer_from_an_address_whose_launched_server_is_gone_is_not_readiness() {
+        // Somebody is listening; it is just not the server this dispatch
+        // started. Taking the `200` would submit the turn to a stranger.
+        let address = unserved_address("stranger");
+        let DialAddress::UnixSocket { path } = &address else {
+            unreachable!("the fixture builds a unix socket address")
+        };
+        let listener =
+            std::os::unix::net::UnixListener::bind(path.as_path()).expect("a bound fixture socket");
+        let serving = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                use std::io::{BufRead, Write};
+                // Read the request head off the wire before answering, or the
+                // client's own write is what fails and no answer is ever seen.
+                let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone"));
+                let mut line = String::new();
+                while reader.read_line(&mut line).is_ok_and(|read| read > 0) {
+                    if line.trim().is_empty() {
+                        break;
+                    }
+                    line.clear();
+                }
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+            }
+        });
+        // Alive for the check before the dial, gone by the one after it: the
+        // order in which a server that dies mid-bring-up is really observed.
+        let checks = std::sync::atomic::AtomicUsize::new(0);
+        let failure = await_ready(
+            HttpShape::Opencode,
+            &address,
+            Duration::from_secs(90),
+            &|| checks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0,
+        )
+        .expect_err("the launched server is gone whoever answered");
+        assert!(failure.exited(), "{failure}");
+        assert!(
+            failure.to_string().contains("something else answered"),
+            "{failure}"
+        );
+        let _ = serving.join();
+        let _ = std::fs::remove_file(path.as_path());
     }
 
     #[test]

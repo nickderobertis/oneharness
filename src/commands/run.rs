@@ -59,6 +59,11 @@ const LARGE_INPUT_THRESHOLD: usize = 64 * 1024;
 /// run's own timeout bounds it further.
 const SERVER_READY_WINDOW: Duration = Duration::from_secs(90);
 
+/// How many times one dispatch will launch a control server before giving up.
+/// One relaunch, and only for a server that exited during bring-up — see
+/// [`bring_up_server`] for which failure earns it and why the other does not.
+const SERVER_START_ATTEMPTS: usize = 2;
+
 /// Temp files holding off-argv prompt/system text for the duration of a run,
 /// removed on drop — so every early return (stream path, an I/O error, normal
 /// completion) cleans them up, like the mock hook's snapshot-and-restore. Writes
@@ -2216,28 +2221,9 @@ fn drive_http_turn(
         .map(|name| ((*name).to_string(), std::env::var(name).ok()))
         .collect();
     let key = control::pool_key(spec.id, &key_env, &[]);
-    let address = candidate_address(server.transport, &root, &key)?;
-    let plan = server_pool::LaunchPlan::new(bin, &server, &[], address, Vec::new())
-        .map_err(|err| format!("could not plan the control server launch: {err}"))?;
-    let lease = server_pool::acquire(&root, &key, &plan, server_pool::DEFAULT_LINGER)
-        .map_err(|err| format!("could not start the control server: {err}"))?;
-    // Narrowed to a dialable address once, here, where the HTTP control path
-    // takes hold of the running server: everything downstream is then handed an
-    // address it can actually open a socket to.
-    let address = DialAddress::try_from(lease.record().address.clone()).map_err(|err| {
-        format!(
-            "the control server for `{}` cannot be reached over HTTP: {err}",
-            spec.id
-        )
-    })?;
+    let (lease, address) = bring_up_server(shape, spec, bin, &server, &root, &key, timeout)?;
     let command = lease.record().argv.as_slice().to_vec();
 
-    // Bounded by the run's own timeout as well as the window, because a server
-    // that never comes up must not hold a dispatch past the budget its caller
-    // set: a `--timeout 5` run waiting 90s for a bring-up is a hang as far as
-    // the caller is concerned.
-    http_turn::await_ready(shape, &address, SERVER_READY_WINDOW.min(timeout))
-        .map_err(|err| format!("{err}"))?;
     let turn = http_turn::open(shape, address, cwd, mode, &http_turn::client_id(spec.id))
         .map_err(|err| format!("{err}"))?;
     let session_id = turn.session_id().to_string();
@@ -2254,6 +2240,64 @@ fn drive_http_turn(
     // using can be reclaimed once its linger expires.
     drop(lease);
     Ok((command, outcome, session_id))
+}
+
+/// Lease a running control server for this dispatch: pick a candidate address,
+/// have the pool start (or reuse) a server there, and wait until it answers.
+///
+/// The wait can end two ways, and only one of them is retried. A server that
+/// EXITED during bring-up is relaunched once at a *fresh* candidate address,
+/// because losing the address is one of the ways a server dies at once: a TCP
+/// port is reserved by binding and letting go, so between the reservation and
+/// the launch it belongs to whoever asks the kernel next, and the loser dies on
+/// `EADDRINUSE`. A server that is merely SILENT is never relaunched — it is
+/// still running, and re-rolling a window the caller already bounded would just
+/// spend the budget twice.
+fn bring_up_server(
+    shape: HttpShape,
+    spec: &'static HarnessSpec,
+    bin: &str,
+    server: &control::ServerSpec,
+    root: &std::path::Path,
+    key: &control::PoolKey,
+    timeout: Duration,
+) -> Result<(server_pool::ServerLease, DialAddress), String> {
+    let mut attempts_left = SERVER_START_ATTEMPTS;
+    loop {
+        attempts_left -= 1;
+        let candidate = candidate_address(server.transport, root, key)?;
+        let plan = server_pool::LaunchPlan::new(bin, server, &[], candidate, Vec::new())
+            .map_err(|err| format!("could not plan the control server launch: {err}"))?;
+        let lease = server_pool::acquire(root, key, &plan, server_pool::DEFAULT_LINGER)
+            .map_err(|err| format!("could not start the control server: {err}"))?;
+        // Narrowed to a dialable address once, here, where the HTTP control path
+        // takes hold of the running server: everything downstream is then handed
+        // an address it can actually open a socket to.
+        let address = DialAddress::try_from(lease.record().address.clone()).map_err(|err| {
+            format!(
+                "the control server for `{}` cannot be reached over HTTP: {err}",
+                spec.id
+            )
+        })?;
+        let record = lease.record().clone();
+        // Bounded by the run's own timeout as well as the window, because a
+        // server that never comes up must not hold a dispatch past the budget
+        // its caller set: a `--timeout 5` run waiting 90s for a bring-up is a
+        // hang as far as the caller is concerned.
+        match http_turn::await_ready(shape, &address, SERVER_READY_WINDOW.min(timeout), &|| {
+            record.is_running()
+        }) {
+            Ok(()) => return Ok((lease, address)),
+            Err(not_ready) => {
+                // Released before relaunching, so the pool sees the dead entry
+                // for what it is and starts a server this dispatch can vouch for.
+                drop(lease);
+                if attempts_left == 0 || !not_ready.exited() {
+                    return Err(not_ready.to_string());
+                }
+            }
+        }
+    }
 }
 
 /// Where a freshly launched server should listen. A reused one keeps its own

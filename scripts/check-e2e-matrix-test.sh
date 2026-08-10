@@ -129,4 +129,19 @@ grep -q 'ANTHROPIC_KEY: .*secrets\.ANTHROPIC_API_KEY' "$tmp/repo/$workflow" ||
     fail "fixture setup: the renamed-key case did not leave the live step referencing secrets.ANTHROPIC_API_KEY"
 run_case "a live-step env key renamed away from what the phase reads" 1 "never reaches the live step"
 
+# The up-front check deleted outright. Every phase's key would then be verified
+# nowhere, so the gate must refuse rather than silently compare against nothing.
+build_fixture
+sed -i.bak '/- name: Verify every controllable harness/,/^      - uses: actions-rust-lang/{/^      - uses: actions-rust-lang/!d;}' \
+    "$tmp/repo/$workflow"
+grep -q '::error::missing secret' "$tmp/repo/$workflow" &&
+    fail "fixture setup: the removed-preflight case left the credential-check step in place"
+run_case "the up-front credential check removed" 1 "up-front credential check"
+
+# The live step left with no secret-backed env at all: every phase reads an unset
+# credential, which is the same silent gap seen from the other end.
+build_fixture
+sed -i.bak '/name: Live turn-control e2e/,$ { /secrets\./d; }' "$tmp/repo/$workflow"
+run_case "the live step stripped of its credentials" 1 "secret-backed variable for \`just live-control\`"
+
 echo "check-e2e-matrix-test: ok"

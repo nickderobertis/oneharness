@@ -61,7 +61,6 @@ llmlint_verdict_key() {
     git hash-object --stdin
 }
 
-# Print the recorded verdict's path, or fail when this key has none.
 llmlint_replay_verdict() {
   local dir entry
   dir=$(llmlint_cache_dir) || return 1

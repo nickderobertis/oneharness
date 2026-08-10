@@ -10,6 +10,10 @@
 # create-vs-comment branch is real behavior: `scripts/report-scheduled-failure-test.sh`
 # drives both halves against a stubbed `gh`.
 #
+# Every failure below says what broke AND what to do about it, for the same
+# reason the script exists: this runs only when something is already wrong, so a
+# reporter that dies quietly takes the finding down with it.
+#
 # Reads (all required except RUN_URL):
 #   REPO      owner/name to file against
 #   TITLE     the issue title, which is also how an existing one is found
@@ -20,25 +24,72 @@ set -euo pipefail
 
 for required in REPO TITLE BODY; do
 	if [ -z "${!required:-}" ]; then
-		echo "report-scheduled-failure: \$$required is required" >&2
+		echo "report-scheduled-failure: \$$required is empty or unset, so there is nothing to file" >&2
+		echo "  Next: the caller supplies all three. In CI that is the \`report a scheduled failure\` step in the workflow that failed — give it \`env: $required: …\`. Run it by hand with REPO=owner/name TITLE=… BODY=… bash scripts/report-scheduled-failure.sh" >&2
 		exit 2
 	fi
 done
+
+# One place every `gh` failure is answered, because the three that can plausibly
+# happen here need three different answers and the exit code tells them apart in
+# none of them — only what `gh` wrote does. What it wrote is printed either way,
+# so a fourth cause nobody predicted is still diagnosable.
+#   $1 what was being attempted, $2 gh's exit status, $3 what gh wrote
+gh_failed() {
+	local what="$1" status="$2" said="$3"
+	echo "report-scheduled-failure: $what failed (gh exited $status)" >&2
+	if [ -n "$said" ]; then
+		printf '%s\n' "$said" | sed 's/^/    gh: /' >&2
+	else
+		echo "    gh: (said nothing)" >&2
+	fi
+	case "$said" in
+	*"gh auth login"* | *"authentication"* | *"HTTP 401"* | *"Bad credentials"*)
+		echo "  Next: this run has no usable credential. In CI, pass \`env: GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}\` to the step; locally, run \`gh auth login\`." >&2
+		;;
+	*"HTTP 403"* | *"Resource not accessible"* | *"not authorized"*)
+		echo "  Next: the credential works but may not write issues on $REPO. Give the workflow \`permissions: issues: write\` (a scheduled run gets no more than the workflow declares), and check that issues are enabled on the repository." >&2
+		;;
+	*"HTTP 404"*)
+		echo "  Next: \`$REPO\` did not resolve — check \$REPO for a typo, and that the token can see a private repository." >&2
+		;;
+	*"HTTP 422"* | *"Validation Failed"* | *"Invalid search query"*)
+		echo "  Next: GitHub rejected the request itself rather than the caller — \$TITLE is the likeliest cause, since it is interpolated into a search query. Reproduce with: gh issue list --repo $REPO --state open --search '$TITLE in:title'" >&2
+		;;
+	*)
+		echo "  Next: reproduce the command above with \`gh --repo $REPO\` and read its error. The three causes worth ruling out first are the credential (\`gh auth status\`), the workflow's \`issues: write\` permission, and \$TITLE." >&2
+		;;
+	esac
+	echo "  The failure being reported is NOT lost: it is the red run at ${RUN_URL:-<no RUN_URL was passed>}." >&2
+	exit 1
+}
 
 # shellcheck disable=SC2153  # BODY is an input, not a typo for the local below
 body="$BODY"
 [ -n "${RUN_URL:-}" ] && body="$body"$'\n\n'"Run: $RUN_URL"
 
+said="$(mktemp)"
+trap 'rm -f "$said"' EXIT
+
 # `--search "<title> in:title"` rather than a label: a label has to exist first,
 # and a workflow that has to create one before it can report a failure has one
 # more way to fail while reporting a failure.
+status=0
 existing="$(gh issue list --repo "$REPO" --state open --search "$TITLE in:title" \
-	--json number,title --jq "first(.[] | select(.title == \"$TITLE\") | .number) // empty")"
+	--json number,title --jq "first(.[] | select(.title == \"$TITLE\") | .number) // empty" \
+	2>"$said")" || status=$?
+[ "$status" -eq 0 ] || gh_failed "looking for an open issue titled \"$TITLE\"" "$status" "$(cat "$said")"
 
+# On success `gh` answers with the URL it wrote to, which is the one thing a
+# reader of this log actually wants next.
 if [ -n "$existing" ]; then
-	gh issue comment "$existing" --repo "$REPO" --body "$body"
-	echo "report-scheduled-failure: commented on #$existing"
+	status=0
+	where="$(gh issue comment "$existing" --repo "$REPO" --body "$body" 2>"$said")" || status=$?
+	[ "$status" -eq 0 ] || gh_failed "commenting on #$existing" "$status" "$(cat "$said")"
+	echo "report-scheduled-failure: commented on #$existing — $where"
 else
-	gh issue create --repo "$REPO" --title "$TITLE" --body "$body"
-	echo "report-scheduled-failure: opened a new issue"
+	status=0
+	where="$(gh issue create --repo "$REPO" --title "$TITLE" --body "$body" 2>"$said")" || status=$?
+	[ "$status" -eq 0 ] || gh_failed "opening an issue titled \"$TITLE\"" "$status" "$(cat "$said")"
+	echo "report-scheduled-failure: opened a new issue — $where"
 fi

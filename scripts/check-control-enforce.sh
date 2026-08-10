@@ -78,9 +78,20 @@ evidence_case() {
 evidence_tmp="$(mktemp -d)"
 trap 'rm -rf "$evidence_tmp"' EXIT
 printf 'codex: stream error\n' >"$evidence_tmp/run.err"
-printf '{"results":[{"status":"timeout","exit_code":null,"text":"starting now"}]}\n' >"$evidence_tmp/report.json"
+printf '{"results":[{"status":"nonzero","exit_code":2,"failure_kind":"auth","error":"the provider refused","text":"starting now"}]}\n' \
+    >"$evidence_tmp/report.json"
 evidence_case "a run that failed loudly" "codex: stream error" "$evidence_tmp" "$evidence_tmp/report.json"
-evidence_case "a partial report" "status=timeout" "$evidence_tmp" "$evidence_tmp/report.json"
+evidence_case "a partial report" "status=nonzero" "$evidence_tmp" "$evidence_tmp/report.json"
+# `error` is the field that says WHY a run did not succeed; stderr does not.
+evidence_case "the run's own error" "the provider refused" "$evidence_tmp" "$evidence_tmp/report.json"
+evidence_case "the classified failure" "failure_kind=auth" "$evidence_tmp" "$evidence_tmp/report.json"
+
+# A harness that failed on its own is not a verdict on the redirection, and the
+# status is what tells the two apart.
+[ "$(_oh_result_status "$evidence_tmp/report.json")" = "nonzero" ] ||
+    fail "a failed run's status was not read back from its report"
+[ -z "$(_oh_result_status "$evidence_tmp/absent.json")" ] ||
+    fail "a missing report must yield no status rather than a made-up one"
 # Silence is itself the finding, so it must be stated rather than left blank.
 : >"$evidence_tmp/run.err"
 evidence_case "a run that said nothing" "wrote nothing to stderr" "$evidence_tmp" "$evidence_tmp/absent.json"

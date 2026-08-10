@@ -1119,6 +1119,13 @@ TOML
 # than deleting the sandbox over it. Bounded, because a stuck harness can emit
 # megabytes and the useful part is the end.
 #
+# The run's own status, or the empty string when no report was written. Used to
+# tell a harness that failed on its own from one that broke a control contract.
+_oh_result_status() {
+    [ -s "$1" ] || return 0
+    jq -r '.results[0].status // ""' "$1" 2>/dev/null || true
+}
+
 #   $1 sandbox directory, $2 report path
 _oh_control_evidence() {
     local sandbox="$1" report="$2"
@@ -1130,7 +1137,9 @@ _oh_control_evidence() {
     fi
     if [ -s "$report" ] && jq -e . "$report" >/dev/null 2>&1; then
         note "  evidence: result —"
-        jq -r '.results[0] | "    status=\(.status) exit_code=\(.exit_code) text=\((.text // "")[0:300])"' \
+        jq -r '.results[0] | "    status=\(.status) exit_code=\(.exit_code) failure_kind=\(.failure_kind // "none")",
+                             "    error=\(.error // "none")",
+                             "    text=\((.text // "")[0:300])"' \
             "$report" >&2 || true
     else
         note "  evidence: no parseable report was written (the run had not finished)"
@@ -1510,7 +1519,23 @@ _oh_control_redirect_enforce_once() {
     if ! _oh_wait_for 180 test -e "$redirected"; then
         kill "$run_pid" 2>/dev/null || true
         wait "$run_pid" 2>/dev/null || true
-        sed 's/^/    /' "$sandbox/run.err" >&2 || true
+        # The run's own verdict separates the two ways this fails: a redirected
+        # turn the harness never ran, versus one it refused — which its status
+        # and error say and its stderr does not.
+        _oh_control_evidence "$sandbox" "$report"
+        # A harness whose OWN turn errored proves nothing either way: a message
+        # cannot be delivered to a session the harness itself just failed, so
+        # calling that a lost redirection accuses this feature of another's
+        # fault. It is the same inconclusive outcome as a turn that ended too
+        # early, and retries like one — opencode reaches it often enough on its
+        # own that treating it as a contract violation makes the suite lie.
+        # Every other ending stays a hard failure: the redirection WAS committed
+        # and the work never happened.
+        if [ "$(_oh_result_status "$report")" = "nonzero" ]; then
+            note "  redirect-enforce: the harness's own turn failed, so nothing here is a verdict on the redirection"
+            rm -rf "$sandbox"
+            return 1
+        fi
         rm -rf "$sandbox"
         fail "$id: the redirection never reached the agent ($marker.txt was never created), so \`interrupt --input\` stopped the turn and lost the message"
     fi

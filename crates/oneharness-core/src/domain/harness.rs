@@ -627,7 +627,8 @@ pub fn valid_ids() -> String {
     REGISTRY.iter().map(|h| h.id).collect::<Vec<_>>().join(", ")
 }
 
-/// Text that does not name a selectable harness identity.
+/// Text that is not a well-formed harness identity (see [`HarnessIdentity`] for
+/// the guarantee parsing makes, and the one it deliberately does not).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HarnessIdentityError;
 
@@ -643,9 +644,9 @@ impl std::fmt::Display for HarnessIdentityError {
     }
 }
 
-/// One selectable harness **identity**: a registry id, optionally qualified by
-/// the `:<variant>` naming one configured auth identity — `claude-code:alternate`,
-/// or plain `codex` where no variant is configured.
+/// A **well-formed** harness identity: a registry id, optionally qualified by
+/// the `:<variant>` naming one auth identity — `claude-code:alternate`, or plain
+/// `codex` where no variant is configured.
 ///
 /// This is the granularity a native session token actually belongs to. Each
 /// variant points its harness at its own home directory (its own
@@ -654,12 +655,27 @@ impl std::fmt::Display for HarnessIdentityError {
 ///
 /// An unqualified id is a legitimate identity, not a degenerate one: a harness
 /// with no `[harness.<id>.variant.*]` has exactly one identity and its selected
-/// id carries no suffix, so both spellings parse. What the type rules out is the
-/// text a bare `String` let into the session store and could never name a
-/// selectable unit — an unknown base id, an empty base or variant around the
-/// separator, a second separator, or a variant outside
-/// [`crate::domain::config::VARIANT_NAME_PATTERN`]. Parsing is the only
-/// constructor, so holding one is proof it was checked.
+/// id carries no suffix, so both spellings parse.
+///
+/// **What parsing proves, exactly:** the base names a registry harness and the
+/// variant — if present — is a legal variant name
+/// ([`crate::domain::config::VARIANT_NAME_PATTERN`]). That rules out the text a
+/// bare `String` let into the session store: an unknown base id, an empty base or
+/// variant around the separator, a second separator, or an out-of-charset
+/// variant. Parsing is the only constructor, so holding one is proof of that
+/// much.
+///
+/// **What it deliberately does not prove:** that the variant is *configured*.
+/// Variants come from layered config, which this pure type cannot see — and must
+/// not, because a stored record outlives the config that minted it. A session
+/// bound to `claude-code:alternate` has to stay readable after `alternate` is
+/// renamed or dropped; making that record unparseable would turn a config edit
+/// into a corrupt store, and a store that cannot say what it was bound to cannot
+/// refuse to resume it under something else. Whether an identity is live is
+/// settled where the candidates are known — the command layer's session wiring,
+/// which continues on it if it is still a candidate and otherwise refuses loudly
+/// ([`crate::domain::session::harness_conflict`]) rather than handing its token to
+/// a sibling.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct HarnessIdentity(String);
@@ -1858,7 +1874,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_harness_identity_parses_only_a_selectable_unit() {
+    fn a_harness_identity_parses_only_a_well_formed_id() {
         // Both legitimate spellings: a harness with no configured variant is one
         // unqualified identity; a configured one carries its variant.
         for (text, base, variant) in [

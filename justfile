@@ -73,6 +73,7 @@ lint-sh:
 lint-workflows: build build-mock-harness
     @bash scripts/check-pr-title-e2e.sh >/dev/null
     @bash scripts/check-e2e-matrix.sh >/dev/null
+    @bash scripts/check-e2e-matrix-test.sh >/dev/null
     @bash scripts/check-workflows.sh >/dev/null
     @bash scripts/check-workflows-e2e.sh >/dev/null
     @bash scripts/check-publish-crates.sh >/dev/null

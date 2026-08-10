@@ -85,6 +85,14 @@ probe_with '{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Authentica
 probe_with '{"jsonrpc":"2.0","id":2,"result":{"models":{"availableModels":[]}}}' \
     && fail_check "a session/new result with no sessionId was reported as a login"
 
+# 3b. Nor is a sessionId that is not a usable one. The frame is a protocol
+#     response from another process, so "present" is not the same as "a session
+#     the phase could go on to drive".
+probe_with '{"jsonrpc":"2.0","id":2,"result":{"sessionId":""}}' \
+    && fail_check "an empty sessionId was reported as a login"
+probe_with '{"jsonrpc":"2.0","id":2,"result":{"sessionId":{"id":7}}}' \
+    && fail_check "a non-string sessionId was reported as a login"
+
 # 4. A copilot that never answers must lose to the probe's own deadline rather
 #    than hanging the suite before any phase has run.
 started=$SECONDS

@@ -1392,7 +1392,10 @@ oh_copilot_login_ready() {
 
     if _oh_wait_for "$seconds" _oh_acp_answer "$dir/out" >/dev/null; then
         frame="$(_oh_acp_answer "$dir/out")"
-        if printf '%s' "$frame" | jq -e '.result.sessionId != null' >/dev/null 2>&1; then
+        # A non-empty STRING id, not merely a present one: this is a protocol
+        # response from another process, and the only reading that means "a
+        # session opened" is one the phase could go on to use.
+        if printf '%s' "$frame" | jq -e '(.result.sessionId | type) == "string" and (.result.sessionId | length) > 0' >/dev/null 2>&1; then
             verdict=0
         else
             note "  copilot has no usable login: ACP session/new answered $(printf '%s' "$frame" | jq -c '.error // .result')"

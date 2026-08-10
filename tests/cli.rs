@@ -20916,6 +20916,124 @@ fn a_streamed_controlled_run_publishes_the_protocol_turns_own_signals() {
 
 #[cfg(unix)]
 #[test]
+fn an_http_controlled_run_carries_its_redirection_into_the_next_turn() {
+    let mock_profile = mock_profile_redirect();
+    // Interrupting a turn makes its OWN prompt request fail: opencode holds
+    // that request open for the whole turn and answers it with a refusal when
+    // the turn is cut short. That refusal describes the turn the supervisor
+    // deliberately stopped, and reading it as the run's outcome ends the run
+    // before the redirection it accepted can become the next turn — the message
+    // lost by another route, and the shape that failed against the real
+    // opencode. The fixture models exactly that: held-open prompt, refusal on
+    // abort, second prompt accepted afterwards.
+    let store = control_store_dir("http-redir");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("http-redir-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let log = store.join("server.log");
+    let pool = store.join("pool");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
+        .env("MOCK_HTTP_CONTROL_FAULT", "redirected-turn")
+        .env("XDG_STATE_HOME", pool.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--session",
+            "httpredir",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working on the wrong thing",
+            "--bin",
+            &bin_override("opencode"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the HTTP controlled run");
+
+    wait_until("the control socket", || {
+        store.join("control").join("httpredir.sock").exists()
+    });
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(&log)
+            .map(|text| text.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "httpredir",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--input",
+            "stop and do the right thing",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    assert_eq!(json_stdout(&interrupt)["redirected"], true);
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+
+    // The redirection reached the SAME session, after the interrupt, as its own
+    // prompt — asserted at the server, which is the only place a message that
+    // was merely accepted and then dropped would be visibly absent.
+    let served = std::fs::read_to_string(&log).unwrap();
+    let at = |needle: &str| {
+        served
+            .lines()
+            .position(|line| line.contains(needle))
+            .unwrap_or_else(|| panic!("`{needle}` never reached the server:\n{served}"))
+    };
+    assert!(
+        at("keep working on the wrong thing") < at("/interrupt")
+            && at("/interrupt") < at("stop and do the right thing"),
+        "server log:\n{served}"
+    );
+    let prompts = served
+        .lines()
+        .filter(|line| line.starts_with("POST /api/session/ses_mock/prompt"))
+        .count();
+    assert_eq!(prompts, 2, "the redirection is a second turn:\n{served}");
+
+    // And the aborted turn's own refusal is not the run's outcome: the run
+    // finished the work it was redirected to.
+    assert_eq!(report["results"][0]["status"], "ok", "{report}");
+    assert_eq!(report["results"][0]["error"], Value::Null, "{report}");
+    assert_eq!(report["control"]["interrupts"][0]["redirected"], true);
+    assert!(
+        report["results"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("redirected")),
+        "the redirected turn's answer is the run's: {report}"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
 fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there() {
     let mock_profile = mock_profile_redirect();
     // The third execution model, end to end through the real CLI: the harness

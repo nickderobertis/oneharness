@@ -228,6 +228,12 @@ Use the `just` recipes; do not hand-roll equivalents.
   first one, which is why no declared mechanism has to refuse `--input`. So every
   backend must keep its turn (and stdin) OPEN while a redirection is pending; a
   mechanism whose terminal signal ends the run unconditionally would drop it.
+  *When* the run learns the aborted turn ended is per mechanism and measured:
+  most announce it, but **opencode announces nothing** — its stream just stops,
+  so there the served interrupt is the ending and the message goes out as soon as
+  the abort lands (`HttpShape::abort_ends_turn_silently`). Interrupting also
+  makes the aborted turn's OWN submission fail (opencode answers its held-open
+  prompt request with a refusal), and that refusal is not the run's outcome.
   `gate <id>` is the odd one out: the runtime pre-tool gate an
   installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It

@@ -109,6 +109,15 @@
 //!                   session, block the turn on a permission request, and abort it
 //!                   on the session's interrupt route. Every request line (and its
 //!                   body) is appended to the log.
+//!                   The `redirected-turn` fault instead models opencode's real
+//!                   redirection shape, measured live: the prompt request is
+//!                   HELD OPEN for the whole turn and answered with a refusal
+//!                   when the interrupt aborts it, the aborted turn ends
+//!                   SILENTLY (no text, no idle — the stream just stops), and
+//!                   the session then takes a second prompt and runs it. A
+//!                   driver that reads the aborted turn's refusal as the run's
+//!                   outcome, or that waits for an end-of-turn event before
+//!                   delivering the redirection, loses the message.
 //!   MOCK_HTTP_CONTROL_FAULT  with MOCK_HTTP_CONTROL_LOG, break the server the way
 //!                   a real one breaks, so the run's user-visible failure can be
 //!                   asserted: `never-ready` exits before binding at all (nothing
@@ -390,6 +399,7 @@ enum HttpControlFault {
     RefuseEvents,
     UnreadableEvents,
     RedirectInterrupt,
+    RedirectedTurn,
 }
 
 impl HttpControlFault {
@@ -409,6 +419,7 @@ impl HttpControlFault {
             "refuse-events" => HttpControlFault::RefuseEvents,
             "unreadable-events" => HttpControlFault::UnreadableEvents,
             "redirect-interrupt" => HttpControlFault::RedirectInterrupt,
+            "redirected-turn" => HttpControlFault::RedirectedTurn,
             other => panic!("mock harness: MOCK_HTTP_CONTROL_FAULT names no fault: `{other}`"),
         }
     }
@@ -482,12 +493,16 @@ fn run_http_control_server(log_path: &str) -> ! {
     // has been aborted. The event stream reads both.
     let admitted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let aborted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // How many prompts this session has taken. A redirection makes a SECOND
+    // one, which is the whole thing the redirect fault exercises.
+    let prompts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     for connection in listener.incoming() {
         let Ok(mut socket) = connection else { continue };
         let log = std::sync::Arc::clone(&log);
         let admitted = std::sync::Arc::clone(&admitted);
         let aborted = std::sync::Arc::clone(&aborted);
+        let prompts = std::sync::Arc::clone(&prompts);
         std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(socket.try_clone().expect("clone"));
             let mut request_line = String::new();
@@ -619,11 +634,33 @@ fn run_http_control_server(log_path: &str) -> ! {
                         );
                     }
                     if aborted.load(std::sync::atomic::Ordering::SeqCst) {
+                        if fault != HttpControlFault::RedirectedTurn {
+                            send(
+                                &mut socket,
+                                "{\"type\":\"session.next.text.ended\",\"data\":{\"text\":\"stopped\"}}",
+                            );
+                            send(&mut socket, "{\"type\":\"session.idle\",\"data\":{}}");
+                            return;
+                        }
+                        // Opencode's real shape, measured live: an aborted turn
+                        // ends SILENTLY. No text, no idle — the stream just
+                        // stops until something else happens on the session. A
+                        // driver holding a redirection for an end-of-turn event
+                        // would wait here until its timeout, so the served
+                        // interrupt has to be what releases it.
+                        while prompts.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+                            std::thread::sleep(std::time::Duration::from_millis(25));
+                        }
                         send(
                             &mut socket,
-                            "{\"type\":\"session.next.text.ended\",\"data\":{\"text\":\"stopped\"}}",
+                            "{\"type\":\"session.next.prompt.admitted\",\"data\":{}}",
+                        );
+                        send(
+                            &mut socket,
+                            "{\"type\":\"session.next.text.ended\",\"data\":{\"text\":\"redirected\"}}",
                         );
                         send(&mut socket, "{\"type\":\"session.idle\",\"data\":{}}");
+                        exit_shortly();
                         return;
                     }
                     std::thread::sleep(std::time::Duration::from_millis(50));
@@ -645,7 +682,11 @@ fn run_http_control_server(log_path: &str) -> ! {
                 }
                 aborted.store(true, std::sync::atomic::Ordering::SeqCst);
                 reply(&mut socket, "204 No Content", "");
-                exit_shortly();
+                // The redirect fault has a second turn to serve, so the server
+                // stays up until the event stream has carried it.
+                if fault != HttpControlFault::RedirectedTurn {
+                    exit_shortly();
+                }
             } else if line.starts_with("POST /api/session/") && line.contains("/prompt") {
                 match fault {
                     HttpControlFault::RefusePrompt => {
@@ -666,7 +707,30 @@ fn run_http_control_server(log_path: &str) -> ! {
                         });
                         std::thread::sleep(std::time::Duration::from_secs(120));
                     }
+                    HttpControlFault::RedirectedTurn => {
+                        let seq = prompts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                        admitted.store(true, std::sync::atomic::Ordering::SeqCst);
+                        if seq == 1 {
+                            // Opencode holds the prompt request open for the
+                            // whole turn and answers it with a REFUSAL when the
+                            // turn is aborted. A driver that reads that refusal
+                            // as the run's outcome stops before the redirection
+                            // it accepted can become the next turn — the message
+                            // lost by another route.
+                            while !aborted.load(std::sync::atomic::Ordering::SeqCst) {
+                                std::thread::sleep(std::time::Duration::from_millis(25));
+                            }
+                            reply(
+                                &mut socket,
+                                "409 Conflict",
+                                "{\"error\":\"the turn was aborted\"}",
+                            );
+                        } else {
+                            reply(&mut socket, "200 OK", "{\"data\":{\"admittedSeq\":2}}");
+                        }
+                    }
                     _ => {
+                        prompts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         admitted.store(true, std::sync::atomic::Ordering::SeqCst);
                         reply(&mut socket, "200 OK", "{\"data\":{\"admittedSeq\":1}}");
                     }

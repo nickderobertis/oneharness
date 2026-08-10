@@ -1233,6 +1233,16 @@ a turn but not open the next one, so there is no harness that has to emulate thi
 with a racy stop-then-send — and `scripts/e2e-control.sh` proves the redirected
 work is really done, per harness, on the filesystem.
 
+What differs between them is *when* the run knows the aborted turn is over, and
+it is measured rather than assumed. Most announce it — Claude Code's `result`,
+codex's `turn/completed`, ACP's prompt response, crush's `run_complete` — so the
+redirection rides that. **Opencode announces nothing**: an aborted turn's event
+stream simply stops, with no `session.idle`, so a run waiting for one waits out
+its whole timeout. Its interrupt route is synchronous, so there the served
+interrupt *is* the ending and the redirection goes out as soon as the abort
+lands. Either way the message is the run's from the moment the interrupt is
+accepted, and it is never submitted before the abort it rides has landed.
+
 **Crush needs a provider its server can actually call.** It resolves one from the
 ambient environment, and no single variable selects it, so a host carrying AWS
 selectors and no `ANTHROPIC_API_KEY` falls through to Bedrock — where a role

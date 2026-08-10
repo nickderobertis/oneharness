@@ -190,6 +190,21 @@ impl HttpShape {
             HttpShape::Crush => ControlShape::CrushHttp,
         }
     }
+
+    /// Whether an aborted turn ends **silently** on this server's event stream,
+    /// so a served interrupt is the only signal that it is over.
+    ///
+    /// Measured live, not guessed. Opencode emits nothing after an abort: the
+    /// stream stops mid-turn with no `session.idle`, and a run waiting for one
+    /// waits out its entire timeout — so a redirection held for an end-of-turn
+    /// event would never be delivered. Its interrupt route is synchronous, and
+    /// that 2xx is the ending. Crush instead emits `run_complete` however the
+    /// run ended, cancellation included, so its redirection rides that and is
+    /// never submitted into a turn still winding down.
+    #[must_use]
+    pub fn abort_ends_turn_silently(self) -> bool {
+        matches!(self, HttpShape::Opencode)
+    }
 }
 
 /// A harness-supplied id, checked before it becomes part of a request path.
@@ -1302,6 +1317,18 @@ mod tests {
         .unwrap();
         assert!(opencode.get("yolo").is_none(), "{opencode}");
         assert!(opencode.get("client_id").is_none(), "{opencode}");
+    }
+
+    #[test]
+    fn only_opencode_ends_an_aborted_turn_without_saying_so() {
+        // Measured live, and the difference decides when a redirection can be
+        // handed over: opencode's stream simply stops after an abort — no
+        // `session.idle` ever arrives — so a run holding the message for an
+        // end-of-turn event waits out its whole timeout and delivers nothing.
+        // Crush emits `run_complete` however the run ended, so its redirection
+        // rides that rather than a cancel whose turn may still be winding down.
+        assert!(HttpShape::Opencode.abort_ends_turn_silently());
+        assert!(!HttpShape::Crush.abort_ends_turn_silently());
     }
 
     #[test]

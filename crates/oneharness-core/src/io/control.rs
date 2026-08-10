@@ -117,16 +117,28 @@ pub struct ControlHandle {
     /// the two paths that touch both (serving an interrupt, advancing on a
     /// line) can never deadlock against each other.
     backend: Mutex<Backend>,
-    /// A redirection an interrupt committed, waiting for the turn it aborted to
-    /// end so it can open the next one.
-    ///
-    /// This is the run taking ownership of the supervisor's message: it is
-    /// parked here *before* the abort is delivered and released again if that
-    /// delivery fails, so there is no moment where the turn has been stopped and
-    /// the message belongs to nobody. Only the stdin and HTTP backends use it —
-    /// a dialogue holds its own, because opening the replacement turn is a
-    /// protocol decision rather than a write.
-    redirect: Mutex<Option<RedirectInput>>,
+    /// A redirection an interrupt committed. Only the stdin and HTTP backends
+    /// use it — a dialogue holds its own, because opening the replacement turn
+    /// is a protocol decision rather than a write.
+    redirect: Mutex<Redirect>,
+}
+
+/// Where a redirection is between being accepted and becoming the next turn.
+///
+/// Three states rather than an `Option` plus a flag, because the middle one is
+/// what makes the operation atomic: the run owns the message from the moment it
+/// accepts the interrupt — so it can never be lost — but must not hand it to the
+/// harness until the abort it rides has actually landed, or the prompt joins the
+/// turn being cancelled. "Committed but not yet deliverable" is exactly that
+/// window, and two independent fields would let a reader see a message as
+/// deliverable while its abort was still in flight.
+enum Redirect {
+    /// Nothing was committed.
+    None,
+    /// Accepted from the supervisor; the abort has not landed yet.
+    Committed(RedirectInput),
+    /// The abort landed, so the turn is over and this is the next one.
+    Deliverable(RedirectInput),
 }
 
 impl ControlHandle {
@@ -149,7 +161,7 @@ impl ControlHandle {
             events: Mutex::new(Vec::new()),
             requests: Mutex::new(0),
             backend: Mutex::new(backend),
-            redirect: Mutex::new(None),
+            redirect: Mutex::new(Redirect::None),
         }
     }
 
@@ -254,19 +266,37 @@ impl ControlHandle {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn redirect(&self) -> std::sync::MutexGuard<'_, Option<RedirectInput>> {
+    fn redirect(&self) -> std::sync::MutexGuard<'_, Redirect> {
         self.redirect
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Take the redirection an interrupt committed, if there is one waiting.
+    /// Take the redirection an interrupt committed, once its abort has landed.
     ///
     /// Taken rather than read: it is delivered exactly once, so a turn that ends
-    /// again — or ends badly — costs one attempt instead of looping.
+    /// again — or ends badly — costs one attempt instead of looping. `None`
+    /// while the abort is still in flight, so a driver polling for work to do
+    /// cannot submit the next turn into the one being cancelled.
     #[must_use]
     pub fn take_redirect(&self) -> Option<RedirectInput> {
-        self.redirect().take()
+        let mut slot = self.redirect();
+        match std::mem::replace(&mut *slot, Redirect::None) {
+            Redirect::Deliverable(input) => Some(input),
+            // Put back: it is still the run's, just not yet the harness's.
+            other => {
+                *slot = other;
+                None
+            }
+        }
+    }
+
+    /// The abort landed, so a committed redirection is now the next turn.
+    fn release_redirect(&self) {
+        let mut slot = self.redirect();
+        if let Redirect::Committed(input) = std::mem::replace(&mut *slot, Redirect::None) {
+            *slot = Redirect::Deliverable(input);
+        }
     }
 
     /// Whether a redirection is committed and not yet delivered.
@@ -274,7 +304,7 @@ impl ControlHandle {
     pub fn has_pending_redirect(&self) -> bool {
         match &*self.backend() {
             Backend::Dialogue(dialogue) => dialogue.has_pending_redirect(),
-            Backend::Stdin | Backend::Http(_) => self.redirect().is_some(),
+            Backend::Stdin | Backend::Http(_) => !matches!(&*self.redirect(), Redirect::None),
         }
     }
 
@@ -391,6 +421,10 @@ impl ControlHandle {
             Some(_) => ControlResponse::redirected(self.shape),
             None => ControlResponse::served(self.shape),
         };
+        let commit = |input: Option<&RedirectInput>| match input {
+            Some(input) => Redirect::Committed(input.clone()),
+            None => Redirect::None,
+        };
         let delivery = match &mut *self.backend() {
             Backend::Http(turn) => match turn.clone() {
                 Some(turn) => {
@@ -398,7 +432,7 @@ impl ControlHandle {
                     // driver reads it when the aborted turn ends, and the server
                     // holds the session either way, so it cannot be lost in the
                     // gap the abort opens.
-                    *self.redirect() = redirect.cloned();
+                    *self.redirect() = commit(redirect);
                     Delivery::Request(turn)
                 }
                 None => return no_active_turn(),
@@ -413,7 +447,7 @@ impl ControlHandle {
             },
             Backend::Stdin => match interrupt_frame(self.shape, &self.next_request_id()) {
                 Some(frame) => {
-                    *self.redirect() = redirect.cloned();
+                    *self.redirect() = commit(redirect);
                     Delivery::Frames(vec![frame])
                 }
                 None => {
@@ -430,7 +464,13 @@ impl ControlHandle {
         let frames = match delivery {
             Delivery::Request(turn) => {
                 return match turn.interrupt() {
-                    Ok(()) => served(),
+                    Ok(()) => {
+                        // The abort landed, so the message may now be handed on.
+                        // For a server whose aborted turn ends silently this is
+                        // the ONLY signal the run will get that it is over.
+                        self.release_redirect();
+                        served()
+                    }
                     Err(err) => {
                         self.abandon_redirect();
                         ControlResponse::refused(
@@ -438,7 +478,7 @@ impl ControlHandle {
                             ControlReason::NotRunning,
                         )
                     }
-                }
+                };
             }
             Delivery::Frames(frames) => frames,
         };
@@ -458,6 +498,9 @@ impl ControlHandle {
                 }
             }
         }
+        // Every abort frame is on the child's stdin, so the message may be
+        // handed on once the harness says the turn it aborted has ended.
+        self.release_redirect();
         served()
     }
 
@@ -465,7 +508,7 @@ impl ControlHandle {
     /// was committed. Both stores are cleared because only one of them ever
     /// holds anything: the backend that took it is the one that has it.
     fn abandon_redirect(&self) {
-        *self.redirect() = None;
+        *self.redirect() = Redirect::None;
         if let Backend::Dialogue(dialogue) = &mut *self.backend() {
             dialogue.abandon_redirect();
         }

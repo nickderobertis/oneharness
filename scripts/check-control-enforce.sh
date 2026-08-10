@@ -104,23 +104,23 @@ evidence_case "the frames the harness sent" "no model configured" "$evidence_tmp
 evidence_case "a run that said nothing" "wrote nothing to stderr" "$evidence_tmp" "$evidence_tmp/absent.json"
 evidence_case "a run with no report" "no parseable report" "$evidence_tmp" "$evidence_tmp/absent.json"
 
-# The wait that decides an attempt is underway. It must come back for EITHER
+# The wait that decides an attempt has settled. It must come back for EITHER
 # answer — the work started, or the run that was doing it is gone — because a
 # wait that only watched the step files spent its whole window on a run that had
 # already exited, three times per harness.
-underway_tmp="$(mktemp -d)"
-trap 'rm -rf "$evidence_tmp" "$underway_tmp"' EXIT
+settled_tmp="$(mktemp -d)"
+trap 'rm -rf "$evidence_tmp" "$settled_tmp"' EXIT
 sleep 30 &
 alive=$!
-_oh_control_underway "$underway_tmp" "$alive" &&
+_oh_control_wait_settled "$settled_tmp" "$alive" &&
     fail "a live run with no steps must keep the wait going"
-touch "$underway_tmp/step-001.txt" "$underway_tmp/step-002.txt"
-_oh_control_underway "$underway_tmp" "$alive" ||
+touch "$settled_tmp/step-001.txt" "$settled_tmp/step-002.txt"
+_oh_control_wait_settled "$settled_tmp" "$alive" ||
     fail "two steps under a live run must end the wait"
-rm -f "$underway_tmp"/step-*.txt
+rm -f "$settled_tmp"/step-*.txt
 kill "$alive" 2>/dev/null || true
 wait "$alive" 2>/dev/null || true
-_oh_control_underway "$underway_tmp" "$alive" ||
+_oh_control_wait_settled "$settled_tmp" "$alive" ||
     fail "a run that has exited must end the wait rather than being waited out"
 
 echo "check-control-enforce: ok"

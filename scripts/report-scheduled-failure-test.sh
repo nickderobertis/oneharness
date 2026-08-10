@@ -32,13 +32,17 @@ exit 0
 STUB
 chmod +x "$tmp/bin/gh"
 
-# $1 what `gh issue list --jq` should print, $2 description
+# The one title every case files under, so a case can plant an issue that
+# matches it exactly and one that only looks like it.
+TITLE_UNDER_TEST="Scheduled turn-control e2e is failing"
+
+# $1 the `number<TAB>title` lines `gh issue list` should print, $2 description
 run_case() {
 	printf '%s' "$1" >"$tmp/existing"
 	: >"$tmp/calls"
 	GH_CALLS="$tmp/calls" GH_EXISTING="$tmp/existing" \
 		PATH="$tmp/bin:$PATH" \
-		REPO="owner/repo" TITLE="Scheduled turn-control e2e is failing" \
+		REPO="owner/repo" TITLE="$TITLE_UNDER_TEST" \
 		BODY="the suite failed" RUN_URL="https://example.invalid/run/1" \
 		bash "$root/scripts/report-scheduled-failure.sh" >"$tmp/out" 2>&1 ||
 		{
@@ -60,13 +64,36 @@ grep -q 'https://example.invalid/run/1' "$tmp/calls" ||
 
 # An open issue: it is commented on, and no second issue is opened — or a week
 # of nightly failures becomes seven issues nobody reads.
-run_case "41" "an open issue"
+run_case "41	$TITLE_UNDER_TEST" "an open issue"
 grep -q '^issue comment 41 ' "$tmp/calls" || {
 	cat "$tmp/calls" >&2
 	fail "an open issue: expected a comment on #41"
 }
 grep -q '^issue create ' "$tmp/calls" &&
 	fail "an open issue: must not open a second one"
+
+# `--search … in:title` is a fuzzy search, so it answers with issues whose title
+# merely resembles this one. Commenting a turn-control failure onto someone
+# else's issue is worse than opening a second one, so the title is matched
+# exactly and a near miss goes to the create branch.
+run_case "41	$TITLE_UNDER_TEST (macOS)" "a similar title"
+grep -q '^issue create ' "$tmp/calls" || {
+	cat "$tmp/calls" >&2
+	fail "a similar title: an issue that is not this one must not be commented on"
+}
+
+# An id that is not an issue number is drift in `gh issue list`, and addressing
+# a comment at it would be a request to whatever it happens to name.
+: >"$tmp/calls"
+printf '%s' "not-a-number	$TITLE_UNDER_TEST" >"$tmp/existing"
+if GH_CALLS="$tmp/calls" GH_EXISTING="$tmp/existing" PATH="$tmp/bin:$PATH" \
+	REPO="owner/repo" TITLE="$TITLE_UNDER_TEST" BODY="x" \
+	bash "$root/scripts/report-scheduled-failure.sh" >"$tmp/out" 2>&1; then
+	cat "$tmp/out" >&2
+	fail "a non-numeric issue id must be refused, not addressed"
+fi
+grep -q '^issue comment ' "$tmp/calls" &&
+	fail "a non-numeric issue id must not be commented on"
 
 # A missing required input is refused rather than filing an empty issue — and
 # says which one and how to supply it, since the caller is a workflow step.
@@ -111,7 +138,7 @@ gh_failure_case() {
 	: >"$tmp/calls"
 	if GH_CALLS="$tmp/calls" GH_EXISTING="$tmp/existing" GH_ERROR="$error" \
 		GH_FAIL_LIST="$fail_list" PATH="$tmp/bin:$PATH" \
-		REPO="owner/repo" TITLE="Scheduled turn-control e2e is failing" \
+		REPO="owner/repo" TITLE="$TITLE_UNDER_TEST" \
 		BODY="the suite failed" RUN_URL="https://example.invalid/run/1" \
 		bash "$root/scripts/report-scheduled-failure.sh" >"$out" 2>&1; then
 		cat "$out" >&2
@@ -139,9 +166,9 @@ gh_failure_case "something nobody predicted" 1 "" \
 # The two write branches fail their own way, and neither may be silent.
 gh_failure_case "HTTP 403: Resource not accessible by integration" "" "" \
 	"opening an issue" "Next:"
-gh_failure_case "HTTP 403: Resource not accessible by integration" "" "41" \
+gh_failure_case "HTTP 403: Resource not accessible by integration" "" "41	$TITLE_UNDER_TEST" \
 	"commenting on #41" "Next:"
 # Whatever went wrong, the finding this was reporting must still be findable.
-gh_failure_case "HTTP 500: Server Error" "" "41" "https://example.invalid/run/1"
+gh_failure_case "HTTP 500: Server Error" "" "41	$TITLE_UNDER_TEST" "https://example.invalid/run/1"
 
 echo "report-scheduled-failure-test: ok"

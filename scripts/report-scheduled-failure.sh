@@ -35,6 +35,7 @@ done
 # none of them — only what `gh` wrote does. What it wrote is printed either way,
 # so a fourth cause nobody predicted is still diagnosable.
 #   $1 what was being attempted, $2 gh's exit status, $3 what gh wrote
+# shellcheck disable=SC2153  # TITLE is an input, not a typo for the `title` the listing loop reads
 gh_failed() {
 	local what="$1" status="$2" said="$3"
 	echo "report-scheduled-failure: $what failed (gh exited $status)" >&2
@@ -73,12 +74,32 @@ trap 'rm -f "$said"' EXIT
 
 # `--search "<title> in:title"` rather than a label: a label has to exist first,
 # and a workflow that has to create one before it can report a failure has one
-# more way to fail while reporting a failure.
+# more way to fail while reporting a failure. The search is a fuzzy one, so the
+# exact title is matched below rather than trusted from it.
 status=0
-existing="$(gh issue list --repo "$REPO" --state open --search "$TITLE in:title" \
-	--json number,title --jq "first(.[] | select(.title == \"$TITLE\") | .number) // empty" \
-	2>"$said")" || status=$?
+listed="$(gh issue list --repo "$REPO" --state open --search "$TITLE in:title" \
+	--json number,title --jq '.[] | "\(.number)\t\(.title)"' 2>"$said")" || status=$?
 [ "$status" -eq 0 ] || gh_failed "looking for an open issue titled \"$TITLE\"" "$status" "$(cat "$said")"
+
+# The title is compared here rather than inside the `--jq` program: `gh`'s
+# built-in jq takes no `--arg`, so an embedded title would be jq source built
+# from an input, and a title carrying a quote would be a filter rather than a
+# string. The number is likewise checked before it is used to address anything.
+existing=""
+while IFS=$'\t' read -r number title; do
+	[ -n "$number" ] || continue
+	case "$number" in
+	*[!0-9]*)
+		echo "report-scheduled-failure: gh listed an issue whose number is not a number (\"$number\")" >&2
+		echo "  Next: \`gh issue list --repo $REPO --state open --json number,title\` no longer answers what this expects — refusing rather than addressing a comment at it. Check the installed gh version." >&2
+		exit 1
+		;;
+	esac
+	if [ "$title" = "$TITLE" ]; then
+		existing="$number"
+		break
+	fi
+done <<<"$listed"
 
 # On success `gh` answers with the URL it wrote to, which is the one thing a
 # reader of this log actually wants next.

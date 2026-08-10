@@ -138,8 +138,14 @@ for declaration in "${CONTROLLABLE[@]}"; do
         # a mode's own config here: these phases run under `--mode bypass` and
         # `--mode default`, neither of which OpenCode expresses through the
         # environment (only its `edit` mapping does).
+        # Built with jq rather than by interpolation: the model id comes from the
+        # environment, and a value carrying a quote would be config the server
+        # cannot parse — reported as a turn that never started, three attempts
+        # deep, which is exactly the failure this arm exists to remove.
         export OH_MODEL=""
-        export OPENCODE_CONFIG_CONTENT="{\"model\":\"${OPENCODE_E2E_MODEL:-anthropic/claude-haiku-4-5}\"}"
+        OPENCODE_CONFIG_CONTENT="$(jq -nc --arg model \
+            "${OPENCODE_E2E_MODEL:-anthropic/claude-haiku-4-5}" '{model: $model}')"
+        export OPENCODE_CONFIG_CONTENT
         ;;
     goose)
         # Goose reads its provider/model from the environment (no --model flag

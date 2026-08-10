@@ -1315,7 +1315,7 @@ _oh_control_enforce_once() {
     # already EXITED will never produce them, so stop waiting the moment it does
     # — waiting out the full window on a dead run is how three opencode attempts
     # cost nine minutes to report one thing three times.
-    if ! _oh_wait_for 180 _oh_control_underway "$sandbox" "$run_pid"; then
+    if ! _oh_wait_for 180 _oh_control_wait_settled "$sandbox" "$run_pid"; then
         kill "$run_pid" 2>/dev/null || true
         wait "$run_pid" 2>/dev/null || true
         note "  control-enforce: the agent never produced two steps"
@@ -1323,7 +1323,7 @@ _oh_control_enforce_once() {
         rm -rf "$sandbox"
         return 1
     fi
-    # The other way `_oh_control_underway` comes back: the run is over. Whether
+    # The other way the wait settles: the run is over. Whether
     # it did two steps first or none, there is nothing in flight to interrupt.
     if ! kill -0 "$run_pid" 2>/dev/null; then
         wait "$run_pid" 2>/dev/null || true
@@ -1556,7 +1556,7 @@ _oh_control_redirect_enforce_once() {
         fail "$id: no control socket appeared at $socket (--control did not open one)"
     fi
 
-    if ! _oh_wait_for 180 _oh_control_underway "$sandbox" "$run_pid"; then
+    if ! _oh_wait_for 180 _oh_control_wait_settled "$sandbox" "$run_pid"; then
         kill "$run_pid" 2>/dev/null || true
         wait "$run_pid" 2>/dev/null || true
         note "  redirect-enforce: the agent never produced two steps"
@@ -1693,11 +1693,12 @@ _oh_steps_at_least() {
     [ "$(_oh_step_count "$1")" -ge "$2" ]
 }
 
-# Whether there is anything left to wait for: the agent has two steps done, or
-# the run it was doing them in has exited. Either way the caller has its answer,
-# and the caller is the one that tells the two apart.
+# Whether the wait for a turn to get going is over — either because it did (two
+# steps done) or because it never will (the run they were coming from has
+# exited). It says the wait is settled, NOT that work is underway; the caller
+# reads which of the two happened and reports them differently.
 #   $1 sandbox directory, $2 the run's pid
-_oh_control_underway() {
+_oh_control_wait_settled() {
     _oh_steps_at_least "$1" 2 || ! kill -0 "$2" 2>/dev/null
 }
 

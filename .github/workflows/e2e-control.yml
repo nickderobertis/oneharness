@@ -18,10 +18,11 @@ name: E2E (Turn control)
 # it fires when that path changes and stays silent for every other PR.
 # workflow_dispatch is kept for on-demand reruns once this is on main.
 #
-# scripts/check-e2e-matrix.sh deliberately does not list this workflow: that
-# gate's contract is the shared PR matrix (which harnesses run on which
-# platforms), and this feature suite has its own paths and its own unix-only
-# platform set, with nothing shared to drift from.
+# This workflow is outside that gate's shared PR matrix (its paths and its
+# unix-only platform set are its own), but scripts/check-e2e-matrix.sh still
+# holds the two contracts restated below to their sources: every path in the
+# filter must exist, and every credential a phase in e2e-control.sh reads must
+# be supplied here.
 #
 # `OH_E2E_NO_SKIP` matters more here than anywhere else: e2e-control.sh notes
 # and continues past a harness whose credentials are missing rather than

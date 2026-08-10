@@ -49,7 +49,12 @@ case ${1:-} in
     ;;
   config)
     [[ ${JUDGE_CONFIG_FAIL:-0} == 1 ]] && exit 1
-    printf '{"rules":{"stub":"%s"}}\n' "${JUDGE_CONFIG:-baseline}"
+    # Real llmlint renders the resolved oneharness override into its effective
+    # config — `"bin": null` with no override, whatever PATH would resolve — so
+    # the stub does too. Without it the fingerprint's normalization of that
+    # variable would be asserted against a config that never carried it.
+    printf '{"oneharness":{"bin":"%s"},"rules":{"stub":"%s"}}\n' \
+      "${LLMLINT_ONEHARNESS_BIN:-null}" "${JUDGE_CONFIG:-baseline}"
     exit 0
     ;;
 esac
@@ -370,6 +375,21 @@ grep -q 'could not record the verdict' "$tmp/verdict-out" || {
   echo "  restore the llmlint_record_verdict failure diagnostic in scripts/local-llmlint-gate.sh" >&2
   exit 1
 }
+
+# The judge's identity must survive the trip from the environment that records a
+# green to the one that pushes it. A lifecycle publication dispatches llmlint
+# through its own sandbox wrapper via LLMLINT_ONEHARNESS_BIN, which llmlint
+# renders into the effective config this fingerprint reads — so reading the
+# caller's value gave that environment a key of its own, and its pre-push gate
+# re-rolled the very green the working tree's gate had just recorded. That is the
+# defect the replay exists to prevent, so it is asserted from both directions.
+rm -rf "$tmp/verdicts"
+verdict_gate
+assert_verdict "the green a working tree's own gate records" 1 0
+verdict_gate LLMLINT_ONEHARNESS_BIN="$tmp/bin/publication-wrapper"
+assert_verdict "a push that dispatches the judge through a wrapper" 0 0
+verdict_gate
+assert_verdict "the recording environment after that push replayed" 0 0
 
 # A recorded verdict is external input the next run trusts enough to skip the
 # judge entirely, so the whole record is validated before it counts. Each case

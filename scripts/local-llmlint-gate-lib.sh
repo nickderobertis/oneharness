@@ -39,15 +39,34 @@ llmlint_cache_dir() {
 # understands from a half-written one or one a later format wrote.
 LLMLINT_VERDICT_FORMAT='oneharness-llmlint-verdict 1'
 
+# The judge's identity: the installed llmlint plus its effective merged config,
+# resolved from the checkout the judge runs against rather than the caller's cwd —
+# that is what makes a plugin pin or a rule edit invalidate even when no file in
+# the tree moved.
+#
+# LLMLINT_ONEHARNESS_BIN is cleared for the read. llmlint renders that override
+# into `llmlint config`, but it names the executable that *dispatches* the model
+# call, not what the judge asks: with no override the field is null however PATH
+# resolves oneharness, so the caller's value gave each environment its own key for
+# one unchanged judge. That is what kept the lifecycle publication re-rolling — it
+# points llmlint at a sandbox wrapper, so its pre-push gate could never replay the
+# green the working tree's own gate had just recorded. Clearing it here does not
+# touch the judge run below, which still dispatches through the caller's wrapper.
+llmlint_judge_fingerprint() {
+  local root=$1
+  (
+    cd "$root" || exit 1
+    unset LLMLINT_ONEHARNESS_BIN
+    llmlint --version && llmlint config
+  )
+}
+
 # The identity of one judge verdict: the workspace content, the resolved base
 # commit, and the judge itself. Content is digested through a scratch index so
 # the caller's staged state is never touched, and it covers untracked-unignored
-# files because the judge reads them too. The judge fingerprint is the installed
-# llmlint plus its effective merged config, resolved from the checkout the judge
-# runs against rather than the caller's cwd — that is what makes a plugin pin or
-# a rule edit invalidate even when no file in the tree moved.
+# files because the judge reads them too.
 llmlint_verdict_key() {
-  local root=$1 base_commit=$2 index tree version config
+  local root=$1 base_commit=$2 index tree fingerprint
   index=$(mktemp) || return 1
   tree=$(
     export GIT_INDEX_FILE=$index
@@ -57,11 +76,10 @@ llmlint_verdict_key() {
     return 1
   }
   rm -f "$index"
-  version=$(cd "$root" && llmlint --version) || return 1
-  config=$(cd "$root" && llmlint config) || return 1
+  fingerprint=$(llmlint_judge_fingerprint "$root") || return 1
   # Digested by git, which this function already depends on and every platform
   # running the gate therefore has — the tree half above is a git hash too.
-  printf '%s\0%s\0%s\0%s\0' "$tree" "$base_commit" "$version" "$config" |
+  printf '%s\0%s\0%s\0' "$tree" "$base_commit" "$fingerprint" |
     git hash-object --stdin
 }
 

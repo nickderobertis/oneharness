@@ -128,7 +128,11 @@
 //!                   ever answers), appending one `LAUNCHED never-ready` line per
 //!                   launch so a relaunch is countable, `lose-port` dies on its
 //!                   first launch the way a server that lost its reserved port
-//!                   does and comes up healthy on the relaunch,
+//!                   does and comes up healthy on the relaunch, `silent-server`
+//!                   BINDS its port and stays alive but answers nothing (the
+//!                   other half of "not ready": a process that is there and
+//!                   quiet, which must be reported against the window and never
+//!                   relaunched),
 //!                   `refuse-session` answers the session-create
 //!                   route `503`, and `no-session-id` answers it `200` with a body
 //!                   naming no id, and `foreign-permission` asks permission for a
@@ -399,6 +403,7 @@ enum HttpControlFault {
     None,
     NeverReady,
     LosePort,
+    SilentServer,
     RefuseSession,
     NoSessionId,
     ForeignPermission,
@@ -421,6 +426,7 @@ impl HttpControlFault {
             "" => HttpControlFault::None,
             "never-ready" => HttpControlFault::NeverReady,
             "lose-port" => HttpControlFault::LosePort,
+            "silent-server" => HttpControlFault::SilentServer,
             "refuse-session" => HttpControlFault::RefuseSession,
             "no-session-id" => HttpControlFault::NoSessionId,
             "foreign-permission" => HttpControlFault::ForeignPermission,
@@ -530,6 +536,33 @@ fn run_http_control_server(log_path: &str) -> ! {
     };
     let listener = std::net::TcpListener::bind(("127.0.0.1", port))
         .expect("the mock control server could not bind its port");
+    // A server that is there and says nothing. It holds the port for the whole
+    // readiness window — so the address is demonstrably ITS own, not a
+    // stranger's — accepts each dial and closes it without answering, then
+    // exits once the caller has stopped dialing so nothing is left for the pool
+    // to reclaim. Both waits are bounded; neither polls open-endedly.
+    if fault == HttpControlFault::SilentServer {
+        note_launch(log_path, "silent-server");
+        listener
+            .set_nonblocking(true)
+            .expect("the mock control server could not poll its listener");
+        let started = std::time::Instant::now();
+        let mut last_seen = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_secs(30)
+            && last_seen.elapsed() < std::time::Duration::from_millis(1500)
+        {
+            match listener.accept() {
+                // Closed without a byte of answer: a definite, immediate error
+                // for the dialer every time, so the window is the only clock.
+                Ok((socket, _)) => {
+                    last_seen = std::time::Instant::now();
+                    drop(socket);
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(25)),
+            }
+        }
+        std::process::exit(0);
+    }
     // The approval policy this server was LAUNCHED with. opencode carries a
     // mode like `edit` in its own config environment rather than on a route, so
     // a controlled run delivers it to the server process — and the only way to

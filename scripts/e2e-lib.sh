@@ -1016,7 +1016,6 @@ oh_control_mode_enforce() {
     local model_args=()
     [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
 
-    note "  control-mode-enforce: a controlled turn under --mode default must END, not hang"
     if ! ONEHARNESS_NO_CONFIG=1 timeout "${OH_CONTROL_MODE_TIMEOUT:-180}" "$bin" run \
         --harness "$id" --prompt "Reply with the single word READY and stop." \
         --control --session "$name" --session-dir "$store" --cwd "$sandbox" \
@@ -1024,20 +1023,30 @@ oh_control_mode_enforce() {
         "${model_args[@]+"${model_args[@]}"}" >"$report" 2>"$sandbox/run.err"; then
         : # a non-zero exit is still an ENDED turn; only the status below decides
     fi
-    status="$(jq -r '.results[0].status // "unknown"' <"$report" 2>/dev/null || echo unknown)"
-    if [ "$status" = "skipped" ]; then
+    # The report is a subprocess's output, so it is parsed rather than trusted:
+    # a run that produced no readable status did not demonstrate a turn ending,
+    # and defaulting that to "fine" is how a phase goes green having proven
+    # nothing. Only the statuses that mean the turn ENDED are accepted.
+    status="$(jq -er '.results[0].status' <"$report" 2>/dev/null || true)"
+    case "$status" in
+    skipped)
         rm -rf "$sandbox"
         skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
-    fi
-    if [ "$status" = "timeout" ]; then
+        ;;
+    ok | nonzero)
+        : # the turn ended, which is what this phase asserts
+        ;;
+    *)
         sed 's/^/    /' "$sandbox/run.err" >&2 || true
         rm -rf "$sandbox"
-        fail "$id: a controlled turn under --mode default never ended — the harness is waiting on a permission request oneharness did not answer, or the mode's own policy did not reach the controlled launch"
-    fi
-    note "  ok[default]: the controlled turn ended with status=$status"
-
+        fail "$id: a controlled turn under --mode default did not end cleanly (status=${status:-<no readable status in the report>}) — the harness may be waiting on a permission request oneharness did not answer, or the mode's own policy did not reach the controlled launch. Next: run \`oneharness run --harness $id --control --session probe --mode default --prompt hi\` and read the report's \`results[0].stdout\` for the last protocol frame it saw; if the harness asked permission and nothing answered, the fix is in \`domain::dialogue\`, and if it never asked, compare the launch argv against \`domain::control\`'s control_mode_parity grid"
+        ;;
+    esac
+    # Silent on success. Unlike the per-harness suites that call the other
+    # `oh_*_enforce` helpers, `e2e-control.sh` already names this phase before it
+    # runs and reports the harness's verdict after it, so a PASS line here is the
+    # same fact a third time. Failure still says everything.
     rm -rf "$sandbox"
-    note "PASS: $id controlled mode policy"
 }
 
 # --- hook enforcement --------------------------------------------------------

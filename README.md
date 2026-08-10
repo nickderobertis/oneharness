@@ -1239,7 +1239,7 @@ one exists, rather than deriving a second policy for the protocol:
 | Crush | `crush run` cannot gate at all, so its `default` acts without asking — and a controlled turn declares the same `yolo` posture rather than gating what the CLI would not |
 
 Where a harness answers permission requests on the wire, the answer is the
-harness's own posture for that mode (`ModeSpec::acts_unattended`), not the
+harness's own posture for that mode (`ModeSpec::posture`), not the
 normalized spectrum's — which is what lets crush's ungated `default` and
 opencode's config-delivered `edit` both be expressed instead of refused.
 `scripts/e2e-control.sh` then proves the delivered policy is *honored* by driving

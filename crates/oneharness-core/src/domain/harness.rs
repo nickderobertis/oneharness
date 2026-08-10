@@ -13,7 +13,7 @@ use crate::domain::events::TelemetryTrace;
 use crate::domain::gate::DenyShape;
 use crate::domain::hooks::HookShape;
 use crate::domain::mock::{MockDelivery, RewriteShape};
-use crate::domain::mode::{ModeHeadless, PermissionMode};
+use crate::domain::mode::{ApprovalPosture, ModeHeadless, PermissionMode};
 use crate::domain::report::OutputFormat;
 use crate::domain::structured::NativeSchema;
 use crate::domain::usage::{UsageProbe, UsageSupport};
@@ -518,7 +518,7 @@ pub struct ModeSpec {
     /// Cross-checked against the argv/environment the harness really builds by
     /// `domain::control`'s `control_mode_parity` grid, so this cannot drift into
     /// a claim the mapping does not back.
-    pub acts_unattended: bool,
+    pub posture: ApprovalPosture,
 }
 
 /// Shorthand for a mode expressed on the argv (no environment, no instruction)
@@ -529,7 +529,7 @@ const fn mode(mode: PermissionMode, headless: ModeHeadless) -> ModeSpec {
         headless,
         env: &[],
         instruction: None,
-        acts_unattended: matches!(mode, PermissionMode::Auto | PermissionMode::Bypass),
+        posture: ApprovalPosture::of(mode),
     }
 }
 
@@ -541,7 +541,7 @@ const fn ungated_mode(mode: PermissionMode, headless: ModeHeadless) -> ModeSpec 
         headless,
         env: &[],
         instruction: None,
-        acts_unattended: true,
+        posture: ApprovalPosture::Unattended,
     }
 }
 
@@ -1021,7 +1021,7 @@ static REGISTRY: &[HarnessSpec] = &[
                 mode: PermissionMode::Plan,
                 headless: ModeHeadless::Clean,
                 env: &[],
-                acts_unattended: false,
+                posture: ApprovalPosture::Gated,
                 instruction: Some(CODEX_PLAN_INSTRUCTION),
             },
             mode(PermissionMode::Default, ModeHeadless::Clean),
@@ -1129,7 +1129,7 @@ static REGISTRY: &[HarnessSpec] = &[
                 // block back on `/config`). So the wire answer is only a backstop
                 // for an ask the config did not already decide, and declining is
                 // the safe way to answer one.
-                acts_unattended: false,
+                posture: ApprovalPosture::Gated,
             },
             mode(PermissionMode::Bypass, ModeHeadless::Clean),
         ],
@@ -1215,21 +1215,21 @@ static REGISTRY: &[HarnessSpec] = &[
                 headless: ModeHeadless::Clean,
                 env: &[("GOOSE_MODE", "approve")],
                 instruction: None,
-                acts_unattended: false,
+                posture: ApprovalPosture::Gated,
             },
             ModeSpec {
                 mode: PermissionMode::Auto,
                 headless: ModeHeadless::Clean,
                 env: &[("GOOSE_MODE", "smart_approve")],
                 instruction: None,
-                acts_unattended: true,
+                posture: ApprovalPosture::Unattended,
             },
             ModeSpec {
                 mode: PermissionMode::Bypass,
                 headless: ModeHeadless::Clean,
                 env: &[("GOOSE_MODE", "auto")],
                 instruction: None,
-                acts_unattended: true,
+                posture: ApprovalPosture::Unattended,
             },
         ],
         // Goose carries reasoning effort in provider config (`goose configure` /

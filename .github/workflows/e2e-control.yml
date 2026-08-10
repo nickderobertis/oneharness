@@ -210,19 +210,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          TITLE: Scheduled turn-control e2e is failing
+          BODY: >-
+            The nightly live turn-control suite failed. It covers ubuntu and
+            macOS; open the run to see which legs failed. macOS runs this suite
+            here and nowhere else, so a macOS-only failure is real drift rather
+            than a flaky leg to re-run.
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          title='Scheduled turn-control e2e is failing'
-          body="$(printf '%s\n' \
-            "The nightly live turn-control suite failed: ${RUN_URL}" \
-            '' \
-            'It covers ubuntu and macOS; open the run to see which legs failed.' \
-            'macOS runs this suite here and nowhere else, so a macOS-only failure' \
-            'is real drift rather than a flaky leg to re-run.')"
-          existing="$(gh issue list --repo "$REPO" --state open --search "$title in:title" --json number --jq 'first(.[].number) // empty')"
-          if [ -n "$existing" ]; then
-            gh issue comment "$existing" --repo "$REPO" --body "$body"
-          else
-            gh issue create --repo "$REPO" --title "$title" --body "$body"
-          fi
+        # A script, not inline YAML: the create-vs-comment branch is real
+        # behavior and scripts/report-scheduled-failure-test.sh drives both
+        # halves against a stubbed `gh` (this path only ever runs when
+        # something is already broken, so it cannot debug itself in place).
+        run: bash scripts/report-scheduled-failure.sh

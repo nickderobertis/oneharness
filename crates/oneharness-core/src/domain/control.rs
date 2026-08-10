@@ -1162,7 +1162,7 @@ mod control_mode_parity {
     use crate::domain::dialogue::{Dialogue, DialogueConfig, DialogueStep};
     use crate::domain::harness::{self, BuildCtx, HarnessSpec, PromptDelivery};
     use crate::domain::http::permits_action;
-    use crate::domain::mode::PermissionMode;
+    use crate::domain::mode::{ApprovalPosture, PermissionMode};
 
     /// The working directory both sides are asked about. Absolute on every
     /// platform, since a `SandboxPolicy` names writable roots by path.
@@ -1223,7 +1223,7 @@ mod control_mode_parity {
                 cwd: absolute_for_test(WORK),
                 model: None,
                 mode,
-                acts_unattended: unattended_of(harness::by_id("codex").unwrap(), mode),
+                posture: posture_of(harness::by_id("codex").unwrap(), mode),
             },
         )
         .expect("codex drives its turn over the app-server")
@@ -1234,10 +1234,10 @@ mod control_mode_parity {
     }
 
     /// The harness's own declaration for `mode`.
-    fn unattended_of(spec: &'static HarnessSpec, mode: PermissionMode) -> bool {
+    fn posture_of(spec: &'static HarnessSpec, mode: PermissionMode) -> ApprovalPosture {
         spec.mode(mode)
             .expect("the caller checked the mode is supported")
-            .acts_unattended
+            .posture
     }
 
     /// Whether a driven turn acts without asking under `mode` — answered by the
@@ -1258,7 +1258,7 @@ mod control_mode_parity {
                         cwd: absolute_for_test(WORK),
                         model: None,
                         mode,
-                        acts_unattended: unattended_of(spec, mode),
+                        posture: posture_of(spec, mode),
                     },
                 )
                 .expect("ACP drives its turn");
@@ -1285,8 +1285,8 @@ mod control_mode_parity {
     /// `mode`, read off the argv and environment its registry entry really
     /// produces. The token per harness is that CLI's documented don't-ask
     /// switch — the same source `build_argv` maps the mode from. This is what
-    /// keeps `ModeSpec::acts_unattended` honest: it is compared against the
-    /// mapping rather than trusted.
+    /// keeps `ModeSpec::posture` honest: it is compared against the mapping
+    /// rather than trusted.
     fn unattended_without_control(spec: &'static HarnessSpec, mode: PermissionMode) -> bool {
         let argv = argv_for(spec, mode, PromptDelivery::Argv);
         let env = spec.mode(mode).map_or(&[][..], |declared| declared.env);

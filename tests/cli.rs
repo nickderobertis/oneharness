@@ -20325,6 +20325,71 @@ fn control_on_a_harness_without_a_mechanism_is_a_usage_error() {
     let _ = std::fs::remove_dir_all(&store);
 }
 
+#[test]
+fn a_controlled_copilot_run_carries_the_modes_own_permission_flags() {
+    // `--control --mode edit` used to be a usage error on every driven turn.
+    // For copilot the mode is expressible because its permission flags are
+    // top-level options that sit beside `--acp` (verified against
+    // `copilot --help`, and by handshaking a real
+    // `copilot --acp --allow-tool … --no-ask-user`, which answers `initialize`
+    // — copilot rejects an option it does not take, so acceptance is the
+    // evidence). So the controlled launch carries the mode's OWN mapping, and
+    // this is the end-to-end proof through the real CLI surface: the mode is
+    // accepted, and the argv the run would spawn carries edit's flags — the
+    // same ones `-p` gets — rather than a posture invented for the protocol.
+    let store = control_store_dir("copilot-edit");
+    let store_arg = store.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "copilot",
+            "--control",
+            "--session",
+            "edits",
+            "--session-dir",
+            &store_arg,
+            "--prompt",
+            "dry-run-prompt",
+            "--mode",
+            "edit",
+            "--bin",
+            &bin_override("copilot"),
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    // Accepted, not the exit 2 the old refusal gave.
+    assert!(output.status.success(), "{output:?}");
+    let report = json_stdout(&output);
+    assert_eq!(report["permission_mode"], "edit", "{report}");
+    let command: Vec<String> = serde_json::from_value(report["results"][0]["command"].clone())
+        .expect("the planned command");
+    assert_eq!(
+        command
+            .iter()
+            .skip(1)
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        [
+            "--acp",
+            "--allow-tool",
+            "write",
+            "--allow-tool",
+            "read",
+            "--allow-all-paths",
+            "--no-ask-user",
+        ],
+        "the controlled launch must carry edit's own flags: {command:?}"
+    );
+    assert!(
+        !command.contains(&"dry-run-prompt".to_string()),
+        "the prompt is negotiated on the ACP wire, not the argv: {command:?}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
 #[cfg(unix)]
 #[test]
 fn a_controlled_edit_run_delivers_the_modes_own_policy_to_its_server() {
@@ -22824,6 +22889,41 @@ fn a_control_server_that_never_answers_is_reported_rather_than_waited_out() {
     );
     // Nothing ran, so nothing is claimed: no session token, no answer text.
     assert!(report["session"]["token"].is_null(), "{report}");
+    assert!(result["text"].is_null(), "{report}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_server_that_is_up_but_silent_is_reported_against_the_window() {
+    // The other half of "not ready", and the half that is a verdict rather than
+    // a fact: the process oneharness launched is demonstrably alive and holding
+    // its own address — it accepts every dial — and simply never answers. There
+    // is nothing to relaunch, so the readiness window is the only thing that can
+    // end the wait, and the run must report it against that window.
+    let (output, report, served) = http_control_run_with_fault("http-silent", "silent-server", "5");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "spawn-error", "{report}");
+    let error = result["error"].as_str().expect("a reason");
+    assert!(
+        error.contains("did not answer within 5s"),
+        "the reason must name the readiness window: {error}"
+    );
+    assert!(
+        !error.contains("exited before it answered"),
+        "a server that is still running has not exited: {error}"
+    );
+    // And it was NOT relaunched. A relaunch is owed to a server that DIED — a
+    // fresh address is one of the ways to recover from that — but re-rolling a
+    // window the caller already bounded would just spend their budget twice.
+    assert_eq!(
+        served
+            .lines()
+            .filter(|line| *line == "LAUNCHED silent-server")
+            .count(),
+        1,
+        "a silent server must be reported, not relaunched:\n{served}"
+    );
     assert!(result["text"].is_null(), "{report}");
 }
 

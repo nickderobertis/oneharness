@@ -25,7 +25,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::domain::control::{AbsolutePath, ControlShape, RedirectInput};
-use crate::domain::mode::PermissionMode;
+use crate::domain::mode::{ApprovalPosture, PermissionMode};
 
 /// What a run needs to open a turn over one of these protocols. The command
 /// layer resolves each value exactly as it would for an ordinary run.
@@ -40,17 +40,19 @@ pub struct DialogueConfig {
     pub cwd: AbsolutePath,
     /// The model to request, when one was resolved.
     pub model: Option<String>,
-    /// The approval posture, which decides how the client answers the server's
-    /// permission requests.
+    /// The approval mode the turn runs under, for the protocols that name it on
+    /// the wire (codex's per-turn `SandboxPolicy` is derived from it). What the
+    /// client ANSWERS a permission request with is `posture` below, which is the
+    /// harness's own reading of this mode rather than the spectrum's.
     pub mode: PermissionMode,
-    /// Whether the harness's own run acts without asking in `mode`
-    /// ([`ModeSpec::acts_unattended`](crate::domain::harness::ModeSpec)).
+    /// What the harness's own run does about approvals in `mode`
+    /// ([`ModeSpec::posture`](crate::domain::harness::ModeSpec)).
     ///
     /// Carried rather than derived from `mode`, because the posture a driven
     /// turn must answer with is the one that mode gives *without* `--control`,
     /// and only the harness's own registry entry knows it — the two ACP
     /// harnesses share one [`ControlShape`] and do not share a mapping.
-    pub acts_unattended: bool,
+    pub posture: ApprovalPosture,
 }
 
 /// What the driver should do after one line.
@@ -303,7 +305,7 @@ impl Dialogue {
     /// for `edit`, which promises auto-approved edits with shell still gated
     /// and whose ask carries no sourced way to tell those apart.
     fn permits_action(&self) -> bool {
-        self.config.acts_unattended
+        self.config.posture.is_unattended()
     }
 
     fn on_server_request(&mut self, method: &str, id: Value, params: &Value) -> DialogueStep {
@@ -698,7 +700,7 @@ mod tests {
             cwd: absolute_for_test(WORK),
             model: Some("gpt-5-codex".to_string()),
             mode: PermissionMode::Bypass,
-            acts_unattended: true,
+            posture: ApprovalPosture::Unattended,
         }
     }
 
@@ -887,13 +889,14 @@ mod tests {
         // `edit` promises auto-approved edits with shell still gated, and an ACP
         // permission request carries no sourced way to tell those apart — so a
         // blanket grant here would hand the agent authority the mode refuses.
-        // The command layer rejects `--mode edit` on a driven turn up front;
-        // this pins the safe answer if one ever reaches the dialogue.
+        // The mode is not refused any more: copilot's own permission flags ride
+        // its `--acp` launch, so the CLI enforces `edit` and this answer is the
+        // backstop for an ask that mapping did not already decide.
         let mut d = Dialogue::new(
             ControlShape::AcpCancel,
             DialogueConfig {
                 mode: PermissionMode::Edit,
-                acts_unattended: false,
+                posture: ApprovalPosture::Gated,
                 ..config()
             },
         )
@@ -916,7 +919,7 @@ mod tests {
             ControlShape::AcpCancel,
             DialogueConfig {
                 mode: PermissionMode::Default,
-                acts_unattended: false,
+                posture: ApprovalPosture::Gated,
                 ..config()
             },
         )
@@ -933,7 +936,7 @@ mod tests {
             ControlShape::CodexAppServer,
             DialogueConfig {
                 mode: PermissionMode::ReadOnly,
-                acts_unattended: false,
+                posture: ApprovalPosture::Gated,
                 ..config()
             },
         )
@@ -961,7 +964,7 @@ mod tests {
                 ControlShape::CodexAppServer,
                 DialogueConfig {
                     mode,
-                    acts_unattended: matches!(mode, PermissionMode::Auto | PermissionMode::Bypass),
+                    posture: ApprovalPosture::of(mode),
                     ..config()
                 },
             )

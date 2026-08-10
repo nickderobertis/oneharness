@@ -28,7 +28,10 @@ cd "$(dirname "$0")/.."
 
 FULL='["ubuntu-latest","macos-latest","windows-latest"]'
 LINUX='["ubuntu-latest"]'
-SCHEMA_ALL='["ubuntu-latest","macos-latest"]'
+# The unix platforms. Two features share it for the same reason and not by
+# coincidence: control sockets have no Windows equivalent, and schema's
+# quote-heavy argv is mangled by the Windows .cmd shim.
+UNIX_ONLY='["ubuntu-latest","macos-latest"]'
 SHARED_PATHS='src/**
 crates/**
 Cargo.toml
@@ -80,8 +83,7 @@ scripts/e2e-${id}.sh
 check_matrix() {
 	local f="$1" prd="$2" all="$3"
 	local line
-	# The GitHub expression is a literal to match, not a shell expansion.
-	# shellcheck disable=SC2016
+	# shellcheck disable=SC2016  # `${{ … }}` is the GitHub expression to match, not a shell expansion
 	line="$(grep -F 'os: ${{ fromJSON(' "$f" || true)"
 	[ -n "$line" ] || { fail "$f has no fromJSON matrix expression"; return; }
 	printf '%s' "$line" | grep -qF "|| '$prd') }}" ||
@@ -110,7 +112,7 @@ done
 f=".github/workflows/e2e-schema.yml"
 check_common "$f"
 check_paths "$f" schema
-check_matrix "$f" "$LINUX" "$SCHEMA_ALL"
+check_matrix "$f" "$LINUX" "$UNIX_ONLY"
 if grep -qE '^\s+- windows-latest$' "$f"; then
 	fail "$f must not offer windows-latest (native --json-schema argv is .cmd-shim-mangled)"
 fi
@@ -185,18 +187,18 @@ check_control() {
 	awk '/^on:/{a=1} /^permissions:/{a=0} a' "$f" | grep -qE '^\s*schedule:' ||
 		fail "$f has no schedule trigger, so macOS — where this feature has broken three times — never runs this suite at all; add a daily \`schedule: - cron:\` (macOS belongs there rather than on the pull request, which a second 26-minute leg is not worth)"
 	awk '/^on:/{a=1} /^permissions:/{a=0} a' "$f" | grep -qE "^\s*- cron:" ||
-		fail "$f declares a schedule with no cron entry"
+		fail "$f declares a schedule with no cron entry, so it never actually fires; add one under \`schedule:\` (\`- cron: \"11 7 * * *\"\`, off the top of the hour where GitHub's shared cron queue backs up)"
 	# shellcheck disable=SC2016  # a GitHub expression to match, not a shell one
 	line="$(grep -F 'os: ${{ fromJSON(' "$f" || true)"
-	printf '%s' "$line" | grep -qF "github.event_name == 'schedule' && '$SCHEMA_ALL'" ||
-		fail "$f does not run its schedule across $SCHEMA_ALL, so the daily run would repeat the pull request's Linux leg and prove nothing new"
+	printf '%s' "$line" | grep -qF "github.event_name == 'schedule' && '$UNIX_ONLY'" ||
+		fail "$f does not run its schedule across $UNIX_ONLY, so the daily run would repeat the pull request's Linux leg and prove nothing new; add \`github.event_name == 'schedule' && '$UNIX_ONLY'\` to the job's \`os:\` fromJSON expression, before its pull-request default"
 
 	# And that a scheduled failure is announced. A schedule has no pull request
 	# to turn red and nobody waiting on it.
 	grep -qE "^\s*failure\(\) && github\.event_name == 'schedule'" "$f" ||
 		fail "$f has no job guarded by \`failure() && github.event_name == 'schedule'\`, so a nightly red would be a square in a tab nobody opens; add one that opens or comments on an issue"
 	grep -qE '^\s+issues: write$' "$f" ||
-		fail "$f grants no \`issues: write\`, so the job reporting a scheduled failure cannot open the issue it exists to open"
+		fail "$f grants no \`issues: write\`, so the job reporting a scheduled failure cannot open the issue it exists to open; add \`permissions: {contents: read, issues: write}\` to that job (job-scoped, not the workflow's top-level read)"
 	while IFS= read -r p; do
 		[ -e "$p" ] || fail "$f triggers on '$p', which no longer exists, so a change to the control path would not run this suite; point that entry at the source's new location (or drop it if the source is gone)"
 	done < <(awk '

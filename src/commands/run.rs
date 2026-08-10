@@ -17,7 +17,7 @@ use oneharness_core::domain::harness::{
 };
 use oneharness_core::domain::http::{self, HttpShape};
 use oneharness_core::domain::mock::{self, MockDelivery};
-use oneharness_core::domain::mode::{ModeHeadless, PermissionMode};
+use oneharness_core::domain::mode::{ApprovalPosture, ModeHeadless, PermissionMode};
 use oneharness_core::domain::report::{
     BatchReport, Capture, FallThrough, FallbackReport, OutputFormat, RunReport, RunResult,
     SessionReport, Status, SCHEMA_VERSION,
@@ -270,9 +270,6 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // to be told which control rule they broke, not a session rule that happens
     // to catch the same shape first.
     let explicit_format = args.output_format.or(cfg.output_format);
-    // Resolved here rather than at its own use below because a driven turn
-    // negotiates approvals on the wire, so `--control` has its own rule about
-    // which modes it can express (see `validate_control`).
     let mode = resolve_mode(args, cfg);
     let control_shape = validate_control(
         args,
@@ -775,10 +772,10 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                         // spectrum's: goose and copilot share one ACP shape and
                         // do not share a mapping, and a driven turn must answer
                         // with what the same mode gives without `--control`.
-                        acts_unattended: specs
+                        posture: specs
                             .first()
                             .and_then(|spec| spec.mode(mode))
-                            .is_some_and(|declared| declared.acts_unattended),
+                            .map_or(ApprovalPosture::of(mode), |declared| declared.posture),
                     },
                 )
             });
@@ -2026,9 +2023,15 @@ fn emit_stream_result(report: &RunReport) -> Result<(), OneharnessError> {
 /// by (oneharness never infers one — an unaddressable run is the whole reason
 /// `--session` is required), one prompt and exactly one harness (control drives
 /// one live turn; a batch or fan-out has no single turn to interrupt), a
-/// harness that declares a *proven* control mechanism, an approval mode the
-/// mechanism can actually express, an explicit output format compatible with
-/// the mechanism, and — last — a platform with unix sockets.
+/// harness that declares a *proven* control mechanism, an explicit output
+/// format compatible with the mechanism, and — last — a platform with unix
+/// sockets.
+///
+/// The approval mode is deliberately NOT among them. `--control` used to refuse
+/// one it could not express on the wire; it no longer derives a posture for the
+/// wire at all, so whatever a harness supports uncontrolled it supports
+/// controlled, and an unsupported mode is `validate_modes`' refusal — the same
+/// one an ordinary run gets.
 #[allow(clippy::fn_params_excessive_bools, clippy::too_many_arguments)] // llmlint: ignore[suppressions_justified] The parameters ARE the list of independently-resolved run properties the control rules must check, each decided separately by the caller; folding them into a struct used at this single call site would hide the list rather than shorten it.
 fn validate_control(
     args: &RunArgs,

@@ -161,6 +161,22 @@ grep -qF "'schedule' && '[\"ubuntu-latest\"]'" "$tmp/repo/$workflow" ||
     fail "fixture setup: the linux-only-schedule case did not narrow the schedule matrix"
 run_case "a schedule narrowed to Linux" 1 "does not run its schedule across"
 
+# A schedule declared with no cron under it: the trigger is there, so a grep for
+# `schedule:` alone would pass, and the workflow would never actually fire.
+build_fixture
+sed -i.bak '/^    - cron:/d' "$tmp/repo/$workflow"
+grep -q '^    - cron:' "$tmp/repo/$workflow" &&
+    fail "fixture setup: the no-cron case left a cron entry in place"
+run_case "a schedule with no cron entry" 1 "no cron entry"
+
+# The reporter job left without permission to report: it runs, and the `gh issue`
+# call fails against the workflow's top-level read-only token.
+build_fixture
+sed -i.bak '/^      issues: write$/d' "$tmp/repo/$workflow"
+grep -q 'issues: write' "$tmp/repo/$workflow" &&
+    fail "fixture setup: the no-permission case left 'issues: write' in place"
+run_case "the reporter without issues: write" 1 "issues: write"
+
 # The reporting job removed: the nightly run still happens, and a failure is a
 # red square nobody is looking at.
 build_fixture

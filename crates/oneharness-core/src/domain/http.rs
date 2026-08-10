@@ -382,15 +382,15 @@ impl PermissionDecision {
 /// applies, so an HTTP turn and a protocol turn answer a permission request the
 /// same way.
 ///
-/// Read off the harness's OWN declaration for the mode
-/// ([`ModeSpec::acts_unattended`]) rather than off the normalized spectrum,
+/// Read off the harness's OWN declaration for the mode ([`ModeSpec::posture`])
+/// rather than off the normalized spectrum,
 /// because the posture a controlled turn must take is the one that mode gives
 /// *without* `--control`. Usually the two agree; where the CLI cannot honor the
 /// spectrum — `crush run` auto-approves whatever it is asked — the harness's own
 /// answer is the one that keeps the two paths under one policy.
 #[must_use]
 pub fn permits_action(mode: &ModeSpec) -> PermissionDecision {
-    if mode.acts_unattended {
+    if mode.posture.is_unattended() {
         PermissionDecision::Allow
     } else {
         // Deny is the safe default, so a mode added later refuses until someone

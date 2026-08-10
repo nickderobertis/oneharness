@@ -256,7 +256,7 @@ Use the `just` recipes; do not hand-roll equivalents.
   server (and joins its pool key, or a run could be served one started under
   another policy), goose's `GOOSE_MODE` already rides the control child's job
   env. Only where nothing can be delivered is a posture answered on the wire, and
-  then it is the harness's own (`ModeSpec::acts_unattended`) rather than the
+  then it is the harness's own (`ModeSpec::posture`) rather than the
   spectrum's — which is why crush's ungated `default` is unattended under control
   too. Adding a harness or a mode means adding its cell to `control_mode_parity`. Declare `ControlShape` only after a live interrupt
   through oneharness. Stdin control keeps the child stdin open, then closes it

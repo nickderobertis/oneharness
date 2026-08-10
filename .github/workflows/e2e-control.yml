@@ -144,6 +144,7 @@ jobs:
 
       - name: Install Goose CLI
         run: |
+          # llmlint: ignore[boundary_inputs_validated] Goose publishes download_cli.sh as its only install artifact — no checksum and no signature asset accompanies it (see the note in e2e-goose.yml), so there is nothing here to verify the download against. This is the vendor's documented path over TLS from its own release host, and the identical line already installs goose in e2e-goose.yml, explore-events.yml and explore-hooks.yml; adding a trust root for it is a repo-wide change, not this workflow's to make.
           curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 

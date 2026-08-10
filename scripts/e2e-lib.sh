@@ -1321,6 +1321,38 @@ oh_control_redirect_enforce() {
     fail "$id: the turn never stayed in flight long enough to redirect across $attempts attempts"
 }
 
+# Report what a control-suite run actually proved, and decide whether a PARTIAL
+# run is acceptable.
+#
+# A credential-less phase in e2e-control.sh notes-and-continues rather than
+# calling skip(), so that ONE unauthenticated harness on a developer box cannot
+# retire the whole suite. In CI every one of those credentials is supplied, so
+# the same partial run means a credential or an install broke — and staying green
+# there would report "control and redirection honored" having proven nothing at
+# all for the harnesses that dropped out. This is the OH_E2E_NO_SKIP stance of
+# skip() applied to the one absence that script handles itself: leniency locally,
+# RED in CI.
+#
+# Lives here rather than inline in e2e-control.sh so the CI-vs-developer decision
+# can be driven directly by check-control-enforce.sh — the partial-run branch is
+# the one this suite's honesty rests on, and it cannot be reached at all without
+# real credentials for some harnesses and not others.
+#
+#   $1 space-separated harness ids proven, $2 ids skipped, $3 formatted duration
+oh_control_report_outcome() {
+    local proven="$1" skipped="$2" took="$3"
+    if [ -z "$proven" ]; then
+        skip "no controllable harness had credentials after $took (unproven: $skipped)"
+    fi
+    if [ -n "$skipped" ]; then
+        if [ -n "${OH_E2E_NO_SKIP:-}" ]; then
+            fail "no credentials for: $skipped (OH_E2E_NO_SKIP is set, so every controllable harness must actually run; proven: $proven)"
+        fi
+        note "NOT PROVEN THIS RUN (no credentials): $skipped"
+    fi
+    note "PASS: turn control and redirection honored by every harness proven here: $proven (in $took)"
+}
+
 # One attempt. Returns 0 on a proven redirection, 1 when the turn ended too early
 # to prove anything (retryable). Any real contract violation calls fail().
 _oh_control_redirect_enforce_once() {

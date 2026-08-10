@@ -211,21 +211,4 @@ for declaration in "${CONTROLLABLE[@]}"; do
     note "  $id proven in $(elapsed $((SECONDS - phase_started)))"
 done
 
-if [ "${#proven[@]}" -eq 0 ]; then
-    skip "no controllable harness had credentials after $(elapsed $SECONDS) (unproven: ${skipped[*]})"
-fi
-if [ "${#skipped[@]}" -gt 0 ]; then
-    # A credential-less phase notes-and-continues rather than calling skip(), so
-    # that ONE unauthenticated harness on a developer box cannot retire the whole
-    # suite. In CI every one of these secrets is supplied, so the same partial
-    # run means a credential or an install broke — and staying green there would
-    # report "control and redirection honored" having proven nothing at all for
-    # the harnesses that dropped out. This is the `OH_E2E_NO_SKIP` stance of
-    # `skip()` (see e2e-lib.sh) applied to the one absence this script handles
-    # itself: leniency locally, RED in CI.
-    if [ -n "${OH_E2E_NO_SKIP:-}" ]; then
-        fail "no credentials for: ${skipped[*]} (OH_E2E_NO_SKIP is set, so every controllable harness must actually run; proven: ${proven[*]})"
-    fi
-    note "NOT PROVEN THIS RUN (no credentials): ${skipped[*]}"
-fi
-note "PASS: turn control and redirection honored by every harness proven here: ${proven[*]} (in $(elapsed $SECONDS))"
+oh_control_report_outcome "${proven[*]-}" "${skipped[*]-}" "$(elapsed $SECONDS)"

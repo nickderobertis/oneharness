@@ -19838,9 +19838,12 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
     );
     assert!(interrupt.status.success(), "{interrupt:?}");
     let frame = json_stdout(&interrupt);
-    assert_eq!(frame["v"], 1);
+    assert_eq!(frame["v"], 2);
     assert_eq!(frame["ok"], true);
     assert_eq!(frame["mechanism"], "claude-control-request");
+    // A plain stop carries no redirection, and says so by omission: the answer
+    // gains no field a supervisor did not ask for.
+    assert!(frame.get("redirected").is_none(), "{frame}");
 
     let output = child.wait_with_output().expect("run did not finish");
     assert!(output.status.success(), "{output:?}");
@@ -19871,6 +19874,249 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
 
     let _ = std::fs::remove_dir_all(&store);
     let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
+fn control_interrupt_redirects_the_turn_with_a_message_in_one_operation() {
+    let mock_profile = mock_profile_redirect();
+    // The point of carrying a message with the interrupt: the supervisor sends
+    // ONE request, and the agent goes from doing the wrong thing to doing the
+    // right thing without the session being redispatched. Asserted at the
+    // harness — the redirected message has to appear in the turn log AFTER the
+    // interrupted turn ended, which is the only moment this harness accepts one.
+    let store = control_store_dir("redirect");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("redirect-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let turn_log = store.join("turn.log");
+    let turn_log_arg = turn_log.display().to_string();
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_TURN_LOG", &turn_log_arg)
+        .env("MOCK_TURN_HOLD", "1")
+        .env(
+            "MOCK_STDOUT",
+            r#"{"type":"system","subtype":"init","session_id":"sess-redirect"}"#,
+        )
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "steered",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "keep working on the wrong thing",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the controlled run");
+
+    let socket = store.join("control").join("steered.sock");
+    wait_until("the control socket to appear", || socket.exists());
+    wait_until("the turn to start", || {
+        std::fs::read_to_string(&turn_log)
+            .map(|log| log.contains("keep working on the wrong thing"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "steered",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--input",
+            "stop and do the right thing",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    let frame = json_stdout(&interrupt);
+    assert_eq!(frame["v"], 2);
+    assert_eq!(frame["ok"], true);
+    // The run says it took the message, so the supervisor is holding a
+    // guarantee rather than having to guess whether to resend it.
+    assert_eq!(frame["redirected"], true, "{frame}");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("run report was not JSON");
+    let interrupts = report["control"]["interrupts"].as_array().unwrap();
+    assert_eq!(interrupts.len(), 1);
+    assert_eq!(interrupts[0]["outcome"], "served");
+    assert_eq!(interrupts[0]["redirected"], true, "{report}");
+
+    // The ordering IS the contract. The harness saw the original prompt, then
+    // the interrupt, then the turn end, and only then the redirection — a
+    // message delivered any earlier is silently dropped by this harness.
+    let log = std::fs::read_to_string(&turn_log).unwrap();
+    let step = |needle: &str| {
+        log.lines()
+            .position(|line| line.contains(needle))
+            .unwrap_or_else(|| panic!("`{needle}` never reached the harness:\n{log}"))
+    };
+    let prompt_at = step("keep working on the wrong thing");
+    let interrupt_at = step("control_request");
+    let ended_at = step("TURN_ENDED");
+    let redirect_at = step("stop and do the right thing");
+    assert!(
+        prompt_at < interrupt_at && interrupt_at < ended_at && ended_at < redirect_at,
+        "turn log:\n{log}"
+    );
+    // And it opened a real second turn rather than being appended to the dead
+    // one: the harness ended twice.
+    assert_eq!(
+        log.lines()
+            .filter(|line| line.contains("TURN_ENDED"))
+            .count(),
+        2,
+        "turn log:\n{log}"
+    );
+
+    assert!(!socket.exists());
+    assert_eq!(report["results"][0]["status"], "ok");
+    assert_eq!(report["session"]["token"], "sess-redirect");
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn interrupt_refuses_a_redirection_that_is_not_a_message() {
+    // A usage error, not a refusal frame: nothing was asked of any run, and a
+    // supervisor that mis-spelled its redirection needs to hear about it while
+    // the turn it meant to redirect is still running.
+    // A NUL is deliberately absent: no argv can carry one, so the boundary that
+    // would refuse it is never reached — that rule is pinned on the type, where
+    // a wire frame can express it.
+    let overlong = "x".repeat(oneharness_core::domain::control::MAX_REDIRECT_INPUT_CHARS + 1);
+    for bad in ["", "   ", "stop\u{1b}[2Jnow", overlong.as_str()] {
+        let output = run(
+            &[
+                "interrupt",
+                "--session",
+                "whatever",
+                "--input",
+                bad,
+                "--compact",
+            ],
+            &[],
+        );
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("--input"), "{stderr}");
+        assert!(
+            output.stdout.is_empty(),
+            "a usage error emits no control frame: {output:?}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_redirection_refused_by_an_idle_run_is_not_reported_as_delivered() {
+    // The other half of the guarantee: a supervisor whose interrupt was refused
+    // still OWNS its message. A refusal that claimed a redirection — or a run
+    // that kept the message and never carried it — would leave the message
+    // silently nowhere, which is the failure this whole feature exists to close.
+    // Driven against a live listener with no turn in flight, so the refusal is
+    // the run's own `no_active_turn` rather than a missing socket.
+    use oneharness_core::domain::control::socket_path;
+    let store = control_store_dir("redirect-idle");
+    let store_arg = store.display().to_string();
+    let listener = oneharness_core::io::control::bind(
+        &socket_path(&store, "idle"),
+        oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
+        None,
+    )
+    .expect("bound an idle control socket");
+
+    let output = run(
+        &[
+            "interrupt",
+            "--session",
+            "idle",
+            "--session-dir",
+            &store_arg,
+            "--input",
+            "do X instead",
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let frame = json_stdout(&output);
+    assert_eq!(frame["ok"], false);
+    assert_eq!(frame["reason"], "no_active_turn");
+    assert!(
+        frame.get("redirected").is_none(),
+        "a refusal must not claim the message was delivered: {frame}"
+    );
+    // And the run kept nothing: a turn starting later must not inherit a
+    // redirection nobody was told had been accepted.
+    assert!(!listener.handle_ref().has_pending_redirect());
+
+    drop(listener);
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_previous_version_supervisor_is_refused_across_the_socket_rather_than_half_understood() {
+    // The v2 bump added `input`, so a v1 supervisor and a v2 run disagree about
+    // what a frame can carry. Driven as raw bytes over the real socket, because
+    // that is exactly what an older `oneharness interrupt` binary puts on it:
+    // the run must say which version it speaks, not accept the frame and drop
+    // the field a v1 client could never have sent — or, worse, a later v3 client
+    // whose `input` means something else.
+    use oneharness_core::domain::control::{socket_path, ControlResponse, PROTOCOL_VERSION};
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+
+    let store = control_store_dir("old-client");
+    let path = socket_path(&store, "mixed");
+    let _listener = oneharness_core::io::control::bind(
+        &path,
+        oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
+        None,
+    )
+    .expect("bound a control socket");
+
+    for other in [PROTOCOL_VERSION - 1, PROTOCOL_VERSION + 1] {
+        let mut stream = UnixStream::connect(&path).expect("connected to the run");
+        stream
+            .write_all(format!("{{\"v\":{other},\"verb\":\"interrupt\"}}\n").as_bytes())
+            .unwrap();
+        let mut reply = String::new();
+        BufReader::new(&stream).read_line(&mut reply).unwrap();
+        let response: ControlResponse = serde_json::from_str(reply.trim()).expect("a v2 answer");
+        assert!(!response.is_ok(), "{reply}");
+        assert!(!response.is_redirected());
+        assert!(
+            reply.contains(&format!("version {other}"))
+                && reply.contains(&format!("v{PROTOCOL_VERSION}")),
+            "the refusal must name both versions: {reply}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -20958,23 +21204,51 @@ fn control_with_more_than_one_prompt_is_a_usage_error() {
 }
 
 #[test]
-fn the_readme_documents_the_control_protocol_version_in_force() {
-    // The frames in the README are what a supervisor copies; a `v` that drifted
-    // from the constant would have them writing frames the run refuses.
+fn the_readme_documents_the_control_protocol_frames_in_force() {
+    // The frames in the README are what a supervisor copies, so they are
+    // reconciled against the types that really encode them rather than being a
+    // second hand-maintained copy of the protocol: a `v` bump, a renamed field,
+    // or an `input`/`redirected` that stopped being emitted would leave a
+    // supervisor writing frames the run refuses — or waiting for an
+    // acknowledgement it never sends.
+    use oneharness_core::domain::control::{
+        ControlReason, ControlRequest, ControlResponse, ControlShape, RedirectInput,
+    };
     let readme =
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md")).unwrap();
     let section = readme
         .split("### Turn control")
         .nth(1)
         .expect("README documents turn control");
-    let expected = format!(
-        r#"{{"v":{},"verb":"interrupt"}}"#,
-        oneharness_core::domain::control::PROTOCOL_VERSION
-    );
-    assert!(
-        section.contains(&expected),
-        "README does not show the current control request frame ({expected})"
-    );
+
+    // Rendered from the types, with the placeholders the README uses for the
+    // values a supervisor fills in, so only the SHAPE is compared.
+    let plain = serde_json::to_string(&ControlRequest::interrupt()).unwrap();
+    let redirecting =
+        serde_json::to_string(&ControlRequest::redirect(RedirectInput::new("R").unwrap()))
+            .unwrap()
+            .replace(r#""R""#, r#""<redirection>""#);
+    let served = ControlResponse::served(ControlShape::ClaudeControlRequest)
+        .to_line()
+        .trim_end()
+        .replace("claude-control-request", "<shape-id>");
+    let redirected = ControlResponse::redirected(ControlShape::ClaudeControlRequest)
+        .to_line()
+        .trim_end()
+        .replace("claude-control-request", "<shape-id>");
+    // The refusal frame is shown once with its reasons as an alternation, so it
+    // is reconciled up to the reason value — which has its own coverage test.
+    let refused = ControlResponse::refused("<msg>", ControlReason::Unsupported).to_line();
+    let refused = refused
+        .split_once(r#""reason":""#)
+        .map(|(head, _)| format!(r#"{head}"reason":""#))
+        .expect("a refusal frame names its reason");
+    for frame in [plain, redirecting, served, redirected, refused] {
+        assert!(
+            section.contains(&frame),
+            "README does not show the current control frame ({frame})"
+        );
+    }
 }
 
 #[cfg(unix)]
@@ -21487,6 +21761,311 @@ fn a_streamed_controlled_run_publishes_the_protocol_turns_own_signals() {
 
 #[cfg(unix)]
 #[test]
+fn an_http_controlled_run_carries_its_redirection_into_the_next_turn() {
+    let mock_profile = mock_profile_redirect();
+    // Interrupting a turn makes its OWN prompt request fail: opencode holds
+    // that request open for the whole turn and answers it with a refusal when
+    // the turn is cut short. That refusal describes the turn the supervisor
+    // deliberately stopped, and reading it as the run's outcome ends the run
+    // before the redirection it accepted can become the next turn — the message
+    // lost by another route, and the shape that failed against the real
+    // opencode. The fixture models exactly that: held-open prompt, refusal on
+    // abort, second prompt accepted afterwards.
+    let store = control_store_dir("http-redir");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("http-redir-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let log = store.join("server.log");
+    let pool = store.join("pool");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
+        .env("MOCK_HTTP_CONTROL_FAULT", "redirected-turn")
+        .env("XDG_STATE_HOME", pool.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--session",
+            "httpredir",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working on the wrong thing",
+            "--bin",
+            &bin_override("opencode"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the HTTP controlled run");
+
+    wait_until("the control socket", || {
+        store.join("control").join("httpredir.sock").exists()
+    });
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(&log)
+            .map(|text| text.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "httpredir",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--input",
+            "stop and do the right thing",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    assert_eq!(json_stdout(&interrupt)["redirected"], true);
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+
+    // The redirection reached the SAME session, after the interrupt, as its own
+    // prompt — asserted at the server, which is the only place a message that
+    // was merely accepted and then dropped would be visibly absent.
+    let served = std::fs::read_to_string(&log).unwrap();
+    let at = |needle: &str| {
+        served
+            .lines()
+            .position(|line| line.contains(needle))
+            .unwrap_or_else(|| panic!("`{needle}` never reached the server:\n{served}"))
+    };
+    assert!(
+        at("keep working on the wrong thing") < at("/interrupt")
+            && at("/interrupt") < at("stop and do the right thing"),
+        "server log:\n{served}"
+    );
+    let prompts = served
+        .lines()
+        .filter(|line| line.starts_with("POST /api/session/ses_mock/prompt"))
+        .count();
+    assert_eq!(prompts, 2, "the redirection is a second turn:\n{served}");
+
+    // And the aborted turn's own refusal is not the run's outcome: the run
+    // finished the work it was redirected to.
+    assert_eq!(report["results"][0]["status"], "ok", "{report}");
+    assert_eq!(report["results"][0]["error"], Value::Null, "{report}");
+    assert_eq!(report["control"]["interrupts"][0]["redirected"], true);
+    assert!(
+        report["results"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("redirected")),
+        "the redirected turn's answer is the run's: {report}"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_refused_redirection_is_reported_rather_than_leaving_a_run_that_did_nothing() {
+    let mock_profile = mock_profile_redirect();
+    // The redirection is the run's to deliver, so a server that will not take it
+    // is the run's failure to report. Silence here would be the worst answer
+    // available: the supervisor was told `redirected`, the original work is
+    // stopped, and the report would call a run that did none of the redirected
+    // work a success.
+    let store = control_store_dir("http-refuse-redir");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("http-refuse-redir-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let log = store.join("server.log");
+    let pool = store.join("pool");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
+        .env("MOCK_HTTP_CONTROL_FAULT", "refuse-redirect")
+        .env("XDG_STATE_HOME", pool.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--session",
+            "refuseredir",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("opencode"),
+            "--timeout",
+            "60",
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the HTTP controlled run");
+
+    wait_until("the control socket", || {
+        store.join("control").join("refuseredir.sock").exists()
+    });
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(&log)
+            .map(|text| text.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "refuseredir",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--input",
+            "do X instead",
+            "--compact",
+        ],
+        &[],
+    );
+    // The interrupt itself succeeded: the turn really was stopped and the run
+    // really did take the message. What follows is about the delivery.
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    assert_eq!(json_stdout(&interrupt)["redirected"], true);
+
+    let output = child.wait_with_output().expect("run did not finish");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    assert_eq!(report["results"][0]["status"], "nonzero", "{report}");
+    let error = report["results"][0]["error"]
+        .as_str()
+        .expect("a refused redirection is reported");
+    assert!(
+        error.contains("503"),
+        "the reason must carry the server's own answer: {error}"
+    );
+
+    wait_for_pooled_server_to_exit(&pool);
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_redirection_the_harness_is_no_longer_there_for_ends_the_run_rather_than_hanging() {
+    let mock_profile = mock_profile_redirect();
+    // The stdin mechanism's own recovery path: the harness exits with the turn
+    // the interrupt aborted, so the message has nowhere left to go. The run must
+    // say so and finish — a run that waited for an answer from a process that is
+    // gone would hold the dispatch until its timeout.
+    let store = control_store_dir("redirect-gone");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("redirect-gone-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let turn_log = store.join("turn.log");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_TURN_LOG", turn_log.display().to_string())
+        .env("MOCK_TURN_HOLD", "1")
+        // The harness ends with the turn it was interrupted out of.
+        .env("MOCK_TURN_ONCE", "1")
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "gone",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("claude-code"),
+            "--timeout",
+            "60",
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the controlled run");
+
+    wait_until("the control socket to appear", || {
+        store.join("control").join("gone.sock").exists()
+    });
+    wait_until("the turn to start", || {
+        std::fs::read_to_string(&turn_log)
+            .map(|log| log.contains("keep working"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "gone",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--input",
+            "do X instead",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+
+    // Finishing at all is the assertion: the deadline is 60s and this returns
+    // as soon as the harness is gone.
+    let output = child.wait_with_output().expect("run did not finish");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    assert_ne!(report["results"][0]["status"], "timeout", "{report}");
+    assert_eq!(report["control"]["interrupts"][0]["redirected"], true);
+    // The harness never ran it — asserted at the harness, because "the run
+    // finished" and "the redirected work happened" are different claims and
+    // only the log can tell them apart.
+    let log = std::fs::read_to_string(&turn_log).unwrap();
+    assert!(!log.contains("do X instead"), "turn log:\n{log}");
+    // The stderr warning is deliberately NOT asserted: whether the write fails
+    // is a race with the child's exit — a redirection written into the pipe of
+    // a process that has stopped reading is accepted by the kernel — so the run
+    // either warns or discovers the loss at EOF. Both end the run without the
+    // message being done, which is what this pins.
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
 fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there() {
     let mock_profile = mock_profile_redirect();
     // The third execution model, end to end through the real CLI: the harness
@@ -21958,6 +22537,10 @@ fn a_control_server_that_redirects_the_interrupt_is_not_reported_as_having_serve
             .unwrap_or(false)
     });
 
+    // Carrying a redirection, because that is the harder half of the same
+    // promise: an abort that did not land must give the message BACK, or the
+    // supervisor walks away believing a turn was redirected when it is still
+    // running and its message is nowhere.
     let interrupt = run(
         &[
             "interrupt",
@@ -21967,6 +22550,8 @@ fn a_control_server_that_redirects_the_interrupt_is_not_reported_as_having_serve
             &store_arg,
             "--cwd",
             &cwd_arg,
+            "--input",
+            "do X instead",
             "--compact",
         ],
         &[],
@@ -21974,6 +22559,10 @@ fn a_control_server_that_redirects_the_interrupt_is_not_reported_as_having_serve
     let answer = json_stdout(&interrupt);
     assert_eq!(answer["ok"], false, "{answer}");
     assert_eq!(interrupt.status.code(), Some(1), "{interrupt:?}");
+    assert!(
+        answer.get("redirected").is_none(),
+        "a refused interrupt must not claim it took the message: {answer}"
+    );
     let error = answer["error"].as_str().expect("a reason");
     assert!(
         error.contains("302"),
@@ -21993,6 +22582,12 @@ fn a_control_server_that_redirects_the_interrupt_is_not_reported_as_having_serve
             .lines()
             .any(|line| line.starts_with("POST /api/session/ses_mock/interrupt")),
         "the interrupt never reached the server:\n{served}"
+    );
+    // And the message was never handed to the harness: it is the supervisor's
+    // to send somewhere else, not something the run half-delivered.
+    assert!(
+        !served.contains("do X instead"),
+        "a redirection whose abort failed must not reach the server:\n{served}"
     );
 
     wait_for_pooled_server_to_exit(&pool);

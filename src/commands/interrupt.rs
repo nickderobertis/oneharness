@@ -11,7 +11,7 @@
 //! nobody is listening on (`not_running`).
 
 use oneharness_core::domain::control::{
-    socket_path, ControlReason, ControlRequest, ControlResponse,
+    socket_path, ControlReason, ControlRequest, ControlResponse, RedirectInput,
 };
 use oneharness_core::domain::harness;
 use oneharness_core::errors::OneharnessError;
@@ -21,6 +21,16 @@ use oneharness_core::io::session as session_io;
 use crate::cli::InterruptArgs;
 
 pub fn run(args: &InterruptArgs) -> Result<i32, OneharnessError> {
+    // Validated before anything is resolved: a redirection that cannot be
+    // carried is the supervisor's mistake, and it should hear about it while the
+    // turn it meant to redirect is still running.
+    let request = match args.input.as_deref() {
+        Some(input) => ControlRequest::redirect(
+            RedirectInput::new(input)
+                .map_err(|reason| OneharnessError::ControlInputInvalid { reason })?,
+        ),
+        None => ControlRequest::interrupt(),
+    };
     let cwd = args
         .cwd
         .clone()
@@ -41,7 +51,7 @@ pub fn run(args: &InterruptArgs) -> Result<i32, OneharnessError> {
     let dir = session_io::resolve_dir(configured).ok_or(OneharnessError::ControlNoSessionDir)?;
 
     let response = refuse_unsupported(&dir, &cwd, &args.session)
-        .unwrap_or_else(|| control::send(&socket_path(&dir, &args.session), interrupt()));
+        .unwrap_or_else(|| control::send(&socket_path(&dir, &args.session), &request));
 
     // Through the shared writer, not `println!`: a supervisor piping this into
     // `head`, or dying between the interrupt and reading its answer, closes
@@ -50,10 +60,6 @@ pub fn run(args: &InterruptArgs) -> Result<i32, OneharnessError> {
     // the way a report does.
     crate::commands::print_json(&response, args.compact)?;
     Ok(i32::from(!response.is_ok()))
-}
-
-fn interrupt() -> ControlRequest {
-    ControlRequest::interrupt()
 }
 
 /// The `unsupported` refusal, when the store says this session is bound to a

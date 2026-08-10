@@ -1287,6 +1287,187 @@ _oh_control_mechanism_matches() {
     [ -n "$2" ] && [ "$1" = "$2" ]
 }
 
+# Live proof that an interrupt's REDIRECTION is delivered: drive a real turn
+# doing the wrong thing, interrupt it with `--input` naming a different piece of
+# work, and prove both halves — the original work froze, AND the redirected work
+# was actually done, by the same dispatch, without the session being redispatched.
+#
+# The redirected artifact is the assertion that separates this from
+# `oh_control_enforce`: an interrupt that stopped the turn and quietly dropped
+# the message would pass that phase and fail this one, which is the exact failure
+# this feature exists to make impossible. Measured on the filesystem for the same
+# reason: several harnesses report a normal `end_turn` after a cancellation, so
+# nothing the harness says about its own turns can carry this.
+#
+# Only call this for a harness `oneharness list` reports a `control` mechanism
+# for. Retries an inconclusive attempt (a turn that ended or finished every step
+# before the interrupt landed) exactly like `oh_control_enforce`.
+#
+#   $1 harness id
+#
+# Its progress lines fall under the `tool_output_is_signal` ignore-block opened
+# above `oh_control_enforce`: a CI log needs them to attribute a failure inside a
+# multi-minute two-turn exchange to the step that produced it.
+oh_control_redirect_enforce() {
+    local id="$1"
+    local attempt attempts=3
+    for attempt in $(seq 1 "$attempts"); do
+        if _oh_control_redirect_enforce_once "$id" "$attempt"; then
+            note "PASS: $id redirection enforcement"
+            return 0
+        fi
+        note "  redirect-enforce: attempt $attempt was inconclusive (the turn ended, or finished every step, before the interrupt landed); retrying"
+    done
+    fail "$id: the turn never stayed in flight long enough to redirect across $attempts attempts"
+}
+
+# One attempt. Returns 0 on a proven redirection, 1 when the turn ended too early
+# to prove anything (retryable). Any real contract violation calls fail().
+_oh_control_redirect_enforce_once() {
+    local id="$1" attempt="$2"
+    local bin sandbox store name socket count frozen frozen_after report marker redirected
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    sandbox="$(mktemp -d)"
+    sandbox="$(oh_native_path "$sandbox")"
+    oh_sandbox_prepare "$id" "$sandbox"
+    git init -q "$sandbox" 2>/dev/null || true
+    store="$sandbox/sessions"
+    name="ohred${attempt}${RANDOM}"
+    socket="$store/control/$name.sock"
+    report="$sandbox/report.json"
+    # The redirected work names a file nothing else in this sandbox could create,
+    # so its presence can only mean the message reached the agent.
+    marker="ohredirect${RANDOM}${RANDOM}"
+    redirected="$sandbox/$marker.txt"
+
+    local model_args=()
+    [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+
+    local steps=60 last
+    last="$(printf 'step-%03d.txt' "$steps")"
+    local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create $steps files named step-001.txt through $last in the current directory, ONE PER TOOL CALL, sleeping 1 second between each (for example: sleep 1 && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
+    local redirect="Stop creating step-NNN.txt files immediately. Instead, using your shell tool, run exactly this one command and then stop: touch $marker.txt"
+
+    # The turn must actually run shell commands for there to be work to stop and
+    # work to redirect to. Confined to a fresh mktemp sandbox, like every other
+    # oh_*_enforce phase.
+    local grant=(--mode bypass) # llmlint: ignore[least_privilege_grants] see above
+    note "  redirect-enforce: starting a controlled run ($id, session $name)"
+    ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --prompt "$prompt" \
+        --control --session "$name" --session-dir "$store" --cwd "$sandbox" \
+        "${grant[@]}" --timeout "${OH_TIMEOUT:-300}" --compact \
+        "${model_args[@]+"${model_args[@]}"}" >"$report" 2>"$sandbox/run.err" &
+    local run_pid=$!
+
+    if ! _oh_wait_for 60 test -S "$socket"; then
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        sed 's/^/    /' "$sandbox/run.err" >&2 || true
+        rm -rf "$sandbox"
+        fail "$id: no control socket appeared at $socket (--control did not open one)"
+    fi
+
+    if ! _oh_wait_for 180 _oh_steps_at_least "$sandbox" 2; then
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        rm -rf "$sandbox"
+        note "  redirect-enforce: the agent never produced two steps"
+        return 1
+    fi
+    if ! kill -0 "$run_pid" 2>/dev/null; then
+        rm -rf "$sandbox"
+        return 1
+    fi
+    count="$(_oh_step_count "$sandbox")"
+    if [ "$count" -ge "$steps" ]; then
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        rm -rf "$sandbox"
+        note "  redirect-enforce: the agent finished all $steps steps before the interrupt could land"
+        return 1
+    fi
+
+    note "  redirect-enforce: interrupting WITH a redirection from a separate process"
+    local frame
+    frame="$(ONEHARNESS_NO_CONFIG=1 "$bin" interrupt --session "$name" --session-dir "$store" --cwd "$sandbox" --input "$redirect" --compact 2>&1)" || {
+        if printf '%s' "$frame" | grep -q no_active_turn; then
+            kill "$run_pid" 2>/dev/null || true
+            wait "$run_pid" 2>/dev/null || true
+            rm -rf "$sandbox"
+            return 1
+        fi
+        printf '%s\n' "$frame" >&2
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        rm -rf "$sandbox"
+        fail "$id: the interrupt carrying a redirection was refused"
+    }
+    if ! printf '%s' "$frame" | jq -e '.ok == true and .redirected == true' >/dev/null 2>&1; then
+        printf '%s\n' "$frame" >&2
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        rm -rf "$sandbox"
+        fail "$id: the answer did not say the redirection was taken (expected ok+redirected)"
+    fi
+    note "  ok: the run took the redirection"
+
+    # Half one: the original work stopped. Sampled after a beat for an in-flight
+    # tool call, then again — the redirected turn must not be the old one
+    # carrying on.
+    sleep 5
+    frozen="$(_oh_step_count "$sandbox")"
+    if [ "$frozen" -ge "$steps" ]; then
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        rm -rf "$sandbox"
+        note "  redirect-enforce: the count reached all $steps steps, so a freeze proves nothing"
+        return 1
+    fi
+
+    # Half two: the redirected work was DONE — by this same dispatch, with no
+    # second `oneharness run`. This is what an interrupt that dropped the message
+    # would fail.
+    # A literal bound, like every other wait here: the redirected turn is one
+    # short tool call, and `OH_TIMEOUT` is the RUN's budget — reaching shell
+    # arithmetic through an unvalidated environment value is a different thing
+    # from being handed to oneharness, which validates it.
+    if ! _oh_wait_for 180 test -e "$redirected"; then
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        sed 's/^/    /' "$sandbox/run.err" >&2 || true
+        rm -rf "$sandbox"
+        fail "$id: the redirection never reached the agent ($marker.txt was never created), so \`interrupt --input\` stopped the turn and lost the message"
+    fi
+    note "  ok: the redirected work was done by the same dispatch"
+
+    frozen_after="$(_oh_step_count "$sandbox")"
+    if [ "$frozen_after" != "$frozen" ]; then
+        kill "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+        rm -rf "$sandbox"
+        fail "$id: the original work did NOT stop — step files went from $frozen to $frozen_after after the interrupt, so the redirection was queued behind a turn that kept running"
+    fi
+    note "  ok: the original work stayed frozen at $frozen step files"
+
+    wait "$run_pid" 2>/dev/null || true
+    if ! jq -e '.control.interrupts | length >= 1 and (.[0].outcome == "served") and (.[0].redirected == true)' "$report" >/dev/null 2>&1; then
+        sed 's/^/    /' "$sandbox/run.err" >&2 || true
+        head -c 2000 "$report" >&2 || true
+        rm -rf "$sandbox"
+        fail "$id: the run report did not record a served REDIRECTED interrupt"
+    fi
+    if ! jq -e '.session.token != null' "$report" >/dev/null 2>&1; then
+        rm -rf "$sandbox"
+        fail "$id: the session did not survive the redirection (no token was captured)"
+    fi
+    note "  ok: report records the redirection and the session survived"
+
+    rm -rf "$sandbox"
+    return 0
+}
+
 # How many observable work artifacts the agent has produced so far. A glob
 # rather than `ls | grep` so a name shellcheck worries about can never miscount.
 _oh_step_count() {

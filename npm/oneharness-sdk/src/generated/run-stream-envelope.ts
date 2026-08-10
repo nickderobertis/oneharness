@@ -41,6 +41,12 @@ export type ControlEvent =
       at: string;
       outcome: "served";
       /**
+       * Whether a redirection was committed with the abort. Omitted when it
+       * was a plain stop, so an older consumer reads the same record it
+       * always did.
+       */
+      redirected?: boolean | undefined;
+      /**
        * The verb requested.
        */
       verb: "interrupt";

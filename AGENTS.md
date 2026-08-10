@@ -220,6 +220,20 @@ Use the `just` recipes; do not hand-roll equivalents.
   through the pooled server, not the harness CLI: permission requests must be
   answered; opencode is terminal only on idle after admission; and cwd stays a
   per-turn value. Pool keys exclude all per-turn and per-thread settings.
+  `interrupt --input` carries a **redirection** with the abort. Atomic means
+  *committed with the abort, delivered at the turn boundary*, never written
+  alongside it: every mechanism drops or queues a message sent into a live turn,
+  so the run parks it before the abort goes out, hands it back on any failure,
+  and opens the next turn itself — through the same frame/route that opened the
+  first one, which is why no declared mechanism has to refuse `--input`. So every
+  backend must keep its turn (and stdin) OPEN while a redirection is pending; a
+  mechanism whose terminal signal ends the run unconditionally would drop it.
+  *When* the run learns the aborted turn ended is per mechanism and measured:
+  most announce it, but **opencode announces nothing** — its stream just stops,
+  so there the served interrupt is the ending and the message goes out as soon as
+  the abort lands (`HttpShape::abort_ends_turn_silently`). Interrupting also
+  makes the aborted turn's OWN submission fail (opencode answers its held-open
+  prompt request with a refusal), and that refusal is not the run's outcome.
   `gate <id>` is the odd one out: the runtime pre-tool gate an
   installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It
@@ -681,7 +695,10 @@ shape. When you add one:
 <!-- llmlint: ignore-block[no_redundant_instruction_pointers] The capability matrix is per-harness data that lives in `README.md` (like the mode, resume, and events tables above); naming the file an adapter author must edit is the instruction, not a deferral of one. -->
 - Declare `control` ([`ControlShape`]) only after `scripts/explore-control.sh
   <id>` and `oh_control_enforce <id>` prove a filesystem-level interrupt through
-  oneharness; `None` is the default. Keep the probe tables, registry, live suite,
+  oneharness; `None` is the default. A new shape must also source how a
+  redirection reaches it (the frame/route that opens a turn on the session it
+  just aborted) and add `oh_control_redirect_enforce <id>` — the live proof the
+  redirected turn actually runs. Keep the probe tables, registry, live suite,
   and README matrix aligned. A sidecar also declares `server` ([`ServerSpec`]).
   Its pool key excludes per-turn and per-thread settings; membership is a lease
   naming a live process identity, never a counter or a bare pid.

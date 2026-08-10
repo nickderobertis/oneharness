@@ -77,6 +77,7 @@ export const ControlEventSchema: z.ZodType<ControlEvent> = z.union([
   z.looseObject({
     at: z.lazy(() => UtcInstantSchema).refine((value) => value !== undefined, { message: "Required" }),
     outcome: z.literal("served").refine((value) => value !== undefined, { message: "Required" }),
+    redirected: z.boolean().optional(),
     verb: z.lazy(() => ControlVerbSchema).refine((value) => value !== undefined, { message: "Required" }),
   }),
   z.looseObject({

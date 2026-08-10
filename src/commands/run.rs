@@ -9,8 +9,13 @@ use crate::commands::{
     UnprovisionedIdentity,
 };
 use oneharness_core::domain::batch::{self, BatchStrategy};
+use oneharness_core::domain::control::{self, ControlReport, ControlShape, DialAddress};
+use oneharness_core::domain::dialogue::{Dialogue, DialogueConfig};
 use oneharness_core::domain::fallback::{self, RunMode};
-use oneharness_core::domain::harness::{self, BuildCtx, HarnessIdentity, HarnessSpec};
+use oneharness_core::domain::harness::{
+    self, BuildCtx, HarnessIdentity, HarnessSpec, PromptDelivery,
+};
+use oneharness_core::domain::http::HttpShape;
 use oneharness_core::domain::mock::{self, MockDelivery};
 use oneharness_core::domain::mode::{ModeHeadless, PermissionMode};
 use oneharness_core::domain::report::{
@@ -24,10 +29,13 @@ use oneharness_core::domain::{events, normalize, signals};
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::cancel;
 use oneharness_core::io::config as config_io;
+use oneharness_core::io::control as control_io;
 use oneharness_core::io::detect::{self, BinOverrides};
 use oneharness_core::io::history::{self, HistoryWriter};
 use oneharness_core::io::hooks::{self as hooks_io, HookSnapshot, Scope};
+use oneharness_core::io::http_turn;
 use oneharness_core::io::runner::{self, Job, NextRun, Outcome};
+use oneharness_core::io::server_pool;
 use oneharness_core::io::session as session_io;
 use std::path::PathBuf;
 
@@ -44,6 +52,12 @@ const EXIT_FAILURE: i32 = 1;
 /// argv and only genuinely-large prompts switch delivery. See `LargeInput` and
 /// issue #1115.
 const LARGE_INPUT_THRESHOLD: usize = 64 * 1024;
+
+/// How long a freshly launched control server is given to start answering. A
+/// launched server is not a reachable one — opencode takes seconds to bind, and
+/// crush's socket file appears before it accepts — so this is generous; the
+/// run's own timeout bounds it further.
+const SERVER_READY_WINDOW: Duration = Duration::from_secs(90);
 
 /// Temp files holding off-argv prompt/system text for the duration of a run,
 /// removed on drop — so every early return (stream path, an I/O error, normal
@@ -117,7 +131,12 @@ fn plan_large_input(
     // system rides the same stream.
     let use_stdin = li.prompt_stdin && (prompt_large || (li.system_rides_prompt && system_large));
     if use_stdin {
-        plan.prompt_stdin = true;
+        // A control-enabled run already owns stdin as a message stream; a large
+        // prompt rides that stream's first frame, so the blob route never
+        // displaces it.
+        if !plan.delivery.is_control_stream() {
+            plan.delivery = PromptDelivery::Stdin;
+        }
     }
     // Loud when a large value is stuck on the argv anyway (e.g. Goose's inline
     // `--system`, or any harness oneharness has not wired for off-argv input).
@@ -241,6 +260,25 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     if fallback_mode {
         validate_fallback(batch_run, args)?;
     }
+    // `--control` is validated before the session is resolved so its own
+    // vocabulary wins the diagnostic: a supervisor who passed `--control` needs
+    // to be told which control rule they broke, not a session rule that happens
+    // to catch the same shape first.
+    let explicit_format = args.output_format.or(cfg.output_format);
+    // Resolved here rather than at its own use below because a driven turn
+    // negotiates approvals on the wire, so `--control` has its own rule about
+    // which modes it can express (see `validate_control`).
+    let mode = resolve_mode(args, cfg);
+    let control_shape = validate_control(
+        args,
+        &specs,
+        explicit_format,
+        schema.is_some(),
+        batch_run,
+        multi_model,
+        stream,
+        mode,
+    )?;
     // A model fan-out multiplies the run into several (harness, model) units, so —
     // like a batch — it refuses every single-unit shape up front (loud usage
     // errors). It is *compatible* with fallback: the model list is exactly the
@@ -275,6 +313,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         batch_run,
         fallback_mode,
         &project_start,
+        control_shape.is_some(),
     )?;
     let session_resume: Option<String> = session_wiring
         .as_ref()
@@ -290,8 +329,12 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // lossy pin before spawning instead of accepting `--session` and silently
     // leaving the store empty. With no explicit format, the plan loop below
     // selects the anchor harness's preferred session-bearing format.
-    let explicit_format = args.output_format.or(cfg.output_format);
-    validate_session_output_format(session_wiring.as_ref(), explicit_format)?;
+    // A mechanism that drives the turn over its own protocol captures the
+    // session id on the wire, so the harness's stdout format has no bearing on
+    // it — checking one here would refuse a perfectly good pairing.
+    if !control_shape.is_some_and(ControlShape::drives_turn) {
+        validate_session_output_format(session_wiring.as_ref(), explicit_format)?;
+    }
     validate_stream(stream, &specs, batch_run, schema.is_some(), fallback_mode)?;
     // Resolve the approval mode (CLI --mode > --bypass/--no-bypass > config
     // `mode` > config `bypass` > the built-in default, which is `default`). A
@@ -299,7 +342,6 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // be built); a mode that *might block on a prompt* is warned about but still
     // run, with the per-harness `--timeout` as the backstop (a hang becomes a
     // `timeout` result, never an infinite stall).
-    let mode = resolve_mode(args, cfg);
     validate_modes(mode, &specs)?;
     // A reasoning/effort setting for a harness that has no headless argv surface
     // for it is refused here (no way to deliver it) — a loud usage error rather
@@ -440,6 +482,9 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let mut plan: Vec<Plan> = Vec::with_capacity(units.len());
     let mut jobs: Vec<Job> = Vec::new();
     let mut job_plans: Vec<HarnessPlan> = Vec::new();
+    // The assembled prompt a control-enabled run delivers as its first stdin
+    // frame (the adapter left the positional off). One harness, one prompt.
+    let mut control_prompt: Option<String> = None;
     // Temp files backing off-argv system prompts, cleaned up on drop (covers every
     // return path below). Never populated under --print-command (nothing spawns).
     let mut temp_files = TempPromptFiles::default();
@@ -459,18 +504,26 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         // expose a provider/tool boundary trace select its required format;
         // others still write history with the timing fields absent.
         let telemetry_spec = history_writer.is_some().then_some(spec.telemetry).flatten();
-        let chosen_format = explicit_format.unwrap_or_else(|| {
-            if let Some(telemetry) = telemetry_spec {
-                telemetry.format
-            } else if want_events {
-                spec.events_format.unwrap_or(spec.output_format)
-            } else if session_anchor.as_ref().map(HarnessIdentity::as_str) == Some(selected_id) {
-                spec.session_format()
-                    .expect("setup_session selected only a harness with a session-bearing format")
-            } else {
-                spec.output_format
-            }
-        });
+        let chosen_format = control_shape
+            .and_then(ControlShape::required_format)
+            .unwrap_or_else(|| {
+                explicit_format.unwrap_or_else(|| {
+                    if let Some(telemetry) = telemetry_spec {
+                        telemetry.format
+                    } else if want_events {
+                        spec.events_format.unwrap_or(spec.output_format)
+                    } else if session_anchor.as_ref().map(HarnessIdentity::as_str)
+                        == Some(selected_id)
+                    {
+                        // A control run on a protocol-driven harness may have no
+                        // session-bearing format at all: its id comes off the
+                        // wire, not out of the harness's stdout document.
+                        spec.session_format().unwrap_or(spec.output_format)
+                    } else {
+                        spec.output_format
+                    }
+                })
+            });
         // A native-schema harness must receive its schema as JSON; force the
         // format so the conforming value lands where we read it (Claude Code's
         // `structured_output`, which needs `--output-format json`).
@@ -560,18 +613,37 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             base_prompt: unit_prompt.to_string(),
             extra,
             system_file: None,
-            prompt_stdin: false,
+            delivery: if control_shape.is_some() {
+                PromptDelivery::ControlStream
+            } else {
+                PromptDelivery::Argv
+            },
         };
 
         if args.print_command {
             // --print-command never spawns, so nothing is materialized off-argv:
             // the printed command is the deterministic inline form (large prompts
             // that would actually run via file/stdin are shown inline).
+            //
+            // A server-submitted control run would launch the harness's SERVER,
+            // never its CLI, so that is the command a dry run must show — with
+            // the address left as its placeholder, because the pool picks one
+            // only when it actually starts a server.
+            let planned_command = control_shape
+                .and_then(HttpShape::of)
+                .and(spec.server)
+                .map(|server| {
+                    std::iter::once(resolved.bin.clone())
+                        .chain(server.launch.iter().map(|arg| (*arg).to_string()))
+                        .chain(server.address_args.iter().map(|arg| (*arg).to_string()))
+                        .collect()
+                })
+                .unwrap_or_else(|| harness_plan.build(schema.as_ref(), None).argv);
             plan.push(Plan::Ready(Box::new(planned_result(
                 spec,
                 &resolved.bin,
                 resolved.available,
-                harness_plan.build(schema.as_ref(), None).argv,
+                planned_command,
                 output_format,
                 result_prompt,
                 unit_model.clone(),
@@ -609,6 +681,9 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             // same delivery) and may write a temp file for the system prompt.
             plan_large_input(&mut harness_plan, spec, system, job_index, &mut temp_files)?;
             let built = harness_plan.build(schema.as_ref(), None);
+            if control_shape.is_some() {
+                control_prompt = Some(built.prompt.clone());
+            }
             // Env layers, applied in order (the runner is last-write-wins):
             // the harness's declared defaults, then any env that delivers the
             // approval mode (Goose's GOOSE_MODE), then config ([env], then
@@ -672,6 +747,49 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let mut forked = false;
     // Empty off the streaming path, where history is written once at the end.
     let mut streamed_history: Vec<StreamedHistory> = Vec::new();
+    // Open the control socket before anything spawns, so a supervisor that races
+    // the dispatch finds an address rather than a gap — but after the plan loop,
+    // because a server-backed mechanism needs the assembled prompt to open its
+    // protocol conversation. `--print-command` executes nothing, so it opens
+    // nothing.
+    let control_listener = match control_shape.filter(|_| !args.print_command) {
+        Some(shape) => {
+            let wiring = session_wiring
+                .as_ref()
+                .expect("validate_control refuses --control without --session");
+            let path = control::socket_path(&wiring.dir, &wiring.name);
+            let cwd = control_cwd(args)?;
+            let dialogue = control_prompt.as_deref().and_then(|prompt| {
+                Dialogue::new(
+                    shape,
+                    DialogueConfig {
+                        prompt: prompt.to_string(),
+                        cwd: cwd.clone(),
+                        model: model.map(str::to_string),
+                        mode,
+                    },
+                )
+            });
+            Some(control_io::bind(&path, shape, dialogue).map_err(|source| {
+                OneharnessError::ControlSocket {
+                    path: path.display().to_string(),
+                    source,
+                }
+            })?)
+        }
+        None => None,
+    };
+    // A control-enabled run holds the child's stdin open for the whole turn, so
+    // the socket's listener thread can push an interrupt into the live process.
+    // It is single-harness/single-prompt by construction (validate_control), so
+    // there is exactly one job to drive this way.
+    let controlled = control_listener
+        .as_ref()
+        .zip(control_prompt.as_deref())
+        .map(|(listener, prompt)| runner::ControlledInput {
+            handle: listener.handle_ref(),
+            prompt: prompt.to_string(),
+        });
     let (mut results, mut fallback_report): (Vec<RunResult>, Option<FallbackReport>) = if stream_run
     {
         // One id per plan entry, not per selected harness: a model fan-out
@@ -685,9 +803,84 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             multi_model,
             history_writer.as_ref(),
             &unit_ids,
+            controlled.as_ref(),
         );
         streamed_history = streamed.history;
-        (streamed.results, streamed.fallback)
+        let mut streamed_results = streamed.results;
+        // A driven turn's signals come off the dialogue in the streaming path
+        // exactly as they do in the buffered one — the stream published events
+        // as they happened, but the session id and answer are only knowable
+        // from the protocol frames, and without this the terminal envelope
+        // carries the raw JSON-RPC transcript as `text` and no session token to
+        // continue with. Applied before the report is built, so nothing already
+        // published has to be retracted.
+        if let Some(input) = controlled.as_ref() {
+            for result in &mut streamed_results {
+                apply_dialogue_signals(result, input.handle);
+            }
+        }
+        (streamed_results, streamed.fallback)
+    } else if let Some(((shape, listener), prompt)) = control_shape
+        .and_then(HttpShape::of)
+        .filter(|_| !args.print_command)
+        .zip(control_listener.as_ref())
+        .zip(control_prompt.as_deref())
+    {
+        // The third execution model: the harness CLI is never spawned at all.
+        // Its interrupt only reaches a turn the SERVER is running (driving one
+        // from the CLI was live-refuted for both harnesses), so oneharness
+        // submits the turn over HTTP and the socket's interrupt is one more
+        // request against that same session.
+        //
+        // The prompt is part of the pattern, not an `expect`: a harness whose
+        // binary is missing never reaches the branch that assembles one, and its
+        // plan holds a `skipped` row already. Falling through publishes that row
+        // — an absent CLI is data in the report, never a panic.
+        let results = run_http_controlled(
+            shape,
+            listener.handle_ref(),
+            plan,
+            prompt,
+            &control_cwd(args)?,
+            mode,
+            Duration::from_secs(timeout),
+        );
+        (results, None)
+    } else if let Some(input) = controlled.as_ref().filter(|_| !jobs.is_empty()) {
+        // One turn, one capture: `--schema` (the only thing that re-runs a job)
+        // is refused alongside `--control` up front.
+        let capture = runner::run_job_streaming_controlled(&jobs[0], Some(input), |_| {
+            runner::StreamStep::Continue
+        });
+        let results = plan
+            .into_iter()
+            .map(|entry| match entry {
+                Plan::Ready(result) => *result,
+                Plan::Pending {
+                    spec,
+                    bin,
+                    output_format,
+                    job_index,
+                    prompt,
+                    model,
+                } => {
+                    let mut result = executed_result(
+                        spec,
+                        bin,
+                        jobs[job_index].argv.clone(),
+                        output_format,
+                        &capture,
+                        schema.as_ref(),
+                        1,
+                        prompt,
+                        model,
+                    );
+                    apply_dialogue_signals(&mut result, input.handle);
+                    result
+                }
+            })
+            .collect();
+        (results, None)
     } else if fallback_mode && !args.print_command {
         // Sequential fallback: run the priority chain until one harness runs.
         // The workspace-restoring mock finish happens below, after every spawn
@@ -837,6 +1030,23 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         None => results.first(),
     };
     let session_report = finalize_session(session_wiring, session_ran, args.print_command);
+    // Every interrupt this run served, read off the live handle before the
+    // listener is dropped (which removes the socket).
+    // `bind` canonicalized the socket path, so it is absolute by construction;
+    // a run that somehow held a relative one has no address to publish.
+    let control_report = match control_listener.as_ref() {
+        Some(listener) => Some(ControlReport {
+            socket: control::AbsolutePath::new(listener.path()).map_err(|message| {
+                OneharnessError::ControlSocket {
+                    path: listener.path().display().to_string(),
+                    source: std::io::Error::new(std::io::ErrorKind::InvalidInput, message),
+                }
+            })?,
+            mechanism: listener.handle_ref().shape(),
+            interrupts: listener.handle_ref().events(),
+        }),
+        None => None,
+    };
 
     if let Some(dir) = &args.output_dir {
         write_output_dir(dir, &results)?;
@@ -870,6 +1080,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         mock_report,
         history_file,
         session_report,
+        control_report,
     );
     if stream_run {
         emit_stream_result(&report)?;
@@ -1152,9 +1363,10 @@ fn setup_mock(
 /// Assemble the top-level [`RunReport`] from the finished results and the shared
 /// run metadata. Extracted so the normal and streaming paths emit an identical
 /// envelope shape (the streaming path passes `batch: None`).
-// Every argument is a separately-resolved piece of the run's envelope, and the
-// two callers (buffered and streaming) assemble them from different places; a
-// parameter struct would only move the same list one call up.
+// llmlint: ignore[suppressions_justified] The allow is justified here: this
+// assembles the report's own top-level fields, so the parameter list IS the
+// contract's shape — bundling it into a struct would create a second definition
+// of `RunReport` that has to be kept in step with the first.
 #[allow(clippy::too_many_arguments)]
 fn build_report(
     results: Vec<RunResult>,
@@ -1171,6 +1383,7 @@ fn build_report(
     mock: Option<MockReport>,
     history_file: Option<String>,
     session: Option<SessionReport>,
+    control: Option<ControlReport>,
 ) -> RunReport {
     RunReport {
         schema_version: SCHEMA_VERSION.to_string(),
@@ -1197,6 +1410,7 @@ fn build_report(
         spy_file: mock.and_then(|m| m.spy_file),
         history_file,
         config_files,
+        control,
         results,
     }
 }
@@ -1213,6 +1427,9 @@ struct SessionWiring {
     /// [`HarnessIdentity::spec`] rather than a second field that could disagree.
     harness: HarnessIdentity,
     project: PathBuf,
+    /// The resolved session store directory — also the anchor for the run's
+    /// `control/<name>.sock`, so both addresses come from one resolution.
+    dir: PathBuf,
     path: PathBuf,
     existing: Option<SessionRecord>,
     plan: SessionPlan,
@@ -1263,6 +1480,7 @@ fn setup_session(
     batch_run: bool,
     fallback_mode: bool,
     project: &std::path::Path,
+    control: bool,
 ) -> Result<Option<SessionWiring>, OneharnessError> {
     let Some(name) = args.session.as_deref() else {
         return Ok(None);
@@ -1270,8 +1488,20 @@ fn setup_session(
     if batch_run {
         return Err(OneharnessError::SessionBatch);
     }
-    let dir = session_io::resolve_dir(args.session_dir.as_deref().and_then(|p| p.to_str()))
-        .ok_or(OneharnessError::SessionNoStore)?;
+    // A `--session-dir` that cannot be spelled as UTF-8 is refused rather than
+    // dropped, exactly as the `interrupt` verb refuses it: silently falling
+    // back to the default store would put the session handle somewhere the
+    // caller did not ask for, and leave the interrupt looking for it there.
+    let configured = match args.session_dir.as_deref() {
+        Some(path) => Some(
+            path.to_str()
+                .ok_or_else(|| OneharnessError::SessionDirInvalid {
+                    path: path.display().to_string(),
+                })?,
+        ),
+        None => None,
+    };
+    let dir = session_io::resolve_dir(configured).ok_or(OneharnessError::SessionNoStore)?;
     let path = session_io::session_path(&dir, project, name);
     // A record this build cannot resume is no record at all: the run creates a
     // fresh session rather than guessing which identity minted a legacy token.
@@ -1294,9 +1524,14 @@ fn setup_session(
         candidates
             .iter()
             .find(|id| {
-                id.spec().session_capable() && existing.as_ref().is_some_and(|r| &r.harness == *id)
+                id.spec().session_capable_under(control)
+                    && existing.as_ref().is_some_and(|r| &r.harness == *id)
             })
-            .or_else(|| candidates.iter().find(|id| id.spec().session_capable()))
+            .or_else(|| {
+                candidates
+                    .iter()
+                    .find(|id| id.spec().session_capable_under(control))
+            })
             .ok_or_else(|| OneharnessError::SessionUnsupported {
                 id: selected_ids.join(", "),
                 supported: session_capable_ids(),
@@ -1310,7 +1545,7 @@ fn setup_session(
             });
         }
         let id = candidates[0].clone();
-        if !id.spec().session_capable() {
+        if !id.spec().session_capable_under(control) {
             return Err(OneharnessError::SessionUnsupported {
                 id: id.to_string(),
                 supported: session_capable_ids(),
@@ -1330,6 +1565,7 @@ fn setup_session(
         name: name.to_string(),
         harness: id,
         project: project.to_path_buf(),
+        dir,
         path,
         existing,
         plan,
@@ -1593,6 +1829,7 @@ fn stream_plan(
     multi_model: bool,
     history_writer: Option<&HistoryWriter>,
     unit_ids: &[&str],
+    controlled: Option<&runner::ControlledInput>,
 ) -> StreamedPlan {
     let mut results: Vec<RunResult> = Vec::new();
     let mut history: Vec<StreamedHistory> = Vec::new();
@@ -1624,6 +1861,7 @@ fn stream_plan(
                 history_writer
                     .zip(run_id)
                     .map(|(writer, run_id)| (writer, run_id, unit_ids[index])),
+                controlled,
             ),
         };
         let StreamedHarness {
@@ -1661,6 +1899,11 @@ struct StreamedHarness {
 /// consumer (it closed the stream — short-circuiting on what it saw) tells the
 /// runner to stop and tear down the child. `schema` is always `None` here
 /// (`--stream` and `--schema` are mutually exclusive, enforced up front).
+// llmlint: ignore[suppressions_justified] The allow below is justified here: these
+// are one plan entry's already-resolved fields (spec/bin/format/prompt/model plus
+// the two optional side channels), and bundling them into a struct would only move
+// the same list one indirection away from the single call site in `stream_plan`.
+#[allow(clippy::too_many_arguments)]
 fn stream_one_harness(
     job: &Job,
     spec: &'static HarnessSpec,
@@ -1673,6 +1916,7 @@ fn stream_one_harness(
         oneharness_core::domain::history::HistoryId,
         &str,
     )>,
+    controlled: Option<&runner::ControlledInput>,
 ) -> StreamedHarness {
     use oneharness_core::domain::report::RunStreamEnvelope;
     use oneharness_core::io::runner::StreamStep;
@@ -1681,7 +1925,7 @@ fn stream_one_harness(
 
     let mut next_index = 0usize;
     let mut persisted_event_indexes = BTreeSet::new();
-    let capture = runner::run_job_streaming(job, |line| {
+    let capture = runner::run_job_streaming_controlled(job, controlled, |line| {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             return StreamStep::Continue;
         };
@@ -1758,6 +2002,357 @@ fn emit_stream_result(report: &RunReport) -> Result<(), OneharnessError> {
     // not an error; any other write failure on the terminal line is non-fatal.
     let _ = writeln!(std::io::stdout(), "{line}");
     Ok(())
+}
+
+/// Validate a `--control` request and return the mechanism that will back it,
+/// or `None` when the flag was not passed (which must change nothing at all —
+/// no socket, no extra process, and a byte-identical argv).
+///
+/// Every check here is a *loud usage error* before anything spawns, because the
+/// failure this feature must never have is a supervisor being told the lever
+/// exists when it does not. In order: a caller-owned handle to address the run
+/// by (oneharness never infers one — an unaddressable run is the whole reason
+/// `--session` is required), one prompt and exactly one harness (control drives
+/// one live turn; a batch or fan-out has no single turn to interrupt), a
+/// harness that declares a *proven* control mechanism, an approval mode the
+/// mechanism can actually express, an explicit output format compatible with
+/// the mechanism, and — last — a platform with unix sockets.
+#[allow(clippy::fn_params_excessive_bools, clippy::too_many_arguments)] // llmlint: ignore[suppressions_justified] The parameters ARE the list of independently-resolved run properties the control rules must check, each decided separately by the caller; folding them into a struct used at this single call site would hide the list rather than shorten it.
+fn validate_control(
+    args: &RunArgs,
+    specs: &[&'static HarnessSpec],
+    explicit_format: Option<OutputFormat>,
+    schema: bool,
+    batch_run: bool,
+    multi_model: bool,
+    stream: bool,
+    mode: PermissionMode,
+) -> Result<Option<ControlShape>, OneharnessError> {
+    if !args.control {
+        return Ok(None);
+    }
+    if args.session.is_none() {
+        return Err(OneharnessError::ControlNeedsSession);
+    }
+    // A batch fans one harness over N prompts, so there is no single live turn
+    // to address. `--session` refuses a batch too, but say it in the control
+    // vocabulary rather than leaving a supervisor to infer it.
+    if batch_run {
+        return Err(OneharnessError::ControlBatch);
+    }
+    // A model fan-out multiplies the run into several (harness, model) units,
+    // and the controlled path drives exactly one live turn. `--session` refuses
+    // a fan-out too, but a supervisor who passed `--control` needs to be told
+    // which control rule they broke.
+    if multi_model {
+        return Err(OneharnessError::MultiModelConflict {
+            with: "--control",
+            why: "control drives one live turn, and a fan-out has no single turn to interrupt",
+        });
+    }
+    // The validate/retry loop re-prompts, which is a second turn — and the
+    // control channel owns the one open stdin. Refuse rather than silently
+    // running with retries disabled.
+    if schema {
+        return Err(OneharnessError::ControlSchema);
+    }
+    if specs.len() != 1 {
+        return Err(OneharnessError::ControlSingleHarness {
+            selected: specs
+                .iter()
+                .map(|spec| spec.id)
+                .collect::<Vec<_>>()
+                .join(", "),
+        });
+    }
+    let spec = specs[0];
+    let Some(shape) = spec.control else {
+        return Err(OneharnessError::ControlUnsupported {
+            id: spec.id.to_string(),
+            supported: control_capable_ids(),
+        });
+    };
+    // A driven turn negotiates its approvals on the wire, so the harness's own
+    // `edit` mapping — which lives on the argv or in its config file — is not
+    // what is in play; oneharness answers each permission request itself. `edit`
+    // promises auto-approved file edits with shell still gated, and no protocol
+    // here carries a *sourced* way to tell an edit request from a command one.
+    // Answering yes to both would grant shell authority the mode denies, and
+    // answering no to both would silently downgrade `edit` toward `default`, so
+    // this is refused before spawning like any other mode a harness cannot
+    // express. Claude Code is unaffected: its control frame rides the ordinary
+    // `-p` run, whose argv carries the real `acceptEdits` mapping.
+    if shape.drives_turn() && mode == PermissionMode::Edit {
+        return Err(OneharnessError::ControlModeUnsupported {
+            id: spec.id.to_string(),
+            mode: mode.as_str(),
+        });
+    }
+    // A server-submitted turn never spawns the harness CLI, so there is no
+    // stdout to publish line by line. Refusing is what keeps `--stream` from
+    // silently selecting the ordinary run — whose interrupt does NOT reach the
+    // turn, which is the whole reason this mechanism exists.
+    if stream && HttpShape::of(shape).is_some() {
+        return Err(OneharnessError::ControlStreamUnsupported {
+            id: spec.id.to_string(),
+        });
+    }
+    if let (Some(required), Some(explicit)) = (shape.required_format(), explicit_format) {
+        if required != explicit {
+            return Err(OneharnessError::ControlOutputFormat {
+                id: spec.id.to_string(),
+                required: required.as_str().to_string(),
+                selected: explicit.as_str().to_string(),
+            });
+        }
+    }
+    // Last, and only for a run that would actually open one. Every check above
+    // states something about the REQUEST — this harness has no control surface,
+    // this mode is not expressible, this format is incompatible — and each is
+    // true on every platform, so answering with the platform first would hand a
+    // supervisor the one reason that disappears when they change machines while
+    // hiding the one that does not.
+    //
+    // A dry run is exempt outright: `--print-command` opens no socket and spawns
+    // nothing (the listener is bound only when it is absent), and the argv it
+    // answers with — the control-stream flags, or the server a submitted turn
+    // would be launched against — is a platform-independent fact. The report
+    // still carries a null `control` block, so nothing claims a channel exists.
+    if !args.print_command && !control_io::supported() {
+        return Err(OneharnessError::ControlPlatform);
+    }
+    Ok(Some(shape))
+}
+
+/// Drive one turn on a pooled control server over HTTP, and shape it into the
+/// ordinary result envelope.
+///
+/// This is the third execution model: nothing about the harness's own CLI run
+/// is involved, because its interrupt does not reach one (live-REFUTED for both
+/// harnesses). The recorded `command` is therefore the SERVER's launch argv —
+/// what oneharness actually ran — rather than a headless invocation that never
+/// happened.
+///
+/// Every failure here is a result, never a panic: a server that will not start
+/// or a route that refuses is `spawn_error`/`nonzero` with the reason in
+/// `error`, exactly like a harness that could not be spawned.
+fn run_http_controlled(
+    shape: HttpShape,
+    handle: &control_io::ControlHandle,
+    plan: Vec<Plan>,
+    prompt: &str,
+    cwd: &control::AbsolutePath,
+    mode: PermissionMode,
+    timeout: Duration,
+) -> Vec<RunResult> {
+    plan.into_iter()
+        .map(|entry| match entry {
+            Plan::Ready(result) => *result,
+            Plan::Pending {
+                spec,
+                bin,
+                output_format,
+                prompt: result_prompt,
+                model,
+                ..
+            } => {
+                let outcome =
+                    drive_http_turn(shape, handle, spec, &bin, prompt, cwd, mode, timeout);
+                let (command, capture, session_id) = match outcome {
+                    Ok((command, outcome, session_id)) => (command, outcome, Some(session_id)),
+                    Err(err) => (vec![bin.clone()], http_turn::TurnOutcome::failed(err), None),
+                };
+                let mut result = executed_result(
+                    spec,
+                    bin,
+                    command,
+                    output_format,
+                    &capture.to_capture(),
+                    None,
+                    1,
+                    result_prompt,
+                    model,
+                );
+                // The turn's own signals: the server's session id, and the text
+                // the event stream carried. Both `None` rather than guessed when
+                // the turn produced neither.
+                result.session_id = session_id;
+                if let Some(text) = capture.text() {
+                    result.text = Some(text.to_string());
+                    result.text_source = Some(format!("http:{}", shape.shape().as_str()));
+                }
+                result
+            }
+        })
+        .collect()
+}
+
+/// Bring up the harness's control server (reusing a pooled one where a live
+/// dispatch already has it), open a session on it, and run the turn.
+#[allow(clippy::too_many_arguments)] // llmlint: ignore[suppressions_justified] Every parameter is one input the server bring-up genuinely needs — harness identity, address, prompt, and posture — and grouping them into a struct used at one call site would hide the list rather than shorten it.
+fn drive_http_turn(
+    shape: HttpShape,
+    handle: &control_io::ControlHandle,
+    spec: &'static HarnessSpec,
+    bin: &str,
+    prompt: &str,
+    cwd: &control::AbsolutePath,
+    mode: PermissionMode,
+    timeout: Duration,
+) -> Result<(Vec<String>, http_turn::TurnOutcome, String), String> {
+    let server = spec.server.ok_or_else(|| {
+        format!(
+            "`{}` declares HTTP control but no server to run it",
+            spec.id
+        )
+    })?;
+    let root = server_pool::resolve_root(None)
+        .ok_or_else(|| "no state directory to keep the control-server pool in".to_string())?;
+    // Per-turn settings are deliberately not in the key: they are negotiated on
+    // the wire, and keying on them would start a fresh server per dispatch.
+    let key_env: Vec<(String, Option<String>)> = server
+        .key_env
+        .iter()
+        .map(|name| ((*name).to_string(), std::env::var(name).ok()))
+        .collect();
+    let key = control::pool_key(spec.id, &key_env, &[]);
+    let address = candidate_address(server.transport, &root, &key)?;
+    let plan = server_pool::LaunchPlan::new(bin, &server, &[], address, Vec::new())
+        .map_err(|err| format!("could not plan the control server launch: {err}"))?;
+    let lease = server_pool::acquire(&root, &key, &plan, server_pool::DEFAULT_LINGER)
+        .map_err(|err| format!("could not start the control server: {err}"))?;
+    // Narrowed to a dialable address once, here, where the HTTP control path
+    // takes hold of the running server: everything downstream is then handed an
+    // address it can actually open a socket to.
+    let address = DialAddress::try_from(lease.record().address.clone()).map_err(|err| {
+        format!(
+            "the control server for `{}` cannot be reached over HTTP: {err}",
+            spec.id
+        )
+    })?;
+    let command = lease.record().argv.as_slice().to_vec();
+
+    // Bounded by the run's own timeout as well as the window, because a server
+    // that never comes up must not hold a dispatch past the budget its caller
+    // set: a `--timeout 5` run waiting 90s for a bring-up is a hang as far as
+    // the caller is concerned.
+    http_turn::await_ready(shape, &address, SERVER_READY_WINDOW.min(timeout))
+        .map_err(|err| format!("{err}"))?;
+    let turn = http_turn::open(shape, address, cwd, mode, &http_turn::client_id(spec.id))
+        .map_err(|err| format!("{err}"))?;
+    let session_id = turn.session_id().to_string();
+
+    // Addressable from the socket thread only while the turn is in flight, so
+    // an interrupt before or after it is an honest `no_active_turn`.
+    handle.begin_http_turn(turn.clone());
+    let outcome = http_turn::run(&turn, prompt, mode, timeout);
+    handle.end_http_turn();
+    // The lease is released here (not at process exit), so a server nobody is
+    // using can be reclaimed once its linger expires.
+    drop(lease);
+    Ok((command, outcome, session_id))
+}
+
+/// Where a freshly launched server should listen. A reused one keeps its own
+/// address; this is only the candidate the pool uses if it has to start one.
+fn candidate_address(
+    transport: control::ServerTransport,
+    root: &std::path::Path,
+    key: &control::PoolKey,
+) -> Result<control::ServerAddress, String> {
+    match transport {
+        control::ServerTransport::Tcp => {
+            // Ask the OS for a free port by binding and immediately dropping:
+            // the same trick every test harness uses, and the only way to pick
+            // one that is not already taken.
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(|err| {
+                format!("could not find a free port for the control server: {err}")
+            })?;
+            let port = listener
+                .local_addr()
+                .map_err(|err| format!("could not read the chosen control-server port: {err}"))?
+                .port();
+            control::Port::new(port)
+                .map(|port| control::ServerAddress::Tcp { port })
+                .map_err(|err| format!("the OS offered no usable port: {err}"))
+        }
+        control::ServerTransport::UnixSocket => {
+            let path = root.join(key.as_str()).join("server.sock");
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|err| format!("could not prepare the control-server socket: {err}"))?;
+            }
+            control::AbsolutePath::new(&path)
+                .map(|path| control::ServerAddress::UnixSocket { path })
+                .map_err(|err| format!("the control-server socket path is unusable: {err}"))
+        }
+        control::ServerTransport::Stdio => {
+            Err("a stdio server is not reached over HTTP".to_string())
+        }
+    }
+}
+
+/// Take the normalized signals a protocol-driven control run produced from the
+/// dialogue that produced them.
+///
+/// A server-backed mechanism's stdout is a JSON-RPC stream, not the harness's
+/// ordinary output document, so the generic extractors read nothing from it.
+/// The dialogue already parsed the same stream to drive the turn, and is the
+/// only thing that knows which frame carried the session id and which carried
+/// the answer. It leaves both `null` when the turn produced neither — a
+/// protocol run never fabricates a signal any more than a plain one does.
+fn apply_dialogue_signals(
+    result: &mut RunResult,
+    handle: &oneharness_core::io::control::ControlHandle,
+) {
+    if !handle.drives_turn_over_stdin() {
+        return;
+    }
+    result.session_id = handle.session_id();
+    if let Some((text, source)) = handle.text() {
+        result.text = Some(text);
+        result.text_source = Some(source.to_string());
+    }
+}
+
+/// The absolute working directory a controlled turn runs in.
+///
+/// A server-backed mechanism negotiates the directory on the wire rather than
+/// inheriting it from a spawn, and the server may well resolve a relative path
+/// against its own cwd rather than the dispatch's — so it is made absolute here,
+/// once, from the same `--cwd` an ordinary run would spawn into.
+fn control_cwd(args: &RunArgs) -> Result<control::AbsolutePath, OneharnessError> {
+    let cwd = args
+        .cwd
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(std::path::Component::CurDir.as_os_str()));
+    let absolute = if cwd.is_absolute() {
+        cwd
+    } else {
+        std::env::current_dir()
+            .map(|base| base.join(&cwd))
+            .unwrap_or(cwd)
+    };
+    let absolute = std::fs::canonicalize(&absolute).unwrap_or(absolute);
+    control::AbsolutePath::new(&absolute).map_err(|message| OneharnessError::ControlSocket {
+        path: absolute.display().to_string(),
+        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, message),
+    })
+}
+
+/// The comma-joined ids of every control-capable harness, for the "control
+/// capable:" hint on a `--control` capability error.
+fn control_capable_ids() -> String {
+    let ids: Vec<&str> = harness::all()
+        .iter()
+        .filter(|spec| spec.control.is_some())
+        .map(|spec| spec.id)
+        .collect();
+    if ids.is_empty() {
+        "none".to_string()
+    } else {
+        ids.join(", ")
+    }
 }
 
 /// Refuse `--stream` combined with anything it cannot serve: a batch
@@ -2278,11 +2873,12 @@ fn failure_dialect(spec: &HarnessSpec) -> signals::FailureDialect {
     }
 }
 
-// Each argument is a separately-owned piece of the run this result freezes — the
-// registry spec, what was actually spawned, what came back, and the per-unit
-// prompt/model a batch or model fan-out varies. Grouping them into a struct would
-// move the same list one call up, where three different callers assemble it from
-// three different places.
+// llmlint: ignore[suppressions_justified] The allow is justified here: each
+// argument is a separately-owned piece of the run this result freezes — the
+// registry spec, what was actually spawned, what came back, the schema, and the
+// per-unit prompt/model a batch or model fan-out varies. Grouping them into a
+// struct would move the same list one call up, where three different callers
+// assemble it from three different places.
 #[allow(clippy::too_many_arguments)]
 fn executed_result(
     spec: &HarnessSpec,
@@ -2548,10 +3144,13 @@ struct HarnessPlan {
     /// deliver off the argv on a harness with a system-file flag (Claude Code).
     /// `None` keeps the system inline. Set by the command layer before spawning.
     system_file: Option<String>,
-    /// When true, deliver the user prompt on the child's stdin (a large prompt on
-    /// a stdin-capable harness): `build` omits the positional and returns the
-    /// assembled prompt as [`BuiltCommand::stdin`]. `false` keeps it on the argv.
-    prompt_stdin: bool,
+    /// How the user prompt reaches the harness. [`PromptDelivery::Stdin`] (a
+    /// large prompt on a stdin-capable harness) makes `build` omit the
+    /// positional and return the assembled prompt as [`BuiltCommand::stdin`];
+    /// [`PromptDelivery::ControlStream`] (a `--control` run) makes it the first
+    /// frame the control channel writes. [`PromptDelivery::Argv`] keeps the argv
+    /// byte-identical to an ordinary run.
+    delivery: PromptDelivery,
 }
 
 /// The result of building one attempt: the argv to spawn and, when the prompt is
@@ -2559,6 +3158,10 @@ struct HarnessPlan {
 struct BuiltCommand {
     argv: Vec<String>,
     stdin: Option<String>,
+    /// The fully assembled prompt (mode instruction + schema/retry additions).
+    /// A control-enabled run delivers it as the first stdin frame rather than an
+    /// argv positional, so it needs the same text the argv would have carried.
+    prompt: String,
 }
 
 impl HarnessPlan {
@@ -2567,11 +3170,14 @@ impl HarnessPlan {
     /// to the prompt, native ones get it on the flag. `feedback` (the prior answer
     /// + validation errors) is appended on a retry so the model can correct itself.
     ///
-    /// When `prompt_stdin` is set, the assembled prompt is returned as
+    /// Under [`PromptDelivery::Stdin`] the assembled prompt is returned as
     /// [`BuiltCommand::stdin`] instead of riding the argv (the adapter omits the
     /// positional), with the system prompt folded in for a harness whose system
     /// rides the prompt ([`LargeInput::system_rides_prompt`]) — so the bytes the
-    /// model sees are identical to the inline path.
+    /// model sees are identical to the inline path. Under
+    /// [`PromptDelivery::ControlStream`] the adapter also omits the positional,
+    /// and [`BuiltCommand::prompt`] is what the control channel writes as its
+    /// first frame.
     fn build(&self, schema: Option<&Schema>, feedback: Option<(&str, &[String])>) -> BuiltCommand {
         let mut prompt = self.base_prompt.clone();
         // A mode that synthesizes a behavioral posture from an instruction
@@ -2603,7 +3209,7 @@ impl HarnessPlan {
         // have inlined: for a harness whose system rides the prompt, prepend the
         // system (mirroring `prompt_with_system`); otherwise the system is carried
         // separately (Claude's file flag, Goose's inline `--system`).
-        let stdin = if self.prompt_stdin {
+        let stdin = if self.delivery.is_stdin_blob() {
             Some(if self.spec.large_input.system_rides_prompt {
                 harness::prompt_with_system_text(self.system.as_deref(), &prompt)
             } else {
@@ -2627,11 +3233,21 @@ impl HarnessPlan {
                 None
             },
             system_file: self.system_file.as_deref(),
-            prompt_stdin: self.prompt_stdin,
+            delivery: self.delivery,
         };
         let mut argv = (self.spec.build_argv)(&ctx);
         argv.extend(self.extra.iter().cloned());
-        BuiltCommand { argv, stdin }
+        let prompt =
+            if self.delivery.is_control_stream() && self.spec.large_input.system_rides_prompt {
+                harness::prompt_with_system_text(self.system.as_deref(), &prompt)
+            } else {
+                prompt
+            };
+        BuiltCommand {
+            argv,
+            stdin,
+            prompt,
+        }
     }
 }
 
@@ -3093,7 +3709,7 @@ mod tests {
             base_prompt: "p".into(),
             extra: Vec::new(),
             system_file: None,
-            prompt_stdin: false,
+            delivery: PromptDelivery::Argv,
         }
     }
 
@@ -3125,7 +3741,10 @@ mod tests {
         let spec = plan.spec;
         let mut temps = TempPromptFiles::default();
         plan_large_input(&mut plan, spec, Some(&big), 0, &mut temps).unwrap();
-        assert!(!plan.prompt_stdin, "no stdin route → prompt stays inline");
+        assert!(
+            !plan.delivery.is_stdin_blob(),
+            "no stdin route → prompt stays inline"
+        );
         assert!(
             plan.system_file.is_none(),
             "no file route → system stays inline"
@@ -3140,7 +3759,7 @@ mod tests {
         let spec = plan.spec;
         let mut temps = TempPromptFiles::default();
         plan_large_input(&mut plan, spec, Some("small"), 0, &mut temps).unwrap();
-        assert!(!plan.prompt_stdin);
+        assert!(!plan.delivery.is_stdin_blob());
         assert!(temps.0.is_empty());
     }
 
@@ -3507,6 +4126,8 @@ mod tests {
             modes: &[],
             reasoning: None,
             usage: oneharness_core::domain::usage::UsageSupport::NoPlanQuota,
+            control: None,
+            server: None,
             build_argv: noop_argv,
         }
     }
@@ -3681,6 +4302,7 @@ mod tests {
             false,
             true,
             std::path::Path::new("/proj"),
+            false,
         )
         .expect("fallback + multi-harness --session is allowed")
         .expect("a wiring is returned when --session is set");
@@ -3701,6 +4323,7 @@ mod tests {
                 false,
                 false,
                 std::path::Path::new("/proj"),
+                false,
             ),
             Err(OneharnessError::SessionMultipleHarnesses { count: 2, .. })
         ));
@@ -3718,6 +4341,7 @@ mod tests {
                 false,
                 true,
                 std::path::Path::new("/proj"),
+                false,
             ),
             Err(OneharnessError::SessionUnsupported { .. })
         ));

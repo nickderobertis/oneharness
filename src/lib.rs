@@ -31,6 +31,7 @@ pub fn dispatch(cli: Cli) -> i32 {
         Command::MockHarness => mock_harness::run(),
         Command::History(args) => commands::history::run(&args),
         Command::Usage(args) => commands::usage::run(&args),
+        Command::Interrupt(args) => commands::interrupt::run(&args),
     };
     match result {
         Ok(code) => code,

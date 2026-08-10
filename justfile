@@ -83,6 +83,9 @@ lint-workflows: build build-mock-harness
     @bash scripts/check-codex-usage-schema.sh >/dev/null
     @bash scripts/check-codex-usage-schema-test.sh >/dev/null
     @bash scripts/check-usage-enforce.sh >/dev/null
+    @bash scripts/check-control-probes.sh >/dev/null
+    @bash scripts/check-control-probe-http.sh >/dev/null
+    @bash scripts/check-control-enforce.sh >/dev/null
     @bash scripts/e2e-variants-test.sh >/dev/null
     @echo 'lint-workflows: ok'
 
@@ -283,6 +286,14 @@ live-cursor: _live-install
 # alarm for Claude Code's native `--json-schema` delivery. See scripts/e2e-schema.sh.
 live-schema: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-schema.sh
+
+# Per-FEATURE live check (not a harness): drive each control-capable harness
+# through `run --control` + a separate `oneharness interrupt` and assert the
+# real turn's work actually stops. Deliberately out of the per-harness suites:
+# every phase drives a multi-step turn then waits out a 15s freeze window, which
+# is far too slow for a per-PR job. See scripts/e2e-control.sh.
+live-control: _live-install
+    ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-control.sh # llmlint: ignore[tool_output_is_signal] Like every other `live-*` recipe this forwards a live e2e transcript: the phase lines are what attribute a failure — or a hang inside a 15s freeze window — to a step in a log nobody can attach a debugger to. The script owns that contract (see its file-level ignore).
 
 live-variants: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-variants.sh

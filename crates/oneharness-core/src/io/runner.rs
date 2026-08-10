@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::domain::report::{Capture, OutputObservation, Status};
 use crate::io::cancel::{cancellation_requested, CancelToken};
+use crate::io::control::ControlHandle;
 use crate::io::process::{resolve_program, Finish, PipeEvent, Process};
 
 /// How long a wait/read blocks before the run re-checks for cancellation.
@@ -421,7 +422,58 @@ where
 /// down through [`Finish::Terminate`]. Without it a cancelled run leaves a live
 /// harness behind, since the harness is its own process-group leader and does
 /// not die with the host.
-pub fn run_job_streaming_cancellable<F>(job: &Job, cancel: &CancelToken, mut on_line: F) -> Capture
+pub fn run_job_streaming_cancellable<F>(job: &Job, cancel: &CancelToken, on_line: F) -> Capture
+where
+    F: FnMut(&str) -> StreamStep,
+{
+    stream_job(job, None, cancel, on_line)
+}
+
+/// Everything the runner needs to keep a run's stdin open for out-of-band turn
+/// control (`run --control`).
+///
+/// The ordinary paths drop the child's stdin as soon as the prompt is written,
+/// which is exactly what makes a turn uninterruptible. Here the handle is
+/// *parked* in the shared [`ControlHandle`] instead, so the control socket's
+/// listener thread can push an interrupt frame into the same live process — and
+/// the runner closes it again the moment the harness emits its end-of-turn
+/// document, so a control-enabled run still terminates on its own.
+pub struct ControlledInput<'a> {
+    /// The shared handle the control socket serves requests through. It also
+    /// owns the protocol conversation for a server-backed mechanism, so the
+    /// runner only pumps lines through it rather than knowing any protocol.
+    pub handle: &'a ControlHandle,
+    /// The assembled user prompt. For a mechanism that rides the harness's own
+    /// run it becomes the first stdin frame; for a server-backed one the
+    /// dialogue sends it after its handshake.
+    pub prompt: String,
+}
+
+/// [`run_job_streaming`], with the child's stdin held open for turn control when
+/// `control` is `Some`. `None` is byte-for-byte the ordinary streaming path.
+///
+/// A controlled run stays cancellable: it carries a fresh token, which the
+/// process-wide flag a host SIGINT/SIGTERM raises still trips, so an interrupted
+/// supervisor tears the harness tree down exactly as an uncontrolled run does.
+pub fn run_job_streaming_controlled<F>(
+    job: &Job,
+    control: Option<&ControlledInput>,
+    on_line: F,
+) -> Capture
+where
+    F: FnMut(&str) -> StreamStep,
+{
+    stream_job(job, control, &CancelToken::new(), on_line)
+}
+
+/// The one streaming implementation both public entry points delegate to:
+/// optional turn control on the child's stdin, bounded by `cancel`.
+fn stream_job<F>(
+    job: &Job,
+    control: Option<&ControlledInput>,
+    cancel: &CancelToken,
+    mut on_line: F,
+) -> Capture
 where
     F: FnMut(&str) -> StreamStep,
 {
@@ -429,7 +481,13 @@ where
     let start_epoch_ms = epoch_millis();
     let started_at = crate::domain::history::format_rfc3339_millis(start_epoch_ms);
     let (program, args) = spawn_target(&job.argv);
-    let (stdin_cfg, stdin_bytes) = stdin_stdio(job);
+    // A controlled run always pipes stdin — the handle is the control channel,
+    // not just a prompt delivery.
+    let (stdin_cfg, stdin_bytes) = if control.is_some() {
+        (Stdio::piped(), None)
+    } else {
+        stdin_stdio(job)
+    };
     let mut command = Command::new(program);
     command
         .args(&args)
@@ -477,6 +535,43 @@ where
     if let Some(bytes) = stdin_bytes {
         feed_stdin(&mut process, bytes);
     }
+    // Park stdin in the control handle and open the turn with the prompt frame.
+    // A failed hand-off is not fatal: the harness simply never receives the
+    // prompt and reports its own error, which is more useful than a panic.
+    if let Some(control) = control {
+        if let Some(stdin) = process.take_stdin() {
+            control.handle.begin_turn(stdin);
+            for frame in control.handle.open_frames(&control.prompt) {
+                if let Err(err) = control.handle.write_line(&frame) {
+                    eprintln!("oneharness: warning: could not open the controlled turn: {err}");
+                    break;
+                }
+            }
+        }
+    }
+
+    // Stdin was held open past the prompt, so a controlled harness waits for
+    // another message instead of exiting. Closing it on the end-of-turn document
+    // is what lets the run finish on its own, interrupted or not.
+    //
+    // A harness whose turn oneharness *drives* (a JSON-RPC server) has no reason
+    // to exit at all once its turn is over — it is a server, waiting for the
+    // next one — so there the end of the turn is the end of the run and the
+    // child is torn down rather than waited on.
+    let mut stopped_after_turn = false;
+    let mut on_line = |line: &str| {
+        if let Some(control) = control {
+            if control.handle.advance(line) {
+                control.handle.end_turn();
+                if control.handle.drives_turn_over_stdin() {
+                    stopped_after_turn = true;
+                    on_line(line);
+                    return StreamStep::Stop;
+                }
+            }
+        }
+        on_line(line)
+    };
 
     let deadline = start + job.timeout;
     let mut pending = Vec::new();

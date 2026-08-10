@@ -290,6 +290,64 @@ pub enum OneharnessError {
     #[error("invalid history cursor `{value}`: expected a UUID")]
     HistoryCursorInvalid { value: String },
 
+    #[error("--control requires --session <NAME>: a run with no caller-owned handle has no address an `oneharness interrupt` process could resolve")]
+    ControlNeedsSession,
+
+    #[error("harness `{id}` has no out-of-band turn control, so --control cannot be honored (control-capable: {supported})")]
+    ControlUnsupported {
+        // llmlint: ignore[invalid_states_unrepresentable] The id is echoed from the already-validated registry selection purely for the diagnostic.
+        id: String,
+        supported: String,
+    },
+
+    #[error(
+        "--control drives one live turn, so it needs exactly one harness (selected: {selected})"
+    )]
+    ControlSingleHarness { selected: String },
+
+    #[error("--control drives one live turn, so it cannot be combined with a batch run (more than one prompt)")]
+    ControlBatch,
+
+    #[error("--control needs a unix domain socket, which this platform does not provide")]
+    ControlPlatform,
+
+    #[error("harness `{id}` submits its controlled turn to a server rather than running its CLI, so there is no line-by-line output to stream; drop --stream (the report still carries the turn's transcript)")]
+    ControlStreamUnsupported { id: String },
+
+    #[error("--control cannot be combined with --schema: the structured-output retry loop re-prompts, which would need a second turn on the control channel's open stdin")]
+    ControlSchema,
+
+    #[error("harness `{id}` negotiates approvals on the wire under --control, where `--mode {mode}` cannot be expressed: it promises auto-approved edits with shell still gated, and the protocol's permission request carries no sourced way to tell one from the other. Use --mode default (deny and continue) or --mode bypass")]
+    ControlModeUnsupported {
+        // llmlint: ignore[invalid_states_unrepresentable] The id is echoed from the already-validated registry selection purely for the diagnostic.
+        id: String,
+        mode: &'static str,
+    },
+
+    #[error("harness `{id}` needs output format `{required}` for --control, but `{selected}` was selected; drop the explicit --output-format")]
+    ControlOutputFormat {
+        id: String,
+        required: String,
+        selected: String,
+    },
+
+    #[error("could not open the control socket `{path}`: {source}")]
+    ControlSocket {
+        // llmlint: ignore[invalid_states_unrepresentable] The failed socket path is retained in display form for a terminal diagnostic and never reused for I/O.
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("no session store directory: pass --session-dir or set `session_dir` in config (a default under the platform state dir could not be resolved)")]
+    ControlNoSessionDir,
+
+    #[error("--session-dir `{path}` is not valid UTF-8, so it cannot address a session store")]
+    SessionDirInvalid {
+        // llmlint: ignore[invalid_states_unrepresentable] The rejected path is kept in its lossy display form solely to quote it back; it is never reused for I/O.
+        path: String,
+    },
+
     #[error("failed to write JSON output: {0}")]
     Serialize(#[from] serde_json::Error),
 

@@ -8,6 +8,7 @@
 //! to drive each real CLI headlessly (deny prompts, pick the model, request a
 //! parseable format). Source new flags from a working driver, not by guessing.
 
+use crate::domain::control::{ControlShape, ServerSpec, ServerTransport};
 use crate::domain::events::TelemetryTrace;
 use crate::domain::gate::DenyShape;
 use crate::domain::hooks::HookShape;
@@ -63,14 +64,56 @@ pub struct BuildCtx<'a> {
     /// `--append-system-prompt-file`) instead of inline `--append-system-prompt`;
     /// `system` is left unread. `None` keeps the ordinary inline path.
     pub system_file: Option<&'a str>,
-    /// When true, the user prompt is delivered on the child's **stdin** rather
-    /// than an argv positional — set by the command layer for a large prompt on a
-    /// harness that declares [`LargeInput::prompt_stdin`]. The adapter then omits
-    /// the positional prompt (and adds any stdin-selecting flags, e.g. Claude
-    /// Code's `--input-format text`); the command layer pipes `prompt` to stdin.
-    /// `prompt` still holds the text so a non-stdin adapter and the report are
-    /// unaffected. `false` keeps the ordinary argv path.
-    pub prompt_stdin: bool,
+    /// How the user prompt reaches the harness for this run. One value rather
+    /// than a flag per route, because the routes are alternatives: a prompt
+    /// cannot ride both an argv positional and a message stream, and the two
+    /// stdin shapes ([`PromptDelivery::Stdin`] vs
+    /// [`PromptDelivery::ControlStream`]) select different CLI flags.
+    pub delivery: PromptDelivery,
+}
+
+/// How the user prompt reaches the harness.
+///
+/// The command layer decides; `build_argv` reads. Keeping it one value is what
+/// makes "positional prompt *and* `--input-format stream-json`" — a spawn the
+/// CLI would reject — impossible to ask for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptDelivery {
+    /// An argv positional: the ordinary case, and byte-identical to what every
+    /// `--print-command` assertion pins.
+    Argv,
+    /// Piped to the child's **stdin** as one blob, for a prompt large enough to
+    /// risk the argv ceiling (`E2BIG`) on a harness that declares
+    /// [`LargeInput::prompt_stdin`]. The adapter omits the positional and adds
+    /// its stdin-selecting flags (Claude Code's `--input-format text`, Goose's
+    /// `-i -`).
+    Stdin,
+    /// Written to the child's stdin as the first frame of a **message stream**
+    /// whose handle then stays open for the run's lifetime — the delivery a
+    /// control-enabled run (`--control`) needs, since that same handle is how an
+    /// out-of-band interrupt reaches the live turn. Only ever selected for a
+    /// harness whose [`HarnessSpec::control`] rides its own stdin.
+    ControlStream,
+}
+
+impl PromptDelivery {
+    /// Whether the adapter should omit the argv positional.
+    #[must_use]
+    pub fn off_argv(self) -> bool {
+        !matches!(self, PromptDelivery::Argv)
+    }
+
+    /// Whether the prompt is piped as one blob (the large-prompt route).
+    #[must_use]
+    pub fn is_stdin_blob(self) -> bool {
+        matches!(self, PromptDelivery::Stdin)
+    }
+
+    /// Whether the prompt opens a control-enabled message stream.
+    #[must_use]
+    pub fn is_control_stream(self) -> bool {
+        matches!(self, PromptDelivery::ControlStream)
+    }
 }
 
 /// The CLI token for a format, as the harnesses spell it.
@@ -108,7 +151,7 @@ pub fn prompt_with_system_text(system: Option<&str>, prompt: &str) -> String {
 /// from each CLI's headless docs, never guessed.
 pub struct LargeInput {
     /// The user prompt can be delivered on the child's **stdin** instead of an
-    /// argv positional. When the command layer sets [`BuildCtx::prompt_stdin`],
+    /// argv positional. When the command layer selects [`PromptDelivery::Stdin`],
     /// `build_argv` omits the positional (and adds any stdin-selecting flags —
     /// Claude Code's `--input-format text`, Goose's `-i -`) and the command layer
     /// pipes the assembled prompt to stdin.
@@ -277,7 +320,7 @@ pub struct HarnessSpec {
     /// system prompt to a temp file / pipes the user prompt to stdin only when a
     /// prompt clears the size threshold *and* the flag here says the harness can
     /// receive it that way, then `build_argv` reads the matching [`BuildCtx`]
-    /// fields ([`BuildCtx::system_file`] / [`BuildCtx::prompt_stdin`]). A small
+    /// fields ([`BuildCtx::system_file`] / [`BuildCtx::delivery`]). A small
     /// prompt keeps the byte-identical inline argv, so the common case (and every
     /// `--print-command`) is unchanged. Sourced from each CLI's headless docs,
     /// never guessed; [`LargeInput::NONE`] (inline only) is the safe default for a
@@ -314,6 +357,30 @@ pub struct HarnessSpec {
     /// being omitted or rendered as 0% used. Sourced from `docs/harness-usage.md`
     /// — every probe and every negative there is an observation, never a guess.
     pub usage: UsageSupport,
+    /// How this harness accepts an **out-of-band interrupt** for an in-flight
+    /// turn (`oneharness run --control` + `oneharness interrupt`). `None` means
+    /// the lever does not exist for it: `--control` is a loud usage error rather
+    /// than a socket that reports success while the turn keeps running. Sourced
+    /// from a *proven* live interrupt against the real CLI — a declared shape
+    /// that was never exercised is the specific failure this field must not
+    /// have (see the capability matrix in `README.md` and
+    /// `scripts/explore-control.sh`, the drift alarm).
+    // llmlint: ignore-block[invalid_states_unrepresentable] `control` and `server`
+    // are two fields by approved design (a mechanism is declared independently of
+    // the process that backs it, and Claude Code's needs none), so the
+    // relationship is enforced where it can also catch a future harness: the
+    // registry invariant test below fails if a server-backed mechanism declares no
+    // server, or a server is declared for a harness with no control. Scoped to
+    // both fields because the pairing IS the finding — an ignore on `control`
+    // alone leaves the half of it that lives on `server` unsuppressed.
+    pub control: Option<ControlShape>,
+    /// The sidecar server this harness's control mechanism needs, when it needs
+    /// one. Declared per harness rather than special-casing the one that does
+    /// not (Claude Code, whose control rides the run process's own stdin), and
+    /// consumed by the generic pool in [`crate::io::server_pool`]. `None` for a
+    /// harness with no server, or with no proven control mechanism at all.
+    pub server: Option<ServerSpec>,
+    // llmlint: ignore-end[invalid_states_unrepresentable]
     /// Builds the full argv (argv[0] is the binary). Pure.
     pub build_argv: fn(&BuildCtx) -> Vec<String>,
 }
@@ -390,6 +457,17 @@ impl HarnessSpec {
     /// Whether this harness can back the caller-owned `--session` handle.
     pub fn session_capable(&self) -> bool {
         !self.session_formats.is_empty()
+    }
+
+    /// Whether it can back that handle *for this run*, given whether the run is
+    /// control-enabled.
+    ///
+    /// A harness whose control mechanism drives the turn over its own protocol
+    /// (Codex's app-server, ACP) mints a thread/session id on the wire even when
+    /// none of its ordinary output formats carries one — which is how Copilot and
+    /// Goose can take `--session` under `--control` and only there.
+    pub fn session_capable_under(&self, control: bool) -> bool {
+        self.session_capable() || (control && self.control.is_some())
     }
 
     /// The session-id-bearing format selected automatically for `--session`.
@@ -818,6 +896,14 @@ static REGISTRY: &[HarnessSpec] = &[
         // reports `num_turns: 0` / `total_cost_usd: 0`.
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::Probed(UsageProbe::ClaudeGetUsage),
+        // LIVE-VERIFIED (claude 2.1.220): with `-p --input-format stream-json`
+        // the run's own stdin stays open, and a `control_request` /
+        // `interrupt` frame aborts the turn (`control_response` success, then a
+        // `result` document) while the session survives. The alternative —
+        // writing a plain user message mid-turn — was tried and is *silently
+        // dropped*, so this is the only mechanism that works. No sidecar server.
+        control: Some(ControlShape::ClaudeControlRequest),
+        server: None,
         build_argv: argv_claude_code,
     },
     HarnessSpec {
@@ -921,6 +1007,16 @@ static REGISTRY: &[HarnessSpec] = &[
         // own app-server probe rather than piggybacking on a dispatch.
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::Probed(UsageProbe::CodexAppServer),
+        // LIVE-VERIFIED: `turn/interrupt {threadId,turnId}` over the
+        // `codex app-server` JSON-RPC stdio protocol stops the turn (step files
+        // frozen for 15s). oneharness spawns the app-server as the run's OWN
+        // child and drives the thread/turn lifecycle on it, so the interrupt
+        // rides the same open stdin — no shared sidecar, hence no `ServerSpec`.
+        // Model, cwd, sandbox, and approvals are negotiated on the wire.
+        // NOT `app-server daemon`: that needs a managed standalone install this
+        // project does not use, and self-updates from a fixed path.
+        control: Some(ControlShape::CodexAppServer),
+        server: None,
         build_argv: argv_codex,
     },
     HarnessSpec {
@@ -1010,6 +1106,13 @@ static REGISTRY: &[HarnessSpec] = &[
         // different measurement that answers nothing about headroom.
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::NoPlanQuota,
+        control: Some(ControlShape::OpencodeHttp),
+        server: Some(ServerSpec {
+            launch: &["serve"],
+            address_args: &["--port", "{address}"],
+            key_env: &[],
+            transport: ServerTransport::Tcp,
+        }),
         build_argv: argv_opencode,
     },
     HarnessSpec {
@@ -1098,6 +1201,16 @@ static REGISTRY: &[HarnessSpec] = &[
         // GitHub token, so that headroom is readable under `copilot` instead.)
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::NoPlanQuota,
+        // LIVE-VERIFIED: the ACP `session/cancel` NOTIFICATION over `goose acp`
+        // stops the turn (step files frozen for 15s) — the same protocol and the
+        // same client code copilot is proven on. Two rules the client must
+        // honor: answer `session/request_permission` (goose blocks indefinitely
+        // and never begins work otherwise), and send cancel WITHOUT an id (with
+        // one, goose answers `-32601 Method not found` and the work carries on).
+        // Goose then reports `stopReason: "end_turn"` and emits nothing else at
+        // all, so the cancellation is recorded from oneharness's own side.
+        control: Some(ControlShape::AcpCancel),
+        server: None,
         build_argv: argv_goose,
     },
     HarnessSpec {
@@ -1190,6 +1303,8 @@ static REGISTRY: &[HarnessSpec] = &[
         // accessor. Nothing is readable here — not even the active auth mode.
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::NoHeadroomReader,
+        control: None,
+        server: None,
         build_argv: argv_qwen,
     },
     HarnessSpec {
@@ -1258,6 +1373,26 @@ static REGISTRY: &[HarnessSpec] = &[
         // stats` is local SQLite spend-to-date, not headroom.
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::NoHeadroomReader,
+        // LIVE-VERIFIED (crush v0.87.0): `POST
+        // /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against a pooled
+        // `crush server` stops the turn (step files frozen for 15s). The turn is
+        // submitted to that server, never to `crush run` — its `run` has no
+        // attach flag, so a CLI-driven turn is unreachable from the route. Two
+        // details the client must get right: `client_id` travels in the BODY
+        // creating the workspace and as a QUERY parameter everywhere else (a
+        // mismatch answers a bare `{"message":"invalid client_id"}`), and the
+        // prompt POST answers 202 with the turn running in the background, so
+        // completion is read off the event stream.
+        control: Some(ControlShape::CrushHttp),
+        server: Some(ServerSpec {
+            launch: &["server"],
+            address_args: &["-H", "unix://{address}"],
+            // Crush resolves its provider from the ambient environment, and no
+            // single variable selects one — so nothing here narrows the pool
+            // key beyond the harness itself.
+            key_env: &[],
+            transport: ServerTransport::UnixSocket,
+        }),
         build_argv: argv_crush,
     },
     HarnessSpec {
@@ -1336,6 +1471,16 @@ static REGISTRY: &[HarnessSpec] = &[
         // are unreachable as oneharness wires Copilot (text mode).
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::Probed(UsageProbe::CopilotUserEndpoint),
+        // LIVE-VERIFIED: the ACP `session/cancel` NOTIFICATION over
+        // `copilot --acp` stops the turn (step files frozen for 15s). Two rules
+        // the client must honor: answer `session/request_permission` (copilot
+        // blocks indefinitely and never starts work otherwise), and send cancel
+        // WITHOUT an id. Copilot then reports `stopReason: "end_turn"` plus a
+        // text chunk reading "Info: Operation cancelled by user", so the
+        // cancellation is recorded from oneharness's own side, never read off
+        // the harness's stop reason.
+        control: Some(ControlShape::AcpCancel),
+        server: None,
         build_argv: argv_copilot,
     },
     HarnessSpec {
@@ -1428,6 +1573,8 @@ static REGISTRY: &[HarnessSpec] = &[
         // the whole non-interactive surface.
         // llmlint: ignore-end[comments_earn_their_place]
         usage: UsageSupport::Probed(UsageProbe::CursorAbout),
+        control: None,
+        server: None,
         build_argv: argv_cursor,
     },
 ];
@@ -1456,11 +1603,18 @@ fn claude_permission_mode(mode: PermissionMode) -> &'static str {
 /// `session_id`).
 fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     // `-p` is print mode. Normally the prompt is the positional after it; for a
-    // large prompt the command layer sets `prompt_stdin`, so we drop the positional
-    // and add `--input-format text` — claude then reads the prompt from stdin,
+    // large prompt the command layer selects `PromptDelivery::Stdin`, so we drop
+    // the positional and add `--input-format text` — claude then reads the prompt from stdin,
     // off the argv (no `E2BIG`). Sourced from `claude --help` (2.1.207).
     let mut a = vec![c.bin.into(), "-p".into()];
-    if c.prompt_stdin {
+    if c.delivery.is_control_stream() {
+        // A control-enabled run reads a *stream* of JSON messages from stdin
+        // rather than one blob, which is what lets the handle stay open past the
+        // prompt for an out-of-band `control_request`. The prompt is the first
+        // frame the command layer writes, so it leaves the positional off.
+        a.push("--input-format".into());
+        a.push("stream-json".into());
+    } else if c.delivery.is_stdin_blob() {
         a.push("--input-format".into());
         a.push("text".into());
     } else {
@@ -1538,6 +1692,16 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
 /// session handle is the `thread_id` Codex emits under `--json`; oneharness reads
 /// it via [`crate::domain::signals::extract_session`].
 fn argv_codex(c: &BuildCtx) -> Vec<String> {
+    // A control-enabled run drives the turn over the app-server's JSON-RPC
+    // protocol instead of `exec`: that is where `turn/interrupt` lives, and it
+    // is a second execution model rather than a flag on `exec`. Everything the
+    // turn needs (model, cwd, sandbox, approvals, the prompt itself) is
+    // negotiated per thread/turn on the wire, so nothing else belongs on the
+    // argv. NOT `app-server daemon`: that needs a managed standalone install
+    // this project does not use, and self-updates from a fixed path.
+    if c.delivery.is_control_stream() {
+        return vec![c.bin.into(), "app-server".into()];
+    }
     let mut a = vec![c.bin.into(), "exec".into()];
     if c.resume.is_some() {
         a.push("resume".into());
@@ -1581,11 +1745,11 @@ fn argv_codex(c: &BuildCtx) -> Vec<String> {
     if let Some(sid) = c.resume {
         a.push(sid.into());
     }
-    // For a large prompt the command layer sets `prompt_stdin` and pipes the
+    // For a large prompt the command layer selects `PromptDelivery::Stdin` and pipes the
     // (system-prepended) prompt; the `-` sentinel forces `codex exec` to read it
     // from stdin (works with `resume <id> -` too). Otherwise the prompt is the
     // positional.
-    if c.prompt_stdin {
+    if c.delivery.is_stdin_blob() {
         a.push("-".into());
     } else {
         a.push(prompt_with_system(c));
@@ -1626,10 +1790,10 @@ fn argv_opencode(c: &BuildCtx) -> Vec<String> {
             a.push("--fork".into());
         }
     }
-    // For a large prompt the command layer sets `prompt_stdin` and pipes the
+    // For a large prompt the command layer selects `PromptDelivery::Stdin` and pipes the
     // (system-prepended) prompt; `opencode run` reads stdin when the positional
     // message is omitted, so drop it. Otherwise the prompt is the positional.
-    if !c.prompt_stdin {
+    if !c.delivery.is_stdin_blob() {
         a.push(prompt_with_system(c));
     }
     a
@@ -1644,6 +1808,12 @@ fn argv_opencode(c: &BuildCtx) -> Vec<String> {
 /// read here. It does expose a native `--system` flag, so `--system` maps to it
 /// rather than being prepended.
 fn argv_goose(c: &BuildCtx) -> Vec<String> {
+    // Control rides the Agent Client Protocol server (`goose acp`). Its
+    // provider/model still come from the environment (GOOSE_PROVIDER /
+    // GOOSE_MODEL), exactly as they do for an ordinary `goose run`.
+    if c.delivery.is_control_stream() {
+        return vec![c.bin.into(), "acp".into()];
+    }
     let mut a = vec![
         c.bin.into(),
         "run".into(),
@@ -1664,11 +1834,11 @@ fn argv_goose(c: &BuildCtx) -> Vec<String> {
         a.push("--name".into());
         a.push(name.into());
     }
-    // For a large prompt the command layer sets `prompt_stdin` and pipes it; the
+    // For a large prompt the command layer selects `PromptDelivery::Stdin` and pipes it; the
     // `-i -` sentinel (`--instructions -`) makes goose read the prompt from stdin,
     // off the argv. Otherwise the prompt rides `-t`. (`--system` stays inline
     // either way — goose has no per-run system file route.)
-    if c.prompt_stdin {
+    if c.delivery.is_stdin_blob() {
         a.push("-i".into());
         a.push("-".into());
     } else {
@@ -1723,10 +1893,10 @@ fn argv_qwen(c: &BuildCtx) -> Vec<String> {
         a.push("--resume".into());
         a.push(sid.into());
     }
-    // For a large prompt the command layer sets `prompt_stdin` and pipes the
+    // For a large prompt the command layer selects `PromptDelivery::Stdin` and pipes the
     // (system-prepended) prompt; qwen reads stdin as the prompt when `-p` is
     // omitted, so drop it. Otherwise the prompt rides `-p`.
-    if !c.prompt_stdin {
+    if !c.delivery.is_stdin_blob() {
         a.push("-p".into());
         a.push(prompt_with_system(c));
     }
@@ -1750,10 +1920,10 @@ fn argv_crush(c: &BuildCtx) -> Vec<String> {
         a.push("-m".into());
         a.push(m.into());
     }
-    // For a large prompt the command layer sets `prompt_stdin` and pipes the
+    // For a large prompt the command layer selects `PromptDelivery::Stdin` and pipes the
     // (system-prepended) prompt; `crush run` reads stdin when the positional is
     // omitted, so drop it. Otherwise the prompt is the positional.
-    if !c.prompt_stdin {
+    if !c.delivery.is_stdin_blob() {
         a.push(prompt_with_system(c));
     }
     a
@@ -1768,11 +1938,16 @@ fn argv_crush(c: &BuildCtx) -> Vec<String> {
 /// the session when the id is new (create-or-resume) — so the caller mints and
 /// reuses a UUID; `session_id` stays null (nothing to extract).
 fn argv_copilot(c: &BuildCtx) -> Vec<String> {
-    // For a large prompt the command layer sets `prompt_stdin` and pipes the
+    // Control rides the Agent Client Protocol server, where `session/cancel`
+    // lives. Model, cwd, and approvals are negotiated on the wire.
+    if c.delivery.is_control_stream() {
+        return vec![c.bin.into(), "--acp".into()];
+    }
+    // For a large prompt the command layer selects `PromptDelivery::Stdin` and pipes the
     // (system-prepended) prompt; copilot reads stdin as the prompt only when `-p`
     // is ABSENT (a `-p` value makes the pipe be ignored), so drop `-p` entirely.
     // Otherwise the prompt rides `-p`.
-    let mut a = if c.prompt_stdin {
+    let mut a = if c.delivery.is_stdin_blob() {
         vec![c.bin.into()]
     } else {
         vec![c.bin.into(), "-p".into(), prompt_with_system(c)]
@@ -1827,13 +2002,13 @@ fn argv_copilot(c: &BuildCtx) -> Vec<String> {
 /// --output-format stream-json` (Cursor continues a chat id with `--resume`; no
 /// system flag, so `--system` is prepended to the prompt)
 fn argv_cursor(c: &BuildCtx) -> Vec<String> {
-    // `-p` is print mode. For a large prompt the command layer sets `prompt_stdin`
+    // `-p` is print mode. For a large prompt the command layer selects `PromptDelivery::Stdin`
     // and pipes the (system-prepended) prompt; cursor reads stdin as the prompt
     // when the positional is omitted (probe-verified 2026-07-11 via
     // scripts/explore-cursor-stdin.sh — piped stdin with `-p` and no positional
     // round-trips; the `-` sentinel does NOT). Otherwise the prompt is the positional.
     let mut a = vec![c.bin.into(), "-p".into()];
-    if !c.prompt_stdin {
+    if !c.delivery.is_stdin_blob() {
         a.push(prompt_with_system(c));
     }
     // `--force` is bypass (it also implies trust). Otherwise a headless run still
@@ -1945,7 +2120,7 @@ mod tests {
             output_format,
             schema: None,
             system_file: None,
-            prompt_stdin: false,
+            delivery: PromptDelivery::Argv,
         }
     }
 
@@ -2482,7 +2657,7 @@ mod tests {
             output_format: OutputFormat::Json,
             schema: None,
             system_file: None,
-            prompt_stdin: false,
+            delivery: PromptDelivery::Argv,
         };
         let argv = (spec.build_argv)(&ctx);
         assert!(
@@ -2562,18 +2737,120 @@ mod tests {
             output_format: spec.output_format,
             schema: None,
             system_file: None,
-            prompt_stdin: false,
+            delivery: PromptDelivery::Argv,
+        }
+    }
+
+    #[test]
+    fn every_declared_control_mechanism_has_the_process_it_needs() {
+        // The pairing rule for the two capability fields, checked across the
+        // whole registry so a harness added later cannot declare a server-backed
+        // mechanism and then fail to start a server at run time.
+        for spec in all() {
+            match (spec.control, spec.server.is_some()) {
+                (Some(shape), has_server) => assert_eq!(
+                    shape.needs_pooled_server(),
+                    has_server,
+                    "`{}` declares `{}` but {} a server",
+                    spec.id,
+                    shape.as_str(),
+                    if has_server {
+                        "also declares"
+                    } else {
+                        "declares no"
+                    }
+                ),
+                (None, has_server) => assert!(
+                    !has_server,
+                    "`{}` declares a server but no control mechanism to use it",
+                    spec.id
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn a_turn_driving_control_run_launches_that_harness_protocol_server() {
+        // A control run on a turn-driving mechanism spawns the harness's OWN
+        // protocol server instead of its headless run, so the launch argv is the
+        // whole command: prompt, mode and model are negotiated on the wire and
+        // must not appear on it. Pinned per harness (each sourced from that CLI
+        // and re-proven by `scripts/explore-control.sh`), so a drifted subcommand
+        // fails here rather than as a controlled run that never starts a turn.
+        let launches = [
+            ("codex", &["app-server"][..]),
+            ("goose", &["acp"][..]),
+            ("copilot", &["--acp"][..]),
+        ];
+        for (id, tail) in launches {
+            let spec = by_id(id).unwrap();
+            assert!(
+                spec.control.is_some_and(ControlShape::drives_turn),
+                "`{id}` should drive its turn over its own protocol"
+            );
+            let argv = (spec.build_argv)(&BuildCtx {
+                delivery: PromptDelivery::ControlStream,
+                model: Some("some-model"),
+                system: Some("be terse"),
+                ..base_ctx(spec)
+            });
+            let expected: Vec<String> = std::iter::once(spec.default_bin)
+                .chain(tail.iter().copied())
+                .map(str::to_string)
+                .collect();
+            assert_eq!(argv, expected, "`{id}` control launch argv");
+        }
+        // The other kind of turn-driving harness never spawns its CLI at all:
+        // its turn goes to a pooled server, so the launch to pin is the
+        // `ServerSpec` the pool starts, plus how the chosen address reaches it.
+        let servers = [
+            ("opencode", &["serve"][..], &["--port", "{address}"][..]),
+            ("crush", &["server"][..], &["-H", "unix://{address}"][..]),
+        ];
+        for (id, launch, address_args) in servers {
+            let spec = by_id(id).unwrap();
+            let server = spec
+                .server
+                .unwrap_or_else(|| panic!("`{id}` should declare the server its control needs"));
+            assert_eq!(server.launch, launch, "`{id}` server launch");
+            assert_eq!(server.address_args, address_args, "`{id}` address args");
+            // Per-turn settings are negotiated on the wire, so nothing about a
+            // dispatch may key the pool: a widened key starts one heavyweight
+            // server per dispatch instead of sharing one.
+            assert!(
+                server.key_env.is_empty(),
+                "`{id}` keys its pool on {:?}",
+                server.key_env
+            );
+        }
+        // A harness whose turn is driven but whose launch is unpinned would ship
+        // a guessed subcommand, so the lists above must cover the registry —
+        // each harness in exactly the one its mechanism calls for.
+        for spec in all() {
+            let Some(shape) = spec.control.filter(|shape| shape.drives_turn()) else {
+                continue;
+            };
+            let pinned = if shape.needs_pooled_server() {
+                servers.iter().any(|(id, _, _)| *id == spec.id)
+            } else {
+                launches.iter().any(|(id, _)| *id == spec.id)
+            };
+            assert!(
+                pinned,
+                "`{}` drives its own turn but its launch is unpinned",
+                spec.id
+            );
         }
     }
 
     #[test]
     fn large_prompt_rides_stdin_off_the_argv_per_harness() {
-        // With `prompt_stdin` set (the command layer's large-prompt decision), a
+        // With `PromptDelivery::Stdin` selected (the command layer's large-prompt decision), a
         // stdin-capable adapter must omit the positional prompt — so the prompt
         // never touches the argv (`E2BIG`) — and add whatever stdin-selecting
         // flags its CLI needs. Sourced per-adapter (see each `build_argv` comment).
         let stdin_ctx = |spec: &'static HarnessSpec| BuildCtx {
-            prompt_stdin: true,
+            delivery: PromptDelivery::Stdin,
             // A system prompt too, to prove it is never inlined either.
             system: Some("be terse"),
             ..base_ctx(spec)

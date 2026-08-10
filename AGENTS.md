@@ -78,6 +78,10 @@ Use the `just` recipes; do not hand-roll equivalents.
 - `just smoke` — hermetic end-to-end smoke of the built binary (part of `just
   check` and CI). `just smoke-live` is the opt-in variant that hits installed,
   authenticated harnesses with real model calls — never in the gate or CI.
+- `just live-control` — the per-feature live turn-control suite: interrupt a real
+  multi-step turn on every control-capable harness and prove the work stopped.
+  Slow by nature (a 15s freeze window per harness), so it is opt-in and outside
+  both the gate and the per-PR e2e matrix.
 - `just sdk-check` / `just python-sdk-check` — generated-contract drift, strict
   language lint/type/test coverage, and packed-artifact subprocess e2e for the
   Node and Python SDKs. The Python gate runs on the oldest supported Python 3.9.
@@ -206,6 +210,16 @@ Use the `just` recipes; do not hand-roll equivalents.
   `CURSOR_API_KEY` from its child: passing it authenticates rather than selects,
   a hazard any future Cursor dispatch also hits.
   <!-- llmlint: ignore-end[agents_md_durable_and_terse, no_redundant_instruction_pointers, comments_earn_their_place] -->
+  `run --control` requires `--session` and exactly one harness; both violations
+  are loud usage errors. Declare `ControlShape` only after a live interrupt
+  through oneharness. Stdin control keeps the child stdin open, then closes it
+  on `is_turn_terminal`. Dialogue control owns its JSON-RPC child per dispatch:
+  codex ends on `turn/completed`, not the `turn/start` response, and ACP must
+  answer `session/request_permission`. Dialogue-derived session ids are usable
+  only under `--control` (`session_capable_under`). HTTP control submits turns
+  through the pooled server, not the harness CLI: permission requests must be
+  answered; opencode is terminal only on idle after admission; and cwd stays a
+  per-turn value. Pool keys exclude all per-turn and per-thread settings.
   `gate <id>` is the odd one out: the runtime pre-tool gate an
   installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It
@@ -664,6 +678,14 @@ shape. When you add one:
   omission. A probing tier requires a zero-turn probe sourced from a real
   capture; a probe that sends a user message or completes a turn is disqualified.
   <!-- llmlint: ignore-end[no_redundant_instruction_pointers, agents_md_durable_and_terse, comments_earn_their_place] -->
+<!-- llmlint: ignore-block[no_redundant_instruction_pointers] The capability matrix is per-harness data that lives in `README.md` (like the mode, resume, and events tables above); naming the file an adapter author must edit is the instruction, not a deferral of one. -->
+- Declare `control` ([`ControlShape`]) only after `scripts/explore-control.sh
+  <id>` and `oh_control_enforce <id>` prove a filesystem-level interrupt through
+  oneharness; `None` is the default. Keep the probe tables, registry, live suite,
+  and README matrix aligned. A sidecar also declares `server` ([`ServerSpec`]).
+  Its pool key excludes per-turn and per-thread settings; membership is a lease
+  naming a live process identity, never a counter or a bare pid.
+<!-- llmlint: ignore-end[no_redundant_instruction_pointers] -->
 - Give the harness its `global_hook` (the user-global hook location, for `sync
   --global` / `install` at `Scope::Global`) and its `gate_deny` (how it expresses
   a pre-tool deny when it runs `oneharness gate <id>`). Both are registry data

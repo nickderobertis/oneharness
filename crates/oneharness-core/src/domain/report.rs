@@ -10,6 +10,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::domain::batch::BatchStrategy;
+use crate::domain::control::ControlReport;
 use crate::domain::events::ActionEvent;
 use crate::domain::mode::PermissionMode;
 use crate::domain::session::SessionPhase;
@@ -22,13 +23,18 @@ use crate::domain::usage::UtcInstant;
 /// `sync`, and `config` — so one number describes the whole surface; the history
 /// records carry their own (`domain::history::SCHEMA_VERSION`).
 ///
-/// `0.6` adds the `session_not_found` [`FailureKind`] — the refusal a harness
+/// `0.7` adds the `session_not_found` [`FailureKind`] — the refusal a harness
 /// returns when asked to continue a session its identity has never seen — and,
 /// with it, the `"session-not-found"` reason a fallback run reports for a
-/// candidate it routed around. Purely additive: every 0.5 field keeps its name,
+/// candidate it routed around. Purely additive: every 0.6 field keeps its name,
 /// type, and meaning. The new *enum value* is why the bump matters, since a
 /// consumer that exhaustively matches `failure_kind` learns from the version that
 /// a sixth value now exists.
+///
+/// `0.6` added the `run` report's `control` block (the out-of-band turn-control
+/// socket a `--control` run listened on, and every interrupt it served).
+/// Additive, so a reader of `0.5` keeps working — the bump is how a consumer
+/// *learns* the field exists rather than having to probe for it.
 ///
 /// `0.5` added two things to the `run` report: the measured
 /// [`ExecutionTelemetry`] on each result (previously internal, which forced a
@@ -36,12 +42,12 @@ use crate::domain::usage::UtcInstant;
 /// the `cancelled` [`Status`] a run reaches when the caller — or a SIGINT/SIGTERM
 /// on the host — tore the harness tree down before it finished. Both are
 /// additive: every 0.4 field keeps its name, type, and meaning. The new *status
-/// value* is why the bump matters, since a consumer that exhaustively matches
+/// value* is why that bump mattered, since a consumer that exhaustively matches
 /// `status` learns from the version that a sixth value now exists.
 ///
 /// `0.4` added the `config` report's `stream` field (the layered `--stream`
 /// value, with its provenance).
-pub const SCHEMA_VERSION: &str = "0.6";
+pub const SCHEMA_VERSION: &str = "0.7";
 
 /// How a harness emits its result, which decides how `text` is extracted.
 ///
@@ -163,6 +169,17 @@ pub struct RunInstantError;
 pub struct RunInstant(String);
 
 impl RunInstant {
+    /// The instant `millis` milliseconds after the UNIX epoch.
+    ///
+    /// The way a clock read enters this type, mirroring
+    /// [`UtcInstant::from_epoch`]: canonical by construction, so the io layer
+    /// never formats an instant only to parse it back — a round trip whose
+    /// failure arm could only ever be an unreachable panic.
+    #[must_use]
+    pub fn from_epoch_millis(millis: u128) -> Self {
+        Self(crate::domain::history::format_rfc3339_millis(millis))
+    }
+
     /// The canonical millisecond-precision UTC text.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -548,6 +565,12 @@ pub struct RunReport {
     /// Config files that shaped this run, in layering order (user first,
     /// project last); empty under `--no-config` or when none exist.
     pub config_files: Vec<String>,
+    /// Out-of-band turn control for this run (`--control`), or `null` when none
+    /// was requested — which is every ordinary run. It records the socket a
+    /// separate `oneharness interrupt` process could address, the harness
+    /// mechanism behind it, and each request served, so a consumer can tell an
+    /// interrupted turn from one that simply ended.
+    pub control: Option<ControlReport>,
     pub results: Vec<RunResult>,
 }
 
@@ -738,6 +761,28 @@ mod tests {
         assert!("2026-02-30T00:00:00.000Z".parse::<RunInstant>().is_err());
         // And the same rule on the deserialization boundary, not just FromStr.
         assert!(serde_json::from_value::<RunInstant>(serde_json::json!("nope")).is_err());
+    }
+
+    #[test]
+    fn a_clock_read_enters_a_run_instant_already_canonical() {
+        // The constructor and `FromStr` have to agree, because this is the
+        // arm that never gets parsed: an io-layer clock read goes straight in.
+        // If they disagreed, a value no reader would accept could still be
+        // written into a measurement, and nothing would say so.
+        let minted = RunInstant::from_epoch_millis(1_767_225_600_007);
+        assert_eq!(minted.as_str(), "2026-01-01T00:00:00.007Z");
+        assert_eq!(minted.as_str().parse::<RunInstant>().unwrap(), minted);
+
+        // Sub-second precision is the whole reason this type is not
+        // `UtcInstant`: the milliseconds must survive, not truncate away.
+        assert_eq!(
+            RunInstant::from_epoch_millis(1_767_225_600_999).as_str(),
+            "2026-01-01T00:00:00.999Z"
+        );
+        assert_eq!(
+            RunInstant::from_epoch_millis(0).as_str(),
+            "1970-01-01T00:00:00.000Z"
+        );
     }
 
     #[test]

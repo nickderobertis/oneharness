@@ -9788,8 +9788,49 @@
   },
   "list_report": {
     "$defs": {
+      "ControlShape": {
+        "description": "How a harness accepts an out-of-band interrupt for an in-flight turn.\n\nRegistry data on [`crate::domain::harness::HarnessSpec::control`], sourced\nfrom a live interrupt against the real CLI \u2014 never guessed. `None` there\nmeans `oneharness interrupt` is a loud usage error for the harness, never a\nsilent no-op: a supervisor that is told \"ok\" while the turn keeps running is\nworse off than one told the lever does not exist.",
+        "oneOf": [
+          {
+            "const": "claude-control-request",
+            "description": "Claude Code: the control frame rides the run process's **own stdin**\n(`-p --input-format stream-json`), so no sidecar server is needed. A\n`{\"type\":\"control_request\",\u2026,\"request\":{\"subtype\":\"interrupt\"}}` line\naborts the turn with a `result` document; the session survives and a\nlater turn continues it with full context. Verified live: a plain user\nmessage written mid-turn is *silently dropped*, so the control frame is\nthe only mechanism that works.",
+            "type": "string"
+          },
+          {
+            "const": "codex-app-server",
+            "description": "Codex: `turn/interrupt {threadId,turnId}` over the `codex app-server`\nJSON-RPC stdio protocol, which oneharness spawns as the run's own child\nand drives the thread/turn lifecycle on \u2014 so the interrupt rides the same\nopen stdin and nothing is shared or pooled.",
+            "type": "string"
+          },
+          {
+            "const": "opencode-http",
+            "description": "OpenCode: `POST /api/session/{id}/interrupt` against `opencode serve`.",
+            "type": "string"
+          },
+          {
+            "const": "acp-cancel",
+            "description": "Goose and Copilot: the ACP `session/cancel` **notification** (no `id`)\nover their JSON-RPC stdio servers.",
+            "type": "string"
+          },
+          {
+            "const": "crush-http",
+            "description": "Crush: `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against\n`crush server`.",
+            "type": "string"
+          }
+        ]
+      },
       "HarnessInfo": {
         "properties": {
+          "control": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ControlShape"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How `run --control` + `oneharness interrupt` abort an in-flight turn on\nthis harness (the mechanism id), or `null` when it has no out-of-band\nturn control at all \u2014 in which case `--control` is a loud usage error for\nit, never a socket that reports success while the turn keeps running."
+          },
           "default_bin": {
             "type": "string"
           },
@@ -9895,6 +9936,7 @@
           "supports_resume",
           "session_capable",
           "supports_fork",
+          "control",
           "fork_reuses_cache",
           "modes",
           "supports_native_schema",
@@ -10223,6 +10265,10 @@
   },
   "run_report": {
     "$defs": {
+      "AbsolutePath": {
+        "description": "A filesystem path that is known to be absolute.\n\nControl addresses are handed to a *different process* \u2014 the socket path in\nthe report is how a supervisor finds the run \u2014 so a relative path is not a\nsmaller version of the right answer, it is a different file depending on who\nreads it. The type is the difference between \"we documented it as absolute\"\nand \"it is\".",
+        "type": "string"
+      },
       "ActionEvent": {
         "description": "One normalized action a harness took, harness-agnostic so a single consumer\nassertion works across harnesses. Every field is always serialized (null when\nabsent) so the shape is stable, mirroring the `usage` contract.",
         "properties": {
@@ -10358,6 +10404,142 @@
             "type": "string"
           }
         ]
+      },
+      "ControlEvent": {
+        "description": "One control request the run handled, recorded in the report so a consumer\ncan tell an interrupted turn from one that simply ended.\n\nA sum type discriminated by `outcome`, so a record can never say \"served,\nand here is the refusal reason\": the reason exists exactly when there was a\nrefusal. Serialized flat \u2014 `{\"outcome\":\"served\",\"verb\":\u2026,\"at\":\u2026}` /\n`{\"outcome\":\"refused\",\"verb\":\u2026,\"at\":\u2026,\"reason\":\u2026}`.",
+        "oneOf": [
+          {
+            "description": "The mechanism accepted the request.",
+            "properties": {
+              "at": {
+                "$ref": "#/$defs/UtcInstant",
+                "description": "When the request was handled."
+              },
+              "outcome": {
+                "const": "served",
+                "type": "string"
+              },
+              "verb": {
+                "$ref": "#/$defs/ControlVerb",
+                "description": "The verb requested."
+              }
+            },
+            "required": [
+              "outcome",
+              "verb",
+              "at"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The request was refused, with why.",
+            "properties": {
+              "at": {
+                "$ref": "#/$defs/UtcInstant"
+              },
+              "outcome": {
+                "const": "refused",
+                "type": "string"
+              },
+              "reason": {
+                "$ref": "#/$defs/ControlReason"
+              },
+              "verb": {
+                "$ref": "#/$defs/ControlVerb"
+              }
+            },
+            "required": [
+              "outcome",
+              "verb",
+              "at",
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ControlReason": {
+        "description": "Why a control request could not be served. Distinct reasons because a\nsupervisor reacts differently to each: `unsupported` is permanent for the\nharness, `not_running` means the dispatch is gone, `no_active_turn` means\nthe run is alive but between turns.",
+        "oneOf": [
+          {
+            "const": "unsupported",
+            "description": "The harness declares no [`ControlShape`] \u2014 the lever does not exist.",
+            "type": "string"
+          },
+          {
+            "const": "no_active_turn",
+            "description": "The run is alive but no turn is in flight right now.",
+            "type": "string"
+          },
+          {
+            "const": "not_running",
+            "description": "No run is listening on the socket (never started, already exited, or a\nstale socket file left by an abnormally-terminated dispatch).",
+            "type": "string"
+          }
+        ]
+      },
+      "ControlReport": {
+        "description": "The run report's `control` block: where the socket lived, which mechanism\nbacked it, and every request served over the run's lifetime.",
+        "properties": {
+          "interrupts": {
+            "description": "Every control request served, in order.",
+            "items": {
+              "$ref": "#/$defs/ControlEvent"
+            },
+            "type": "array"
+          },
+          "mechanism": {
+            "$ref": "#/$defs/ControlShape",
+            "description": "The harness mechanism backing it."
+          },
+          "socket": {
+            "$ref": "#/$defs/AbsolutePath",
+            "description": "Absolute path of the socket this run listened on."
+          }
+        },
+        "required": [
+          "socket",
+          "mechanism",
+          "interrupts"
+        ],
+        "type": "object"
+      },
+      "ControlShape": {
+        "description": "How a harness accepts an out-of-band interrupt for an in-flight turn.\n\nRegistry data on [`crate::domain::harness::HarnessSpec::control`], sourced\nfrom a live interrupt against the real CLI \u2014 never guessed. `None` there\nmeans `oneharness interrupt` is a loud usage error for the harness, never a\nsilent no-op: a supervisor that is told \"ok\" while the turn keeps running is\nworse off than one told the lever does not exist.",
+        "oneOf": [
+          {
+            "const": "claude-control-request",
+            "description": "Claude Code: the control frame rides the run process's **own stdin**\n(`-p --input-format stream-json`), so no sidecar server is needed. A\n`{\"type\":\"control_request\",\u2026,\"request\":{\"subtype\":\"interrupt\"}}` line\naborts the turn with a `result` document; the session survives and a\nlater turn continues it with full context. Verified live: a plain user\nmessage written mid-turn is *silently dropped*, so the control frame is\nthe only mechanism that works.",
+            "type": "string"
+          },
+          {
+            "const": "codex-app-server",
+            "description": "Codex: `turn/interrupt {threadId,turnId}` over the `codex app-server`\nJSON-RPC stdio protocol, which oneharness spawns as the run's own child\nand drives the thread/turn lifecycle on \u2014 so the interrupt rides the same\nopen stdin and nothing is shared or pooled.",
+            "type": "string"
+          },
+          {
+            "const": "opencode-http",
+            "description": "OpenCode: `POST /api/session/{id}/interrupt` against `opencode serve`.",
+            "type": "string"
+          },
+          {
+            "const": "acp-cancel",
+            "description": "Goose and Copilot: the ACP `session/cancel` **notification** (no `id`)\nover their JSON-RPC stdio servers.",
+            "type": "string"
+          },
+          {
+            "const": "crush-http",
+            "description": "Crush: `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against\n`crush server`.",
+            "type": "string"
+          }
+        ]
+      },
+      "ControlVerb": {
+        "description": "The control verb a supervisor sends. Only `interrupt` exists today; the\nframe's `v` is what leaves room for `steer` later.",
+        "enum": [
+          "interrupt"
+        ],
+        "type": "string"
       },
       "ExecutionTelemetry": {
         "description": "Measured execution telemetry for one harness run: when the invocation ran,\nand \u2014 when the harness's transcript supports it \u2014 how its wall clock split\nbetween provider latency and tool work.\n\nCarried from the runner/parser to the history writer *and*, since report\nschema `0.5`, serialized on [`RunResult::telemetry`]. Exposing it there is\nwhat lets a consumer read the numbers off the run it just made instead of\nre-opening the history file the same run wrote.\n\nInternally tagged by `source`, so the variant is a value a consumer switches\non rather than a shape it has to sniff. Every variant states only what was\nactually measured \u2014 there is no variant meaning \"no telemetry\"; that is a\n`null` field.",
@@ -10982,6 +11164,10 @@
           "cost_usd"
         ],
         "type": "object"
+      },
+      "UtcInstant": {
+        "description": "An RFC 3339 timestamp in UTC (`Z`), in oneharness's canonical spelling.",
+        "type": "string"
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -11008,6 +11194,17 @@
           "type": "string"
         },
         "type": "array"
+      },
+      "control": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ControlReport"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Out-of-band turn control for this run (`--control`), or `null` when none\nwas requested \u2014 which is every ordinary run. It records the socket a\nseparate `oneharness interrupt` process could address, the harness\nmechanism behind it, and each request served, so a consumer can tell an\ninterrupted turn from one that simply ended."
       },
       "dry_run": {
         "type": "boolean"
@@ -11132,6 +11329,7 @@
       "spy_file",
       "history_file",
       "config_files",
+      "control",
       "results"
     ],
     "title": "RunReport",
@@ -11139,6 +11337,10 @@
   },
   "run_stream_envelope": {
     "$defs": {
+      "AbsolutePath": {
+        "description": "A filesystem path that is known to be absolute.\n\nControl addresses are handed to a *different process* \u2014 the socket path in\nthe report is how a supervisor finds the run \u2014 so a relative path is not a\nsmaller version of the right answer, it is a different file depending on who\nreads it. The type is the difference between \"we documented it as absolute\"\nand \"it is\".",
+        "type": "string"
+      },
       "ActionEvent": {
         "description": "One normalized action a harness took, harness-agnostic so a single consumer\nassertion works across harnesses. Every field is always serialized (null when\nabsent) so the shape is stable, mirroring the `usage` contract.",
         "properties": {
@@ -11274,6 +11476,142 @@
             "type": "string"
           }
         ]
+      },
+      "ControlEvent": {
+        "description": "One control request the run handled, recorded in the report so a consumer\ncan tell an interrupted turn from one that simply ended.\n\nA sum type discriminated by `outcome`, so a record can never say \"served,\nand here is the refusal reason\": the reason exists exactly when there was a\nrefusal. Serialized flat \u2014 `{\"outcome\":\"served\",\"verb\":\u2026,\"at\":\u2026}` /\n`{\"outcome\":\"refused\",\"verb\":\u2026,\"at\":\u2026,\"reason\":\u2026}`.",
+        "oneOf": [
+          {
+            "description": "The mechanism accepted the request.",
+            "properties": {
+              "at": {
+                "$ref": "#/$defs/UtcInstant",
+                "description": "When the request was handled."
+              },
+              "outcome": {
+                "const": "served",
+                "type": "string"
+              },
+              "verb": {
+                "$ref": "#/$defs/ControlVerb",
+                "description": "The verb requested."
+              }
+            },
+            "required": [
+              "outcome",
+              "verb",
+              "at"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The request was refused, with why.",
+            "properties": {
+              "at": {
+                "$ref": "#/$defs/UtcInstant"
+              },
+              "outcome": {
+                "const": "refused",
+                "type": "string"
+              },
+              "reason": {
+                "$ref": "#/$defs/ControlReason"
+              },
+              "verb": {
+                "$ref": "#/$defs/ControlVerb"
+              }
+            },
+            "required": [
+              "outcome",
+              "verb",
+              "at",
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ControlReason": {
+        "description": "Why a control request could not be served. Distinct reasons because a\nsupervisor reacts differently to each: `unsupported` is permanent for the\nharness, `not_running` means the dispatch is gone, `no_active_turn` means\nthe run is alive but between turns.",
+        "oneOf": [
+          {
+            "const": "unsupported",
+            "description": "The harness declares no [`ControlShape`] \u2014 the lever does not exist.",
+            "type": "string"
+          },
+          {
+            "const": "no_active_turn",
+            "description": "The run is alive but no turn is in flight right now.",
+            "type": "string"
+          },
+          {
+            "const": "not_running",
+            "description": "No run is listening on the socket (never started, already exited, or a\nstale socket file left by an abnormally-terminated dispatch).",
+            "type": "string"
+          }
+        ]
+      },
+      "ControlReport": {
+        "description": "The run report's `control` block: where the socket lived, which mechanism\nbacked it, and every request served over the run's lifetime.",
+        "properties": {
+          "interrupts": {
+            "description": "Every control request served, in order.",
+            "items": {
+              "$ref": "#/$defs/ControlEvent"
+            },
+            "type": "array"
+          },
+          "mechanism": {
+            "$ref": "#/$defs/ControlShape",
+            "description": "The harness mechanism backing it."
+          },
+          "socket": {
+            "$ref": "#/$defs/AbsolutePath",
+            "description": "Absolute path of the socket this run listened on."
+          }
+        },
+        "required": [
+          "socket",
+          "mechanism",
+          "interrupts"
+        ],
+        "type": "object"
+      },
+      "ControlShape": {
+        "description": "How a harness accepts an out-of-band interrupt for an in-flight turn.\n\nRegistry data on [`crate::domain::harness::HarnessSpec::control`], sourced\nfrom a live interrupt against the real CLI \u2014 never guessed. `None` there\nmeans `oneharness interrupt` is a loud usage error for the harness, never a\nsilent no-op: a supervisor that is told \"ok\" while the turn keeps running is\nworse off than one told the lever does not exist.",
+        "oneOf": [
+          {
+            "const": "claude-control-request",
+            "description": "Claude Code: the control frame rides the run process's **own stdin**\n(`-p --input-format stream-json`), so no sidecar server is needed. A\n`{\"type\":\"control_request\",\u2026,\"request\":{\"subtype\":\"interrupt\"}}` line\naborts the turn with a `result` document; the session survives and a\nlater turn continues it with full context. Verified live: a plain user\nmessage written mid-turn is *silently dropped*, so the control frame is\nthe only mechanism that works.",
+            "type": "string"
+          },
+          {
+            "const": "codex-app-server",
+            "description": "Codex: `turn/interrupt {threadId,turnId}` over the `codex app-server`\nJSON-RPC stdio protocol, which oneharness spawns as the run's own child\nand drives the thread/turn lifecycle on \u2014 so the interrupt rides the same\nopen stdin and nothing is shared or pooled.",
+            "type": "string"
+          },
+          {
+            "const": "opencode-http",
+            "description": "OpenCode: `POST /api/session/{id}/interrupt` against `opencode serve`.",
+            "type": "string"
+          },
+          {
+            "const": "acp-cancel",
+            "description": "Goose and Copilot: the ACP `session/cancel` **notification** (no `id`)\nover their JSON-RPC stdio servers.",
+            "type": "string"
+          },
+          {
+            "const": "crush-http",
+            "description": "Crush: `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against\n`crush server`.",
+            "type": "string"
+          }
+        ]
+      },
+      "ControlVerb": {
+        "description": "The control verb a supervisor sends. Only `interrupt` exists today; the\nframe's `v` is what leaves room for `steer` later.",
+        "enum": [
+          "interrupt"
+        ],
+        "type": "string"
       },
       "ExecutionTelemetry": {
         "description": "Measured execution telemetry for one harness run: when the invocation ran,\nand \u2014 when the harness's transcript supports it \u2014 how its wall clock split\nbetween provider latency and tool work.\n\nCarried from the runner/parser to the history writer *and*, since report\nschema `0.5`, serialized on [`RunResult::telemetry`]. Exposing it there is\nwhat lets a consumer read the numbers off the run it just made instead of\nre-opening the history file the same run wrote.\n\nInternally tagged by `source`, so the variant is a value a consumer switches\non rather than a shape it has to sniff. Every variant states only what was\nactually measured \u2014 there is no variant meaning \"no telemetry\"; that is a\n`null` field.",
@@ -11530,6 +11868,17 @@
             },
             "type": "array"
           },
+          "control": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ControlReport"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Out-of-band turn control for this run (`--control`), or `null` when none\nwas requested \u2014 which is every ordinary run. It records the socket a\nseparate `oneharness interrupt` process could address, the harness\nmechanism behind it, and each request served, so a consumer can tell an\ninterrupted turn from one that simply ended."
+          },
           "dry_run": {
             "type": "boolean"
           },
@@ -11653,6 +12002,7 @@
           "spy_file",
           "history_file",
           "config_files",
+          "control",
           "results"
         ],
         "type": "object"
@@ -12050,6 +12400,10 @@
           "cost_usd"
         ],
         "type": "object"
+      },
+      "UtcInstant": {
+        "description": "An RFC 3339 timestamp in UTC (`Z`), in oneharness's canonical spelling.",
+        "type": "string"
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",

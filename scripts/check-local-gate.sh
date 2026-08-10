@@ -16,6 +16,9 @@ trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin"
 log="$tmp/calls"
 primary_harness=$(llmlint_primary_harness "$root/oneharness.toml")
+# Keep every recorded verdict inside the scratch tree; a case must never read or
+# write the developer's own cache.
+export XDG_CACHE_HOME="$tmp/cache"
 
 assert_file_contains() {
   local expected=$1 file=$2 description=$3
@@ -36,6 +39,25 @@ assert_line_count() {
 
 cat > "$tmp/bin/llmlint" <<'STUB'
 #!/usr/bin/env bash
+# The gate fingerprints the judge before deciding whether to replay a verdict.
+# Those two reads cost nothing and are not judge rolls, so they stay out of the
+# call log the cases below count.
+case ${1:-} in
+  --version)
+    printf 'llmlint %s\n' "${JUDGE_VERSION:-9.9.9}"
+    exit 0
+    ;;
+  config)
+    [[ ${JUDGE_CONFIG_FAIL:-0} == 1 ]] && exit 1
+    # Real llmlint renders the resolved oneharness override into its effective
+    # config — `"bin": null` with no override, whatever PATH would resolve — so
+    # the stub does too. Without it the fingerprint's normalization of that
+    # variable would be asserted against a config that never carried it.
+    printf '{"oneharness":{"bin":"%s"},"rules":{"stub":"%s"}}\n' \
+      "${LLMLINT_ONEHARNESS_BIN:-null}" "${JUDGE_CONFIG:-baseline}"
+    exit 0
+    ;;
+esac
 printf 'llmlint %s\n' "$*" >> "$CALL_LOG"
 if [[ ${1:-} == --diff && ${JUDGE_FAIL:-0} == 1 ]]; then
   echo 'judge found an issue' >&2
@@ -123,6 +145,10 @@ assert_file_contains \
 assert_file_contains 'llmlint --diff --diff-base HEAD' "$log" \
   "no-key path did not invoke the judge after a successful probe"
 : > "$log"
+# That green was recorded. Every case below shares its tree, base and stub judge,
+# and each is about a path that has to be *reached* rather than replayed, so drop
+# the record; replay has its own section further down.
+rm -rf "$tmp/cache"
 
 CALL_LOG="$log" PATH="$tmp/bin:$PATH" HOME="$tmp/home" PROBE_MODE=unavailable \
   "$root/scripts/local-llmlint-gate.sh" HEAD 2>"$tmp/skip"
@@ -203,6 +229,233 @@ assert_file_contains "$primary_harness login --with-api-key" "$log" \
   "primary harness login was not invoked"
 assert_file_contains 'llmlint --diff --diff-base HEAD' "$log" \
   "llmlint judge was not invoked with the comparison ref"
+
+# The judge is non-deterministic: asked the same question twice it can answer
+# differently, which is how gate-green work has been rejected at push time on a
+# finding no earlier roll raised. So a green it already reached must be replayed
+# rather than rolled again, and everything the verdict depends on — the tree, the
+# resolved base commit, the judge configuration — must invalidate it. These cases
+# drive a scratch repository so they can commit and edit a real tree.
+verdict_repo="$tmp/verdict-repo"
+mkdir -p "$verdict_repo/scripts"
+cp "$root/scripts/local-llmlint-gate.sh" "$root/scripts/local-llmlint-gate-lib.sh" \
+  "$verdict_repo/scripts/"
+cp "$root/oneharness.toml" "$verdict_repo/oneharness.toml"
+git -C "$verdict_repo" init -q -b main
+git -C "$verdict_repo" config user.email test@example.com
+git -C "$verdict_repo" config user.name Test
+git -C "$verdict_repo" add -A
+git -C "$verdict_repo" commit -qm initial
+git -C "$verdict_repo" branch base
+
+verdict_status=0
+# Run the gate in the scratch repo against the `base` branch. Extra arguments are
+# `NAME=VALUE` overrides for that one invocation.
+verdict_gate() {
+  : > "$log"
+  verdict_status=0
+  (
+    cd "$verdict_repo"
+    env -u OPENAI_API_KEY CALL_LOG="$log" PATH="$tmp/bin:$PATH" HOME="$tmp/home" \
+      XDG_CACHE_HOME="$tmp/verdicts" "$@" ./scripts/local-llmlint-gate.sh base
+  ) > "$tmp/verdict-out" 2>&1 || verdict_status=$?
+}
+
+# $1 description, $2 expected judge rolls, $3 expected exit status
+assert_verdict() {
+  local description=$1 expected_rolls=$2 expected_status=$3 rolls probes
+  rolls=$(grep -c '^llmlint --diff ' "$log" || true)
+  probes=$(grep -c '^oneharness ' "$log" || true)
+  [[ $rolls -eq $expected_rolls && $verdict_status -eq $expected_status ]] || {
+    cat "$tmp/verdict-out" >&2
+    echo "check-local-gate: $description; expected $expected_rolls judge roll(s) and exit $expected_status, saw $rolls and exit $verdict_status" >&2
+    echo "  the run's own output is above; compare llmlint_verdict_key's three inputs in scripts/local-llmlint-gate-lib.sh against what this case changed" >&2
+    exit 1
+  }
+  # A replay must cost nothing: the availability probe is itself a billed model
+  # call, so it has to be skipped alongside the judge.
+  [[ $expected_rolls -ne 0 || $probes -eq 0 ]] || {
+    cat "$tmp/verdict-out" >&2
+    echo "check-local-gate: $description; a replayed verdict still ran $probes availability probe(s)" >&2
+    echo "  move the replay check in scripts/local-llmlint-gate.sh back above the credential/probe block" >&2
+    exit 1
+  }
+}
+
+verdict_gate
+assert_verdict "the first run on a fresh cache" 1 0
+
+verdict_gate
+assert_verdict "an unchanged tree, base and judge" 0 0
+grep -q 'replaying the green verdict' "$tmp/verdict-out" || {
+  cat "$tmp/verdict-out" >&2
+  echo "check-local-gate: a replayed verdict did not say so" >&2
+  echo "  restore the 'replaying the green verdict' notice in scripts/local-llmlint-gate.sh; a silent replay reads as a fresh green" >&2
+  exit 1
+}
+
+# Content, not just tracked content: the judge reads untracked-unignored files too.
+printf 'first\n' > "$verdict_repo/marker"
+verdict_gate
+assert_verdict "a changed tree" 1 0
+verdict_gate
+assert_verdict "the changed tree, judged and recorded" 0 0
+
+# The key holds the RESOLVED base commit, so a base ref that moves under an
+# unchanged tree invalidates.
+git -C "$verdict_repo" add -A
+git -C "$verdict_repo" commit -qm marker
+git -C "$verdict_repo" branch -f base HEAD
+verdict_gate
+assert_verdict "a base ref moved to a new commit" 1 0
+verdict_gate
+assert_verdict "the moved base, judged and recorded" 0 0
+
+# A rule edit or a plugin bump changes no file in this tree, so only the judge
+# fingerprint can catch it — and neither does upgrading llmlint itself.
+verdict_gate JUDGE_CONFIG=drifted
+assert_verdict "a changed judge configuration" 1 0
+verdict_gate
+assert_verdict "the original judge configuration" 0 0
+verdict_gate JUDGE_VERSION=9.9.10
+assert_verdict "an upgraded judge" 1 0
+verdict_gate
+assert_verdict "the original judge build" 0 0
+
+# A finding is never recorded: the next run must ask again rather than replay a
+# verdict that was red.
+printf 'second\n' > "$verdict_repo/marker"
+verdict_gate JUDGE_FAIL=1
+assert_verdict "a judge finding" 1 4
+verdict_gate
+assert_verdict "the run after a finding" 1 0
+
+# The forced roll neither reads a recorded verdict...
+verdict_gate ONEHARNESS_LLMLINT_REJUDGE=1
+assert_verdict "a forced roll over a recorded verdict" 1 0
+grep -q 'ONEHARNESS_LLMLINT_REJUDGE=1' "$tmp/verdict-out" || {
+  cat "$tmp/verdict-out" >&2
+  echo "check-local-gate: a forced roll did not say why it skipped the recorded verdict" >&2
+  echo "  restore the ONEHARNESS_LLMLINT_REJUDGE notice in scripts/local-llmlint-gate.sh; otherwise a forced roll is indistinguishable from a cache miss" >&2
+  exit 1
+}
+# ...nor records one, so the next ordinary run still has to judge.
+printf 'third\n' > "$verdict_repo/marker"
+verdict_gate ONEHARNESS_LLMLINT_REJUDGE=1
+assert_verdict "a forced roll on an unrecorded tree" 1 0
+verdict_gate
+assert_verdict "the run after a forced roll" 1 0
+verdict_gate
+assert_verdict "the run after that green was recorded" 0 0
+
+# A judge that cannot be fingerprinted cannot be identified, so the run says so,
+# rolls, and records nothing — the next run has to roll too. Failing open toward
+# judging is the only safe direction: the alternative replays a verdict that may
+# belong to a different judge.
+printf 'fourth\n' > "$verdict_repo/marker"
+verdict_gate JUDGE_CONFIG_FAIL=1
+assert_verdict "a judge whose configuration cannot be read" 1 0
+grep -q 'cannot identify this verdict' "$tmp/verdict-out" || {
+  cat "$tmp/verdict-out" >&2
+  echo "check-local-gate: an unidentifiable verdict was not reported" >&2
+  echo "  restore the diagnostic on llmlint_verdict_key's failure branch in scripts/local-llmlint-gate.sh" >&2
+  exit 1
+}
+verdict_gate
+assert_verdict "the run after an unidentifiable verdict" 1 0
+
+# A cache root the environment points somewhere unusable — here a relative path,
+# which llmlint_cache_dir refuses — must not take the gate down with it: judge,
+# then say the green went unrecorded.
+verdict_gate XDG_CACHE_HOME=not-an-absolute-path
+assert_verdict "an unusable cache root" 1 0
+grep -q 'could not record the verdict' "$tmp/verdict-out" || {
+  cat "$tmp/verdict-out" >&2
+  echo "check-local-gate: a verdict that could not be recorded was not reported" >&2
+  echo "  restore the llmlint_record_verdict failure diagnostic in scripts/local-llmlint-gate.sh" >&2
+  exit 1
+}
+
+# The judge's identity must survive the trip from the environment that records a
+# green to the one that pushes it. A lifecycle publication dispatches llmlint
+# through its own sandbox wrapper via LLMLINT_ONEHARNESS_BIN, which llmlint
+# renders into the effective config this fingerprint reads — so reading the
+# caller's value gave that environment a key of its own, and its pre-push gate
+# re-rolled the very green the working tree's gate had just recorded. That is the
+# defect the replay exists to prevent, so it is asserted from both directions.
+rm -rf "$tmp/verdicts"
+verdict_gate
+assert_verdict "the green a working tree's own gate records" 1 0
+verdict_gate LLMLINT_ONEHARNESS_BIN="$tmp/bin/publication-wrapper"
+assert_verdict "a push that dispatches the judge through a wrapper" 0 0
+verdict_gate
+assert_verdict "the recording environment after that push replayed" 0 0
+
+# A recorded verdict is external input the next run trusts enough to skip the
+# judge entirely, so the whole record is validated before it counts. Each case
+# damages the stored record the way a store really gets damaged — a write
+# interrupted partway, a leftover from another key or base, a file some later
+# format wrote — and the run has to judge again rather than replay it, then
+# re-record so one bad file is not a permanent miss.
+rm -rf "$tmp/verdicts"
+verdict_gate
+assert_verdict "the green the record cases start from" 1 0
+verdict_gate
+assert_verdict "that record before it is damaged" 0 0
+
+# The one record the scratch store holds for the current key. The section above
+# cleared the store, so a second file here means a key was written that the
+# unchanged tree, base and judge should never have produced.
+verdict_entry() {
+  local entries=("$tmp/verdicts/oneharness/llmlint-gate"/*.verdict)
+  [[ ${#entries[@]} -eq 1 && -f ${entries[0]} ]] || {
+    echo "check-local-gate: expected exactly one recorded verdict, found: ${entries[*]}" >&2
+    return 1
+  }
+  printf '%s\n' "${entries[0]}"
+}
+entry=$(verdict_entry) || exit 1
+{
+  IFS= read -r format_line
+  IFS= read -r key_line
+  IFS= read -r base_line
+  IFS= read -r stamp_line
+} < "$entry"
+
+# $1 description; the remaining arguments are the lines written over the stored
+# record, or none at all for an empty file.
+assert_record_rejected() {
+  local description=$1
+  shift
+  if [[ $# -eq 0 ]]; then
+    : > "$entry"
+  else
+    printf '%s\n' "$@" > "$entry"
+  fi
+  verdict_gate
+  assert_verdict "$description" 1 0
+  verdict_gate
+  assert_verdict "$description, after that run re-recorded it" 0 0
+}
+
+assert_record_rejected "an empty record"
+assert_record_rejected "a write interrupted after its key line" "$format_line" "$key_line"
+assert_record_rejected "a record belonging to another verdict key" \
+  "$format_line" "key 0000000000000000000000000000000000000000" "$base_line" "$stamp_line"
+assert_record_rejected "a record judged against another base commit" \
+  "$format_line" "$key_line" "base 0000000000000000000000000000000000000000" "$stamp_line"
+assert_record_rejected "a record a later format wrote" \
+  "oneharness-llmlint-verdict 2" "$key_line" "$base_line" "$stamp_line"
+assert_record_rejected "a record whose timestamp is unreadable" \
+  "$format_line" "$key_line" "$base_line" "recorded whenever"
+assert_record_rejected "a record with a line appended after its timestamp" \
+  "$format_line" "$key_line" "$base_line" "$stamp_line" "recorded 2000-01-01T00:00:00Z"
+
+# The record the gate itself wrote still replays, so the validation above rejects
+# damaged records rather than every record.
+verdict_gate
+assert_verdict "the undamaged record the last run wrote" 0 0
+: > "$log"
 
 git init -q --bare "$tmp/remote.git"
 git init -q -b main "$tmp/repo"

@@ -10248,6 +10248,10 @@
                 "const": "served",
                 "type": "string"
               },
+              "redirected": {
+                "description": "Whether a redirection was committed with the abort. Omitted when it\nwas a plain stop, so an older consumer reads the same record it\nalways did.",
+                "type": "boolean"
+              },
               "verb": {
                 "$ref": "#/$defs/ControlVerb",
                 "description": "The verb requested."
@@ -11314,6 +11318,10 @@
               "outcome": {
                 "const": "served",
                 "type": "string"
+              },
+              "redirected": {
+                "description": "Whether a redirection was committed with the abort. Omitted when it\nwas a plain stop, so an older consumer reads the same record it\nalways did.",
+                "type": "boolean"
               },
               "verb": {
                 "$ref": "#/$defs/ControlVerb",

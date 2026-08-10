@@ -109,4 +109,12 @@ printf '%s' "$phase" | grep -q 'oh_copilot_login_ready' \
 printf '%s' "$phase" | grep -qE '(have_env|need_env).*(GH_TOKEN|GITHUB_TOKEN|COPILOT_E2E_AUTH)' \
     && fail_check "the copilot phase in scripts/e2e-control.sh is gating on an environment token again"
 
+# 7. Polling starts before the agent's transcript exists — the `--acp` redirect
+#    only opens it once the probe's fifo has a reader. "Not there yet" is not an
+#    answer and is not an error either: a stray `No such file or directory` in a
+#    live log is one more thing to rule out when a phase goes wrong.
+noise="$(_oh_acp_answer "$work/never-written.jsonl" 2>&1)" && \
+    fail_check "a transcript that does not exist yet was read as an answer"
+[ -z "$noise" ] || fail_check "polling a not-yet-created transcript printed: $noise"
+
 echo "check-copilot-login-probe: ok"

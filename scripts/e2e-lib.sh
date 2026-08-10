@@ -1408,6 +1408,11 @@ oh_copilot_login_ready() {
 # still being written must never be read as a verdict.
 _oh_acp_answer() {
     local line
+    # The transcript is opened by a background redirect, so the first poll can
+    # arrive before the file exists. That is "no answer yet", not an error to
+    # print — a stray `No such file or directory` in a live log is one more
+    # thing to rule out when a phase goes wrong.
+    [ -r "$1" ] || return 1
     while IFS= read -r line; do
         if printf '%s' "$line" | jq -e 'select(.id == 2) | has("result") or has("error")' >/dev/null 2>&1; then
             printf '%s' "$line"

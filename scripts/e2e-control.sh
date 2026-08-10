@@ -162,6 +162,13 @@ for declaration in "${CONTROLLABLE[@]}"; do
     # copilot's control path came to ship with no live alarm. `oh_copilot_login_ready`
     # asks copilot instead (a zero-turn ACP `session/new`, no AI credits), and
     # answers for an environment token too, since copilot reads those as well.
+    #
+    # This phase cannot go vacuous on copilot: its control launch argv is a bare
+    # `copilot --acp`, so every shell call raises `session/request_permission`,
+    # and the tool does not run while that goes unanswered (measured: no file
+    # after 20s of silence). The step files the freeze assertion counts exist
+    # only because oneharness answered it, so the ACP permission path is proven
+    # by the same run, not assumed.
     copilot)
         oh_copilot_login_ready "$default_bin" || {
             note "  SKIP Copilot auth: copilot cannot open a session (run \`copilot login\`, or set COPILOT_GITHUB_TOKEN)"

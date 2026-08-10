@@ -1620,12 +1620,31 @@ static REGISTRY: &[HarnessSpec] = &[
     },
 ];
 
+/// The built-in tools a `read-only` Claude Code run may use, delivered as
+/// `--tools` — the set it PERMITS, so the set it withholds is everything else.
+///
+/// It was the mirror image until claude 2.1.220: `bypassPermissions` with
+/// `--disallowedTools Bash Edit Write NotebookEdit`. Naming what is forbidden is
+/// fail-open, and the CLI's own tool set is what moved under it. That version's
+/// built-ins include `Task`, which hands the turn to a subagent carrying the
+/// full set, so an agent with no `Bash` of its own delegated the shell call and
+/// the write landed (reproduced directly: the same argv plus "use the Agent tool
+/// to run `touch …`" creates the file; the live Windows leg that caught it
+/// reported `origin: {"kind":"task-notification"}` on a turn that did the write).
+/// An allowlist has no such tail: a tool the CLI adds next is out of reach
+/// because reaching it means being named here.
+///
+/// Sourced from `claude --help` (2.1.220) — `--tools` takes names "from the
+/// built-in set", and the `system`/`init` frame of a real run echoes back
+/// exactly these five.
+const CLAUDE_READ_ONLY_TOOLS: &[&str] = &["Read", "Grep", "Glob", "WebFetch", "WebSearch"];
+
 /// Claude Code's `--permission-mode` token for each normalized mode. `Default`
 /// maps to `dontAsk` (deny any un-allowed tool and continue) rather than
 /// `default` (which *aborts* the `-p` run on an un-allowed tool): the ask flow
 /// then completes headlessly instead of failing on the first prompt. `ReadOnly`
-/// rides `bypassPermissions` (allow-all, no prompts) with the mutating tools
-/// denied separately — deny rules take precedence even under bypass.
+/// rides `bypassPermissions` (allow-all, no prompts) with the available tool set
+/// narrowed to [`CLAUDE_READ_ONLY_TOOLS`] separately.
 fn claude_permission_mode(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::Plan => "plan",
@@ -1637,7 +1656,7 @@ fn claude_permission_mode(mode: PermissionMode) -> &'static str {
     }
 }
 
-/// `claude -p <prompt> --permission-mode <mode> [--disallowedTools …] [--model M]
+/// `claude -p <prompt> --permission-mode <mode> [--tools …] [--model M]
 /// [--append-system-prompt S] [--resume <id> [--fork-session]] --output-format json`
 /// (`--resume` continues a session by id; `--fork-session` branches a new session
 /// from it instead of appending — the session id is read from the result JSON's
@@ -1663,12 +1682,11 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     }
     a.push("--permission-mode".into());
     a.push(claude_permission_mode(c.mode).into());
-    // read-only: deny the mutating tools (Bash covers destructive shell; reads
-    // still run via Read/Grep/Glob). A bare name removes the tool entirely.
+    // read-only: narrow the built-in set to the tools that only read.
     if c.mode == PermissionMode::ReadOnly {
-        a.push("--disallowedTools".into());
-        for tool in ["Bash", "Edit", "Write", "NotebookEdit"] {
-            a.push(tool.into());
+        a.push("--tools".into());
+        for tool in CLAUDE_READ_ONLY_TOOLS {
+            a.push((*tool).into());
         }
     }
     if let Some(m) = c.model {
@@ -2361,24 +2379,26 @@ mod tests {
                 "mode {mode:?} should emit {token}: {argv:?}"
             );
         }
-        // read-only additionally denies the mutating tools (and only read-only
-        // does — plan/bypass leave them available to the permission system).
+        // read-only additionally narrows the built-in set to the read-only
+        // tools, and only read-only does — plan/bypass leave the whole set
+        // available to the permission system.
         let ro = (spec.build_argv)(&ctx("claude", None, PermissionMode::ReadOnly));
-        assert!(
-            ro.windows(2).any(|w| w == ["--disallowedTools", "Bash"]),
-            "read-only should deny Bash: {ro:?}"
+        let tools: Vec<&str> = ro
+            .iter()
+            .skip_while(|a| *a != "--tools")
+            .skip(1)
+            .take(CLAUDE_READ_ONLY_TOOLS.len())
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            tools, CLAUDE_READ_ONLY_TOOLS,
+            "read-only should permit exactly the read-only tools: {ro:?}"
         );
-        for tool in ["Edit", "Write", "NotebookEdit"] {
-            assert!(
-                ro.iter().any(|t| t == tool),
-                "read-only denies {tool}: {ro:?}"
-            );
-        }
         assert!(
             !(spec.build_argv)(&ctx("claude", None, PermissionMode::Plan))
                 .iter()
-                .any(|t| t == "--disallowedTools"),
-            "plan should not deny tools"
+                .any(|t| t == "--tools"),
+            "plan should not narrow the tool set"
         );
     }
 

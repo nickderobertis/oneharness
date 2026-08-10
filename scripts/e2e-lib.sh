@@ -879,7 +879,7 @@ oh_enforce_file() { printf '%s-%s%s.txt' "$1" "${RANDOM}" "${RANDOM}"; }
 
 # Live proof that a NO-MUTATION mode (`read-only` or `plan`) is HONORED by the
 # real harness — the drift alarm for the per-harness mapping (Codex's `--sandbox
-# read-only`, Claude's `--disallowedTools` / `--permission-mode plan`, Copilot's
+# read-only`, Claude's `--tools` allowlist / `--permission-mode plan`, Copilot's
 # `--deny-tool` / `--mode plan`, Cursor's `--mode ask` / `--mode plan`, Qwen's
 # `--approval-mode plan`). The agent is told to `touch` a file:
 #   * under `--mode <mode>` the write must be BLOCKED (file absent), and

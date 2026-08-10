@@ -555,7 +555,7 @@ fn read_only_is_distinct_from_plan_and_enforced_where_possible() {
         &[],
     );
     let c = json_stdout(&claude_ro)["results"][0]["command"].to_string();
-    assert!(c.contains("disallowedTools"), "{c}");
+    assert!(c.contains("--tools"), "{c}");
 }
 
 #[test]

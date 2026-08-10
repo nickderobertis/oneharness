@@ -547,7 +547,15 @@ aren't re-litigated each session:
   becomes a `timeout` result, per "never panic on a harness's behavior"), and
   `--permit-prompts` silences the warning. The per-harness `read-only`/`plan`
   mapping is drift-alarmed live by `oh_mode_enforce` (writes blocked under
-  read-only, allowed under bypass).
+  read-only, allowed under bypass). A no-mutation mode whose mechanism
+  enumerates TOOLS must name the ones the run may use, never the ones it may
+  not: claude's `--disallowedTools Bash Edit Write NotebookEdit` was complete
+  until 2.1.220 put `Task` in the built-in set, and an agent with no `Bash`
+  delegated the write to a subagent the deny rules did not reach. The
+  equality grid cannot catch that (both paths fail open together), so the floor
+  is its own assertion — `control_mode_parity`'s
+  `a_no_mutation_mode_withholds_the_capability_to_write`, over the whole
+  registry.
 - **Config is layered and loud.** Defaults come from `oneharness.toml` files —
   user level (`$ONEHARNESS_CONFIG` or the platform config dir) under project
   level (discovered upward from `--cwd`/cwd) under the `ONEHARNESS_<FIELD>`

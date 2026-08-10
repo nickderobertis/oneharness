@@ -1155,6 +1155,14 @@ mod control_mode_parity {
     //! `build_argv` on the uncontrolled side, the protocol client on the
     //! controlled one — and is driven off the registry, so a harness or a mode
     //! added later arrives here unasserted and fails.
+    //!
+    //! Equality alone is a floorless property: two paths that both permit a
+    //! write agree just as well as two that both refuse one, so a `read-only`
+    //! that stopped blocking anything satisfies every cell above. The companion
+    //! `a_no_mutation_mode_withholds_the_capability_to_write` is that floor —
+    //! per harness, in that CLI's own vocabulary — and it covers the whole
+    //! registry rather than the control-capable part of it, because a mode that
+    //! fails open fails open with or without `--control`.
 
     use serde_json::Value;
 
@@ -1476,6 +1484,110 @@ mod control_mode_parity {
     /// Stated rather than detected, so a launch that silently stopped carrying
     /// it fails here instead of quietly falling through to a coarser check.
     const MODE_RIDES_CONTROL_ARGV: [&str; 2] = ["claude-code", "copilot"];
+
+    /// The tools a `read-only` Claude Code run is left holding. Restated here
+    /// rather than read from the registry: this is the assertion, so it has to
+    /// fail when the registry's list moves rather than move with it.
+    const CLAUDE_READ_ONLY_TOOLS: [&str; 5] = ["Read", "Grep", "Glob", "WebFetch", "WebSearch"];
+
+    /// How a no-mutation `mode` takes the ability to write away from the agent,
+    /// read off the argv the registry really builds and asserted present.
+    ///
+    /// Each harness answers in its own vocabulary because each CLI has its own
+    /// mechanism, and the mechanisms are not equally strong. A sandbox or a
+    /// native plan mode is enforcement the CLI owns, so a tool it gains later
+    /// arrives already inside it. An enumeration of tool names is only as good
+    /// as which side it enumerates — which is why Claude's is asserted to name
+    /// what the run MAY use. It named what the run may not (`--disallowedTools
+    /// Bash Edit Write NotebookEdit`) until claude 2.1.220 put `Task` in the
+    /// built-in set: the agent handed the shell call to a subagent the deny
+    /// rules did not reach, and the live Windows leg watched the file appear.
+    fn withholding(spec: &'static HarnessSpec, mode: PermissionMode) -> String {
+        let argv = argv_for(spec, mode, PromptDelivery::Argv);
+        let carries = |want: &[&str]| {
+            assert!(
+                argv.windows(want.len()).any(|window| window == want),
+                "`{}` {mode:?} must carry {want:?} to withhold a write; got {argv:?}",
+                spec.id
+            );
+            format!("carries:{}", want.join(" "))
+        };
+        match (spec.id, mode) {
+            ("claude-code", PermissionMode::ReadOnly) => {
+                let permitted: Vec<&str> = argv
+                    .iter()
+                    .skip_while(|arg| *arg != "--tools")
+                    .skip(1)
+                    .take_while(|arg| !arg.starts_with("--"))
+                    .map(String::as_str)
+                    .collect();
+                assert_eq!(
+                    permitted, CLAUDE_READ_ONLY_TOOLS,
+                    "`claude-code` read-only must permit exactly the read-only tools; got {argv:?}"
+                );
+                assert!(
+                    !argv.iter().any(|arg| arg == "--disallowedTools"),
+                    "`claude-code` read-only must not go back to naming what it forbids, \
+                     which leaves every tool it forgot — and every tool the CLI adds — \
+                     reachable; got {argv:?}"
+                );
+                format!("permits-only:{}", permitted.join(","))
+            }
+            ("claude-code", _) => carries(&["--permission-mode", "plan"]),
+            ("codex", _) => carries(&["--sandbox", "read-only"]),
+            ("opencode", _) => carries(&["--agent", "plan"]),
+            ("qwen", _) => carries(&["--approval-mode", "plan"]),
+            ("cursor", PermissionMode::ReadOnly) => carries(&["--mode", "ask"]),
+            // Copilot enumerates too, but over its permission vocabulary's own
+            // three categories rather than per-tool names, so denying the two
+            // that act leaves only the one that reads.
+            ("copilot", PermissionMode::ReadOnly) => {
+                carries(&["--deny-tool", "shell"]);
+                carries(&["--deny-tool", "write"])
+            }
+            ("cursor" | "copilot", _) => carries(&["--mode", "plan"]),
+            (other, _) => {
+                panic!("`{other}` supports {mode:?} but nothing here says what it takes away")
+            }
+        }
+    }
+
+    #[test]
+    fn a_no_mutation_mode_withholds_the_capability_to_write() {
+        let mut grid: Vec<String> = Vec::new();
+        for spec in harness::all() {
+            for mode in [PermissionMode::ReadOnly, PermissionMode::Plan] {
+                if spec.mode(mode).is_none() {
+                    continue;
+                }
+                grid.push(format!(
+                    "{} {} {}",
+                    spec.id,
+                    mode.as_str(),
+                    withholding(spec, mode)
+                ));
+            }
+        }
+        // Spelled out for the same reason as the grid above: a harness that
+        // gains `read-only` or `plan` later lands here as a line nobody wrote.
+        assert_eq!(
+            grid,
+            [
+                "claude-code read-only permits-only:Read,Grep,Glob,WebFetch,WebSearch",
+                "claude-code plan carries:--permission-mode plan",
+                "codex read-only carries:--sandbox read-only",
+                "codex plan carries:--sandbox read-only",
+                "opencode read-only carries:--agent plan",
+                "opencode plan carries:--agent plan",
+                "qwen read-only carries:--approval-mode plan",
+                "qwen plan carries:--approval-mode plan",
+                "copilot read-only carries:--deny-tool write",
+                "copilot plan carries:--mode plan",
+                "cursor read-only carries:--mode ask",
+                "cursor plan carries:--mode plan",
+            ]
+        );
+    }
 }
 
 #[cfg(test)]

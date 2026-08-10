@@ -19093,6 +19093,158 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
 
 #[cfg(unix)]
 #[test]
+fn control_interrupt_redirects_the_turn_with_a_message_in_one_operation() {
+    let mock_profile = mock_profile_redirect();
+    // The point of carrying a message with the interrupt: the supervisor sends
+    // ONE request, and the agent goes from doing the wrong thing to doing the
+    // right thing without the session being redispatched. Asserted at the
+    // harness — the redirected message has to appear in the turn log AFTER the
+    // interrupted turn ended, which is the only moment this harness accepts one.
+    let store = control_store_dir("redirect");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("redirect-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let turn_log = store.join("turn.log");
+    let turn_log_arg = turn_log.display().to_string();
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_TURN_LOG", &turn_log_arg)
+        .env("MOCK_TURN_HOLD", "1")
+        .env(
+            "MOCK_STDOUT",
+            r#"{"type":"system","subtype":"init","session_id":"sess-redirect"}"#,
+        )
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "steered",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "keep working on the wrong thing",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the controlled run");
+
+    let socket = store.join("control").join("steered.sock");
+    wait_until("the control socket to appear", || socket.exists());
+    wait_until("the turn to start", || {
+        std::fs::read_to_string(&turn_log)
+            .map(|log| log.contains("keep working on the wrong thing"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "steered",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--input",
+            "stop and do the right thing",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    let frame = json_stdout(&interrupt);
+    assert_eq!(frame["v"], 2);
+    assert_eq!(frame["ok"], true);
+    // The run says it took the message, so the supervisor is holding a
+    // guarantee rather than having to guess whether to resend it.
+    assert_eq!(frame["redirected"], true, "{frame}");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("run report was not JSON");
+    let interrupts = report["control"]["interrupts"].as_array().unwrap();
+    assert_eq!(interrupts.len(), 1);
+    assert_eq!(interrupts[0]["outcome"], "served");
+    assert_eq!(interrupts[0]["redirected"], true, "{report}");
+
+    // The ordering IS the contract. The harness saw the original prompt, then
+    // the interrupt, then the turn end, and only then the redirection — a
+    // message delivered any earlier is silently dropped by this harness.
+    let log = std::fs::read_to_string(&turn_log).unwrap();
+    let step = |needle: &str| {
+        log.lines()
+            .position(|line| line.contains(needle))
+            .unwrap_or_else(|| panic!("`{needle}` never reached the harness:\n{log}"))
+    };
+    let prompt_at = step("keep working on the wrong thing");
+    let interrupt_at = step("control_request");
+    let ended_at = step("TURN_ENDED");
+    let redirect_at = step("stop and do the right thing");
+    assert!(
+        prompt_at < interrupt_at && interrupt_at < ended_at && ended_at < redirect_at,
+        "turn log:\n{log}"
+    );
+    // And it opened a real second turn rather than being appended to the dead
+    // one: the harness ended twice.
+    assert_eq!(
+        log.lines()
+            .filter(|line| line.contains("TURN_ENDED"))
+            .count(),
+        2,
+        "turn log:\n{log}"
+    );
+
+    assert!(!socket.exists());
+    assert_eq!(report["results"][0]["status"], "ok");
+    assert_eq!(report["session"]["token"], "sess-redirect");
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn interrupt_refuses_a_redirection_that_is_not_a_message() {
+    // A usage error, not a refusal frame: nothing was asked of any run, and a
+    // supervisor that mis-spelled its redirection needs to hear about it while
+    // the turn it meant to redirect is still running.
+    // A NUL is deliberately absent: no argv can carry one, so the boundary that
+    // would refuse it is never reached — that rule is pinned on the type, where
+    // a wire frame can express it.
+    for bad in ["", "   ", "stop\u{1b}[2Jnow"] {
+        let output = run(
+            &[
+                "interrupt",
+                "--session",
+                "whatever",
+                "--input",
+                bad,
+                "--compact",
+            ],
+            &[],
+        );
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("--input"), "{stderr}");
+        assert!(
+            output.stdout.is_empty(),
+            "a usage error emits no control frame: {output:?}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn control_run_pins_the_message_stream_argv_and_leaves_the_prompt_off_it() {
     let mock_profile = mock_profile_redirect();
     // The control channel IS the run's stdin, so the prompt cannot ride the

@@ -8,6 +8,11 @@
 # check that trusted the harness's own stop reason would pass for the wrong
 # reason.
 #
+# Then the same turn again with `interrupt --input`, which must do BOTH halves:
+# freeze the original work AND carry out the redirected work, on the same
+# dispatch. An interrupt that stopped the turn and quietly dropped the message
+# passes the first phase and fails this one.
+#
 # This is a per-FEATURE live suite (like `e2e-schema.sh`), deliberately separate
 # from the per-harness `e2e-<id>.sh` scripts: each phase drives a real
 # multi-step turn and then waits out a 15-second freeze window, which is far too
@@ -31,7 +36,7 @@ set -euo pipefail
 # shellcheck source=scripts/e2e-lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 
-note "== oneharness live e2e: out-of-band turn control (--control / interrupt) =="
+note "== oneharness live e2e: out-of-band turn control (--control / interrupt [--input]) =="
 need jq
 
 case "$(uname -s 2>/dev/null || echo unknown)" in
@@ -156,6 +161,8 @@ for declaration in "${CONTROLLABLE[@]}"; do
     esac
     note "» $id: a real turn must actually STOP when interrupted"
     oh_control_enforce "$id" "$mechanism"
+    note "» $id: an interrupt carrying --input must STOP the turn and DO the new work"
+    oh_control_redirect_enforce "$id"
     proven+=("$id")
 done
 
@@ -165,4 +172,4 @@ fi
 if [ "${#skipped[@]}" -gt 0 ]; then
     note "NOT PROVEN THIS RUN (no credentials): ${skipped[*]}"
 fi
-note "PASS: turn control honored by every harness proven here: ${proven[*]}"
+note "PASS: turn control and redirection honored by every harness proven here: ${proven[*]}"

@@ -1105,11 +1105,39 @@ oneharness run --harness claude-code --control --session triage \
 
 # A SEPARATE process, whenever the supervisor decides to redirect it.
 oneharness interrupt --session triage
-# {"v":1,"ok":true,"mechanism":"claude-control-request"}
+# {"v":2,"ok":true,"mechanism":"claude-control-request"}
 
 # The turn aborted, the session survived: the next turn continues with full context.
 oneharness run --harness claude-code --session triage --prompt "Stop there — do X instead."
 ```
+
+Those last two steps are one operation with `--input`: the turn stops **and**
+the message becomes the next turn, on the same live dispatch.
+
+```bash
+oneharness interrupt --session triage --input "Stop there — do X instead."
+# {"v":2,"ok":true,"mechanism":"claude-control-request","redirected":true}
+```
+
+`redirected: true` is the run saying it took the message. *Atomic* here means
+**committed with the abort, delivered at the turn boundary**: every one of these
+protocols drops a message sent into a turn already in flight (Claude Code
+silently discards a mid-turn `user` frame; codex and ACP refuse a second turn on
+a busy thread; both HTTP servers queue against the turn they are still running),
+so a supervisor doing this by hand has to stop, wait, and then send — and each of
+those waits is a window where the turn is dead and the message is nobody's.
+Instead the run takes ownership in the same request that aborts the turn: parked
+before the abort goes out, handed back if the abort fails, and written by the run
+itself the moment the turn ends. So the two answers a supervisor can read are
+"stopped, and your message is mine to deliver" and "nothing happened, and your
+message is still yours" — never a third where both were lost. The redirected turn
+runs on the same session in the same posture, working directory and model, and
+the run's report covers both turns.
+
+`--input` is refused as a **usage error** (exit 2, nothing sent) when it is
+blank, longer than 8192 characters, or carries characters that are not message
+text — a redirection is spliced into another program's protocol frame, so it has
+to be a message rather than bytes.
 
 `interrupt` being a separate process is the whole point, and is why the channel
 is a socket rather than a flag. The protocol is one newline-terminated JSON
@@ -1118,18 +1146,25 @@ request per connection, one response, connection closed:
 <!-- TODO(control-wire-doc-drift): generate this block from the `domain::control` request/response types, or add a gate that reconciles their field names against it, so the two cannot drift. -->
 <!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This block hand-restates the `ControlRequest`/`ControlResponse` wire shapes; the tests reconcile only `v` and the refusal-reason values, so the field names and the ok/error split really are duplicated with nothing keeping them aligned. Suppressed rather than fixed, deliberately: generating or gating a five-line README example is its own piece of work, and the exposure — a stale doc example, not a stale contract — is marginal against the change this lands in. Scoped to the fenced block because the duplication is the shape lines themselves. Tracked by the TODO above. -->
 ```jsonc
-→ {"v":1,"verb":"interrupt"}
-← {"v":1,"ok":true,"mechanism":"<shape-id>"}
-← {"v":1,"ok":false,"error":"<msg>","reason":"unsupported"|"no_active_turn"|"not_running"}
+→ {"v":2,"verb":"interrupt"}
+→ {"v":2,"verb":"interrupt","input":"<redirection>"}
+← {"v":2,"ok":true,"mechanism":"<shape-id>"}
+← {"v":2,"ok":true,"mechanism":"<shape-id>","redirected":true}
+← {"v":2,"ok":false,"error":"<msg>","reason":"unsupported"|"no_active_turn"|"not_running"}
 ```
 <!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
 
 `interrupt` is the only verb; `v` is what leaves room to add one later (some
 harnesses can also *steer* a turn without ending it, which is deliberately out of
-scope). The three refusal reasons are distinct because a supervisor reacts
-differently to each: `unsupported` is permanent for the harness, `not_running`
-means the dispatch is gone, `no_active_turn` means the run is alive but between
-turns. `interrupt` exits 0 when the request was served and 1 when it was refused.
+scope). **v2** added `input` and `redirected`; both are omitted when absent, so a
+plain stop is byte-identical to the v1 frames — but the version itself is checked
+strictly in both directions, so a v1 `oneharness interrupt` against a v2 run (or
+the reverse) is told which side speaks what rather than having its redirection
+silently dropped. The three refusal reasons are distinct because a supervisor
+reacts differently to each: `unsupported` is permanent for the harness,
+`not_running` means the dispatch is gone, `no_active_turn` means the run is alive
+but between turns. `interrupt` exits 0 when the request was served and 1 when it
+was refused.
 
 Requirements, all loud usage errors before anything spawns — a control lever that
 silently is not there is worse than none:
@@ -1180,16 +1215,22 @@ multi-step turn, interrupts it, and reports whether work actually *stopped*
 that is only probe-verified is **not** declared in the registry, so
 `oneharness interrupt` can never report success on a path nobody exercised.
 
-| Harness | `control` | Mechanism | Status |
-| --- | --- | --- | --- |
-| Claude Code | `claude-control-request` | A `control_request` frame on the run's own stdin (`-p --input-format stream-json`) | **LIVE** through oneharness |
-| Codex | `codex-app-server` | `turn/interrupt {threadId,turnId}` over the `codex app-server` JSON-RPC stdio protocol | **LIVE** through oneharness |
-| Copilot | `acp-cancel` | The ACP `session/cancel` **notification** over `copilot --acp` | **LIVE** through oneharness |
-| Goose | `acp-cancel` | The same ACP `session/cancel` **notification** over `goose acp` | **LIVE** through oneharness |
-| OpenCode | `opencode-http` | `POST /api/session/{id}/interrupt` against a pooled `opencode serve` | **LIVE** through oneharness |
-| Crush | `crush-http` | `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against a pooled `crush server` | **LIVE** through oneharness |
-| Cursor | — | none | cursor-agent exposes no headless control surface |
-| Qwen | — | none | qwen exposes no headless control surface |
+| Harness | `control` | Mechanism | Redirection (`--input`) | Status |
+| --- | --- | --- | --- | --- |
+| Claude Code | `claude-control-request` | A `control_request` frame on the run's own stdin (`-p --input-format stream-json`) | a `user` frame on the same stdin, after the aborted turn's `result` | **LIVE** through oneharness |
+| Codex | `codex-app-server` | `turn/interrupt {threadId,turnId}` over the `codex app-server` JSON-RPC stdio protocol | a new `turn/start` on the same thread, after `turn/completed` | **LIVE** through oneharness |
+| Copilot | `acp-cancel` | The ACP `session/cancel` **notification** over `copilot --acp` | a new `session/prompt` on the same session, after the cancelled one answers | **LIVE** through oneharness |
+| Goose | `acp-cancel` | The same ACP `session/cancel` **notification** over `goose acp` | the same `session/prompt` | **LIVE** through oneharness |
+| OpenCode | `opencode-http` | `POST /api/session/{id}/interrupt` against a pooled `opencode serve` | `POST /api/session/{id}/prompt` on the same session, once it goes idle | **LIVE** through oneharness |
+| Crush | `crush-http` | `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against a pooled `crush server` | `POST /v1/workspaces/{id}/agent` on the same session, once the run completes | **LIVE** through oneharness |
+| Cursor | — | none | — | cursor-agent exposes no headless control surface |
+| Qwen | — | none | — | qwen exposes no headless control surface |
+
+Every declared mechanism carries a redirection, so `--input` is never refused for
+being unsupported: each one delivers it through **the same frame or route that
+opened the turn in the first place**, on a session that already exists. There is
+no mechanism that can abort a turn but not open the next one, so there is no
+harness that has to emulate this with a racy stop-then-send.
 
 **Crush needs a provider its server can actually call.** It resolves one from the
 ambient environment, and no single variable selects it, so a host carrying AWS

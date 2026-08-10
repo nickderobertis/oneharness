@@ -136,8 +136,12 @@ fi
 # Copilot's phase is deliberately absent from this second check: it asks copilot
 # itself rather than the environment, so it declares no `have_env` to align to.
 
-# Print the secret names one step's `env:` block puts in that step's
-# environment. $1 workflow file, $2 a regex identifying the step by what it runs.
+# Print the environment VARIABLE names one step's `env:` block sets from a
+# secret. The variable name is the contract — that is what e2e-control.sh reads —
+# and the secret it is set from may legitimately be named differently, so the key
+# is what is collected and `secrets.` presence is only what distinguishes a
+# credential from a `vars.`-sourced model knob. $1 workflow file, $2 a regex
+# identifying the step by what it runs.
 step_env_secrets() {
 	awk -v marker="$2" '
 		function flush() {
@@ -148,8 +152,8 @@ step_env_secrets() {
 		{ buf = buf $0 "\n" }
 		/^        env:$/ { in_env = 1; next }
 		in_env && /^          / {
-			if (match($0, /secrets\.[A-Za-z_][A-Za-z0-9_]*/))
-				names = names substr($0, RSTART + 8, RLENGTH - 8) "\n"
+			if ($0 ~ /secrets\./ && match($0, /[A-Za-z_][A-Za-z0-9_]*:/))
+				names = names substr($0, RSTART, RLENGTH - 1) "\n"
 			next
 		}
 		in_env && /^[[:space:]]*$/ { next }
@@ -177,9 +181,9 @@ check_control() {
 	preflight="$(step_env_secrets "$f" "::error::missing secret")"
 	live="$(step_env_secrets "$f" "just live-control")"
 	[ -n "$preflight" ] ||
-		fail "$f has no step whose env supplies secrets to an up-front credential check (one emitting '::error::missing secret'), so a phase's key going missing would only surface minutes into paid model calls; restore that step with one \`<NAME>: \${{ secrets.<NAME> }}\` env entry per credential the phases in $s read"
+		fail "$f has no step whose env sets a secret-backed variable for an up-front credential check (one emitting '::error::missing secret'), so a phase's key going missing would only surface minutes into paid model calls; restore that step with one \`<NAME>: \${{ secrets.<SECRET> }}\` env entry per credential the phases in $s read"
 	[ -n "$live" ] ||
-		fail "$f has no step whose env supplies secrets to \`just live-control\`, so every control phase would read an unset credential; give that step the same \`<NAME>: \${{ secrets.<NAME> }}\` env entries the credential-check step verifies"
+		fail "$f has no step whose env sets a secret-backed variable for \`just live-control\`, so every control phase would read an unset credential; give that step the same \`<NAME>: \${{ secrets.<SECRET> }}\` env entries the credential-check step verifies"
 
 	while IFS= read -r line; do
 		accepted="$(printf '%s' "$line" | sed -E 's/.*have_env[[:space:]]+"[^"]*"[[:space:]]*//; s/\|\|.*//')"
@@ -198,7 +202,7 @@ check_control() {
 			fi
 		done
 		[ "$satisfied" -eq 1 ] ||
-			fail "$f supplies none of [$accepted] to both its credential-check step and its live step, and $s accepts them for one of its phases, so that harness would drop out mid-run$detail; add one of them as a \`secrets.<NAME>\` env entry to both steps (sync it first with 'just secrets-sync'), or narrow that phase's accepted list to a key CI already has"
+			fail "$f sets none of [$accepted] from a secret in both its credential-check step and its live step, and $s accepts them for one of its phases, so that harness would drop out mid-run$detail; give both steps an env entry keyed by one of those names (\`<NAME>: \${{ secrets.<SECRET> }}\`, synced first with 'just secrets-sync'), or narrow that phase's accepted list to a key CI already has"
 	done < <(grep -E '^[[:space:]]*have_env ' "$s")
 }
 check_control

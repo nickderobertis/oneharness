@@ -119,4 +119,14 @@ grep -q 'ANTHROPIC_API_KEY: ' "$tmp/repo/$workflow" ||
     fail "fixture setup: the preflight case removed ANTHROPIC_API_KEY from the whole file, not just the credential check"
 run_case "a credential missing from the up-front check" 1 "not checked up front"
 
+# The env KEY is the contract, not the secret it is drawn from: a live step that
+# renames the variable still references the right secret, but the phase reading
+# $ANTHROPIC_API_KEY finds nothing.
+build_fixture
+sed -i.bak '/name: Live turn-control e2e/,$ { s/^          ANTHROPIC_API_KEY: /          ANTHROPIC_KEY: /; }' \
+    "$tmp/repo/$workflow"
+grep -q 'ANTHROPIC_KEY: .*secrets\.ANTHROPIC_API_KEY' "$tmp/repo/$workflow" ||
+    fail "fixture setup: the renamed-key case did not leave the live step referencing secrets.ANTHROPIC_API_KEY"
+run_case "a live-step env key renamed away from what the phase reads" 1 "never reaches the live step"
+
 echo "check-e2e-matrix-test: ok"

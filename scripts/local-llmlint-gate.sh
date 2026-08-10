@@ -41,7 +41,7 @@ elif verdict_key=$(llmlint_verdict_key "$root" "$base_commit"); then
   fi
 else
   verdict_key=""
-  echo "llmlint: cannot identify this verdict (no digest tool, cache home, or judge fingerprint); rolling the judge without recording it" >&2
+  echo "llmlint: cannot identify this verdict because the judge would not report its version or effective config; rolling without recording — run 'llmlint config' from $root to see why" >&2
 fi
 
 if [[ -n ${OPENAI_API_KEY:-} ]]; then

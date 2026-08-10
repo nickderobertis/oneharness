@@ -574,7 +574,7 @@ impl Dialogue {
     ///
     /// `auto` is the mode that genuinely wants the narrow grant — it promises to
     /// act on its own within the workspace, not to hand over the machine.
-    fn codex_sandbox_policy(&self) -> Value {
+    pub(crate) fn codex_sandbox_policy(&self) -> Value {
         match self.config.mode {
             PermissionMode::Bypass => json!({"type": "dangerFullAccess"}),
             PermissionMode::Auto => json!({

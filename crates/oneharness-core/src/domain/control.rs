@@ -1136,6 +1136,297 @@ pub struct ControlReport {
 }
 
 #[cfg(test)]
+mod control_mode_parity {
+    //! Every control-capable harness × every [`PermissionMode`]: what a
+    //! controlled run is allowed to do must be what the same mode allows
+    //! without `--control`.
+    //!
+    //! The one confirmed bug in this feature was a cell of this grid. Codex's
+    //! `--control --mode bypass` asked the app-server for `workspaceWrite`
+    //! where `codex exec` under the same mode asks for no sandbox at all, so
+    //! the controlled run was strictly MORE restricted than the uncontrolled
+    //! one — and on a host without unprivileged user namespaces every shell
+    //! call failed before running, so the turn did no work whatsoever. It
+    //! survived because the live suite drives control under `--mode bypass`
+    //! only: the one position that was broken was the only one tested.
+    //!
+    //! So this is a unit assertion over the whole grid rather than another live
+    //! phase. It reads both postures out of the REAL code — the registry's own
+    //! `build_argv` on the uncontrolled side, the protocol client on the
+    //! controlled one — and is driven off the registry, so a harness or a mode
+    //! added later arrives here unasserted and fails.
+
+    use serde_json::Value;
+
+    use super::{absolute_for_test, ControlShape};
+    use crate::domain::dialogue::{Dialogue, DialogueConfig, DialogueStep};
+    use crate::domain::harness::{self, BuildCtx, HarnessSpec, PromptDelivery};
+    use crate::domain::http::permits_action;
+    use crate::domain::mode::PermissionMode;
+
+    /// The working directory both sides are asked about. Absolute on every
+    /// platform, since a `SandboxPolicy` names writable roots by path.
+    const WORK: &str = "/work";
+
+    /// The argv the registry really builds for `mode`, differing from an
+    /// ordinary run in nothing but how the prompt is delivered.
+    fn argv_for(
+        spec: &'static HarnessSpec,
+        mode: PermissionMode,
+        delivery: PromptDelivery,
+    ) -> Vec<String> {
+        (spec.build_argv)(&BuildCtx {
+            bin: spec.default_bin,
+            prompt: "hi",
+            model: None,
+            system: None,
+            resume: None,
+            fork: false,
+            mode,
+            output_format: spec.output_format,
+            schema: None,
+            system_file: None,
+            delivery,
+        })
+    }
+
+    /// The sandbox `codex exec` asks for under `mode`, read off its real argv
+    /// and spelled in the app-server's own `SandboxPolicy` vocabulary so the
+    /// two sides are comparable at all.
+    fn codex_exec_sandbox(argv: &[String]) -> &'static str {
+        if argv
+            .iter()
+            .any(|arg| arg == "--dangerously-bypass-approvals-and-sandbox")
+        {
+            return "dangerFullAccess";
+        }
+        match argv
+            .windows(2)
+            .find(|pair| pair[0] == "--sandbox")
+            .map(|pair| pair[1].as_str())
+        {
+            Some("read-only") => "readOnly",
+            Some("workspace-write") => "workspaceWrite",
+            Some(other) => panic!("`codex exec` asks for an unmapped sandbox `{other}`"),
+            // `exec`'s own default, stated at the registry entry: no flag is
+            // the read-only sandbox, not an absent one.
+            None => "readOnly",
+        }
+    }
+
+    /// The sandbox a controlled codex turn asks its app-server for.
+    fn codex_control_sandbox(mode: PermissionMode) -> String {
+        Dialogue::new(
+            ControlShape::CodexAppServer,
+            DialogueConfig {
+                prompt: "hi".to_string(),
+                cwd: absolute_for_test(WORK),
+                model: None,
+                mode,
+            },
+        )
+        .expect("codex drives its turn over the app-server")
+        .codex_sandbox_policy()["type"]
+            .as_str()
+            .expect("a sandbox names its type")
+            .to_string()
+    }
+
+    /// Whether a driven turn acts without asking under `mode` — answered by the
+    /// real client, through the shape it would really be asked in.
+    fn unattended_under_control(shape: ControlShape, mode: PermissionMode) -> bool {
+        match shape {
+            // ACP offers options and the client picks one (or cancels), so the
+            // answer is read off an actual reply rather than a predicate.
+            ControlShape::AcpCancel => {
+                let mut dialogue = Dialogue::new(
+                    shape,
+                    DialogueConfig {
+                        prompt: "hi".to_string(),
+                        cwd: absolute_for_test(WORK),
+                        model: None,
+                        mode,
+                    },
+                )
+                .expect("ACP drives its turn");
+                let step = dialogue.on_line(
+                    r#"{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"options":[{"optionId":"a","kind":"allow_once"}]}}"#,
+                );
+                let DialogueStep::Send(frames) = step else {
+                    panic!("a permission request is always answered");
+                };
+                let reply: Value = serde_json::from_str(&frames[0]).expect("a JSON reply");
+                reply["result"]["outcome"]["outcome"] == "selected"
+            }
+            // Both HTTP servers carry the posture as one decision: opencode
+            // answers each ask with it, crush declares it on the workspace.
+            _ => permits_action(mode).allows(),
+        }
+    }
+
+    /// Whether the harness's OWN uncontrolled run acts without asking under
+    /// `mode`, read off the argv and environment its registry entry produces.
+    /// The token per harness is that CLI's documented don't-ask switch — the
+    /// same source `build_argv` maps the mode from.
+    fn unattended_without_control(spec: &'static HarnessSpec, mode: PermissionMode) -> bool {
+        let argv = argv_for(spec, mode, PromptDelivery::Argv);
+        let env = spec.mode(mode).map_or(&[][..], |declared| declared.env);
+        match spec.id {
+            "opencode" => argv
+                .iter()
+                .any(|arg| arg == "--dangerously-skip-permissions"),
+            // The allow-all trio, minus any explicit deny: `read-only` allows
+            // every tool and then denies `write`/`shell`, so the trio on its
+            // own does not mean unattended.
+            "copilot" => {
+                argv.iter().any(|arg| arg == "--allow-all-tools")
+                    && !argv.iter().any(|arg| arg == "--deny-tool")
+            }
+            // `GOOSE_MODE`: `approve` gates each call, `smart_approve` and
+            // `auto` both act on their own.
+            "goose" => env
+                .iter()
+                .any(|(_, value)| *value == "auto" || *value == "smart_approve"),
+            // `crush run -q` auto-approves the whole session and carries no
+            // mode on its argv at all, so it is unattended whatever was asked
+            // for — the limitation declared at its registry entry.
+            "crush" => true,
+            other => panic!("`{other}` drives its turn but has no uncontrolled posture reader"),
+        }
+    }
+
+    #[test]
+    fn a_controlled_run_allows_exactly_what_the_same_mode_allows_without_control() {
+        let mut grid: Vec<String> = Vec::new();
+        for spec in harness::all() {
+            let Some(shape) = spec.control else { continue };
+            for mode in PermissionMode::ALL {
+                let verdict = cell(spec, shape, mode);
+                grid.push(format!("{} {} {verdict}", spec.id, mode.as_str()));
+            }
+        }
+        // The whole grid, spelled out: a harness or a mode added later lands
+        // here as a line nobody wrote down, which is the point.
+        assert_eq!(
+            grid,
+            [
+                "claude-code read-only same-argv",
+                "claude-code plan same-argv",
+                "claude-code default same-argv",
+                "claude-code edit same-argv",
+                "claude-code auto same-argv",
+                "claude-code bypass same-argv",
+                "codex read-only same-sandbox:readOnly",
+                "codex plan same-sandbox:readOnly",
+                "codex default same-sandbox:readOnly",
+                "codex edit mode-unsupported",
+                "codex auto same-sandbox:workspaceWrite",
+                "codex bypass same-sandbox:dangerFullAccess",
+                "opencode read-only same-posture:gated",
+                "opencode plan same-posture:gated",
+                "opencode default same-posture:gated",
+                "opencode edit refused-under-control",
+                "opencode auto mode-unsupported",
+                "opencode bypass same-posture:unattended",
+                "goose read-only mode-unsupported",
+                "goose plan mode-unsupported",
+                "goose default same-posture:gated",
+                "goose edit mode-unsupported",
+                "goose auto same-posture:unattended",
+                "goose bypass same-posture:unattended",
+                // `crush run` auto-approves whatever it is asked, so `default`
+                // is the one cell where the two paths differ — in the SAFE
+                // direction, which is the opposite of the codex bug.
+                "crush read-only mode-unsupported",
+                "crush plan mode-unsupported",
+                "crush default stricter-under-control",
+                "crush edit mode-unsupported",
+                "crush auto mode-unsupported",
+                "crush bypass same-posture:unattended",
+                "copilot read-only same-posture:gated",
+                "copilot plan same-posture:gated",
+                "copilot default same-posture:gated",
+                "copilot edit refused-under-control",
+                "copilot auto mode-unsupported",
+                "copilot bypass same-posture:unattended",
+            ]
+        );
+    }
+
+    /// One cell of the grid: assert the two paths agree, and name how.
+    fn cell(spec: &'static HarnessSpec, shape: ControlShape, mode: PermissionMode) -> String {
+        if spec.mode(mode).is_none() {
+            // The harness cannot express this mode at all, so the
+            // command layer refuses the run before anything spawns —
+            // with `--control` or without it. There is no pair here.
+            return "mode-unsupported".to_string();
+        }
+        if shape.drives_turn() && mode == PermissionMode::Edit {
+            // Refused under `--control` rather than answered: no
+            // protocol here carries a sourced way to tell an edit
+            // request from a command one, so no policy is sent at all.
+            return "refused-under-control".to_string();
+        }
+        match shape {
+            // Claude Code's control frame rides its ORDINARY run, so
+            // the mode's flags are the ordinary ones — byte for byte.
+            // Only the prompt's delivery may differ.
+            ControlShape::ClaudeControlRequest => {
+                let mut ordinary = argv_for(spec, mode, PromptDelivery::Argv);
+                let mut controlled = argv_for(spec, mode, PromptDelivery::ControlStream);
+                assert_eq!(ordinary.remove(2), "hi", "{} {mode:?}", spec.id);
+                assert_eq!(
+                    controlled.drain(2..4).collect::<Vec<_>>(),
+                    ["--input-format", "stream-json"],
+                    "{} {mode:?}",
+                    spec.id
+                );
+                assert_eq!(
+                    ordinary, controlled,
+                    "`{}` sends a different policy under --control for {mode:?}",
+                    spec.id
+                );
+                "same-argv".to_string()
+            }
+            // The only per-harness policy the control path recomputes,
+            // and where the bug lived.
+            ControlShape::CodexAppServer => {
+                let ordinary = codex_exec_sandbox(&argv_for(spec, mode, PromptDelivery::Argv));
+                assert_eq!(
+                    codex_control_sandbox(mode),
+                    ordinary,
+                    "`{}` asks for a different sandbox under --control for {mode:?}",
+                    spec.id
+                );
+                format!("same-sandbox:{ordinary}")
+            }
+            shape => {
+                let controlled = unattended_under_control(shape, mode);
+                let ordinary = unattended_without_control(spec, mode);
+                if controlled == ordinary {
+                    return format!(
+                        "same-posture:{}",
+                        if controlled { "unattended" } else { "gated" }
+                    );
+                }
+                // The only difference the invariant tolerates: a CLI
+                // that cannot express the mode at all, where the
+                // controlled turn is STRICTER. That is the safe
+                // direction, and the opposite of the codex bug. The
+                // grid above names which cell it is, so a new harness
+                // cannot arrive here unnoticed.
+                assert!(
+                    !controlled,
+                    "`{}` is more permissive under --control for {mode:?}",
+                    spec.id
+                );
+                "stricter-under-control".to_string()
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

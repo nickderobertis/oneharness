@@ -342,6 +342,13 @@ pub enum OneharnessError {
     #[error("no session store directory: pass --session-dir or set `session_dir` in config (a default under the platform state dir could not be resolved)")]
     ControlNoSessionDir,
 
+    /// `--input` was not a message a redirection can carry. A usage error rather
+    /// than a refusal frame: nothing was asked of the run, so there is nothing
+    /// for it to answer — and a supervisor that mis-spelled its redirection
+    /// needs to be told before the turn it meant to redirect ends.
+    #[error("--input is not a usable redirection: {reason}")]
+    ControlInputInvalid { reason: String },
+
     #[error("--session-dir `{path}` is not valid UTF-8, so it cannot address a session store")]
     SessionDirInvalid {
         // llmlint: ignore[invalid_states_unrepresentable] The rejected path is kept in its lossy display form solely to quote it back; it is never reused for I/O.

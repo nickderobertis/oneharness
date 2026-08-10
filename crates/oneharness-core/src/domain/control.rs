@@ -7,6 +7,24 @@
 //! --session <NAME>` process resolves that socket and asks the run to abort the
 //! current turn while keeping the session alive.
 //!
+//! An interrupt may also carry a **redirection** ([`RedirectInput`]): the user
+//! message that says what to do instead. Stopping alone only costs the turn —
+//! the supervisor still has to start a fresh dispatch to say anything — so the
+//! two travel as one request.
+//!
+//! *Atomic* here means **committed with the abort, delivered at the turn
+//! boundary**, and that is a deliberate design rather than a convenience. Every
+//! one of these protocols drops a message sent into a turn already in flight:
+//! Claude Code silently discards a `user` frame mid-turn (verified live), codex
+//! and ACP refuse a second turn on a thread that has one, and both HTTP servers
+//! queue against a session they are still running. So a supervisor doing this by
+//! hand *has* to stop, wait, and then send — and every one of those waits is a
+//! window where the turn is dead and the message is nobody's. Instead the run
+//! takes ownership of the message in the same operation that aborts the turn:
+//! it is parked before the abort is delivered, released again if the abort
+//! fails, and otherwise written by the run itself the moment the turn ends. A
+//! supervisor that reads `ok` is holding a guarantee, not a race it won.
+//!
 //! This module holds everything with no I/O in it: the wire frames, the
 //! per-harness capability shapes, the sidecar-server declaration and its pool
 //! key, the harness-specific stdin frames, and the report block. The socket,
@@ -28,7 +46,13 @@ use crate::domain::usage::UtcInstant;
 /// to today's shape: `interrupt` is the only verb now, but some harnesses can
 /// also *steer* a turn without ending it (codex `turn/steer`, opencode
 /// `delivery:"steer"`), which is deliberately out of scope here.
-pub const PROTOCOL_VERSION: u32 = 1;
+///
+/// **v2** added the interrupt's optional `input` — the redirection delivered
+/// with the abort — and the answer's `redirected` flag. Both directions are
+/// version-checked on the way in, so a v1 supervisor talking to a v2 run (or the
+/// reverse) is told which side speaks what rather than having a field it does
+/// not understand silently ignored.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// The directory (under the session store) holding one socket per named run.
 pub const CONTROL_DIR: &str = "control";
@@ -506,30 +530,130 @@ impl ControlVerb {
     }
 }
 
-/// One newline-terminated request frame: `{"v":1,"verb":"interrupt"}`.
+/// The most characters a redirection may carry.
+///
+/// Code points, like every other bound in this codebase that a JSON Schema also
+/// has to express. It is a ceiling on a *message a person wrote*, not on a
+/// document: generous for a redirection, and small enough that the encoded frame
+/// stays well inside the 64 KiB bound both ends of the socket read against, so a
+/// redirect that was accepted here can never be one the peer refuses unread.
+pub const MAX_REDIRECT_INPUT_CHARS: usize = 8 * 1024;
+
+/// The user message an interrupt delivers with the abort.
+///
+/// A validated type rather than a `String` because the text is spliced into
+/// *another program's* protocol frame — Claude Code's stdin message stream, a
+/// JSON-RPC `turn/start`, an HTTP prompt body. The three rules below are what
+/// separate "a redirection" from "bytes that reached a harness": it must say
+/// something, it must fit the frame the peer will read, and it must not carry
+/// characters that are not message text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(transparent)]
+pub struct RedirectInput(String);
+
+impl RedirectInput {
+    /// Accept `raw` as a redirection, or say why it cannot be one.
+    pub fn new(raw: impl Into<String>) -> Result<Self, String> {
+        let raw = raw.into();
+        // Blank is not a smaller redirection: it would abort the turn and hand
+        // the agent nothing, which is the plain interrupt wearing a flag.
+        if raw.trim().is_empty() {
+            return Err(
+                "the interrupt's `input` is blank, so it redirects the turn at nothing \
+                        (send the interrupt without `--input` to just stop it)"
+                    .to_string(),
+            );
+        }
+        let chars = raw.chars().count();
+        if chars > MAX_REDIRECT_INPUT_CHARS {
+            return Err(format!(
+                "the interrupt's `input` is {chars} characters, past the \
+                 {MAX_REDIRECT_INPUT_CHARS} a redirection may carry"
+            ));
+        }
+        // Newline, tab and carriage return are message text — a person pasting a
+        // paragraph sends them. Every other control character (C0, DEL, C1) is
+        // not: it reaches a harness inside a protocol frame, where a NUL or an
+        // escape sequence is something other than what was typed.
+        if let Some(bad) = raw
+            .chars()
+            .find(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+        {
+            return Err(format!(
+                "the interrupt's `input` carries the control character U+{:04X}, which is not \
+                 message text",
+                bad as u32
+            ));
+        }
+        Ok(RedirectInput(raw))
+    }
+
+    /// The message, exactly as it was written.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for RedirectInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for RedirectInput {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        RedirectInput::new(String::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
+}
+
+/// One newline-terminated request frame: `{"v":2,"verb":"interrupt"}`, or
+/// `{"v":2,"verb":"interrupt","input":"…"}` to redirect rather than only stop.
 ///
 /// The version is not a field a caller sets: a `ControlRequest` that exists is
 /// one this build speaks, so an unsupported `v` is rejected while parsing
 /// rather than travelling as a value every reader must re-check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ControlRequest {
     v: u32,
     verb: ControlVerb,
+    /// The redirection to deliver with the abort. Absent is a plain stop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    input: Option<RedirectInput>,
 }
 
 impl ControlRequest {
+    /// Stop the turn and hand the agent nothing further.
     #[must_use]
     pub fn interrupt() -> Self {
         ControlRequest {
             v: PROTOCOL_VERSION,
             verb: ControlVerb::Interrupt,
+            input: None,
+        }
+    }
+
+    /// Stop the turn and deliver `input` in the same operation.
+    #[must_use]
+    pub fn redirect(input: RedirectInput) -> Self {
+        ControlRequest {
+            v: PROTOCOL_VERSION,
+            verb: ControlVerb::Interrupt,
+            input: Some(input),
         }
     }
 
     /// The verb requested.
     #[must_use]
-    pub fn verb(self) -> ControlVerb {
+    pub fn verb(&self) -> ControlVerb {
         self.verb
+    }
+
+    /// The redirection this request carries, or `None` for a plain stop.
+    #[must_use]
+    pub fn input(&self) -> Option<&RedirectInput> {
+        self.input.as_ref()
     }
 }
 
@@ -544,6 +668,8 @@ impl<'de> Deserialize<'de> for ControlRequest {
         struct RequestWire {
             v: u32,
             verb: ControlVerb,
+            #[serde(default)]
+            input: Option<RedirectInput>,
         }
         let wire = RequestWire::deserialize(deserializer)?;
         if wire.v != PROTOCOL_VERSION {
@@ -555,6 +681,7 @@ impl<'de> Deserialize<'de> for ControlRequest {
         Ok(ControlRequest {
             v: wire.v,
             verb: wire.verb,
+            input: wire.input,
         })
     }
 }
@@ -593,11 +720,24 @@ impl ControlReason {
 /// error *and* a reason. "Succeeded, and here is why it was refused" is a state
 /// a supervisor would have to defend against, so it is not representable. The
 /// serialized shape is the fixed wire contract either way —
-/// `{"v":1,"ok":true,"mechanism":…}` / `{"v":1,"ok":false,"error":…,"reason":…}`.
+/// `{"v":2,"ok":true,"mechanism":…}` / `{"v":2,"ok":false,"error":…,"reason":…}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlResponse {
+    // llmlint: ignore[invalid_states_unrepresentable] `redirected` is a bool
+    // because BOTH of its values are valid here and neither contradicts
+    // anything else in the variant: a served interrupt either carried a message
+    // or did not, and a supervisor branches on exactly that. Splitting `Served`
+    // into two variants would not remove a representable-but-invalid state —
+    // there is none — while duplicating `mechanism` and every match arm that
+    // reads it. The contradiction this type does exist to forbid, "succeeded,
+    // and here is why it was refused", is the `Served`/`Refused` split above,
+    // and a refusal claiming a redirection is rejected while parsing.
     Served {
         mechanism: ControlShape,
+        /// Whether the request's redirection was committed along with the abort.
+        /// Reported rather than left implicit: a supervisor that sent `input`
+        /// needs to read back that the run took it, not infer it from `ok`.
+        redirected: bool,
     },
     Refused {
         error: String,
@@ -619,6 +759,11 @@ struct ResponseWire {
     ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mechanism: Option<String>,
+    /// Omitted rather than sent as `false`, so a plain interrupt's answer gains
+    /// no field a supervisor did not ask for — only `v` distinguishes it from
+    /// the frame the previous version emitted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    redirected: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -628,10 +773,14 @@ struct ResponseWire {
 impl Serialize for ControlResponse {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let wire = match self {
-            ControlResponse::Served { mechanism } => ResponseWire {
+            ControlResponse::Served {
+                mechanism,
+                redirected,
+            } => ResponseWire {
                 v: PROTOCOL_VERSION,
                 ok: true,
                 mechanism: Some(mechanism.as_str().to_string()),
+                redirected: *redirected,
                 error: None,
                 reason: None,
             },
@@ -639,6 +788,7 @@ impl Serialize for ControlResponse {
                 v: PROTOCOL_VERSION,
                 ok: false,
                 mechanism: None,
+                redirected: false,
                 error: Some(error.clone()),
                 reason: Some(*reason),
             },
@@ -667,7 +817,10 @@ impl<'de> Deserialize<'de> for ControlResponse {
                 D::Error::custom("a successful control frame must carry a mechanism")
             })?;
             return ControlShape::from_wire(&mechanism)
-                .map(|mechanism| ControlResponse::Served { mechanism })
+                .map(|mechanism| ControlResponse::Served {
+                    mechanism,
+                    redirected: wire.redirected,
+                })
                 .ok_or_else(|| {
                     D::Error::custom(format!("unknown control mechanism `{mechanism}`"))
                 });
@@ -675,6 +828,14 @@ impl<'de> Deserialize<'de> for ControlResponse {
         if wire.mechanism.is_some() {
             return Err(D::Error::custom(
                 "a refused control frame must not carry a mechanism",
+            ));
+        }
+        // Nothing was delivered, so a refusal claiming a redirection is a frame
+        // that contradicts itself — refused here rather than decoded into a
+        // supervisor's belief that its message reached the agent.
+        if wire.redirected {
+            return Err(D::Error::custom(
+                "a refused control frame must not claim a redirection was delivered",
             ));
         }
         Ok(ControlResponse::Refused {
@@ -692,7 +853,26 @@ impl ControlResponse {
     /// The documented success frame, carrying the mechanism that served it.
     #[must_use]
     pub fn served(shape: ControlShape) -> Self {
-        ControlResponse::Served { mechanism: shape }
+        ControlResponse::Served {
+            mechanism: shape,
+            redirected: false,
+        }
+    }
+
+    /// The success frame for an interrupt whose redirection was committed with
+    /// the abort.
+    #[must_use]
+    pub fn redirected(shape: ControlShape) -> Self {
+        ControlResponse::Served {
+            mechanism: shape,
+            redirected: true,
+        }
+    }
+
+    /// Whether a redirection rode along with the abort.
+    #[must_use]
+    pub fn is_redirected(&self) -> bool {
+        matches!(self, ControlResponse::Served { redirected, .. } if *redirected)
     }
 
     /// The documented failure frame.
@@ -714,7 +894,7 @@ impl ControlResponse {
     #[must_use]
     pub fn mechanism(&self) -> Option<ControlShape> {
         match self {
-            ControlResponse::Served { mechanism } => Some(*mechanism),
+            ControlResponse::Served { mechanism, .. } => Some(*mechanism),
             ControlResponse::Refused { .. } => None,
         }
     }
@@ -732,7 +912,11 @@ impl ControlResponse {
     #[must_use]
     pub fn record(&self, verb: ControlVerb, at: UtcInstant) -> ControlEvent {
         match self {
-            ControlResponse::Served { .. } => ControlEvent::Served { verb, at },
+            ControlResponse::Served { redirected, .. } => ControlEvent::Served {
+                verb,
+                at,
+                redirected: *redirected,
+            },
             ControlResponse::Refused { reason, .. } => ControlEvent::Refused {
                 verb,
                 at,
@@ -795,6 +979,11 @@ pub fn socket_path(dir: &Path, name: &str) -> PathBuf {
 /// Claude Code's `-p --input-format stream-json` reads one JSON message per
 /// line; the prompt is a `user` message rather than an argv positional, which
 /// is what lets the stdin handle stay open for the control frame afterwards.
+///
+/// The same frame opens a redirected turn: an interrupt's `input` is written
+/// here once the aborted turn's `result` arrives, which is the only moment
+/// Claude Code does not drop it (a `user` message sent mid-turn is silently
+/// discarded — verified live).
 #[must_use]
 pub fn prompt_frame(shape: ControlShape, prompt: &str) -> Option<String> {
     match shape {
@@ -869,12 +1058,23 @@ pub fn is_turn_terminal(shape: ControlShape, line: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum ControlEvent {
+    // llmlint: ignore[invalid_states_unrepresentable] The same reasoning as
+    // `ControlResponse::Served`: both values of `redirected` are valid records
+    // of something that really happened, so there is no invalid state to make
+    // unrepresentable. It is also a published report field — a second `outcome`
+    // value would be a schema change for consumers matching on that tag, which
+    // is a cost with nothing bought.
     /// The mechanism accepted the request.
     Served {
         /// The verb requested.
         verb: ControlVerb,
         /// When the request was handled.
         at: UtcInstant,
+        /// Whether a redirection was committed with the abort. Omitted when it
+        /// was a plain stop, so an older consumer reads the same record it
+        /// always did.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        redirected: bool,
     },
     /// The request was refused, with why.
     Refused {
@@ -905,6 +1105,12 @@ impl ControlEvent {
     #[must_use]
     pub fn is_served(&self) -> bool {
         matches!(self, ControlEvent::Served { .. })
+    }
+
+    /// Whether this request also delivered a redirection.
+    #[must_use]
+    pub fn is_redirected(&self) -> bool {
+        matches!(self, ControlEvent::Served { redirected, .. } if *redirected)
     }
 
     /// Why it was refused, or `None` when it was served.
@@ -1050,19 +1256,71 @@ mod tests {
     #[test]
     fn request_round_trips_on_the_wire() {
         let line = serde_json::to_string(&ControlRequest::interrupt()).unwrap();
-        assert_eq!(line, r#"{"v":1,"verb":"interrupt"}"#);
+        assert_eq!(line, r#"{"v":2,"verb":"interrupt"}"#);
         assert_eq!(parse_request(&line).unwrap(), ControlRequest::interrupt());
+        assert_eq!(ControlRequest::interrupt().input(), None);
     }
 
     #[test]
-    fn parse_rejects_empty_malformed_and_future_versions() {
+    fn a_redirecting_request_carries_its_message_and_round_trips() {
+        let request = ControlRequest::redirect(RedirectInput::new("do X instead").unwrap());
+        let line = serde_json::to_string(&request).unwrap();
+        assert_eq!(line, r#"{"v":2,"verb":"interrupt","input":"do X instead"}"#);
+        let parsed = parse_request(&line).unwrap();
+        assert_eq!(parsed, request);
+        assert_eq!(
+            parsed.input().map(RedirectInput::as_str),
+            Some("do X instead")
+        );
+    }
+
+    #[test]
+    fn a_redirection_must_be_a_message_a_harness_can_be_handed() {
+        // The text is spliced into another program's protocol frame, so the
+        // boundary is where it has to be a message rather than bytes.
+        for (bad, why) in [
+            ("", "blank"),
+            ("   \n\t ", "whitespace only"),
+            ("stop\u{0}now", "a NUL"),
+            ("stop\u{1b}[2Jnow", "an escape sequence"),
+            ("c1\u{85}break", "a C1 control"),
+        ] {
+            assert!(
+                RedirectInput::new(bad).is_err(),
+                "`{bad}` ({why}) should not be a redirection"
+            );
+        }
+        let too_long = "x".repeat(MAX_REDIRECT_INPUT_CHARS + 1);
+        assert!(RedirectInput::new(too_long).is_err());
+        // Counted in characters, not bytes: a multi-byte message right at the
+        // bound is a message, not an overflow.
+        let wide = "é".repeat(MAX_REDIRECT_INPUT_CHARS);
+        assert!(RedirectInput::new(wide).is_ok());
+        // A paragraph is exactly what a redirection usually is.
+        let paragraph = RedirectInput::new("stop that.\n\tdo this instead\r\n").unwrap();
+        assert_eq!(paragraph.as_str(), "stop that.\n\tdo this instead\r\n");
+        assert_eq!(paragraph.to_string(), paragraph.as_str());
+        // And the same rules hold when it arrives from the wire rather than a flag.
+        assert!(serde_json::from_value::<RedirectInput>(serde_json::json!("  ")).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_empty_malformed_and_other_versions() {
         assert!(parse_request("   ").unwrap_err().contains("empty"));
         assert!(parse_request("{ nope").unwrap_err().contains("malformed"));
-        assert!(parse_request(r#"{"v":1,"verb":"steer"}"#)
+        assert!(parse_request(r#"{"v":2,"verb":"steer"}"#)
             .unwrap_err()
             .contains("malformed"));
-        let future = parse_request(r#"{"v":2,"verb":"interrupt"}"#).unwrap_err();
-        assert!(future.contains("version 2"), "{future}");
+        // A v1 supervisor and a v2 run disagree about what a frame can carry, so
+        // each is told which version the other speaks rather than having its
+        // `input` silently dropped.
+        let old = parse_request(r#"{"v":1,"verb":"interrupt"}"#).unwrap_err();
+        assert!(old.contains("version 1"), "{old}");
+        let future = parse_request(r#"{"v":3,"verb":"interrupt"}"#).unwrap_err();
+        assert!(future.contains("version 3"), "{future}");
+        // A redirection that is not a message is refused while parsing, so no
+        // run is ever asked to hand one to a harness.
+        assert!(parse_request(r#"{"v":2,"verb":"interrupt","input":""}"#).is_err());
         // The version cannot be carried past parsing: there is no way to build
         // a request that claims one this build does not speak.
         assert_eq!(ControlRequest::interrupt().verb(), ControlVerb::Interrupt);
@@ -1073,8 +1331,17 @@ mod tests {
         let line = ControlResponse::served(ControlShape::ClaudeControlRequest).to_line();
         assert_eq!(
             line,
-            "{\"v\":1,\"ok\":true,\"mechanism\":\"claude-control-request\"}\n"
+            "{\"v\":2,\"ok\":true,\"mechanism\":\"claude-control-request\"}\n"
         );
+        // A redirection says so, so a supervisor reads back that the run took
+        // its message rather than inferring it from `ok`.
+        let redirected = ControlResponse::redirected(ControlShape::ClaudeControlRequest);
+        assert_eq!(
+            redirected.to_line(),
+            "{\"v\":2,\"ok\":true,\"mechanism\":\"claude-control-request\",\"redirected\":true}\n"
+        );
+        assert!(redirected.is_redirected());
+        assert!(!ControlResponse::served(ControlShape::ClaudeControlRequest).is_redirected());
     }
 
     #[test]
@@ -1082,8 +1349,9 @@ mod tests {
         let line = ControlResponse::refused("no run is listening", ControlReason::NotRunning);
         assert_eq!(
             line.to_line(),
-            "{\"v\":1,\"ok\":false,\"error\":\"no run is listening\",\"reason\":\"not_running\"}\n"
+            "{\"v\":2,\"ok\":false,\"error\":\"no run is listening\",\"reason\":\"not_running\"}\n"
         );
+        assert!(!line.is_redirected());
         assert_eq!(ControlReason::NoActiveTurn.as_str(), "no_active_turn");
         assert_eq!(ControlReason::Unsupported.as_str(), "unsupported");
     }
@@ -1094,14 +1362,17 @@ mod tests {
         // frame claiming success without a mechanism (or a refusal without one)
         // fails loudly instead of decoding into a half-state.
         for bad in [
-            r#"{"v":1,"ok":true}"#,
-            r#"{"v":1,"ok":true,"mechanism":"made-up"}"#,
-            r#"{"v":1,"ok":true,"mechanism":"acp-cancel","error":"nope"}"#,
-            r#"{"v":1,"ok":true,"mechanism":"acp-cancel","reason":"not_running"}"#,
-            r#"{"v":1,"ok":false,"error":"nope","reason":"not_running","mechanism":"acp-cancel"}"#,
-            r#"{"v":1,"ok":false,"reason":"not_running"}"#,
-            r#"{"v":1,"ok":false,"error":"nope"}"#,
-            r#"{"v":2,"ok":true,"mechanism":"claude-control-request"}"#,
+            r#"{"v":2,"ok":true}"#,
+            r#"{"v":2,"ok":true,"mechanism":"made-up"}"#,
+            r#"{"v":2,"ok":true,"mechanism":"acp-cancel","error":"nope"}"#,
+            r#"{"v":2,"ok":true,"mechanism":"acp-cancel","reason":"not_running"}"#,
+            r#"{"v":2,"ok":false,"error":"nope","reason":"not_running","mechanism":"acp-cancel"}"#,
+            r#"{"v":2,"ok":false,"reason":"not_running"}"#,
+            r#"{"v":2,"ok":false,"error":"nope"}"#,
+            // Nothing was stopped, so nothing was redirected either: a refusal
+            // claiming otherwise would tell a supervisor its message landed.
+            r#"{"v":2,"ok":false,"error":"nope","reason":"not_running","redirected":true}"#,
+            r#"{"v":3,"ok":true,"mechanism":"claude-control-request"}"#,
         ] {
             assert!(
                 serde_json::from_str::<ControlResponse>(bad).is_err(),
@@ -1109,9 +1380,14 @@ mod tests {
             );
         }
         let served: ControlResponse =
-            serde_json::from_str(r#"{"v":1,"ok":true,"mechanism":"acp-cancel"}"#).unwrap();
+            serde_json::from_str(r#"{"v":2,"ok":true,"mechanism":"acp-cancel"}"#).unwrap();
         assert_eq!(served.mechanism(), Some(ControlShape::AcpCancel));
         assert!(served.is_ok());
+        assert!(!served.is_redirected());
+        let redirected: ControlResponse =
+            serde_json::from_str(r#"{"v":2,"ok":true,"mechanism":"acp-cancel","redirected":true}"#)
+                .unwrap();
+        assert!(redirected.is_redirected());
     }
 
     #[test]
@@ -1123,13 +1399,26 @@ mod tests {
         assert_eq!(served.verb(), ControlVerb::Interrupt);
         assert_eq!(served.at(), &at);
         assert_eq!(served.reason(), None);
+        assert!(!served.is_redirected());
         let value = serde_json::to_value(&served).unwrap();
         assert_eq!(value["outcome"], "served");
         assert!(value.get("reason").is_none());
+        // Omitted for a plain stop, so a consumer written against v1 reads the
+        // record it always did.
+        assert!(value.get("redirected").is_none(), "{value}");
+
+        let redirected = ControlResponse::redirected(ControlShape::ClaudeControlRequest)
+            .record(ControlVerb::Interrupt, at.clone());
+        assert!(redirected.is_redirected());
+        assert_eq!(
+            serde_json::to_value(&redirected).unwrap()["redirected"],
+            serde_json::json!(true)
+        );
 
         let refused = ControlResponse::refused("nope", ControlReason::NoActiveTurn)
             .record(ControlVerb::Interrupt, at);
         assert_eq!(refused.reason(), Some(ControlReason::NoActiveTurn));
+        assert!(!refused.is_redirected());
         let value = serde_json::to_value(&refused).unwrap();
         assert_eq!(value["outcome"], "refused");
         assert_eq!(value["reason"], "no_active_turn");

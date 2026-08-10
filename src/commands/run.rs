@@ -2245,7 +2245,10 @@ fn drive_http_turn(
     // Addressable from the socket thread only while the turn is in flight, so
     // an interrupt before or after it is an honest `no_active_turn`.
     handle.begin_http_turn(turn.clone());
-    let outcome = http_turn::run(&turn, prompt, mode, timeout);
+    // The driver asks for a redirection each time a turn ends: an interrupt
+    // commits its message to the handle, and this is where the run hands it to a
+    // session that has actually gone idle.
+    let outcome = http_turn::run(&turn, prompt, mode, timeout, &|| handle.take_redirect());
     handle.end_http_turn();
     // The lease is released here (not at process exit), so a server nobody is
     // using can be reclaimed once its linger expires.

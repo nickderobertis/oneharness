@@ -12,11 +12,11 @@
 //! sockets, threads and the clock.
 
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::domain::control::{AbsolutePath, DialAddress};
+use crate::domain::control::{AbsolutePath, DialAddress, RedirectInput};
 use crate::domain::http::{
     self, ClientId, HttpShape, PermissionAsk, PermissionDecision, ResourceId, TurnAddress,
     TurnEvent, TurnOpening,
@@ -45,7 +45,8 @@ pub struct HttpTurn {
 impl HttpTurn {
     /// The protocol this turn is driven over, read off the coordinates it is
     /// addressed by so the two can never disagree.
-    fn shape(&self) -> HttpShape {
+    #[must_use]
+    pub fn shape(&self) -> HttpShape {
         self.address.shape()
     }
 
@@ -292,7 +293,21 @@ fn created_id(body: &str, what: &str) -> io::Result<ResourceId> {
 /// A turn that ends because it was interrupted is still a completed run here:
 /// oneharness records the interrupt from its own side (the socket that served
 /// it), never from what the harness says about how the turn stopped.
-pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duration) -> TurnOutcome {
+///
+/// `take_redirect` is asked once each time a turn ends, and hands over the
+/// message an interrupt committed. Submitting it *here* rather than from the
+/// socket thread is what makes the redirection atomic: both servers queue a
+/// prompt behind the turn they are still running, so a message sent alongside
+/// the abort would land in the turn being cancelled. The interrupt takes
+/// ownership of it instead, and this loop delivers it to a session that is
+/// demonstrably idle.
+pub fn run(
+    turn: &HttpTurn,
+    prompt: &str,
+    mode: PermissionMode,
+    timeout: Duration,
+    take_redirect: &dyn Fn() -> Option<RedirectInput>,
+) -> TurnOutcome {
     let decision = http::permits_action(mode);
     let started = Instant::now();
     let started_at = utc_now();
@@ -323,12 +338,25 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
         }
     };
 
-    let submit_error = Arc::new(Mutex::new(None::<String>));
-    let submitter = {
+    // Which submission a recorded refusal belongs to, and which one is current.
+    //
+    // Numbered rather than a single slot, because interrupting a turn makes its
+    // own prompt request fail: opencode holds that request open for the whole
+    // turn and answers it with a refusal when the turn is aborted. That refusal
+    // describes the turn the supervisor deliberately stopped — treating it as
+    // the run's outcome ends the run before the redirection it committed can
+    // become the next turn, which is the message being lost by another route.
+    let gave_up = Arc::new(Mutex::new(None::<(usize, String)>));
+    let current = Arc::new(AtomicUsize::new(0));
+    // Every prompt this turn submits — its own, and any redirection an
+    // interrupt hands over — goes out on its own thread. Opencode holds the
+    // prompt request open for the whole turn, so submitting from the reader
+    // would stop it following the very stream that says when to stop.
+    let spawn_submit = |prompt: String| {
         let turn = turn.clone();
-        let prompt = prompt.to_string();
         let finished = Arc::clone(&finished);
-        let submit_error = Arc::clone(&submit_error);
+        let gave_up = Arc::clone(&gave_up);
+        let mine = current.load(Ordering::SeqCst);
         std::thread::spawn(move || {
             let request = http::prompt_request(&turn.address, &prompt);
             // A prompt the server would not take means there is no turn to
@@ -344,11 +372,21 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
                 Err(err) => Some(format!("could not submit the prompt: {err}")),
             };
             if let Some(refusal) = refusal {
-                *submit_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(refusal);
+                *gave_up.lock().unwrap_or_else(|e| e.into_inner()) = Some((mine, refusal));
                 finished.store(true, Ordering::SeqCst);
             }
         })
     };
+    // The refusal that belongs to the submission still in flight, if any.
+    let current_failure = || {
+        gave_up
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .filter(|(who, _)| *who == current.load(Ordering::SeqCst))
+            .map(|(_, why)| why.clone())
+    };
+    let mut submitters = vec![spawn_submit(prompt.to_string())];
 
     let mut timed_out = false;
     // Whether the stream ended before the turn did. Buffered events are handed
@@ -358,9 +396,45 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
     // The turn is only over once it has begun: see `TurnEvent::Started`.
     let mut in_flight = false;
     let mut ended = false;
+    // A failure of the subscription itself rather than of any one submission.
+    let mut stream_error: Option<String> = None;
+    // Take over a committed redirection and make it the next turn. `true` when
+    // one was submitted, which is the loop's signal to keep reading rather than
+    // end. Both callers reach this from a *turn* ending — the harness saying so
+    // on the stream, or its prompt request coming back — because those are the
+    // two ways this run learns the session will accept a prompt again.
+    let redirect_next = |submitters: &mut Vec<std::thread::JoinHandle<()>>| {
+        let Some(redirect) = take_redirect() else {
+            return false;
+        };
+        // The new submission is current, so the aborted one's refusal is no
+        // longer the run's outcome — and a `finished` it raised is no longer
+        // this run's reason to stop.
+        current.fetch_add(1, Ordering::SeqCst);
+        finished.store(false, Ordering::SeqCst);
+        submitters.push(spawn_submit(redirect.as_str().to_string()));
+        true
+    };
+
+    // Opencode's aborted turn ends with NO event at all — the stream simply
+    // stops — so a redirection waiting for one would never be delivered and the
+    // run would sit out its whole timeout. There the served interrupt is the
+    // ending, and the message becomes deliverable the moment that abort lands,
+    // which is what this poll picks up. Crush announces its cancellation, so
+    // nothing is deliverable early and this never fires for it.
+    let abort_is_silent = turn.shape().abort_ends_turn_silently();
     while !ended {
+        if abort_is_silent {
+            redirect_next(&mut submitters);
+        }
         if finished.load(Ordering::SeqCst) {
-            break;
+            // A submission gave up. When that was the turn an interrupt
+            // aborted, its redirection is what happens next; otherwise there is
+            // genuinely nothing more to follow.
+            if !redirect_next(&mut submitters) {
+                break;
+            }
+            in_flight = false;
         }
         if Instant::now() >= deadline {
             timed_out = true;
@@ -382,7 +456,16 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
                     TurnEvent::Started => in_flight = true,
                     TurnEvent::Finished => {
                         if in_flight {
-                            ended = true;
+                            // The turn is over, so the session will accept a
+                            // prompt again — the first moment a redirection an
+                            // interrupt committed can actually become a turn.
+                            // Until its own `Started` arrives, the same idle
+                            // this arm read must not end the run again.
+                            if redirect_next(&mut submitters) {
+                                in_flight = false;
+                            } else {
+                                ended = true;
+                            }
                         }
                     }
                     TurnEvent::Ignored => {}
@@ -393,7 +476,7 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
             // arrive, so the run reports why rather than waiting out its
             // timeout on a stream that is an error document.
             StreamPoll::Refused(status) => {
-                *submit_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!(
+                stream_error = Some(format!(
                     "the control server refused the event subscription ({status})"
                 ));
                 break;
@@ -402,7 +485,7 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
             // will ever be read off this stream, so the run says why instead of
             // waiting out its timeout on bytes it refuses to interpret.
             StreamPoll::Unreadable(why) => {
-                *submit_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!(
+                stream_error = Some(format!(
                     "the control server's event subscription cannot be read: {why}"
                 ));
                 break;
@@ -415,12 +498,14 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
             }
         }
     }
-    // A peer can hold the prompt request open longer than the run's budget.
-    // Once that budget expires, joining the request thread would turn a timeout
-    // into an additional REQUEST_TIMEOUT wait. Dropping the handle detaches the
-    // worker; releasing the dispatch's server lease tears down its socket.
+    // A peer can hold a prompt request open longer than the run's budget. Once
+    // that budget expires, joining the request threads would turn a timeout into
+    // an additional REQUEST_TIMEOUT wait. Dropping the handles detaches the
+    // workers; releasing the dispatch's server lease tears down its socket.
     if !timed_out {
-        let _ = submitter.join();
+        for submitter in submitters {
+            let _ = submitter.join();
+        }
     }
 
     // A stream that ended before the turn did is not a turn that ended: the
@@ -428,15 +513,10 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
     // clean finish, which would hand a supervisor an `ok` for work that was
     // cut short — and, unlike a timeout or a refusal, leaves nothing else in
     // the envelope to notice it by.
-    let error = submit_error
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-        .or_else(|| {
-            (closed_early && !ended).then(|| {
-                "the control server closed the event stream before the turn ended".to_string()
-            })
-        });
+    let error = stream_error.or_else(current_failure).or_else(|| {
+        (closed_early && !ended)
+            .then(|| "the control server closed the event stream before the turn ended".to_string())
+    });
     // A timeout's status stays authoritative — nothing else in the envelope
     // says the budget was exceeded — while still carrying whatever was noticed
     // on the way, which is the only place that reason survives.

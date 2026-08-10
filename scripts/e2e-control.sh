@@ -8,6 +8,11 @@
 # check that trusted the harness's own stop reason would pass for the wrong
 # reason.
 #
+# Then the same turn again with `interrupt --input`, which must do BOTH halves:
+# freeze the original work AND carry out the redirected work, on the same
+# dispatch. An interrupt that stopped the turn and quietly dropped the message
+# passes the first phase and fails this one.
+#
 # This is a per-FEATURE live suite (like `e2e-schema.sh`), deliberately separate
 # from the per-harness `e2e-<id>.sh` scripts: each phase drives a real
 # multi-step turn and then waits out a 15-second freeze window, which is far too
@@ -31,7 +36,7 @@ set -euo pipefail
 # shellcheck source=scripts/e2e-lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 
-note "== oneharness live e2e: out-of-band turn control (--control / interrupt) =="
+note "== oneharness live e2e: out-of-band turn control (--control / interrupt [--input]) =="
 need jq
 
 # Wall-clock, formatted. Every phase drives a real multi-step turn, waits out a
@@ -137,7 +142,23 @@ for declaration in "${CONTROLLABLE[@]}"; do
             export GOOSE_PROVIDER="${GOOSE_PROVIDER:-openai}"
             export GOOSE_MODEL="${GOOSE_MODEL:-${GOOSE_E2E_MODEL:-gpt-4o-mini}}"
         fi
-        have_env "Goose provider key" OPENAI_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY || {
+        # `GOOSE_E2E_AUTH` is the same sentinel every other phase accepts, and
+        # goose needs one for the same reason: several of its providers take no
+        # key from the environment at all, so the key check alone retires a phase
+        # on a host whose goose is in fact ready to run. A host saying so
+        # supplies its own GOOSE_PROVIDER/GOOSE_MODEL, which the defaults above
+        # already defer to.
+        #
+        # NOT every provider is a usable substrate for THIS suite, and the trap
+        # is worth naming: goose's own `claude-code` provider authenticates from
+        # the local Claude Code CLI (so it needs no key) but does NOT honor
+        # `session/cancel` — the ACP session is cancelled while the provider's
+        # own subprocess carries on, and the phase below fails on the freeze
+        # assertion having proven nothing about the mechanism (measured twice on
+        # one host: 5 step files became 16, then 20, in the 15s after a served
+        # interrupt). The same `acp-cancel` code path passes on copilot. Pick a
+        # provider goose talks to over the wire.
+        have_env "Goose provider key" GOOSE_E2E_AUTH OPENAI_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY || {
             skipped+=("$id")
             continue
         }
@@ -184,6 +205,8 @@ for declaration in "${CONTROLLABLE[@]}"; do
     note "» $id: a real turn must actually STOP when interrupted"
     phase_started=$SECONDS
     oh_control_enforce "$id" "$mechanism"
+    note "» $id: an interrupt carrying --input must STOP the turn and DO the new work"
+    oh_control_redirect_enforce "$id"
     proven+=("$id")
     note "  $id proven in $(elapsed $((SECONDS - phase_started)))"
 done
@@ -194,4 +217,4 @@ fi
 if [ "${#skipped[@]}" -gt 0 ]; then
     note "NOT PROVEN THIS RUN (no credentials): ${skipped[*]}"
 fi
-note "PASS: turn control honored by every harness proven here: ${proven[*]} (in $(elapsed $SECONDS))"
+note "PASS: turn control and redirection honored by every harness proven here: ${proven[*]} (in $(elapsed $SECONDS))"

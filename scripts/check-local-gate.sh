@@ -48,6 +48,7 @@ case ${1:-} in
     exit 0
     ;;
   config)
+    [[ ${JUDGE_CONFIG_FAIL:-0} == 1 ]] && exit 1
     printf '{"rules":{"stub":"%s"}}\n' "${JUDGE_CONFIG:-baseline}"
     exit 0
     ;;
@@ -224,7 +225,6 @@ assert_file_contains "$primary_harness login --with-api-key" "$log" \
 assert_file_contains 'llmlint --diff --diff-base HEAD' "$log" \
   "llmlint judge was not invoked with the comparison ref"
 
-# --- verdict replay -------------------------------------------------------
 # The judge is non-deterministic: asked the same question twice it can answer
 # differently, which is how gate-green work has been rejected at push time on a
 # finding no earlier roll raised. So a green it already reached must be replayed
@@ -264,6 +264,7 @@ assert_verdict() {
   [[ $rolls -eq $expected_rolls && $verdict_status -eq $expected_status ]] || {
     cat "$tmp/verdict-out" >&2
     echo "check-local-gate: $description; expected $expected_rolls judge roll(s) and exit $expected_status, saw $rolls and exit $verdict_status" >&2
+    echo "  the run's own output is above; compare llmlint_verdict_key's three inputs in scripts/local-llmlint-gate-lib.sh against what this case changed" >&2
     exit 1
   }
   # A replay must cost nothing: the availability probe is itself a billed model
@@ -271,6 +272,7 @@ assert_verdict() {
   [[ $expected_rolls -ne 0 || $probes -eq 0 ]] || {
     cat "$tmp/verdict-out" >&2
     echo "check-local-gate: $description; a replayed verdict still ran $probes availability probe(s)" >&2
+    echo "  move the replay check in scripts/local-llmlint-gate.sh back above the credential/probe block" >&2
     exit 1
   }
 }
@@ -283,6 +285,7 @@ assert_verdict "an unchanged tree, base and judge" 0 0
 grep -q 'replaying the green verdict' "$tmp/verdict-out" || {
   cat "$tmp/verdict-out" >&2
   echo "check-local-gate: a replayed verdict did not say so" >&2
+  echo "  restore the 'replaying the green verdict' notice in scripts/local-llmlint-gate.sh; a silent replay reads as a fresh green" >&2
   exit 1
 }
 
@@ -324,6 +327,7 @@ assert_verdict "a forced roll over a recorded verdict" 1 0
 grep -q 'ONEHARNESS_LLMLINT_REJUDGE=1' "$tmp/verdict-out" || {
   cat "$tmp/verdict-out" >&2
   echo "check-local-gate: a forced roll did not say why it skipped the recorded verdict" >&2
+  echo "  restore the ONEHARNESS_LLMLINT_REJUDGE notice in scripts/local-llmlint-gate.sh; otherwise a forced roll is indistinguishable from a cache miss" >&2
   exit 1
 }
 # ...nor records one, so the next ordinary run still has to judge.
@@ -334,6 +338,34 @@ verdict_gate
 assert_verdict "the run after a forced roll" 1 0
 verdict_gate
 assert_verdict "the run after that green was recorded" 0 0
+
+# A judge that cannot be fingerprinted cannot be identified, so the run says so,
+# rolls, and records nothing — the next run has to roll too. Failing open toward
+# judging is the only safe direction: the alternative replays a verdict that may
+# belong to a different judge.
+printf 'fourth\n' > "$verdict_repo/marker"
+verdict_gate JUDGE_CONFIG_FAIL=1
+assert_verdict "a judge whose configuration cannot be read" 1 0
+grep -q 'cannot identify this verdict' "$tmp/verdict-out" || {
+  cat "$tmp/verdict-out" >&2
+  echo "check-local-gate: an unidentifiable verdict was not reported" >&2
+  echo "  restore the diagnostic on llmlint_verdict_key's failure branch in scripts/local-llmlint-gate.sh" >&2
+  exit 1
+}
+verdict_gate
+assert_verdict "the run after an unidentifiable verdict" 1 0
+
+# A cache root the environment points somewhere unusable — here a relative path,
+# which llmlint_cache_dir refuses — must not take the gate down with it: judge,
+# then say the green went unrecorded.
+verdict_gate XDG_CACHE_HOME=not-an-absolute-path
+assert_verdict "an unusable cache root" 1 0
+grep -q 'could not record the verdict' "$tmp/verdict-out" || {
+  cat "$tmp/verdict-out" >&2
+  echo "check-local-gate: a verdict that could not be recorded was not reported" >&2
+  echo "  restore the llmlint_record_verdict failure diagnostic in scripts/local-llmlint-gate.sh" >&2
+  exit 1
+}
 : > "$log"
 
 git init -q --bare "$tmp/remote.git"

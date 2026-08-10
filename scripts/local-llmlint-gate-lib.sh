@@ -19,15 +19,19 @@ llmlint_primary_harness() {
   printf '%s\n' "$primary_harness"
 }
 
-# Where recorded green verdicts live. A home-less environment cannot cache; the
-# caller reports that and judges afresh rather than failing.
+# Where recorded green verdicts live. The root comes from the environment, so it
+# is validated here: only an absolute, single-line path is accepted, since a
+# relative one would scatter verdict files through whatever directory the gate
+# happened to run in and an embedded newline would truncate the path the caller
+# reads back. A rejected or home-less environment simply cannot cache, which the
+# caller reports and judges afresh through rather than failing.
 llmlint_cache_dir() {
   local base=${XDG_CACHE_HOME:-}
-  if [[ -z $base ]]; then
-    base=${HOME:-}
-    [[ -n $base ]] || return 1
-    base=$base/.cache
-  fi
+  [[ -n $base ]] || base=${HOME:+$HOME/.cache}
+  [[ $base == /* ]] || return 1
+  case $base in
+  *$'\n'*) return 1 ;;
+  esac
   printf '%s/oneharness/llmlint-gate\n' "$base"
 }
 

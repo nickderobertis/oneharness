@@ -16,6 +16,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 fail() {
 	echo "report-scheduled-failure-test: $1" >&2
+	echo "  Next: re-run with \`bash -x scripts/report-scheduled-failure-test.sh\` to see the reporter's own commands. The stubbed \`gh\` records every call it was given in \$tmp/calls, and each case's output is above — a broken assertion here means the reporter files, comments, or refuses differently than a nightly failure needs it to." >&2
 	exit 1
 }
 

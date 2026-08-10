@@ -103,6 +103,14 @@ done <<<"$listed"
 
 # On success `gh` answers with the URL it wrote to, which is the one thing a
 # reader of this log actually wants next.
+#
+# llmlint: ignore-block[changed_behavior_has_e2e] Both branches are driven end to
+# end by `report-scheduled-failure-test.sh` against a `gh` on PATH, but that `gh`
+# is a stub and cannot be anything else: the real boundary here is filing issues
+# into this repository, so a test that crossed it would open a real issue on
+# every run. The stub is exercised as the real thing — the script runs as a
+# subprocess and the assertions read the argv it actually invoked — which is the
+# closest a check can get without making the repository the fixture.
 if [ -n "$existing" ]; then
 	status=0
 	where="$(gh issue comment "$existing" --repo "$REPO" --body "$body" 2>"$said")" || status=$?
@@ -114,3 +122,4 @@ else
 	[ "$status" -eq 0 ] || gh_failed "opening an issue titled \"$TITLE\"" "$status" "$(cat "$said")"
 	echo "report-scheduled-failure: opened a new issue — $where"
 fi
+# llmlint: ignore-end[changed_behavior_has_e2e]

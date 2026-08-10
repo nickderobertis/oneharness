@@ -19294,6 +19294,48 @@ fn a_redirection_refused_by_an_idle_run_is_not_reported_as_delivered() {
 
 #[cfg(unix)]
 #[test]
+fn a_previous_version_supervisor_is_refused_across_the_socket_rather_than_half_understood() {
+    // The v2 bump added `input`, so a v1 supervisor and a v2 run disagree about
+    // what a frame can carry. Driven as raw bytes over the real socket, because
+    // that is exactly what an older `oneharness interrupt` binary puts on it:
+    // the run must say which version it speaks, not accept the frame and drop
+    // the field a v1 client could never have sent — or, worse, a later v3 client
+    // whose `input` means something else.
+    use oneharness_core::domain::control::{socket_path, ControlResponse, PROTOCOL_VERSION};
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+
+    let store = control_store_dir("old-client");
+    let path = socket_path(&store, "mixed");
+    let _listener = oneharness_core::io::control::bind(
+        &path,
+        oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
+        None,
+    )
+    .expect("bound a control socket");
+
+    for other in [PROTOCOL_VERSION - 1, PROTOCOL_VERSION + 1] {
+        let mut stream = UnixStream::connect(&path).expect("connected to the run");
+        stream
+            .write_all(format!("{{\"v\":{other},\"verb\":\"interrupt\"}}\n").as_bytes())
+            .unwrap();
+        let mut reply = String::new();
+        BufReader::new(&stream).read_line(&mut reply).unwrap();
+        let response: ControlResponse = serde_json::from_str(reply.trim()).expect("a v2 answer");
+        assert!(!response.is_ok(), "{reply}");
+        assert!(!response.is_redirected());
+        assert!(
+            reply.contains(&format!("version {other}"))
+                && reply.contains(&format!("v{PROTOCOL_VERSION}")),
+            "the refusal must name both versions: {reply}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
 fn control_run_pins_the_message_stream_argv_and_leaves_the_prompt_off_it() {
     let mock_profile = mock_profile_redirect();
     // The control channel IS the run's stdin, so the prompt cannot ride the

@@ -19056,8 +19056,8 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
     assert_eq!(frame["v"], 2);
     assert_eq!(frame["ok"], true);
     assert_eq!(frame["mechanism"], "claude-control-request");
-    // A plain stop carries no redirection, and says so by omission — the frame
-    // a v1 supervisor reads is unchanged.
+    // A plain stop carries no redirection, and says so by omission: the answer
+    // gains no field a supervisor did not ask for.
     assert!(frame.get("redirected").is_none(), "{frame}");
 
     let output = child.wait_with_output().expect("run did not finish");

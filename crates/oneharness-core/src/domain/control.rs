@@ -750,8 +750,9 @@ struct ResponseWire {
     ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mechanism: Option<String>,
-    /// Omitted rather than sent as `false`, so a plain interrupt's answer is
-    /// byte-identical to the one v1 supervisors read.
+    /// Omitted rather than sent as `false`, so a plain interrupt's answer gains
+    /// no field a supervisor did not ask for — only `v` distinguishes it from
+    /// the frame the previous version emitted.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     redirected: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]

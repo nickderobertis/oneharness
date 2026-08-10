@@ -1154,11 +1154,11 @@ request per connection, one response, connection closed:
 
 `interrupt` is the only verb; `v` is what leaves room to add one later (some
 harnesses can also *steer* a turn without ending it, which is deliberately out of
-scope). The optional fields above are omitted when absent, so a plain stop is
-byte-identical to what the previous version emitted — but `v` itself is checked
-strictly in both directions, so an older `oneharness interrupt` against a newer
-run (or the reverse) is told which side speaks what rather than having a field it
-does not understand silently dropped. The three refusal reasons are distinct
+scope). The optional fields above are omitted when absent, so a plain stop gains
+no field a supervisor did not ask for — `v` is the only thing that changed about
+it. And `v` itself is checked strictly in both directions, so an older
+`oneharness interrupt` against a newer run (or the reverse) is told which side
+speaks what rather than having a field it does not understand silently dropped. The three refusal reasons are distinct
 because a supervisor reacts differently to each: `unsupported` is permanent for
 the harness, `not_running` means the dispatch is gone, `no_active_turn` means the
 run is alive but between turns. `interrupt` exits 0 when the request was served

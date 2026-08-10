@@ -1429,7 +1429,11 @@ _oh_control_redirect_enforce_once() {
     # Half two: the redirected work was DONE — by this same dispatch, with no
     # second `oneharness run`. This is what an interrupt that dropped the message
     # would fail.
-    if ! _oh_wait_for "${OH_TIMEOUT:-300}" test -e "$redirected"; then
+    # A literal bound, like every other wait here: the redirected turn is one
+    # short tool call, and `OH_TIMEOUT` is the RUN's budget — reaching shell
+    # arithmetic through an unvalidated environment value is a different thing
+    # from being handed to oneharness, which validates it.
+    if ! _oh_wait_for 180 test -e "$redirected"; then
         kill "$run_pid" 2>/dev/null || true
         wait "$run_pid" 2>/dev/null || true
         sed 's/^/    /' "$sandbox/run.err" >&2 || true

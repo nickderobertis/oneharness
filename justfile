@@ -343,5 +343,8 @@ lint-llm-diff base="origin/main" *args:
 
 # Local complete-gate tier. Validation is model-free; the judge uses an API key
 # bootstrap when provided, otherwise the committed authenticated fallback chain.
+# A green is recorded per (workspace content, resolved base commit, judge config)
+# and replayed rather than rolled again — `ONEHARNESS_LLMLINT_REJUDGE=1` forces a
+# fresh roll that neither reads nor records one.
 lint-llm-local base:
     scripts/local-llmlint-gate.sh "{{base}}"

@@ -16,6 +16,9 @@ trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin"
 log="$tmp/calls"
 primary_harness=$(llmlint_primary_harness "$root/oneharness.toml")
+# Keep every recorded verdict inside the scratch tree; a case must never read or
+# write the developer's own cache.
+export XDG_CACHE_HOME="$tmp/cache"
 
 assert_file_contains() {
   local expected=$1 file=$2 description=$3
@@ -36,6 +39,19 @@ assert_line_count() {
 
 cat > "$tmp/bin/llmlint" <<'STUB'
 #!/usr/bin/env bash
+# The gate fingerprints the judge before deciding whether to replay a verdict.
+# Those two reads cost nothing and are not judge rolls, so they stay out of the
+# call log the cases below count.
+case ${1:-} in
+  --version)
+    printf 'llmlint %s\n' "${JUDGE_VERSION:-9.9.9}"
+    exit 0
+    ;;
+  config)
+    printf '{"rules":{"stub":"%s"}}\n' "${JUDGE_CONFIG:-baseline}"
+    exit 0
+    ;;
+esac
 printf 'llmlint %s\n' "$*" >> "$CALL_LOG"
 if [[ ${1:-} == --diff && ${JUDGE_FAIL:-0} == 1 ]]; then
   echo 'judge found an issue' >&2
@@ -123,6 +139,10 @@ assert_file_contains \
 assert_file_contains 'llmlint --diff --diff-base HEAD' "$log" \
   "no-key path did not invoke the judge after a successful probe"
 : > "$log"
+# That green was recorded. Every case below shares its tree, base and stub judge,
+# and each is about a path that has to be *reached* rather than replayed, so drop
+# the record; replay has its own section further down.
+rm -rf "$tmp/cache"
 
 CALL_LOG="$log" PATH="$tmp/bin:$PATH" HOME="$tmp/home" PROBE_MODE=unavailable \
   "$root/scripts/local-llmlint-gate.sh" HEAD 2>"$tmp/skip"
@@ -203,6 +223,118 @@ assert_file_contains "$primary_harness login --with-api-key" "$log" \
   "primary harness login was not invoked"
 assert_file_contains 'llmlint --diff --diff-base HEAD' "$log" \
   "llmlint judge was not invoked with the comparison ref"
+
+# --- verdict replay -------------------------------------------------------
+# The judge is non-deterministic: asked the same question twice it can answer
+# differently, which is how gate-green work has been rejected at push time on a
+# finding no earlier roll raised. So a green it already reached must be replayed
+# rather than rolled again, and everything the verdict depends on — the tree, the
+# resolved base commit, the judge configuration — must invalidate it. These cases
+# drive a scratch repository so they can commit and edit a real tree.
+verdict_repo="$tmp/verdict-repo"
+mkdir -p "$verdict_repo/scripts"
+cp "$root/scripts/local-llmlint-gate.sh" "$root/scripts/local-llmlint-gate-lib.sh" \
+  "$verdict_repo/scripts/"
+cp "$root/oneharness.toml" "$verdict_repo/oneharness.toml"
+git -C "$verdict_repo" init -q -b main
+git -C "$verdict_repo" config user.email test@example.com
+git -C "$verdict_repo" config user.name Test
+git -C "$verdict_repo" add -A
+git -C "$verdict_repo" commit -qm initial
+git -C "$verdict_repo" branch base
+
+verdict_status=0
+# Run the gate in the scratch repo against the `base` branch. Extra arguments are
+# `NAME=VALUE` overrides for that one invocation.
+verdict_gate() {
+  : > "$log"
+  verdict_status=0
+  (
+    cd "$verdict_repo"
+    env -u OPENAI_API_KEY CALL_LOG="$log" PATH="$tmp/bin:$PATH" HOME="$tmp/home" \
+      XDG_CACHE_HOME="$tmp/verdicts" "$@" ./scripts/local-llmlint-gate.sh base
+  ) > "$tmp/verdict-out" 2>&1 || verdict_status=$?
+}
+
+# $1 description, $2 expected judge rolls, $3 expected exit status
+assert_verdict() {
+  local description=$1 expected_rolls=$2 expected_status=$3 rolls probes
+  rolls=$(grep -c '^llmlint --diff ' "$log" || true)
+  probes=$(grep -c '^oneharness ' "$log" || true)
+  [[ $rolls -eq $expected_rolls && $verdict_status -eq $expected_status ]] || {
+    cat "$tmp/verdict-out" >&2
+    echo "check-local-gate: $description; expected $expected_rolls judge roll(s) and exit $expected_status, saw $rolls and exit $verdict_status" >&2
+    exit 1
+  }
+  # A replay must cost nothing: the availability probe is itself a billed model
+  # call, so it has to be skipped alongside the judge.
+  [[ $expected_rolls -ne 0 || $probes -eq 0 ]] || {
+    cat "$tmp/verdict-out" >&2
+    echo "check-local-gate: $description; a replayed verdict still ran $probes availability probe(s)" >&2
+    exit 1
+  }
+}
+
+verdict_gate
+assert_verdict "the first run on a fresh cache" 1 0
+
+verdict_gate
+assert_verdict "an unchanged tree, base and judge" 0 0
+grep -q 'replaying the green verdict' "$tmp/verdict-out" || {
+  cat "$tmp/verdict-out" >&2
+  echo "check-local-gate: a replayed verdict did not say so" >&2
+  exit 1
+}
+
+# Content, not just tracked content: the judge reads untracked-unignored files too.
+printf 'first\n' > "$verdict_repo/marker"
+verdict_gate
+assert_verdict "a changed tree" 1 0
+verdict_gate
+assert_verdict "the changed tree, judged and recorded" 0 0
+
+# The key holds the RESOLVED base commit, so a base ref that moves under an
+# unchanged tree invalidates.
+git -C "$verdict_repo" add -A
+git -C "$verdict_repo" commit -qm marker
+git -C "$verdict_repo" branch -f base HEAD
+verdict_gate
+assert_verdict "a base ref moved to a new commit" 1 0
+verdict_gate
+assert_verdict "the moved base, judged and recorded" 0 0
+
+# A rule edit or a plugin bump changes no file in this tree, so only the judge
+# fingerprint can catch it.
+verdict_gate JUDGE_CONFIG=drifted
+assert_verdict "a changed judge configuration" 1 0
+verdict_gate
+assert_verdict "the original judge configuration" 0 0
+
+# A finding is never recorded: the next run must ask again rather than replay a
+# verdict that was red.
+printf 'second\n' > "$verdict_repo/marker"
+verdict_gate JUDGE_FAIL=1
+assert_verdict "a judge finding" 1 4
+verdict_gate
+assert_verdict "the run after a finding" 1 0
+
+# The forced roll neither reads a recorded verdict...
+verdict_gate ONEHARNESS_LLMLINT_REJUDGE=1
+assert_verdict "a forced roll over a recorded verdict" 1 0
+grep -q 'ONEHARNESS_LLMLINT_REJUDGE=1' "$tmp/verdict-out" || {
+  cat "$tmp/verdict-out" >&2
+  echo "check-local-gate: a forced roll did not say why it skipped the recorded verdict" >&2
+  exit 1
+}
+# ...nor records one, so the next ordinary run still has to judge.
+printf 'third\n' > "$verdict_repo/marker"
+verdict_gate ONEHARNESS_LLMLINT_REJUDGE=1
+assert_verdict "a forced roll on an unrecorded tree" 1 0
+verdict_gate
+assert_verdict "the run after a forced roll" 1 0
+verdict_gate
+assert_verdict "the run after that green was recorded" 0 0
+: > "$log"
 
 git init -q --bare "$tmp/remote.git"
 git init -q -b main "$tmp/repo"

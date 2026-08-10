@@ -99,4 +99,24 @@ grep -q 'secrets.CRUSH_E2E_AUTH' "$tmp/repo/$workflow" ||
     fail "fixture setup: the sentinel case did not wire secrets.CRUSH_E2E_AUTH into the workflow"
 run_case "a sentinel standing in for a credential" 1 "CRUSH_E2E_AUTH"
 
+# A key the up-front check verifies but the live step never exports. The
+# preflight passes, then every phase that reads it drops its harness out — the
+# expensive failure the preflight exists to prevent, arriving anyway.
+build_fixture
+sed -i.bak '/name: Live turn-control e2e/,$ { /ANTHROPIC_API_KEY: /d; }' \
+    "$tmp/repo/$workflow"
+grep -q 'ANTHROPIC_API_KEY: ' "$tmp/repo/$workflow" ||
+    fail "fixture setup: the live-step case removed ANTHROPIC_API_KEY from the whole file, not just the live step"
+run_case "a credential missing from the live step" 1 "never reaches the live step"
+
+# The reverse drift: the live step exports it, but the up-front check no longer
+# looks for it, so a run with that secret unset fails minutes in and names the
+# harness rather than the secret to set.
+build_fixture
+sed -i.bak '/name: Verify every controllable harness/,/uses: actions-rust-lang/ { /ANTHROPIC_API_KEY: /d; }' \
+    "$tmp/repo/$workflow"
+grep -q 'ANTHROPIC_API_KEY: ' "$tmp/repo/$workflow" ||
+    fail "fixture setup: the preflight case removed ANTHROPIC_API_KEY from the whole file, not just the credential check"
+run_case "a credential missing from the up-front check" 1 "not checked up front"
+
 echo "check-e2e-matrix-test: ok"

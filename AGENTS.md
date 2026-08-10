@@ -68,6 +68,13 @@ Use the `just` recipes; do not hand-roll equivalents.
   coverage (hard-gated at 95%), build, smoke. Must pass before any commit or PR.
 - `just gate` — pre-push superset: `check`, dependency/license audit, llmlint
   validation, and its merge-base diff judge (skipped locally without Codex/key).
+  The judge is non-deterministic, so its greens are recorded and **replayed**:
+  one workspace content plus one resolved base commit plus one judge config is
+  judged exactly once, and `pre-push` replays what the working tree's own gate
+  already cleared rather than re-rolling a verdict it can lose. Any of the three
+  moving re-judges; only a green is ever recorded, so a finding always asks
+  again. `ONEHARNESS_LLMLINT_REJUDGE=1 just gate` forces a fresh roll that
+  neither reads nor records a verdict.
 - `just test` / `just lint` / `just format` — individual gate steps.
 - `just coverage` — run the workspace suite under `cargo llvm-cov` and fail below
   95% line coverage (the `COVERAGE_MIN` gate, also part of `just check` and CI).

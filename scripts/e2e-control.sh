@@ -96,6 +96,7 @@ have_env() {
 
 proven=()
 skipped=()
+failed=()
 
 for declaration in "${CONTROLLABLE[@]}"; do
     IFS=$'\t' read -r id mechanism default_bin <<<"$declaration"
@@ -202,16 +203,31 @@ for declaration in "${CONTROLLABLE[@]}"; do
         export OH_MODEL="${OH_MODEL:-}"
         ;;
     esac
+    # Each phase runs in a SUBSHELL so a harness that genuinely fails records a
+    # verdict instead of ending the suite. `fail()` exits, and this script's
+    # whole point is a per-harness answer: aborting on the first failure hides
+    # every harness after it — including opencode, goose and crush, which only
+    # ever run here, so one flaky phase would leave three mechanisms unproven
+    # with nothing in the log saying so. Every failure is still fatal, just at
+    # the end, once all of them have been named.
     note "» $id: a real turn must actually STOP when interrupted"
     phase_started=$SECONDS
-    oh_control_enforce "$id" "$mechanism"
+    if ! (oh_control_enforce "$id" "$mechanism"); then
+        failed+=("$id (interrupt)")
+        note "  $id FAILED the interrupt phase after $(elapsed $((SECONDS - phase_started)))"
+        continue
+    fi
     note "» $id: an interrupt carrying --input must STOP the turn and DO the new work"
-    oh_control_redirect_enforce "$id"
+    if ! (oh_control_redirect_enforce "$id"); then
+        failed+=("$id (redirection)")
+        note "  $id FAILED the redirection phase after $(elapsed $((SECONDS - phase_started)))"
+        continue
+    fi
     proven+=("$id")
     note "  $id proven in $(elapsed $((SECONDS - phase_started)))"
 done
 
-if [ "${#proven[@]}" -eq 0 ]; then
+if [ "${#proven[@]}" -eq 0 ] && [ "${#failed[@]}" -eq 0 ]; then
     skip "no controllable harness had credentials after $(elapsed $SECONDS) (unproven: ${skipped[*]})"
 fi
 if [ "${#skipped[@]}" -gt 0 ]; then
@@ -227,5 +243,12 @@ if [ "${#skipped[@]}" -gt 0 ]; then
         fail "no credentials for: ${skipped[*]} (OH_E2E_NO_SKIP is set, so every controllable harness must actually run; proven: ${proven[*]})"
     fi
     note "NOT PROVEN THIS RUN (no credentials): ${skipped[*]}"
+fi
+if [ "${#failed[@]}" -gt 0 ]; then
+    # Printed as one verdict per harness, because that is the thing this suite
+    # exists to answer and a reader should not have to reconstruct it from the
+    # transcript above.
+    [ "${#proven[@]}" -gt 0 ] && note "PROVEN: ${proven[*]}"
+    fail "turn control or redirection NOT honored by: ${failed[*]} (in $(elapsed $SECONDS))"
 fi
 note "PASS: turn control and redirection honored by every harness proven here: ${proven[*]} (in $(elapsed $SECONDS))"

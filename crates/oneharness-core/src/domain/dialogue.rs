@@ -557,18 +557,35 @@ impl Dialogue {
         "never"
     }
 
-    /// The narrowest sandbox that still lets the mode do what it promises:
-    /// writes confined to the working directory under a permissive mode,
-    /// read-only otherwise.
+    /// The narrowest sandbox that still lets the mode do what it promises, in
+    /// Codex's own spelling (sourced from its app-server `SandboxPolicy`).
+    ///
+    /// `bypass` must mean here exactly what it means on `codex exec`, where it
+    /// maps to `--dangerously-bypass-approvals-and-sandbox` — no sandbox at all.
+    /// Confining it to `workspaceWrite` instead made `--control --mode bypass`
+    /// strictly more restricted than the same mode without `--control`, and the
+    /// difference is not cosmetic: Codex enforces `workspaceWrite` by launching
+    /// every shell call under bubblewrap in its own network namespace, and where
+    /// that namespace cannot be set up the call fails BEFORE running
+    /// (`bwrap: loopback: Failed RTM_NEWADDR` on a GitHub Actions runner), so
+    /// the turn does no work whatsoever. It went unnoticed because a developer
+    /// box where the sandbox does not bite behaves identically either way;
+    /// `e2e-control.sh` caught it the first time it ran somewhere it does.
+    ///
+    /// `auto` is the mode that genuinely wants the narrow grant — it promises to
+    /// act on its own within the workspace, not to hand over the machine.
     fn codex_sandbox_policy(&self) -> Value {
-        if self.permits_action() {
-            json!({
+        match self.config.mode {
+            PermissionMode::Bypass => json!({"type": "dangerFullAccess"}),
+            PermissionMode::Auto => json!({
                 "type": "workspaceWrite",
                 "writableRoots": [self.config.cwd.to_string()],
                 "networkAccess": false,
-            })
-        } else {
-            json!({"type": "readOnly"})
+            }),
+            PermissionMode::ReadOnly
+            | PermissionMode::Plan
+            | PermissionMode::Default
+            | PermissionMode::Edit => json!({"type": "readOnly"}),
         }
     }
 }
@@ -728,13 +745,10 @@ mod tests {
         assert_eq!(turn["method"], "turn/start");
         assert_eq!(turn["params"]["threadId"], "th-1");
         assert_eq!(turn["params"]["input"][0]["text"], "do the thing");
-        // A permissive mode confines writes to the working directory rather
-        // than handing over full access.
-        assert_eq!(turn["params"]["sandboxPolicy"]["type"], "workspaceWrite");
-        assert_eq!(
-            turn["params"]["sandboxPolicy"]["writableRoots"][0],
-            absolute_text_for_test(WORK)
-        );
+        // `bypass` asks for no sandbox, exactly as it does on `codex exec`.
+        // Anything narrower runs the shell under bubblewrap, which does no work
+        // at all where its network namespace cannot be set up.
+        assert_eq!(turn["params"]["sandboxPolicy"]["type"], "dangerFullAccess");
 
         // The turn id arrives on the event stream and is what interrupt addresses.
         d.on_line(r#"{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"th-1","turn":{"id":"tu-9"}}}"#);
@@ -925,6 +939,51 @@ mod tests {
         assert_eq!(codex.codex_sandbox_policy()["type"], "readOnly");
     }
 
+    /// Every mode's sandbox, pinned against Codex's own `SandboxPolicy` shape.
+    ///
+    /// `bypass` is the one that matters: it must ask for no sandbox, matching
+    /// what the same mode maps to on `codex exec`. A `workspaceWrite` here runs
+    /// each shell call under bubblewrap in a fresh network namespace, and a host
+    /// that cannot create one fails every call before it executes — a turn that
+    /// silently does nothing rather than an error anyone can see.
+    #[test]
+    fn codex_sandbox_follows_the_mode_the_run_asked_for() {
+        let policy = |mode| {
+            Dialogue::new(
+                ControlShape::CodexAppServer,
+                DialogueConfig { mode, ..config() },
+            )
+            .unwrap()
+            .codex_sandbox_policy()
+        };
+
+        let bypass = policy(PermissionMode::Bypass);
+        assert_eq!(bypass["type"], "dangerFullAccess");
+        assert!(
+            bypass.get("writableRoots").is_none(),
+            "full access takes no roots: {bypass}"
+        );
+
+        // `auto` is the mode that does want the narrow grant.
+        let auto = policy(PermissionMode::Auto);
+        assert_eq!(auto["type"], "workspaceWrite");
+        assert_eq!(auto["writableRoots"][0], absolute_text_for_test(WORK));
+        assert_eq!(auto["networkAccess"], false);
+
+        for mode in [
+            PermissionMode::ReadOnly,
+            PermissionMode::Plan,
+            PermissionMode::Default,
+            PermissionMode::Edit,
+        ] {
+            assert_eq!(
+                policy(mode)["type"],
+                "readOnly",
+                "{mode:?} promises no mutation"
+            );
+        }
+    }
+
     #[test]
     fn codex_answers_an_unrecognized_request_without_granting_it() {
         // Answering is mandatory — an unanswered request stalls the turn — but a
@@ -1061,7 +1120,7 @@ mod tests {
         // Negotiated in the run's own posture and directory, exactly as the
         // first turn was — a redirection is not a chance to widen either.
         assert_eq!(next["params"]["cwd"], absolute_text_for_test(WORK));
-        assert_eq!(next["params"]["sandboxPolicy"]["type"], "workspaceWrite");
+        assert_eq!(next["params"]["sandboxPolicy"]["type"], "dangerFullAccess");
         assert_eq!(next["params"]["approvalPolicy"], "never");
 
         // The new turn is interruptible in its own right, once codex names it.

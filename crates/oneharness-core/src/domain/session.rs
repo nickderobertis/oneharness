@@ -51,10 +51,13 @@ pub struct SessionRecord {
     /// is a usage error ([`harness_conflict`]).
     ///
     /// Typed as [`HarnessIdentity`] rather than a `String` so the store cannot
-    /// hold text that names no selectable unit: a record whose `harness` does not
-    /// parse fails to deserialize, and [`crate::io::session::read`] reports no
-    /// record at all — the same fresh start a legacy record gets, never a resume
-    /// against an id nothing can run.
+    /// hold text that is not even a well-formed id: such a record fails to
+    /// deserialize, and [`crate::io::session::read`] reports no record at all —
+    /// the same fresh start a legacy record gets. A record whose variant is
+    /// merely *unconfigured* still parses (see [`HarnessIdentity`]) — a config
+    /// edit must not corrupt the store — and is caught by [`harness_conflict`]
+    /// instead, which is the check that needs it to still say what it was bound
+    /// to.
     pub harness: HarnessIdentity,
     /// The harness's native continuation token (its emitted session id) — what
     /// the next run resumes with.

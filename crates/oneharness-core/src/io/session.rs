@@ -197,10 +197,10 @@ mod tests {
 
     #[test]
     fn read_ignores_a_record_bound_to_an_unrunnable_identity() {
-        // Well-formed JSON whose `harness` names no selectable unit — a harness
-        // dropped from the registry, or a hand-edited store. There is nothing to
-        // resume it against, so it reads as absent and the run starts fresh
-        // rather than carrying an id no candidate can ever match.
+        // Well-formed JSON whose `harness` is not a well-formed identity — a
+        // harness dropped from the registry, or a hand-edited store. There is
+        // nothing to resume it against, so it reads as absent and the run starts
+        // fresh rather than carrying an id no candidate can ever match.
         let dir = temp_dir("unrunnable");
         for harness in ["gone-harness", "claude-code:", "claude-code:a:b", ""] {
             let path = dir.join("x.json");

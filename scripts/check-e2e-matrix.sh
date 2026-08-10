@@ -177,9 +177,9 @@ check_control() {
 	preflight="$(step_env_secrets "$f" "::error::missing secret")"
 	live="$(step_env_secrets "$f" "just live-control")"
 	[ -n "$preflight" ] ||
-		fail "$f has no step whose env supplies secrets to an up-front credential check (one emitting '::error::missing secret'), so a phase's key going missing would only surface minutes into paid model calls"
+		fail "$f has no step whose env supplies secrets to an up-front credential check (one emitting '::error::missing secret'), so a phase's key going missing would only surface minutes into paid model calls; restore that step with one \`<NAME>: \${{ secrets.<NAME> }}\` env entry per credential the phases in $s read"
 	[ -n "$live" ] ||
-		fail "$f has no step whose env supplies secrets to \`just live-control\`, so every control phase would read an unset credential"
+		fail "$f has no step whose env supplies secrets to \`just live-control\`, so every control phase would read an unset credential; give that step the same \`<NAME>: \${{ secrets.<NAME> }}\` env entries the credential-check step verifies"
 
 	while IFS= read -r line; do
 		accepted="$(printf '%s' "$line" | sed -E 's/.*have_env[[:space:]]+"[^"]*"[[:space:]]*//; s/\|\|.*//')"

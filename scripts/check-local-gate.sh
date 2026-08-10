@@ -307,11 +307,15 @@ verdict_gate
 assert_verdict "the moved base, judged and recorded" 0 0
 
 # A rule edit or a plugin bump changes no file in this tree, so only the judge
-# fingerprint can catch it.
+# fingerprint can catch it — and neither does upgrading llmlint itself.
 verdict_gate JUDGE_CONFIG=drifted
 assert_verdict "a changed judge configuration" 1 0
 verdict_gate
 assert_verdict "the original judge configuration" 0 0
+verdict_gate JUDGE_VERSION=9.9.10
+assert_verdict "an upgraded judge" 1 0
+verdict_gate
+assert_verdict "the original judge build" 0 0
 
 # A finding is never recorded: the next run must ask again rather than replay a
 # verdict that was red.

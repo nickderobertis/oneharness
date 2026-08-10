@@ -35,16 +35,6 @@ llmlint_cache_dir() {
   printf '%s/oneharness/llmlint-gate\n' "$base"
 }
 
-llmlint_digest() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum | cut -d' ' -f1
-  elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 | cut -d' ' -f1
-  else
-    return 1
-  fi
-}
-
 # The identity of one judge verdict: the workspace content, the resolved base
 # commit, and the judge itself. Content is digested through a scratch index so
 # the caller's staged state is never touched, and it covers untracked-unignored
@@ -65,7 +55,10 @@ llmlint_verdict_key() {
   rm -f "$index"
   version=$(cd "$root" && llmlint --version) || return 1
   config=$(cd "$root" && llmlint config) || return 1
-  printf '%s\0%s\0%s\0%s\0' "$tree" "$base_commit" "$version" "$config" | llmlint_digest
+  # Digested by git, which this function already depends on and every platform
+  # running the gate therefore has — the tree half above is a git hash too.
+  printf '%s\0%s\0%s\0%s\0' "$tree" "$base_commit" "$version" "$config" |
+    git hash-object --stdin
 }
 
 # Print the recorded verdict's path, or fail when this key has none.

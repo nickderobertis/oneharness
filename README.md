@@ -1217,6 +1217,17 @@ That is an unusable *credential*, not an absent mechanism: with
 and the cancel route then freezes the turn. `oh_control_enforce crush` is what
 holds that proof.
 
+**Copilot's phase asks copilot, not the environment.** `copilot login` stores its
+token in the OS credential store, so a host with no `GH_TOKEN`/`GITHUB_TOKEN`
+runs copilot perfectly well — and a token check retires the phase on exactly such
+a host, which is how copilot's control path came to ship with no live alarm at
+all. The gate is a zero-turn ACP `session/new` (`oh_copilot_login_ready`): a
+session that opens is a usable login, `Authentication required` is not, and
+neither spends AI credits. Copilot also blocks until the client answers
+`session/request_permission`, so the step files the freeze assertion counts exist
+only because oneharness answered it — the permission path is proven by the same
+run rather than assumed.
+
 A declared mechanism means oneharness **drives the turn** over that protocol
 rather than through the harness's ordinary headless run: it spawns
 `codex app-server` / `copilot --acp` / `goose acp` as the run's own child,

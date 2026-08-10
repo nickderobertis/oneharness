@@ -6,17 +6,22 @@ name: E2E (Turn control)
 # work was carried out by the same dispatch (scripts/e2e-control.sh).
 #
 # This is the per-FEATURE counterpart to the per-harness e2e workflows, like
-# e2e-schema.yml — but unlike every one of those it is **workflow_dispatch
-# only**, deliberately. Each phase drives a real multi-step turn and then waits
-# out a 15-second freeze window, twice, for six harnesses; that is far too slow
-# to run on every PR, which is exactly why AGENTS.md keeps `just live-control`
-# outside both the gate and the per-PR e2e matrix. Being dispatch-only is also
-# why scripts/check-e2e-matrix.sh does not list it: that gate's contract is
-# about the PR matrix, and this workflow has none to drift from.
+# e2e-schema.yml. It is the only place goose, opencode and crush can be proven
+# at all, since their providers authenticate from keys a developer box
+# generally does not carry — so the suite has to be reachable BEFORE a change
+# to the control path merges, not only after.
 #
-# Run it from the Actions tab after any change to the control path — it is the
-# only place goose, opencode and crush can be proven, since their providers
-# authenticate from keys a developer box generally does not carry.
+# Hence the narrow `pull_request` path filter rather than dispatch-only. Each
+# phase drives a real multi-step turn and then waits out a 15-second freeze
+# window, twice, for six harnesses, so this must never join the ordinary per-PR
+# e2e matrix — the filter below lists only the control feature's own sources, so
+# it fires when that path changes and stays silent for every other PR.
+# workflow_dispatch is kept for on-demand reruns once this is on main.
+#
+# scripts/check-e2e-matrix.sh deliberately does not list this workflow: that
+# gate's contract is the shared PR matrix (which harnesses run on which
+# platforms), and this feature suite has its own paths and its own unix-only
+# platform set, with nothing shared to drift from.
 #
 # `OH_E2E_NO_SKIP` matters more here than anywhere else: e2e-control.sh notes
 # and continues past a harness whose credentials are missing rather than
@@ -24,9 +29,30 @@ name: E2E (Turn control)
 # two harnesses out of six. With it set, any harness that does not run is RED.
 #
 # Security: same posture as the per-harness workflows — gated to the canonical
-# repo, and dispatch-only means it never runs for a fork PR head at all.
+# repo, and the job `if` additionally requires a pull request's head to live in
+# this repository, so a fork PR head never runs it and the tokens below are
+# never reachable by code from a fork (GitHub already withholds secrets from
+# fork pull requests; the `if` is defense in depth). A fork can therefore edit
+# this file freely.
 
 on:
+  # Only the control feature's own sources: the wire frames and capability
+  # shapes, the socket and the two turn drivers the redirection travels
+  # through, the `interrupt` verb, and this suite itself. A PR that touches
+  # none of these does not run a minute of this.
+  pull_request:
+    paths:
+      - crates/oneharness-core/src/domain/control.rs
+      - crates/oneharness-core/src/domain/dialogue.rs
+      - crates/oneharness-core/src/domain/http.rs
+      - crates/oneharness-core/src/io/control.rs
+      - crates/oneharness-core/src/io/http_turn.rs
+      - crates/oneharness-core/src/io/server_pool.rs
+      - src/commands/interrupt.rs
+      - scripts/e2e-control.sh
+      - scripts/e2e-lib.sh
+      - scripts/install-e2e.sh
+      - .github/workflows/e2e-control.yml
   workflow_dispatch:
     inputs:
       os:
@@ -55,13 +81,17 @@ env:
 jobs:
   live:
     name: turn-control live e2e (${{ matrix.os }})
-    if: github.repository == 'nickderobertis/oneharness'
+    if: >-
+      github.repository == 'nickderobertis/oneharness' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     strategy:
       fail-fast: false
       # Unix-only: the control channel is a unix socket, and e2e-control.sh
-      # exits early on Windows. Defaults to ubuntu; 'all' adds macos.
+      # exits early on Windows. Linux on a pull request; a dispatch can pick a
+      # single OS or 'all' to add macos.
       matrix:
-        os: ${{ fromJSON(inputs.os == 'all' && '["ubuntu-latest","macos-latest"]' || format('["{0}"]', inputs.os)) }}
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && (inputs.os == 'all' && '["ubuntu-latest","macos-latest"]' || format('["{0}"]', inputs.os)) || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:

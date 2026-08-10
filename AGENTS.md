@@ -79,9 +79,17 @@ Use the `just` recipes; do not hand-roll equivalents.
   check` and CI). `just smoke-live` is the opt-in variant that hits installed,
   authenticated harnesses with real model calls — never in the gate or CI.
 - `just live-control` — the per-feature live turn-control suite: interrupt a real
-  multi-step turn on every control-capable harness and prove the work stopped.
-  Slow by nature (a 15s freeze window per harness), so it is opt-in and outside
-  both the gate and the per-PR e2e matrix.
+  multi-step turn on every control-capable harness, prove the work stopped, then
+  interrupt again with `--input` and prove the redirected work ran. Slow by
+  nature (two 15s freeze windows per harness), so it is opt-in locally and
+  outside the gate and the shared per-PR e2e matrix — but NOT outside CI: goose,
+  opencode and crush authenticate from provider keys a developer box generally
+  does not carry, so `e2e-control.yml` (which supplies all of them) is the only
+  place those three are ever proven. It runs on a `pull_request` whose paths
+  touch the control feature's own sources, and on demand; a PR touching anything
+  else does not run a minute of it. In CI `OH_E2E_NO_SKIP` makes a harness that
+  drops out for want of a credential RED — without it the suite reports success
+  having proven nothing for whichever harnesses went unauthenticated.
 - `just sdk-check` / `just python-sdk-check` — generated-contract drift, strict
   language lint/type/test coverage, and packed-artifact subprocess e2e for the
   Node and Python SDKs. The Python gate runs on the oldest supported Python 3.9.

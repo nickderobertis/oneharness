@@ -745,9 +745,6 @@ mod tests {
         assert_eq!(turn["method"], "turn/start");
         assert_eq!(turn["params"]["threadId"], "th-1");
         assert_eq!(turn["params"]["input"][0]["text"], "do the thing");
-        // `bypass` asks for no sandbox, exactly as it does on `codex exec`.
-        // Anything narrower runs the shell under bubblewrap, which does no work
-        // at all where its network namespace cannot be set up.
         assert_eq!(turn["params"]["sandboxPolicy"]["type"], "dangerFullAccess");
 
         // The turn id arrives on the event stream and is what interrupt addresses.
@@ -940,12 +937,6 @@ mod tests {
     }
 
     /// Every mode's sandbox, pinned against Codex's own `SandboxPolicy` shape.
-    ///
-    /// `bypass` is the one that matters: it must ask for no sandbox, matching
-    /// what the same mode maps to on `codex exec`. A `workspaceWrite` here runs
-    /// each shell call under bubblewrap in a fresh network namespace, and a host
-    /// that cannot create one fails every call before it executes — a turn that
-    /// silently does nothing rather than an error anyone can see.
     #[test]
     fn codex_sandbox_follows_the_mode_the_run_asked_for() {
         let policy = |mode| {

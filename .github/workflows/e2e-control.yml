@@ -1,40 +1,9 @@
 name: E2E (Turn control)
 
-# Live end-to-end check for the turn-control feature: for EVERY harness that
-# declares a control mechanism, interrupt a real multi-step turn and prove the
-# work stopped, then interrupt again with `--input` and prove the redirected
-# work was carried out by the same dispatch (scripts/e2e-control.sh).
-#
-# This is the per-FEATURE counterpart to the per-harness e2e workflows, like
-# e2e-schema.yml. It is the only place goose, opencode and crush can be proven
-# at all, since their providers authenticate from keys a developer box
-# generally does not carry — so the suite has to be reachable BEFORE a change
-# to the control path merges, not only after.
-#
-# Hence the narrow `pull_request` path filter rather than dispatch-only. Each
-# phase drives a real multi-step turn and then waits out a 15-second freeze
-# window, twice, for six harnesses, so this must never join the ordinary per-PR
-# e2e matrix — the filter below lists only the control feature's own sources, so
-# it fires when that path changes and stays silent for every other PR.
-# workflow_dispatch is kept for on-demand reruns once this is on main.
-#
-# This workflow is outside that gate's shared PR matrix (its paths and its
-# unix-only platform set are its own), but scripts/check-e2e-matrix.sh still
-# holds the two contracts restated below to their sources: every path in the
-# filter must exist, and every credential a phase in e2e-control.sh reads must
-# be supplied here.
-#
-# `OH_E2E_NO_SKIP` matters more here than anywhere else: e2e-control.sh notes
-# and continues past a harness whose credentials are missing rather than
-# retiring the suite, so without it a run could report success having exercised
-# two harnesses out of six. With it set, any harness that does not run is RED.
-#
-# Security: same posture as the per-harness workflows — gated to the canonical
-# repo, and the job `if` additionally requires a pull request's head to live in
-# this repository, so a fork PR head never runs it and the tokens below are
-# never reachable by code from a fork (GitHub already withholds secrets from
-# fork pull requests; the `if` is defense in depth). A fork can therefore edit
-# this file freely.
+# CI is the only place goose, opencode and crush can be proven at all, since
+# their providers authenticate from keys a developer box generally does not
+# carry — so the suite has to be reachable BEFORE a change to the control path
+# merges, not only after.
 
 on:
   # Only the control feature's own sources: the wire frames and capability

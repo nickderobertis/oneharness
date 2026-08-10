@@ -20239,6 +20239,66 @@ fn interrupt_on_a_harness_without_a_mechanism_reports_unsupported() {
 }
 
 #[test]
+fn interrupt_resolves_a_variant_qualified_record_to_its_harness() {
+    // Since a session record binds to the whole identity, the store's `harness`
+    // is `cursor:alternate`, not `cursor`. Control is a property of the *adapter*,
+    // so the pre-dispatch refusal has to read the registry entry off the
+    // identity's base: looking the composed id up as a bare harness id finds
+    // nothing, which silently downgrades a knowable `unsupported` into the
+    // `not_running` a supervisor only learns after spending a dispatch.
+    let store = control_store_dir("variant-interrupt");
+    let cwd = control_store_dir("variant-interrupt-cwd");
+    let write_record = |name: &str, harness: &str| {
+        let record = serde_json::json!({
+            "schema_version": session::SCHEMA_VERSION,
+            "name": name,
+            "project": cwd.display().to_string(),
+            "harness": harness,
+            "token": "th-1",
+            "created": "2026-08-08T00:00:00Z",
+            "updated": "2026-08-08T00:00:00Z",
+        });
+        let path = oneharness_core::io::session::session_path(&store, &cwd, name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_string(&record).unwrap()).unwrap();
+    };
+    let interrupt = |name: &str| {
+        json_stdout(&run(
+            &[
+                "interrupt",
+                "--session",
+                name,
+                "--session-dir",
+                &store.display().to_string(),
+                "--cwd",
+                &cwd.display().to_string(),
+                "--compact",
+            ],
+            &[],
+        ))
+    };
+
+    // A variant of a harness with no control mechanism: refused from the store,
+    // and the diagnostic names the adapter the caller can act on.
+    write_record("bound", "cursor:alternate");
+    let frame = interrupt("bound");
+    assert_eq!(frame["ok"], false);
+    assert_eq!(frame["reason"], "unsupported", "{frame}");
+    assert!(frame["error"].as_str().unwrap().contains("cursor"));
+
+    // A variant of a control-*capable* harness is not refused from the store: the
+    // socket is the authority, and with no run listening the answer is that no
+    // turn is in flight — never `unsupported`.
+    write_record("live", "claude-code:alternate");
+    let frame = interrupt("live");
+    assert_eq!(frame["ok"], false);
+    assert_eq!(frame["reason"], "not_running", "{frame}");
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
 fn a_run_without_control_opens_no_socket_and_keeps_its_argv() {
     let mock_profile = mock_profile_redirect();
     // The non-breaking guarantee: absent `--control`, nothing changes — no

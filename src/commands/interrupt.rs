@@ -64,6 +64,20 @@ fn interrupt() -> ControlRequest {
 /// Answering from the store matters because it is the one refusal a supervisor
 /// can get *before* wasting a dispatch: a harness that can never be interrupted
 /// says so whether or not a run happens to be alive.
+///
+/// The store read is validated at the boundary by the record's own type: a
+/// `harness` that is not a well-formed
+/// [`oneharness_core::domain::harness::HarnessIdentity`] fails to deserialize and
+/// [`session_io::read`] reports no record, so the only value reaching the
+/// registry here is one parsing already proved names a harness.
+///
+/// Deliberately NOT filtered through
+/// [`oneharness_core::domain::session::resumable`], unlike the `run` path. That
+/// filter drops a record whose *token* this build will not resume;
+/// control capability is a property of the adapter, which every store version
+/// records faithfully — a `0.1` record's bare `"cursor"` answers "can this ever be
+/// interrupted?" exactly as well as a qualified one. Dropping it would make a
+/// supervisor spend a dispatch to learn what the store already knew.
 fn refuse_unsupported(
     dir: &std::path::Path,
     cwd: &std::path::Path,

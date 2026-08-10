@@ -20239,6 +20239,54 @@ fn interrupt_on_a_harness_without_a_mechanism_reports_unsupported() {
 }
 
 #[test]
+fn interrupt_reads_control_support_through_a_variant_qualified_identity() {
+    // A record a variant-aware run wrote binds `cursor:alternate`, not `cursor`.
+    // Control is a property of the registry harness the variant points at, so
+    // the store must still answer `unsupported`. Matching the whole stored id
+    // against registry names instead finds nothing, and the supervisor is sent
+    // to the socket for a refusal it could have had before spending a dispatch.
+    let store = control_store_dir("unsupported-variant");
+    let cwd = control_store_dir("unsupported-variant-cwd");
+    let record = serde_json::json!({
+        "schema_version": session::SCHEMA_VERSION,
+        "name": "bound",
+        "project": cwd.display().to_string(),
+        "harness": "cursor:alternate",
+        "token": "th-1",
+        "created": "2026-08-08T00:00:00Z",
+        "updated": "2026-08-08T00:00:00Z",
+    });
+    let path = oneharness_core::io::session::session_path(&store, &cwd, "bound");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, serde_json::to_string(&record).unwrap()).unwrap();
+
+    let output = run(
+        &[
+            "interrupt",
+            "--session",
+            "bound",
+            "--session-dir",
+            &store.display().to_string(),
+            "--cwd",
+            &cwd.display().to_string(),
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let frame = json_stdout(&output);
+    assert_eq!(frame["ok"], false);
+    assert_eq!(
+        frame["reason"], "unsupported",
+        "a variant of an uncontrollable harness is still uncontrollable"
+    );
+    assert!(frame["error"].as_str().unwrap().contains("cursor"));
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
 fn a_run_without_control_opens_no_socket_and_keeps_its_argv() {
     let mock_profile = mock_profile_redirect();
     // The non-breaking guarantee: absent `--control`, nothing changes — no

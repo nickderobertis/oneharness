@@ -186,9 +186,10 @@ pub struct InterruptArgs {
     /// only a stop, and the session has to be redispatched to say anything.
     ///
     /// The run takes ownership of the message when it accepts the interrupt, so
-    /// there is no window in which the turn is dead and the message is lost; the
-    /// answer frame's `redirected` says it did. Refused when it is blank, over
-    /// 8192 characters, or carries characters that are not message text.
+    /// there is no window in which the turn is dead and the message is lost, and
+    /// the answer frame says so. Refused (exit 2) when it is blank, past the
+    /// length bound the refusal names, or carrying characters that are not
+    /// message text.
     #[arg(long, value_name = "TEXT")]
     pub input: Option<String>,
 

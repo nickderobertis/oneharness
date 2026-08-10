@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::domain::control::{AbsolutePath, DialAddress};
+use crate::domain::control::{AbsolutePath, DialAddress, RedirectInput};
 use crate::domain::http::{
     self, ClientId, HttpShape, PermissionAsk, PermissionDecision, ResourceId, TurnAddress,
     TurnEvent, TurnOpening,
@@ -305,7 +305,7 @@ pub fn run(
     prompt: &str,
     mode: PermissionMode,
     timeout: Duration,
-    take_redirect: &dyn Fn() -> Option<String>,
+    take_redirect: &dyn Fn() -> Option<RedirectInput>,
 ) -> TurnOutcome {
     let decision = http::permits_action(mode);
     let started = Instant::now();
@@ -407,7 +407,7 @@ pub fn run(
                             // this arm read must not end the run again.
                             match take_redirect() {
                                 Some(redirect) => {
-                                    submitters.push(spawn_submit(redirect));
+                                    submitters.push(spawn_submit(redirect.as_str().to_string()));
                                     in_flight = false;
                                 }
                                 None => ended = true,

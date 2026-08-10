@@ -220,15 +220,14 @@ Use the `just` recipes; do not hand-roll equivalents.
   through the pooled server, not the harness CLI: permission requests must be
   answered; opencode is terminal only on idle after admission; and cwd stays a
   per-turn value. Pool keys exclude all per-turn and per-thread settings.
-  `interrupt --input` carries a **redirection** with the abort (protocol v2:
-  request `input`, answer + report `redirected`). Atomic means *committed with
-  the abort, delivered at the turn boundary*, never written alongside it: every
-  mechanism drops or queues a message sent into a live turn, so the run parks it
-  before the abort goes out, hands it back on any failure, and opens the next
-  turn itself — through the same frame/route that opened the first one, which is
-  why no declared mechanism has to refuse `--input`. So every backend must keep
-  its turn (and stdin) OPEN when a redirection is pending; a mechanism whose
-  terminal signal ends the run unconditionally would drop it.
+  `interrupt --input` carries a **redirection** with the abort. Atomic means
+  *committed with the abort, delivered at the turn boundary*, never written
+  alongside it: every mechanism drops or queues a message sent into a live turn,
+  so the run parks it before the abort goes out, hands it back on any failure,
+  and opens the next turn itself — through the same frame/route that opened the
+  first one, which is why no declared mechanism has to refuse `--input`. So every
+  backend must keep its turn (and stdin) OPEN while a redirection is pending; a
+  mechanism whose terminal signal ends the run unconditionally would drop it.
   `gate <id>` is the odd one out: the runtime pre-tool gate an
   installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It

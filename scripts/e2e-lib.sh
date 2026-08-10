@@ -1304,9 +1304,10 @@ _oh_control_mechanism_matches() {
 # before the interrupt landed) exactly like `oh_control_enforce`.
 #
 #   $1 harness id
-# llmlint: ignore-block[tool_output_is_signal] The phase's progress lines are how a
-# CI log attributes a failure inside a multi-minute two-turn exchange to the step
-# that produced it — the same contract every other oh_*_enforce helper here follows.
+#
+# Its progress lines fall under the `tool_output_is_signal` ignore-block opened
+# above `oh_control_enforce`: a CI log needs them to attribute a failure inside a
+# multi-minute two-turn exchange to the step that produced it.
 oh_control_redirect_enforce() {
     local id="$1"
     local attempt attempts=3
@@ -1462,7 +1463,6 @@ _oh_control_redirect_enforce_once() {
     rm -rf "$sandbox"
     return 0
 }
-# llmlint: ignore-end[tool_output_is_signal]
 
 # How many observable work artifacts the agent has produced so far. A glob
 # rather than `ls | grep` so a name shellcheck worries about can never miscount.

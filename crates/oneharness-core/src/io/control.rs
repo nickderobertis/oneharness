@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::domain::control::{
     interrupt_frame, prompt_frame, ControlEvent, ControlReason, ControlRequest, ControlResponse,
-    ControlShape, ControlVerb,
+    ControlShape, ControlVerb, RedirectInput,
 };
 use crate::domain::dialogue::Dialogue;
 use crate::domain::http::HttpShape;
@@ -126,7 +126,7 @@ pub struct ControlHandle {
     /// the message belongs to nobody. Only the stdin and HTTP backends use it —
     /// a dialogue holds its own, because opening the replacement turn is a
     /// protocol decision rather than a write.
-    redirect: Mutex<Option<String>>,
+    redirect: Mutex<Option<RedirectInput>>,
 }
 
 impl ControlHandle {
@@ -254,7 +254,7 @@ impl ControlHandle {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn redirect(&self) -> std::sync::MutexGuard<'_, Option<String>> {
+    fn redirect(&self) -> std::sync::MutexGuard<'_, Option<RedirectInput>> {
         self.redirect
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -265,7 +265,7 @@ impl ControlHandle {
     /// Taken rather than read: it is delivered exactly once, so a turn that ends
     /// again — or ends badly — costs one attempt instead of looping.
     #[must_use]
-    pub fn take_redirect(&self) -> Option<String> {
+    pub fn take_redirect(&self) -> Option<RedirectInput> {
         self.redirect().take()
     }
 
@@ -289,7 +289,7 @@ impl ControlHandle {
         let Some(input) = self.take_redirect() else {
             return false;
         };
-        let Some(frame) = prompt_frame(self.shape, &input) else {
+        let Some(frame) = prompt_frame(self.shape, input.as_str()) else {
             return false;
         };
         match self.write_line(&frame) {
@@ -350,11 +350,7 @@ impl ControlHandle {
     /// Serve one request, recording it for the report either way.
     pub fn serve(&self, request: &ControlRequest) -> ControlResponse {
         let response = match request.verb() {
-            ControlVerb::Interrupt => self.interrupt(
-                request
-                    .input()
-                    .map(crate::domain::control::RedirectInput::as_str),
-            ),
+            ControlVerb::Interrupt => self.interrupt(request.input()),
         };
         self.events
             .lock()
@@ -371,7 +367,7 @@ impl ControlHandle {
     /// "stopped, and your message is the run's to deliver" and "nothing
     /// happened, and your message is still yours". There is no third state where
     /// the turn is dead and the redirection was dropped.
-    fn interrupt(&self, redirect: Option<&str>) -> ControlResponse {
+    fn interrupt(&self, redirect: Option<&RedirectInput>) -> ControlResponse {
         /// How the live backend delivers an abort, decided under the backend
         /// lock and carried out after it is released: an HTTP abort is a
         /// network request and a frame is a write to the child, and neither
@@ -402,7 +398,7 @@ impl ControlHandle {
                     // driver reads it when the aborted turn ends, and the server
                     // holds the session either way, so it cannot be lost in the
                     // gap the abort opens.
-                    *self.redirect() = redirect.map(str::to_string);
+                    *self.redirect() = redirect.cloned();
                     Delivery::Request(turn)
                 }
                 None => return no_active_turn(),
@@ -417,7 +413,7 @@ impl ControlHandle {
             },
             Backend::Stdin => match interrupt_frame(self.shape, &self.next_request_id()) {
                 Some(frame) => {
-                    *self.redirect() = redirect.map(str::to_string);
+                    *self.redirect() = redirect.cloned();
                     Delivery::Frames(vec![frame])
                 }
                 None => {

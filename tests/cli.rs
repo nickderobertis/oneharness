@@ -19221,7 +19221,8 @@ fn interrupt_refuses_a_redirection_that_is_not_a_message() {
     // A NUL is deliberately absent: no argv can carry one, so the boundary that
     // would refuse it is never reached — that rule is pinned on the type, where
     // a wire frame can express it.
-    for bad in ["", "   ", "stop\u{1b}[2Jnow"] {
+    let overlong = "x".repeat(oneharness_core::domain::control::MAX_REDIRECT_INPUT_CHARS + 1);
+    for bad in ["", "   ", "stop\u{1b}[2Jnow", overlong.as_str()] {
         let output = run(
             &[
                 "interrupt",
@@ -19241,6 +19242,54 @@ fn interrupt_refuses_a_redirection_that_is_not_a_message() {
             "a usage error emits no control frame: {output:?}"
         );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_redirection_refused_by_an_idle_run_is_not_reported_as_delivered() {
+    // The other half of the guarantee: a supervisor whose interrupt was refused
+    // still OWNS its message. A refusal that claimed a redirection — or a run
+    // that kept the message and never carried it — would leave the message
+    // silently nowhere, which is the failure this whole feature exists to close.
+    // Driven against a live listener with no turn in flight, so the refusal is
+    // the run's own `no_active_turn` rather than a missing socket.
+    use oneharness_core::domain::control::socket_path;
+    let store = control_store_dir("redirect-idle");
+    let store_arg = store.display().to_string();
+    let listener = oneharness_core::io::control::bind(
+        &socket_path(&store, "idle"),
+        oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
+        None,
+    )
+    .expect("bound an idle control socket");
+
+    let output = run(
+        &[
+            "interrupt",
+            "--session",
+            "idle",
+            "--session-dir",
+            &store_arg,
+            "--input",
+            "do X instead",
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let frame = json_stdout(&output);
+    assert_eq!(frame["ok"], false);
+    assert_eq!(frame["reason"], "no_active_turn");
+    assert!(
+        frame.get("redirected").is_none(),
+        "a refusal must not claim the message was delivered: {frame}"
+    );
+    // And the run kept nothing: a turn starting later must not inherit a
+    // redirection nobody was told had been accepted.
+    assert!(!listener.handle_ref().has_pending_redirect());
+
+    drop(listener);
+    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -20268,23 +20317,51 @@ fn control_with_more_than_one_prompt_is_a_usage_error() {
 }
 
 #[test]
-fn the_readme_documents_the_control_protocol_version_in_force() {
-    // The frames in the README are what a supervisor copies; a `v` that drifted
-    // from the constant would have them writing frames the run refuses.
+fn the_readme_documents_the_control_protocol_frames_in_force() {
+    // The frames in the README are what a supervisor copies, so they are
+    // reconciled against the types that really encode them rather than being a
+    // second hand-maintained copy of the protocol: a `v` bump, a renamed field,
+    // or an `input`/`redirected` that stopped being emitted would leave a
+    // supervisor writing frames the run refuses — or waiting for an
+    // acknowledgement it never sends.
+    use oneharness_core::domain::control::{
+        ControlReason, ControlRequest, ControlResponse, ControlShape, RedirectInput,
+    };
     let readme =
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md")).unwrap();
     let section = readme
         .split("### Turn control")
         .nth(1)
         .expect("README documents turn control");
-    let expected = format!(
-        r#"{{"v":{},"verb":"interrupt"}}"#,
-        oneharness_core::domain::control::PROTOCOL_VERSION
-    );
-    assert!(
-        section.contains(&expected),
-        "README does not show the current control request frame ({expected})"
-    );
+
+    // Rendered from the types, with the placeholders the README uses for the
+    // values a supervisor fills in, so only the SHAPE is compared.
+    let plain = serde_json::to_string(&ControlRequest::interrupt()).unwrap();
+    let redirecting =
+        serde_json::to_string(&ControlRequest::redirect(RedirectInput::new("R").unwrap()))
+            .unwrap()
+            .replace(r#""R""#, r#""<redirection>""#);
+    let served = ControlResponse::served(ControlShape::ClaudeControlRequest)
+        .to_line()
+        .trim_end()
+        .replace("claude-control-request", "<shape-id>");
+    let redirected = ControlResponse::redirected(ControlShape::ClaudeControlRequest)
+        .to_line()
+        .trim_end()
+        .replace("claude-control-request", "<shape-id>");
+    // The refusal frame is shown once with its reasons as an alternation, so it
+    // is reconciled up to the reason value — which has its own coverage test.
+    let refused = ControlResponse::refused("<msg>", ControlReason::Unsupported).to_line();
+    let refused = refused
+        .split_once(r#""reason":""#)
+        .map(|(head, _)| format!(r#"{head}"reason":""#))
+        .expect("a refusal frame names its reason");
+    for frame in [plain, redirecting, served, redirected, refused] {
+        assert!(
+            section.contains(&frame),
+            "README does not show the current control frame ({frame})"
+        );
+    }
 }
 
 #[cfg(unix)]

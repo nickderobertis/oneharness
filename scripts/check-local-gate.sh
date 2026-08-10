@@ -370,6 +370,71 @@ grep -q 'could not record the verdict' "$tmp/verdict-out" || {
   echo "  restore the llmlint_record_verdict failure diagnostic in scripts/local-llmlint-gate.sh" >&2
   exit 1
 }
+
+# A recorded verdict is external input the next run trusts enough to skip the
+# judge entirely, so the whole record is validated before it counts. Each case
+# damages the stored record the way a store really gets damaged — a write
+# interrupted partway, a leftover from another key or base, a file some later
+# format wrote — and the run has to judge again rather than replay it, then
+# re-record so one bad file is not a permanent miss.
+rm -rf "$tmp/verdicts"
+verdict_gate
+assert_verdict "the green the record cases start from" 1 0
+verdict_gate
+assert_verdict "that record before it is damaged" 0 0
+
+# The one record the scratch store holds for the current key. The section above
+# cleared the store, so a second file here means a key was written that the
+# unchanged tree, base and judge should never have produced.
+verdict_entry() {
+  local entries=("$tmp/verdicts/oneharness/llmlint-gate"/*.verdict)
+  [[ ${#entries[@]} -eq 1 && -f ${entries[0]} ]] || {
+    echo "check-local-gate: expected exactly one recorded verdict, found: ${entries[*]}" >&2
+    return 1
+  }
+  printf '%s\n' "${entries[0]}"
+}
+entry=$(verdict_entry) || exit 1
+{
+  IFS= read -r format_line
+  IFS= read -r key_line
+  IFS= read -r base_line
+  IFS= read -r stamp_line
+} < "$entry"
+
+# $1 description; the remaining arguments are the lines written over the stored
+# record, or none at all for an empty file.
+assert_record_rejected() {
+  local description=$1
+  shift
+  if [[ $# -eq 0 ]]; then
+    : > "$entry"
+  else
+    printf '%s\n' "$@" > "$entry"
+  fi
+  verdict_gate
+  assert_verdict "$description" 1 0
+  verdict_gate
+  assert_verdict "$description, after that run re-recorded it" 0 0
+}
+
+assert_record_rejected "an empty record"
+assert_record_rejected "a write interrupted after its key line" "$format_line" "$key_line"
+assert_record_rejected "a record belonging to another verdict key" \
+  "$format_line" "key 0000000000000000000000000000000000000000" "$base_line" "$stamp_line"
+assert_record_rejected "a record judged against another base commit" \
+  "$format_line" "$key_line" "base 0000000000000000000000000000000000000000" "$stamp_line"
+assert_record_rejected "a record a later format wrote" \
+  "oneharness-llmlint-verdict 2" "$key_line" "$base_line" "$stamp_line"
+assert_record_rejected "a record whose timestamp is unreadable" \
+  "$format_line" "$key_line" "$base_line" "recorded whenever"
+assert_record_rejected "a record with a line appended after its timestamp" \
+  "$format_line" "$key_line" "$base_line" "$stamp_line" "recorded 2000-01-01T00:00:00Z"
+
+# The record the gate itself wrote still replays, so the validation above rejects
+# damaged records rather than every record.
+verdict_gate
+assert_verdict "the undamaged record the last run wrote" 0 0
 : > "$log"
 
 git init -q --bare "$tmp/remote.git"

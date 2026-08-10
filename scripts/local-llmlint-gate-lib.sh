@@ -35,6 +35,10 @@ llmlint_cache_dir() {
   printf '%s/oneharness/llmlint-gate\n' "$base"
 }
 
+# The first line of every recorded verdict, so a reader can tell a record it
+# understands from a half-written one or one a later format wrote.
+LLMLINT_VERDICT_FORMAT='oneharness-llmlint-verdict 1'
+
 # The identity of one judge verdict: the workspace content, the resolved base
 # commit, and the judge itself. Content is digested through a scratch index so
 # the caller's staged state is never touched, and it covers untracked-unignored
@@ -61,23 +65,57 @@ llmlint_verdict_key() {
     git hash-object --stdin
 }
 
-llmlint_replay_verdict() {
-  local dir entry
+# When this key's green was recorded, if the store holds a record that belongs to
+# it. A verdict file is external input the caller trusts enough to skip the judge
+# entirely, so the whole record is validated before it counts: the format it was
+# written with, the key it was recorded under, the base commit it was judged
+# against, and a well-formed timestamp — four lines, no more. Anything else (a
+# half-written file, a leftover from another key or base, a later format) is not
+# an error but a miss, so the caller judges again; failing toward the judge is the
+# only safe direction.
+llmlint_recorded_verdict() {
+  local key=$1 base_commit=$2 dir entry format recorded_key recorded_base stamp
   dir=$(llmlint_cache_dir) || return 1
-  entry="$dir/$1.verdict"
-  [[ -s $entry ]] || return 1
-  printf '%s\n' "$entry"
+  entry="$dir/$key.verdict"
+  [[ -f $entry ]] || return 1
+  # The trailing read must FAIL: a fifth line means this is not the record this
+  # reader understands, whoever wrote it.
+  {
+    IFS= read -r format &&
+      IFS= read -r recorded_key &&
+      IFS= read -r recorded_base &&
+      IFS= read -r stamp &&
+      ! IFS= read -r _
+  } <"$entry" || return 1
+  [[ $format == "$LLMLINT_VERDICT_FORMAT" ]] || return 1
+  [[ $recorded_key == "key $key" ]] || return 1
+  [[ $recorded_base == "base $base_commit" ]] || return 1
+  stamp=${stamp#recorded }
+  # Spelled as a glob rather than a regex: bash 3.2 is still the system shell on
+  # macOS, where this gate runs.
+  [[ $stamp == [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z ]] || return 1
+  printf '%s\n' "$stamp"
 }
 
 llmlint_record_verdict() {
-  local key=$1 base_commit=$2 dir
+  local key=$1 base_commit=$2 dir entry temp stamp
   dir=$(llmlint_cache_dir) || return 1
   mkdir -p "$dir" || return 1
-  printf 'recorded %s against base %s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$base_commit" >"$dir/$key.verdict" || return 1
+  stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ) || return 1
+  entry="$dir/$key.verdict"
+  # Written beside the entry and moved onto it, so a reader never sees a record
+  # this writer was interrupted halfway through.
+  temp=$(mktemp "$entry.XXXXXX") || return 1
+  if ! printf '%s\nkey %s\nbase %s\nrecorded %s\n' \
+    "$LLMLINT_VERDICT_FORMAT" "$key" "$base_commit" "$stamp" >"$temp" ||
+    ! mv -f "$temp" "$entry"; then
+    rm -f "$temp"
+    return 1
+  fi
   # A key no tree has matched in a month cannot match one again; drop it rather
-  # than growing the cache without bound.
-  find "$dir" -name '*.verdict' -mtime +30 -delete 2>/dev/null || true
+  # than growing the cache without bound. The glob also reaps a scratch file an
+  # interrupted write left behind.
+  find "$dir" -name '*.verdict*' -mtime +30 -delete 2>/dev/null || true
 }
 
 llmlint_judge_available() {

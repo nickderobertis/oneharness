@@ -35,8 +35,8 @@ verdict_key=""
 if [[ ${ONEHARNESS_LLMLINT_REJUDGE:-0} == 1 ]]; then
   echo "llmlint: ONEHARNESS_LLMLINT_REJUDGE=1; rolling the judge without reading or recording a verdict" >&2
 elif verdict_key=$(llmlint_verdict_key "$root" "$base_commit"); then
-  if verdict_entry=$(llmlint_replay_verdict "$verdict_key"); then
-    echo "llmlint: replaying the green verdict for this tree, base ${base_commit:0:12}, and judge config ($(cat "$verdict_entry")); set ONEHARNESS_LLMLINT_REJUDGE=1 to roll again" >&2
+  if recorded_at=$(llmlint_recorded_verdict "$verdict_key" "$base_commit"); then
+    echo "llmlint: replaying the green verdict recorded $recorded_at for this tree, base ${base_commit:0:12}, and judge config; set ONEHARNESS_LLMLINT_REJUDGE=1 to roll again" >&2
     exit 0
   fi
 else

@@ -1037,7 +1037,12 @@ oh_control_mode_enforce() {
         : # the turn ended, which is what this phase asserts
         ;;
     *)
-        sed 's/^/    /' "$sandbox/run.err" >&2 || true
+        # The same evidence an inconclusive interrupt attempt leaves, for the
+        # same reason: the frames are where the harness says whether it was
+        # asked to do anything, and `text` says whether it answered — which is
+        # what separates "the mode's policy never arrived" from "it answered and
+        # only its ENDING never came".
+        _oh_control_evidence "$sandbox" "$report"
         rm -rf "$sandbox"
         fail "$id: a controlled turn under --mode default did not end cleanly (status=${status:-<no readable status in the report>}) — the harness may be waiting on a permission request oneharness did not answer, or the mode's own policy did not reach the controlled launch. Next: run \`oneharness run --harness $id --control --session probe --mode default --prompt hi\` and read the report's \`results[0].stdout\` for the last protocol frame it saw; if the harness asked permission and nothing answered, the fix is in \`domain::dialogue\`, and if it never asked, compare the launch argv against \`domain::control\`'s control_mode_parity grid"
         ;;
@@ -1222,6 +1227,15 @@ _oh_control_evidence() {
         note "  evidence: last frames the harness sent —"
         jq -r '.results[0].stdout // ""' "$report" 2>/dev/null \
             | tail -n 15 | cut -c1-400 | sed 's/^/    /' >&2 || true
+        # And the kinds of frame it sent at all, deduped. A turn that never ends
+        # is usually a recognizer that no longer matches rather than a harness
+        # that did nothing, and the `type` a run never saw is invisible in a
+        # tail of the ones it did — this is the whole vocabulary in one line.
+        note "  evidence: frame types seen —"
+        jq -r '.results[0].stdout // ""' "$report" 2>/dev/null \
+            | jq -R -r 'fromjson? | .type // empty' 2>/dev/null \
+            | sort -u | tr '\n' ' ' | sed 's/^/    /' >&2 || true
+        printf '\n' >&2
     else
         note "  evidence: no parseable report was written (the run had not finished)"
     fi

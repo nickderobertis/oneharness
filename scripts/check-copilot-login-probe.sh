@@ -117,4 +117,17 @@ noise="$(_oh_acp_answer "$work/never-written.jsonl" 2>&1)" && \
     fail_check "a transcript that does not exist yet was read as an answer"
 [ -z "$noise" ] || fail_check "polling a not-yet-created transcript printed: $noise"
 
+# 8. A deadline that is not a positive whole number is a broken probe, and a
+#    broken probe fails the same way an unauthenticated copilot does — the
+#    phase retires for a reason that has nothing to do with copilot. Loud, then.
+for bad in "thirty" "5s" "-5" "0"; do
+    # shellcheck disable=SC2016  # $1/$2 are the inner shell's arguments, not this one's
+    complaint="$(env -u GH_TOKEN -u GITHUB_TOKEN -u COPILOT_GITHUB_TOKEN -u COPILOT_E2E_AUTH \
+        OH_COPILOT_LOGIN_PROBE_SECONDS="$bad" \
+        bash -c 'source "$1"; oh_copilot_login_ready "$2"' _ "$root/scripts/e2e-lib.sh" "$work/bin/copilot" 2>&1)" \
+        && fail_check "OH_COPILOT_LOGIN_PROBE_SECONDS='$bad' was accepted as a deadline"
+    printf '%s' "$complaint" | grep -q 'OH_COPILOT_LOGIN_PROBE_SECONDS' \
+        || fail_check "OH_COPILOT_LOGIN_PROBE_SECONDS='$bad' was rejected without saying so: $complaint"
+done
+
 echo "check-copilot-login-probe: ok"

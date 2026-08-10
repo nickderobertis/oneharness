@@ -1326,8 +1326,6 @@ _oh_wait_for() {
     return 1
 }
 
-# --- copilot credential detection ------------------------------------------
-
 # The ACP `initialize` frame `oh_copilot_login_ready` opens with. Declared here
 # so the probe's two frames read together.
 _OH_ACP_INITIALIZE='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false}}}}'
@@ -1360,7 +1358,17 @@ oh_copilot_login_ready() {
     command -v "$bin" >/dev/null 2>&1 || return 1
     command -v jq >/dev/null 2>&1 || return 1
 
+    # The deadline bounds two loops and a `-lt` comparison, so a value that is
+    # not a positive whole number is a broken probe rather than a slow one — and
+    # it would surface as `oh_copilot_login_ready` returning "no login", i.e. as
+    # copilot being retired again for a reason that has nothing to do with
+    # copilot. Loud, like every other bad setting this suite takes.
     local seconds="${OH_COPILOT_LOGIN_PROBE_SECONDS:-45}"
+    case "$seconds" in
+    '' | *[!0-9]*) fail "OH_COPILOT_LOGIN_PROBE_SECONDS must be a positive whole number of seconds, got '$seconds'" ;;
+    esac
+    [ "$seconds" -gt 0 ] || fail "OH_COPILOT_LOGIN_PROBE_SECONDS must be greater than zero, got '$seconds'"
+
     local dir writer agent frame new verdict=1
     dir="$(mktemp -d)"
     mkfifo "$dir/in"

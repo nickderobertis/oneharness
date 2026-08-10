@@ -113,6 +113,50 @@ if grep -qE '^\s+- windows-latest$' "$f"; then
 	fail "$f must not offer windows-latest (native --json-schema argv is .cmd-shim-mangled)"
 fi
 
+# The turn-control feature suite is outside the shared PR matrix — its own
+# feature-scoped paths, its own unix-only platform set — so it is checked for the
+# two contracts it does restate rather than skipped outright:
+#
+#   - Its pull_request filter names the control feature's sources one path at a
+#     time, which Actions cannot glob from the feature's module graph. A source
+#     that moves silently stops triggering the suite, and the symptom is a
+#     control regression merging unnoticed — so every listed path must exist.
+#   - Its up-front credential step restates which provider keys the phases in
+#     e2e-control.sh actually read. A phase whose key nobody supplied drops that
+#     harness out, which OH_E2E_NO_SKIP turns RED only after minutes of paid
+#     model calls — so every `have_env` phase must have at least one accepted key
+#     supplied here. `*_E2E_AUTH` entries are developer-host sentinels rather
+#     than credentials (see e2e-control.sh), so they cannot satisfy it.
+#
+# Copilot's phase is deliberately absent from this second check: it asks copilot
+# itself rather than the environment, so it declares no `have_env` to align to.
+check_control() {
+	local f=".github/workflows/e2e-control.yml" s="scripts/e2e-control.sh"
+	local p line accepted v satisfied
+	check_common "$f"
+	while IFS= read -r p; do
+		[ -e "$p" ] || fail "$f triggers on '$p', which no longer exists, so a change to the control path would not run this suite; point that entry at the source's new location (or drop it if the source is gone)"
+	done < <(awk '
+		/^  pull_request:$/ { in_pr = 1; next }
+		in_pr && /^    paths:$/ { in_paths = 1; next }
+		in_paths && /^      - / { sub(/^      - /, ""); print; next }
+		in_paths { exit }
+		in_pr && /^  [^ ]/ { exit }
+	' "$f")
+
+	while IFS= read -r line; do
+		accepted="$(printf '%s' "$line" | sed -E 's/.*have_env[[:space:]]+"[^"]*"[[:space:]]*//; s/\|\|.*//')"
+		satisfied=0
+		for v in $accepted; do
+			case "$v" in *_E2E_AUTH) continue ;; esac
+			grep -q "secrets\.$v" "$f" && satisfied=1
+		done
+		[ "$satisfied" -eq 1 ] ||
+			fail "$f supplies none of [$accepted], which $s accepts for one of its phases, so that harness would drop out mid-run; add one of them as a \`secrets.<NAME>\` env entry to both the credential-check and the live step (sync it first with 'just secrets-sync'), or narrow that phase's accepted list to a key CI already has"
+	done < <(grep -E '^[[:space:]]*have_env ' "$s")
+}
+check_control
+
 if [ "$fails" -ne 0 ]; then
 	printf '\ncheck-e2e-matrix: %d drift(s) from the contract in scripts/check-e2e-matrix.sh\n' "$fails" >&2
 	exit 1

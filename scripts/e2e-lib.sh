@@ -1109,6 +1109,43 @@ TOML
 # CI log attributes a failure inside a multi-minute turn plus a 15s freeze window
 # to the step that produced it — the same contract every other oh_*_enforce helper
 # here follows.
+# What the harness actually did, for a phase that produced no work to freeze.
+#
+# "The agent never produced two steps" is the one inconclusive outcome that is
+# indistinguishable from a broken harness: three attempts retry it, burn nine
+# minutes and then fail naming only the symptom, and a suite whose whole purpose
+# is CI has no debugger to attach. Everything known about the attempt is on disk
+# by then — the launcher's stderr and the partial report — so print it rather
+# than deleting the sandbox over it. Bounded, because a stuck harness can emit
+# megabytes and the useful part is the end.
+#
+# The run's own status, or the empty string when no report was written. Used to
+# tell a harness that failed on its own from one that broke a control contract.
+_oh_result_status() {
+    [ -s "$1" ] || return 0
+    jq -r '.results[0].status // ""' "$1" 2>/dev/null || true
+}
+
+#   $1 sandbox directory, $2 report path
+_oh_control_evidence() {
+    local sandbox="$1" report="$2"
+    if [ -s "$sandbox/run.err" ]; then
+        note "  evidence: last stderr from the run —"
+        tail -n 20 "$sandbox/run.err" | sed 's/^/    /' >&2 || true
+    else
+        note "  evidence: the run wrote nothing to stderr"
+    fi
+    if [ -s "$report" ] && jq -e . "$report" >/dev/null 2>&1; then
+        note "  evidence: result —"
+        jq -r '.results[0] | "    status=\(.status) exit_code=\(.exit_code) failure_kind=\(.failure_kind // "none")",
+                             "    error=\(.error // "none")",
+                             "    text=\((.text // "")[0:300])"' \
+            "$report" >&2 || true
+    else
+        note "  evidence: no parseable report was written (the run had not finished)"
+    fi
+}
+
 oh_control_enforce() {
     local id="$1" expected_mechanism="$2"
     # Three attempts, not two: an inconclusive attempt is a model that refused or
@@ -1182,11 +1219,14 @@ _oh_control_enforce_once() {
     if ! _oh_wait_for 180 _oh_steps_at_least "$sandbox" 2; then
         kill "$run_pid" 2>/dev/null || true
         wait "$run_pid" 2>/dev/null || true
-        rm -rf "$sandbox"
         note "  control-enforce: the agent never produced two steps"
+        _oh_control_evidence "$sandbox" "$report"
+        rm -rf "$sandbox"
         return 1
     fi
     if ! kill -0 "$run_pid" 2>/dev/null; then
+        note "  control-enforce: the run ended before any work could be interrupted"
+        _oh_control_evidence "$sandbox" "$report"
         rm -rf "$sandbox"
         return 1
     fi
@@ -1321,6 +1361,46 @@ oh_control_redirect_enforce() {
     fail "$id: the turn never stayed in flight long enough to redirect across $attempts attempts"
 }
 
+# Report what a control-suite run actually proved, and decide whether a PARTIAL
+# run is acceptable.
+#
+# A credential-less phase in e2e-control.sh notes-and-continues rather than
+# calling skip(), so that ONE unauthenticated harness on a developer box cannot
+# retire the whole suite. In CI every one of those credentials is supplied, so
+# the same partial run means a credential or an install broke — and staying green
+# there would report "control and redirection honored" having proven nothing at
+# all for the harnesses that dropped out. This is the OH_E2E_NO_SKIP stance of
+# skip() applied to the one absence that script handles itself: leniency locally,
+# RED in CI.
+#
+# Lives here rather than inline in e2e-control.sh so the CI-vs-developer decision
+# can be driven directly by check-control-enforce.sh — the partial-run branch is
+# the one this suite's honesty rests on, and it cannot be reached at all without
+# real credentials for some harnesses and not others.
+#
+# A harness that RAN and broke its contract is a different thing from one that
+# never ran, and it outranks both verdicts below: it is the regression this suite
+# exists to catch, so it fails the run whatever the credentials looked like.
+#
+#   $1 space-separated ids proven, $2 ids skipped, $3 formatted duration,
+#   $4 ids that ran and failed
+oh_control_report_outcome() {
+    local proven="$1" skipped="$2" took="$3" failed="${4:-}"
+    if [ -n "$failed" ]; then
+        fail "turn control is NOT honored by: $failed (proven: ${proven:-none}; not run: ${skipped:-none}) after $took"
+    fi
+    if [ -z "$proven" ]; then
+        skip "no controllable harness had credentials after $took (unproven: $skipped)"
+    fi
+    if [ -n "$skipped" ]; then
+        if [ -n "${OH_E2E_NO_SKIP:-}" ]; then
+            fail "no credentials for: $skipped (OH_E2E_NO_SKIP is set, so every controllable harness must actually run; proven: $proven)"
+        fi
+        note "NOT PROVEN THIS RUN (no credentials): $skipped"
+    fi
+    note "PASS: turn control and redirection honored by every harness proven here: $proven (in $took)"
+}
+
 # One attempt. Returns 0 on a proven redirection, 1 when the turn ended too early
 # to prove anything (retryable). Any real contract violation calls fail().
 _oh_control_redirect_enforce_once() {
@@ -1372,11 +1452,14 @@ _oh_control_redirect_enforce_once() {
     if ! _oh_wait_for 180 _oh_steps_at_least "$sandbox" 2; then
         kill "$run_pid" 2>/dev/null || true
         wait "$run_pid" 2>/dev/null || true
-        rm -rf "$sandbox"
         note "  redirect-enforce: the agent never produced two steps"
+        _oh_control_evidence "$sandbox" "$report"
+        rm -rf "$sandbox"
         return 1
     fi
     if ! kill -0 "$run_pid" 2>/dev/null; then
+        note "  redirect-enforce: the run ended before any work could be redirected"
+        _oh_control_evidence "$sandbox" "$report"
         rm -rf "$sandbox"
         return 1
     fi
@@ -1436,7 +1519,23 @@ _oh_control_redirect_enforce_once() {
     if ! _oh_wait_for 180 test -e "$redirected"; then
         kill "$run_pid" 2>/dev/null || true
         wait "$run_pid" 2>/dev/null || true
-        sed 's/^/    /' "$sandbox/run.err" >&2 || true
+        # The run's own verdict separates the two ways this fails: a redirected
+        # turn the harness never ran, versus one it refused — which its status
+        # and error say and its stderr does not.
+        _oh_control_evidence "$sandbox" "$report"
+        # A harness whose OWN turn errored proves nothing either way: a message
+        # cannot be delivered to a session the harness itself just failed, so
+        # calling that a lost redirection accuses this feature of another's
+        # fault. It is the same inconclusive outcome as a turn that ended too
+        # early, and retries like one — opencode reaches it often enough on its
+        # own that treating it as a contract violation makes the suite lie.
+        # Every other ending stays a hard failure: the redirection WAS committed
+        # and the work never happened.
+        if [ "$(_oh_result_status "$report")" = "nonzero" ]; then
+            note "  redirect-enforce: the harness's own turn failed, so nothing here is a verdict on the redirection"
+            rm -rf "$sandbox"
+            return 1
+        fi
         rm -rf "$sandbox"
         fail "$id: the redirection never reached the agent ($marker.txt was never created), so \`interrupt --input\` stopped the turn and lost the message"
     fi

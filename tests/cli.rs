@@ -2169,6 +2169,100 @@ fn a_sibling_variant_is_never_handed_the_anchors_resume_token() {
 }
 
 #[test]
+fn a_healthy_leading_candidate_takes_the_turn_from_the_stored_identity_and_says_so() {
+    // The anchor preference decides who may carry the stored token — NOT who
+    // runs. Every other anchor test has the leading candidate unable to run, so
+    // this is the case they leave open: the handle lives on `alternate`, and
+    // `primary` (ahead of it in the chain) recovers and is perfectly healthy.
+    // Fallback stops at the first candidate that runs, so `primary` takes the
+    // turn. What must hold is that it takes it *honestly*: it never receives
+    // `alternate`'s token (its config directory has never seen that session), the
+    // report does not claim a continuation, and the handle's move is announced
+    // rather than leaving an operator to infer a dropped thread from the token.
+    let store = session_store_dir("healthy-leader");
+    let store_arg = store.display().to_string();
+    let primary_argv =
+        std::env::temp_dir().join(format!("oh-healthy-leader-argv-{}", std::process::id()));
+    let _ = std::fs::remove_file(&primary_argv);
+    let primary_serves = format!(
+        r#"MOCK_EXIT = "0", MOCK_ARGV_FILE = '{}', MOCK_STDOUT = '{{"session_id":"sess-primary","result":"served-by-primary"}}'"#,
+        primary_argv.display()
+    );
+    let alternate_serves = r#"MOCK_EXIT = "0", MOCK_STDOUT = '{"session_id":"sess-alt","result":"served-by-alternate"}'"#;
+    let fx = ConfigFixture::new(
+        "session-healthy-leader",
+        &variant_fallback_project(
+            r#"MOCK_EXIT = "1", MOCK_STDERR = "Error: insufficient_quota""#,
+            alternate_serves,
+        ),
+        "",
+    );
+    let args = [
+        "run",
+        "--prompt",
+        "hi",
+        "--cwd",
+        &fx.cwd(),
+        "--session",
+        "triage",
+        "--session-dir",
+        &store_arg,
+        "--compact",
+    ]
+    .map(str::to_string);
+    let turn = || {
+        run_with_config(
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+            &[],
+            &fx.user_config(),
+        )
+    };
+
+    // Turn one: `primary` is out of quota, so the handle is minted on `alternate`.
+    let first = turn();
+    assert!(first.status.success(), "{first:?}");
+    let bound = json_stdout(&first);
+    assert_eq!(bound["fallback"]["ran"], "claude-code:alternate");
+    assert_eq!(stored_session(&bound)["harness"], "claude-code:alternate");
+
+    // Turn two: `primary` recovers. It leads the chain, so it runs.
+    std::fs::write(
+        PathBuf::from(fx.cwd()).join("oneharness.toml"),
+        variant_fallback_project(&primary_serves, alternate_serves),
+    )
+    .unwrap();
+    let second = turn();
+    assert!(second.status.success(), "{second:?}");
+    let value = json_stdout(&second);
+    assert_eq!(value["fallback"]["ran"], "claude-code:primary");
+    assert_eq!(
+        value["session"]["phase"], "create",
+        "the candidate that ran carried no token, so it started a conversation"
+    );
+
+    // The stored identity's token never reaches the leader's argv.
+    let argv = std::fs::read_to_string(&primary_argv).unwrap();
+    assert!(
+        !argv.lines().any(|arg| arg == "--resume") && !argv.contains("sess-alt"),
+        "the leading candidate must run fresh, never carrying `alternate`'s token: {argv}"
+    );
+
+    // The handle follows the identity that did the work, and the move is loud.
+    let record = stored_session(&value);
+    assert_eq!(record["harness"], "claude-code:primary");
+    assert_eq!(record["token"], "sess-primary");
+    let moved = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        moved.contains("session `triage` was bound to `claude-code:alternate`")
+            && moved.contains("`claude-code:primary` ran this turn"),
+        "a handle that changes identity must announce it: {moved}"
+    );
+
+    let _ = std::fs::remove_file(&primary_argv);
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
 fn a_lossy_output_format_is_refused_by_the_variant_qualified_identity() {
     // `--session` needs a format that actually carries the native id. An explicit
     // pin that drops it is refused BEFORE spawning (accepting it would leave the

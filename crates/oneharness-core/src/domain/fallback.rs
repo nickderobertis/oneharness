@@ -126,11 +126,7 @@ impl RunWork {
 ///   the classifier reads that refusal only off a non-zero run — a clean-exit arm
 ///   would be behavior no harness can produce. It belongs with
 ///   `auth` and `quota` for the same reason: the *task* is fine and the next
-///   candidate can still do it. Leaving it unclassified is what stranded a chain
-///   of five identities on the one that minted the token — the token is scoped to
-///   a single identity's session namespace, so every other candidate's resume is
-///   guaranteed to fail this way, and reading that as a real task failure stopped
-///   the chain at candidate one with four authenticated identities untried.
+///   candidate can still do it.
 ///
 /// Everything else is a **real run**, so `None`: a clean [`Status::Ok`]; a
 /// [`Status::Timeout`] (a genuine, if slow, run — falling through it would let a

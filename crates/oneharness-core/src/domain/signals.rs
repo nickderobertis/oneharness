@@ -388,9 +388,8 @@ pub fn classify_harness_failure(
 /// - opencode: `Error: Session not found`
 /// - qwen: `No saved session found with title "<id>"`
 ///
-/// cursor is deliberately absent: its wording could not be captured (the probe
-/// machine's cursor-agent refuses at authentication before reading the session),
-/// and a guessed phrase is exactly the drift this list exists to avoid. Its
+/// cursor is deliberately absent: its refusal wording was never verified, and a
+/// guessed phrase is exactly the drift this list exists to avoid. Its
 /// unknown-session run therefore stays unclassified — a chain-stopping real
 /// failure, the honest default.
 ///

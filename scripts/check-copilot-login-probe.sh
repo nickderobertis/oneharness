@@ -2,19 +2,9 @@
 # Hermetic contract check for `oh_copilot_login_ready`, the credential detector
 # the live-control copilot phase gates on.
 #
-# This detector is the fix for a phase that reported a working harness as
-# unauthenticated: copilot's own login is stored by `copilot login` in the OS
-# credential store, so a host with no GH_TOKEN/GITHUB_TOKEN in its environment
-# still runs copilot fine — and the old env-token gate retired the phase there,
-# shipping copilot's control path with no live alarm at all. The whole defect
-# was the detection, so the detection is what this pins.
-#
 # Every case runs with GH_TOKEN, GITHUB_TOKEN, COPILOT_GITHUB_TOKEN and
-# COPILOT_E2E_AUTH explicitly unset: a detector that quietly went back to
-# reading them would pass its own test on a CI box that has one.
-#
-# A stub `copilot` speaks the two ACP frames the probe depends on, so the shapes
-# here are the ones a real copilot answered (captured live):
+# COPILOT_E2E_AUTH unset, against a stub `copilot` speaking the two ACP frames
+# a real copilot answered (captured live):
 #   authenticated: {"jsonrpc":"2.0","id":2,"result":{"sessionId":"…", …}}
 #   logged out:    {"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Authentication required"}}
 set -euo pipefail

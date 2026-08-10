@@ -723,6 +723,15 @@ impl ControlReason {
 /// `{"v":2,"ok":true,"mechanism":…}` / `{"v":2,"ok":false,"error":…,"reason":…}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlResponse {
+    // llmlint: ignore[invalid_states_unrepresentable] `redirected` is a bool
+    // because BOTH of its values are valid here and neither contradicts
+    // anything else in the variant: a served interrupt either carried a message
+    // or did not, and a supervisor branches on exactly that. Splitting `Served`
+    // into two variants would not remove a representable-but-invalid state —
+    // there is none — while duplicating `mechanism` and every match arm that
+    // reads it. The contradiction this type does exist to forbid, "succeeded,
+    // and here is why it was refused", is the `Served`/`Refused` split above,
+    // and a refusal claiming a redirection is rejected while parsing.
     Served {
         mechanism: ControlShape,
         /// Whether the request's redirection was committed along with the abort.
@@ -1049,6 +1058,12 @@ pub fn is_turn_terminal(shape: ControlShape, line: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum ControlEvent {
+    // llmlint: ignore[invalid_states_unrepresentable] The same reasoning as
+    // `ControlResponse::Served`: both values of `redirected` are valid records
+    // of something that really happened, so there is no invalid state to make
+    // unrepresentable. It is also a published report field — a second `outcome`
+    // value would be a schema change for consumers matching on that tag, which
+    // is a cost with nothing bought.
     /// The mechanism accepted the request.
     Served {
         /// The verb requested.

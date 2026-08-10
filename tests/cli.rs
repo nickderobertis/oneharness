@@ -21034,6 +21034,193 @@ fn an_http_controlled_run_carries_its_redirection_into_the_next_turn() {
 
 #[cfg(unix)]
 #[test]
+fn a_refused_redirection_is_reported_rather_than_leaving_a_run_that_did_nothing() {
+    let mock_profile = mock_profile_redirect();
+    // The redirection is the run's to deliver, so a server that will not take it
+    // is the run's failure to report. Silence here would be the worst answer
+    // available: the supervisor was told `redirected`, the original work is
+    // stopped, and the report would call a run that did none of the redirected
+    // work a success.
+    let store = control_store_dir("http-refuse-redir");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("http-refuse-redir-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let log = store.join("server.log");
+    let pool = store.join("pool");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
+        .env("MOCK_HTTP_CONTROL_FAULT", "refuse-redirect")
+        .env("XDG_STATE_HOME", pool.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--session",
+            "refuseredir",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("opencode"),
+            "--timeout",
+            "60",
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the HTTP controlled run");
+
+    wait_until("the control socket", || {
+        store.join("control").join("refuseredir.sock").exists()
+    });
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(&log)
+            .map(|text| text.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "refuseredir",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--input",
+            "do X instead",
+            "--compact",
+        ],
+        &[],
+    );
+    // The interrupt itself succeeded: the turn really was stopped and the run
+    // really did take the message. What follows is about the delivery.
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    assert_eq!(json_stdout(&interrupt)["redirected"], true);
+
+    let output = child.wait_with_output().expect("run did not finish");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    assert_eq!(report["results"][0]["status"], "nonzero", "{report}");
+    let error = report["results"][0]["error"]
+        .as_str()
+        .expect("a refused redirection is reported");
+    assert!(
+        error.contains("503"),
+        "the reason must carry the server's own answer: {error}"
+    );
+
+    wait_for_pooled_server_to_exit(&pool);
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_redirection_the_harness_is_no_longer_there_for_ends_the_run_rather_than_hanging() {
+    let mock_profile = mock_profile_redirect();
+    // The stdin mechanism's own recovery path: the harness exits with the turn
+    // the interrupt aborted, so the message has nowhere left to go. The run must
+    // say so and finish — a run that waited for an answer from a process that is
+    // gone would hold the dispatch until its timeout.
+    let store = control_store_dir("redirect-gone");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("redirect-gone-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let turn_log = store.join("turn.log");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_TURN_LOG", turn_log.display().to_string())
+        .env("MOCK_TURN_HOLD", "1")
+        // The harness ends with the turn it was interrupted out of.
+        .env("MOCK_TURN_ONCE", "1")
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "gone",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("claude-code"),
+            "--timeout",
+            "60",
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the controlled run");
+
+    wait_until("the control socket to appear", || {
+        store.join("control").join("gone.sock").exists()
+    });
+    wait_until("the turn to start", || {
+        std::fs::read_to_string(&turn_log)
+            .map(|log| log.contains("keep working"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "gone",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--input",
+            "do X instead",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+
+    // Finishing at all is the assertion: the deadline is 60s and this returns
+    // as soon as the harness is gone.
+    let output = child.wait_with_output().expect("run did not finish");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    assert_ne!(report["results"][0]["status"], "timeout", "{report}");
+    assert_eq!(report["control"]["interrupts"][0]["redirected"], true);
+    // The harness never ran it — asserted at the harness, because "the run
+    // finished" and "the redirected work happened" are different claims and
+    // only the log can tell them apart.
+    let log = std::fs::read_to_string(&turn_log).unwrap();
+    assert!(!log.contains("do X instead"), "turn log:\n{log}");
+    // The stderr warning is deliberately NOT asserted: whether the write fails
+    // is a race with the child's exit — a redirection written into the pipe of
+    // a process that has stopped reading is accepted by the kernel — so the run
+    // either warns or discovers the loss at EOF. Both end the run without the
+    // message being done, which is what this pins.
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
 fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there() {
     let mock_profile = mock_profile_redirect();
     // The third execution model, end to end through the real CLI: the harness
@@ -21505,6 +21692,10 @@ fn a_control_server_that_redirects_the_interrupt_is_not_reported_as_having_serve
             .unwrap_or(false)
     });
 
+    // Carrying a redirection, because that is the harder half of the same
+    // promise: an abort that did not land must give the message BACK, or the
+    // supervisor walks away believing a turn was redirected when it is still
+    // running and its message is nowhere.
     let interrupt = run(
         &[
             "interrupt",
@@ -21514,6 +21705,8 @@ fn a_control_server_that_redirects_the_interrupt_is_not_reported_as_having_serve
             &store_arg,
             "--cwd",
             &cwd_arg,
+            "--input",
+            "do X instead",
             "--compact",
         ],
         &[],
@@ -21521,6 +21714,10 @@ fn a_control_server_that_redirects_the_interrupt_is_not_reported_as_having_serve
     let answer = json_stdout(&interrupt);
     assert_eq!(answer["ok"], false, "{answer}");
     assert_eq!(interrupt.status.code(), Some(1), "{interrupt:?}");
+    assert!(
+        answer.get("redirected").is_none(),
+        "a refused interrupt must not claim it took the message: {answer}"
+    );
     let error = answer["error"].as_str().expect("a reason");
     assert!(
         error.contains("302"),
@@ -21540,6 +21737,12 @@ fn a_control_server_that_redirects_the_interrupt_is_not_reported_as_having_serve
             .lines()
             .any(|line| line.starts_with("POST /api/session/ses_mock/interrupt")),
         "the interrupt never reached the server:\n{served}"
+    );
+    // And the message was never handed to the harness: it is the supervisor's
+    // to send somewhere else, not something the run half-delivered.
+    assert!(
+        !served.contains("do X instead"),
+        "a redirection whose abort failed must not reach the server:\n{served}"
     );
 
     wait_for_pooled_server_to_exit(&pool);

@@ -88,6 +88,10 @@
 //!   MOCK_TURN_HOLD  with MOCK_TURN_LOG, keep the turn running after the prompt
 //!                   instead of completing it, so a test can interrupt a turn
 //!                   that is genuinely still in flight.
+//!   MOCK_TURN_ONCE  with MOCK_TURN_LOG, exit as soon as the first turn ends
+//!                   instead of reading on — the harness that is GONE by the
+//!                   time a committed redirection would be written to it, so a
+//!                   test can drive the run's recovery from that write failing.
 //!   MOCK_ACP_LOG    if set to a path, act like an **ACP JSON-RPC server** on
 //!                   stdio (the shape `copilot --acp` / `goose acp` speak):
 //!                   answer `initialize` and `session/new`, hold `session/prompt`
@@ -400,6 +404,7 @@ enum HttpControlFault {
     UnreadableEvents,
     RedirectInterrupt,
     RedirectedTurn,
+    RefuseRedirect,
 }
 
 impl HttpControlFault {
@@ -420,6 +425,7 @@ impl HttpControlFault {
             "unreadable-events" => HttpControlFault::UnreadableEvents,
             "redirect-interrupt" => HttpControlFault::RedirectInterrupt,
             "redirected-turn" => HttpControlFault::RedirectedTurn,
+            "refuse-redirect" => HttpControlFault::RefuseRedirect,
             other => panic!("mock harness: MOCK_HTTP_CONTROL_FAULT names no fault: `{other}`"),
         }
     }
@@ -634,6 +640,13 @@ fn run_http_control_server(log_path: &str) -> ! {
                         );
                     }
                     if aborted.load(std::sync::atomic::Ordering::SeqCst) {
+                        // A refused redirection ends the run through the
+                        // submission, not the stream: the stream stays silent
+                        // exactly as opencode's does after an abort.
+                        if fault == HttpControlFault::RefuseRedirect {
+                            std::thread::sleep(std::time::Duration::from_secs(30));
+                            return;
+                        }
                         if fault != HttpControlFault::RedirectedTurn {
                             send(
                                 &mut socket,
@@ -684,7 +697,10 @@ fn run_http_control_server(log_path: &str) -> ! {
                 reply(&mut socket, "204 No Content", "");
                 // The redirect fault has a second turn to serve, so the server
                 // stays up until the event stream has carried it.
-                if fault != HttpControlFault::RedirectedTurn {
+                if !matches!(
+                    fault,
+                    HttpControlFault::RedirectedTurn | HttpControlFault::RefuseRedirect
+                ) {
                     exit_shortly();
                 }
             } else if line.starts_with("POST /api/session/") && line.contains("/prompt") {
@@ -706,6 +722,32 @@ fn run_http_control_server(log_path: &str) -> ! {
                             std::process::exit(0);
                         });
                         std::thread::sleep(std::time::Duration::from_secs(120));
+                    }
+                    // The redirected prompt is the one refused: the first
+                    // turn runs normally so there is something to interrupt,
+                    // and the SECOND submission — the redirection — is what the
+                    // server will not take. A run that swallowed that would
+                    // report success having done none of the redirected work.
+                    HttpControlFault::RefuseRedirect => {
+                        let seq = prompts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                        if seq == 1 {
+                            admitted.store(true, std::sync::atomic::Ordering::SeqCst);
+                            while !aborted.load(std::sync::atomic::Ordering::SeqCst) {
+                                std::thread::sleep(std::time::Duration::from_millis(25));
+                            }
+                            reply(
+                                &mut socket,
+                                "409 Conflict",
+                                "{\"error\":\"the turn was aborted\"}",
+                            );
+                        } else {
+                            reply(
+                                &mut socket,
+                                "503 Service Unavailable",
+                                "{\"error\":\"model unavailable\"}",
+                            );
+                            exit_shortly();
+                        }
                     }
                     HttpControlFault::RedirectedTurn => {
                         let seq = prompts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
@@ -1025,6 +1067,7 @@ fn run_controlled_turn(log_path: &str) -> ! {
         if !ended {
             break;
         }
+        let once = std::env::var_os("MOCK_TURN_ONCE").is_some();
         let result = std::env::var("MOCK_TURN_RESULT").unwrap_or_else(|_| {
             format!(
                 r#"{{"type":"result","subtype":"{}","session_id":"mock-session","result":"mock turn"}}"#,
@@ -1038,6 +1081,9 @@ fn run_controlled_turn(log_path: &str) -> ! {
         let _ = writeln!(out, "{result}");
         let _ = out.flush();
         append("TURN_ENDED");
+        if once {
+            break;
+        }
         index += 1;
     }
     std::process::exit(0);

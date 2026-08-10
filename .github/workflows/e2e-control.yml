@@ -18,6 +18,17 @@ name: E2E (Turn control)
 # it fires when that path changes and stays silent for every other PR.
 # workflow_dispatch is kept for on-demand reruns once this is on main.
 #
+# macOS is on the SCHEDULE, not on the pull request. This feature has broken on
+# macOS three times — `/tmp` canonicalizing to `/private/tmp`, the shorter
+# `sun_path` budget, and a refusal-reason mismatch — none of which Linux can
+# show, so a platform that never runs the suite is where the next one hides. But
+# a second 26-minute leg on every control-path PR is not what that is worth, so
+# the daily run carries it: drift surfaces within a day, before anyone depends
+# on it, and never in a reviewer's way. A scheduled run also gets its own way of
+# being seen, because nobody is watching a checks list for it — the `report` job
+# opens (or comments on) an issue when a scheduled leg fails, so a nightly red
+# is not a red square in a tab no one opens.
+#
 # This workflow is outside that gate's shared PR matrix (its paths and its
 # unix-only platform set are its own), but scripts/check-e2e-matrix.sh still
 # holds the two contracts restated below to their sources: every path in the
@@ -54,6 +65,11 @@ on:
       - scripts/e2e-lib.sh
       - scripts/install-e2e.sh
       - .github/workflows/e2e-control.yml
+  # Daily, on the default branch, across ubuntu AND macos — the only place the
+  # macOS legs of this feature run at all. 07:11 UTC: off the top of the hour,
+  # where GitHub's shared cron queue is at its most backed up.
+  schedule:
+    - cron: "11 7 * * *"
   workflow_dispatch:
     inputs:
       os:
@@ -89,10 +105,10 @@ jobs:
     strategy:
       fail-fast: false
       # Unix-only: the control channel is a unix socket, and e2e-control.sh
-      # exits early on Windows. Linux on a pull request; a dispatch can pick a
-      # single OS or 'all' to add macos.
+      # exits early on Windows. Linux on a pull request; ubuntu AND macos on the
+      # schedule; a dispatch can pick a single OS or 'all'.
       matrix:
-        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && (inputs.os == 'all' && '["ubuntu-latest","macos-latest"]' || format('["{0}"]', inputs.os)) || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && (inputs.os == 'all' && '["ubuntu-latest","macos-latest"]' || format('["{0}"]', inputs.os)) || (github.event_name == 'schedule' && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]')) }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -173,3 +189,40 @@ jobs:
           # can never be caught mid-turn (see the goose phase for the measurement).
           GOOSE_E2E_MODEL: ${{ vars.GOOSE_E2E_MODEL }}
         run: just live-control
+
+  # A scheduled run has no pull request to turn red and nobody waiting on it, so
+  # left alone a nightly failure is a red square in a tab no one opens. This
+  # gives it somewhere to be seen: one open issue, commented on each further
+  # night, so a week of failures is one thread rather than seven.
+  report:
+    name: report a scheduled failure
+    needs: live
+    if: >-
+      failure() && github.event_name == 'schedule' &&
+      github.repository == 'nickderobertis/oneharness'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    timeout-minutes: 5
+    steps:
+      - name: Open or update the drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title='Scheduled turn-control e2e is failing'
+          body="$(printf '%s\n' \
+            "The nightly live turn-control suite failed: ${RUN_URL}" \
+            '' \
+            'It covers ubuntu and macOS; open the run to see which legs failed.' \
+            'macOS runs this suite here and nowhere else, so a macOS-only failure' \
+            'is real drift rather than a flaky leg to re-run.')"
+          existing="$(gh issue list --repo "$REPO" --state open --search "$title in:title" --json number --jq 'first(.[].number) // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body "$body"
+          else
+            gh issue create --repo "$REPO" --title "$title" --body "$body"
+          fi

@@ -144,4 +144,27 @@ build_fixture
 sed -i.bak '/name: Live turn-control e2e/,$ { /secrets\./d; }' "$tmp/repo/$workflow"
 run_case "the live step stripped of its credentials" 1 "secret-backed variable for \`just live-control\`"
 
+# The schedule removed: macOS then runs the suite nowhere, and this feature has
+# already broken there three times in ways Linux cannot show.
+build_fixture
+sed -i.bak '/^  schedule:$/,/^    - cron:/d' "$tmp/repo/$workflow"
+grep -q '^  schedule:$' "$tmp/repo/$workflow" &&
+    fail "fixture setup: the removed-schedule case left the schedule trigger in place"
+run_case "the schedule removed" 1 "no schedule trigger"
+
+# The schedule kept, but narrowed to Linux: the daily run would repeat the pull
+# request's leg, and macOS would still never run.
+build_fixture
+sed -i.bak "s/github.event_name == 'schedule' && '\[\"ubuntu-latest\",\"macos-latest\"\]'/github.event_name == 'schedule' \&\& '[\"ubuntu-latest\"]'/" \
+    "$tmp/repo/$workflow"
+grep -qF "'schedule' && '[\"ubuntu-latest\"]'" "$tmp/repo/$workflow" ||
+    fail "fixture setup: the linux-only-schedule case did not narrow the schedule matrix"
+run_case "a schedule narrowed to Linux" 1 "does not run its schedule across"
+
+# The reporting job removed: the nightly run still happens, and a failure is a
+# red square nobody is looking at.
+build_fixture
+sed -i.bak "/failure() && github.event_name == 'schedule'/d" "$tmp/repo/$workflow"
+run_case "the scheduled-failure report removed" 1 "nightly red"
+
 echo "check-e2e-matrix-test: ok"

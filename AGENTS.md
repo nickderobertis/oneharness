@@ -100,9 +100,18 @@ Use the `just` recipes; do not hand-roll equivalents.
   does not carry, so `e2e-control.yml` (which supplies all of them) is the only
   place those three are ever proven. It runs on a `pull_request` whose paths
   touch the control feature's own sources, and on demand; a PR touching anything
-  else does not run a minute of it. In CI `OH_E2E_NO_SKIP` makes a harness that
-  drops out for want of a credential RED — without it the suite reports success
-  having proven nothing for whichever harnesses went unauthenticated.
+  else does not run a minute of it. **macOS is on the daily `schedule`, never on
+  the pull request**: this feature has broken there three times in ways Linux
+  cannot show (`/tmp`→`/private/tmp`, the shorter `sun_path` budget, a
+  refusal-reason mismatch), and a second 26-minute leg per control PR is not
+  what that is worth. A scheduled failure opens (or comments on) an issue,
+  because a schedule has no PR to turn red. In CI `OH_E2E_NO_SKIP` makes a
+  harness that drops out for want of a credential RED — without it the suite
+  reports success having proven nothing for whichever harnesses went
+  unauthenticated. The control × mode grid is NOT its job: the policy each mode
+  sends with and without `--control` is pinned per harness as a unit assertion
+  (`domain::control`'s `control_mode_parity`), since a live phase per mode would
+  multiply an already-26-minute suite to prove a value.
 - `just sdk-check` / `just python-sdk-check` — generated-contract drift, strict
   language lint/type/test coverage, and packed-artifact subprocess e2e for the
   Node and Python SDKs. The Python gate runs on the oldest supported Python 3.9.
@@ -241,6 +250,14 @@ Use the `just` recipes; do not hand-roll equivalents.
   through the pooled server, not the harness CLI: permission requests must be
   answered; opencode is terminal only on idle after admission; and cwd stays a
   per-turn value. Pool keys exclude all per-turn and per-thread settings.
+  Readiness is a question about the PROCESS oneharness launched, never about who
+  answers at its address: a TCP port is reserved by binding and letting go, so
+  between the reservation and the launch it belongs to whoever asks the kernel
+  next, and a run that took any answer could be driven against a stranger's
+  server (which is how a hermetic control test read `timeout` at random). So a
+  server that EXITED during bring-up is said so at once and relaunched once at a
+  fresh address; one that is merely SILENT is reported against the window and
+  never relaunched.
   `interrupt --input` carries a **redirection** with the abort. Atomic means
   *committed with the abort, delivered at the turn boundary*, never written
   alongside it: every mechanism drops or queues a message sent into a live turn,

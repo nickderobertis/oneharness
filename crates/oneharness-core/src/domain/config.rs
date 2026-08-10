@@ -457,14 +457,22 @@ fn validate(config: &FileConfig) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_variant_name(name: &str) -> Result<(), String> {
-    let valid = !name.is_empty()
+/// Whether `name` is a legal `[harness.<id>.variant.<name>]` key — the one
+/// spelling of [`VARIANT_NAME_PATTERN`], shared so every place that admits a
+/// variant (config validation here, [`super::harness::HarnessIdentity`] parsing a
+/// composed id) accepts exactly the same set rather than drifting apart.
+#[must_use]
+pub(crate) fn is_valid_variant_name(name: &str) -> bool {
+    !name.is_empty()
         && name.len() <= 64
         && name
             .bytes()
             .enumerate()
-            .all(|(i, b)| b.is_ascii_alphanumeric() || (i > 0 && matches!(b, b'-' | b'_')));
-    valid.then_some(()).ok_or_else(|| {
+            .all(|(i, b)| b.is_ascii_alphanumeric() || (i > 0 && matches!(b, b'-' | b'_')))
+}
+
+fn validate_variant_name(name: &str) -> Result<(), String> {
+    is_valid_variant_name(name).then_some(()).ok_or_else(|| {
         format!("invalid harness variant name `{name}`; expected {VARIANT_NAME_PATTERN}")
     })
 }

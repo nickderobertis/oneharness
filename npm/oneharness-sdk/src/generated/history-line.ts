@@ -10,7 +10,7 @@ export type HistoryLine =
           harness: string;
           harness_id?: string | null | undefined;
           run_id: string;
-          schema_version: "1.2" | "1.3" | "1.4";
+          schema_version: "1.2" | "1.3" | "1.4" | "1.5";
           type: "event";
           variant?: string | null | undefined;
           [k: string]: unknown;
@@ -36,7 +36,7 @@ export type HistoryLine =
         }
       | ({
           error: string;
-          schema_version?: "1.3" | "1.4" | undefined;
+          schema_version?: "1.3" | "1.4" | "1.5" | undefined;
           [k: string]: unknown;
         } & (
           | {
@@ -55,7 +55,17 @@ export type HistoryLine =
             [k: string]: unknown;
           }
         | {
-            schema_version?: "1.4" | undefined;
+            schema_version?: "1.4" | "1.5" | undefined;
+            [k: string]: unknown;
+          }
+      ) &
+      (
+        | {
+            failure_kind?: "auth" | "rate_limit" | "model_not_found" | "quota" | "tool_deferred" | null | undefined;
+            [k: string]: unknown;
+          }
+        | {
+            schema_version?: "1.5" | undefined;
             [k: string]: unknown;
           }
       ) &
@@ -81,7 +91,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4";
+            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5";
             session: string;
             session_id: string | null;
             started_at: string;
@@ -117,7 +127,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4";
+            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5";
             session: string;
             session_id: string | null;
             started_at: string;
@@ -153,7 +163,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.2" | "1.3" | "1.4";
+            schema_version: "1.2" | "1.3" | "1.4" | "1.5";
             session: string;
             session_id: string | null;
             started_at?: never | undefined;
@@ -189,7 +199,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4";
+            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5";
             session: string;
             session_id: string | null;
             started_at?: never | undefined;
@@ -225,7 +235,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.3" | "1.4";
+            schema_version: "1.3" | "1.4" | "1.5";
             session: string;
             session_id: string | null;
             started_at: string;
@@ -261,7 +271,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4";
+            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5";
             session: string;
             session_id: string | null;
             started_at?: never | undefined;
@@ -286,13 +296,14 @@ export type TimingSource = "provider_measured" | "stdout_observed";
  * The normalized, closed set of failure reasons oneharness can classify from a
  * harness's output. It is the single source for the `failure_kind` contract
  * value: serialized as the snake_case token a consumer reads in the report
- * (`auth`, `rate_limit`, `model_not_found`, `quota`, `tool_deferred`), so the
- * wire shape is unchanged — modeling it as an enum keeps a misspelled or
- * invalid kind unrepresentable and gives every producer/consumer (classifier,
- * `is_failure`, the fallback fall-through rule, the report, history) one
- * definition to share instead of scattered string literals.
+ * (`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,
+ * `tool_deferred`), so the wire shape is unchanged — modeling it as an enum
+ * keeps a misspelled or invalid kind unrepresentable and gives every
+ * producer/consumer (classifier, `is_failure`, the fallback fall-through rule,
+ * the report, history) one definition to share instead of scattered string
+ * literals.
  */
-export type FailureKind = "auth" | "rate_limit" | "model_not_found" | "quota" | "tool_deferred";
+export type FailureKind = "auth" | "rate_limit" | "model_not_found" | "quota" | "session_not_found" | "tool_deferred";
 /**
  * The unified approval mode, from least to most autonomy. A harness may not
  * support every value (see [`crate::domain::harness::HarnessSpec::mode`]); the

@@ -586,8 +586,21 @@ shape. When you add one:
   loud usage error before spawning. When the list is empty, `--session` is a loud
   usage error (no id to bind a name to) — never a silent fresh start. It is
   single-harness, refuses batch/`--resume`/`--fork`/`--all`, and echoes a `session`
-  block `{name, phase, token, store_file}` in the report. Update the *Session
-  handle* section + `session_capable`/`--session` mentions in `README.md`. Also
+  block `{name, phase, token, store_file}` in the report. The record binds to the
+  **variant-qualified** id: a native token is scoped to one identity's session
+  store (each variant is its own `env_from` home), and a base id cannot say which
+  identity minted it. So `harness_conflict` compares the whole id, a legacy `0.1`
+  record starts fresh rather than guessing, the token is captured from — and
+  rebound to — the candidate that actually *ran*, and the fallback anchor prefers
+  the identity the record already belongs to. A resume no identity can resolve is
+  the `session_not_found` kind, which falls through beside `auth`/`quota`; its
+  phrasings in `domain::signals` are captures from real CLIs (cursor's is
+  deliberately missing, never guessed).
+  <!-- llmlint: ignore-block[no_redundant_instruction_pointers] `README.md` is not in the agent-loaded instruction set (only this file is), so naming the sections that go stale is the instruction, not a redirect to one; dropping it is how the two documents drift. -->
+  Update the *Session
+  handle* section + `session_capable`/`--session` mentions in `README.md`.
+  <!-- llmlint: ignore-end[no_redundant_instruction_pointers] -->
+  Also
   declare `fork_reuses_cache` (implies `supports_fork`): true only if a forked run
   reuses
   the parent session's prompt-cache prefix, which is what makes a `min-tokens`

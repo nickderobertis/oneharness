@@ -119,6 +119,14 @@ impl RunWork {
 ///   every other kind is read out of a process that ran.
 /// - [`Status::Nonzero`] or [`Status::Ok`] with `failure_kind == "quota"` → `"quota"` (the account
 ///   has no credit/quota to do work — a provisioning problem like `auth`).
+/// - [`Status::Nonzero`] with `failure_kind == "session_not_found"` →
+///   `"session-not-found"` (the run asked to continue a session this identity's
+///   store has never seen, so it refused before doing anything). Non-zero only,
+///   unlike `quota`: every CLI observed refusing an unknown session exits 1, and
+///   the classifier reads that refusal only off a non-zero run — a clean-exit arm
+///   would be behavior no harness can produce. It belongs with
+///   `auth` and `quota` for the same reason: the *task* is fine and the next
+///   candidate can still do it.
 ///
 /// Everything else is a **real run**, so `None`: a clean [`Status::Ok`]; a
 /// [`Status::Timeout`] (a genuine, if slow, run — falling through it would let a
@@ -158,6 +166,7 @@ pub fn startup_failure_reason(
         (_, Some(FailureKind::Quota)) if matches!(status, Status::Ok | Status::Nonzero) => {
             Some("quota")
         }
+        (Status::Nonzero, Some(FailureKind::SessionNotFound)) => Some("session-not-found"),
         (Status::Skipped, _) => Some("not-installed"),
         (Status::SpawnError, _) => Some("spawn-error"),
         (Status::Nonzero, _) => match failure_kind {
@@ -261,6 +270,34 @@ mod tests {
             false,
             RunWork::None
         ));
+        // A resume the harness could not resolve: this identity does not hold the
+        // session, but the task is untouched, so the next candidate gets it.
+        assert_eq!(
+            startup_failure_reason(
+                Status::Nonzero,
+                Some(FailureKind::SessionNotFound),
+                false,
+                RunWork::None
+            ),
+            Some("session-not-found")
+        );
+        assert!(is_startup_failure(
+            Status::Nonzero,
+            Some(FailureKind::SessionNotFound),
+            false,
+            RunWork::None
+        ));
+        // Non-zero only: no observed CLI refuses an unknown session on a clean
+        // exit, so a zero-exit run keeps whatever its own record said.
+        assert_eq!(
+            startup_failure_reason(
+                Status::Ok,
+                Some(FailureKind::SessionNotFound),
+                false,
+                RunWork::None
+            ),
+            None
+        );
     }
 
     #[test]
@@ -414,6 +451,7 @@ mod tests {
             (Status::Nonzero, Some(FailureKind::Auth), false),
             (Status::Nonzero, Some(FailureKind::Quota), false),
             (Status::Ok, Some(FailureKind::Quota), false),
+            (Status::Nonzero, Some(FailureKind::SessionNotFound), false),
             (Status::Nonzero, Some(FailureKind::RateLimit), true),
             (Status::Nonzero, Some(FailureKind::ModelNotFound), true),
             (Status::Skipped, None, false),

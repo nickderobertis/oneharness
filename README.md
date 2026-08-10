@@ -952,8 +952,11 @@ invalidating earlier ones):
   same loud usage error the flag does — turn it off for that call with
   `--no-stream`.
 - `failure_kind` / `failure_kind_source` — on a non-zero run, a coarse reason
-  (`auth`, `rate_limit`, `model_not_found`, `quota`) so a caller can tell a
-  retryable condition from a broken request. This is **distinct from `status`**,
+  (`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`) so a
+  caller can tell a retryable condition from a broken request. `session_not_found`
+  is the harness refusing to continue a session its identity has never seen — a
+  resumed token belongs to exactly one identity's session store, so it is a
+  provisioning miss like `auth`, not a task failure. This is **distinct from `status`**,
   which only records oneharness's relationship to the process. One kind,
   `tool_deferred`, is reported even on a `status: ok` run: the harness exited
   cleanly but only **deferred** a builtin tool call (`Read`, `Bash`, …) instead
@@ -1070,8 +1073,12 @@ oneharness run --harness claude-code --session triage --prompt "Now propose a fi
 
 The report's `session` block echoes `{name, phase, token, store_file}` — `phase`
 is `create` on the first run and `continue` after, `token` is the bound native id.
-A named session is **bound to one harness** (reusing the name on another is a loud
-error) and cannot combine with `--resume`/`--fork`/`--all` or a batch, and is
+A named session is **bound to one identity** — the variant-qualified harness id
+(`claude-code:alternate`), because each [variant](#configuration) points its
+harness at its own home directory and therefore keeps a disjoint session
+namespace, so a token minted under one is meaningless under another. Reusing the
+name on a different harness *or a sibling variant* is a loud error. It cannot
+combine with `--resume`/`--fork`/`--all` or a batch, and is
 supported only for harnesses that expose a session id headlessly (`session_capable`
 in `oneharness list`: `claude-code`, `opencode`, `codex`, `cursor`, `qwen`) — for
 the rest, `--session` is a usage error rather than a silent fresh start. Session
@@ -1083,10 +1090,19 @@ defaults to `--json` for every run). An explicit `--output-format` or config
 the harness runs, never a warning after a lost capture. In the
 default **parallel** run mode it is single-harness; under
 [`--run-mode fallback`](#fallback-mode-first-that-runs-wins) it is allowed on a
-multi-harness chain and binds to the **anchor** — the first session-capable harness
-in the priority order, which fallback deterministically settles on given stable
-availability (the token is applied to, and captured from, that harness only, so a
-transient fall-through to a different harness never resumes it with a foreign id).
+multi-harness chain and binds to the **anchor** — the candidate the stored record
+already belongs to when it is still in the chain, else the first session-capable
+one in priority order. The token is applied to the anchor's argv only, so no other
+candidate is ever handed an id its identity cannot resolve. When the anchor falls
+through (its quota is spent, or it can no longer resolve the token) the next
+candidate does the turn *fresh* and the handle follows it: the store rebinds to
+whoever ran, with a warning on stderr, because a native token cannot move between
+identities. Continuity costs one conversation; the dispatch keeps going.
+
+Records written before oneharness bound sessions to the variant-qualified id
+(store `schema_version` `0.1`) name only the base harness, so which identity minted
+their token is unrecoverable. Such a record starts a **fresh** session rather than
+resuming a guessed identity — once, on the next run of that name.
 This is the substrate a multi-turn driver (e.g. a simulated-user / skill-testing
 framework) builds on: thread one handle, get faithful state, read `events` for what
 the agent *did*.
@@ -1325,6 +1341,7 @@ chain, so a long, genuine run can never be mistaken for "try the next one".
 | Resolved but unspawnable (`spawn-error`) | ✅ fall through — `spawn-error` |
 | Ran, exited non-zero, classified `auth`, no work done | ✅ fall through — `auth` |
 | Ran, exited non-zero, classified `quota` (no credit), no work done | ✅ fall through — `quota` |
+| Refused a resume it cannot resolve, classified `session_not_found`, no work done | ✅ fall through — `session-not-found` |
 | Ran and succeeded (`ok`) | ⛔ stop — this is the answer |
 | Ran and failed the task (`nonzero`, incl. `rate_limit` / `model_not_found`) | ⛔ stop¹ |
 | Timed out (`timeout`) — a slow but genuine run | ⛔ stop |
@@ -1335,6 +1352,17 @@ chain, so a long, genuine run can never be mistaken for "try the next one".
 a per-model rejection means "try the next model", so `model_not_found` (fall
 through — `model-not-found`) and `rate_limit` (fall through — `rate-limit`) *do*
 fall through. With a single model both still stop the chain, as above.
+
+**An unresolvable resume falls through too.** A native session token lives in one
+identity's session store — each `claude-code` variant points the CLI at its own
+`CLAUDE_CONFIG_DIR`, so their namespaces are disjoint — and a harness handed a
+token it has never seen refuses in about a second with no output and no usage
+(`No conversation found with session ID …`, `no rollout found for thread id …`,
+`Session not found`, `No saved session found with title …`). That is a
+provisioning miss, not a task failure: the task is untouched and the next
+candidate can still do it, so it classifies as `session_not_found` and falls
+through. Left unclassified it read as a real failure and stopped the chain at the
+one identity that could never serve it.
 
 A **subscription/usage-limit** rejection classifies as `quota` and falls through
 whichever way its CLI reports it: Claude Code's session or weekly limit, and
@@ -1653,6 +1681,8 @@ taken from stdout, so it can never stand in for provider output the run did not
 produce. It and partial timing both arrived in history schema **v1.3**;
 a record's `schema_version` names the oldest reader that can understand it, so a
 record carrying either declares `1.3` while a provider-measured success still declares `1.1`.
+The same rule versions the enums a reader has to know: a `cancelled` run declares
+**v1.4**, and one classified `session_not_found` declares **v1.5**.
 
 It is **off by default** and opt-in three ways, layered like every other setting
 (CLI > env > project file > user file):

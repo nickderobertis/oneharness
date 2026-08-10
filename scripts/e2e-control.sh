@@ -96,6 +96,7 @@ have_env() {
 
 proven=()
 skipped=()
+failed=()
 
 for declaration in "${CONTROLLABLE[@]}"; do
     IFS=$'\t' read -r id mechanism default_bin <<<"$declaration"
@@ -202,13 +203,24 @@ for declaration in "${CONTROLLABLE[@]}"; do
         export OH_MODEL="${OH_MODEL:-}"
         ;;
     esac
-    note "» $id: a real turn must actually STOP when interrupted"
     phase_started=$SECONDS
-    oh_control_enforce "$id" "$mechanism"
-    note "» $id: an interrupt carrying --input must STOP the turn and DO the new work"
-    oh_control_redirect_enforce "$id"
-    proven+=("$id")
-    note "  $id proven in $(elapsed $((SECONDS - phase_started)))"
+    # Both phases run in a subshell so this harness's verdict cannot end the run:
+    # `fail` exits, and aborting here would leave every harness after this one
+    # unexercised with nothing saying so — the same silent partial coverage
+    # OH_E2E_NO_SKIP exists to prevent, arrived at from the other direction. One
+    # CI run should say what all six harnesses did, not just the first to break.
+    if (
+        note "» $id: a real turn must actually STOP when interrupted"
+        oh_control_enforce "$id" "$mechanism"
+        note "» $id: an interrupt carrying --input must STOP the turn and DO the new work"
+        oh_control_redirect_enforce "$id"
+    ); then
+        proven+=("$id")
+        note "  $id proven in $(elapsed $((SECONDS - phase_started)))"
+    else
+        failed+=("$id")
+        note "  FAILED: $id after $(elapsed $((SECONDS - phase_started))) — see its evidence above; continuing so this run reports every harness"
+    fi
 done
 
-oh_control_report_outcome "${proven[*]-}" "${skipped[*]-}" "$(elapsed $SECONDS)"
+oh_control_report_outcome "${proven[*]-}" "${skipped[*]-}" "$(elapsed $SECONDS)" "${failed[*]-}"

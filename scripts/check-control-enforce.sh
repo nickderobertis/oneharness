@@ -54,5 +54,36 @@ OH_E2E_NO_SKIP='' outcome_case "a run that proved nothing" 0 "SKIP" "" "goose cr
 OH_E2E_NO_SKIP=1 outcome_case "a run that proved nothing in CI" 1 "skip disallowed" "" "goose crush" "1m00s"
 # A fully credentialed run reports the harnesses it proved and stays green.
 OH_E2E_NO_SKIP=1 outcome_case "a complete run" 0 "PASS" "claude-code goose" "" "1m00s"
+# A harness that ran and broke its contract is the regression this suite exists
+# to catch, so it fails the run even where everything else was proven — and even
+# on a developer box, where a missing credential would have been forgiven.
+OH_E2E_NO_SKIP='' outcome_case "a harness that broke its contract" 1 "codex" "claude-code" "" "1m00s" "codex"
+OH_E2E_NO_SKIP='' outcome_case "a failure outranking a partial run" 1 "codex" "claude-code" "goose" "1m00s" "codex"
+
+# The evidence an inconclusive phase leaves behind. Three attempts retry that
+# outcome and then fail naming only the symptom, so whatever the harness did has
+# to reach the log — a CI-only suite has nothing else to look at.
+evidence_case() {
+    local description="$1" needle="$2" sandbox="$3" report="$4" out
+    out="$(_oh_control_evidence "$sandbox" "$report" 2>&1)"
+    case "$out" in
+    *"$needle"*) ;;
+    *)
+        printf '%s\n' "$out" >&2
+        fail "$description: evidence did not mention '$needle'"
+        ;;
+    esac
+}
+
+evidence_tmp="$(mktemp -d)"
+trap 'rm -rf "$evidence_tmp"' EXIT
+printf 'codex: stream error\n' >"$evidence_tmp/run.err"
+printf '{"results":[{"status":"timeout","exit_code":null,"text":"starting now"}]}\n' >"$evidence_tmp/report.json"
+evidence_case "a run that failed loudly" "codex: stream error" "$evidence_tmp" "$evidence_tmp/report.json"
+evidence_case "a partial report" "status=timeout" "$evidence_tmp" "$evidence_tmp/report.json"
+# Silence is itself the finding, so it must be stated rather than left blank.
+: >"$evidence_tmp/run.err"
+evidence_case "a run that said nothing" "wrote nothing to stderr" "$evidence_tmp" "$evidence_tmp/absent.json"
+evidence_case "a run with no report" "no parseable report" "$evidence_tmp" "$evidence_tmp/absent.json"
 
 echo "check-control-enforce: ok"

@@ -130,7 +130,23 @@ for declaration in "${CONTROLLABLE[@]}"; do
             export GOOSE_PROVIDER="${GOOSE_PROVIDER:-openai}"
             export GOOSE_MODEL="${GOOSE_MODEL:-${GOOSE_E2E_MODEL:-gpt-4o-mini}}"
         fi
-        have_env "Goose provider key" OPENAI_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY || {
+        # `GOOSE_E2E_AUTH` is the same sentinel every other phase accepts, and
+        # goose needs one for the same reason: several of its providers take no
+        # key from the environment at all, so the key check alone retires a phase
+        # on a host whose goose is in fact ready to run. A host saying so
+        # supplies its own GOOSE_PROVIDER/GOOSE_MODEL, which the defaults above
+        # already defer to.
+        #
+        # NOT every provider is a usable substrate for THIS suite, and the trap
+        # is worth naming: goose's own `claude-code` provider authenticates from
+        # the local Claude Code CLI (so it needs no key) but does NOT honor
+        # `session/cancel` — the ACP session is cancelled while the provider's
+        # own subprocess carries on, and the phase below fails on the freeze
+        # assertion having proven nothing about the mechanism (measured twice on
+        # one host: 5 step files became 16, then 20, in the 15s after a served
+        # interrupt). The same `acp-cancel` code path passes on copilot. Pick a
+        # provider goose talks to over the wire.
+        have_env "Goose provider key" GOOSE_E2E_AUTH OPENAI_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY || {
             skipped+=("$id")
             continue
         }

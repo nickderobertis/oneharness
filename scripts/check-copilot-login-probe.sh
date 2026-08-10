@@ -100,12 +100,20 @@ probe_with '' && fail_check "a copilot that never answered session/new was repor
 elapsed=$((SECONDS - started))
 [ "$elapsed" -le 20 ] || fail_check "the probe took ${elapsed}s to give up on a silent copilot; it is meant to be bounded"
 
-# 5. No copilot at all is not a login (and must not be an error).
+# 5. No copilot at all is not a login (and must not be an error) — answered from
+#    the absence itself, not by waiting the probe's FULL default deadline out.
+#    Left unbounded this case passes either way, which is why the deadline is
+#    deliberately not shortened here: "copilot is not installed" is a question
+#    the filesystem already answers, and 45s spent re-asking it is 45s added to
+#    every phase gate on a host without copilot.
+started=$SECONDS
 # shellcheck disable=SC2016  # $1/$2 are the inner shell's arguments, not this one's
 env -u GH_TOKEN -u GITHUB_TOKEN -u COPILOT_GITHUB_TOKEN -u COPILOT_E2E_AUTH \
     bash -c 'source "$1"; oh_copilot_login_ready "$2"' _ "$root/scripts/e2e-lib.sh" "$work/bin/absent-copilot" \
     2>/dev/null \
     && fail_check "a missing copilot binary was reported as logged in"
+elapsed=$((SECONDS - started))
+[ "$elapsed" -le 10 ] || fail_check "the probe took ${elapsed}s to notice copilot is not installed; it must answer that from the absence, not by waiting out its deadline"
 
 # 6. The live-control copilot phase must gate on this detector and NOT on the
 #    environment tokens it replaced — that substitution IS the fix, and a revert

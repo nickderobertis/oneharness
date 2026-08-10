@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.11](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.6.10...oneharness-core-v0.6.11) - 2026-08-10
+
+### Added
+
+- carry a redirection with an out-of-band interrupt ([#1230](https://github.com/nickderobertis/oneharness/pull/1230))
+
 ## [0.6.10](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.6.9...oneharness-core-v0.6.10) - 2026-08-09
 
 ### Added

@@ -166,10 +166,11 @@ pub enum Command {
     ///
     /// This is a SEPARATE process from the run — which is the whole reason turn
     /// control is a socket rather than a flag: a supervisor watching a long turn
-    /// go sideways can redirect it instead of destroying it. Emits the control
-    /// response frame as JSON on stdout and exits 0 when the interrupt was
-    /// served, 1 when it was refused (with `reason`: `unsupported`,
-    /// `not_running`, or `no_active_turn`).
+    /// go sideways can redirect it instead of destroying it. Pass `--input` to
+    /// say what it should do instead, delivered with the stop as one operation.
+    /// Emits the control response frame as JSON on stdout and exits 0 when the
+    /// interrupt was served, 1 when it was refused (with `reason`:
+    /// `unsupported`, `not_running`, or `no_active_turn`).
     Interrupt(InterruptArgs),
 }
 
@@ -179,6 +180,17 @@ pub struct InterruptArgs {
     /// (`run --control --session <NAME>`).
     #[arg(long, value_name = "NAME")]
     pub session: String,
+
+    /// A user message delivered with the interrupt: the turn stops and this
+    /// becomes the next one, in a single operation. Without it the interrupt is
+    /// only a stop, and the session has to be redispatched to say anything.
+    ///
+    /// The run takes ownership of the message when it accepts the interrupt, so
+    /// there is no window in which the turn is dead and the message is lost; the
+    /// answer frame's `redirected` says it did. Refused when it is blank, over
+    /// 8192 characters, or carries characters that are not message text.
+    #[arg(long, value_name = "TEXT")]
+    pub input: Option<String>,
 
     /// Directory the `--session` store (and its `control/` sockets) lives in;
     /// must match the run's. Default: <platform state dir>/oneharness/sessions.

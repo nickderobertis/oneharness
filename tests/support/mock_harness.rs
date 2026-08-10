@@ -74,8 +74,11 @@
 //!                   in-turn transcript), then keep reading stdin, appending each
 //!                   received line to the log verbatim. A line containing
 //!                   `control_request` ends the turn — the log gains an
-//!                   `INTERRUPTED` line and MOCK_TURN_RESULT is emitted — as does
-//!                   EOF. This is the hermetic stand-in for Claude Code's
+//!                   `INTERRUPTED` line and MOCK_TURN_RESULT is emitted, then a
+//!                   `TURN_ENDED` line. The stream stays open afterwards, so a
+//!                   message arriving next opens ANOTHER turn (which is how an
+//!                   interrupt's redirection is delivered); EOF ends the process.
+//!                   This is the hermetic stand-in for Claude Code's
 //!                   `-p --input-format stream-json` control channel: the turn is
 //!                   observably in flight (the prompt frame appears in the log),
 //!                   so a test can drive a *separate* `oneharness interrupt`
@@ -919,39 +922,60 @@ fn run_controlled_turn(log_path: &str) -> ! {
     // ordinary case); MOCK_TURN_HOLD keeps it running so a test can interrupt a
     // genuinely in-flight turn.
     let hold = std::env::var_os("MOCK_TURN_HOLD").is_some();
-    let mut interrupted = false;
-    for line in std::io::BufRead::lines(std::io::stdin().lock()) {
-        let Ok(line) = line else { break };
-        append(&line);
-        // A control frame, not a line that merely mentions one: a prompt whose
-        // text says `control_request` would otherwise end the turn nobody
-        // asked to stop.
-        let control = serde_json::from_str::<serde_json::Value>(&line)
-            .ok()
-            .is_some_and(|frame| {
-                frame.get("type").and_then(serde_json::Value::as_str) == Some("control_request")
-            });
-        if control {
-            interrupted = true;
-            append("INTERRUPTED");
-            break;
-        }
-        if !hold {
-            break;
-        }
-    }
-    let result = std::env::var("MOCK_TURN_RESULT").unwrap_or_else(|_| {
-        format!(
-            r#"{{"type":"result","subtype":"{}","session_id":"mock-session","result":"mock turn"}}"#,
-            if interrupted {
-                "error_during_execution"
-            } else {
-                "success"
+    let mut lines = std::io::BufRead::lines(std::io::stdin().lock());
+    // Turns, not one turn: the stream stays open after a turn ends, so a
+    // message arriving afterwards opens the next one. That is what an interrupt
+    // carrying a redirection depends on, and modelling it here is what lets a
+    // hermetic test see the redirected turn actually run.
+    let mut index = 0usize;
+    loop {
+        let mut interrupted = false;
+        let mut ended = false;
+        for line in lines.by_ref() {
+            let Ok(line) = line else { break };
+            append(&line);
+            // A control frame, not a line that merely mentions one: a prompt
+            // whose text says `control_request` would otherwise end the turn
+            // nobody asked to stop.
+            let control = serde_json::from_str::<serde_json::Value>(&line)
+                .ok()
+                .is_some_and(|frame| {
+                    frame.get("type").and_then(serde_json::Value::as_str) == Some("control_request")
+                });
+            if control {
+                interrupted = true;
+                ended = true;
+                append("INTERRUPTED");
+                break;
             }
-        )
-    });
-    let _ = writeln!(out, "{result}");
-    let _ = out.flush();
+            // Only the run's own turn is held open; a redirected one ends as
+            // soon as it has its message, so a test does not have to interrupt
+            // twice to watch a run finish.
+            if !hold || index > 0 {
+                ended = true;
+                break;
+            }
+        }
+        // The stream closed rather than a turn ending: there is nothing further
+        // to answer, and emitting another document would invent a turn.
+        if !ended {
+            break;
+        }
+        let result = std::env::var("MOCK_TURN_RESULT").unwrap_or_else(|_| {
+            format!(
+                r#"{{"type":"result","subtype":"{}","session_id":"mock-session","result":"mock turn"}}"#,
+                if interrupted {
+                    "error_during_execution"
+                } else {
+                    "success"
+                }
+            )
+        });
+        let _ = writeln!(out, "{result}");
+        let _ = out.flush();
+        append("TURN_ENDED");
+        index += 1;
+    }
     std::process::exit(0);
 }
 

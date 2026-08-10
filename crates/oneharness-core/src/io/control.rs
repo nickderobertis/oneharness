@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::domain::control::{
-    interrupt_frame, ControlEvent, ControlReason, ControlRequest, ControlResponse, ControlShape,
-    ControlVerb,
+    interrupt_frame, prompt_frame, ControlEvent, ControlReason, ControlRequest, ControlResponse,
+    ControlShape, ControlVerb,
 };
 use crate::domain::dialogue::Dialogue;
 use crate::domain::http::HttpShape;
@@ -117,6 +117,16 @@ pub struct ControlHandle {
     /// the two paths that touch both (serving an interrupt, advancing on a
     /// line) can never deadlock against each other.
     backend: Mutex<Backend>,
+    /// A redirection an interrupt committed, waiting for the turn it aborted to
+    /// end so it can open the next one.
+    ///
+    /// This is the run taking ownership of the supervisor's message: it is
+    /// parked here *before* the abort is delivered and released again if that
+    /// delivery fails, so there is no moment where the turn has been stopped and
+    /// the message belongs to nobody. Only the stdin and HTTP backends use it —
+    /// a dialogue holds its own, because opening the replacement turn is a
+    /// protocol decision rather than a write.
+    redirect: Mutex<Option<String>>,
 }
 
 impl ControlHandle {
@@ -139,6 +149,7 @@ impl ControlHandle {
             events: Mutex::new(Vec::new()),
             requests: Mutex::new(0),
             backend: Mutex::new(backend),
+            redirect: Mutex::new(None),
         }
     }
 
@@ -181,7 +192,15 @@ impl ControlHandle {
                 // document is the only signal, and there is nothing to write
                 // back.
                 Backend::Stdin | Backend::Http(_) => {
-                    return crate::domain::control::is_turn_terminal(self.shape, line);
+                    if !crate::domain::control::is_turn_terminal(self.shape, line) {
+                        return false;
+                    }
+                    // The aborted turn just ended, which is the first moment
+                    // this harness will accept the message an interrupt
+                    // committed: written mid-turn it is silently dropped, and
+                    // written after `end_turn` closes stdin there is nothing to
+                    // write to. So the turn is kept open for one more round.
+                    return !self.open_redirected_turn();
                 }
             }
         };
@@ -235,6 +254,56 @@ impl ControlHandle {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    fn redirect(&self) -> std::sync::MutexGuard<'_, Option<String>> {
+        self.redirect
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Take the redirection an interrupt committed, if there is one waiting.
+    ///
+    /// Taken rather than read: it is delivered exactly once, so a turn that ends
+    /// again — or ends badly — costs one attempt instead of looping.
+    #[must_use]
+    pub fn take_redirect(&self) -> Option<String> {
+        self.redirect().take()
+    }
+
+    /// Whether a redirection is committed and not yet delivered.
+    #[must_use]
+    pub fn has_pending_redirect(&self) -> bool {
+        match &*self.backend() {
+            Backend::Dialogue(dialogue) => dialogue.has_pending_redirect(),
+            Backend::Stdin | Backend::Http(_) => self.redirect().is_some(),
+        }
+    }
+
+    /// Deliver a committed redirection as the next turn's prompt frame, for a
+    /// mechanism whose turn rides the harness's own stdin.
+    ///
+    /// `true` when one was written, which is the run's signal to keep the turn
+    /// (and therefore stdin) open for the answer. A write that fails is reported
+    /// and the turn ends, because the message has nowhere left to go and a run
+    /// that waited on it would hang until its timeout.
+    fn open_redirected_turn(&self) -> bool {
+        let Some(input) = self.take_redirect() else {
+            return false;
+        };
+        let Some(frame) = prompt_frame(self.shape, &input) else {
+            return false;
+        };
+        match self.write_line(&frame) {
+            Ok(()) => true,
+            Err(err) => {
+                eprintln!(
+                    "oneharness: warning: the turn was interrupted but its redirection could not \
+                     be delivered: {err}"
+                );
+                false
+            }
+        }
+    }
+
     #[must_use]
     pub fn shape(&self) -> ControlShape {
         self.shape
@@ -279,9 +348,13 @@ impl ControlHandle {
     }
 
     /// Serve one request, recording it for the report either way.
-    pub fn serve(&self, request: ControlRequest) -> ControlResponse {
+    pub fn serve(&self, request: &ControlRequest) -> ControlResponse {
         let response = match request.verb() {
-            ControlVerb::Interrupt => self.interrupt(),
+            ControlVerb::Interrupt => self.interrupt(
+                request
+                    .input()
+                    .map(crate::domain::control::RedirectInput::as_str),
+            ),
         };
         self.events
             .lock()
@@ -290,7 +363,15 @@ impl ControlHandle {
         response
     }
 
-    fn interrupt(&self) -> ControlResponse {
+    /// Abort the in-flight turn, committing `redirect` to the next one in the
+    /// same operation.
+    ///
+    /// The message is taken over *before* the abort is delivered and given back
+    /// on every failure path, so the two outcomes a supervisor can read are
+    /// "stopped, and your message is the run's to deliver" and "nothing
+    /// happened, and your message is still yours". There is no third state where
+    /// the turn is dead and the redirection was dropped.
+    fn interrupt(&self, redirect: Option<&str>) -> ControlResponse {
         /// How the live backend delivers an abort, decided under the backend
         /// lock and carried out after it is released: an HTTP abort is a
         /// network request and a frame is a write to the child, and neither
@@ -308,20 +389,37 @@ impl ControlHandle {
                 ControlReason::NoActiveTurn,
             )
         };
+        // The answer for a delivered abort, which says whether the redirection
+        // went with it. Built once so every success path reports the same thing.
+        let served = || match redirect {
+            Some(_) => ControlResponse::redirected(self.shape),
+            None => ControlResponse::served(self.shape),
+        };
         let delivery = match &mut *self.backend() {
             Backend::Http(turn) => match turn.clone() {
-                Some(turn) => Delivery::Request(turn),
+                Some(turn) => {
+                    // Committed before the request goes out: the run's own
+                    // driver reads it when the aborted turn ends, and the server
+                    // holds the session either way, so it cannot be lost in the
+                    // gap the abort opens.
+                    *self.redirect() = redirect.map(str::to_string);
+                    Delivery::Request(turn)
+                }
                 None => return no_active_turn(),
             },
             // A server-backed mechanism addresses the live thread/session by
             // the ids the dialogue captured, so it alone knows whether there is
-            // a turn to abort at all.
-            Backend::Dialogue(dialogue) => match dialogue.interrupt() {
+            // a turn to abort at all — and it takes the redirection over itself,
+            // because opening the replacement turn is a protocol decision.
+            Backend::Dialogue(dialogue) => match dialogue.interrupt(redirect) {
                 Some(frames) => Delivery::Frames(frames),
                 None => return no_active_turn(),
             },
             Backend::Stdin => match interrupt_frame(self.shape, &self.next_request_id()) {
-                Some(frame) => Delivery::Frames(vec![frame]),
+                Some(frame) => {
+                    *self.redirect() = redirect.map(str::to_string);
+                    Delivery::Frames(vec![frame])
+                }
                 None => {
                     return ControlResponse::refused(
                         format!(
@@ -336,11 +434,14 @@ impl ControlHandle {
         let frames = match delivery {
             Delivery::Request(turn) => {
                 return match turn.interrupt() {
-                    Ok(()) => ControlResponse::served(self.shape),
-                    Err(err) => ControlResponse::refused(
-                        format!("could not deliver the interrupt to the control server: {err}"),
-                        ControlReason::NotRunning,
-                    ),
+                    Ok(()) => served(),
+                    Err(err) => {
+                        self.abandon_redirect();
+                        ControlResponse::refused(
+                            format!("could not deliver the interrupt to the control server: {err}"),
+                            ControlReason::NotRunning,
+                        )
+                    }
                 }
             }
             Delivery::Frames(frames) => frames,
@@ -348,16 +449,30 @@ impl ControlHandle {
         for frame in &frames {
             match self.write_line(frame) {
                 Ok(()) => {}
-                Err(err) if err.kind() == io::ErrorKind::NotConnected => return no_active_turn(),
+                Err(err) if err.kind() == io::ErrorKind::NotConnected => {
+                    self.abandon_redirect();
+                    return no_active_turn();
+                }
                 Err(err) => {
+                    self.abandon_redirect();
                     return ControlResponse::refused(
                         format!("could not deliver the interrupt to the harness: {err}"),
                         ControlReason::NotRunning,
-                    )
+                    );
                 }
             }
         }
-        ControlResponse::served(self.shape)
+        served()
+    }
+
+    /// Give back a redirection whose abort could not be delivered, wherever it
+    /// was committed. Both stores are cleared because only one of them ever
+    /// holds anything: the backend that took it is the one that has it.
+    fn abandon_redirect(&self) {
+        *self.redirect() = None;
+        if let Backend::Dialogue(dialogue) = &mut *self.backend() {
+            dialogue.abandon_redirect();
+        }
     }
 
     fn next_request_id(&self) -> String {
@@ -537,7 +652,7 @@ mod imp {
                 ControlReason::Unsupported,
             ),
             Ok(_) => match crate::domain::control::parse_request(&line) {
-                Ok(request) => handle.serve(request),
+                Ok(request) => handle.serve(&request),
                 // A frame this version cannot parse is refused loudly rather
                 // than being mistaken for an interrupt.
                 Err(err) => ControlResponse::refused(err, ControlReason::Unsupported),
@@ -555,7 +670,7 @@ mod imp {
     /// Send one request to a run listening at `path` and read its answer.
     /// A missing socket, or one nothing is listening on, is `not_running` —
     /// exactly what a supervisor needs to distinguish from a refusal.
-    pub fn send(path: &Path, request: ControlRequest) -> ControlResponse {
+    pub fn send(path: &Path, request: &ControlRequest) -> ControlResponse {
         use std::io::{BufRead, BufReader, Read, Write};
         let mut stream = match UnixStream::connect(path) {
             Ok(stream) => stream,
@@ -571,7 +686,7 @@ mod imp {
         };
         let _ = stream.set_read_timeout(Some(CLIENT_TIMEOUT));
         let _ = stream.set_write_timeout(Some(CLIENT_TIMEOUT));
-        let mut line = match serde_json::to_string(&request) {
+        let mut line = match serde_json::to_string(request) {
             Ok(line) => line,
             Err(err) => {
                 return ControlResponse::refused(
@@ -645,7 +760,7 @@ mod imp {
         ))
     }
 
-    pub fn send(path: &Path, _request: ControlRequest) -> ControlResponse {
+    pub fn send(path: &Path, _request: &ControlRequest) -> ControlResponse {
         ControlResponse::refused(
             format!(
                 "control sockets are unavailable on this platform (`{}`)",
@@ -673,7 +788,7 @@ pub fn bind(
 
 /// Send one control request to the run listening at `path`.
 #[must_use]
-pub fn send(path: &Path, request: ControlRequest) -> ControlResponse {
+pub fn send(path: &Path, request: &ControlRequest) -> ControlResponse {
     imp::send(path, request)
 }
 
@@ -742,7 +857,7 @@ mod tests {
         let dir = temp_dir("noturn");
         let path = socket_path(&dir, "idle");
         let _listener = bind(&path, ControlShape::ClaudeControlRequest, None).unwrap();
-        let response = send(&path, ControlRequest::interrupt());
+        let response = send(&path, &ControlRequest::interrupt());
         assert!(!response.is_ok());
         assert_eq!(response.reason(), Some(ControlReason::NoActiveTurn));
         std::fs::remove_dir_all(&dir).ok();
@@ -752,7 +867,7 @@ mod tests {
     fn interrupt_against_a_missing_socket_is_not_running() {
         let dir = temp_dir("missing");
         let path = socket_path(&dir, "gone");
-        let response = send(&path, ControlRequest::interrupt());
+        let response = send(&path, &ControlRequest::interrupt());
         assert!(!response.is_ok());
         assert_eq!(response.reason(), Some(ControlReason::NotRunning));
         std::fs::remove_dir_all(&dir).ok();
@@ -790,7 +905,7 @@ mod tests {
             .unwrap();
         handle.begin_turn(child.stdin.take().unwrap());
 
-        let response = send(&path, ControlRequest::interrupt());
+        let response = send(&path, &ControlRequest::interrupt());
         assert!(response.is_ok(), "{response:?}");
         assert_eq!(
             response.mechanism(),
@@ -815,6 +930,104 @@ mod tests {
         assert_eq!(events[0].verb(), ControlVerb::Interrupt);
         assert!(events[0].is_served());
         assert!(!events[0].at().as_str().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_redirection_reaches_the_child_only_once_the_aborted_turn_has_ended() {
+        use crate::domain::control::RedirectInput;
+        use std::io::Read;
+        // The ordering IS the feature. A `user` frame written into a live turn
+        // is silently dropped by Claude Code, so a redirect delivered alongside
+        // the interrupt would be lost — while one delivered by the supervisor
+        // after the turn ends needs a second round trip the turn might not
+        // survive. So the run takes the message at interrupt time and writes it
+        // itself, at the one moment the harness will accept it.
+        let dir = temp_dir("redirect");
+        let path = socket_path(&dir, "live");
+        let listener = bind(&path, ControlShape::ClaudeControlRequest, None).unwrap();
+        let handle = listener.handle();
+
+        // A real child again: the assertion is on bytes that reached a process,
+        // in the order they reached it.
+        let mut child = std::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        handle.begin_turn(child.stdin.take().unwrap());
+
+        let response = send(
+            &path,
+            &ControlRequest::redirect(RedirectInput::new("do X instead").unwrap()),
+        );
+        assert!(response.is_ok(), "{response:?}");
+        assert!(
+            response.is_redirected(),
+            "the answer must say the message was taken: {response:?}"
+        );
+        assert!(
+            handle.has_pending_redirect(),
+            "the run owns the message from the interrupt onwards"
+        );
+
+        // The turn's own end is the moment the redirection becomes a turn — and
+        // the run says so by keeping the turn open rather than closing stdin.
+        assert!(
+            !handle.advance(r#"{"type":"result","subtype":"error_during_execution"}"#),
+            "the run must not end while it still owes a redirection"
+        );
+        assert!(!handle.has_pending_redirect(), "delivered exactly once");
+        // The next end really is the end.
+        assert!(handle.advance(r#"{"type":"result","subtype":"success"}"#));
+
+        handle.end_turn();
+        let mut delivered = String::new();
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut delivered)
+            .unwrap();
+        child.wait().ok();
+        let frames: Vec<serde_json::Value> = delivered
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).expect("every frame is JSON"))
+            .collect();
+        assert_eq!(frames.len(), 2, "{delivered}");
+        assert_eq!(frames[0]["type"], "control_request");
+        assert_eq!(frames[0]["request"]["subtype"], "interrupt");
+        assert_eq!(frames[1]["type"], "user");
+        assert_eq!(frames[1]["message"]["content"][0]["text"], "do X instead");
+
+        let events = handle.events();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].is_served());
+        assert!(
+            events[0].is_redirected(),
+            "the report must distinguish a redirect from a plain stop"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_redirection_whose_interrupt_was_refused_is_not_taken_over() {
+        use crate::domain::control::RedirectInput;
+        // Nothing was stopped, so nothing may be queued behind it: a supervisor
+        // reading a refusal still owns its message and can send it elsewhere.
+        let dir = temp_dir("redirect-refused");
+        let path = socket_path(&dir, "idle");
+        let listener = bind(&path, ControlShape::ClaudeControlRequest, None).unwrap();
+        let response = send(
+            &path,
+            &ControlRequest::redirect(RedirectInput::new("do X instead").unwrap()),
+        );
+        assert!(!response.is_ok());
+        assert!(!response.is_redirected());
+        assert_eq!(response.reason(), Some(ControlReason::NoActiveTurn));
+        assert!(!listener.handle_ref().has_pending_redirect());
+        assert!(listener.handle_ref().take_redirect().is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -852,7 +1065,7 @@ mod tests {
         // And the listener is still serving: one flooding client must not cost
         // the run its control lever.
         drop(stream);
-        let response = send(&path, ControlRequest::interrupt());
+        let response = send(&path, &ControlRequest::interrupt());
         assert_eq!(response.reason(), Some(ControlReason::NoActiveTurn));
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -889,7 +1102,7 @@ mod tests {
         });
 
         let started = std::time::Instant::now();
-        let response = send(&path, ControlRequest::interrupt());
+        let response = send(&path, &ControlRequest::interrupt());
         assert!(!response.is_ok(), "{response:?}");
         assert_eq!(response.reason(), Some(ControlReason::NotRunning));
         // Refused *as oversized* rather than parsed and found unreadable: the

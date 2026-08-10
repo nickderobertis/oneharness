@@ -106,6 +106,16 @@ pub struct Dialogue {
     /// The message the accumulated text is currently coming from, so two
     /// separate assistant messages do not run together into one word.
     text_item: Option<String>,
+    /// The redirection an interrupt committed, waiting for the turn it aborted
+    /// to actually end.
+    ///
+    /// Neither protocol takes a second turn on a thread that already has one —
+    /// codex answers `turn/start` with an error and ACP's `session/prompt`
+    /// queues behind the live one — so the message is held here from the moment
+    /// the interrupt is served until the aborted turn's own end, which is the
+    /// first point a new turn can be opened. Held, never re-sent: it is taken
+    /// once, so a turn that ends badly costs one attempt rather than looping.
+    pending_redirect: Option<String>,
 }
 
 impl Dialogue {
@@ -129,6 +139,7 @@ impl Dialogue {
             turn_id: None,
             text: String::new(),
             text_item: None,
+            pending_redirect: None,
         })
     }
 
@@ -191,31 +202,56 @@ impl Dialogue {
 
     /// The frames that abort the in-flight turn, or `None` when there is no
     /// turn to abort (before the prompt, or after the turn ended).
-    pub fn interrupt(&mut self) -> Option<Vec<String>> {
+    ///
+    /// `redirect` is the message to deliver with the abort. It is committed only
+    /// when the abort itself could be written — a `None` here means nothing was
+    /// aborted, so nothing may be queued behind it either.
+    pub fn interrupt(&mut self, redirect: Option<&str>) -> Option<Vec<String>> {
         if self.phase != Phase::InTurn {
             return None;
         }
-        match self.shape {
+        let frames = match self.shape {
             ControlShape::CodexAppServer => {
                 let thread = self.session_id.clone()?;
                 let turn = self.turn_id.clone()?;
                 let id = self.take_id();
-                Some(vec![request(
+                vec![request(
                     id,
                     "turn/interrupt",
                     json!({"threadId": thread, "turnId": turn}),
-                )])
+                )]
             }
             // A NOTIFICATION, not a request. Sent with an `id`, goose answers
             // `-32601 Method not found` and the work carries on.
             _ => {
                 let session = self.session_id.as_ref()?;
-                Some(vec![notification(
+                vec![notification(
                     "session/cancel",
                     json!({"sessionId": session}),
-                )])
+                )]
             }
+        };
+        // Taken over only now that the abort exists: a caller whose interrupt
+        // was refused above still holds its message, rather than having handed
+        // it to a turn that was never stopped.
+        if let Some(redirect) = redirect {
+            self.pending_redirect = Some(redirect.to_string());
         }
+        Some(frames)
+    }
+
+    /// Whether a redirection is committed and waiting for the aborted turn to
+    /// end. The run reads this to tell a redirect that is still in flight from
+    /// one the conversation has already opened its new turn for.
+    #[must_use]
+    pub fn has_pending_redirect(&self) -> bool {
+        self.pending_redirect.is_some()
+    }
+
+    /// Give back a redirection whose abort could not be written after all, so
+    /// the supervisor still owns a message no turn is going to carry.
+    pub fn abandon_redirect(&mut self) {
+        self.pending_redirect = None;
     }
 
     /// The harness's native session identifier, once the server minted one.
@@ -406,10 +442,11 @@ impl Dialogue {
                 self.phase = Phase::InTurn;
                 let turn_id = self.take_id();
                 self.turn_request_id = Some(turn_id);
+                let prompt = self.config.prompt.clone();
                 DialogueStep::Send(vec![request(
                     turn_id,
                     self.turn_method(),
-                    self.turn_params(&session),
+                    self.turn_params(&session, &prompt),
                 )])
             }
             Some(id) if Some(id) == self.turn_request_id => match self.shape {
@@ -436,9 +473,43 @@ impl Dialogue {
         }
     }
 
+    /// The turn is over. If an interrupt committed a redirection, this is the
+    /// first moment a new turn can carry it, so the conversation opens one
+    /// instead of ending — otherwise the dialogue is done.
     fn finish(&mut self) -> DialogueStep {
+        if let Some(redirect) = self.pending_redirect.take() {
+            if let Some(frames) = self.open_redirected_turn(&redirect) {
+                return DialogueStep::Send(frames);
+            }
+        }
         self.phase = Phase::Done;
         DialogueStep::Terminal
+    }
+
+    /// The frames that open a fresh turn carrying `prompt` on the session this
+    /// conversation already holds — the redirection's delivery.
+    ///
+    /// `None` when the server never named a session, which is the one case
+    /// there is nothing to address a new turn to.
+    fn open_redirected_turn(&mut self, prompt: &str) -> Option<Vec<String>> {
+        let session = self.session_id.clone()?;
+        // The aborted turn's answer and the redirected one are different
+        // answers; run together they read as one sentence that changes its mind.
+        if !self.text.is_empty() {
+            self.text.push('\n');
+            self.text_item = None;
+        }
+        // The old turn is gone: codex mints a new id for the new one, and
+        // interrupting against the stale id would address a turn that ended.
+        self.turn_id = None;
+        self.phase = Phase::InTurn;
+        let id = self.take_id();
+        self.turn_request_id = Some(id);
+        Some(vec![request(
+            id,
+            self.turn_method(),
+            self.turn_params(&session, prompt),
+        )])
     }
 
     fn turn_method(&self) -> &'static str {
@@ -459,18 +530,22 @@ impl Dialogue {
         params
     }
 
-    fn turn_params(&self, session: &str) -> Value {
+    /// The params that open a turn on `session` carrying `prompt` — the run's
+    /// own prompt first, and afterwards whatever a redirect delivered. One
+    /// function for both, so a redirected turn is negotiated in exactly the
+    /// posture and working directory the original was.
+    fn turn_params(&self, session: &str, prompt: &str) -> Value {
         match self.shape {
             ControlShape::CodexAppServer => json!({
                 "threadId": session,
                 "cwd": self.config.cwd.to_string(),
-                "input": [{"type": "text", "text": self.config.prompt}],
+                "input": [{"type": "text", "text": prompt}],
                 "approvalPolicy": self.codex_approval_policy(),
                 "sandboxPolicy": self.codex_sandbox_policy(),
             }),
             _ => json!({
                 "sessionId": session,
-                "prompt": [{"type": "text", "text": self.config.prompt}],
+                "prompt": [{"type": "text", "text": prompt}],
             }),
         }
     }
@@ -629,7 +704,7 @@ mod tests {
         assert_eq!(init["id"], 1);
 
         // Nothing to interrupt before the prompt is out.
-        assert!(d.interrupt().is_none());
+        assert!(d.interrupt(None).is_none());
 
         let step = d.on_line(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
         assert!(!step.is_terminal());
@@ -658,7 +733,7 @@ mod tests {
 
         // The turn id arrives on the event stream and is what interrupt addresses.
         d.on_line(r#"{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"th-1","turn":{"id":"tu-9"}}}"#);
-        let frames = d.interrupt().expect("a turn is in flight");
+        let frames = d.interrupt(None).expect("a turn is in flight");
         let abort = parse(&frames[0]);
         assert_eq!(abort["method"], "turn/interrupt");
         assert_eq!(abort["params"]["threadId"], "th-1");
@@ -685,12 +760,12 @@ mod tests {
             !step.is_terminal(),
             "codex acknowledges turn/start immediately — ending here would end every run instantly"
         );
-        assert!(d.interrupt().is_some(), "the turn is still in flight");
+        assert!(d.interrupt(None).is_some(), "the turn is still in flight");
 
         // `turn/completed` is what ends it.
         let step = d.on_line(r#"{"jsonrpc":"2.0","method":"turn/completed","params":{}}"#);
         assert!(step.is_terminal());
-        assert!(d.interrupt().is_none(), "no turn left to interrupt");
+        assert!(d.interrupt(None).is_none(), "no turn left to interrupt");
     }
 
     #[test]
@@ -701,9 +776,9 @@ mod tests {
         d.open();
         d.on_line(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
         d.on_line(r#"{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"th-1"}}}"#);
-        assert!(d.interrupt().is_none(), "no turn id yet");
+        assert!(d.interrupt(None).is_none(), "no turn id yet");
         d.on_line(r#"{"jsonrpc":"2.0","id":3,"result":{"turn":{"id":"tu-3"}}}"#);
-        let abort = parse(&d.interrupt().expect("a turn is in flight")[0]);
+        let abort = parse(&d.interrupt(None).expect("a turn is in flight")[0]);
         assert_eq!(abort["params"]["turnId"], "tu-3");
     }
 
@@ -744,7 +819,7 @@ mod tests {
 
         // Cancel is a NOTIFICATION: with an `id`, goose answers -32601 and the
         // work carries on.
-        let frames = d.interrupt().expect("a turn is in flight");
+        let frames = d.interrupt(None).expect("a turn is in flight");
         let cancel = parse(&frames[0]);
         assert_eq!(cancel["method"], "session/cancel");
         assert_eq!(cancel["params"]["sessionId"], "sess-7");
@@ -937,6 +1012,147 @@ mod tests {
         for noise in ["", "   ", "not json", "{}", r#"{"jsonrpc":"2.0"}"#] {
             assert_eq!(d.on_line(noise), DialogueStep::default(), "{noise}");
         }
+    }
+
+    /// Drive a codex conversation to the point where a turn is in flight.
+    fn codex_in_turn() -> Dialogue {
+        let mut d = Dialogue::new(ControlShape::CodexAppServer, config()).unwrap();
+        d.open();
+        d.on_line(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
+        d.on_line(r#"{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"th-1"}}}"#);
+        d.on_line(r#"{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"th-1","turn":{"id":"tu-9"}}}"#);
+        d
+    }
+
+    #[test]
+    fn a_codex_interrupt_carrying_a_redirection_opens_the_next_turn_when_this_one_ends() {
+        // Codex refuses a second turn on a thread that already has one, so the
+        // redirection is held from the moment the interrupt is served until
+        // `turn/completed` — the first point a new turn can carry it. The
+        // supervisor's message is the run's from the interrupt onwards, which is
+        // what makes the two one operation.
+        let mut d = codex_in_turn();
+        d.on_line(
+            r#"{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"itemId":"m1","delta":"wrong path"}}"#,
+        );
+        let abort = parse(
+            &d.interrupt(Some("do X instead"))
+                .expect("a turn is in flight")[0],
+        );
+        assert_eq!(abort["method"], "turn/interrupt");
+        assert!(d.has_pending_redirect());
+
+        // The aborted turn ending is delivery, not the end of the conversation.
+        let step = d.on_line(r#"{"jsonrpc":"2.0","method":"turn/completed","params":{}}"#);
+        assert!(
+            !step.is_terminal(),
+            "the redirection still has to be carried"
+        );
+        assert!(!d.has_pending_redirect(), "it was handed over exactly once");
+        let next = parse(&step.frames()[0]);
+        assert_eq!(next["method"], "turn/start");
+        assert_eq!(next["params"]["threadId"], "th-1", "same thread, new turn");
+        assert_eq!(next["params"]["input"][0]["text"], "do X instead");
+        // Negotiated in the run's own posture and directory, exactly as the
+        // first turn was — a redirection is not a chance to widen either.
+        assert_eq!(next["params"]["cwd"], absolute_text_for_test(WORK));
+        assert_eq!(next["params"]["sandboxPolicy"]["type"], "workspaceWrite");
+        assert_eq!(next["params"]["approvalPolicy"], "never");
+
+        // The new turn is interruptible in its own right, once codex names it.
+        assert!(
+            d.interrupt(None).is_none(),
+            "the old turn's id must not address the new one"
+        );
+        d.on_line(r#"{"jsonrpc":"2.0","method":"turn/started","params":{"turn":{"id":"tu-10"}}}"#);
+        let again = parse(&d.interrupt(None).expect("the redirected turn is in flight")[0]);
+        assert_eq!(again["params"]["turnId"], "tu-10");
+
+        // And it ends the conversation, because nothing is queued behind it.
+        let step = d.on_line(r#"{"jsonrpc":"2.0","method":"turn/completed","params":{}}"#);
+        assert!(step.is_terminal());
+
+        // Both answers are kept, separated rather than run together into one
+        // sentence that changes its mind.
+        d.on_line(
+            r#"{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"itemId":"m2","delta":"ignored"}}"#,
+        );
+        assert_eq!(d.text().as_deref(), Some("wrong path"));
+    }
+
+    #[test]
+    fn an_acp_interrupt_carrying_a_redirection_prompts_the_same_session_again() {
+        let mut d = Dialogue::new(ControlShape::AcpCancel, config()).unwrap();
+        d.open();
+        d.on_line(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
+        d.on_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-7"}}"#);
+        let cancel = parse(&d.interrupt(Some("do X instead")).expect("in flight")[0]);
+        assert_eq!(cancel["method"], "session/cancel");
+        assert!(cancel.get("id").is_none(), "cancel is still a notification");
+
+        // ACP ends the turn on the prompt response — reporting `end_turn` even
+        // after a real cancellation — and that is where the redirection lands.
+        let step = d.on_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"cancelled"}}"#);
+        assert!(!step.is_terminal());
+        let next = parse(&step.frames()[0]);
+        assert_eq!(next["method"], "session/prompt");
+        assert_eq!(
+            next["params"]["sessionId"], "sess-7",
+            "the session survived"
+        );
+        assert_eq!(next["params"]["prompt"][0]["text"], "do X instead");
+
+        let step = d.on_line(r#"{"jsonrpc":"2.0","id":4,"result":{"stopReason":"end_turn"}}"#);
+        assert!(step.is_terminal(), "nothing is queued behind the redirect");
+    }
+
+    #[test]
+    fn a_redirection_is_only_taken_over_when_the_abort_it_rides_exists() {
+        // The supervisor still owns its message unless the turn was really
+        // stopped: taking it and then refusing the interrupt would be the exact
+        // window this feature exists to close.
+        let mut before_the_turn = Dialogue::new(ControlShape::CodexAppServer, config()).unwrap();
+        before_the_turn.open();
+        assert!(before_the_turn.interrupt(Some("too early")).is_none());
+        assert!(!before_the_turn.has_pending_redirect());
+
+        // In flight, but codex has not named the turn yet, so there is no id to
+        // abort against.
+        let mut unnamed = Dialogue::new(ControlShape::CodexAppServer, config()).unwrap();
+        unnamed.open();
+        unnamed.on_line(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
+        unnamed.on_line(r#"{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"th-1"}}}"#);
+        assert!(unnamed.interrupt(Some("no turn id yet")).is_none());
+        assert!(!unnamed.has_pending_redirect());
+
+        // And one whose abort could not be written is given back, so the turn
+        // that ends afterwards ends rather than carrying a message nobody
+        // believes was delivered.
+        let mut abandoned = codex_in_turn();
+        assert!(abandoned.interrupt(Some("dropped")).is_some());
+        abandoned.abandon_redirect();
+        assert!(!abandoned.has_pending_redirect());
+        let step = abandoned.on_line(r#"{"jsonrpc":"2.0","method":"turn/completed","params":{}}"#);
+        assert!(step.is_terminal());
+    }
+
+    #[test]
+    fn a_redirection_is_attempted_once_even_when_the_turn_ends_badly() {
+        // A server error ends the turn too, and the message has been committed,
+        // so it is still offered the one delivery it was promised — and then the
+        // conversation ends rather than retrying forever.
+        let mut d = codex_in_turn();
+        d.interrupt(Some("do X instead")).unwrap();
+        let step =
+            d.on_line(r#"{"jsonrpc":"2.0","id":3,"error":{"code":-32603,"message":"boom"}}"#);
+        assert!(!step.is_terminal());
+        let next = parse(&step.frames()[0]);
+        assert_eq!(next["method"], "turn/start");
+        let step = d.on_line(&format!(
+            r#"{{"jsonrpc":"2.0","id":{},"error":{{"code":-32603,"message":"boom"}}}}"#,
+            next["id"]
+        ));
+        assert!(step.is_terminal(), "one attempt, not a loop");
     }
 
     #[test]

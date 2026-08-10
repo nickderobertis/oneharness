@@ -292,7 +292,21 @@ fn created_id(body: &str, what: &str) -> io::Result<ResourceId> {
 /// A turn that ends because it was interrupted is still a completed run here:
 /// oneharness records the interrupt from its own side (the socket that served
 /// it), never from what the harness says about how the turn stopped.
-pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duration) -> TurnOutcome {
+///
+/// `take_redirect` is asked once each time a turn ends, and hands over the
+/// message an interrupt committed. Submitting it *here* rather than from the
+/// socket thread is what makes the redirection atomic: both servers queue a
+/// prompt behind the turn they are still running, so a message sent alongside
+/// the abort would land in the turn being cancelled. The interrupt takes
+/// ownership of it instead, and this loop delivers it to a session that is
+/// demonstrably idle.
+pub fn run(
+    turn: &HttpTurn,
+    prompt: &str,
+    mode: PermissionMode,
+    timeout: Duration,
+    take_redirect: &dyn Fn() -> Option<String>,
+) -> TurnOutcome {
     let decision = http::permits_action(mode);
     let started = Instant::now();
     let started_at = utc_now();
@@ -324,9 +338,12 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
     };
 
     let submit_error = Arc::new(Mutex::new(None::<String>));
-    let submitter = {
+    // Every prompt this turn submits — its own, and any redirection an
+    // interrupt hands over — goes out on its own thread. Opencode holds the
+    // prompt request open for the whole turn, so submitting from the reader
+    // would stop it following the very stream that says when to stop.
+    let spawn_submit = |prompt: String| {
         let turn = turn.clone();
-        let prompt = prompt.to_string();
         let finished = Arc::clone(&finished);
         let submit_error = Arc::clone(&submit_error);
         std::thread::spawn(move || {
@@ -349,6 +366,7 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
             }
         })
     };
+    let mut submitters = vec![spawn_submit(prompt.to_string())];
 
     let mut timed_out = false;
     // Whether the stream ended before the turn did. Buffered events are handed
@@ -382,7 +400,18 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
                     TurnEvent::Started => in_flight = true,
                     TurnEvent::Finished => {
                         if in_flight {
-                            ended = true;
+                            // The turn is over, so the session will accept a
+                            // prompt again — the first moment a redirection an
+                            // interrupt committed can actually become a turn.
+                            // Until its own `Started` arrives, the same idle
+                            // this arm read must not end the run again.
+                            match take_redirect() {
+                                Some(redirect) => {
+                                    submitters.push(spawn_submit(redirect));
+                                    in_flight = false;
+                                }
+                                None => ended = true,
+                            }
                         }
                     }
                     TurnEvent::Ignored => {}
@@ -415,12 +444,14 @@ pub fn run(turn: &HttpTurn, prompt: &str, mode: PermissionMode, timeout: Duratio
             }
         }
     }
-    // A peer can hold the prompt request open longer than the run's budget.
-    // Once that budget expires, joining the request thread would turn a timeout
-    // into an additional REQUEST_TIMEOUT wait. Dropping the handle detaches the
-    // worker; releasing the dispatch's server lease tears down its socket.
+    // A peer can hold a prompt request open longer than the run's budget. Once
+    // that budget expires, joining the request threads would turn a timeout into
+    // an additional REQUEST_TIMEOUT wait. Dropping the handles detaches the
+    // workers; releasing the dispatch's server lease tears down its socket.
     if !timed_out {
-        let _ = submitter.join();
+        for submitter in submitters {
+            let _ = submitter.join();
+        }
     }
 
     // A stream that ended before the turn did is not a turn that ended: the

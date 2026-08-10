@@ -1326,6 +1326,97 @@ _oh_wait_for() {
     return 1
 }
 
+# --- copilot credential detection ------------------------------------------
+
+# The ACP `initialize` frame `oh_copilot_login_ready` opens with. Declared here
+# so the probe's two frames read together.
+_OH_ACP_INITIALIZE='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false}}}}'
+
+# Whether copilot has a login it can actually open a session with — the gate the
+# live-control copilot phase uses instead of an environment token.
+#
+# Copilot's own credential is not something this suite can look at: `copilot
+# login` stores the token in the OS credential store, and the documented plain
+# `~/.copilot` fallback only applies where there is none. Measured on a
+# developer host, copilot authenticates with COPILOT_HOME pointed at an EMPTY
+# directory and with COPILOT_GITHUB_TOKEN/GH_TOKEN/GITHUB_TOKEN all unset — so
+# both a file check and an environment check report that host as logged out,
+# which is how copilot's control path came to ship with no live alarm.
+#
+# Asking copilot is therefore the only honest test, and ACP answers it for free.
+# `session/new` opens a session against a usable credential and is refused with
+# `{"code":-32000,"message":"Authentication required"}` without one (both shapes
+# captured live). No user message is sent and no turn completes, so this spends
+# no AI credits — the same zero-turn bar the `oneharness usage` probes are held
+# to. It answers for an environment token too, since copilot reads those as
+# well, so this one gate covers a developer host and CI alike.
+#
+#   $1 the copilot binary to probe (default `copilot`)
+# llmlint: ignore-block[tool_output_is_signal] A refusal here retires a whole
+# phase, so the reason has to reach the transcript: "copilot skipped" with no
+# answer attached is the silent skip this function exists to end.
+oh_copilot_login_ready() {
+    local bin="${1:-copilot}"
+    command -v "$bin" >/dev/null 2>&1 || return 1
+    command -v jq >/dev/null 2>&1 || return 1
+
+    local seconds="${OH_COPILOT_LOGIN_PROBE_SECONDS:-45}"
+    local dir writer agent frame new verdict=1
+    dir="$(mktemp -d)"
+    mkfifo "$dir/in"
+    new="$(jq -nc --arg cwd "$dir" '{jsonrpc:"2.0",id:2,method:"session/new",params:{cwd:$cwd,mcpServers:[]}}')"
+
+    # stdin stays open until the answer lands: copilot answers `session/new`
+    # asynchronously, and an EOF drops the reply in flight — which would read
+    # exactly like a logged-out copilot (the same `StdinAfterRequests` trap that
+    # once reported a readable codex quota as unreadable).
+    (
+        printf '%s\n%s\n' "$_OH_ACP_INITIALIZE" "$new"
+        local waited=0
+        while [ ! -e "$dir/answered" ] && [ "$waited" -lt "$seconds" ]; do
+            sleep 1
+            waited=$((waited + 1))
+        done
+    ) >"$dir/in" 2>/dev/null &
+    writer=$!
+    "$bin" --acp <"$dir/in" >"$dir/out" 2>"$dir/err" &
+    agent=$!
+
+    if _oh_wait_for "$seconds" _oh_acp_answer "$dir/out" >/dev/null; then
+        frame="$(_oh_acp_answer "$dir/out")"
+        if printf '%s' "$frame" | jq -e '.result.sessionId != null' >/dev/null 2>&1; then
+            verdict=0
+        else
+            note "  copilot has no usable login: ACP session/new answered $(printf '%s' "$frame" | jq -c '.error // .result')"
+        fi
+    else
+        note "  copilot has no usable login: ACP session/new went unanswered for ${seconds}s"
+    fi
+
+    : >"$dir/answered"
+    wait "$writer" 2>/dev/null || true
+    kill "$agent" 2>/dev/null || true
+    wait "$agent" 2>/dev/null || true
+    rm -rf "$dir"
+    return "$verdict"
+}
+# llmlint: ignore-end[tool_output_is_signal]
+
+# Print the COMPLETE answer to ACP request 2 from the transcript in `$1`, or
+# return 1 while there is none. Every line is parsed rather than matched: the
+# agent interleaves `session/update` notifications with its replies, and a line
+# still being written must never be read as a verdict.
+_oh_acp_answer() {
+    local line
+    while IFS= read -r line; do
+        if printf '%s' "$line" | jq -e 'select(.id == 2) | has("result") or has("error")' >/dev/null 2>&1; then
+            printf '%s' "$line"
+            return 0
+        fi
+    done <"$1"
+    return 1
+}
+
 # Live proof that `run --mock-rules` — the single-flag ephemeral mock — is
 # honored end to end by the real harness: the hook is delivered for THIS run
 # only (claude: a per-run --settings temp file; the rest: a project-scope

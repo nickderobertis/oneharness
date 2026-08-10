@@ -34,6 +34,14 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 note "== oneharness live e2e: out-of-band turn control (--control / interrupt) =="
 need jq
 
+# Wall-clock, formatted. Every phase drives a real multi-step turn, waits out a
+# 15s freeze window, and retries an inconclusive attempt up to three times, so
+# what this suite costs in time is not something a reader can infer from the
+# transcript — a phase that started retrying, or a newly proven harness, shows
+# up here as minutes that were not there before. `$SECONDS` is the whole run;
+# pass a difference for one phase.
+elapsed() { printf '%dm%02ds' "$(($1 / 60))" "$(($1 % 60))"; }
+
 case "$(uname -s 2>/dev/null || echo unknown)" in
 MINGW* | MSYS* | CYGWIN*)
     note "control sockets are unix-only; nothing to verify on Windows"
@@ -45,9 +53,11 @@ BIN="$(oh_bin)"
 [ -n "$BIN" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
 # The capability matrix is the script's input: every harness declaring a
-# mechanism must prove it here.
+# mechanism must prove it here. `default_bin` rides along so a phase that probes
+# the CLI directly (copilot's, below) can only ever probe the binary oneharness
+# would spawn.
 mapfile -t CONTROLLABLE < <(ONEHARNESS_NO_CONFIG=1 "$BIN" list --compact \
-    | jq -r '.harnesses[] | select(.control != null) | [.id, .control] | @tsv')
+    | jq -r '.harnesses[] | select(.control != null) | [.id, .control, .default_bin] | @tsv')
 
 if [ "${#CONTROLLABLE[@]}" -eq 0 ]; then
     fail "no harness declares a control mechanism, so this suite would prove nothing"
@@ -62,10 +72,12 @@ note "harnesses declaring turn control: ${CONTROLLABLE[*]}"
 #
 # Each phase also accepts a `<HARNESS>_E2E_AUTH` sentinel alongside the provider
 # keys CI supplies. Several of these CLIs authenticate from their own on-disk
-# credentials (`~/.claude/.credentials.json`, `~/.codex/auth.json`, a `copilot`
-# login) with no key in the environment at all, so on a developer host the key
-# check alone would retire a phase whose harness is in fact ready to run. The
-# sentinel is how that host says so; its value is never read.
+# credentials (`~/.claude/.credentials.json`, `~/.codex/auth.json`) with no key
+# in the environment at all, so on a developer host the key check alone would
+# retire a phase whose harness is in fact ready to run. The sentinel is how that
+# host says so; its value is never read. Copilot needs no sentinel — its phase
+# asks copilot itself instead (see below), which is what a sentinel only
+# approximates.
 have_env() {
     local label="$1"
     shift
@@ -81,7 +93,7 @@ proven=()
 skipped=()
 
 for declaration in "${CONTROLLABLE[@]}"; do
-    IFS=$'\t' read -r id mechanism <<<"$declaration"
+    IFS=$'\t' read -r id mechanism default_bin <<<"$declaration"
     case "$id" in
     claude-code)
         have_env "Claude auth" CLAUDE_E2E_AUTH CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY || {
@@ -143,8 +155,16 @@ for declaration in "${CONTROLLABLE[@]}"; do
         }
         export OH_MODEL="${CRUSH_E2E_MODEL:-}"
         ;;
+    # Copilot is the one phase that does NOT ask the environment. Its login is
+    # stored by `copilot login` in the OS credential store, so a host with no
+    # GH_TOKEN/GITHUB_TOKEN runs copilot perfectly well — and the token gate
+    # this replaces retired the phase on exactly such a host, which is how
+    # copilot's control path came to ship with no live alarm. `oh_copilot_login_ready`
+    # asks copilot instead (a zero-turn ACP `session/new`, no AI credits), and
+    # answers for an environment token too, since copilot reads those as well.
     copilot)
-        have_env "Copilot auth" COPILOT_E2E_AUTH GH_TOKEN GITHUB_TOKEN || {
+        oh_copilot_login_ready "$default_bin" || {
+            note "  SKIP Copilot auth: copilot cannot open a session (run \`copilot login\`, or set COPILOT_GITHUB_TOKEN)"
             skipped+=("$id")
             continue
         }
@@ -155,14 +175,16 @@ for declaration in "${CONTROLLABLE[@]}"; do
         ;;
     esac
     note "» $id: a real turn must actually STOP when interrupted"
+    phase_started=$SECONDS
     oh_control_enforce "$id" "$mechanism"
     proven+=("$id")
+    note "  $id proven in $(elapsed $((SECONDS - phase_started)))"
 done
 
 if [ "${#proven[@]}" -eq 0 ]; then
-    skip "no controllable harness had credentials (unproven: ${skipped[*]})"
+    skip "no controllable harness had credentials after $(elapsed $SECONDS) (unproven: ${skipped[*]})"
 fi
 if [ "${#skipped[@]}" -gt 0 ]; then
     note "NOT PROVEN THIS RUN (no credentials): ${skipped[*]}"
 fi
-note "PASS: turn control honored by every harness proven here: ${proven[*]}"
+note "PASS: turn control honored by every harness proven here: ${proven[*]} (in $(elapsed $SECONDS))"

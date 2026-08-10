@@ -1213,6 +1213,15 @@ _oh_control_evidence() {
                              "    error=\(.error // "none")",
                              "    text=\((.text // "")[0:300])"' \
             "$report" >&2 || true
+        # The transcript, last. For a turn driven over a protocol it is the only
+        # place the SERVER speaks: the launcher's stderr says a run failed and
+        # the `error` says how oneharness saw it end, but why the harness
+        # refused, errored or never started a turn is in the frames it sent. Its
+        # absence is what left three opencode attempts, nine minutes apart, with
+        # nothing between them but "the control server closed the event stream".
+        note "  evidence: last frames the harness sent —"
+        jq -r '.results[0].stdout // ""' "$report" 2>/dev/null \
+            | tail -n 15 | cut -c1-400 | sed 's/^/    /' >&2 || true
     else
         note "  evidence: no parseable report was written (the run had not finished)"
     fi
@@ -1221,20 +1230,26 @@ _oh_control_evidence() {
 oh_control_enforce() {
     local id="$1" expected_mechanism="$2"
     # Three attempts, not two: an inconclusive attempt is a model that refused or
-    # raced, and opencode declines this fixture outright often enough (answers
-    # `ok` in under ten seconds having run no tool at all) that two attempts
-    # retire the phase on model mood rather than on control behavior. Retrying
-    # cannot hide a regression — every real contract violation below calls
-    # `fail` on the spot, and only a turn that proved NOTHING comes back here.
-    local attempt attempts=3
+    # raced, and a harness that declines this fixture outright (answers `ok` in
+    # under ten seconds having run no tool at all) would retire the phase on
+    # model mood rather than on control behavior. Retrying cannot hide a
+    # regression — every real contract violation below calls `fail` on the spot,
+    # and only a turn that proved NOTHING comes back here.
+    #
+    # It is a backstop, not the mechanism: the workload each attempt drives is
+    # sized so a turn CANNOT finish it inside the interrupt window (see the
+    # prompt below), so a harness that needs the retries is telling you
+    # something. Which attempt won is reported for exactly that reason — a phase
+    # that passes on the third every night is a phase about to fail.
+    local attempt attempts=3 started=$SECONDS
     for attempt in $(seq 1 "$attempts"); do
         if _oh_control_enforce_once "$id" "$attempt" "$expected_mechanism"; then
-            note "PASS: $id control enforcement"
+            note "PASS: $id control enforcement (attempt $attempt of $attempts, $((SECONDS - started))s)"
             return 0
         fi
         note "  control-enforce: attempt $attempt was inconclusive (the turn ended, or finished every step, before the interrupt landed); retrying"
     done
-    fail "$id: the turn never stayed in flight long enough to interrupt across $attempts attempts"
+    fail "$id: the turn never stayed in flight long enough to interrupt across $attempts attempts ($((SECONDS - started))s)"
 }
 
 # One attempt. Returns 0 on a proven interrupt, 1 when the turn ended too early
@@ -1261,9 +1276,18 @@ _oh_control_enforce_once() {
     # when the interrupt arrives, and each step must be individually observable.
     # `steps` is the ceiling the assertion below reads too, so the prompt and the
     # "did it merely finish?" test can never drift apart.
-    local steps=60 last
+    #
+    # The PAUSE is what makes staying in flight a property of the workload rather
+    # than of how fast the model happens to be. The interrupt lands as soon as
+    # two steps exist and the assertion is over ~18s later, while the work asked
+    # for is $steps × $pause seconds of sleeping — so no agent can outrun the
+    # window, and one that batches every file into a single command (the failure
+    # the ONE-PER-TOOL-CALL wording exists for) is still sleeping when the abort
+    # arrives. Three attempts remain as a backstop for a turn that never starts;
+    # they are not how this phase stays in flight.
+    local steps=60 pause=3 last
     last="$(printf 'step-%03d.txt' "$steps")"
-    local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create $steps files named step-001.txt through $last in the current directory, ONE PER TOOL CALL, sleeping 1 second between each (for example: sleep 1 && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
+    local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create $steps files named step-001.txt through $last in the current directory, ONE PER TOOL CALL, sleeping $pause seconds before each (for example: sleep $pause && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
 
     # The turn must actually run shell commands for there to be work to stop, so a
     # narrower mode would make the freeze assertion vacuous. Confined to a fresh
@@ -1287,8 +1311,11 @@ _oh_control_enforce_once() {
     note "  ok: control socket present at $socket"
 
     # Wait until the agent is demonstrably working: at least two steps done, so
-    # a frozen count afterwards means something real stopped.
-    if ! _oh_wait_for 180 _oh_steps_at_least "$sandbox" 2; then
+    # a frozen count afterwards means something real stopped. A run that has
+    # already EXITED will never produce them, so stop waiting the moment it does
+    # — waiting out the full window on a dead run is how three opencode attempts
+    # cost nine minutes to report one thing three times.
+    if ! _oh_wait_for 180 _oh_control_underway "$sandbox" "$run_pid"; then
         kill "$run_pid" 2>/dev/null || true
         wait "$run_pid" 2>/dev/null || true
         note "  control-enforce: the agent never produced two steps"
@@ -1296,8 +1323,11 @@ _oh_control_enforce_once() {
         rm -rf "$sandbox"
         return 1
     fi
+    # The other way `_oh_control_underway` comes back: the run is over. Whether
+    # it did two steps first or none, there is nothing in flight to interrupt.
     if ! kill -0 "$run_pid" 2>/dev/null; then
-        note "  control-enforce: the run ended before any work could be interrupted"
+        wait "$run_pid" 2>/dev/null || true
+        note "  control-enforce: the run ended before any work could be interrupted ($(_oh_step_count "$sandbox") step files)"
         _oh_control_evidence "$sandbox" "$report"
         rm -rf "$sandbox"
         return 1
@@ -1422,15 +1452,19 @@ _oh_control_mechanism_matches() {
 # multi-minute two-turn exchange to the step that produced it.
 oh_control_redirect_enforce() {
     local id="$1"
-    local attempt attempts=3
+    # Attempts and duration reported for the same reason as `oh_control_enforce`:
+    # the retries are a backstop for a turn that never starts, so a harness
+    # spending them is the finding, and a transcript that never says which
+    # attempt won cannot tell anyone that.
+    local attempt attempts=3 started=$SECONDS
     for attempt in $(seq 1 "$attempts"); do
         if _oh_control_redirect_enforce_once "$id" "$attempt"; then
-            note "PASS: $id redirection enforcement"
+            note "PASS: $id redirection enforcement (attempt $attempt of $attempts, $((SECONDS - started))s)"
             return 0
         fi
         note "  redirect-enforce: attempt $attempt was inconclusive (the turn ended, or finished every step, before the interrupt landed); retrying"
     done
-    fail "$id: the turn never stayed in flight long enough to redirect across $attempts attempts"
+    fail "$id: the turn never stayed in flight long enough to redirect across $attempts attempts ($((SECONDS - started))s)"
 }
 
 # Report what a control-suite run actually proved, and decide whether a PARTIAL
@@ -1497,9 +1531,10 @@ _oh_control_redirect_enforce_once() {
     local model_args=()
     [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
 
-    local steps=60 last
+    # Same workload, and same reason it is paced: see `_oh_control_enforce_once`.
+    local steps=60 pause=3 last
     last="$(printf 'step-%03d.txt' "$steps")"
-    local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create $steps files named step-001.txt through $last in the current directory, ONE PER TOOL CALL, sleeping 1 second between each (for example: sleep 1 && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
+    local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create $steps files named step-001.txt through $last in the current directory, ONE PER TOOL CALL, sleeping $pause seconds before each (for example: sleep $pause && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
     local redirect="Stop creating step-NNN.txt files immediately. Instead, using your shell tool, run exactly this one command and then stop: touch $marker.txt"
 
     # The turn must actually run shell commands for there to be work to stop and
@@ -1521,7 +1556,7 @@ _oh_control_redirect_enforce_once() {
         fail "$id: no control socket appeared at $socket (--control did not open one)"
     fi
 
-    if ! _oh_wait_for 180 _oh_steps_at_least "$sandbox" 2; then
+    if ! _oh_wait_for 180 _oh_control_underway "$sandbox" "$run_pid"; then
         kill "$run_pid" 2>/dev/null || true
         wait "$run_pid" 2>/dev/null || true
         note "  redirect-enforce: the agent never produced two steps"
@@ -1530,7 +1565,8 @@ _oh_control_redirect_enforce_once() {
         return 1
     fi
     if ! kill -0 "$run_pid" 2>/dev/null; then
-        note "  redirect-enforce: the run ended before any work could be redirected"
+        wait "$run_pid" 2>/dev/null || true
+        note "  redirect-enforce: the run ended before any work could be redirected ($(_oh_step_count "$sandbox") step files)"
         _oh_control_evidence "$sandbox" "$report"
         rm -rf "$sandbox"
         return 1
@@ -1655,6 +1691,14 @@ _oh_step_count() {
 # `_oh_step_count`, so waiting on it needs no shell expression.
 _oh_steps_at_least() {
     [ "$(_oh_step_count "$1")" -ge "$2" ]
+}
+
+# Whether there is anything left to wait for: the agent has two steps done, or
+# the run it was doing them in has exited. Either way the caller has its answer,
+# and the caller is the one that tells the two apart.
+#   $1 sandbox directory, $2 the run's pid
+_oh_control_underway() {
+    _oh_steps_at_least "$1" 2 || ! kill -0 "$2" 2>/dev/null
 }
 
 # Poll `command…` until it succeeds or `seconds` elapse. Returns 1 on timeout.

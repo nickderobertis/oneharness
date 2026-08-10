@@ -92,9 +92,35 @@ evidence_case "the classified failure" "failure_kind=auth" "$evidence_tmp" "$evi
     fail "a failed run's status was not read back from its report"
 [ -z "$(_oh_result_status "$evidence_tmp/absent.json")" ] ||
     fail "a missing report must yield no status rather than a made-up one"
+# For a turn driven over a protocol, the frames the harness sent are the only
+# place the SERVER says anything — the stderr and the `error` above are both
+# oneharness's account of it.
+printf '{"results":[{"status":"nonzero","stdout":"{\\"type\\":\\"session.error\\",\\"error\\":\\"no model configured\\"}"}]}\n' \
+    >"$evidence_tmp/frames.json"
+evidence_case "the frames the harness sent" "no model configured" "$evidence_tmp" "$evidence_tmp/frames.json"
+
 # Silence is itself the finding, so it must be stated rather than left blank.
 : >"$evidence_tmp/run.err"
 evidence_case "a run that said nothing" "wrote nothing to stderr" "$evidence_tmp" "$evidence_tmp/absent.json"
 evidence_case "a run with no report" "no parseable report" "$evidence_tmp" "$evidence_tmp/absent.json"
+
+# The wait that decides an attempt is underway. It must come back for EITHER
+# answer — the work started, or the run that was doing it is gone — because a
+# wait that only watched the step files spent its whole window on a run that had
+# already exited, three times per harness.
+underway_tmp="$(mktemp -d)"
+trap 'rm -rf "$evidence_tmp" "$underway_tmp"' EXIT
+sleep 30 &
+alive=$!
+_oh_control_underway "$underway_tmp" "$alive" &&
+    fail "a live run with no steps must keep the wait going"
+touch "$underway_tmp/step-001.txt" "$underway_tmp/step-002.txt"
+_oh_control_underway "$underway_tmp" "$alive" ||
+    fail "two steps under a live run must end the wait"
+rm -f "$underway_tmp"/step-*.txt
+kill "$alive" 2>/dev/null || true
+wait "$alive" 2>/dev/null || true
+_oh_control_underway "$underway_tmp" "$alive" ||
+    fail "a run that has exited must end the wait rather than being waited out"
 
 echo "check-control-enforce: ok"

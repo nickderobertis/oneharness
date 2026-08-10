@@ -502,16 +502,46 @@ pub struct ModeSpec {
     /// for modes a harness expresses natively (their own plan/agent mode already
     /// carries the behavior). Prepended by the command layer; kept single-line.
     pub instruction: Option<&'static str>,
+    /// Whether this harness's OWN run acts without asking in this mode.
+    ///
+    /// A driven turn answers the server's permission requests itself, and the
+    /// answer has to be the posture the *same mode* gives without `--control` —
+    /// otherwise `--control` silently reshapes the policy, which is the class of
+    /// bug that made codex's controlled `bypass` more restricted than its
+    /// uncontrolled one. Usually that is the normalized spectrum (`auto` and
+    /// `bypass` mean "act without asking"), which is what [`mode`] fills in; it
+    /// is stated per harness because a CLI can be unable to honor the spectrum
+    /// at all — `crush run` auto-approves the whole session, so its `default` is
+    /// unattended however it is asked, and a controlled run that gated it would
+    /// be stricter than the CLI can be.
+    ///
+    /// Cross-checked against the argv/environment the harness really builds by
+    /// `domain::control`'s `control_mode_parity` grid, so this cannot drift into
+    /// a claim the mapping does not back.
+    pub acts_unattended: bool,
 }
 
-/// Shorthand for an argv-expressed mode (no environment, no instruction): the
-/// common case.
+/// Shorthand for a mode expressed on the argv (no environment, no instruction)
+/// whose posture follows the normalized spectrum: the common case.
 const fn mode(mode: PermissionMode, headless: ModeHeadless) -> ModeSpec {
     ModeSpec {
         mode,
         headless,
         env: &[],
         instruction: None,
+        acts_unattended: matches!(mode, PermissionMode::Auto | PermissionMode::Bypass),
+    }
+}
+
+/// Shorthand for a mode on a harness whose own run cannot gate at all, so it
+/// acts without asking whichever mode it was given (crush's `run -q`).
+const fn ungated_mode(mode: PermissionMode, headless: ModeHeadless) -> ModeSpec {
+    ModeSpec {
+        mode,
+        headless,
+        env: &[],
+        instruction: None,
+        acts_unattended: true,
     }
 }
 
@@ -991,6 +1021,7 @@ static REGISTRY: &[HarnessSpec] = &[
                 mode: PermissionMode::Plan,
                 headless: ModeHeadless::Clean,
                 env: &[],
+                acts_unattended: false,
                 instruction: Some(CODEX_PLAN_INSTRUCTION),
             },
             mode(PermissionMode::Default, ModeHeadless::Clean),
@@ -1092,6 +1123,13 @@ static REGISTRY: &[HarnessSpec] = &[
                     r#"{"permission":{"edit":"allow","bash":"deny"}}"#,
                 )],
                 instruction: None,
+                // The config above IS this mode's policy, and a controlled run
+                // delivers it to the server it launches (probe-verified: `opencode
+                // serve` loads `OPENCODE_CONFIG_CONTENT` and echoes this exact
+                // block back on `/config`). So the wire answer is only a backstop
+                // for an ask the config did not already decide, and declining is
+                // the safe way to answer one.
+                acts_unattended: false,
             },
             mode(PermissionMode::Bypass, ModeHeadless::Clean),
         ],
@@ -1177,18 +1215,21 @@ static REGISTRY: &[HarnessSpec] = &[
                 headless: ModeHeadless::Clean,
                 env: &[("GOOSE_MODE", "approve")],
                 instruction: None,
+                acts_unattended: false,
             },
             ModeSpec {
                 mode: PermissionMode::Auto,
                 headless: ModeHeadless::Clean,
                 env: &[("GOOSE_MODE", "smart_approve")],
                 instruction: None,
+                acts_unattended: true,
             },
             ModeSpec {
                 mode: PermissionMode::Bypass,
                 headless: ModeHeadless::Clean,
                 env: &[("GOOSE_MODE", "auto")],
                 instruction: None,
+                acts_unattended: true,
             },
         ],
         // Goose carries reasoning effort in provider config (`goose configure` /
@@ -1359,8 +1400,8 @@ static REGISTRY: &[HarnessSpec] = &[
         // also cannot gate, so `default` and `bypass` behave the same (bypass
         // adds the explicit `--yolo`). There is no plan/edit/auto mode on `run`.
         modes: &[
-            mode(PermissionMode::Default, ModeHeadless::Clean),
-            mode(PermissionMode::Bypass, ModeHeadless::Clean),
+            ungated_mode(PermissionMode::Default, ModeHeadless::Clean),
+            ungated_mode(PermissionMode::Bypass, ModeHeadless::Clean),
         ],
         // Crush sets reasoning through model options in `crush.json`
         // (`reasoning_effort` / `think`), not a CLI flag — the `sync`-path
@@ -1938,16 +1979,22 @@ fn argv_crush(c: &BuildCtx) -> Vec<String> {
 /// the session when the id is new (create-or-resume) — so the caller mints and
 /// reuses a UUID; `session_id` stays null (nothing to extract).
 fn argv_copilot(c: &BuildCtx) -> Vec<String> {
-    // Control rides the Agent Client Protocol server, where `session/cancel`
-    // lives. Model, cwd, and approvals are negotiated on the wire.
-    if c.delivery.is_control_stream() {
-        return vec![c.bin.into(), "--acp".into()];
-    }
     // For a large prompt the command layer selects `PromptDelivery::Stdin` and pipes the
     // (system-prepended) prompt; copilot reads stdin as the prompt only when `-p`
     // is ABSENT (a `-p` value makes the pipe be ignored), so drop `-p` entirely.
     // Otherwise the prompt rides `-p`.
-    let mut a = if c.delivery.is_stdin_blob() {
+    let mut a = if c.delivery.is_control_stream() {
+        // Control rides the ACP server, but the approval posture does NOT move
+        // to the wire with it: `--acp` is one of copilot's own top-level
+        // options, and the permission flags below sit beside it (verified
+        // against `copilot --help` 1.0.78 and by handshaking a real
+        // `copilot --acp --allow-tool … --no-ask-user`, which answers
+        // `initialize` — copilot rejects an option it does not take, so
+        // acceptance is the evidence). Carrying them means a controlled turn
+        // runs under the mode's OWN mapping rather than a second policy
+        // invented for the protocol.
+        vec![c.bin.into(), "--acp".into()]
+    } else if c.delivery.is_stdin_blob() {
         vec![c.bin.into()]
     } else {
         vec![c.bin.into(), "-p".into(), prompt_with_system(c)]
@@ -1986,6 +2033,12 @@ fn argv_copilot(c: &BuildCtx) -> Vec<String> {
             a.push("plan".into());
         }
         _ => {}
+    }
+    // The mode is the only thing a control launch carries: the model and the
+    // session it continues are negotiated per session on the wire, so neither
+    // belongs on the argv that starts the server.
+    if c.delivery.is_control_stream() {
+        return a;
     }
     if let Some(m) = c.model {
         a.push("--model".into());
@@ -2773,14 +2826,30 @@ mod tests {
     fn a_turn_driving_control_run_launches_that_harness_protocol_server() {
         // A control run on a turn-driving mechanism spawns the harness's OWN
         // protocol server instead of its headless run, so the launch argv is the
-        // whole command: prompt, mode and model are negotiated on the wire and
+        // whole command: the prompt and the model are negotiated on the wire and
         // must not appear on it. Pinned per harness (each sourced from that CLI
         // and re-proven by `scripts/explore-control.sh`), so a drifted subcommand
         // fails here rather than as a controlled run that never starts a turn.
+        //
+        // The APPROVAL MODE is the exception, and only where the CLI takes it
+        // beside the protocol switch: copilot's permission flags are top-level
+        // options that sit next to `--acp`, so a controlled turn runs under the
+        // mode's own mapping instead of a posture invented for the protocol
+        // (`domain::control`'s `control_mode_parity` holds the two equal). Codex
+        // and goose take theirs elsewhere — the app-server negotiates the
+        // sandbox per turn, and goose reads `GOOSE_MODE` from the environment.
         let launches = [
             ("codex", &["app-server"][..]),
             ("goose", &["acp"][..]),
-            ("copilot", &["--acp"][..]),
+            (
+                "copilot",
+                &[
+                    "--acp",
+                    "--allow-all-tools",
+                    "--allow-all-paths",
+                    "--no-ask-user",
+                ][..],
+            ),
         ];
         for (id, tail) in launches {
             let spec = by_id(id).unwrap();

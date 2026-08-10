@@ -1193,15 +1193,9 @@ silently is not there is worse than none:
   harness, mode, or output format — is refused with that reason instead, which is
   the one that survives changing machines. `--print-command` is exempt: it opens
   no socket and spawns nothing, and the argv it prints is the same everywhere.
-- **No `--mode edit` on a driven turn** (every mechanism except
-  `claude-control-request`). Those turns negotiate approvals on the wire, so
-  oneharness answers each permission request itself rather than the harness's
-  own `edit` mapping applying — and `edit` means *auto-approve file edits, still
-  gate shell*, which no such request carries a sourced way to distinguish.
-  Answering yes to both would grant shell authority the mode denies; answering
-  no to both would silently downgrade `edit`. Use `--mode default` (deny and
-  continue) or `--mode bypass`. Claude Code is unaffected: its control frame
-  rides the ordinary `-p` run, whose argv carries the real `acceptEdits`.
+- **No mode is refused by `--control` itself.** Whatever a harness supports
+  without `--control` it supports with it, under the same policy — see
+  *Approval modes under control* below.
 - **No `--stream` on a server-submitted mechanism** (`opencode-http`,
   `crush-http`): those turns never spawn the harness CLI, so there is no stdout
   to publish line by line — and accepting the flag would silently select the
@@ -1217,6 +1211,39 @@ a consumer can tell an interrupted turn from one that simply ended.
 
 **Without `--control` nothing changes**: no socket, no extra process, and a
 byte-identical argv.
+
+#### Approval modes under control
+
+`--control` is a lever on a turn, not a policy. **For every harness that declares
+a mechanism and every `--mode` that harness supports, a controlled run is under
+exactly the policy the same mode gives without `--control`** — pinned cell by
+cell as a unit assertion (`domain::control`'s `control_mode_parity`), which reads
+both postures out of the real code rather than out of a second table.
+
+That is an invariant with a history. `--control --mode bypass` once asked codex's
+app-server for a `workspaceWrite` sandbox where `codex exec` under the same mode
+asks for none at all, so the controlled run was *more* restricted than the
+uncontrolled one — and on a host without unprivileged user namespaces every shell
+call failed before running, so the turn did no work whatsoever.
+
+It holds because the control path delivers the harness's **own** mapping wherever
+one exists, rather than deriving a second policy for the protocol:
+
+| Harness | How the mode reaches a controlled turn |
+| --- | --- |
+| Claude Code | Its control frame rides the ordinary `-p` run, so the mode's flags are the ordinary ones, byte for byte |
+| Copilot | Its permission flags are top-level options that sit beside `--acp`, so the ACP launch carries the same `--allow-tool`/`--deny-tool`/`--mode` arguments `-p` gets |
+| Goose | `GOOSE_MODE` is injected into the ACP child exactly as into an ordinary run — the control child *is* an ordinary job |
+| OpenCode | A mode carried in `OPENCODE_CONFIG_CONTENT` (its `edit` mapping) is handed to the pooled `opencode serve` the turn runs on, which loads it identically; the mode is part of the server's pool key, so a run can never be handed a server started under a different policy |
+| Codex | The app-server negotiates the sandbox per turn, so its `SandboxPolicy` is asserted equal to the sandbox `codex exec` selects for that mode |
+| Crush | `crush run` cannot gate at all, so its `default` acts without asking — and a controlled turn declares the same `yolo` posture rather than gating what the CLI would not |
+
+Where a harness answers permission requests on the wire, the answer is the
+harness's own posture for that mode (`ModeSpec::acts_unattended`), not the
+normalized spectrum's — which is what lets crush's ungated `default` and
+opencode's config-delivered `edit` both be expressed instead of refused.
+`scripts/e2e-control.sh` then proves the delivered policy is *honored* by driving
+a controlled turn under the gating `--mode default` and requiring it to end.
 
 #### Control support matrix
 

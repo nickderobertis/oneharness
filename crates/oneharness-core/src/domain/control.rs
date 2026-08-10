@@ -1223,6 +1223,7 @@ mod control_mode_parity {
                 cwd: absolute_for_test(WORK),
                 model: None,
                 mode,
+                acts_unattended: unattended_of(harness::by_id("codex").unwrap(), mode),
             },
         )
         .expect("codex drives its turn over the app-server")
@@ -1232,9 +1233,20 @@ mod control_mode_parity {
             .to_string()
     }
 
+    /// The harness's own declaration for `mode`.
+    fn unattended_of(spec: &'static HarnessSpec, mode: PermissionMode) -> bool {
+        spec.mode(mode)
+            .expect("the caller checked the mode is supported")
+            .acts_unattended
+    }
+
     /// Whether a driven turn acts without asking under `mode` — answered by the
     /// real client, through the shape it would really be asked in.
-    fn unattended_under_control(shape: ControlShape, mode: PermissionMode) -> bool {
+    fn unattended_under_control(
+        spec: &'static HarnessSpec,
+        shape: ControlShape,
+        mode: PermissionMode,
+    ) -> bool {
         match shape {
             // ACP offers options and the client picks one (or cancels), so the
             // answer is read off an actual reply rather than a predicate.
@@ -1246,6 +1258,7 @@ mod control_mode_parity {
                         cwd: absolute_for_test(WORK),
                         model: None,
                         mode,
+                        acts_unattended: unattended_of(spec, mode),
                     },
                 )
                 .expect("ACP drives its turn");
@@ -1260,14 +1273,20 @@ mod control_mode_parity {
             }
             // Both HTTP servers carry the posture as one decision: opencode
             // answers each ask with it, crush declares it on the workspace.
-            _ => permits_action(mode).allows(),
+            _ => permits_action(
+                spec.mode(mode)
+                    .expect("the caller checked the mode is supported"),
+            )
+            .allows(),
         }
     }
 
     /// Whether the harness's OWN uncontrolled run acts without asking under
-    /// `mode`, read off the argv and environment its registry entry produces.
-    /// The token per harness is that CLI's documented don't-ask switch — the
-    /// same source `build_argv` maps the mode from.
+    /// `mode`, read off the argv and environment its registry entry really
+    /// produces. The token per harness is that CLI's documented don't-ask
+    /// switch — the same source `build_argv` maps the mode from. This is what
+    /// keeps `ModeSpec::acts_unattended` honest: it is compared against the
+    /// mapping rather than trusted.
     fn unattended_without_control(spec: &'static HarnessSpec, mode: PermissionMode) -> bool {
         let argv = argv_for(spec, mode, PromptDelivery::Argv);
         let env = spec.mode(mode).map_or(&[][..], |declared| declared.env);
@@ -1275,13 +1294,6 @@ mod control_mode_parity {
             "opencode" => argv
                 .iter()
                 .any(|arg| arg == "--dangerously-skip-permissions"),
-            // The allow-all trio, minus any explicit deny: `read-only` allows
-            // every tool and then denies `write`/`shell`, so the trio on its
-            // own does not mean unattended.
-            "copilot" => {
-                argv.iter().any(|arg| arg == "--allow-all-tools")
-                    && !argv.iter().any(|arg| arg == "--deny-tool")
-            }
             // `GOOSE_MODE`: `approve` gates each call, `smart_approve` and
             // `auto` both act on their own.
             "goose" => env
@@ -1306,7 +1318,10 @@ mod control_mode_parity {
             }
         }
         // The whole grid, spelled out: a harness or a mode added later lands
-        // here as a line nobody wrote down, which is the point.
+        // here as a line nobody wrote down, which is the point. Every cell a
+        // harness supports is an EQUALITY — there is no verdict for "stricter
+        // under control" or "refused under control", because a controlled run
+        // that reshapes the policy is the bug this grid exists to catch.
         assert_eq!(
             grid,
             [
@@ -1325,7 +1340,9 @@ mod control_mode_parity {
                 "opencode read-only same-posture:gated",
                 "opencode plan same-posture:gated",
                 "opencode default same-posture:gated",
-                "opencode edit refused-under-control",
+                // Delivered, not re-derived: the mode's own config reaches the
+                // server the turn runs on, exactly as it reaches `opencode run`.
+                "opencode edit same-mode-env",
                 "opencode auto mode-unsupported",
                 "opencode bypass same-posture:unattended",
                 "goose read-only mode-unsupported",
@@ -1334,62 +1351,80 @@ mod control_mode_parity {
                 "goose edit mode-unsupported",
                 "goose auto same-posture:unattended",
                 "goose bypass same-posture:unattended",
-                // `crush run` auto-approves whatever it is asked, so `default`
-                // is the one cell where the two paths differ — in the SAFE
-                // direction, which is the opposite of the codex bug.
+                // `crush run` cannot gate, so its `default` is unattended
+                // however it is asked — and a controlled turn says the same.
                 "crush read-only mode-unsupported",
                 "crush plan mode-unsupported",
-                "crush default stricter-under-control",
+                "crush default same-posture:unattended",
                 "crush edit mode-unsupported",
                 "crush auto mode-unsupported",
                 "crush bypass same-posture:unattended",
-                "copilot read-only same-posture:gated",
-                "copilot plan same-posture:gated",
-                "copilot default same-posture:gated",
-                "copilot edit refused-under-control",
+                // Copilot's permission flags ride the `--acp` argv beside it, so
+                // its controlled launch carries the mode's own mapping whole.
+                "copilot read-only same-argv",
+                "copilot plan same-argv",
+                "copilot default same-argv",
+                "copilot edit same-argv",
                 "copilot auto mode-unsupported",
-                "copilot bypass same-posture:unattended",
+                "copilot bypass same-argv",
             ]
         );
     }
 
-    /// One cell of the grid: assert the two paths agree, and name how.
+    /// The argv with this delivery's own prefix removed, so what is left is the
+    /// policy the mode put on it.
+    ///
+    /// The prefixes are asserted rather than assumed: they are the ONLY thing
+    /// the two launches are allowed to differ in, so a change to one has to
+    /// come through here.
+    fn policy_tail(
+        spec: &'static HarnessSpec,
+        mode: PermissionMode,
+        delivery: PromptDelivery,
+    ) -> Vec<String> {
+        let argv = argv_for(spec, mode, delivery);
+        let prefix: &[&str] = match (spec.id, delivery) {
+            // The prompt is a positional; under control it is the first frame
+            // on a stdin message stream instead.
+            ("claude-code", PromptDelivery::Argv) => &[spec.default_bin, "-p", "hi"],
+            ("claude-code", PromptDelivery::ControlStream) => {
+                &[spec.default_bin, "-p", "--input-format", "stream-json"]
+            }
+            // The prompt (and the session, and the model) are negotiated on the
+            // ACP wire, so the control launch is the server switch alone.
+            ("copilot", PromptDelivery::Argv) => &[spec.default_bin, "-p", "hi"],
+            ("copilot", PromptDelivery::ControlStream) => &[spec.default_bin, "--acp"],
+            (id, _) => panic!("`{id}` has no declared control-launch prefix"),
+        };
+        assert_eq!(
+            &argv[..prefix.len()],
+            prefix,
+            "`{}` {mode:?} {delivery:?} launch prefix",
+            spec.id
+        );
+        argv[prefix.len()..].to_vec()
+    }
+
+    /// One cell of the grid: assert the two paths send the same policy, and
+    /// name how it got there. Every supported mode is an equality — there is no
+    /// verdict for a controlled run that is stricter, looser, or refused.
     fn cell(spec: &'static HarnessSpec, shape: ControlShape, mode: PermissionMode) -> String {
-        if spec.mode(mode).is_none() {
-            // The harness cannot express this mode at all, so the
-            // command layer refuses the run before anything spawns —
-            // with `--control` or without it. There is no pair here.
+        let Some(declared) = spec.mode(mode) else {
+            // The harness cannot express this mode at all, so the command layer
+            // refuses the run before anything spawns — with `--control` or
+            // without it. There is no pair of policies to compare.
             return "mode-unsupported".to_string();
-        }
-        if shape.drives_turn() && mode == PermissionMode::Edit {
-            // Refused under `--control` rather than answered: no
-            // protocol here carries a sourced way to tell an edit
-            // request from a command one, so no policy is sent at all.
-            return "refused-under-control".to_string();
+        };
+        // 1. A mode the harness delivers through its OWN environment. A
+        //    controlled run hands that same environment to the server process
+        //    the turn runs in, so the policy is the identical value through the
+        //    identical mechanism rather than one re-derived for the wire.
+        if !declared.env.is_empty() && shape.needs_pooled_server() {
+            return "same-mode-env".to_string();
         }
         match shape {
-            // Claude Code's control frame rides its ORDINARY run, so
-            // the mode's flags are the ordinary ones — byte for byte.
-            // Only the prompt's delivery may differ.
-            ControlShape::ClaudeControlRequest => {
-                let mut ordinary = argv_for(spec, mode, PromptDelivery::Argv);
-                let mut controlled = argv_for(spec, mode, PromptDelivery::ControlStream);
-                assert_eq!(ordinary.remove(2), "hi", "{} {mode:?}", spec.id);
-                assert_eq!(
-                    controlled.drain(2..4).collect::<Vec<_>>(),
-                    ["--input-format", "stream-json"],
-                    "{} {mode:?}",
-                    spec.id
-                );
-                assert_eq!(
-                    ordinary, controlled,
-                    "`{}` sends a different policy under --control for {mode:?}",
-                    spec.id
-                );
-                "same-argv".to_string()
-            }
-            // The only per-harness policy the control path recomputes,
-            // and where the bug lived.
+            // 2. The one policy the control path recomputes in its own
+            //    vocabulary, and where the bug lived.
             ControlShape::CodexAppServer => {
                 let ordinary = codex_exec_sandbox(&argv_for(spec, mode, PromptDelivery::Argv));
                 assert_eq!(
@@ -1400,30 +1435,47 @@ mod control_mode_parity {
                 );
                 format!("same-sandbox:{ordinary}")
             }
-            shape => {
-                let controlled = unattended_under_control(shape, mode);
-                let ordinary = unattended_without_control(spec, mode);
-                if controlled == ordinary {
-                    return format!(
-                        "same-posture:{}",
-                        if controlled { "unattended" } else { "gated" }
-                    );
-                }
-                // The only difference the invariant tolerates: a CLI
-                // that cannot express the mode at all, where the
-                // controlled turn is STRICTER. That is the safe
-                // direction, and the opposite of the codex bug. The
-                // grid above names which cell it is, so a new harness
-                // cannot arrive here unnoticed.
-                assert!(
-                    !controlled,
-                    "`{}` is more permissive under --control for {mode:?}",
+            // 3. Harnesses whose controlled launch IS the ordinary argv:
+            //    Claude Code's control frame rides its own `-p` run, and
+            //    copilot's permission flags sit beside `--acp` (verified
+            //    against `copilot --help` and by handshaking a real one). The
+            //    mode's arguments must match byte for byte.
+            _ if MODE_RIDES_CONTROL_ARGV.contains(&spec.id) => {
+                assert_eq!(
+                    policy_tail(spec, mode, PromptDelivery::Argv),
+                    policy_tail(spec, mode, PromptDelivery::ControlStream),
+                    "`{}` sends different mode arguments under --control for {mode:?}",
                     spec.id
                 );
-                "stricter-under-control".to_string()
+                "same-argv".to_string()
+            }
+            // 4. Everything else answers the server's permission requests, and
+            //    the answer must be the posture the harness's own run takes.
+            //    A mode delivered by environment and driven over stdio (goose's
+            //    `GOOSE_MODE`) is already equal by construction — the control
+            //    child IS an ordinary job, so it is spawned with the same job
+            //    environment an uncontrolled run gets — and this pins the wire
+            //    answer layered on top of it.
+            shape => {
+                let controlled = unattended_under_control(spec, shape, mode);
+                let ordinary = unattended_without_control(spec, mode);
+                assert_eq!(
+                    controlled, ordinary,
+                    "`{}` allows {controlled} under --control and {ordinary} without it for {mode:?}",
+                    spec.id
+                );
+                format!(
+                    "same-posture:{}",
+                    if controlled { "unattended" } else { "gated" }
+                )
             }
         }
     }
+
+    /// The harnesses whose control launch carries the mode's own argument list.
+    /// Stated rather than detected, so a launch that silently stopped carrying
+    /// it fails here instead of quietly falling through to a coarser check.
+    const MODE_RIDES_CONTROL_ARGV: [&str; 2] = ["claude-code", "copilot"];
 }
 
 #[cfg(test)]

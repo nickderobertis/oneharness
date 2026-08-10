@@ -530,6 +530,13 @@ fn run_http_control_server(log_path: &str) -> ! {
     };
     let listener = std::net::TcpListener::bind(("127.0.0.1", port))
         .expect("the mock control server could not bind its port");
+    // The approval policy this server was LAUNCHED with. opencode carries a
+    // mode like `edit` in its own config environment rather than on a route, so
+    // a controlled run delivers it to the server process — and the only way to
+    // prove that from outside is to have the server say what it received.
+    if let Ok(config) = std::env::var("OPENCODE_CONFIG_CONTENT") {
+        note_launch(log_path, &format!("config {config}"));
+    }
     let log = std::sync::Arc::new(std::sync::Mutex::new(
         std::fs::OpenOptions::new()
             .create(true)

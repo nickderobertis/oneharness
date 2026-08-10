@@ -977,6 +977,69 @@ oh_edit_enforce() {
     note "PASS: $id edit enforcement"
 }
 
+# Live proof that a CONTROLLED turn runs under the mode's own policy — the half
+# of the control x mode invariant a value cannot show.
+#
+# The equality itself is a unit assertion (`domain::control`'s
+# `control_mode_parity`): for every control-capable harness and every mode, the
+# policy the control path sends is the policy that mode sends without
+# `--control`. What that assertion cannot check is whether the harness HONORS
+# what it was handed, and two of those deliveries are new:
+#   * copilot's permission flags now ride the `--acp` argv beside the protocol
+#     switch, and
+#   * opencode's mode environment now reaches the pooled server it launches.
+#
+# So this drives ONE controlled turn under `--mode default` — the gating posture
+# — and requires it to END rather than hang. That is the narrowest thing worth a
+# live phase here, and it covers a path that would otherwise have gone dark: a
+# controlled run under `bypass` now carries copilot's allow-all flags, so it no
+# longer raises `session/request_permission` at all, and answering that request
+# is the rule an ACP client must not break (goose and copilot block forever
+# otherwise). Under `default` the ask still comes, oneharness still answers it,
+# and a turn that ends is the evidence.
+#
+# A short prompt and no freeze window: this is a termination check, not an
+# interrupt one, so it costs a fraction of the phases around it.
+#   $1 harness id
+oh_control_mode_enforce() {
+    local id="$1"
+    local bin sandbox store name report status
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    sandbox="$(mktemp -d)"
+    sandbox="$(oh_native_path "$sandbox")"
+    oh_sandbox_prepare "$id" "$sandbox"
+    store="$sandbox/store"
+    name="mode-$id"
+    report="$sandbox/report.json"
+    local model_args=()
+    [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+
+    note "  control-mode-enforce: a controlled turn under --mode default must END, not hang"
+    if ! ONEHARNESS_NO_CONFIG=1 timeout "${OH_CONTROL_MODE_TIMEOUT:-180}" "$bin" run \
+        --harness "$id" --prompt "Reply with the single word READY and stop." \
+        --control --session "$name" --session-dir "$store" --cwd "$sandbox" \
+        --mode default --timeout "${OH_TIMEOUT:-120}" --compact \
+        "${model_args[@]+"${model_args[@]}"}" >"$report" 2>"$sandbox/run.err"; then
+        : # a non-zero exit is still an ENDED turn; only the status below decides
+    fi
+    status="$(jq -r '.results[0].status // "unknown"' <"$report" 2>/dev/null || echo unknown)"
+    if [ "$status" = "skipped" ]; then
+        rm -rf "$sandbox"
+        skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+    fi
+    if [ "$status" = "timeout" ]; then
+        sed 's/^/    /' "$sandbox/run.err" >&2 || true
+        rm -rf "$sandbox"
+        fail "$id: a controlled turn under --mode default never ended — the harness is waiting on a permission request oneharness did not answer, or the mode's own policy did not reach the controlled launch"
+    fi
+    note "  ok[default]: the controlled turn ended with status=$status"
+
+    rm -rf "$sandbox"
+    note "PASS: $id controlled mode policy"
+}
+
 # --- hook enforcement --------------------------------------------------------
 
 # Live proof that a synced `[[hooks]]` gate is HONORED by the real harness — the

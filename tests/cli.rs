@@ -20325,17 +20325,27 @@ fn control_on_a_harness_without_a_mechanism_is_a_usage_error() {
     let _ = std::fs::remove_dir_all(&store);
 }
 
+#[cfg(unix)]
 #[test]
-fn control_refuses_edit_mode_on_a_driven_turn_rather_than_over_granting() {
-    // A driven turn negotiates approvals on the wire, so oneharness answers each
-    // permission request itself. `edit` means auto-approved edits with shell
-    // still gated, and no protocol here carries a sourced way to tell those
-    // apart — so answering at all would either grant shell authority the mode
-    // denies or silently downgrade `edit`. Refuse before spawning instead.
-    // opencode declares `edit` AND a control mechanism, so it is exactly the
-    // combination that would otherwise reach the blanket grant.
+fn a_controlled_edit_run_delivers_the_modes_own_policy_to_its_server() {
+    // `edit` used to be a usage error on a driven turn: the wire posture was
+    // derived from the normalized spectrum, which can say "act without asking"
+    // or "decline" and nothing in between — so `edit` (auto-approved edits,
+    // shell still gated) could only be over- or under-granted, and refusing was
+    // the least wrong answer.
+    //
+    // It is no longer derived. opencode carries `edit` in its OWN config
+    // environment, and a controlled run hands that same environment to the
+    // server process the turn runs in — the identical value through the
+    // identical mechanism an uncontrolled `opencode run` uses. This is the
+    // proof it actually travels: the fixture server reports the policy it was
+    // launched with. The session is then refused, so the run is synchronous and
+    // the delivery is asserted without a turn having to exist.
     let store = control_store_dir("edit-mode");
     let store_arg = store.display().to_string();
+    let cwd = control_store_dir("edit-mode-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let pool = store.join("pool");
     let output = run(
         &[
             "run",
@@ -20346,29 +20356,113 @@ fn control_refuses_edit_mode_on_a_driven_turn_rather_than_over_granting() {
             "edits",
             "--session-dir",
             &store_arg,
-            "--prompt",
-            "hi",
+            "--cwd",
+            &cwd_arg,
             "--mode",
             "edit",
+            "--prompt",
+            "hi",
             "--bin",
             &bin_override("opencode"),
+            "--timeout",
+            "30",
+            "--compact",
         ],
-        &[],
+        &[
+            (
+                "MOCK_HTTP_CONTROL_LOG",
+                store.join("server.log").display().to_string().as_str(),
+            ),
+            ("MOCK_HTTP_CONTROL_FAULT", "refuse-session"),
+            ("XDG_STATE_HOME", pool.display().to_string().as_str()),
+        ],
     );
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    // The mode is accepted — not the exit 2 a usage error would give.
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let report = json_stdout(&output);
+    assert_eq!(report["permission_mode"], "edit", "{report}");
+    assert_eq!(report["results"][0]["status"], "spawn-error", "{report}");
+
+    wait_for_pooled_server_to_exit(&pool);
+    let served = std::fs::read_to_string(store.join("server.log")).unwrap_or_default();
+    // Byte for byte the value opencode's `modes` declares for `edit`, which is
+    // also what an uncontrolled `--mode edit` run injects.
     assert!(
-        stderr.contains("negotiates approvals on the wire")
-            && stderr.contains("--mode edit")
-            && stderr.contains("--mode bypass"),
-        "the refusal must name the mode and an expressible alternative; stderr:\n{stderr}"
+        served
+            .lines()
+            .any(|line| line == r#"LAUNCHED config {"permission":{"edit":"allow","bash":"deny"}}"#),
+        "the mode's own config never reached the control server:\n{served}"
     );
-    // Refused *before* anything spawned, which is what makes it a usage error
-    // rather than a run that quietly acted with the wrong authority.
-    assert!(
-        !store.join("control").exists(),
-        "a refused control run must open no socket"
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_controlled_servers_pool_key_separates_one_approval_policy_from_another() {
+    // The mode's environment is baked into the server process at LAUNCH, not
+    // negotiated per turn — so it has to be in the pool key. Without it a
+    // `--mode edit` dispatch could be handed a server someone else started
+    // under `--mode bypass`, and the controlled run would silently be under a
+    // policy nobody asked for. Two runs differing only in mode must therefore
+    // land in two different pool entries.
+    let store = control_store_dir("edit-poolkey");
+    let pool = store.join("pool");
+    let entries = |mode: &str| {
+        let cwd = control_store_dir(&format!("edit-poolkey-{mode}"));
+        let out = run(
+            &[
+                "run",
+                "--harness",
+                "opencode",
+                "--control",
+                "--session",
+                mode,
+                "--session-dir",
+                store.display().to_string().as_str(),
+                "--cwd",
+                cwd.display().to_string().as_str(),
+                "--mode",
+                mode,
+                "--prompt",
+                "hi",
+                "--bin",
+                &bin_override("opencode"),
+                "--timeout",
+                "20",
+                "--compact",
+            ],
+            &[
+                (
+                    "MOCK_HTTP_CONTROL_LOG",
+                    store.join("server.log").display().to_string().as_str(),
+                ),
+                ("MOCK_HTTP_CONTROL_FAULT", "refuse-session"),
+                ("XDG_STATE_HOME", pool.display().to_string().as_str()),
+            ],
+        );
+        // The session is refused, so each run is synchronous and leaves its
+        // pool entry behind without needing a turn.
+        assert_eq!(out.status.code(), Some(1), "{out:?}");
+        let _ = std::fs::remove_dir_all(&cwd);
+        std::fs::read_dir(pool.join("oneharness").join("servers"))
+            .map(|dir| {
+                dir.filter_map(Result::ok)
+                    .map(|entry| entry.file_name().to_string_lossy().to_string())
+                    .collect::<std::collections::BTreeSet<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let after_edit = entries("edit");
+    let after_bypass = entries("bypass");
+    assert_eq!(after_edit.len(), 1, "{after_edit:?}");
+    assert_eq!(
+        after_bypass.len(),
+        2,
+        "a mode delivered to the server must not share its pool entry: {after_bypass:?}"
     );
+
     let _ = std::fs::remove_dir_all(&store);
 }
 

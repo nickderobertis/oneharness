@@ -21,7 +21,6 @@ use crate::domain::http::{
     self, ClientId, HttpShape, PermissionAsk, PermissionDecision, ResourceId, TurnAddress,
     TurnEvent, TurnOpening,
 };
-use crate::domain::mode::PermissionMode;
 use crate::domain::report::{Capture, RunInstant, Status};
 use crate::io::http::{HttpClient, StreamPoll};
 
@@ -220,11 +219,10 @@ pub fn open(
     shape: HttpShape,
     server: DialAddress,
     cwd: &AbsolutePath,
-    mode: PermissionMode,
+    decision: PermissionDecision,
     client_id: &str,
 ) -> io::Result<HttpTurn> {
     let client = HttpClient::new(server, REQUEST_TIMEOUT);
-    let decision = http::permits_action(mode);
 
     // One arm per protocol, because the coordinates a turn is addressed by are
     // per protocol: opencode's open request already IS its session, while
@@ -304,11 +302,10 @@ fn created_id(body: &str, what: &str) -> io::Result<ResourceId> {
 pub fn run(
     turn: &HttpTurn,
     prompt: &str,
-    mode: PermissionMode,
+    decision: PermissionDecision,
     timeout: Duration,
     take_redirect: &dyn Fn() -> Option<RedirectInput>,
 ) -> TurnOutcome {
-    let decision = http::permits_action(mode);
     let started = Instant::now();
     let started_at = utc_now();
     let deadline = started + timeout;

@@ -15,7 +15,7 @@ use oneharness_core::domain::fallback::{self, RunMode};
 use oneharness_core::domain::harness::{
     self, BuildCtx, HarnessIdentity, HarnessSpec, PromptDelivery,
 };
-use oneharness_core::domain::http::HttpShape;
+use oneharness_core::domain::http::{self, HttpShape};
 use oneharness_core::domain::mock::{self, MockDelivery};
 use oneharness_core::domain::mode::{ModeHeadless, PermissionMode};
 use oneharness_core::domain::report::{
@@ -282,7 +282,6 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         batch_run,
         multi_model,
         stream,
-        mode,
     )?;
     // A model fan-out multiplies the run into several (harness, model) units, so —
     // like a batch — it refuses every single-unit shape up front (loud usage
@@ -772,6 +771,14 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
                         cwd: cwd.clone(),
                         model: model.map(str::to_string),
                         mode,
+                        // The harness's own posture for this mode, not the
+                        // spectrum's: goose and copilot share one ACP shape and
+                        // do not share a mapping, and a driven turn must answer
+                        // with what the same mode gives without `--control`.
+                        acts_unattended: specs
+                            .first()
+                            .and_then(|spec| spec.mode(mode))
+                            .is_some_and(|declared| declared.acts_unattended),
                     },
                 )
             });
@@ -2031,7 +2038,6 @@ fn validate_control(
     batch_run: bool,
     multi_model: bool,
     stream: bool,
-    mode: PermissionMode,
 ) -> Result<Option<ControlShape>, OneharnessError> {
     if !args.control {
         return Ok(None);
@@ -2077,22 +2083,16 @@ fn validate_control(
             supported: control_capable_ids(),
         });
     };
-    // A driven turn negotiates its approvals on the wire, so the harness's own
-    // `edit` mapping — which lives on the argv or in its config file — is not
-    // what is in play; oneharness answers each permission request itself. `edit`
-    // promises auto-approved file edits with shell still gated, and no protocol
-    // here carries a *sourced* way to tell an edit request from a command one.
-    // Answering yes to both would grant shell authority the mode denies, and
-    // answering no to both would silently downgrade `edit` toward `default`, so
-    // this is refused before spawning like any other mode a harness cannot
-    // express. Claude Code is unaffected: its control frame rides the ordinary
-    // `-p` run, whose argv carries the real `acceptEdits` mapping.
-    if shape.drives_turn() && mode == PermissionMode::Edit {
-        return Err(OneharnessError::ControlModeUnsupported {
-            id: spec.id.to_string(),
-            mode: mode.as_str(),
-        });
-    }
+    // No mode is refused here any more. A driven turn used to answer every
+    // permission request from the normalized spectrum, which could express
+    // neither `edit` (auto-approved edits, shell still gated) nor a CLI that
+    // cannot gate at all — so `edit` was refused rather than silently reshaped.
+    // Both controlled launches now carry the mode's OWN mapping instead: the
+    // opencode server is started with the mode's environment, and copilot's
+    // permission flags ride the `--acp` argv beside it, so a controlled run is
+    // under the policy `spec.modes` already declares. What a harness cannot
+    // express is still refused — by `validate_modes`, before this, for
+    // controlled and uncontrolled runs alike.
     // A server-submitted turn never spawns the harness CLI, so there is no
     // stdout to publish line by line. Refusing is what keeps `--stream` from
     // silently selecting the ordinary run — whose interrupt does NOT reach the
@@ -2213,19 +2213,52 @@ fn drive_http_turn(
     })?;
     let root = server_pool::resolve_root(None)
         .ok_or_else(|| "no state directory to keep the control-server pool in".to_string())?;
+    // The harness's own mapping for this mode. Resolved here rather than from
+    // the normalized spectrum, so a controlled turn runs under exactly the
+    // policy the same mode gives without `--control`. Support was checked before
+    // anything spawned, so an absent one is a bug rather than a user error.
+    let mode_spec = spec
+        .mode(mode)
+        .ok_or_else(|| format!("`{}` cannot express `--mode {}`", spec.id, mode.as_str()))?;
+    // Where a mode is delivered by the harness's own environment (opencode's
+    // `OPENCODE_CONFIG_CONTENT`), it goes to the SERVER — that is the process
+    // the turn runs in, and `opencode serve` loads it exactly as `opencode run`
+    // does (probe-verified: the server echoes the block back on `/config`).
+    // Sending the harness's own mapping beats re-deriving the policy on the
+    // wire, which is how a controlled mode drifts from an uncontrolled one.
+    let mode_env: Vec<(String, String)> = mode_spec
+        .env
+        .iter()
+        .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+        .collect();
     // Per-turn settings are deliberately not in the key: they are negotiated on
-    // the wire, and keying on them would start a fresh server per dispatch.
+    // the wire, and keying on them would start a fresh server per dispatch. The
+    // mode's environment is NOT per-turn — it is baked into the server process
+    // at launch — so it belongs in the key, or a `--mode edit` dispatch could be
+    // handed a server someone else started under a different policy.
     let key_env: Vec<(String, Option<String>)> = server
         .key_env
         .iter()
         .map(|name| ((*name).to_string(), std::env::var(name).ok()))
+        .chain(
+            mode_env
+                .iter()
+                .map(|(name, value)| (name.clone(), Some(value.clone()))),
+        )
         .collect();
     let key = control::pool_key(spec.id, &key_env, &[]);
-    let (lease, address) = bring_up_server(shape, spec, bin, &server, &root, &key, timeout)?;
+    let (lease, address) = bring_up_server(shape, spec, bin, &root, &key, mode_env, timeout)?;
     let command = lease.record().argv.as_slice().to_vec();
 
-    let turn = http_turn::open(shape, address, cwd, mode, &http_turn::client_id(spec.id))
-        .map_err(|err| format!("{err}"))?;
+    let decision = http::permits_action(mode_spec);
+    let turn = http_turn::open(
+        shape,
+        address,
+        cwd,
+        decision,
+        &http_turn::client_id(spec.id),
+    )
+    .map_err(|err| format!("{err}"))?;
     let session_id = turn.session_id().to_string();
 
     // Addressable from the socket thread only while the turn is in flight, so
@@ -2234,7 +2267,7 @@ fn drive_http_turn(
     // The driver asks for a redirection each time a turn ends: an interrupt
     // commits its message to the handle, and this is where the run hands it to a
     // session that has actually gone idle.
-    let outcome = http_turn::run(&turn, prompt, mode, timeout, &|| handle.take_redirect());
+    let outcome = http_turn::run(&turn, prompt, decision, timeout, &|| handle.take_redirect());
     handle.end_http_turn();
     // The lease is released here (not at process exit), so a server nobody is
     // using can be reclaimed once its linger expires.
@@ -2257,16 +2290,24 @@ fn bring_up_server(
     shape: HttpShape,
     spec: &'static HarnessSpec,
     bin: &str,
-    server: &control::ServerSpec,
     root: &std::path::Path,
     key: &control::PoolKey,
+    env: Vec<(String, String)>,
     timeout: Duration,
 ) -> Result<(server_pool::ServerLease, DialAddress), String> {
+    // Re-read rather than taken as a parameter: the caller already proved it is
+    // there, and this is the one place the launch is assembled.
+    let server = spec.server.ok_or_else(|| {
+        format!(
+            "`{}` declares HTTP control but no server to run it",
+            spec.id
+        )
+    })?;
     let mut attempts_left = SERVER_START_ATTEMPTS;
     loop {
         attempts_left -= 1;
         let candidate = candidate_address(server.transport, root, key)?;
-        let plan = server_pool::LaunchPlan::new(bin, server, &[], candidate, Vec::new())
+        let plan = server_pool::LaunchPlan::new(bin, &server, &[], candidate, env.clone())
             .map_err(|err| format!("could not plan the control server launch: {err}"))?;
         let lease = server_pool::acquire(root, key, &plan, server_pool::DEFAULT_LINGER)
             .map_err(|err| format!("could not start the control server: {err}"))?;

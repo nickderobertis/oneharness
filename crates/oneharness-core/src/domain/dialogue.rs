@@ -43,6 +43,14 @@ pub struct DialogueConfig {
     /// The approval posture, which decides how the client answers the server's
     /// permission requests.
     pub mode: PermissionMode,
+    /// Whether the harness's own run acts without asking in `mode`
+    /// ([`ModeSpec::acts_unattended`](crate::domain::harness::ModeSpec)).
+    ///
+    /// Carried rather than derived from `mode`, because the posture a driven
+    /// turn must answer with is the one that mode gives *without* `--control`,
+    /// and only the harness's own registry entry knows it — the two ACP
+    /// harnesses share one [`ControlShape`] and do not share a mapping.
+    pub acts_unattended: bool,
 }
 
 /// What the driver should do after one line.
@@ -283,23 +291,19 @@ impl Dialogue {
         id
     }
 
-    /// Whether this run's approval posture allows the server to act. The
-    /// permissive modes are exactly the ones that mean "act without asking" for
-    /// *any* action; everything else declines, which is the same
-    /// deny-and-continue posture `--mode default` gives an ordinary run.
+    /// Whether this run's approval posture allows the server to act — the
+    /// harness's own answer for this mode, so a driven turn is under the policy
+    /// the same mode gives without `--control`.
     ///
-    /// `Edit` is deliberately absent rather than grouped with them: it promises
-    /// auto-approved edits with shell still gated, and a permission request
-    /// here carries no sourced way to tell the two apart, so allowing it would
-    /// grant shell authority the mode denies. The command layer refuses `edit`
-    /// on a driven turn up front ([`OneharnessError::ControlModeUnsupported`]),
-    /// so it never reaches this decision — and if a later change lets it
-    /// through, declining is the safe way to be wrong.
+    /// A permission request is a *backstop* on the harnesses whose own mapping
+    /// already reaches the protocol server: goose's `GOOSE_MODE` is injected
+    /// into the ACP child's environment, and copilot's permission flags ride
+    /// the `--acp` argv beside it. So this answers what that mapping did not
+    /// already decide, and declining is the safe way to answer one — notably
+    /// for `edit`, which promises auto-approved edits with shell still gated
+    /// and whose ask carries no sourced way to tell those apart.
     fn permits_action(&self) -> bool {
-        matches!(
-            self.config.mode,
-            PermissionMode::Bypass | PermissionMode::Auto
-        )
+        self.config.acts_unattended
     }
 
     fn on_server_request(&mut self, method: &str, id: Value, params: &Value) -> DialogueStep {
@@ -694,6 +698,7 @@ mod tests {
             cwd: absolute_for_test(WORK),
             model: Some("gpt-5-codex".to_string()),
             mode: PermissionMode::Bypass,
+            acts_unattended: true,
         }
     }
 
@@ -888,6 +893,7 @@ mod tests {
             ControlShape::AcpCancel,
             DialogueConfig {
                 mode: PermissionMode::Edit,
+                acts_unattended: false,
                 ..config()
             },
         )
@@ -910,6 +916,7 @@ mod tests {
             ControlShape::AcpCancel,
             DialogueConfig {
                 mode: PermissionMode::Default,
+                acts_unattended: false,
                 ..config()
             },
         )
@@ -926,6 +933,7 @@ mod tests {
             ControlShape::CodexAppServer,
             DialogueConfig {
                 mode: PermissionMode::ReadOnly,
+                acts_unattended: false,
                 ..config()
             },
         )
@@ -951,7 +959,11 @@ mod tests {
         let policy = |mode| {
             Dialogue::new(
                 ControlShape::CodexAppServer,
-                DialogueConfig { mode, ..config() },
+                DialogueConfig {
+                    mode,
+                    acts_unattended: matches!(mode, PermissionMode::Auto | PermissionMode::Bypass),
+                    ..config()
+                },
             )
             .unwrap()
             .codex_sandbox_policy()

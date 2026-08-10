@@ -25,7 +25,7 @@
 use serde_json::{json, Value};
 
 use crate::domain::control::{AbsolutePath, ControlShape};
-use crate::domain::mode::PermissionMode;
+use crate::domain::harness::ModeSpec;
 
 /// The HTTP methods these control protocols use. A closed set rather than a
 /// string: a typo'd verb is a route that silently does not exist, which reads
@@ -382,18 +382,20 @@ impl PermissionDecision {
 /// applies, so an HTTP turn and a protocol turn answer a permission request the
 /// same way.
 ///
-/// `Edit` is not permissive here: it promises auto-approved edits with shell
-/// still gated, and neither server's permission ask carries a sourced way to
-/// tell those apart, so allowing it would grant shell authority the mode
-/// denies. The command layer refuses `edit` on a controlled turn before
-/// anything spawns; this is the safe answer if one ever arrives anyway.
+/// Read off the harness's OWN declaration for the mode
+/// ([`ModeSpec::acts_unattended`]) rather than off the normalized spectrum,
+/// because the posture a controlled turn must take is the one that mode gives
+/// *without* `--control`. Usually the two agree; where the CLI cannot honor the
+/// spectrum — `crush run` auto-approves whatever it is asked — the harness's own
+/// answer is the one that keeps the two paths under one policy.
 #[must_use]
-pub fn permits_action(mode: PermissionMode) -> PermissionDecision {
-    match mode {
-        PermissionMode::Bypass | PermissionMode::Auto => PermissionDecision::Allow,
+pub fn permits_action(mode: &ModeSpec) -> PermissionDecision {
+    if mode.acts_unattended {
+        PermissionDecision::Allow
+    } else {
         // Deny is the safe default, so a mode added later refuses until someone
         // decides otherwise rather than granting on arrival.
-        _ => PermissionDecision::Deny,
+        PermissionDecision::Deny
     }
 }
 
@@ -1167,6 +1169,7 @@ impl SseAccumulator {
 mod tests {
     use super::*;
     use crate::domain::control::{absolute_for_test, absolute_text_for_test};
+    use crate::domain::mode::PermissionMode;
 
     fn crush_address() -> TurnAddress {
         TurnAddress::Crush {
@@ -1513,29 +1516,46 @@ mod tests {
         }
     }
 
+    /// The decision each harness's own mapping for `mode` implies.
+    fn decision_for(id: &str, mode: PermissionMode) -> PermissionDecision {
+        permits_action(
+            crate::domain::harness::by_id(id)
+                .expect("a registered harness")
+                .mode(mode)
+                .expect("a mode the harness declares"),
+        )
+    }
+
     #[test]
     fn only_a_permissive_run_skips_the_asking() {
         assert_eq!(
-            permits_action(PermissionMode::Bypass),
+            decision_for("opencode", PermissionMode::Bypass),
             PermissionDecision::Allow
         );
         assert_eq!(
-            permits_action(PermissionMode::Default),
+            decision_for("opencode", PermissionMode::Default),
             PermissionDecision::Deny
         );
-        // A mode nobody mapped denies rather than grants, so adding one cannot
-        // hand an agent authority by omission.
+        // A mode nobody declared as unattended denies rather than grants, so
+        // adding one cannot hand an agent authority by omission.
         assert_eq!(
-            permits_action(PermissionMode::ReadOnly),
+            decision_for("opencode", PermissionMode::ReadOnly),
             PermissionDecision::Deny
         );
-        // `edit` gates shell, and a permission ask here carries no sourced way
-        // to tell an edit from a command, so a blanket allow would grant more
-        // than the mode promises. The command layer refuses it before spawning;
-        // denying is the safe answer if one ever arrives anyway.
+        // `edit` carries its policy in the harness's own config, which the
+        // control path delivers to the server; a permission ask still carries
+        // no sourced way to tell an edit from a command, so the wire backstop
+        // denies what that config did not already decide.
         assert_eq!(
-            permits_action(PermissionMode::Edit),
+            decision_for("opencode", PermissionMode::Edit),
             PermissionDecision::Deny
+        );
+        // And the posture is the HARNESS's, not the spectrum's: `crush run`
+        // cannot gate at all, so its `default` acts without asking — a
+        // controlled turn that denied it would be stricter than the CLI can be.
+        assert_eq!(
+            decision_for("crush", PermissionMode::Default),
+            PermissionDecision::Allow
         );
         // Crush can be told once; opencode has no such route and answers each.
         assert!(skip_permissions_request(&crush_address(), PermissionDecision::Allow).is_some());

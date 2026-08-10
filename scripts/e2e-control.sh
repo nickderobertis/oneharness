@@ -185,12 +185,16 @@ for declaration in "${CONTROLLABLE[@]}"; do
     # asks copilot instead (a zero-turn ACP `session/new`, no AI credits), and
     # answers for an environment token too, since copilot reads those as well.
     #
-    # This phase cannot go vacuous on copilot: its control launch argv is a bare
-    # `copilot --acp`, so every shell call raises `session/request_permission`,
-    # and the tool does not run while that goes unanswered (measured: no file
-    # after 20s of silence). The step files the freeze assertion counts exist
-    # only because oneharness answered it, so the ACP permission path is proven
-    # by the same run, not assumed.
+    # A note on what the bypass phases below do and no longer do for copilot.
+    # Its control launch used to be a bare `copilot --acp`, so every shell call
+    # raised `session/request_permission` and the step files existed only
+    # because oneharness answered it — the ACP permission path came free with
+    # the freeze assertion. It no longer does: a controlled run now carries the
+    # mode's own flags, so under `--mode bypass` copilot is told allow-all up
+    # front and asks nothing. That is the point (the controlled run is under the
+    # same policy an uncontrolled one is), but it moves the permission path's
+    # proof to `oh_control_mode_enforce`, which drives a turn under the gating
+    # `--mode default` and requires it to end.
     copilot)
         oh_copilot_login_ready "$default_bin" || {
             note "  SKIP Copilot auth: copilot cannot open a session (run \`copilot login\`, or set COPILOT_GITHUB_TOKEN)"
@@ -214,6 +218,8 @@ for declaration in "${CONTROLLABLE[@]}"; do
         oh_control_enforce "$id" "$mechanism"
         note "» $id: an interrupt carrying --input must STOP the turn and DO the new work"
         oh_control_redirect_enforce "$id"
+        note "» $id: a controlled turn must run under the mode's OWN policy, not one invented for the wire"
+        oh_control_mode_enforce "$id"
     ); then
         proven+=("$id")
         note "  $id proven in $(elapsed $((SECONDS - phase_started)))"

@@ -12,6 +12,7 @@ use std::process::{Command, Output, Stdio};
 use oneharness_core::domain::events::{ActionEvent, TimingSource, ToolCallStatus};
 use oneharness_core::domain::history::{HistoryLabels, HistoryLine, HistoryStreamEnvelope};
 use oneharness_core::domain::report::{RunStreamEnvelope, Status};
+use oneharness_core::domain::session;
 use oneharness_core::domain::signals::FailureKind;
 use oneharness_core::domain::usage::{UsageProbe, UsageSupport};
 use oneharness_core::io::history::HistoryWriter;
@@ -298,7 +299,7 @@ fn every_report_carries_the_shared_schema_version() {
     // so a consumer reads any of them with one number — and a bump must move
     // every surface at once. Pinned literally on purpose: asserting against the
     // constant would pass through a bump nobody intended.
-    let version = "0.6";
+    let version = "0.7";
     let printed = run(
         &[
             "run",
@@ -341,7 +342,7 @@ fn list_describes_every_harness() {
     let output = run(&["list"], &[]);
     assert!(output.status.success());
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.6");
+    assert_eq!(value["schema_version"], "0.7");
     let ids: Vec<&str> = value["harnesses"]
         .as_array()
         .unwrap()
@@ -1683,6 +1684,790 @@ fn session_in_fallback_mode_anchors_to_the_first_session_capable_harness() {
     assert_eq!(v2["session"]["phase"], "continue");
     assert_eq!(v2["session"]["token"], "th-1");
 
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+/// The stored record for a named session, read back off the report's own
+/// `session.store_file` handle (the path a consumer is told to look at).
+///
+/// Every record the CLI writes is asserted to carry the current store schema
+/// version here rather than in each caller: the version is what tells a reader
+/// whether `harness` is a variant-qualified id or a pre-`0.2` base name it must
+/// decline to resume, so a record written without the bump would be read back as
+/// legacy and silently start fresh forever.
+fn stored_session(report: &Value) -> Value {
+    let path = report["session"]["store_file"]
+        .as_str()
+        .expect("a session run reports its store file");
+    let record: Value = serde_json::from_str(
+        &std::fs::read_to_string(path).unwrap_or_else(|err| panic!("reading {path}: {err}")),
+    )
+    .expect("the session store holds one JSON record");
+    assert_eq!(
+        record["schema_version"],
+        session::SCHEMA_VERSION,
+        "a CLI-written record must carry the current store schema version"
+    );
+    record
+}
+
+/// Two identities of one harness (mocked): the first refuses, the second serves.
+/// `first_env` / `second_env` are TOML env tables for the two variants.
+fn variant_fallback_project(first_env: &str, second_env: &str) -> String {
+    let mock = mock_bin().display().to_string();
+    format!(
+        r#"
+        harnesses = ["claude-code:primary", "claude-code:alternate"]
+        run_mode = "fallback"
+
+        [harness.claude-code.variant.primary]
+        bin = '{mock}'
+        env = {{ {first_env} }}
+
+        [harness.claude-code.variant.alternate]
+        bin = '{mock}'
+        env = {{ {second_env} }}
+        "#
+    )
+}
+
+#[test]
+fn session_binds_to_the_variant_that_ran_not_the_one_that_fell_through() {
+    // A fallback chain of two identities of the SAME harness. The anchor (the
+    // first) is out of quota and falls through; the second does the turn and
+    // exposes its own native id. The handle must persist *that* token, bound to
+    // the variant-qualified id that minted it — a record keyed on the base
+    // `claude-code` cannot say which identity's namespace the token lives in, and
+    // matching results on the base id picks the fell-through candidate, which
+    // exposed no id at all.
+    let store = session_store_dir("variant-anchor");
+    let project = variant_fallback_project(
+        r#"MOCK_EXIT = "1", MOCK_STDERR = "Error: insufficient_quota""#,
+        r#"MOCK_EXIT = "0", MOCK_STDOUT = '{"session_id":"sess-alt","result":"served-by-alternate"}'"#,
+    );
+    let fx = ConfigFixture::new("session-variant-anchor", &project, "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--session",
+            "triage",
+            "--session-dir",
+            &store.display().to_string(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}, stderr {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["fallback"]["fell_through"][0]["reason"], "quota");
+    assert_eq!(value["fallback"]["ran"], "claude-code:alternate");
+    assert_eq!(value["results"][1]["text"], "served-by-alternate");
+    // The token the winner minted, not the anchor's (absent) one.
+    assert_eq!(value["session"]["token"], "sess-alt");
+    assert_eq!(value["session"]["phase"], "create");
+    let record = stored_session(&value);
+    assert_eq!(record["token"], "sess-alt");
+    assert_eq!(
+        record["harness"], "claude-code:alternate",
+        "the record binds to the identity whose namespace holds the token"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn a_resume_the_identity_cannot_resolve_falls_through_to_the_next_candidate() {
+    // The condition that collapsed a five-identity chain, driven as the two turns
+    // an operator actually runs. Turn one binds `triage` to the first identity.
+    // Turn two hands that identity its own token back, and it refuses — the shape
+    // a real `claude` prints when the conversation is not in its config dir: exit
+    // 1, empty stdout, no usage, one line on stderr. Read as a plain task failure
+    // that stops the chain dead; classified as `session_not_found` it falls
+    // through, and the second authenticated identity does the work.
+    let store = session_store_dir("stale-resume");
+    let store_arg = store.display().to_string();
+    let argv_file = std::env::temp_dir().join(format!("oh-stale-argv-{}", std::process::id()));
+    let _ = std::fs::remove_file(&argv_file);
+    let alternate_serves = r#"MOCK_EXIT = "0", MOCK_STDOUT = '{"session_id":"sess-alt","result":"served-by-alternate"}'"#;
+    // One project directory across both turns (it is the key the session store
+    // partitions on); the mocks are scripted apart by rewriting its config.
+    let fx = ConfigFixture::new(
+        "session-stale-resume",
+        &variant_fallback_project(
+            r#"MOCK_EXIT = "0", MOCK_STDOUT = '{"session_id":"sess-primary","result":"served-by-primary"}'"#,
+            alternate_serves,
+        ),
+        "",
+    );
+    // History is on so the refusal's own record can be read back: a
+    // `session_not_found` record is legible only to a v1.5 reader, and it must
+    // say so.
+    let history = hist_dir("stale-resume");
+    let args = [
+        "run",
+        "--prompt",
+        "hi",
+        "--cwd",
+        &fx.cwd(),
+        "--session",
+        "triage",
+        "--session-dir",
+        &store_arg,
+        "--history",
+        "--history-dir",
+        &history.display().to_string(),
+        "--compact",
+    ]
+    .map(str::to_string);
+    let turn = || {
+        run_with_config(
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+            &[],
+            &fx.user_config(),
+        )
+    };
+
+    let first = turn();
+    assert!(first.status.success(), "{first:?}");
+    let created = json_stdout(&first);
+    assert_eq!(created["fallback"]["ran"], "claude-code:primary");
+    assert_eq!(created["session"]["token"], "sess-primary");
+
+    std::fs::write(
+        PathBuf::from(fx.cwd()).join("oneharness.toml"),
+        variant_fallback_project(
+            &format!(
+                r#"MOCK_EXIT = "1", MOCK_ARGV_FILE = '{}', MOCK_STDERR = "No conversation found with session ID: sess-primary""#,
+                argv_file.display()
+            ),
+            alternate_serves,
+        ),
+    )
+    .unwrap();
+    let second = turn();
+    assert!(
+        second.status.success(),
+        "a chain with a healthy identity must still succeed: exit {:?}, stderr {}",
+        second.status.code(),
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let value = json_stdout(&second);
+    // The anchor was handed its own token back and could not resolve it...
+    let resumed = std::fs::read_to_string(&argv_file).unwrap();
+    assert!(
+        resumed
+            .lines()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .any(|pair| pair == ["--resume", "sess-primary"]),
+        "the anchor must be the candidate that resumes: {resumed}"
+    );
+    assert_eq!(value["results"][0]["status"], "nonzero");
+    assert_eq!(value["results"][0]["failure_kind"], "session_not_found");
+    assert_eq!(value["results"][0]["failure_kind_source"], "stderr");
+    assert_eq!(
+        value["fallback"]["fell_through"][0]["reason"],
+        "session-not-found"
+    );
+    // ...so the next identity ran the turn, and the handle follows it.
+    assert_eq!(value["fallback"]["ran"], "claude-code:alternate");
+    assert_eq!(value["results"][1]["text"], "served-by-alternate");
+    assert_eq!(value["session"]["token"], "sess-alt");
+    assert_eq!(
+        value["session"]["phase"], "create",
+        "the winner never got the anchor's token, so it started a new conversation"
+    );
+    assert_eq!(
+        stored_session(&value)["harness"],
+        "claude-code:alternate",
+        "a session that moved identities says so"
+    );
+    // A move is not silent: the handle now continues somewhere else, and an
+    // operator reading only the report would not know the thread was dropped.
+    let moved = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        moved.contains("session `triage` was bound to `claude-code:primary`")
+            && moved.contains("`claude-code:alternate` ran this turn"),
+        "the rebind must be announced: {moved}"
+    );
+    // The refusal's history record declares the version that first understood it.
+    let refused = first_history_run(Path::new(value["history_file"].as_str().unwrap()));
+    assert_eq!(refused["harness_id"], "claude-code:primary");
+    assert_eq!(refused["failure_kind"], "session_not_found");
+    assert_eq!(refused["schema_version"], "1.5");
+
+    // Turn three: the handle lives on `alternate` now, so *it* is the anchor and
+    // resumes `sess-alt` — even though `primary` still leads the priority chain.
+    // Binding to the head of the chain instead would hand the token back to the
+    // identity that cannot resolve it, every turn from here on.
+    let alternate_argv = std::env::temp_dir().join(format!("oh-stale-alt-{}", std::process::id()));
+    let _ = std::fs::remove_file(&alternate_argv);
+    std::fs::write(
+        PathBuf::from(fx.cwd()).join("oneharness.toml"),
+        variant_fallback_project(
+            r#"MOCK_EXIT = "1", MOCK_STDERR = "Error: insufficient_quota""#,
+            &format!(
+                r#"MOCK_EXIT = "0", MOCK_ARGV_FILE = '{}', MOCK_STDOUT = '{{"session_id":"sess-alt","result":"served-by-alternate"}}'"#,
+                alternate_argv.display()
+            ),
+        ),
+    )
+    .unwrap();
+    let third = turn();
+    assert!(third.status.success(), "{third:?}");
+    let continued = json_stdout(&third);
+    assert_eq!(continued["session"]["phase"], "continue");
+    assert_eq!(continued["fallback"]["ran"], "claude-code:alternate");
+    let alternate_resumed = std::fs::read_to_string(&alternate_argv).unwrap();
+    assert!(
+        alternate_resumed
+            .lines()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .any(|pair| pair == ["--resume", "sess-alt"]),
+        "the identity holding the session must be the one that resumes it: {alternate_resumed}"
+    );
+
+    let _ = std::fs::remove_file(&alternate_argv);
+    let _ = std::fs::remove_file(&argv_file);
+    let _ = std::fs::remove_dir_all(&history);
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn every_sourced_unknown_session_refusal_falls_through_its_own_chain() {
+    // One case per CLI whose refusal was captured from a real invocation (a bogus
+    // session id resumed against the installed binary). Each drives its own
+    // harness's dialect through a real fallback chain, so a phrase that stops
+    // matching stops the chain here rather than in a dispatch: exit 1, empty
+    // stdout, the message on stderr — the exact shape each CLI produces.
+    let mock = mock_bin().display().to_string();
+    let served =
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"served-by-codex"}}"#;
+    let cases = [
+        (
+            "claude-code",
+            "No conversation found with session ID: 019f-0000",
+        ),
+        (
+            "codex",
+            "Error: thread/resume: thread/resume failed: no rollout found for thread id 019f-0000 \
+             (code -32600)",
+        ),
+        ("opencode", "Error: Session not found"),
+        ("qwen", "No saved session found with title \"019f-0000\"."),
+    ];
+
+    for (first, refusal) in cases {
+        // codex is the healthy tail for every chain, so the refusing harness is
+        // always a different one.
+        let tail = if first == "codex" {
+            "opencode"
+        } else {
+            "codex"
+        };
+        let tail_stdout = if tail == "codex" {
+            served.to_string()
+        } else {
+            r#"{"type":"text","part":{"type":"text","text":"served-by-codex"}}"#.to_string()
+        };
+        let project = format!(
+            r#"
+            harnesses = ["{first}", "{tail}"]
+            run_mode = "fallback"
+
+            [harness.{first}]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "1", MOCK_STDERR = '{refusal}' }}
+
+            [harness.{tail}]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "0", MOCK_STDOUT = '{tail_stdout}' }}
+            "#
+        );
+        let fx = ConfigFixture::new(&format!("unknown-session-{first}"), &project, "");
+        let output = run_with_config(
+            &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+            &[],
+            &fx.user_config(),
+        );
+        assert!(
+            output.status.success(),
+            "{first}: exit {:?}, stderr {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value = json_stdout(&output);
+        assert_eq!(
+            value["results"][0]["failure_kind"], "session_not_found",
+            "{first} must classify its own refusal"
+        );
+        assert_eq!(
+            value["fallback"]["fell_through"][0]["reason"], "session-not-found",
+            "{first}"
+        );
+        assert_eq!(value["fallback"]["ran"], tail, "{first}");
+        assert_eq!(value["results"][1]["text"], "served-by-codex", "{first}");
+    }
+}
+
+#[test]
+fn a_named_session_refuses_to_migrate_between_identities_of_one_harness() {
+    // The record binds to the whole identity, so continuing it on a sibling
+    // variant is the same loud usage error as continuing it on another harness —
+    // never a silent resume with a token that identity's store has never seen.
+    let mock = mock_bin().display().to_string();
+    let store = session_store_dir("variant-conflict");
+    let store_arg = store.display().to_string();
+    let project = format!(
+        r#"
+        [harness.claude-code.variant.primary]
+        bin = '{mock}'
+
+        [harness.claude-code.variant.alternate]
+        bin = '{mock}'
+        "#
+    );
+    let fx = ConfigFixture::new("session-variant-conflict", &project, "");
+    let session_args = |variant: &str| {
+        [
+            "run".to_string(),
+            "--prompt".to_string(),
+            "hi".to_string(),
+            "--cwd".to_string(),
+            fx.cwd(),
+            "--harness".to_string(),
+            format!("claude-code:{variant}"),
+            "--session".to_string(),
+            "triage".to_string(),
+            "--session-dir".to_string(),
+            store_arg.clone(),
+            "--compact".to_string(),
+        ]
+    };
+    let first_args = session_args("primary");
+    let first = run_with_config(
+        &first_args.iter().map(String::as_str).collect::<Vec<_>>(),
+        &[(
+            "MOCK_STDOUT",
+            r#"{"session_id":"sess-primary","result":"ok"}"#,
+        )],
+        &fx.user_config(),
+    );
+    assert!(first.status.success(), "{first:?}");
+    let created = json_stdout(&first);
+    assert_eq!(created["session"]["token"], "sess-primary");
+    assert_eq!(stored_session(&created)["harness"], "claude-code:primary");
+
+    let second_args = session_args("alternate");
+    let second = run_with_config(
+        &second_args.iter().map(String::as_str).collect::<Vec<_>>(),
+        &[("MOCK_STDOUT", r#"{"session_id":"sess-alt","result":"ok"}"#)],
+        &fx.user_config(),
+    );
+    assert_eq!(second.status.code(), Some(2), "{second:?}");
+    let stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        stderr.contains("claude-code:primary") && stderr.contains("claude-code:alternate"),
+        "the error must name both identities: {stderr}"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn a_sibling_variant_is_never_handed_the_anchors_resume_token() {
+    // The other half of the fall-through: the candidate that picks up the turn
+    // must run FRESH. Its config directory has never seen the anchor's token, so
+    // passing it along would only reproduce the refusal one identity down the
+    // chain — the token is scoped to the namespace that minted it, and the
+    // report's own `phase` must not claim a continuation nobody performed.
+    let store = session_store_dir("sibling-no-resume");
+    let store_arg = store.display().to_string();
+    let alternate_argv =
+        std::env::temp_dir().join(format!("oh-sibling-argv-{}", std::process::id()));
+    let _ = std::fs::remove_file(&alternate_argv);
+    let alternate_serves = format!(
+        r#"MOCK_EXIT = "0", MOCK_ARGV_FILE = '{}', MOCK_STDOUT = '{{"session_id":"sess-alt","result":"served-by-alternate"}}'"#,
+        alternate_argv.display()
+    );
+    let fx = ConfigFixture::new(
+        "session-sibling-no-resume",
+        &variant_fallback_project(
+            r#"MOCK_EXIT = "0", MOCK_STDOUT = '{"session_id":"sess-primary","result":"served-by-primary"}'"#,
+            &alternate_serves,
+        ),
+        "",
+    );
+    let args = [
+        "run",
+        "--prompt",
+        "hi",
+        "--cwd",
+        &fx.cwd(),
+        "--session",
+        "triage",
+        "--session-dir",
+        &store_arg,
+        "--compact",
+    ]
+    .map(str::to_string);
+    let turn = || {
+        run_with_config(
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+            &[],
+            &fx.user_config(),
+        )
+    };
+
+    // Turn one binds the handle to `primary`.
+    let first = turn();
+    assert!(first.status.success(), "{first:?}");
+    assert_eq!(json_stdout(&first)["session"]["token"], "sess-primary");
+
+    // Turn two: the anchor is out of quota, so `alternate` takes the turn.
+    std::fs::write(
+        PathBuf::from(fx.cwd()).join("oneharness.toml"),
+        variant_fallback_project(
+            r#"MOCK_EXIT = "1", MOCK_STDERR = "Error: insufficient_quota""#,
+            &alternate_serves,
+        ),
+    )
+    .unwrap();
+    let second = turn();
+    assert!(second.status.success(), "{second:?}");
+    let value = json_stdout(&second);
+    assert_eq!(value["fallback"]["ran"], "claude-code:alternate");
+    assert_eq!(
+        value["session"]["phase"], "create",
+        "a run that carried no token must not report a continuation"
+    );
+
+    let argv = std::fs::read_to_string(&alternate_argv).unwrap();
+    assert!(
+        !argv.lines().any(|arg| arg == "--resume"),
+        "the sibling must run fresh, never carrying the anchor's token: {argv}"
+    );
+    assert!(
+        !argv.contains("sess-primary"),
+        "the anchor's token must not reach a sibling's argv at all: {argv}"
+    );
+
+    let _ = std::fs::remove_file(&alternate_argv);
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn a_healthy_leading_candidate_takes_the_turn_from_the_stored_identity_and_says_so() {
+    // The anchor preference decides who may carry the stored token — NOT who
+    // runs. Every other anchor test has the leading candidate unable to run, so
+    // this is the case they leave open: the handle lives on `alternate`, and
+    // `primary` (ahead of it in the chain) recovers and is perfectly healthy.
+    // Fallback stops at the first candidate that runs, so `primary` takes the
+    // turn. What must hold is that it takes it *honestly*: it never receives
+    // `alternate`'s token (its config directory has never seen that session), the
+    // report does not claim a continuation, and the handle's move is announced
+    // rather than leaving an operator to infer a dropped thread from the token.
+    let store = session_store_dir("healthy-leader");
+    let store_arg = store.display().to_string();
+    let primary_argv =
+        std::env::temp_dir().join(format!("oh-healthy-leader-argv-{}", std::process::id()));
+    let _ = std::fs::remove_file(&primary_argv);
+    let primary_serves = format!(
+        r#"MOCK_EXIT = "0", MOCK_ARGV_FILE = '{}', MOCK_STDOUT = '{{"session_id":"sess-primary","result":"served-by-primary"}}'"#,
+        primary_argv.display()
+    );
+    let alternate_serves = r#"MOCK_EXIT = "0", MOCK_STDOUT = '{"session_id":"sess-alt","result":"served-by-alternate"}'"#;
+    let fx = ConfigFixture::new(
+        "session-healthy-leader",
+        &variant_fallback_project(
+            r#"MOCK_EXIT = "1", MOCK_STDERR = "Error: insufficient_quota""#,
+            alternate_serves,
+        ),
+        "",
+    );
+    let args = [
+        "run",
+        "--prompt",
+        "hi",
+        "--cwd",
+        &fx.cwd(),
+        "--session",
+        "triage",
+        "--session-dir",
+        &store_arg,
+        "--compact",
+    ]
+    .map(str::to_string);
+    let turn = || {
+        run_with_config(
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+            &[],
+            &fx.user_config(),
+        )
+    };
+
+    // Turn one: `primary` is out of quota, so the handle is minted on `alternate`.
+    let first = turn();
+    assert!(first.status.success(), "{first:?}");
+    let bound = json_stdout(&first);
+    assert_eq!(bound["fallback"]["ran"], "claude-code:alternate");
+    assert_eq!(stored_session(&bound)["harness"], "claude-code:alternate");
+
+    // Turn two: `primary` recovers. It leads the chain, so it runs.
+    std::fs::write(
+        PathBuf::from(fx.cwd()).join("oneharness.toml"),
+        variant_fallback_project(&primary_serves, alternate_serves),
+    )
+    .unwrap();
+    let second = turn();
+    assert!(second.status.success(), "{second:?}");
+    let value = json_stdout(&second);
+    assert_eq!(value["fallback"]["ran"], "claude-code:primary");
+    assert_eq!(
+        value["session"]["phase"], "create",
+        "the candidate that ran carried no token, so it started a conversation"
+    );
+
+    // The stored identity's token never reaches the leader's argv.
+    let argv = std::fs::read_to_string(&primary_argv).unwrap();
+    assert!(
+        !argv.lines().any(|arg| arg == "--resume") && !argv.contains("sess-alt"),
+        "the leading candidate must run fresh, never carrying `alternate`'s token: {argv}"
+    );
+
+    // The handle follows the identity that did the work, and the move is loud.
+    let record = stored_session(&value);
+    assert_eq!(record["harness"], "claude-code:primary");
+    assert_eq!(record["token"], "sess-primary");
+    let moved = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        moved.contains("session `triage` was bound to `claude-code:alternate`")
+            && moved.contains("`claude-code:primary` ran this turn"),
+        "a handle that changes identity must announce it: {moved}"
+    );
+
+    let _ = std::fs::remove_file(&primary_argv);
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn a_lossy_output_format_is_refused_by_the_variant_qualified_identity() {
+    // `--session` needs a format that actually carries the native id. An explicit
+    // pin that drops it is refused BEFORE spawning (accepting it would leave the
+    // handle silently unstorable), and the error names the whole identity — a
+    // bare `claude-code` would not tell an operator running several which of
+    // their configured variants to re-run.
+    let mock = mock_bin().display().to_string();
+    let store = session_store_dir("variant-format");
+    let fx = ConfigFixture::new(
+        "session-variant-format",
+        &format!(
+            r#"
+        [harness.claude-code.variant.alternate]
+        bin = '{mock}'
+        "#
+        ),
+        "",
+    );
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--harness",
+            "claude-code:alternate",
+            "--session",
+            "triage",
+            "--session-dir",
+            &store.display().to_string(),
+            "--output-format",
+            "text",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("claude-code:alternate"),
+        "the error must name the variant-qualified identity: {stderr}"
+    );
+    assert!(
+        stderr.contains("text") && stderr.contains("json"),
+        "the error must name the refused format and the ones that work: {stderr}"
+    );
+    // Nothing spawned, so nothing was stored.
+    assert_eq!(
+        std::fs::read_dir(&store).unwrap().count(),
+        0,
+        "a refused run must leave the store untouched"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn a_legacy_session_record_starts_fresh_instead_of_resuming_a_guessed_identity() {
+    // A record written before the store bound sessions to a variant-qualified id
+    // says only `claude-code` — which identity minted its token is unrecoverable.
+    // Guessing is what strands a chain, so the run creates a new session instead.
+    let store = session_store_dir("legacy-record");
+    let store_arg = store.display().to_string();
+    let cwd = session_store_dir("legacy-record-cwd");
+    let argv_file = std::env::temp_dir().join(format!("oh-legacy-argv-{}", std::process::id()));
+    let _ = std::fs::remove_file(&argv_file);
+    let args = [
+        "run",
+        "--harness",
+        "claude-code",
+        "--session",
+        "triage",
+        "--session-dir",
+        &store_arg,
+        "--cwd",
+        &cwd.display().to_string(),
+        "--prompt",
+        "hi",
+        "--bin",
+        &bin_override("claude-code"),
+        "--compact",
+    ];
+
+    // Learn the store path the way a consumer does, then plant a v0.1 record.
+    let dry = run(
+        &[args.as_slice(), &["--print-command"]].concat(),
+        &[("MOCK_STDOUT", r#"{"session_id":"sess-new","result":"ok"}"#)],
+    );
+    assert!(dry.status.success(), "{dry:?}");
+    let path = PathBuf::from(
+        json_stdout(&dry)["session"]["store_file"]
+            .as_str()
+            .expect("the handle reports its store file"),
+    );
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        r#"{"schema_version":"0.1","name":"triage","project":"/p","harness":"claude-code",
+            "token":"sess-legacy","created":"2026-07-10T00:00:00Z","updated":"2026-07-10T00:00:00Z"}"#,
+    )
+    .unwrap();
+
+    let output = run(
+        &args,
+        &[
+            ("MOCK_STDOUT", r#"{"session_id":"sess-new","result":"ok"}"#),
+            ("MOCK_ARGV_FILE", &argv_file.display().to_string()),
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let value = json_stdout(&output);
+    assert_eq!(value["session"]["phase"], "create");
+    assert_eq!(value["session"]["token"], "sess-new");
+    let argv = std::fs::read_to_string(&argv_file).unwrap();
+    assert!(
+        !argv.contains("sess-legacy"),
+        "the legacy token must never be resumed: {argv}"
+    );
+    // The replacement record is written at the current shape.
+    let record = stored_session(&value);
+    assert_eq!(record["token"], "sess-new");
+    assert_eq!(record["harness"], "claude-code");
+
+    let _ = std::fs::remove_file(&argv_file);
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn a_record_bound_to_an_unrunnable_identity_starts_fresh_rather_than_failing() {
+    // A current-version record whose `harness` names no harness this build has —
+    // a hand-edited store, or an adapter retired from the registry. It cannot
+    // even be spelled as an identity, so there is nothing to resume it against or
+    // to report a conflict with; the run recovers the same way it does for a
+    // legacy record: create a new session, never resume the orphaned token and
+    // never abort on a store fault.
+    let store = session_store_dir("orphan-record");
+    let store_arg = store.display().to_string();
+    let cwd = session_store_dir("orphan-record-cwd");
+    let argv_file = std::env::temp_dir().join(format!("oh-orphan-argv-{}", std::process::id()));
+    let _ = std::fs::remove_file(&argv_file);
+    let args = [
+        "run",
+        "--harness",
+        "claude-code",
+        "--session",
+        "triage",
+        "--session-dir",
+        &store_arg,
+        "--cwd",
+        &cwd.display().to_string(),
+        "--prompt",
+        "hi",
+        "--bin",
+        &bin_override("claude-code"),
+        "--compact",
+    ];
+
+    let dry = run(
+        &[args.as_slice(), &["--print-command"]].concat(),
+        &[("MOCK_STDOUT", r#"{"session_id":"sess-new","result":"ok"}"#)],
+    );
+    assert!(dry.status.success(), "{dry:?}");
+    let path = PathBuf::from(
+        json_stdout(&dry)["session"]["store_file"]
+            .as_str()
+            .expect("the handle reports its store file"),
+    );
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        format!(
+            r#"{{"schema_version":"{}","name":"triage","project":"/p","harness":"retired-harness",
+                "token":"sess-orphan","created":"2026-07-10T00:00:00Z","updated":"2026-07-10T00:00:00Z"}}"#,
+            session::SCHEMA_VERSION
+        ),
+    )
+    .unwrap();
+
+    let output = run(
+        &args,
+        &[
+            ("MOCK_STDOUT", r#"{"session_id":"sess-new","result":"ok"}"#),
+            ("MOCK_ARGV_FILE", &argv_file.display().to_string()),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "an orphaned record must not take the run down: {output:?}"
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["session"]["phase"], "create");
+    assert_eq!(value["session"]["token"], "sess-new");
+    let argv = std::fs::read_to_string(&argv_file).unwrap();
+    assert!(
+        !argv.contains("sess-orphan"),
+        "the orphaned token must never be resumed: {argv}"
+    );
+    let record = stored_session(&value);
+    assert_eq!(record["token"], "sess-new");
+    assert_eq!(record["harness"], "claude-code");
+
+    let _ = std::fs::remove_file(&argv_file);
     let _ = std::fs::remove_dir_all(&store);
     let _ = std::fs::remove_dir_all(&cwd);
 }
@@ -4132,7 +4917,7 @@ fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
     // The report is still the contract: a cancelled run is a value a consumer
     // reads, not a process that vanished.
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.6");
+    assert_eq!(value["schema_version"], "0.7");
     let result = &value["results"][0];
     assert_eq!(result["status"], "cancelled");
     assert_eq!(result["exit_code"], Value::Null);
@@ -6883,7 +7668,7 @@ fn config_command_shows_values_with_sources() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.6");
+    assert_eq!(value["schema_version"], "0.7");
     assert_eq!(value["config_files"].as_array().unwrap().len(), 2);
 
     // The project file wins for model and is named as the source...
@@ -12619,7 +13404,7 @@ fn history_watch_streams_stdout_observed_event_at_the_current_version() {
     // Event lines are written by the current writer and read live, so they
     // always declare the current version (unlike a run record, whose version is
     // the oldest reader that can understand the fields it carries).
-    assert_eq!(envelope["line"]["schema_version"], "1.4");
+    assert_eq!(envelope["line"]["schema_version"], "1.5");
     assert_eq!(
         envelope["line"]["event"]["timing_source"],
         "stdout_observed"
@@ -19063,7 +19848,7 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
     let output = child.wait_with_output().expect("run did not finish");
     assert!(output.status.success(), "{output:?}");
     let report: Value = serde_json::from_slice(&output.stdout).expect("run report was not JSON");
-    assert_eq!(report["schema_version"], "0.6");
+    assert_eq!(report["schema_version"], "0.7");
     assert_eq!(report["control"]["mechanism"], "claude-control-request");
     assert_eq!(report["control"]["socket"], socket.display().to_string());
     let interrupts = report["control"]["interrupts"].as_array().unwrap();
@@ -19788,6 +20573,66 @@ fn interrupt_on_a_harness_without_a_mechanism_reports_unsupported() {
     assert_eq!(frame["ok"], false);
     assert_eq!(frame["reason"], "unsupported");
     assert!(frame["error"].as_str().unwrap().contains("cursor"));
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn interrupt_resolves_a_variant_qualified_record_to_its_harness() {
+    // Since a session record binds to the whole identity, the store's `harness`
+    // is `cursor:alternate`, not `cursor`. Control is a property of the *adapter*,
+    // so the pre-dispatch refusal has to read the registry entry off the
+    // identity's base: looking the composed id up as a bare harness id finds
+    // nothing, which silently downgrades a knowable `unsupported` into the
+    // `not_running` a supervisor only learns after spending a dispatch.
+    let store = control_store_dir("variant-interrupt");
+    let cwd = control_store_dir("variant-interrupt-cwd");
+    let write_record = |name: &str, harness: &str| {
+        let record = serde_json::json!({
+            "schema_version": session::SCHEMA_VERSION,
+            "name": name,
+            "project": cwd.display().to_string(),
+            "harness": harness,
+            "token": "th-1",
+            "created": "2026-08-08T00:00:00Z",
+            "updated": "2026-08-08T00:00:00Z",
+        });
+        let path = oneharness_core::io::session::session_path(&store, &cwd, name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_string(&record).unwrap()).unwrap();
+    };
+    let interrupt = |name: &str| {
+        json_stdout(&run(
+            &[
+                "interrupt",
+                "--session",
+                name,
+                "--session-dir",
+                &store.display().to_string(),
+                "--cwd",
+                &cwd.display().to_string(),
+                "--compact",
+            ],
+            &[],
+        ))
+    };
+
+    // A variant of a harness with no control mechanism: refused from the store,
+    // and the diagnostic names the adapter the caller can act on.
+    write_record("bound", "cursor:alternate");
+    let frame = interrupt("bound");
+    assert_eq!(frame["ok"], false);
+    assert_eq!(frame["reason"], "unsupported", "{frame}");
+    assert!(frame["error"].as_str().unwrap().contains("cursor"));
+
+    // A variant of a control-*capable* harness is not refused from the store: the
+    // socket is the authority, and with no run listening the answer is that no
+    // turn is in flight — never `unsupported`.
+    write_record("live", "claude-code:alternate");
+    let frame = interrupt("live");
+    assert_eq!(frame["ok"], false);
+    assert_eq!(frame["reason"], "not_running", "{frame}");
 
     let _ = std::fs::remove_dir_all(&store);
     let _ = std::fs::remove_dir_all(&cwd);

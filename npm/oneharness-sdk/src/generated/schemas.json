@@ -544,7 +544,7 @@
         ]
       },
       "FailureKind": {
-        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `tool_deferred`), so the\nwire shape is unchanged — modeling it as an enum keeps a misspelled or\ninvalid kind unrepresentable and gives every producer/consumer (classifier,\n`is_failure`, the fallback fall-through rule, the report, history) one\ndefinition to share instead of scattered string literals.",
+        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,\n`tool_deferred`), so the wire shape is unchanged — modeling it as an enum\nkeeps a misspelled or invalid kind unrepresentable and gives every\nproducer/consumer (classifier, `is_failure`, the fallback fall-through rule,\nthe report, history) one definition to share instead of scattered string\nliterals.",
         "oneOf": [
           {
             "description": "Authentication / authorization rejected the request (401/403, missing or\ninvalid credentials).",
@@ -565,6 +565,11 @@
             "description": "Out of quota / credits, or a billing problem — a provisioning failure.",
             "type": "string",
             "const": "quota"
+          },
+          {
+            "description": "The session this run asked to continue does not exist for the identity it\nran as, so the harness refused before doing any work (see\n[`unknown_session_rejection`]). Distinct from every other kind because the\ntask itself is fine: another identity — or a fresh session on this one —\ncan still run it.",
+            "type": "string",
+            "const": "session_not_found"
           },
           {
             "description": "The harness deferred a builtin tool call instead of executing it, so a\nclean-exit run did no useful work (Claude Code bridge deployments; issue\n#1114). The only kind that can appear on a `status: ok` run.",
@@ -731,7 +736,7 @@
             "format": "int32"
           },
           "failure_kind": {
-            "description": "Best-effort failure reason; `null` when unclassified. Distinct from\n`status`, which records oneharness's relationship to the process. Two\nfamilies: coarse reasons for a non-zero run (`auth`, `rate_limit`,\n`model_not_found`, `quota`), and `tool_deferred` — a run that exited\n*cleanly* but only deferred a builtin tool call instead of executing it\n(Claude Code bridge/managed deployments), so it did no useful work. The\ndeferred case is the only `failure_kind` that can appear on a `status: ok`\nrun, and it also marks the run as failed for exit-code purposes.\nSerialized as its snake_case token (see [`FailureKind`]).",
+            "description": "Best-effort failure reason; `null` when unclassified. Distinct from\n`status`, which records oneharness's relationship to the process. Two\nfamilies: coarse reasons for a non-zero run (`auth`, `rate_limit`,\n`model_not_found`, `quota`, `session_not_found`), and `tool_deferred` — a run that exited\n*cleanly* but only deferred a builtin tool call instead of executing it\n(Claude Code bridge/managed deployments), so it did no useful work. The\ndeferred case is the only `failure_kind` that can appear on a `status: ok`\nrun, and it also marks the run as failed for exit-code purposes.\nSerialized as its snake_case token (see [`FailureKind`]).",
             "anyOf": [
               {
                 "$ref": "#/$defs/FailureKind"
@@ -1490,7 +1495,7 @@
         ]
       },
       "FailureKind": {
-        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `tool_deferred`), so the\nwire shape is unchanged — modeling it as an enum keeps a misspelled or\ninvalid kind unrepresentable and gives every producer/consumer (classifier,\n`is_failure`, the fallback fall-through rule, the report, history) one\ndefinition to share instead of scattered string literals.",
+        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,\n`tool_deferred`), so the wire shape is unchanged — modeling it as an enum\nkeeps a misspelled or invalid kind unrepresentable and gives every\nproducer/consumer (classifier, `is_failure`, the fallback fall-through rule,\nthe report, history) one definition to share instead of scattered string\nliterals.",
         "oneOf": [
           {
             "description": "Authentication / authorization rejected the request (401/403, missing or\ninvalid credentials).",
@@ -1511,6 +1516,11 @@
             "description": "Out of quota / credits, or a billing problem — a provisioning failure.",
             "type": "string",
             "const": "quota"
+          },
+          {
+            "description": "The session this run asked to continue does not exist for the identity it\nran as, so the harness refused before doing any work (see\n[`unknown_session_rejection`]). Distinct from every other kind because the\ntask itself is fine: another identity — or a fresh session on this one —\ncan still run it.",
+            "type": "string",
+            "const": "session_not_found"
           },
           {
             "description": "The harness deferred a builtin tool call instead of executing it, so a\nclean-exit run did no useful work (Claude Code bridge deployments; issue\n#1114). The only kind that can appear on a `status: ok` run.",
@@ -1841,7 +1851,7 @@
             "format": "int32"
           },
           "failure_kind": {
-            "description": "Best-effort failure reason; `null` when unclassified. Distinct from\n`status`, which records oneharness's relationship to the process. Two\nfamilies: coarse reasons for a non-zero run (`auth`, `rate_limit`,\n`model_not_found`, `quota`), and `tool_deferred` — a run that exited\n*cleanly* but only deferred a builtin tool call instead of executing it\n(Claude Code bridge/managed deployments), so it did no useful work. The\ndeferred case is the only `failure_kind` that can appear on a `status: ok`\nrun, and it also marks the run as failed for exit-code purposes.\nSerialized as its snake_case token (see [`FailureKind`]).",
+            "description": "Best-effort failure reason; `null` when unclassified. Distinct from\n`status`, which records oneharness's relationship to the process. Two\nfamilies: coarse reasons for a non-zero run (`auth`, `rate_limit`,\n`model_not_found`, `quota`, `session_not_found`), and `tool_deferred` — a run that exited\n*cleanly* but only deferred a builtin tool call instead of executing it\n(Claude Code bridge/managed deployments), so it did no useful work. The\ndeferred case is the only `failure_kind` that can appear on a `status: ok`\nrun, and it also marks the run as failed for exit-code purposes.\nSerialized as its snake_case token (see [`FailureKind`]).",
             "anyOf": [
               {
                 "$ref": "#/$defs/FailureKind"
@@ -2498,7 +2508,8 @@
                         "enum": [
                           "1.2",
                           "1.3",
-                          "1.4"
+                          "1.4",
+                          "1.5"
                         ]
                       },
                       "type": {
@@ -2614,7 +2625,8 @@
                             "type": "string",
                             "enum": [
                               "1.3",
-                              "1.4"
+                              "1.4",
+                              "1.5"
                             ]
                           }
                         },
@@ -2680,7 +2692,38 @@
                       "schema_version": {
                         "type": "string",
                         "enum": [
-                          "1.4"
+                          "1.4",
+                          "1.5"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "failure_kind": {
+                        "enum": [
+                          "auth",
+                          "rate_limit",
+                          "model_not_found",
+                          "quota",
+                          "tool_deferred",
+                          null
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "schema_version": {
+                        "type": "string",
+                        "enum": [
+                          "1.5"
                         ]
                       }
                     }
@@ -2776,7 +2819,8 @@
                           "1.1",
                           "1.2",
                           "1.3",
-                          "1.4"
+                          "1.4",
+                          "1.5"
                         ]
                       },
                       "session": {
@@ -2958,7 +3002,8 @@
                           "1.1",
                           "1.2",
                           "1.3",
-                          "1.4"
+                          "1.4",
+                          "1.5"
                         ]
                       },
                       "session": {
@@ -3138,7 +3183,8 @@
                         "enum": [
                           "1.2",
                           "1.3",
-                          "1.4"
+                          "1.4",
+                          "1.5"
                         ]
                       },
                       "session": {
@@ -3299,7 +3345,8 @@
                           "1.1",
                           "1.2",
                           "1.3",
-                          "1.4"
+                          "1.4",
+                          "1.5"
                         ]
                       },
                       "session": {
@@ -3459,7 +3506,8 @@
                         "type": "string",
                         "enum": [
                           "1.3",
-                          "1.4"
+                          "1.4",
+                          "1.5"
                         ]
                       },
                       "session": {
@@ -3636,7 +3684,8 @@
                           "1.1",
                           "1.2",
                           "1.3",
-                          "1.4"
+                          "1.4",
+                          "1.5"
                         ]
                       },
                       "session": {
@@ -3815,7 +3864,7 @@
         ]
       },
       "FailureKind": {
-        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `tool_deferred`), so the\nwire shape is unchanged — modeling it as an enum keeps a misspelled or\ninvalid kind unrepresentable and gives every producer/consumer (classifier,\n`is_failure`, the fallback fall-through rule, the report, history) one\ndefinition to share instead of scattered string literals.",
+        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,\n`tool_deferred`), so the wire shape is unchanged — modeling it as an enum\nkeeps a misspelled or invalid kind unrepresentable and gives every\nproducer/consumer (classifier, `is_failure`, the fallback fall-through rule,\nthe report, history) one definition to share instead of scattered string\nliterals.",
         "oneOf": [
           {
             "description": "Authentication / authorization rejected the request (401/403, missing or\ninvalid credentials).",
@@ -3836,6 +3885,11 @@
             "description": "Out of quota / credits, or a billing problem — a provisioning failure.",
             "type": "string",
             "const": "quota"
+          },
+          {
+            "description": "The session this run asked to continue does not exist for the identity it\nran as, so the harness refused before doing any work (see\n[`unknown_session_rejection`]). Distinct from every other kind because the\ntask itself is fine: another identity — or a fresh session on this one —\ncan still run it.",
+            "type": "string",
+            "const": "session_not_found"
           },
           {
             "description": "The harness deferred a builtin tool call instead of executing it, so a\nclean-exit run did no useful work (Claude Code bridge deployments; issue\n#1114). The only kind that can appear on a `status: ok` run.",
@@ -4048,7 +4102,8 @@
                     "type": "string",
                     "enum": [
                       "1.3",
-                      "1.4"
+                      "1.4",
+                      "1.5"
                     ]
                   }
                 },
@@ -4114,7 +4169,38 @@
               "schema_version": {
                 "type": "string",
                 "enum": [
-                  "1.4"
+                  "1.4",
+                  "1.5"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "failure_kind": {
+                "enum": [
+                  "auth",
+                  "rate_limit",
+                  "model_not_found",
+                  "quota",
+                  "tool_deferred",
+                  null
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "schema_version": {
+                "type": "string",
+                "enum": [
+                  "1.5"
                 ]
               }
             }
@@ -4391,7 +4477,8 @@
             "enum": [
               "1.2",
               "1.3",
-              "1.4"
+              "1.4",
+              "1.5"
             ]
           },
           "session": {
@@ -4991,7 +5078,8 @@
             "enum": [
               "1.2",
               "1.3",
-              "1.4"
+              "1.4",
+              "1.5"
             ]
           },
           "session": {
@@ -5166,7 +5254,8 @@
             "enum": [
               "1.2",
               "1.3",
-              "1.4"
+              "1.4",
+              "1.5"
             ]
           },
           "session": {
@@ -5339,7 +5428,8 @@
             "enum": [
               "1.2",
               "1.3",
-              "1.4"
+              "1.4",
+              "1.5"
             ]
           },
           "session": {
@@ -5513,7 +5603,8 @@
             "type": "string",
             "enum": [
               "1.3",
-              "1.4"
+              "1.4",
+              "1.5"
             ]
           },
           "session": {
@@ -6356,7 +6447,7 @@
         ]
       },
       "FailureKind": {
-        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `tool_deferred`), so the\nwire shape is unchanged — modeling it as an enum keeps a misspelled or\ninvalid kind unrepresentable and gives every producer/consumer (classifier,\n`is_failure`, the fallback fall-through rule, the report, history) one\ndefinition to share instead of scattered string literals.",
+        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,\n`tool_deferred`), so the wire shape is unchanged — modeling it as an enum\nkeeps a misspelled or invalid kind unrepresentable and gives every\nproducer/consumer (classifier, `is_failure`, the fallback fall-through rule,\nthe report, history) one definition to share instead of scattered string\nliterals.",
         "oneOf": [
           {
             "description": "Authentication / authorization rejected the request (401/403, missing or\ninvalid credentials).",
@@ -6377,6 +6468,11 @@
             "description": "Out of quota / credits, or a billing problem — a provisioning failure.",
             "type": "string",
             "const": "quota"
+          },
+          {
+            "description": "The session this run asked to continue does not exist for the identity it\nran as, so the harness refused before doing any work (see\n[`unknown_session_rejection`]). Distinct from every other kind because the\ntask itself is fine: another identity — or a fresh session on this one —\ncan still run it.",
+            "type": "string",
+            "const": "session_not_found"
           },
           {
             "description": "The harness deferred a builtin tool call instead of executing it, so a\nclean-exit run did no useful work (Claude Code bridge deployments; issue\n#1114). The only kind that can appear on a `status: ok` run.",
@@ -6700,7 +6796,7 @@
         ]
       },
       "FailureKind": {
-        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `tool_deferred`), so the\nwire shape is unchanged — modeling it as an enum keeps a misspelled or\ninvalid kind unrepresentable and gives every producer/consumer (classifier,\n`is_failure`, the fallback fall-through rule, the report, history) one\ndefinition to share instead of scattered string literals.",
+        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,\n`tool_deferred`), so the wire shape is unchanged — modeling it as an enum\nkeeps a misspelled or invalid kind unrepresentable and gives every\nproducer/consumer (classifier, `is_failure`, the fallback fall-through rule,\nthe report, history) one definition to share instead of scattered string\nliterals.",
         "oneOf": [
           {
             "description": "Authentication / authorization rejected the request (401/403, missing or\ninvalid credentials).",
@@ -6721,6 +6817,11 @@
             "description": "Out of quota / credits, or a billing problem — a provisioning failure.",
             "type": "string",
             "const": "quota"
+          },
+          {
+            "description": "The session this run asked to continue does not exist for the identity it\nran as, so the harness refused before doing any work (see\n[`unknown_session_rejection`]). Distinct from every other kind because the\ntask itself is fine: another identity — or a fresh session on this one —\ncan still run it.",
+            "type": "string",
+            "const": "session_not_found"
           },
           {
             "description": "The harness deferred a builtin tool call instead of executing it, so a\nclean-exit run did no useful work (Claude Code bridge deployments; issue\n#1114). The only kind that can appear on a `status: ok` run.",
@@ -6760,7 +6861,8 @@
                     "enum": [
                       "1.2",
                       "1.3",
-                      "1.4"
+                      "1.4",
+                      "1.5"
                     ]
                   },
                   "variant": {
@@ -6882,7 +6984,8 @@
                         "type": "string",
                         "enum": [
                           "1.3",
-                          "1.4"
+                          "1.4",
+                          "1.5"
                         ]
                       }
                     },
@@ -6948,7 +7051,38 @@
                   "schema_version": {
                     "type": "string",
                     "enum": [
-                      "1.4"
+                      "1.4",
+                      "1.5"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "failure_kind": {
+                    "enum": [
+                      "auth",
+                      "rate_limit",
+                      "model_not_found",
+                      "quota",
+                      "tool_deferred",
+                      null
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "schema_version": {
+                    "type": "string",
+                    "enum": [
+                      "1.5"
                     ]
                   }
                 }
@@ -7225,7 +7359,8 @@
                 "enum": [
                   "1.2",
                   "1.3",
-                  "1.4"
+                  "1.4",
+                  "1.5"
                 ]
               },
               "session": {
@@ -7825,7 +7960,8 @@
                 "enum": [
                   "1.2",
                   "1.3",
-                  "1.4"
+                  "1.4",
+                  "1.5"
                 ]
               },
               "session": {
@@ -8000,7 +8136,8 @@
                 "enum": [
                   "1.2",
                   "1.3",
-                  "1.4"
+                  "1.4",
+                  "1.5"
                 ]
               },
               "session": {
@@ -8173,7 +8310,8 @@
                 "enum": [
                   "1.2",
                   "1.3",
-                  "1.4"
+                  "1.4",
+                  "1.5"
                 ]
               },
               "session": {
@@ -8347,7 +8485,8 @@
                 "type": "string",
                 "enum": [
                   "1.3",
-                  "1.4"
+                  "1.4",
+                  "1.5"
                 ]
               },
               "session": {
@@ -9356,7 +9495,7 @@
         ]
       },
       "FailureKind": {
-        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `tool_deferred`), so the\nwire shape is unchanged — modeling it as an enum keeps a misspelled or\ninvalid kind unrepresentable and gives every producer/consumer (classifier,\n`is_failure`, the fallback fall-through rule, the report, history) one\ndefinition to share instead of scattered string literals.",
+        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,\n`tool_deferred`), so the wire shape is unchanged — modeling it as an enum\nkeeps a misspelled or invalid kind unrepresentable and gives every\nproducer/consumer (classifier, `is_failure`, the fallback fall-through rule,\nthe report, history) one definition to share instead of scattered string\nliterals.",
         "oneOf": [
           {
             "description": "Authentication / authorization rejected the request (401/403, missing or\ninvalid credentials).",
@@ -9377,6 +9516,11 @@
             "description": "Out of quota / credits, or a billing problem — a provisioning failure.",
             "type": "string",
             "const": "quota"
+          },
+          {
+            "description": "The session this run asked to continue does not exist for the identity it\nran as, so the harness refused before doing any work (see\n[`unknown_session_rejection`]). Distinct from every other kind because the\ntask itself is fine: another identity — or a fresh session on this one —\ncan still run it.",
+            "type": "string",
+            "const": "session_not_found"
           },
           {
             "description": "The harness deferred a builtin tool call instead of executing it, so a\nclean-exit run did no useful work (Claude Code bridge deployments; issue\n#1114). The only kind that can appear on a `status: ok` run.",
@@ -9429,7 +9573,8 @@
                         "type": "string",
                         "enum": [
                           "1.3",
-                          "1.4"
+                          "1.4",
+                          "1.5"
                         ]
                       }
                     },
@@ -9495,7 +9640,38 @@
                   "schema_version": {
                     "type": "string",
                     "enum": [
-                      "1.4"
+                      "1.4",
+                      "1.5"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "failure_kind": {
+                    "enum": [
+                      "auth",
+                      "rate_limit",
+                      "model_not_found",
+                      "quota",
+                      "tool_deferred",
+                      null
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "schema_version": {
+                    "type": "string",
+                    "enum": [
+                      "1.5"
                     ]
                   }
                 }
@@ -9772,7 +9948,8 @@
                 "enum": [
                   "1.2",
                   "1.3",
-                  "1.4"
+                  "1.4",
+                  "1.5"
                 ]
               },
               "session": {
@@ -10372,7 +10549,8 @@
                 "enum": [
                   "1.2",
                   "1.3",
-                  "1.4"
+                  "1.4",
+                  "1.5"
                 ]
               },
               "session": {
@@ -10547,7 +10725,8 @@
                 "enum": [
                   "1.2",
                   "1.3",
-                  "1.4"
+                  "1.4",
+                  "1.5"
                 ]
               },
               "session": {
@@ -10720,7 +10899,8 @@
                 "enum": [
                   "1.2",
                   "1.3",
-                  "1.4"
+                  "1.4",
+                  "1.5"
                 ]
               },
               "session": {
@@ -10894,7 +11074,8 @@
                 "type": "string",
                 "enum": [
                   "1.3",
-                  "1.4"
+                  "1.4",
+                  "1.5"
                 ]
               },
               "session": {

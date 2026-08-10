@@ -86,6 +86,7 @@ lint-workflows: build build-mock-harness
     @bash scripts/check-control-probes.sh >/dev/null
     @bash scripts/check-control-probe-http.sh >/dev/null
     @bash scripts/check-control-enforce.sh >/dev/null
+    @bash scripts/check-copilot-login-probe.sh >/dev/null
     @bash scripts/e2e-variants-test.sh >/dev/null
     @echo 'lint-workflows: ok'
 

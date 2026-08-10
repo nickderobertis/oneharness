@@ -1,0 +1,143 @@
+name: E2E (Turn control)
+
+# Live end-to-end check for the turn-control feature: for EVERY harness that
+# declares a control mechanism, interrupt a real multi-step turn and prove the
+# work stopped, then interrupt again with `--input` and prove the redirected
+# work was carried out by the same dispatch (scripts/e2e-control.sh).
+#
+# This is the per-FEATURE counterpart to the per-harness e2e workflows, like
+# e2e-schema.yml — but unlike every one of those it is **workflow_dispatch
+# only**, deliberately. Each phase drives a real multi-step turn and then waits
+# out a 15-second freeze window, twice, for six harnesses; that is far too slow
+# to run on every PR, which is exactly why AGENTS.md keeps `just live-control`
+# outside both the gate and the per-PR e2e matrix. Being dispatch-only is also
+# why scripts/check-e2e-matrix.sh does not list it: that gate's contract is
+# about the PR matrix, and this workflow has none to drift from.
+#
+# Run it from the Actions tab after any change to the control path — it is the
+# only place goose, opencode and crush can be proven, since their providers
+# authenticate from keys a developer box generally does not carry.
+#
+# `OH_E2E_NO_SKIP` matters more here than anywhere else: e2e-control.sh notes
+# and continues past a harness whose credentials are missing rather than
+# retiring the suite, so without it a run could report success having exercised
+# two harnesses out of six. With it set, any harness that does not run is RED.
+#
+# Security: same posture as the per-harness workflows — gated to the canonical
+# repo, and dispatch-only means it never runs for a fork PR head at all.
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "Platform(s): 'all' = every supported OS, or a single OS. Control sockets are unix-only, so Windows is not offered."
+        type: choice
+        default: ubuntu-latest
+        options:
+          - ubuntu-latest
+          - macos-latest
+          - all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-control-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # In CI every harness is installed and every credential supplied up front, so
+  # a skip means detection/install/spawn broke — fail instead of going green
+  # having tested nothing. See scripts/e2e-lib.sh and e2e-control.sh.
+  OH_E2E_NO_SKIP: 1
+
+jobs:
+  live:
+    name: turn-control live e2e (${{ matrix.os }})
+    if: github.repository == 'nickderobertis/oneharness'
+    strategy:
+      fail-fast: false
+      # Unix-only: the control channel is a unix socket, and e2e-control.sh
+      # exits early on Windows. Defaults to ubuntu; 'all' adds macos.
+      matrix:
+        os: ${{ fromJSON(inputs.os == 'all' && '["ubuntu-latest","macos-latest"]' || format('["{0}"]', inputs.os)) }}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    # Six harnesses x (one interrupt phase + one redirection phase), each with a
+    # 15s freeze window and up to three attempts when a turn ends too early.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify every controllable harness's credential is present
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+        run: |
+          # Checked up front rather than per phase: with OH_E2E_NO_SKIP set a
+          # missing key fails the suite minutes into paid model calls, and the
+          # error there names the harness rather than the secret to set.
+          missing=()
+          [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || missing+=("CLAUDE_CODE_OAUTH_TOKEN (claude-code)")
+          [ -n "${OPENAI_API_KEY:-}" ] || missing+=("OPENAI_API_KEY (codex, goose)")
+          [ -n "${ANTHROPIC_API_KEY:-}" ] || missing+=("ANTHROPIC_API_KEY (opencode, crush)")
+          [ -n "${COPILOT_GITHUB_TOKEN:-}" ] || missing+=("COPILOT_GITHUB_TOKEN (copilot)")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf '::error::missing secret: %s\n' "${missing[@]}"
+            echo "Sync them with 'just secrets-sync', or set each: gh secret set <NAME> --repo ${{ github.repository }}"
+            exit 1
+          fi
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install the npm-distributed harness CLIs
+        run: |
+          npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai @charmland/crush @github/copilot
+          claude --version
+          codex --version
+          opencode --version
+          crush --version
+          copilot --version
+
+      - name: Install Goose CLI
+        run: |
+          curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Codex does not read OPENAI_API_KEY for headless work; the documented CI
+      # pattern is to write ~/.codex/auth.json from the key on stdin. Its
+      # app-server (the control mechanism here) authenticates the same way.
+      - name: Authenticate Codex with the API key (headless)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: printenv OPENAI_API_KEY | codex login --with-api-key
+
+      - name: Live turn-control e2e against every controllable harness
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CLAUDE_E2E_MODEL: ${{ vars.CLAUDE_E2E_MODEL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_E2E_MODEL: ${{ vars.CODEX_E2E_MODEL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENCODE_E2E_MODEL: ${{ vars.OPENCODE_E2E_MODEL }}
+          CRUSH_E2E_MODEL: ${{ vars.CRUSH_E2E_MODEL }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          COPILOT_E2E_MODEL: ${{ vars.COPILOT_E2E_MODEL }}
+          # Goose takes no --model flag; it resolves provider/model from the
+          # environment. e2e-control.sh prefers Anthropic when its key is
+          # present because a model that batches all 60 steps into one command
+          # can never be caught mid-turn (see the goose phase for the measurement).
+          GOOSE_E2E_MODEL: ${{ vars.GOOSE_E2E_MODEL }}
+        run: just live-control

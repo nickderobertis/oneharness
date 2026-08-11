@@ -1,0 +1,1228 @@
+{
+  "config": {
+    "always": [
+      "--compact"
+    ],
+    "argv": [
+      "config"
+    ],
+    "bindings": [
+      {
+        "flag": "--cwd",
+        "kind": "value",
+        "option": "cwd",
+        "unless": null
+      },
+      {
+        "flag": "--config",
+        "kind": "value",
+        "option": "config",
+        "unless": "noConfig"
+      },
+      {
+        "flag": "--no-config",
+        "kind": "switch",
+        "option": "noConfig",
+        "unless": null
+      }
+    ],
+    "method": "config",
+    "options": "config_options",
+    "output": "config_report",
+    "rust": "oneharness_core::domain::config::explain",
+    "stdin": false,
+    "stdout": "json",
+    "uncovered": []
+  },
+  "detect": {
+    "always": [
+      "--compact"
+    ],
+    "argv": [
+      "detect"
+    ],
+    "bindings": [
+      {
+        "flag": "--harness",
+        "kind": "repeated",
+        "option": "harnesses",
+        "unless": null
+      },
+      {
+        "flag": "--all",
+        "kind": "switch",
+        "option": "all",
+        "unless": "harnesses"
+      },
+      {
+        "flag": "--exclude",
+        "kind": "repeated",
+        "option": "exclude",
+        "unless": null
+      },
+      {
+        "flag": "--bin",
+        "kind": "key-value",
+        "option": "bins",
+        "unless": null
+      },
+      {
+        "flag": "--config",
+        "kind": "value",
+        "option": "config",
+        "unless": "noConfig"
+      },
+      {
+        "flag": "--no-config",
+        "kind": "switch",
+        "option": "noConfig",
+        "unless": null
+      },
+      {
+        "flag": "--require-available",
+        "kind": "switch",
+        "option": "requireAvailable",
+        "unless": null
+      }
+    ],
+    "method": "detect",
+    "options": "detect_options",
+    "output": "detect_report",
+    "rust": "oneharness_core::io::detect::detect",
+    "stdin": false,
+    "stdout": "json",
+    "uncovered": []
+  },
+  "gate": {
+    "always": [],
+    "argv": [
+      "gate"
+    ],
+    "bindings": [
+      {
+        "flag": "",
+        "kind": "positional",
+        "option": "harness",
+        "unless": null
+      },
+      {
+        "flag": "--deny-if-contains",
+        "kind": "value",
+        "option": "denyIfContains",
+        "unless": null
+      },
+      {
+        "flag": "--reason",
+        "kind": "value",
+        "option": "reason",
+        "unless": null
+      }
+    ],
+    "method": "gate",
+    "options": "gate_options",
+    "output": null,
+    "rust": "oneharness_core::domain::gate::render_deny",
+    "stdin": true,
+    "stdout": "text",
+    "uncovered": []
+  },
+  "history": {
+    "always": [
+      "--compact"
+    ],
+    "argv": [
+      "history",
+      "show"
+    ],
+    "bindings": [
+      {
+        "flag": "",
+        "kind": "positional",
+        "option": "session",
+        "unless": "last"
+      },
+      {
+        "flag": "--last",
+        "kind": "switch",
+        "option": "last",
+        "unless": null
+      },
+      {
+        "flag": "--all",
+        "kind": "switch",
+        "option": "all",
+        "unless": null
+      },
+      {
+        "flag": "--project",
+        "kind": "value",
+        "option": "project",
+        "unless": "allProjects"
+      },
+      {
+        "flag": "--all-projects",
+        "kind": "switch",
+        "option": "allProjects",
+        "unless": null
+      },
+      {
+        "flag": "--history-dir",
+        "kind": "value",
+        "option": "historyDir",
+        "unless": null
+      },
+      {
+        "flag": "--config",
+        "kind": "value",
+        "option": "config",
+        "unless": "noConfig"
+      },
+      {
+        "flag": "--no-config",
+        "kind": "switch",
+        "option": "noConfig",
+        "unless": null
+      }
+    ],
+    "method": "history",
+    "options": "history_lookup",
+    "output": "history_records",
+    "rust": "oneharness_core::io::history::read_session",
+    "stdin": false,
+    "stdout": "json",
+    "uncovered": [
+      {
+        "flag": "--format",
+        "reason": "the SDKs consume the JSON contract; `--format text` is the human-readable view of the same data, carrying nothing the JSON does not"
+      }
+    ]
+  },
+  "historyClear": {
+    "always": [
+      "--compact"
+    ],
+    "argv": [
+      "history",
+      "clear"
+    ],
+    "bindings": [
+      {
+        "flag": "--project",
+        "kind": "value",
+        "option": "project",
+        "unless": "allProjects"
+      },
+      {
+        "flag": "--all-projects",
+        "kind": "switch",
+        "option": "allProjects",
+        "unless": null
+      },
+      {
+        "flag": "--yes",
+        "kind": "switch",
+        "option": "yes",
+        "unless": null
+      },
+      {
+        "flag": "--history-dir",
+        "kind": "value",
+        "option": "historyDir",
+        "unless": null
+      },
+      {
+        "flag": "--config",
+        "kind": "value",
+        "option": "config",
+        "unless": "noConfig"
+      },
+      {
+        "flag": "--no-config",
+        "kind": "switch",
+        "option": "noConfig",
+        "unless": null
+      }
+    ],
+    "method": "historyClear",
+    "options": "history_clear_options",
+    "output": "history_clear_report",
+    "rust": "oneharness_core::io::history::remove_sessions",
+    "stdin": false,
+    "stdout": "json",
+    "uncovered": []
+  },
+  "historyList": {
+    "always": [
+      "--compact"
+    ],
+    "argv": [
+      "history",
+      "list"
+    ],
+    "bindings": [
+      {
+        "flag": "--variant",
+        "kind": "value",
+        "option": "variant",
+        "unless": null
+      },
+      {
+        "flag": "--project",
+        "kind": "value",
+        "option": "project",
+        "unless": "allProjects"
+      },
+      {
+        "flag": "--all-projects",
+        "kind": "switch",
+        "option": "allProjects",
+        "unless": null
+      },
+      {
+        "flag": "--history-dir",
+        "kind": "value",
+        "option": "historyDir",
+        "unless": null
+      },
+      {
+        "flag": "--config",
+        "kind": "value",
+        "option": "config",
+        "unless": "noConfig"
+      },
+      {
+        "flag": "--no-config",
+        "kind": "switch",
+        "option": "noConfig",
+        "unless": null
+      }
+    ],
+    "method": "historyList",
+    "options": "history_list_options",
+    "output": "history_list",
+    "rust": "oneharness_core::io::history::list_sessions",
+    "stdin": false,
+    "stdout": "json",
+    "uncovered": [
+      {
+        "flag": "--format",
+        "reason": "the SDKs consume the JSON contract; `--format text` is the human-readable view of the same data, carrying nothing the JSON does not"
+      }
+    ]
+  },
+  "historyMigrate": {
+    "always": [
+      "--compact"
+    ],
+    "argv": [
+      "history",
+      "migrate"
+    ],
+    "bindings": [
+      {
+        "flag": "--history-dir",
+        "kind": "value",
+        "option": "historyDir",
+        "unless": null
+      },
+      {
+        "flag": "--config",
+        "kind": "value",
+        "option": "config",
+        "unless": "noConfig"
+      },
+      {
+        "flag": "--no-config",
+        "kind": "switch",
+        "option": "noConfig",
+        "unless": null
+      }
+    ],
+    "method": "historyMigrate",
+    "options": "history_migrate_options",
+    "output": "history_migrate_report",
+    "rust": "oneharness_core::io::history::migrate",
+    "stdin": false,
+    "stdout": "json",
+    "uncovered": []
+  },
+  "historyWatch": {
+    "always": [
+      "--format",
+      "jsonl"
+    ],
+    "argv": [
+      "history",
+      "watch"
+    ],
+    "bindings": [
+      {
+        "flag": "--after",
+        "kind": "value",
+        "option": "after",
+        "unless": null
+      },
+      {
+        "flag": "--label",
+        "kind": "key-value",
+        "option": "labels",
+        "unless": null
+      },
+      {
+        "flag": "--variant",
+        "kind": "value",
+        "option": "variant",
+        "unless": null
+      },
+      {
+        "flag": "--project",
+        "kind": "value",
+        "option": "project",
+        "unless": "allProjects"
+      },
+      {
+        "flag": "--all-projects",
+        "kind": "switch",
+        "option": "allProjects",
+        "unless": null
+      },
+      {
+        "flag": "--history-dir",
+        "kind": "value",
+        "option": "historyDir",
+        "unless": null
+      },
+      {
+        "flag": "--events",
+        "kind": "switch",
+        "option": "events",
+        "unless": null
+      },
+      {
+        "flag": "--config",
+        "kind": "value",
+        "option": "config",
+        "unless": "noConfig"
+      },
+      {
+        "flag": "--no-config",
+        "kind": "switch",
+        "option": "noConfig",
+        "unless": null
+      }
+    ],
+    "method": "historyWatch",
+    "options": "history_watch_options",
+    "output": "history_stream_envelope",
+    "rust": "oneharness_core::io::history::HistoryWatcher",
+    "stdin": false,
+    "stdout": "jsonl",
+    "uncovered": []
+  },
+  "init": {
+    "always": [],
+    "argv": [
+      "init"
+    ],
+    "bindings": [
+      {
+        "flag": "",
+        "kind": "positional",
+        "option": "path",
+        "unless": null
+      },
+      {
+        "flag": "--force",
+        "kind": "switch",
+        "option": "force",
+        "unless": null
+      }
+    ],
+    "method": "init",
+    "options": "init_options",
+    "output": null,
+    "rust": "oneharness_core::io::init::init",
+    "stdin": false,
+    "stdout": "text",
+    "uncovered": []
+  },
+  "interrupt": {
+    "always": [
+      "--compact"
+    ],
+    "argv": [
+      "interrupt"
+    ],
+    "bindings": [
+      {
+        "flag": "--session",
+        "kind": "value",
+        "option": "session",
+        "unless": null
+      },
+      {
+        "flag": "--input",
+        "kind": "value",
+        "option": "input",
+        "unless": null
+      },
+      {
+        "flag": "--session-dir",
+        "kind": "value",
+        "option": "sessionDir",
+        "unless": null
+      },
+      {
+        "flag": "--cwd",
+        "kind": "value",
+        "option": "cwd",
+        "unless": null
+      }
+    ],
+    "method": "interrupt",
+    "options": "interrupt_options",
+    "output": "interrupt_response",
+    "rust": "oneharness_core::io::control::send",
+    "stdin": false,
+    "stdout": "json",
+    "uncovered": []
+  },
+  "list": {
+    "always": [
+      "--compact"
+    ],
+    "argv": [
+      "list"
+    ],
+    "bindings": [],
+    "method": "list",
+    "options": null,
+    "output": "list_report",
+    "rust": "oneharness_core::io::registry::list",
+    "stdin": false,
+    "stdout": "json",
+    "uncovered": []
+  },
+  "mock": {
+    "always": [],
+    "argv": [
+      "mock"
+    ],
+    "bindings": [
+      {
+        "flag": "",
+        "kind": "positional",
+        "option": "harness",
+        "unless": null
+      },
+      {
+        "flag": "--rules",
+        "kind": "value",
+        "option": "rules",
+        "unless": null
+      },
+      {
+        "flag": "--spy-file",
+        "kind": "value",
+        "option": "spyFile",
+        "unless": null
+      }
+    ],
+    "method": "mock",
+    "options": "mock_options",
+    "output": null,
+    "rust": "oneharness_core::domain::mock::decide",
+    "stdin": true,
+    "stdout": "text",
+    "uncovered": []
+  },
+  "run": {
+    "always": [
+      "--compact",
+      "--no-stream"
+    ],
+    "argv": [
+      "run"
+    ],
+    "bindings": [
+      {
+        "flag": "--prompt",
+        "kind": "value",
+        "option": "prompt",
+        "unless": null
+      },
+      {
+        "flag": "--prompt",
+        "kind": "repeated",
+        "option": "batchPrompts",
+        "unless": null
+      },
+      {
+        "flag": "--prompt-file",
+        "kind": "repeated",
+        "option": "promptFiles",
+        "unless": null
+      },
+      {
+        "flag": "--harness",
+        "kind": "repeated",
+        "option": "harnesses",
+        "unless": null
+      },
+      {
+        "flag": "--mock-harness",
+        "kind": "repeated",
+        "option": "mockHarnesses",
+        "unless": null
+      },
+      {
+        "flag": "--all",
+        "kind": "switch",
+        "option": "all",
+        "unless": "harnesses"
+      },
+      {
+        "flag": "--exclude",
+        "kind": "repeated",
+        "option": "exclude",
+        "unless": null
+      },
+      {
+        "flag": "--model",
+        "kind": "repeated",
+        "option": "models",
+        "unless": null
+      },
+      {
+        "flag": "--system",
+        "kind": "value",
+        "option": "system",
+        "unless": null
+      },
+      {
+        "flag": "--system-file",
+        "kind": "value",
+        "option": "systemFile",
+        "unless": "system"
+      },
+      {
+        "flag": "--reasoning",
+        "kind": "value",
+        "option": "reasoning",
+        "unless": null
+      },
+      {
+        "flag": "--resume",
+        "kind": "value",
+        "option": "resume",
+        "unless": null
+      },
+      {
+        "flag": "--fork",
+        "kind": "switch",
+        "option": "fork",
+        "unless": null
+      },
+      {
+        "flag": "--session",
+        "kind": "value",
+        "option": "session",
+        "unless": null
+      },
+      {
+        "flag": "--session-dir",
+        "kind": "value",
+        "option": "sessionDir",
+        "unless": null
+      },
+      {
+        "flag": "--control",
+        "kind": "switch",
+        "option": "control",
+        "unless": null
+      },
+      {
+        "flag": "--output-format",
+        "kind": "value",
+        "option": "outputFormat",
+        "unless": null
+      },
+      {
+        "flag": "--events",
+        "kind": "switch",
+        "option": "events",
+        "unless": null
+      },
+      {
+        "flag": "--mock-rules",
+        "kind": "value",
+        "option": "mockRules",
+        "unless": null
+      },
+      {
+        "flag": "--spy-file",
+        "kind": "value",
+        "option": "spyFile",
+        "unless": null
+      },
+      {
+        "flag": "--schema",
+        "kind": "value",
+        "option": "schema",
+        "unless": null
+      },
+      {
+        "flag": "--schema-max-retries",
+        "kind": "value",
+        "option": "schemaMaxRetries",
+        "unless": null
+      },
+      {
+        "flag": "--output-dir",
+        "kind": "value",
+        "option": "outputDir",
+        "unless": null
+      },
+      {
+        "flag": "--timeout",
+        "kind": "value",
+        "option": "timeoutSeconds",
+        "unless": null
+      },
+      {
+        "flag": "--cwd",
+        "kind": "value",
+        "option": "cwd",
+        "unless": null
+      },
+      {
+        "flag": "--env",
+        "kind": "key-value",
+        "option": "env",
+        "unless": null
+      },
+      {
+        "flag": "--mode",
+        "kind": "value",
+        "option": "mode",
+        "unless": null
+      },
+      {
+        "flag": "--permit-prompts",
+        "kind": "switch",
+        "option": "permitPrompts",
+        "unless": null
+      },
+      {
+        "flag": "--config",
+        "kind": "value",
+        "option": "config",
+        "unless": "noConfig"
+      },
+      {
+        "flag": "--no-config",
+        "kind": "switch",
+        "option": "noConfig",
+        "unless": null
+      },
+      {
+        "flag": "--max-parallel",
+        "kind": "value",
+        "option": "maxParallel",
+        "unless": null
+      },
+      {
+        "flag": "--batch-strategy",
+        "kind": "value",
+        "option": "batchStrategy",
+        "unless": null
+      },
+      {
+        "flag": "--run-mode",
+        "kind": "value",
+        "option": "runMode",
+        "unless": null
+      },
+      {
+        "flag": "--print-command",
+        "kind": "switch",
+        "option": "printCommand",
+        "unless": null
+      },
+      {
+        "flag": "--bin",
+        "kind": "key-value",
+        "option": "bins",
+        "unless": null
+      },
+      {
+        "flag": "--require-available",
+        "kind": "switch",
+        "option": "requireAvailable",
+        "unless": null
+      },
+      {
+        "flag": "--history",
+        "kind": "switch",
+        "option": "history",
+        "unless": "noHistory"
+      },
+      {
+        "flag": "--no-history",
+        "kind": "switch",
+        "option": "noHistory",
+        "unless": null
+      },
+      {
+        "flag": "--history-dir",
+        "kind": "value",
+        "option": "historyDir",
+        "unless": null
+      },
+      {
+        "flag": "--history-name",
+        "kind": "value",
+        "option": "historyName",
+        "unless": null
+      },
+      {
+        "flag": "--history-label",
+        "kind": "key-value",
+        "option": "historyLabels",
+        "unless": null
+      },
+      {
+        "flag": "",
+        "kind": "trailing",
+        "option": "passthrough",
+        "unless": null
+      }
+    ],
+    "method": "run",
+    "options": "run_options",
+    "output": "run_report",
+    "rust": "oneharness_core::io::run::run",
+    "stdin": false,
+    "stdout": "json",
+    "uncovered": [
+      {
+        "flag": "--bypass",
+        "reason": "`mode: \"bypass\"` is the same request"
+      },
+      {
+        "flag": "--no-bypass",
+        "reason": "`mode: \"default\"` is the same request"
+      },
+      {
+        "flag": "--stream",
+        "reason": "`runStream()` is the streaming method; this one returns one report"
+      }
+    ]
+  },
+  "runStream": {
+    "always": [
+      "--compact",
+      "--stream"
+    ],
+    "argv": [
+      "run"
+    ],
+    "bindings": [
+      {
+        "flag": "--prompt",
+        "kind": "value",
+        "option": "prompt",
+        "unless": null
+      },
+      {
+        "flag": "--prompt",
+        "kind": "repeated",
+        "option": "batchPrompts",
+        "unless": null
+      },
+      {
+        "flag": "--prompt-file",
+        "kind": "repeated",
+        "option": "promptFiles",
+        "unless": null
+      },
+      {
+        "flag": "--harness",
+        "kind": "repeated",
+        "option": "harnesses",
+        "unless": null
+      },
+      {
+        "flag": "--mock-harness",
+        "kind": "repeated",
+        "option": "mockHarnesses",
+        "unless": null
+      },
+      {
+        "flag": "--all",
+        "kind": "switch",
+        "option": "all",
+        "unless": "harnesses"
+      },
+      {
+        "flag": "--exclude",
+        "kind": "repeated",
+        "option": "exclude",
+        "unless": null
+      },
+      {
+        "flag": "--model",
+        "kind": "repeated",
+        "option": "models",
+        "unless": null
+      },
+      {
+        "flag": "--system",
+        "kind": "value",
+        "option": "system",
+        "unless": null
+      },
+      {
+        "flag": "--system-file",
+        "kind": "value",
+        "option": "systemFile",
+        "unless": "system"
+      },
+      {
+        "flag": "--reasoning",
+        "kind": "value",
+        "option": "reasoning",
+        "unless": null
+      },
+      {
+        "flag": "--resume",
+        "kind": "value",
+        "option": "resume",
+        "unless": null
+      },
+      {
+        "flag": "--fork",
+        "kind": "switch",
+        "option": "fork",
+        "unless": null
+      },
+      {
+        "flag": "--session",
+        "kind": "value",
+        "option": "session",
+        "unless": null
+      },
+      {
+        "flag": "--session-dir",
+        "kind": "value",
+        "option": "sessionDir",
+        "unless": null
+      },
+      {
+        "flag": "--control",
+        "kind": "switch",
+        "option": "control",
+        "unless": null
+      },
+      {
+        "flag": "--output-format",
+        "kind": "value",
+        "option": "outputFormat",
+        "unless": null
+      },
+      {
+        "flag": "--events",
+        "kind": "switch",
+        "option": "events",
+        "unless": null
+      },
+      {
+        "flag": "--mock-rules",
+        "kind": "value",
+        "option": "mockRules",
+        "unless": null
+      },
+      {
+        "flag": "--spy-file",
+        "kind": "value",
+        "option": "spyFile",
+        "unless": null
+      },
+      {
+        "flag": "--schema",
+        "kind": "value",
+        "option": "schema",
+        "unless": null
+      },
+      {
+        "flag": "--schema-max-retries",
+        "kind": "value",
+        "option": "schemaMaxRetries",
+        "unless": null
+      },
+      {
+        "flag": "--output-dir",
+        "kind": "value",
+        "option": "outputDir",
+        "unless": null
+      },
+      {
+        "flag": "--timeout",
+        "kind": "value",
+        "option": "timeoutSeconds",
+        "unless": null
+      },
+      {
+        "flag": "--cwd",
+        "kind": "value",
+        "option": "cwd",
+        "unless": null
+      },
+      {
+        "flag": "--env",
+        "kind": "key-value",
+        "option": "env",
+        "unless": null
+      },
+      {
+        "flag": "--mode",
+        "kind": "value",
+        "option": "mode",
+        "unless": null
+      },
+      {
+        "flag": "--permit-prompts",
+        "kind": "switch",
+        "option": "permitPrompts",
+        "unless": null
+      },
+      {
+        "flag": "--config",
+        "kind": "value",
+        "option": "config",
+        "unless": "noConfig"
+      },
+      {
+        "flag": "--no-config",
+        "kind": "switch",
+        "option": "noConfig",
+        "unless": null
+      },
+      {
+        "flag": "--max-parallel",
+        "kind": "value",
+        "option": "maxParallel",
+        "unless": null
+      },
+      {
+        "flag": "--batch-strategy",
+        "kind": "value",
+        "option": "batchStrategy",
+        "unless": null
+      },
+      {
+        "flag": "--run-mode",
+        "kind": "value",
+        "option": "runMode",
+        "unless": null
+      },
+      {
+        "flag": "--print-command",
+        "kind": "switch",
+        "option": "printCommand",
+        "unless": null
+      },
+      {
+        "flag": "--bin",
+        "kind": "key-value",
+        "option": "bins",
+        "unless": null
+      },
+      {
+        "flag": "--require-available",
+        "kind": "switch",
+        "option": "requireAvailable",
+        "unless": null
+      },
+      {
+        "flag": "--history",
+        "kind": "switch",
+        "option": "history",
+        "unless": "noHistory"
+      },
+      {
+        "flag": "--no-history",
+        "kind": "switch",
+        "option": "noHistory",
+        "unless": null
+      },
+      {
+        "flag": "--history-dir",
+        "kind": "value",
+        "option": "historyDir",
+        "unless": null
+      },
+      {
+        "flag": "--history-name",
+        "kind": "value",
+        "option": "historyName",
+        "unless": null
+      },
+      {
+        "flag": "--history-label",
+        "kind": "key-value",
+        "option": "historyLabels",
+        "unless": null
+      },
+      {
+        "flag": "",
+        "kind": "trailing",
+        "option": "passthrough",
+        "unless": null
+      }
+    ],
+    "method": "runStream",
+    "options": "run_options",
+    "output": "run_stream_envelope",
+    "rust": "oneharness_core::io::run::run",
+    "stdin": false,
+    "stdout": "jsonl",
+    "uncovered": [
+      {
+        "flag": "--bypass",
+        "reason": "`mode: \"bypass\"` is the same request"
+      },
+      {
+        "flag": "--no-bypass",
+        "reason": "`mode: \"default\"` is the same request"
+      },
+      {
+        "flag": "--no-stream",
+        "reason": "this method streams by definition, so the negative half cannot apply"
+      }
+    ]
+  },
+  "sync": {
+    "always": [
+      "--compact"
+    ],
+    "argv": [
+      "sync"
+    ],
+    "bindings": [
+      {
+        "flag": "--cwd",
+        "kind": "value",
+        "option": "cwd",
+        "unless": null
+      },
+      {
+        "flag": "--harness",
+        "kind": "repeated",
+        "option": "harnesses",
+        "unless": null
+      },
+      {
+        "flag": "--check",
+        "kind": "switch",
+        "option": "check",
+        "unless": null
+      },
+      {
+        "flag": "--global",
+        "kind": "switch",
+        "option": "global",
+        "unless": null
+      },
+      {
+        "flag": "--config",
+        "kind": "value",
+        "option": "config",
+        "unless": "noConfig"
+      },
+      {
+        "flag": "--no-config",
+        "kind": "switch",
+        "option": "noConfig",
+        "unless": null
+      }
+    ],
+    "method": "sync",
+    "options": "sync_options",
+    "output": "sync_report",
+    "rust": "oneharness_core::io::sync::sync",
+    "stdin": false,
+    "stdout": "json",
+    "uncovered": []
+  },
+  "usage": {
+    "always": [
+      "--compact"
+    ],
+    "argv": [
+      "usage"
+    ],
+    "bindings": [
+      {
+        "flag": "--harness",
+        "kind": "repeated",
+        "option": "harnesses",
+        "unless": null
+      },
+      {
+        "flag": "--all",
+        "kind": "switch",
+        "option": "all",
+        "unless": "harnesses"
+      },
+      {
+        "flag": "--exclude",
+        "kind": "repeated",
+        "option": "exclude",
+        "unless": null
+      },
+      {
+        "flag": "--bin",
+        "kind": "key-value",
+        "option": "bins",
+        "unless": null
+      },
+      {
+        "flag": "--cwd",
+        "kind": "value",
+        "option": "cwd",
+        "unless": null
+      },
+      {
+        "flag": "--timeout",
+        "kind": "value",
+        "option": "timeoutSeconds",
+        "unless": null
+      },
+      {
+        "flag": "--config",
+        "kind": "value",
+        "option": "config",
+        "unless": "noConfig"
+      },
+      {
+        "flag": "--no-config",
+        "kind": "switch",
+        "option": "noConfig",
+        "unless": null
+      }
+    ],
+    "method": "usage",
+    "options": "usage_options",
+    "output": "usage_report",
+    "rust": "oneharness_core::io::usage::report",
+    "stdin": false,
+    "stdout": "json",
+    "uncovered": [
+      {
+        "flag": "--format",
+        "reason": "the SDKs consume the JSON contract; `--format text` is the human-readable view of the same data, carrying nothing the JSON does not"
+      }
+    ]
+  }
+}

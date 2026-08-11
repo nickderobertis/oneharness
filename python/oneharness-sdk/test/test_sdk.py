@@ -5,9 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
 
@@ -17,7 +20,35 @@ from oneharness_sdk import (
     OneHarness,
     OneHarnessProcessError,
 )
-from oneharness_sdk._client import _validate
+from oneharness_sdk._client import (
+    _CAPABILITIES,
+    _capability_arguments,
+    _input,
+    _validate,
+)
+from oneharness_sdk._client import (
+    _SCHEMAS as SCHEMAS,
+)
+
+
+@contextmanager
+def without_ambient_overrides() -> Iterator[None]:
+    """Hide the machine's own `ONEHARNESS_*` overrides from the spawned CLI.
+
+    The client passes the parent environment through, so a developer box — or an
+    orchestrator that exports `ONEHARNESS_HARNESSES` — would otherwise reshape
+    the very layering the config and sync tests assert on. `ONEHARNESS_NO_CONFIG`
+    is the usual escape hatch and is unavailable here: those verbs *are* the
+    layering.
+    """
+    saved = {key: value for key, value in os.environ.items() if key.startswith("ONEHARNESS_")}
+    for key in saved:
+        del os.environ[key]
+    try:
+        yield
+    finally:
+        os.environ.update(saved)
+
 
 ROOT = Path(__file__).resolve().parents[3]
 SUFFIX = ".exe" if os.name == "nt" else ""
@@ -45,6 +76,74 @@ INPUT_KEYS = json.loads(
         / "input-keys.json"
     ).read_text(encoding="utf-8")
 )
+
+
+# One schema-valid value per option the manifest binds, keyed by the option's
+# own name so an option shared across verbs is populated the same way in each.
+# A binding with no entry here fails
+# `test_every_bound_option_is_a_field_of_its_options_contract` by name, which is
+# what keeps this table from going stale as the CLI grows flags.
+POPULATED: dict[str, Any] = {
+    "after": "0198f0d0-7b31-7000-8000-000000000001",
+    "all": True,
+    "allProjects": False,
+    "batchPrompts": ["first", "second"],
+    "batchStrategy": "speed",
+    "bins": {"codex": "/bin/codex"},
+    "check": True,
+    "config": "/nowhere/oneharness.toml",
+    "control": True,
+    "cwd": "/nowhere",
+    "denyIfContains": "rm -rf",
+    "env": {"MOCK_STDOUT": "hi"},
+    "event": "{}",
+    "events": True,
+    "exclude": ["goose"],
+    "force": True,
+    "fork": True,
+    "global": False,
+    "harness": "claude-code",
+    "harnesses": ["codex"],
+    "history": True,
+    "historyDir": "/nowhere/history",
+    "historyLabels": {"run": "sdk"},
+    "historyName": "session",
+    "input": "do this instead",
+    "labels": {"run": "sdk"},
+    "last": False,
+    "maxParallel": 2,
+    "mockHarnesses": ["codex"],
+    "mockRules": "/nowhere/rules.json",
+    "mode": "bypass",
+    "models": ["gpt-5"],
+    "noConfig": False,
+    "noHistory": False,
+    "outputDir": "/nowhere/out",
+    "outputFormat": "json",
+    "passthrough": ["--verbose"],
+    "path": "/nowhere/oneharness.toml",
+    "permitPrompts": True,
+    "printCommand": True,
+    "project": "oneharness",
+    "prompt": "hello",
+    "promptFiles": ["/nowhere/prompt.txt"],
+    "reason": "policy",
+    "reasoning": "high",
+    "requireAvailable": True,
+    "resume": "prior-session",
+    "rules": "/nowhere/rules.json",
+    "runMode": "parallel",
+    "schema": "/nowhere/schema.json",
+    "schemaMaxRetries": 2,
+    "session": "work",
+    "sessionDir": "/nowhere/sessions",
+    "spyFile": "/nowhere/spy.jsonl",
+    "system": "be terse",
+    "systemFile": "/nowhere/system.txt",
+    "timeoutSeconds": 30,
+    "variant": "claude-code:work",
+    "yes": True,
+}
 
 
 def python_input(root: str, value: Any) -> Any:
@@ -357,6 +456,14 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             client.history_watch(cast("Any", {"all_project": True}))
         with self.assertRaisesRegex(ContractError, "invalid oneharness detect options"):
             await client.detect(cast("Any", "codex"))
+        with self.assertRaisesRegex(ContractError, "invalid mock harness"):
+            await client.run_mock("", {"prompt": "no harness"})
+        with self.assertRaisesRegex(ContractError, "invalid oneharness gate options"):
+            await client.gate(cast("Any", {"harness": "claude-code"}))
+        with self.assertRaisesRegex(ContractError, "invalid oneharness mock options"):
+            await client.mock(cast("Any", {"event": "{}"}))
+        with self.assertRaisesRegex(ContractError, "invalid oneharness interrupt options"):
+            await client.interrupt(cast("Any", {}))
 
     async def test_malformed_external_contracts_are_rejected(self) -> None:
         """Validate bounded values and every stream line from an external process."""
@@ -403,6 +510,236 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             else:
                 os.environ["PATH"] = old_path
         self.assertIn("codex", {item["id"] for item in listed})
+
+    def layered(self, project: Path) -> OneHarness:
+        """Return a client that reads config files but only the ones under test.
+
+        `no_config` cannot be used here — the verbs under test are about the
+        layering — so the machine's own user config is displaced by an empty
+        file instead, leaving the project layer as the only one with content.
+        """
+        empty = project / "user.toml"
+        empty.write_text("", encoding="utf-8")
+        return OneHarness(
+            executable=str(BINARY),
+            env={"ONEHARNESS_NO_CONFIG": "0", "ONEHARNESS_CONFIG": str(empty)},
+        )
+
+    async def test_config_reports_the_layered_values_and_their_sources(self) -> None:
+        """Attribute a project-file value to the file it came from."""
+        project = Path(tempfile.mkdtemp(prefix="oneharness-python-config-"))
+        (project / "oneharness.toml").write_text(
+            'harnesses = ["codex"]\nmode = "bypass"\n', encoding="utf-8"
+        )
+        with without_ambient_overrides():
+            report = await self.layered(project).config({"cwd": str(project)})
+        self.assertEqual(report["harnesses"]["value"], ["codex"])
+        self.assertIn("oneharness.toml", report["harnesses"]["source"])
+        self.assertEqual(report["mode"]["value"], "bypass")
+
+    async def test_sync_plans_then_writes_a_harness_policy_file(self) -> None:
+        """Report what a check would change, write it, then change nothing."""
+        project = Path(tempfile.mkdtemp(prefix="oneharness-python-sync-"))
+        (project / "oneharness.toml").write_text(
+            'allowed_tools = ["Bash(echo:*)"]\n', encoding="utf-8"
+        )
+        client = self.layered(project)
+        options: Any = {"cwd": str(project), "harnesses": ["claude-code"]}
+        with without_ambient_overrides():
+            # `--check` exits non-zero precisely because a file *would* change,
+            # and the method has to surface that as the report rather than as a
+            # raise.
+            planned = await client.sync(cast("Any", {**options, "check": True}))
+            self.assertEqual(self.claude(planned), "created")
+            # Still `created` on the real write, which is what proves the check
+            # reported the status a write would reach while writing nothing.
+            self.assertEqual(self.claude(await client.sync(options)), "created")
+            # Idempotent, so a second sync of the same policy changes nothing.
+            self.assertEqual(self.claude(await client.sync(options)), "unchanged")
+
+    def claude(self, report: Any) -> str:
+        """Return the claude-code result's status from one sync report."""
+        results = [item for item in report["results"] if item["harness"] == "claude-code"]
+        return cast("str", results[0]["status"])
+
+    def test_a_python_keyword_option_still_renders_its_cli_flag(self) -> None:
+        """`sync --global` reaches argv through the `global_` public spelling.
+
+        A TypedDict cannot declare a field called `global`, so the generator
+        suffixes it; this is the proof the suffix is undone on the way out
+        rather than becoming an option a caller can set and the CLI never sees.
+        """
+        parsed = _input("sync_options", {"global_": True}, "sync options")
+        self.assertIn("--global", _capability_arguments("sync", parsed))
+
+    async def test_init_scaffolds_a_config_and_refuses_to_clobber_it(self) -> None:
+        """Write a starter file, then treat an existing one as a refusal."""
+        project = Path(tempfile.mkdtemp(prefix="oneharness-python-init-"))
+        path = str(project / "oneharness.toml")
+        client = self.client()
+        self.assertEqual(await client.init({"path": path}), path)
+        self.assertIn("run_mode", Path(path).read_text(encoding="utf-8"))
+
+        with self.assertRaises(OneHarnessProcessError):
+            await client.init({"path": path})
+        self.assertEqual(await client.init({"path": path, "force": True}), path)
+
+    async def test_usage_reports_an_honest_tier_for_an_unprobeable_binary(self) -> None:
+        """Report a state rather than a fabricated headroom number."""
+        # `oneharness-mock-harness` is a real executable answering no usage
+        # protocol, so this drives the whole probe path.
+        report = await self.client().usage(
+            {
+                "harnesses": ["claude-code"],
+                "bins": {"claude-code": str(MOCK)},
+                "timeout_seconds": 20,
+            }
+        )
+        self.assertEqual(report["schema_version"], "0.1")
+        claude = [item for item in report["identities"] if item["harness"] == "claude-code"]
+        self.assertIn(claude[0]["availability"]["state"], {"known", "unknown", "unavailable"})
+
+    async def test_gate_answers_a_hook_event_with_the_harness_verdict(self) -> None:
+        """Deny a marked call and say an allowed one with silence."""
+        client = self.client()
+        blocked = await client.gate(
+            {
+                "harness": "claude-code",
+                "deny_if_contains": "BLOCKED",
+                "reason": "policy",
+                "event": json.dumps(
+                    {"tool_name": "Bash", "tool_input": {"command": "echo BLOCKED"}}
+                ),
+            }
+        )
+        self.assertIsNotNone(blocked)
+        self.assertEqual(
+            json.loads(cast("str", blocked))["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+
+        # An allowed call is said with silence, so `None` is the answer rather
+        # than a missing one.
+        allowed = await client.gate(
+            {
+                "harness": "claude-code",
+                "deny_if_contains": "BLOCKED",
+                "event": json.dumps({"tool_name": "Bash", "tool_input": {"command": "echo fine"}}),
+            }
+        )
+        self.assertIsNone(allowed)
+
+    async def test_mock_applies_a_ruleset_and_spies_the_original_call(self) -> None:
+        """Deny through a rules file while recording the call as observed."""
+        directory = Path(tempfile.mkdtemp(prefix="oneharness-python-mock-"))
+        rules = directory / "rules.json"
+        spy = directory / "spy.jsonl"
+        rules.write_text(
+            json.dumps(
+                {
+                    "rules": [
+                        {
+                            "match": {"tool": "Bash", "input": {"command": {"contains": "secret"}}},
+                            "action": {"deny": {"message": "no secrets"}},
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        verdict = await self.client().mock(
+            {
+                "harness": "claude-code",
+                "rules": str(rules),
+                "spy_file": str(spy),
+                "event": json.dumps({"tool_name": "Bash", "tool_input": {"command": "cat secret"}}),
+            }
+        )
+        self.assertEqual(
+            json.loads(cast("str", verdict))["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+        self.assertIn("cat secret", spy.read_text(encoding="utf-8"))
+
+    async def test_interrupt_refuses_a_session_no_run_is_serving(self) -> None:
+        """Return the refusal frame instead of raising on a non-zero exit."""
+        session_dir = tempfile.mkdtemp(prefix="oneharness-python-interrupt-")
+        response = await self.client().interrupt(
+            {"session": "no-such-session", "session_dir": session_dir}
+        )
+        self.assertIs(response["ok"], False)
+        self.assertEqual(response["reason"], "not_running")
+
+    async def test_history_clear_is_a_dry_run_until_confirmed(self) -> None:
+        """Migrate, report what a clear would remove, then remove it."""
+        history_dir = tempfile.mkdtemp(prefix="oneharness-python-clear-")
+        client = self.client()
+        await client.run(
+            {
+                "prompt": "history clear from python",
+                "harnesses": ["codex"],
+                "mode": "bypass",
+                "history": True,
+                "history_dir": history_dir,
+                "env": {"MOCK_STDOUT": HISTORY_TRACE},
+                "bins": {"codex": str(MOCK)},
+            }
+        )
+        self.assertEqual(len(await client.history_list({"history_dir": history_dir})), 1)
+
+        migrated = await client.history_migrate({"history_dir": history_dir})
+        self.assertIsInstance(migrated["files_processed"], int)
+
+        dry = await client.history_clear({"history_dir": history_dir})
+        self.assertIs(dry["dry_run"], True)
+        self.assertEqual(dry["would_remove"], 1)
+        # Nothing was removed, which the session still being listed proves.
+        self.assertEqual(len(await client.history_list({"history_dir": history_dir})), 1)
+
+        cleared = await client.history_clear({"history_dir": history_dir, "yes": True})
+        self.assertIs(cleared["dry_run"], False)
+        self.assertEqual(cleared["removed"], 1)
+        self.assertEqual(await client.history_list({"history_dir": history_dir}), [])
+
+    async def test_detect_accepts_the_whole_verb_not_only_a_harness_list(self) -> None:
+        """Reach the rest of `detect`'s flags through the options mapping."""
+        detected = await self.client().detect({"all": True, "exclude": ["codex"]})
+        identifiers = {item["id"] for item in detected}
+        self.assertIn("claude-code", identifiers)
+        self.assertNotIn("codex", identifiers)
+
+    def test_every_capability_the_manifest_declares_has_a_method(self) -> None:
+        """The client-side half of the coverage gate.
+
+        `scripts/sdk-coverage.mjs` enforces this across both languages in
+        `just check`; asserting it here too means a missing method fails the
+        package's own suite rather than only a repo-level script.
+        """
+        client = self.client()
+        for method in _CAPABILITIES:
+            name = re.sub(r"(?<!^)(?=[A-Z])", "_", method).lower()
+            self.assertTrue(callable(getattr(client, name, None)), f"{name} is missing")
+
+    def test_every_bound_option_is_a_field_of_its_options_contract(self) -> None:
+        """Reject a manifest binding no caller could ever set.
+
+        One populated value per contract, so each validator is walked over every
+        option the manifest binds rather than the handful a happy-path call
+        happens to set — which is how a flag bound in Rust and absent from the
+        Python contract is caught here rather than by a consumer.
+        """
+        for method, capability in _CAPABILITIES.items():
+            root = capability["options"]
+            if root is None:
+                continue
+            inverse = {camel: snake for snake, camel in INPUT_KEYS[root].items()}
+            # Bound options, plus any the contract requires without binding —
+            # `gate`/`mock` take their event on stdin rather than in argv.
+            names = {binding["option"] for binding in capability["bindings"]}
+            names.update(INPUT_KEYS[root][key] for key in SCHEMAS[root].get("required", []))
+            populated = {inverse.get(name, name): POPULATED[name] for name in names}
+            with self.subTest(method=method):
+                self.assertEqual(_validate(root, populated, "populated options"), populated)
+                rendered = _capability_arguments(method, _input(root, populated, "populated"))
+                self.assertEqual(rendered[: len(capability["argv"])], capability["argv"])
 
     async def test_additive_output_fields_are_preserved(self) -> None:
         """Accept a newer compatible CLI response without erasing its additions."""

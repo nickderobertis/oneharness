@@ -6,6 +6,7 @@ import argparse
 import copy
 import difflib
 import json
+import keyword
 import re
 import subprocess
 from pathlib import Path
@@ -77,8 +78,17 @@ OUTPUT_ALIASES = (
 
 
 def snake_case(value: str) -> str:
-    """Convert the Rust bundle's Node-facing camel case to Python snake case."""
-    return re.sub(r"(?<!^)(?=[A-Z])", "_", value).lower()
+    """Convert the Rust bundle's Node-facing camel case to Python snake case.
+
+    A field whose name is a Python keyword — `sync`'s `--global` — takes the
+    conventional trailing underscore. It cannot keep the bare spelling: a
+    TypedDict declares its fields as class-body annotations, and `global: bool`
+    there is a syntax error rather than a field. The generated `input-keys.json`
+    carries the mapping back, so the client still renders the CLI's own name and
+    only the Python caller sees the suffix.
+    """
+    name = re.sub(r"(?<!^)(?=[A-Z])", "_", value).lower()
+    return f"{name}_" if keyword.iskeyword(name) else name
 
 
 def pythonize(node: Any) -> Any:
@@ -199,6 +209,10 @@ def generated_files() -> dict[str, bytes]:
     )
     bundle = json.loads(output)
     schemas = copy.deepcopy(bundle)
+    # The capability manifest travels beside the schemas rather than inside them:
+    # it is a table of argv bindings, not something a document is validated
+    # against, and the client keys it by method to render one call's arguments.
+    capabilities = {item["method"]: item for item in schemas.pop("capabilities")}
     input_keys: dict[str, dict[str, str]] = {}
     for root in INPUT_ROOTS:
         keys: dict[str, str] = {}
@@ -213,6 +227,7 @@ def generated_files() -> dict[str, bytes]:
     return {
         "__init__.py": b'"""Rust-generated Python SDK assets."""\n',
         "schemas.json": (json.dumps(schemas, indent=2, sort_keys=True) + "\n").encode(),
+        "capabilities.json": (json.dumps(capabilities, indent=2, sort_keys=True) + "\n").encode(),
         "input-keys.json": (json.dumps(input_keys, indent=2, sort_keys=True) + "\n").encode(),
         "../_generated_types.py": types_module(bundle).encode(),
     }

@@ -927,7 +927,7 @@
       ],
       "method": "interrupt",
       "options": "interrupt_options",
-      "output": null,
+      "output": "interrupt_response",
       "rust": "oneharness_core::io::control::send",
       "stdin": false,
       "stdout": "json",
@@ -1184,7 +1184,7 @@
       ],
       "method": "historyClear",
       "options": "history_clear_options",
-      "output": null,
+      "output": "history_clear_report",
       "rust": "oneharness_core::io::history::remove_sessions",
       "stdin": false,
       "stdout": "json",
@@ -1220,7 +1220,7 @@
       ],
       "method": "historyMigrate",
       "options": "history_migrate_options",
-      "output": null,
+      "output": "history_migrate_report",
       "rust": "oneharness_core::io::history::migrate",
       "stdin": false,
       "stdout": "json",
@@ -1238,7 +1238,7 @@
       "cwd": {
         "type": "string"
       },
-      "noConfig": {
+      "no_config": {
         "type": "boolean"
       }
     },
@@ -1899,10 +1899,10 @@
         },
         "type": "array"
       },
-      "noConfig": {
+      "no_config": {
         "type": "boolean"
       },
-      "requireAvailable": {
+      "require_available": {
         "description": "Exit non-zero if any probed harness is not installed. The SDKs surface\nthat as a thrown process error rather than a report a caller must\nre-check.",
         "type": "boolean"
       }
@@ -1972,7 +1972,7 @@
     "additionalProperties": false,
     "description": "Options accepted by the language SDKs' `gate()` \u2014 the pre-tool gate an\ninstalled hook invokes, driven directly so a consumer hosting its own hook\nrunner never has to shell out and parse.",
     "properties": {
-      "denyIfContains": {
+      "deny_if_contains": {
         "type": "string"
       },
       "event": {
@@ -2000,16 +2000,16 @@
     "additionalProperties": false,
     "description": "Options accepted by the language SDKs' `historyClear()`.",
     "properties": {
-      "allProjects": {
+      "all_projects": {
         "type": "boolean"
       },
       "config": {
         "type": "string"
       },
-      "historyDir": {
+      "history_dir": {
         "type": "string"
       },
-      "noConfig": {
+      "no_config": {
         "type": "boolean"
       },
       "project": {
@@ -2022,6 +2022,79 @@
     },
     "title": "HistoryClearOptions",
     "type": "object"
+  },
+  "history_clear_report": {
+    "$defs": {
+      "HistoryClearDryRun": {
+        "description": "The frame a run without `--yes` prints: these files *would* go.",
+        "properties": {
+          "dry_run": {
+            "const": true,
+            "type": "boolean"
+          },
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "hint": {
+            "description": "How to make the dry run real. Constant text, carried in the document so\na JSON consumer gets the same guidance the text view prints.",
+            "type": "string"
+          },
+          "would_remove": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "would_remove",
+          "files",
+          "dry_run",
+          "hint"
+        ],
+        "type": "object"
+      },
+      "HistoryClearRemoved": {
+        "description": "The frame a `--yes` run prints: these files are gone.",
+        "properties": {
+          "dry_run": {
+            "const": false,
+            "description": "Always `false` \u2014 the field is what tells the two frames apart, so it is\na literal rather than a flag either constructor could get wrong.",
+            "type": "boolean"
+          },
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "removed": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "removed",
+          "files",
+          "dry_run"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "anyOf": [
+      {
+        "$ref": "#/$defs/HistoryClearRemoved"
+      },
+      {
+        "$ref": "#/$defs/HistoryClearDryRun"
+      }
+    ],
+    "description": "The `oneharness history clear` output contract.\n\n`clear` is a dry run until `--yes`, and the two phases have always printed\n*different* documents: a real run reports `removed`, a dry run reports\n`would_remove` plus the hint that makes it real. That difference is the\ncontract, so this is a sum of the two frames rather than one struct with\nboth counts optional \u2014 which would let a consumer read a deletion count off\na run that deleted nothing. Untagged, because `dry_run` is the discriminant\nthe published shape already carries.",
+    "title": "HistoryClearReport"
   },
   "history_line": {
     "$defs": {
@@ -3808,14 +3881,71 @@
       "config": {
         "type": "string"
       },
-      "historyDir": {
+      "history_dir": {
         "type": "string"
       },
-      "noConfig": {
+      "no_config": {
         "type": "boolean"
       }
     },
     "title": "HistoryMigrateOptions",
+    "type": "object"
+  },
+  "history_migrate_report": {
+    "$defs": {
+      "MigrationSummary": {
+        "description": "Outcome for one session file processed by [`migrate`]. Counts refer to\nwhole legacy records and current v1.0 lines; unreadable lines are preserved\nbyte-for-byte and reported as skipped.",
+        "properties": {
+          "already_current": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          },
+          "records_migrated": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "skipped": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "records_migrated",
+          "skipped",
+          "already_current"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The `oneharness history migrate` output contract.\n\nA type rather than the inline `json!` literal it replaced, because an SDK\ncannot validate a document that has no schema \u2014 which is what left this\ncapability's `output` unbacked in the capability manifest.",
+    "properties": {
+      "files": {
+        "description": "One entry per session file the migration touched.",
+        "items": {
+          "$ref": "#/$defs/MigrationSummary"
+        },
+        "type": "array"
+      },
+      "files_processed": {
+        "description": "`files.len()`, carried so a consumer reading only the summary does not\nhave to walk the array.",
+        "format": "uint",
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "files",
+      "files_processed"
+    ],
+    "title": "HistoryMigrateReport",
     "type": "object"
   },
   "history_record": {
@@ -11805,7 +11935,7 @@
         "minLength": 1,
         "type": "string"
       },
-      "sessionDir": {
+      "session_dir": {
         "type": "string"
       }
     },
@@ -11814,6 +11944,115 @@
     ],
     "title": "InterruptOptions",
     "type": "object"
+  },
+  "interrupt_response": {
+    "$defs": {
+      "ControlReason": {
+        "description": "Why a control request could not be served. Distinct reasons because a\nsupervisor reacts differently to each: `unsupported` is permanent for the\nharness, `not_running` means the dispatch is gone, `no_active_turn` means\nthe run is alive but between turns.",
+        "oneOf": [
+          {
+            "const": "unsupported",
+            "description": "The harness declares no [`ControlShape`] \u2014 the lever does not exist.",
+            "type": "string"
+          },
+          {
+            "const": "no_active_turn",
+            "description": "The run is alive but no turn is in flight right now.",
+            "type": "string"
+          },
+          {
+            "const": "not_running",
+            "description": "No run is listening on the socket (never started, already exited, or a\nstale socket file left by an abnormally-terminated dispatch).",
+            "type": "string"
+          }
+        ]
+      },
+      "ControlShape": {
+        "description": "How a harness accepts an out-of-band interrupt for an in-flight turn.\n\nRegistry data on [`crate::domain::harness::HarnessSpec::control`], sourced\nfrom a live interrupt against the real CLI \u2014 never guessed. `None` there\nmeans `oneharness interrupt` is a loud usage error for the harness, never a\nsilent no-op: a supervisor that is told \"ok\" while the turn keeps running is\nworse off than one told the lever does not exist.",
+        "oneOf": [
+          {
+            "const": "claude-control-request",
+            "description": "Claude Code: the control frame rides the run process's **own stdin**\n(`-p --input-format stream-json`), so no sidecar server is needed. A\n`{\"type\":\"control_request\",\u2026,\"request\":{\"subtype\":\"interrupt\"}}` line\naborts the turn with a `result` document; the session survives and a\nlater turn continues it with full context. Verified live: a plain user\nmessage written mid-turn is *silently dropped*, so the control frame is\nthe only mechanism that works.",
+            "type": "string"
+          },
+          {
+            "const": "codex-app-server",
+            "description": "Codex: `turn/interrupt {threadId,turnId}` over the `codex app-server`\nJSON-RPC stdio protocol, which oneharness spawns as the run's own child\nand drives the thread/turn lifecycle on \u2014 so the interrupt rides the same\nopen stdin and nothing is shared or pooled.",
+            "type": "string"
+          },
+          {
+            "const": "opencode-http",
+            "description": "OpenCode: `POST /api/session/{id}/interrupt` against `opencode serve`.",
+            "type": "string"
+          },
+          {
+            "const": "acp-cancel",
+            "description": "Goose and Copilot: the ACP `session/cancel` **notification** (no `id`)\nover their JSON-RPC stdio servers.",
+            "type": "string"
+          },
+          {
+            "const": "crush-http",
+            "description": "Crush: `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against\n`crush server`.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The answer to one `oneharness interrupt`: either the abort was served, or it was refused with a reason.",
+    "oneOf": [
+      {
+        "properties": {
+          "mechanism": {
+            "$ref": "#/$defs/ControlShape"
+          },
+          "ok": {
+            "const": true,
+            "type": "boolean"
+          },
+          "redirected": {
+            "description": "Whether the request's redirection was committed with the abort. Omitted rather than sent as `false`, so a plain interrupt's answer gains no field the supervisor did not ask for.",
+            "type": "boolean"
+          },
+          "v": {
+            "const": 2,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "v",
+          "ok",
+          "mechanism"
+        ],
+        "type": "object"
+      },
+      {
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "ok": {
+            "const": false,
+            "type": "boolean"
+          },
+          "reason": {
+            "$ref": "#/$defs/ControlReason"
+          },
+          "v": {
+            "const": 2,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "v",
+          "ok",
+          "error",
+          "reason"
+        ],
+        "type": "object"
+      }
+    ],
+    "title": "ControlResponse"
   },
   "list_report": {
     "$defs": {
@@ -12173,7 +12412,7 @@
       "rules": {
         "type": "string"
       },
-      "spyFile": {
+      "spy_file": {
         "type": "string"
       }
     },
@@ -14697,7 +14936,7 @@
         },
         "type": "array"
       },
-      "noConfig": {
+      "no_config": {
         "type": "boolean"
       }
     },
@@ -14829,10 +15068,10 @@
         },
         "type": "array"
       },
-      "noConfig": {
+      "no_config": {
         "type": "boolean"
       },
-      "timeoutSeconds": {
+      "timeout_seconds": {
         "format": "uint64",
         "minimum": 0,
         "type": "integer"

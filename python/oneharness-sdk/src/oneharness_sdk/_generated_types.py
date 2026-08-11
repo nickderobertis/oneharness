@@ -77,6 +77,120 @@ class HistoryWatchOptions(_HistoryWatchOptionsOptional):
     pass
 
 
+class _DetectOptionsOptional(TypedDict, total=False):
+    all: bool
+    bins: dict[str, str]
+    config: str
+    exclude: Sequence[str]
+    harnesses: Sequence[str]
+    no_config: bool
+    require_available: bool
+
+
+class DetectOptions(_DetectOptionsOptional):
+    pass
+
+
+class _ConfigOptionsOptional(TypedDict, total=False):
+    config: str
+    cwd: str
+    no_config: bool
+
+
+class ConfigOptions(_ConfigOptionsOptional):
+    pass
+
+
+class _SyncOptionsOptional(TypedDict, total=False):
+    check: bool
+    config: str
+    cwd: str
+    global: bool
+    harnesses: Sequence[str]
+    no_config: bool
+
+
+class SyncOptions(_SyncOptionsOptional):
+    pass
+
+
+class _InitOptionsOptional(TypedDict, total=False):
+    force: bool
+    path: str
+
+
+class InitOptions(_InitOptionsOptional):
+    pass
+
+
+class _UsageOptionsOptional(TypedDict, total=False):
+    all: bool
+    bins: dict[str, str]
+    config: str
+    cwd: str
+    exclude: Sequence[str]
+    harnesses: Sequence[str]
+    no_config: bool
+    timeout_seconds: int
+
+
+class UsageOptions(_UsageOptionsOptional):
+    pass
+
+
+class _GateOptionsOptional(TypedDict, total=False):
+    deny_if_contains: str
+    reason: str
+
+
+class GateOptions(_GateOptionsOptional):
+    event: str
+    harness: str
+
+
+class _MockOptionsOptional(TypedDict, total=False):
+    rules: str
+    spy_file: str
+
+
+class MockOptions(_MockOptionsOptional):
+    event: str
+    harness: str
+
+
+class _InterruptOptionsOptional(TypedDict, total=False):
+    cwd: str
+    input: str
+    session_dir: str
+
+
+class InterruptOptions(_InterruptOptionsOptional):
+    session: str
+
+
+class _HistoryClearOptionsOptional(TypedDict, total=False):
+    all_projects: bool
+    config: str
+    history_dir: str
+    no_config: bool
+    project: str
+    yes: bool
+
+
+class HistoryClearOptions(_HistoryClearOptionsOptional):
+    pass
+
+
+class _HistoryMigrateOptionsOptional(TypedDict, total=False):
+    config: str
+    history_dir: str
+    no_config: bool
+
+
+class HistoryMigrateOptions(_HistoryMigrateOptionsOptional):
+    pass
+
+
 HistoryLookup = dict[str, Any]
 RunReport = dict[str, Any]
 RunStreamEnvelope = dict[str, Any]
@@ -85,3 +199,9 @@ HistoryLine = dict[str, Any]
 HistoryStreamEnvelope = dict[str, Any]
 HarnessInfo = dict[str, Any]
 Detection = dict[str, Any]
+ConfigReport = dict[str, Any]
+SyncReport = dict[str, Any]
+UsageReport = dict[str, Any]
+InterruptResponse = dict[str, Any]
+HistoryClearReport = dict[str, Any]
+HistoryMigrateReport = dict[str, Any]

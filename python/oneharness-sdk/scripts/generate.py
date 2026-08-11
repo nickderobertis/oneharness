@@ -13,11 +13,66 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[3]
 OUTPUT = ROOT / "python" / "oneharness-sdk" / "src" / "oneharness_sdk" / "_generated"
+# Every option contract the client validates and then renders to argv. A root
+# listed here is snake-cased in the emitted schema and gets an entry in
+# `input-keys.json`, which is how the client maps a Python key back to the
+# camelCase spelling the capability manifest binds.
 INPUT_ROOTS = (
     "run_options",
     "history_lookup",
     "history_list_options",
     "history_watch_options",
+    "detect_options",
+    "config_options",
+    "sync_options",
+    "init_options",
+    "usage_options",
+    "gate_options",
+    "mock_options",
+    "interrupt_options",
+    "history_clear_options",
+    "history_migrate_options",
+)
+
+# The input roots that become a public TypedDict, and its name. `history_lookup`
+# is deliberately absent: it is an overlapping union, which a TypedDict cannot
+# express, so the client publishes it as a mapping and the JSON Schema stays the
+# thing that validates it.
+TYPED_DICTS = (
+    ("RunOptions", "run_options"),
+    ("HistoryListOptions", "history_list_options"),
+    ("HistoryWatchOptions", "history_watch_options"),
+    ("DetectOptions", "detect_options"),
+    ("ConfigOptions", "config_options"),
+    ("SyncOptions", "sync_options"),
+    ("InitOptions", "init_options"),
+    ("UsageOptions", "usage_options"),
+    ("GateOptions", "gate_options"),
+    ("MockOptions", "mock_options"),
+    ("InterruptOptions", "interrupt_options"),
+    ("HistoryClearOptions", "history_clear_options"),
+    ("HistoryMigrateOptions", "history_migrate_options"),
+)
+
+# Output contracts the client returns. Each is a validated JSON document rather
+# than a typed structure: the Python SDK checks the document against the
+# generated schema and hands back the mapping, so an additive field a newer CLI
+# emits reaches the caller instead of being dropped by a stricter type.
+OUTPUT_ALIASES = (
+    "HistoryLookup",
+    "RunReport",
+    "RunStreamEnvelope",
+    "HistoryRecord",
+    "HistoryLine",
+    "HistoryStreamEnvelope",
+    "HarnessInfo",
+    "Detection",
+    "ConfigReport",
+    "SyncReport",
+    "UsageReport",
+    "InterruptResponse",
+    "HistoryClearReport",
+    "HistoryMigrateReport",
 )
 
 
@@ -108,9 +163,6 @@ def typed_dict(name: str, schema: dict[str, Any]) -> list[str]:
 
 def types_module(bundle: dict[str, Any]) -> str:
     """Generate public Python input shapes and validated output aliases."""
-    run = pythonize(bundle["run_options"])
-    history_list = pythonize(bundle["history_list_options"])
-    watch = pythonize(bundle["history_watch_options"])
     lines = [
         '"""Generated from oneharness-core. Do not edit."""',
         "",
@@ -118,27 +170,12 @@ def types_module(bundle: dict[str, Any]) -> str:
         "",
         "from collections.abc import Sequence",
         "from typing import Any, TypedDict",
-        "",
-        "",
-        *typed_dict("RunOptions", run),
-        "",
-        "",
-        *typed_dict("HistoryListOptions", history_list),
-        "",
-        "",
-        *typed_dict("HistoryWatchOptions", watch),
-        "",
-        "",
-        "HistoryLookup = dict[str, Any]",
-        "RunReport = dict[str, Any]",
-        "RunStreamEnvelope = dict[str, Any]",
-        "HistoryRecord = dict[str, Any]",
-        "HistoryLine = dict[str, Any]",
-        "HistoryStreamEnvelope = dict[str, Any]",
-        "HarnessInfo = dict[str, Any]",
-        "Detection = dict[str, Any]",
-        "",
     ]
+    for name, root in TYPED_DICTS:
+        lines.extend(("", "", *typed_dict(name, pythonize(bundle[root]))))
+    lines.extend(("", ""))
+    lines.extend(f"{alias} = dict[str, Any]" for alias in OUTPUT_ALIASES)
+    lines.append("")
     return "\n".join(lines)
 
 

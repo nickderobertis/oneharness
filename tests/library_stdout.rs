@@ -5,6 +5,11 @@
 //! and any *other* test finishing inside that window would have libtest's own
 //! progress line land in the capture. One test per process makes the window
 //! clean under `cargo test` as well as under nextest.
+//!
+//! Unix-only as a whole file (rather than per item), because redirecting a file
+//! descriptor is: leaving the imports behind on Windows would only be an
+//! unused-import warning, which this workspace treats as an error.
+#![cfg(unix)]
 
 use oneharness_core::domain::report::Status;
 use oneharness_core::io::run::{run, RunControls};
@@ -13,7 +18,6 @@ use oneharness_core::io::run::{run, RunControls};
 mod fixture;
 use fixture::request;
 
-#[cfg(unix)]
 #[test]
 fn a_library_caller_gets_the_report_back_without_the_engine_printing_it() {
     // The whole point of the library entry point: the report is a *value*, and
@@ -59,10 +63,8 @@ fn a_library_caller_gets_the_report_back_without_the_engine_printing_it() {
 /// The only way to ask "did that call print anything?" of code running in your
 /// own process. Restored on drop, so a panicking assertion still leaves the test
 /// harness able to report.
-#[cfg(unix)]
 struct StdoutRedirect(std::os::fd::OwnedFd);
 
-#[cfg(unix)]
 impl StdoutRedirect {
     fn to(path: &std::path::Path) -> Self {
         use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -82,7 +84,6 @@ impl StdoutRedirect {
     }
 }
 
-#[cfg(unix)]
 impl Drop for StdoutRedirect {
     fn drop(&mut self) {
         use std::os::fd::AsRawFd;

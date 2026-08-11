@@ -112,8 +112,10 @@ Use the `just` recipes; do not hand-roll equivalents.
   fixes either and reporting them so is how a suite blames this feature for
   something else: a **provider refusal** (the account is out of quota, so the
   request was answered and DECLINED — `_oh_provider_refusal` recognizes it from
-  the provider's own words, since the run is a clean `ok` that did nothing, and
-  the phase reports `not run: <id> (provider refused: …)` and never retries,
+  the provider's own WORDS, on every path a CLI states them (`text`, `error`,
+  `stderr`, and the frames), because no status says it: copilot's driven turn is
+  a clean `ok` that did nothing, and its `-p` run exits 1 with the message on
+  stderr alone. The phase reports `not run: <id> (provider refused: …)` and never retries,
   because a quota does not refill inside a suite), and a declared **known gap**
   (`known_gap` in `e2e-control.sh`). Both are still SAID every run: an absence
   dropped from the verdict is indistinguishable from coverage. A *rate limit* is

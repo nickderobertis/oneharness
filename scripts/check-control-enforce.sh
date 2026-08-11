@@ -225,6 +225,19 @@ printf '%s\n' '{"results":[{"status":"ok","text":"Error: You have reached your u
     >"$evidence_tmp/refused-text.json"
 [ -n "$(_oh_provider_refusal <"$evidence_tmp/refused-text.json")" ] ||
     fail "a refusal stated only in the normalized text was not recognized"
+# And in `stderr` ALONE, which is the shape copilot's ordinary `-p` run takes: it
+# exits 1 with `text`, `error` and `stdout` all empty and the refusal printed
+# only there. A reader that skipped stderr called that a broken harness, which is
+# how this suite went red on someone else's quota one phase earlier than the
+# control suite did.
+printf '%s\n' '{"results":[{"status":"nonzero","exit_code":1,"text":null,"error":null,"stdout":"","stderr":"\nYou'"'"'ve reached your additional usage limit for your plan. Go to https://github.com/settings/copilot/features for more details. (Request ID: B84A:2256BB:3AD438:448202:6A7B0ECA)\n\nChanges    +0 -0\nAI Credits 0 (2s)\n"}]}' \
+    >"$evidence_tmp/refused-stderr.json"
+case "$(_oh_provider_refusal <"$evidence_tmp/refused-stderr.json")" in
+*"additional usage limit"*) ;;
+*)
+    fail "a refusal printed only on the CLI's stderr was not recognized"
+    ;;
+esac
 
 # And what the phases actually call: the reason must reach the caller, because
 # every phase runs in a subshell whose variables die with it.

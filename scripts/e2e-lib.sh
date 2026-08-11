@@ -299,6 +299,15 @@ oh_assert_echoed() {
     source="$(oh_field '.results[0].text_source')"
 
     if [ "$status" != "ok" ]; then
+        # A turn the harness's own provider refused for quota is NOT this suite
+        # failing — nothing about oneharness was exercised by a request that was
+        # answered and declined. Checked before the failure and only for a
+        # refusal in the provider's own words; every other non-`ok` still fails.
+        local refusal
+        refusal="$(printf '%s' "$OH_REPORT" | _oh_provider_refusal)"
+        if [ -n "$refusal" ]; then
+            not_run "$id: its own provider refused the turn, so nothing was exercised: $refusal"
+        fi
         oh_dump
         fail "$id did not run cleanly: status=$status, exit_code=$exit_code"
     fi
@@ -1903,8 +1912,12 @@ _oh_provider_refusal() {
     report="$(cat)"
     transcript="$(printf '%s' "$report" | jq -r '.results[0].stdout // ""' 2>/dev/null || true)"
     {
-        # What oneharness normalized, and how it saw the run end.
-        printf '%s' "$report" | jq -r '.results[0] | (.text // ""), (.error // "")' 2>/dev/null || true
+        # What oneharness normalized, how it saw the run end, and what the CLI
+        # itself printed. `stderr` is not optional here: copilot's ordinary `-p`
+        # run states the refusal ONLY there, exits 1, and leaves `text`, `error`
+        # and `stdout` all empty — so a reader that skipped it would call the
+        # same refusal a broken harness.
+        printf '%s' "$report" | jq -r '.results[0] | (.text // ""), (.error // ""), (.stderr // "")' 2>/dev/null || true
         # Every string inside the harness's own frames: on a driven turn the
         # refusal is the text of a message, not a field of a result.
         printf '%s\n' "$transcript" | jq -R -r 'fromjson? | .. | strings' 2>/dev/null || true

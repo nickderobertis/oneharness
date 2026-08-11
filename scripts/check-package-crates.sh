@@ -48,8 +48,19 @@ cat >"$work/bin/git" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$1" in
-  tag) if [[ ${NO_TAG:-0} == 0 ]]; then echo oneharness-core-v0.6.11; fi ;;
-  fetch) ;;
+  tag)
+    if [[ ${NO_TAG:-0} == 0 || -f ${CALL_LOG}.fetched ]]; then
+      echo oneharness-core-v0.6.11
+    fi
+    ;;
+  fetch)
+    case ${FETCH_MODE:-ok} in
+      ok) ;;
+      fail) exit 1 ;;
+      recover) touch "${CALL_LOG}.fetched" ;;
+      *) echo "invalid FETCH_MODE" >&2; exit 2 ;;
+    esac
+    ;;
   diff)
     case ${GIT_DIFF_MODE:-clean} in
       clean) exit 0 ;;
@@ -102,6 +113,18 @@ if run_case env NO_TAG=1 just package-crates >"$work/out" 2>&1; then
   fail "missing-tag case unexpectedly passed"
 fi
 assert_contains 'no merged oneharness-core release tag found after fetching origin' "$work/out"
+
+if run_case env NO_TAG=1 FETCH_MODE=fail just package-crates >"$work/out" 2>&1; then
+  fail "failed tag fetch unexpectedly passed"
+fi
+assert_contains 'could not be fetched from origin' "$work/out"
+
+rm -f "$work/calls.fetched"
+if ! run_case env NO_TAG=1 FETCH_MODE=recover just package-crates >"$work/out" 2>&1; then
+  cat "$work/out" >&2
+  fail "tag fetch recovery did not continue to package verification"
+fi
+assert_contains 'package-crates: ok' "$work/out"
 
 if run_case env BINARY_PACKAGE=fail just package-crates >"$work/out" 2>&1; then
   fail "incompatible published dependency unexpectedly passed"

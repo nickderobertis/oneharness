@@ -95,12 +95,20 @@ evidence_case "the classified failure" "failure_kind=auth" "$evidence_tmp" "$evi
 # For a turn driven over a protocol, the frames the harness sent are the only
 # place the SERVER says anything — the stderr and the `error` above are both
 # oneharness's account of it.
-printf '{"results":[{"status":"nonzero","stdout":"{\\"type\\":\\"session.error\\",\\"error\\":\\"no model configured\\"}\\n{\\"type\\":\\"session.idle\\"}"}]}\n' \
+# `%s`, not a format with escapes in it: `printf` interprets `\n` and `\"` and
+# does not agree across platforms about how many backslashes it takes to survive
+# that, which left this fixture one frame long on macOS and Windows.
+printf '%s\n' '{"results":[{"status":"nonzero","stdout":"{\"type\":\"session.error\",\"error\":\"no model configured\"}\n{\"type\":\"session.idle\"}"}]}' \
     >"$evidence_tmp/frames.json"
 evidence_case "the frames the harness sent" "no model configured" "$evidence_tmp" "$evidence_tmp/frames.json"
 # A turn that never ends is usually a recognizer that stopped matching, and the
 # `type` nobody handled is invisible in a tail of the ones that were.
 evidence_case "the frame vocabulary" "session.error session.idle" "$evidence_tmp" "$evidence_tmp/frames.json"
+# The error a frame carried, in full: the tail above truncates lines, and where
+# it cuts is the difference between a credential and a rate limit.
+printf '%s\n' '{"results":[{"status":"timeout","stdout":"{\"type\":\"session.next.step.failed\",\"data\":{\"error\":{\"message\":\"Provider request failed with HTTP 429: rate limited\"}}}"}]}' \
+    >"$evidence_tmp/errors.json"
+evidence_case "the error a frame carried" "HTTP 429: rate limited" "$evidence_tmp" "$evidence_tmp/errors.json"
 
 # Silence is itself the finding, so it must be stated rather than left blank.
 : >"$evidence_tmp/run.err"

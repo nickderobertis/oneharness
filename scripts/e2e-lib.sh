@@ -1236,6 +1236,15 @@ _oh_control_evidence() {
             | jq -R -r 'fromjson? | .type // empty' 2>/dev/null \
             | sort -u | tr '\n' ' ' | sed 's/^/    /' >&2 || true
         printf '\n' >&2
+        # And any error a frame carried, in full. The tail above truncates each
+        # line to keep a transcript readable, which is exactly long enough to
+        # print `Provider request failed with HT` and stop — and whether that
+        # ends 401, 429 or 500 is the entire difference between a credential, a
+        # rate limit, and the harness having a bad night.
+        note "  evidence: errors the harness reported —"
+        jq -r '.results[0].stdout // ""' "$report" 2>/dev/null \
+            | jq -R -r 'fromjson? | .. | objects | select(has("message")) | .message' 2>/dev/null \
+            | sort -u | tail -n 5 | cut -c1-300 | sed 's/^/    /' >&2 || true
     else
         note "  evidence: no parseable report was written (the run had not finished)"
     fi

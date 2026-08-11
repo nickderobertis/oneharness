@@ -3,6 +3,8 @@
 //! I/O stays behind the `io` and `commands` boundaries.
 
 pub mod batch;
+// The declared capability surface the parity gate reconciles against.
+pub mod capability;
 pub mod config;
 pub mod control;
 pub mod dialogue;

@@ -217,7 +217,7 @@ Both SDK distributions are stamped from the root Cargo version and depend on the
 exact matching `oneharness-cli` package.
 
 The SDK declarations, input contracts, and runtime validation schemas are
-generated from one Rust JSON Schema bundle and drift-checked by `just check`.
+generated from one Rust JSON Schema bundle and drift-checked on every gate run.
 Outputs preserve unknown fields for additive forward compatibility; inputs are
 strict, so unknown option names and misspellings fail before a subprocess starts.
 `HistoryStreamEnvelope` has no independent schema version: its event variant is
@@ -233,7 +233,9 @@ Both clients cover every verb this CLI exposes, and both build their command
 lines from the same declared manifest rather than naming flags of their own, so
 no consumer has to drop to raw argv for anything. A Rust consumer does not need
 the subprocess at all: `oneharness-core` returns each verb's report directly.
-`just check` fails if any of that stops being true.
+The gates that fail when any of that stops being true — and the recipe each one
+runs under, generated from the justfile rather than restated — are in
+[CLI ↔ SDK parity](docs/sdk-parity.md#which-gate-runs-them).
 
 History distinguishes provider timing from tool intervals observed by
 oneharness. `model_ms` and `tool_ms` remain reserved for harnesses with explicit

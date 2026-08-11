@@ -1639,7 +1639,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_permissive_run_skips_the_asking() {
+    fn asking_is_skipped_only_where_the_harness_declares_it_acts_unattended() {
         assert_eq!(
             decision_for("opencode", PermissionMode::Bypass),
             PermissionDecision::Allow
@@ -1654,10 +1654,11 @@ mod tests {
             decision_for("opencode", PermissionMode::ReadOnly),
             PermissionDecision::Deny
         );
-        // `edit` carries its policy in the harness's own config, which the
-        // control path delivers to the server; a permission ask still carries
-        // no sourced way to tell an edit from a command, so the wire backstop
-        // denies what that config did not already decide.
+        // `edit` carries its policy in the harness's own config, which a turn
+        // submitted to a pooled server cannot deliver — so the command layer
+        // refuses that combination outright. Denying is the safe answer if one
+        // ever reaches the wire anyway: a permission ask carries no sourced way
+        // to tell an edit from a command.
         assert_eq!(
             decision_for("opencode", PermissionMode::Edit),
             PermissionDecision::Deny

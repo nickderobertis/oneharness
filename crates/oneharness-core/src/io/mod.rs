@@ -8,6 +8,10 @@ pub mod control;
 pub mod detect;
 pub mod history;
 pub mod hooks;
+// Public on purpose, unlike the shared machinery below it: an embedder that
+// selects a `<id>:<variant>` itself needs the same environment a run would
+// resolve for it, and the CLI re-exports exactly these three items rather than
+// resolving an identity a second way.
 pub mod identity;
 // The starter-config scaffold `oneharness init` writes.
 pub mod init;

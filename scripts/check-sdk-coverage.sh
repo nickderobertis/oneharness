@@ -15,7 +15,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "check-sdk-coverage: node not found; the SDK coverage gate needs Node" >&2
+  echo "check-sdk-coverage: node not found; this gate reads both SDK clients with Node. Install Node (or run 'just bootstrap') and rerun 'just lint-workflows'." >&2
   exit 1
 fi
 

@@ -12,7 +12,6 @@ import type {
   FailureKind,
   FallThrough,
   FallbackReport,
-  OutputFormat,
   RunReport,
   RunResult,
   SessionReport,
@@ -31,7 +30,7 @@ import type { HistoryLookup, HistoryLookupByLast, HistoryLookupBySession } from 
 import type { HistoryRecords } from "./history-records.js";
 import type { HistoryEventLine, HistoryStreamEnvelope } from "./history-stream-envelope.js";
 import type { HistoryWatchOptions } from "./history-watch-options.js";
-import type { HistoryLabels, PermissionMode, RunOptions } from "./options.js";
+import type { HistoryLabels, OutputFormat, PermissionMode, RunMode, RunOptions } from "./options.js";
 import type { HarnessInfo, ListReport, ModeInfo, VariantInfo } from "./registry.js";
 import type { RunStreamEnvelope } from "./run-stream-envelope.js";
 
@@ -1851,27 +1850,53 @@ export const PermissionModeSchema: z.ZodType<PermissionMode> = z.union([
   z.literal("bypass"),
 ]);
 
+export const RunModeSchema: z.ZodType<RunMode> = z.union([z.literal("parallel"), z.literal("fallback")]);
+
 export const RunOptionsSchema: z.ZodType<RunOptions> = z.strictObject({
+  all: z.boolean().optional(),
+  batchPrompts: z.array(z.string()).optional(),
+  batchStrategy: z.lazy(() => BatchStrategySchema).optional(),
   bins: z.record(z.string(), z.string()).optional(),
+  config: z.string().optional(),
+  control: z.boolean().optional(),
   cwd: z.string().optional(),
   env: z.record(z.string(), z.string()).optional(),
   events: z.boolean().optional(),
+  exclude: z.array(z.string()).optional(),
   fork: z.boolean().optional(),
   harnesses: z.array(z.string()).optional(),
   history: z.boolean().optional(),
   historyDir: z.string().optional(),
   historyLabels: z.lazy(() => HistoryLabelsSchema).optional(),
   historyName: z.string().optional(),
+  maxParallel: z.int().gte(0).optional(),
+  mockHarnesses: z.array(z.string()).optional(),
+  mockRules: z.string().optional(),
   mode: z.lazy(() => PermissionModeSchema).optional(),
   models: z.array(z.string()).optional(),
+  noConfig: z.boolean().optional(),
+  noHistory: z.boolean().optional(),
+  outputDir: z.string().optional(),
+  outputFormat: z.lazy(() => OutputFormatSchema).optional(),
+  passthrough: z.array(z.string()).optional(),
+  permitPrompts: z.boolean().optional(),
+  printCommand: z.boolean().optional(),
   prompt: z
     .string()
     .min(1)
     .refine((value) => value !== undefined, { message: "Required" }),
+  promptFiles: z.array(z.string()).optional(),
   reasoning: z.string().optional(),
+  requireAvailable: z.boolean().optional(),
   resume: z.string().optional(),
+  runMode: z.lazy(() => RunModeSchema).optional(),
+  schema: z.string().optional(),
+  schemaMaxRetries: z.int().gte(0).optional(),
   session: z.string().optional(),
+  sessionDir: z.string().optional(),
+  spyFile: z.string().optional(),
   system: z.string().optional(),
+  systemFile: z.string().optional(),
   timeoutSeconds: z.int().gte(0).optional(),
 });
 

@@ -7,22 +7,46 @@ from typing import Any, TypedDict
 
 
 class _RunOptionsOptional(TypedDict, total=False):
+    all: bool
+    batch_prompts: Sequence[str]
+    batch_strategy: str
     bins: dict[str, str]
+    config: str
+    control: bool
     cwd: str
     env: dict[str, str]
     events: bool
+    exclude: Sequence[str]
     fork: bool
     harnesses: Sequence[str]
     history: bool
     history_dir: str
     history_labels: dict[str, str]
     history_name: str
+    max_parallel: int
+    mock_harnesses: Sequence[str]
+    mock_rules: str
     mode: str
     models: Sequence[str]
+    no_config: bool
+    no_history: bool
+    output_dir: str
+    output_format: str
+    passthrough: Sequence[str]
+    permit_prompts: bool
+    print_command: bool
+    prompt_files: Sequence[str]
     reasoning: str
+    require_available: bool
     resume: str
+    run_mode: str
+    schema: str
+    schema_max_retries: int
     session: str
+    session_dir: str
+    spy_file: str
     system: str
+    system_file: str
     timeout_seconds: int
 
 

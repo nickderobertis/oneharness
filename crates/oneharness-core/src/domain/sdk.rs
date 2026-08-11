@@ -194,6 +194,13 @@ pub struct RunOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub fork: Option<bool>,
+    // The four enum-typed options here carry NO doc comment on purpose, and a
+    // `//` comment rather than a `///` one for the same reason: a `$ref` with a
+    // sibling `description` is merged inline by json-schema-to-typescript
+    // instead of resolving to the named type, so the generated SDK loses
+    // `PermissionMode`/`OutputFormat`/`RunMode`/`BatchStrategy` as exported
+    // names and `zod.ts` then fails to import them. Each enum's own definition
+    // carries the description.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "PermissionMode")]
     pub mode: Option<PermissionMode>,
@@ -261,7 +268,6 @@ pub struct RunOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub control: Option<bool>,
-    /// Override the output format requested from each harness.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "OutputFormat")]
     pub output_format: Option<OutputFormat>,
@@ -299,11 +305,9 @@ pub struct RunOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "u32")]
     pub max_parallel: Option<u32>,
-    /// How a batch run schedules its calls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "BatchStrategy")]
     pub batch_strategy: Option<BatchStrategy>,
-    /// How the selected harnesses are run: all at once, or in priority order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "RunMode")]
     pub run_mode: Option<RunMode>,

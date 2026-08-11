@@ -2,6 +2,19 @@
 # Hermetic contract check for the mechanism assertion used by live-control.
 set -euo pipefail
 
+# The same treatment `check-local-gate.sh` and `check-sdk-install.sh` take, for
+# the same reason: the cases below stand a `sort` of their own on the PATH to
+# drive the CRLF branch, and an extensionless stub is not a program on Windows.
+# The suite this checks is itself unix-only (`e2e-control.sh` exits early there —
+# control sockets are unix domain sockets), so nothing that runs on Windows is
+# left unchecked by skipping here.
+case $(uname -s) in
+MINGW* | MSYS* | CYGWIN*)
+    echo "check-control-enforce: skipped on Windows because this Unix behavioral harness relies on extensionless executable stubs" >&2
+    exit 0
+    ;;
+esac
+
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/e2e-lib.sh
 source "$root/scripts/e2e-lib.sh"
@@ -113,10 +126,14 @@ evidence_case "the frame vocabulary" "session.error session.idle" "$evidence_tmp
 # ours, and it is only checkable where a CRLF `sort` can be arranged.
 crlf_sort_dir="$(mktemp -d)"
 trap 'rm -rf "$evidence_tmp" "$crlf_sort_dir"' EXIT
-cat >"$crlf_sort_dir/sort" <<'STUB'
+# The real `sort`, resolved BEFORE the stub joins the PATH and baked in as an
+# absolute path. `command sort` would not do: `command` bypasses functions, not
+# the PATH, so the stub would find itself and fork until the box ran out.
+real_sort="$(command -v sort)"
+cat >"$crlf_sort_dir/sort" <<STUB
 #!/usr/bin/env bash
-# Stands in for the Windows runner's `sort`: same ordering, CRLF line endings.
-command sort "$@" | sed 's/$/\r/'
+# Stands in for the Windows runner's \`sort\`: same ordering, CRLF line endings.
+"$real_sort" "\$@" | sed 's/\$/\r/'
 STUB
 chmod +x "$crlf_sort_dir/sort"
 PATH="$crlf_sort_dir:$PATH" \

@@ -69,22 +69,28 @@ while IFS= read -r commit; do
 done < <(git rev-list "$core_tag"..HEAD)
 
 # Cargo states "the binary's oneharness-core dependency cannot be satisfied by
-# anything published" in two structurally different places, so this asks the
-# same question twice rather than matching one release's wording.
+# anything published" in three structurally different ways, so this asks the
+# same question three times rather than matching one release's wording. Each
+# arm is narrow on purpose; between them they are the one transition
+# release-plz completes by bumping and publishing core.
 #
-# It can fail while COMPILING: the requirement resolves, the source is
-# unpacked, and the build hits API the published core does not have. That
-# names a registry source path.
+# COMPILING — the requirement resolves, the source is unpacked, and the build
+# hits API the published core does not have. Only this one names a registry
+# source path.
 #
-# Or it can fail while RESOLVING, before any source exists — so there is no
-# path to match, which is why a source-path conjunct alone silently missed
-# this. A resolver failure is the shape a new core *feature* takes: the binary
-# forwards `mock-harness` to `oneharness-core/mock-harness`, and a published
-# core without that feature is rejected at selection time.
+# RESOLVING, no published version matches — the requirement itself is ahead of
+# the registry, which is what release-plz's own generated PR hits. Pinned by
+# the candidate list, the searched location and the dependent package, so an
+# unrelated resolver failure does not read as this one.
 #
-# Both are the one transition release-plz completes by bumping and publishing
-# core. Neither is excused on its own: the `pending_core_release` conjunct
-# below is what keeps this from swallowing a binary that is simply broken.
+# RESOLVING, a version matches but a FEATURE does not — the binary forwards
+# `mock-harness` to `oneharness-core/mock-harness` and the published core has
+# no such feature. This one fails before any source is unpacked and Cargo
+# words it "for `oneharness-core`" rather than "for the requirement", so
+# neither arm above sees it.
+#
+# None is excused on its own: the `pending_core_release` conjunct below is
+# what keeps this from swallowing a binary that is simply broken.
 registry_core_mismatch=false
 if grep -Eq 'oneharness-core-[0-9]+\.[0-9]+\.[0-9]+[/\\]' "$output_file" &&
   grep -Eq "could not compile \`oneharness\`" "$output_file"; then

@@ -47,7 +47,12 @@ schemars = "1"
 
 # Integration tests drive the binaries directly via the cargo-provided
 # CARGO_BIN_EXE_* paths and parse JSON with serde_json (already a dependency),
-# so no extra test-only crates are needed.
+# so no extra test-only crates are needed — except one: proving the library run
+# path prints nothing means redirecting this process's own fd 1 across the call
+# (`tests/library.rs`), which needs `dup`/`dup2`. Already in the tree via
+# `oneharness-core`, so it costs no extra download.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
 
 [profile.release]
 strip = true

@@ -112,6 +112,28 @@ Use the `just` recipes; do not hand-roll equivalents.
 - A thin CLI over a registry of **harness adapters**. Each adapter is data: a
   canonical id, a default binary name, an install hint, an output format, and two
   pure functions — build the argv, and best-effort extract the final text.
+- **`run` is a library call the CLI wraps, not a verb the CLI owns.** Its whole
+  orchestration lives in `oneharness_core::io::run` behind
+  `run(&RunRequest, RunControls) -> Result<RunOutcome, _>`, which **returns** the
+  report; `src/commands/run.rs` only converts clap's `RunArgs` into `RunRequest`,
+  owns stdout (the buffered report, or the NDJSON stream protocol through its
+  `EventSink`), and maps the outcome to an exit code. So **nothing under
+  `io::run` may write to stdout** — a `println!` there is a bug in a consumer's
+  own contract — and a new `run` flag is three edits, not one: the clap field,
+  the `RunRequest` field, and the `From<&RunArgs>` conversion (a field dropped
+  there goes silently missing from every run, which is what
+  `every_run_flag_reaches_the_engine_request` exists to catch). `--compact` is
+  deliberately NOT on `RunRequest`: it is about printing, which the shell owns.
+  `RunControls` carries the three things a subprocess hop gave a consumer for
+  free — the event sink, a `CancelToken` (the only handle that reaches a harness
+  tree, since each harness leads its own process group), and whether oneharness
+  may take over the host's SIGINT/SIGTERM disposition (`signal_cancel`, which
+  the CLI sets and an embedder leaves off, cancelling its own token instead).
+  Warnings still go to the host's stderr, so an embedder inherits them.
+  `tests/library.rs` is that surface's drift alarm, one test per property:
+  report-back-without-printing (an fd-1 redirect across the call), an event
+  observed while the run is demonstrably still streaming, and a cancel that
+  stops the harness's own descendant — proven from outside the tree.
 - `run` spawns the selected harnesses **in parallel**, each as a subprocess with
   a timeout, and emits one JSON report. `io::process` owns each launcher's whole
   tree (Unix process group; Windows kill-on-close Job Object assigned while the

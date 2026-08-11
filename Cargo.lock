@@ -629,6 +629,7 @@ name = "oneharness"
 version = "0.6.12"
 dependencies = [
  "clap",
+ "libc",
  "oneharness-core",
  "schemars",
  "serde",

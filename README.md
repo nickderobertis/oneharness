@@ -818,8 +818,9 @@ and exceeded it): nothing was exceeded, the run was stopped. A **second**
 `SIGINT`/`SIGTERM` exits immediately with `130` without waiting for teardown.
 
 Library consumers get the same guarantee without touching process signals:
-`oneharness_core::io::cancel::CancelToken` is passed to
-`runner::run_job_cancellable`, `run_job_streaming_cancellable`, or
+`oneharness_core::io::cancel::CancelToken` is passed as `RunControls::cancel` to
+`io::run::run` (see [Driving a run from Rust](#driving-a-run-from-rust-no-oneharness-process)),
+or directly to `runner::run_job_cancellable`, `run_job_streaming_cancellable`, or
 `run_jobs_with_cancel`, and cancelling it tears the tree down through the same
 path. `io::cancel::install_signal_cancel()` is the opt-in that wires the host's
 signals to it (the CLI calls it for `run`).
@@ -2005,6 +2006,52 @@ status="$(jq -r '.results[0].status' <<<"$result")"
 The same uniform interface is the intended driver for a future **cross-harness
 skill-testing framework**: set up a sandbox, fire one prompt at every harness via
 `oneharness run --all`, and assert on the JSON.
+
+### Driving a run from Rust (no `oneharness` process)
+
+A Rust consumer does not have to spawn the CLI and parse its stdout: the whole
+run is a call on the engine crate, and it **returns** the report.
+
+```rust
+use oneharness_core::io::cancel::CancelToken;
+use oneharness_core::io::run::{run, EventSink, RunControls, RunRequest, SinkStep};
+
+let request = RunRequest {
+    harness: vec!["claude-code".to_string()],
+    prompt: vec!["summarize this repo".to_string()],
+    timeout: Some(300),
+    ..RunRequest::default()
+};
+
+let cancel = CancelToken::new();          // hand a clone to your supervisor
+let outcome = run(&request, RunControls { cancel: cancel.clone(), ..Default::default() })?;
+println!("{}", outcome.report.results[0].text.as_deref().unwrap_or(""));
+# Ok::<(), oneharness_core::errors::OneharnessError>(())
+```
+
+`RunRequest` is the `oneharness run` flag surface as plain data (everything
+optional; the same `oneharness.toml` / `ONEHARNESS_*` layering applies unless you
+set `no_config`). `RunOutcome` carries the `RunReport`, the exit code the CLI
+would have returned, whether the run streamed, and the one-line failure summary
+the CLI prints to stderr. `Err` means the *request* was refused before anything
+spawned — a harness's own failure is always a `RunResult`, never an error.
+
+Three things the CLI does for itself, which an in-process caller now chooses:
+
+- **Where events go.** Set `stream: true` and pass an `EventSink`; its `event`
+  method is called as each normalized event arrives, and returning
+  `SinkStep::Stop` short-circuits the turn (the CLI's own sink is the one that
+  writes the NDJSON protocol to stdout — nothing inside the engine does).
+- **How it is cancelled.** Each harness leads its own process group / Job Object,
+  so no signal you send your own group reaches one; `RunControls::cancel` is the
+  handle that does, tearing the whole tree down and still returning a report with
+  `"status": "cancelled"`. Cancel and then *wait for the call to return* — killing
+  your own process instead orphans a live, billing harness.
+- **Whose signals apply.** `RunControls::signal_cancel` is off by default, so the
+  engine never takes over your `SIGINT`/`SIGTERM` disposition; the CLI sets it.
+
+Warnings (a history file that could not be opened, a mode that may block) go to
+**your** stderr, exactly as they did from the CLI.
 
 ## Development
 

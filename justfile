@@ -65,7 +65,7 @@ clippy: lint
 # publish time. This belongs in every PR gate: a green tag is already too late,
 # and the registry-resolved dependency check is cheap beside the existing gate.
 package-crates:
-    bash scripts/package-crates.sh
+    @bash scripts/package-crates.sh
 
 # Lint shell scripts with shellcheck; any finding is an error. Like `cargo-deny`,
 # shellcheck is an external tool: CI installs it, and this prints an install hint
@@ -143,7 +143,7 @@ e2e:
 # Hermetic end-to-end smoke of the *built* binary (part of `check`; CI runs it on
 # every platform). Drives list/detect/print-command + one mock spawn; no network.
 smoke:
-    ONEHARNESS_BIN="target/debug/oneharness" ONEHARNESS_HARNESSES="codex:undeclared-smoke-sentinel" bash scripts/smoke.sh
+    @ONEHARNESS_BIN="target/debug/oneharness" ONEHARNESS_HARNESSES="codex:undeclared-smoke-sentinel" bash scripts/smoke.sh
 
 # Opt-in live smoke against installed, authenticated harnesses. Makes real (paid)
 # model calls and needs network, so it is deliberately out of `check` and CI.

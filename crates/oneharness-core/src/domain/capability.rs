@@ -87,13 +87,21 @@ pub struct OptionBinding {
     pub option: &'static str,
     /// How it renders, including the flag when it has one.
     pub kind: FlagKind,
-    /// Another option whose truth suppresses this one.
+    /// Another option that suppresses this one *when it renders an argument*.
     ///
     /// The one thing a flat binding list cannot say by itself: `history show`
     /// takes `--last` OR a session name and clap refuses both, so a lookup
     /// carrying `{session, last: true}` — which the union deliberately accepts,
     /// resolving to "the most recent" — must render only `--last`. Declaring the
     /// suppression keeps that rule in the manifest instead of in each SDK.
+    ///
+    /// The conflict being encoded is clap's, and clap conflicts on a flag being
+    /// *present*, so the test each SDK applies is whether the named option
+    /// renders anything — never the host language's truthiness. The two differ:
+    /// `{all: true, harnesses: []}` — the shape a caller assembling options
+    /// programmatically produces — sends no `--harness`, so it must keep
+    /// `--all`, yet an empty array is truthy in JavaScript. Reading it as truth
+    /// there dropped the only selection such a call carried.
     pub unless: Option<&'static str>,
 }
 

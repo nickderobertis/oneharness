@@ -572,6 +572,62 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         parsed = _input("sync_options", {"global_": True}, "sync options")
         self.assertIn("--global", _capability_arguments("sync", parsed))
 
+    async def test_a_suppression_waits_for_its_suppressor_to_render(self) -> None:
+        """An option that carries nothing suppresses nothing.
+
+        An `unless` encodes a clap conflict, and clap conflicts on a flag being
+        *present*, so the test is whether the named option renders — not whether
+        the value looks true. `{"all": True, "harnesses": []}` sends no
+        `--harness`, so it must keep the `--all` that is the call's only
+        selection; `{"system": ""}` does send `--system ""`, so it must suppress
+        the `--system-file` clap refuses beside it.
+        """
+        client = self.client()
+        registry = sorted(item["id"] for item in await client.list())
+        everything = await client.run(
+            {
+                "prompt": "empty suppressor keeps --all",
+                "all": True,
+                "harnesses": [],
+                "mode": "bypass",
+                "print_command": True,
+            }
+        )
+        self.assertTrue(everything["dry_run"])
+        self.assertEqual(
+            sorted(result["harness"] for result in everything["results"]), registry
+        )
+
+        # The other direction, on the same pair: a suppressor that does render
+        # still suppresses, and it has to — `--all` beside `--harness` is the
+        # clap conflict this binding exists to avoid, so a miss fails the call.
+        one = await client.run(
+            {
+                "prompt": "rendering suppressor drops --all",
+                "all": True,
+                "harnesses": ["codex"],
+                "mode": "bypass",
+                "print_command": True,
+            }
+        )
+        self.assertEqual([result["harness"] for result in one["results"]], ["codex"])
+
+        prompt = "empty system still suppresses --system-file"
+        empty_system = await client.run(
+            {
+                "prompt": prompt,
+                "harnesses": ["codex"],
+                "system": "",
+                "system_file": str(Path(tempfile.gettempdir()) / "never-read.txt"),
+                "mode": "bypass",
+                "print_command": True,
+            }
+        )
+        self.assertEqual(
+            empty_system["results"][0]["command"],
+            ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--json", prompt],
+        )
+
     async def test_init_scaffolds_a_config_and_refuses_to_clobber_it(self) -> None:
         """Write a starter file, then treat an existing one as a refusal."""
         project = Path(tempfile.mkdtemp(prefix="oneharness-python-init-"))

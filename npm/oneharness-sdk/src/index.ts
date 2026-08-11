@@ -6,6 +6,7 @@ import {
 	CAPABILITIES,
 	type Capability,
 	type CapabilityMethod,
+	type OptionBinding,
 } from "./generated/capabilities.js";
 import type { ConfigOptions } from "./generated/config-options.js";
 import type { ConfigReport } from "./generated/config-report.js";
@@ -367,6 +368,33 @@ function pushMany(
 }
 
 /**
+ * Does this binding put anything on the argv for `value`?
+ *
+ * This is the question `unless` asks, and asking it any other way is a bug: the
+ * conflict a suppression encodes is clap's, and clap conflicts on a flag being
+ * *present*. JavaScript truthiness is not that test — `{all: true, harnesses:
+ * []}`, the shape a caller assembling options programmatically produces, sends
+ * no `--harness` at all, yet an empty array is truthy, so reading it as truth
+ * dropped `--all` and left the call with no selection to make.
+ */
+function rendersArgument(binding: OptionBinding, value: unknown): boolean {
+	if (value === undefined || value === null) return false;
+	switch (binding.kind) {
+		case "repeated":
+		case "trailing":
+			return (value as readonly unknown[]).length > 0;
+		case "key-value":
+			return Object.keys(value as object).length > 0;
+		case "switch":
+			return Boolean(value);
+		default:
+			// A `positional` or `value` binding renders whatever it carries, an
+			// empty string included — which is a present flag to clap.
+			return true;
+	}
+}
+
+/**
  * Render one capability's argv from its declared bindings.
  *
  * The client lists no flags of its own: `CAPABILITIES` says which option
@@ -389,8 +417,17 @@ function capabilityArguments(
 	const args: string[] = [...capability.argv, ...capability.always];
 	const positional: string[] = [];
 	const trailing: string[] = [];
+	const bound = new Map(
+		capability.bindings.map((binding) => [binding.option, binding]),
+	);
 	for (const binding of capability.bindings) {
-		if (binding.unless !== null && input[binding.unless]) continue;
+		// `a_suppressing_option_is_one_the_same_capability_binds` proves in Rust
+		// that an `unless` always resolves here, so a missing entry is unreachable
+		// rather than a case to render through.
+		const suppressor =
+			binding.unless === null ? null : bound.get(binding.unless);
+		if (suppressor && rendersArgument(suppressor, input[suppressor.option]))
+			continue;
 		const value = input[binding.option];
 		if (value === undefined || value === null) continue;
 		switch (binding.kind) {

@@ -282,7 +282,7 @@ export type OptionBinding = {
 	/** Empty for a positional or trailing binding, which have no flag. */
 	readonly flag: string;
 	readonly kind: FlagKind;
-	/** Another option whose truth suppresses this one. */
+	/** Another option that suppresses this one when it renders an argument. */
 	readonly unless: string | null;
 };
 

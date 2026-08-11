@@ -1209,6 +1209,58 @@ describe("OneHarness", () => {
 		expect(argv).toContain("high");
 	});
 
+	test("suppresses a bound option only when its suppressor renders an argument", async () => {
+		// An `unless` encodes a clap conflict, and clap conflicts on a flag being
+		// present — so an option carrying nothing must suppress nothing. Truthiness
+		// is a different test in this language: `harnesses: []` is truthy while
+		// sending no `--harness`, and reading it as truth dropped the `--all` that
+		// was the call's only selection, which the CLI answers by refusing to run.
+		const client = sdk();
+		const registry = (await client.list()).map((harness) => harness.id).sort();
+		const everything = await client.run({
+			prompt: "empty suppressor keeps --all",
+			all: true,
+			harnesses: [],
+			mode: "bypass",
+			printCommand: true,
+		});
+		expect(everything.dry_run).toBe(true);
+		expect(everything.results.map((result) => result.harness).sort()).toEqual(
+			registry,
+		);
+
+		// The other direction, on the same pair: a suppressor that does render
+		// still suppresses, and it has to — `--all` beside `--harness` is the clap
+		// conflict this binding exists to avoid, so a miss here fails the call.
+		const one = await client.run({
+			prompt: "rendering suppressor drops --all",
+			all: true,
+			harnesses: ["codex"],
+			mode: "bypass",
+			printCommand: true,
+		});
+		expect(one.results.map((result) => result.harness)).toEqual(["codex"]);
+
+		// A `value` binding renders whatever it carries, `""` included: `--system ""`
+		// reaches the argv, so it suppresses the `--system-file` clap refuses beside
+		// it. Truthiness would call that empty string absent and send both.
+		const emptySystem = await client.run({
+			prompt: "empty system still suppresses --system-file",
+			harnesses: ["codex"],
+			system: "",
+			systemFile: resolve(tmpdir(), "oneharness-sdk-never-read-system.txt"),
+			mode: "bypass",
+			printCommand: true,
+		});
+		expect(emptySystem.results[0]?.command).toEqual([
+			"codex",
+			"exec",
+			"--dangerously-bypass-approvals-and-sandbox",
+			"--json",
+			"empty system still suppresses --system-file",
+		]);
+	});
+
 	test("rejects an empty prompt before spawning", async () => {
 		await expect(new OneHarness().run({ prompt: "" })).rejects.toThrow(
 			"invalid oneharness run options",

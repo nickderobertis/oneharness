@@ -101,6 +101,28 @@ def _text(value: Any) -> str:
     return json.dumps(value) if isinstance(value, bool) else str(value)
 
 
+def _renders_argument(binding: Mapping[str, Any], value: Any) -> bool:
+    """Does this binding put anything on the argv for ``value``?
+
+    This is the question ``unless`` asks, and asking it any other way is a bug:
+    the conflict a suppression encodes is clap's, and clap conflicts on a flag
+    being *present*. Truthiness is not that test — ``{"system": ""}`` still
+    sends ``--system ""``, so it must suppress the ``--system-file`` clap
+    refuses beside it, and ``{"all": True, "harnesses": []}`` sends no
+    ``--harness``, so it must keep ``--all``.
+    """
+    if value is None:
+        return False
+    kind = binding["kind"]
+    if kind in ("repeated", "trailing", "key-value"):
+        return len(value) > 0
+    if kind == "switch":
+        return bool(value)
+    # A `positional` or `value` binding renders whatever it carries, an empty
+    # string included — which is a present flag to clap.
+    return True
+
+
 def _capability_arguments(method: str, options: Mapping[str, Any]) -> list[str]:
     """Render one capability's argv from its declared bindings.
 
@@ -113,9 +135,13 @@ def _capability_arguments(method: str, options: Mapping[str, Any]) -> list[str]:
     args: list[str] = [*capability["argv"], *capability["always"]]
     positional: list[str] = []
     trailing: list[str] = []
+    # `a_suppressing_option_is_one_the_same_capability_binds` proves in Rust that
+    # an `unless` always resolves here, so a missing entry is unreachable rather
+    # than a case to render through.
+    bound = {binding["option"]: binding for binding in capability["bindings"]}
     for binding in capability["bindings"]:
         unless = binding["unless"]
-        if unless is not None and options.get(unless):
+        if unless is not None and _renders_argument(bound[unless], options.get(unless)):
             continue
         value = options.get(binding["option"])
         if value is None:

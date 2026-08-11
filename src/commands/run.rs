@@ -7,13 +7,28 @@
 //! protocol), and map the outcome to a process exit code.
 
 use oneharness_core::domain::events::ActionEvent;
+use oneharness_core::domain::mode::PermissionMode;
 use oneharness_core::domain::report::{RunReport, RunStreamEnvelope};
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::cancel::CancelToken;
-use oneharness_core::io::run::{EventSink, RunControls, RunRequest, SinkStep};
+use oneharness_core::io::run::{EventSink, Resume, RunControls, RunRequest, SinkStep};
 
 use crate::cli::RunArgs;
 use crate::commands::print_json;
+
+/// Collapse a clap-exclusive `--x` / `--no-x` pair into the single override the
+/// engine takes: `None` when neither was passed (the config layer still
+/// applies), else the direction that was. The positive wins if a future clap
+/// change ever let both through, matching the precedence the engine documents.
+fn toggle(yes: bool, no: bool) -> Option<bool> {
+    if yes {
+        Some(true)
+    } else if no {
+        Some(false)
+    } else {
+        None
+    }
+}
 
 pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let request = RunRequest::from(args);
@@ -103,15 +118,18 @@ impl From<&RunArgs> for RunRequest {
             system: args.system.clone(),
             reasoning: args.reasoning.clone(),
             system_file: args.system_file.clone(),
-            resume: args.resume.clone(),
-            fork: args.fork,
+            // Forking is a property of the resume clap already guarantees it
+            // implies, so the two flags become one value.
+            resume: args.resume.clone().map(|session| Resume {
+                session,
+                fork: args.fork,
+            }),
             session: args.session.clone(),
             session_dir: args.session_dir.clone(),
             control: args.control,
             output_format: args.output_format,
             events: args.events,
-            stream: args.stream,
-            no_stream: args.no_stream,
+            stream: toggle(args.stream, args.no_stream),
             mock_rules: args.mock_rules.clone(),
             spy_file: args.spy_file.clone(),
             schema: args.schema.clone(),
@@ -120,9 +138,12 @@ impl From<&RunArgs> for RunRequest {
             timeout: args.timeout,
             cwd: args.cwd.clone(),
             env: args.env.clone(),
-            mode: args.mode,
-            no_bypass: args.no_bypass,
-            bypass: args.bypass,
+            // `--bypass` / `--no-bypass` are shorthands for a mode, and clap
+            // makes `--mode` exclusive with both, so the three collapse into one
+            // value in that same precedence order.
+            mode: args
+                .mode
+                .or_else(|| toggle(args.bypass, args.no_bypass).map(PermissionMode::from_bypass)),
             permit_prompts: args.permit_prompts,
             config: args.config.clone(),
             no_config: args.no_config,
@@ -132,8 +153,7 @@ impl From<&RunArgs> for RunRequest {
             print_command: args.print_command,
             bin: args.bin.clone(),
             require_available: args.require_available,
-            history: args.history,
-            no_history: args.no_history,
+            history: toggle(args.history, args.no_history),
             history_dir: args.history_dir.clone(),
             history_name: args.history_name.clone(),
             history_label: args.history_label.clone(),
@@ -243,7 +263,6 @@ mod tests {
         assert_eq!(request.reasoning.as_deref(), Some("high"));
         assert!(request.system_file.is_none());
         assert!(request.resume.is_none());
-        assert!(!request.fork);
         assert_eq!(request.session.as_deref(), Some("chat"));
         assert_eq!(
             request.session_dir.as_deref(),
@@ -255,8 +274,7 @@ mod tests {
             Some(oneharness_core::domain::report::OutputFormat::Json)
         );
         assert!(request.events);
-        assert!(request.stream);
-        assert!(!request.no_stream);
+        assert_eq!(request.stream, Some(true));
         assert!(request.mock_rules.is_none());
         assert!(request.spy_file.is_none());
         assert_eq!(
@@ -274,12 +292,7 @@ mod tests {
             Some(std::path::Path::new("/tmp/work"))
         );
         assert_eq!(request.env, ["K=V"]);
-        assert_eq!(
-            request.mode,
-            Some(oneharness_core::domain::mode::PermissionMode::Plan)
-        );
-        assert!(!request.no_bypass);
-        assert!(!request.bypass);
+        assert_eq!(request.mode, Some(PermissionMode::Plan));
         assert!(request.permit_prompts);
         assert_eq!(
             request.config.as_deref(),
@@ -298,8 +311,7 @@ mod tests {
         assert!(request.print_command);
         assert_eq!(request.bin, ["claude-code=/bin/true"]);
         assert!(request.require_available);
-        assert!(request.history);
-        assert!(!request.no_history);
+        assert_eq!(request.history, Some(true));
         assert_eq!(
             request.history_dir.as_deref(),
             Some(std::path::Path::new("/tmp/hist"))
@@ -312,6 +324,8 @@ mod tests {
     #[test]
     fn the_negative_toggles_and_all_selection_carry_over() {
         // The flags the case above cannot set (each conflicts with one it uses).
+        // Each `--no-x` must reach the engine as an explicit `Some(false)`, not
+        // as the `None` that would silently let a config value stand.
         let args = args_of(&[
             "oneharness",
             "run",
@@ -327,15 +341,24 @@ mod tests {
         ]);
         let request = RunRequest::from(&args);
         assert!(request.all);
-        assert!(request.no_stream);
-        assert!(!request.stream);
-        assert!(request.no_history);
-        assert!(request.no_bypass);
+        assert_eq!(request.stream, Some(false));
+        assert_eq!(request.history, Some(false));
+        assert_eq!(request.mode, Some(PermissionMode::Default));
         assert!(request.no_config);
         assert_eq!(request.system_file.as_deref(), Some("sys.txt"));
 
+        // Neither half of a toggle passed leaves the config layer in force.
+        let plain = RunRequest::from(&args_of(&["oneharness", "run", "--prompt", "hi"]));
+        assert_eq!(plain.stream, None);
+        assert_eq!(plain.history, None);
+        assert_eq!(plain.mode, None);
+
         let args = args_of(&["oneharness", "run", "--prompt", "hi", "--bypass"]);
-        assert!(RunRequest::from(&args).bypass);
+        assert_eq!(
+            RunRequest::from(&args).mode,
+            Some(PermissionMode::Bypass),
+            "--bypass is the `--mode bypass` shorthand"
+        );
 
         let args = args_of(&[
             "oneharness",
@@ -346,9 +369,21 @@ mod tests {
             "sid",
             "--fork",
         ]);
-        let request = RunRequest::from(&args);
-        assert_eq!(request.resume.as_deref(), Some("sid"));
-        assert!(request.fork);
+        assert_eq!(
+            RunRequest::from(&args).resume,
+            Some(Resume {
+                session: "sid".to_string(),
+                fork: true,
+            })
+        );
+        let args = args_of(&["oneharness", "run", "--prompt", "hi", "--resume", "sid"]);
+        assert_eq!(
+            RunRequest::from(&args).resume,
+            Some(Resume {
+                session: "sid".to_string(),
+                fork: false,
+            })
+        );
 
         let args = args_of(&[
             "oneharness",

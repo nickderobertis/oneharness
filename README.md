@@ -2038,7 +2038,7 @@ spawned — a harness's own failure is always a `RunResult`, never an error.
 
 Three things the CLI does for itself, which an in-process caller now chooses:
 
-- **Where events go.** Set `stream: true` and pass an `EventSink`; its `event`
+- **Where events go.** Set `stream: Some(true)` and pass an `EventSink`; its `event`
   method is called as each normalized event arrives, and returning
   `SinkStep::Stop` short-circuits the turn (the CLI's own sink is the one that
   writes the NDJSON protocol to stdout — nothing inside the engine does).

@@ -124,6 +124,10 @@ Use the `just` recipes; do not hand-roll equivalents.
   there goes silently missing from every run, which is what
   `every_run_flag_reaches_the_engine_request` exists to catch). `--compact` is
   deliberately NOT on `RunRequest`: it is about printing, which the shell owns.
+  Nor is any `--no-x` half of a clap-exclusive pair — the request carries the one
+  value they resolve to (`stream`/`history` as `Option<bool>`, `--bypass` folded
+  into `mode`, `--fork` inside the `Resume` it is meaningless without), because
+  a library caller has no clap to make the conflicting state unreachable.
   `RunControls` carries the three things a subprocess hop gave a consumer for
   free — the event sink, a `CancelToken` (the only handle that reaches a harness
   tree, since each harness leads its own process group), and whether oneharness

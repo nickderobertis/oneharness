@@ -116,6 +116,7 @@ pub struct RunControls<'a> {
     /// cancel the run instead of killing the host. Process-global and therefore
     /// opt-in: the CLI sets it, an embedder with its own signal handling leaves
     /// it `false` and cancels [`RunControls::cancel`] itself.
+    // llmlint: ignore[changed_behavior_has_e2e] The `true` arm is already driven end to end by `a_host_signal_cancels_the_run_and_terminates_a_silent_harness` (tests/cli.rs), which SIGTERMs a real `oneharness run` — the CLI is the only caller that sets this — and asserts the harness's descendant stopped and the report still landed; the `false` arm is what every test in tests/library.rs runs under. A second test would have to install a process-wide handler and signal its own test process, which under the `cargo test` fallback (one process, many tests) poisons its siblings.
     pub signal_cancel: bool,
     /// The version the report attributes the run to. `None` uses this engine's
     /// own crate version; the CLI passes its binary version so `oneharness run`
@@ -139,13 +140,31 @@ pub struct RunOutcome {
     pub failure_summary: Option<String>,
 }
 
+/// A session continuation: the harness's own session id, and whether to branch
+/// a new session from it instead of appending to it.
+///
+/// One value rather than two fields, because forking is a property *of* a
+/// resume — there is nothing to branch from without one, and no adapter emits
+/// its fork flag ([`crate::domain::harness::BuildCtx::fork`]) outside the
+/// `--resume` arm.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Resume {
+    /// The harness's native session id, as it reported one.
+    // llmlint: ignore[invalid_states_unrepresentable] A native session id is opaque provider text with no shared grammar across the eight harnesses (a UUID here, a thread id there); the engine forwards it verbatim through each adapter's verified `--resume` mapping, and a harness that cannot resolve it answers with the `session_not_found` classification — the only validation that could be honest.
+    pub session: String,
+    /// Branch a new session from [`Resume::session`] instead of appending, so
+    /// the original (and its cached prefix) is untouched. Only for a harness
+    /// that declares `supports_fork`; others are a loud usage error.
+    pub fork: bool,
+}
+
 /// One run, as data.
 ///
 /// Field-for-field the `oneharness run` flag surface (the binary's clap `RunArgs`
-/// converts into this), minus the two knobs that are about *printing* rather than
-/// running — `--compact` and the terminal envelope — which stay with the shell.
-/// Every field is a plain owned value, so a library caller builds one with
-/// [`Default`] and struct-update syntax:
+/// converts into this), minus `--compact`: that is about how the shell *prints*
+/// the report, not how the engine produces it. Every field is a plain owned
+/// value, so a library caller builds one with [`Default`] and struct-update
+/// syntax — which also keeps a future field from breaking them:
 ///
 /// ```
 /// use oneharness_core::io::run::RunRequest;
@@ -162,16 +181,13 @@ pub struct RunOutcome {
 /// overrides, exactly as it does for the CLI. Set [`RunRequest::no_config`] for a
 /// hermetic run.
 ///
-/// Several pairs of fields are *mutually exclusive on the argv*, where clap
-/// refuses them outright; here they resolve by a documented precedence rather
-/// than a new error, so a request is never rejected for a rule only the CLI
-/// spells. Setting both `stream` and `no_stream` streams (the positive wins, per
-/// [`resolve_stream`]); `mode` beats `bypass`/`no_bypass`, and `bypass` beats
-/// `no_bypass` ([`resolve_mode`]); `session` beats `resume` for the harness the
-/// session is anchored to; and `fork` without `resume` has nothing to branch
-/// from, so no adapter emits its fork flag. Everything that would actually
-/// *change what runs* is still a loud error — an unknown harness, a mode a
-/// harness cannot express, `--session` on one that exposes no id.
+/// Where the CLI spells a choice as a mutually-exclusive *pair* of flags, this
+/// carries the one value they resolve to, so the conflicting state cannot be
+/// built at all: `--stream`/`--no-stream` and `--history`/`--no-history` are one
+/// `Option<bool>` each (`None` = defer to config), `--bypass`/`--no-bypass` fold
+/// into [`RunRequest::mode`] (they are shorthands for one), and `--fork` lives
+/// inside the [`Resume`] it has no meaning without. The binary's own conversion
+/// applies clap's precedence on the way in.
 #[derive(Debug, Clone, Default)]
 pub struct RunRequest {
     /// Run against every supported harness.
@@ -197,10 +213,8 @@ pub struct RunRequest {
     pub reasoning: Option<String>,
     /// Read the system prompt from a file (`-` for stdin) instead of inline.
     pub system_file: Option<String>,
-    /// Continue this native session id (single-harness).
-    pub resume: Option<String>,
-    /// Branch a new session from [`RunRequest::resume`] instead of appending.
-    pub fork: bool,
+    /// Continue a prior session by its native id, optionally branching it.
+    pub resume: Option<Resume>,
     /// Continue (or start) a conversation by a stable, caller-owned name.
     pub session: Option<String>,
     /// Where the [`RunRequest::session`] store lives.
@@ -212,9 +226,9 @@ pub struct RunRequest {
     /// Surface each harness's normalized tool-call `events`.
     pub events: bool,
     /// Publish events incrementally to [`RunControls::events`] as they occur.
-    pub stream: bool,
-    /// Do NOT stream, overriding `stream` in config / `ONEHARNESS_STREAM`.
-    pub no_stream: bool,
+    /// `None` defers to `stream` in config / `ONEHARNESS_STREAM` (off by
+    /// default); `Some` overrides it in either direction.
+    pub stream: Option<bool>,
     /// A one-shot mock/spy ruleset for the selected harnesses' tool calls.
     pub mock_rules: Option<PathBuf>,
     /// Append one JSONL record per observed tool call to this file.
@@ -232,12 +246,10 @@ pub struct RunRequest {
     pub cwd: Option<PathBuf>,
     /// Extra `KEY=VALUE` environment for each harness process.
     pub env: Vec<String>,
-    /// The approval mode requested from each harness.
+    /// The approval mode requested from each harness. `None` defers to config
+    /// `mode` (then the legacy config `bypass`, then [`PermissionMode::Default`]).
+    /// The CLI's `--bypass` / `--no-bypass` shorthands resolve into this.
     pub mode: Option<PermissionMode>,
-    /// Shorthand for [`PermissionMode::Default`].
-    pub no_bypass: bool,
-    /// Shorthand for [`PermissionMode::Bypass`].
-    pub bypass: bool,
     /// Silence the warning that the chosen mode may block on an approval prompt.
     pub permit_prompts: bool,
     /// Load configuration from this file only (skip user/project discovery).
@@ -256,10 +268,10 @@ pub struct RunRequest {
     pub bin: Vec<String>,
     /// Treat a not-installed harness as a failure.
     pub require_available: bool,
-    /// Record this run to the normalized cross-harness history store.
-    pub history: bool,
-    /// Do NOT record history, overriding config / `ONEHARNESS_HISTORY`.
-    pub no_history: bool,
+    /// Record this run to the normalized cross-harness history store. `None`
+    /// defers to `history` in config / `ONEHARNESS_HISTORY` (off by default);
+    /// `Some` overrides it in either direction.
+    pub history: Option<bool>,
     /// Directory history is written to.
     pub history_dir: Option<PathBuf>,
     /// Human-meaningful name for this history session.
@@ -550,13 +562,14 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
     // prefix is per harness/model/tools — and is a fresh fan-out, not a session
     // continuation. Refuse both before anything spawns (loud usage errors).
     if batch_run {
-        validate_batch(&specs, args.resume.is_some() || args.fork)?;
+        validate_batch(&specs, args.resume.is_some())?;
     }
-    let resume = args.resume.as_deref();
+    let resume = args.resume.as_ref().map(|r| r.session.as_str());
+    let fork = args.resume.as_ref().is_some_and(|r| r.fork);
     validate_resume(resume, &specs)?;
     // `--fork` (clap-guaranteed to imply `--resume`) branches a new session
     // instead of appending; refused before spawning for a harness that can't fork.
-    validate_fork(args.fork, &specs)?;
+    validate_fork(fork, &specs)?;
     // `--session <name>`: resolve the uniform handle to the harness's native
     // token (via the session store) before building argv. Validates capability +
     // no-batch loudly; in parallel it is single-harness, in fallback it binds to
@@ -863,7 +876,7 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
                         == Some(selected_id.as_str())
                 })
                 .or_else(|| resume.map(str::to_string)),
-            fork: args.fork,
+            fork,
             mode,
             output_format,
             native,
@@ -1673,8 +1686,8 @@ fn build_report(
         model: model.map(str::to_string),
         // The model fan-out list, present only on a multi-model run.
         models,
-        resume: args.resume.clone(),
-        fork: args.fork,
+        resume: args.resume.as_ref().map(|r| r.session.clone()),
+        fork: args.resume.as_ref().is_some_and(|r| r.fork),
         session,
         permission_mode: mode,
         bypass_permissions: mode.is_bypass(),
@@ -1983,13 +1996,7 @@ fn open_history_writer(
     if args.print_command {
         return Ok(None);
     }
-    let enabled = if args.history {
-        true
-    } else if args.no_history {
-        false
-    } else {
-        cfg.history.unwrap_or(false)
-    };
+    let enabled = args.history.unwrap_or_else(|| cfg.history.unwrap_or(false));
     if !enabled {
         return Ok(None);
     }
@@ -2674,13 +2681,7 @@ fn validate_stream(
 /// invocation, and a single call that needs the buffered report back says
 /// `--no-stream` instead of having to unset the config it inherited.
 fn resolve_stream(args: &RunRequest, cfg: &crate::domain::config::FileConfig) -> bool {
-    if args.stream {
-        true
-    } else if args.no_stream {
-        false
-    } else {
-        cfg.stream.unwrap_or(false)
-    }
+    args.stream.unwrap_or_else(|| cfg.stream.unwrap_or(false))
 }
 
 /// Run `jobs` wave by wave, preserving global order in the returned outcomes.
@@ -2811,7 +2812,7 @@ fn validate_fallback(batch_run: bool, args: &RunRequest) -> Result<(), Oneharnes
             "fallback tries harnesses in order for one prompt; a batch fans one harness over many prompts",
         );
     }
-    if args.resume.is_some() || args.fork {
+    if args.resume.is_some() {
         return conflict(
             "--resume/--fork",
             "a resumed session belongs to one specific harness, so it cannot fall through to another (use --session, which binds to the fallback anchor)",
@@ -2846,7 +2847,7 @@ fn validate_multi_model(
             "a batch shares one cacheable prefix, which is per harness/model — fan out over models or over prompts, not both",
         );
     }
-    if args.resume.is_some() || args.fork {
+    if args.resume.is_some() {
         return conflict(
             "--resume/--fork",
             "a resumed session is tied to one model, so it cannot fan out over several",
@@ -3836,10 +3837,6 @@ fn validate_fork(fork: bool, specs: &[&'static HarnessSpec]) -> Result<(), Oneha
 fn resolve_mode(args: &RunRequest, cfg: &crate::domain::config::FileConfig) -> PermissionMode {
     if let Some(m) = args.mode {
         m
-    } else if args.bypass {
-        PermissionMode::Bypass
-    } else if args.no_bypass {
-        PermissionMode::Default
     } else if let Some(m) = cfg.mode {
         m
     } else {
@@ -4480,7 +4477,10 @@ mod tests {
             ),
             PermissionMode::Plan
         );
-        // CLI --mode beats config; --bypass / --no-bypass are the shorthands.
+        // An explicit request mode beats every config layer. (The CLI's
+        // `--bypass` / `--no-bypass` shorthands resolve into this same field
+        // before the engine sees them — pinned in the binary's own conversion
+        // test, since the precedence between the three is a clap-surface rule.)
         let mut a = run_args();
         a.mode = Some(PermissionMode::Edit);
         assert_eq!(
@@ -4488,13 +4488,13 @@ mod tests {
             PermissionMode::Edit
         );
         let mut a = run_args();
-        a.no_bypass = true;
+        a.mode = Some(PermissionMode::Default);
         assert_eq!(
             resolve_mode(&a, &cfg_with(Some(PermissionMode::Plan), None)),
             PermissionMode::Default
         );
         let mut a = run_args();
-        a.bypass = true;
+        a.mode = Some(PermissionMode::Bypass);
         assert_eq!(
             resolve_mode(&a, &cfg_with(None, Some(false))),
             PermissionMode::Bypass

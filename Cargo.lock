@@ -631,7 +631,6 @@ dependencies = [
  "clap",
  "libc",
  "oneharness-core",
- "schemars",
  "serde",
  "serde_json",
 ]

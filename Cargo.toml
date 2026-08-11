@@ -43,7 +43,6 @@ oneharness-core = { path = "crates/oneharness-core", version = "0.6.11" }
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-schemars = "1"
 
 # Integration tests drive the binaries directly via the cargo-provided
 # CARGO_BIN_EXE_* paths and parse JSON with serde_json (already a dependency),

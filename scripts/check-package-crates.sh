@@ -110,7 +110,10 @@ run_case() {
 }
 
 : >"$work/calls"
-run_case just package-crates >"$work/out"
+if ! run_case just package-crates >"$work/out" 2>&1; then
+  cat "$work/out" >&2
+  fail "happy-path package verification failed; fix the diagnostic above and rerun 'bash scripts/check-package-crates.sh'"
+fi
 [[ $(wc -l <"$work/calls") -eq 2 ]] || fail "happy path did not package core then binary"
 assert_contains 'package-crates: ok' "$work/out"
 

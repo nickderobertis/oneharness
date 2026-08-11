@@ -313,8 +313,12 @@ pub enum TurnAddress {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnOpening<'a> {
     /// A session on `opencode serve`, which has no client identity and answers
-    /// each permission ask as it arrives rather than declaring a posture.
-    Opencode { cwd: &'a AbsolutePath },
+    /// each permission ask as it arrives rather than declaring a posture. The
+    /// model is named here or not at all — see [`OpencodeModel`].
+    Opencode {
+        cwd: &'a AbsolutePath,
+        model: Option<&'a OpencodeModel>,
+    },
     /// The workspace every other crush route hangs off, opened as one client
     /// identity and in one permission posture.
     Crush {
@@ -399,6 +403,54 @@ pub fn permits_action(mode: &ModeSpec) -> PermissionDecision {
     }
 }
 
+/// The model an opencode turn runs on, split the way its session route names
+/// one: a provider and an id, both required.
+///
+/// A controlled opencode turn is a session on a pooled server, and the model is
+/// a property of that SESSION — not of the server, and not of the prompt. It was
+/// simply dropped: `--model` reaches `opencode run` on the argv and reached
+/// nothing at all under `--control`, so a controlled turn ran on whatever the
+/// server picked by itself. That is not a theoretical default — live it was
+/// `wandb/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B` on one host and
+/// `ling-3.0-tiny-free` in CI, both answering `Provider request failed with
+/// HTTP 401`, which is what made the live control suite's opencode phase a coin
+/// flip. Naming it in the server's own config does NOT fix that: `opencode
+/// serve` loads `OPENCODE_CONFIG_CONTENT`'s `model` and echoes it back on
+/// `/config` while the session it creates still runs on its own choice
+/// (measured against opencode 1.18.5).
+///
+/// The field names are the server's own (`{"providerID": …, "id": …}`, both
+/// required by `/doc`'s schema for `POST /api/session`), and a real session
+/// created that way answers with the model echoed back and runs its step on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpencodeModel {
+    provider: String,
+    id: String,
+}
+
+impl OpencodeModel {
+    /// Split a fully-qualified `<provider>/<model>` id — the form `opencode run
+    /// --model` documents and this route requires.
+    ///
+    /// `None` when there is no provider to name, because there is nothing to
+    /// guess: opencode's own ids carry slashes inside them
+    /// (`wandb/nvidia/NVIDIA-Nemotron-…`), so only the FIRST segment is the
+    /// provider and a bare id names none. A caller that gets `None` must refuse
+    /// rather than open a session without one — which is exactly the silent
+    /// drop this type exists to end.
+    #[must_use]
+    pub fn parse(model: &str) -> Option<Self> {
+        let (provider, id) = model.split_once('/')?;
+        if provider.is_empty() || id.is_empty() {
+            return None;
+        }
+        Some(Self {
+            provider: provider.to_string(),
+            id: id.to_string(),
+        })
+    }
+}
+
 /// The request that creates the turn's own session (opencode), or the workspace
 /// everything else hangs off (crush).
 #[must_use]
@@ -406,12 +458,15 @@ pub fn open_request(opening: &TurnOpening) -> HttpRequest {
     match opening {
         // The session names its own working directory, so the server can be
         // shared by dispatches in different projects — the cwd stays a per-turn
-        // setting and never widens the pool key.
-        TurnOpening::Opencode { cwd } => HttpRequest::new(
-            Method::Post,
-            "/api/session".to_string(),
-            Some(json!({"location": {"directory": cwd.to_string()}})),
-        ),
+        // setting and never widens the pool key. The model is per turn for the
+        // same reason, and it has to be named here: see [`OpencodeModel`].
+        TurnOpening::Opencode { cwd, model } => {
+            let mut body = json!({"location": {"directory": cwd.to_string()}});
+            if let Some(model) = model {
+                body["model"] = json!({"providerID": model.provider, "id": model.id});
+            }
+            HttpRequest::new(Method::Post, "/api/session".to_string(), Some(body))
+        }
         // The workspace is where crush's `client_id` travels in the BODY — and
         // where its permission posture is declared: `yolo` is the same "act
         // without asking" the `--yolo` flag sets, applied at creation so the
@@ -1237,9 +1292,12 @@ mod tests {
         // names the same place from the server's process as from this one.
         let here = cwd("/work/here");
         let opencode: Value = serde_json::from_str(
-            open_request(&TurnOpening::Opencode { cwd: &here })
-                .body()
-                .unwrap(),
+            open_request(&TurnOpening::Opencode {
+                cwd: &here,
+                model: None,
+            })
+            .body()
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(opencode["location"]["directory"], here.to_string());
@@ -1251,6 +1309,57 @@ mod tests {
         )
         .unwrap();
         assert_eq!(crush["path"], here.to_string());
+    }
+
+    #[test]
+    fn an_opencode_turn_names_the_model_it_runs_on_to_the_session() {
+        // The model is per turn like the cwd above, and the session is the only
+        // place opencode takes one: its server loads a `model` from
+        // `OPENCODE_CONFIG_CONTENT` and creates sessions on a different one
+        // anyway (measured against 1.18.5), so a session opened without it runs
+        // on whatever the server picked — live, a free model answering 401.
+        let here = cwd("/work/here");
+        let model = OpencodeModel::parse("anthropic/claude-haiku-4-5").expect("qualified");
+        let body: Value = serde_json::from_str(
+            open_request(&TurnOpening::Opencode {
+                cwd: &here,
+                model: Some(&model),
+            })
+            .body()
+            .unwrap(),
+        )
+        .unwrap();
+        // The field names are the server's own, from `/doc`'s schema for
+        // `POST /api/session`, where both are required.
+        assert_eq!(body["model"]["providerID"], "anthropic");
+        assert_eq!(body["model"]["id"], "claude-haiku-4-5");
+        // A run with no model asks for none rather than sending an empty one,
+        // which the same schema would refuse.
+        let bare: Value = serde_json::from_str(
+            open_request(&TurnOpening::Opencode {
+                cwd: &here,
+                model: None,
+            })
+            .body()
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(bare.get("model").is_none(), "{bare}");
+    }
+
+    #[test]
+    fn a_model_naming_no_provider_is_refused_rather_than_guessed_at() {
+        // Only the FIRST segment is the provider: opencode's own ids carry
+        // slashes inside them, so a split anywhere else invents a provider.
+        let nested = OpencodeModel::parse("wandb/nvidia/NVIDIA-Nemotron-3.5").expect("qualified");
+        assert_eq!(nested.provider, "wandb");
+        assert_eq!(nested.id, "nvidia/NVIDIA-Nemotron-3.5");
+        // And a bare id names no provider, so there is nothing to send. The
+        // caller refuses; it must never open a session without one, because
+        // that is the silent drop that ran a controlled turn on a free model.
+        for bare in ["haiku", "", "/claude-haiku-4-5", "anthropic/"] {
+            assert!(OpencodeModel::parse(bare).is_none(), "accepted `{bare}`");
+        }
     }
 
     #[test]
@@ -1313,9 +1422,12 @@ mod tests {
         // its opening carries none of them and inventing one would be a key its
         // session-create route does not read.
         let opencode: Value = serde_json::from_str(
-            open_request(&TurnOpening::Opencode { cwd: &work })
-                .body()
-                .unwrap(),
+            open_request(&TurnOpening::Opencode {
+                cwd: &work,
+                model: None,
+            })
+            .body()
+            .unwrap(),
         )
         .unwrap();
         assert!(opencode.get("yolo").is_none(), "{opencode}");
@@ -1840,7 +1952,10 @@ mod tests {
         let awkward = cwd("/a b/../c");
         let mut routes = vec![
             open_request(&crush_opening(&awkward, &client, PermissionDecision::Allow)),
-            open_request(&TurnOpening::Opencode { cwd: &awkward }),
+            open_request(&TurnOpening::Opencode {
+                cwd: &awkward,
+                model: None,
+            }),
             readiness_request(HttpShape::Crush),
             readiness_request(HttpShape::Opencode),
         ];

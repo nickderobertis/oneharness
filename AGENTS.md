@@ -265,8 +265,14 @@ Use the `just` recipes; do not hand-roll equivalents.
   answer `session/request_permission`. Dialogue-derived session ids are usable
   only under `--control` (`session_capable_under`). HTTP control submits turns
   through the pooled server, not the harness CLI: permission requests must be
-  answered; opencode is terminal only on idle after admission; and cwd stays a
-  per-turn value. Pool keys exclude all per-turn and per-thread settings.
+  answered; opencode is terminal only on idle after admission; and cwd — plus
+  opencode's MODEL, which its session-create route takes as a required
+  provider+id pair — stays a per-turn value. A per-turn setting the wire has no
+  place for is refused, never dropped: an opencode session opened without a
+  model runs on whatever the server picks, and live that was a free model
+  answering 401 on every turn. Its own config does not decide that — `opencode
+  serve` loads a `model` from `OPENCODE_CONFIG_CONTENT` and creates sessions on
+  another one anyway. Pool keys exclude all per-turn and per-thread settings.
   Readiness is a question about the PROCESS oneharness launched, never about who
   answers at its address: a TCP port is reserved by binding and letting go, so
   between the reservation and the launch it belongs to whoever asks the kernel

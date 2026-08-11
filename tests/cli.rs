@@ -22225,6 +22225,58 @@ fn a_redirection_the_harness_is_no_longer_there_for_ends_the_run_rather_than_han
 
 #[cfg(unix)]
 #[test]
+fn a_controlled_opencode_model_that_names_no_provider_is_refused_before_a_server_starts() {
+    // The route that carries an opencode turn's model takes a provider and an
+    // id, so a bare model id cannot be sent. Refusing says so; the alternative
+    // — sending the session no model — runs the turn on whatever the server
+    // picks, which is the drop that made the live control suite a coin flip.
+    let store = control_store_dir("http-model");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("http-model-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let pool = store.join("pool");
+
+    let output = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("XDG_STATE_HOME", pool.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--session",
+            "http-model",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "hi",
+            "--model",
+            "claude-haiku-4-5",
+            "--bin",
+            &bin_override("opencode"),
+            "--compact",
+        ])
+        .output()
+        .expect("the run produced a report");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    let error = report["results"][0]["error"]
+        .as_str()
+        .expect("a refused model is reported, not swallowed");
+    assert!(error.contains("names no provider"), "{error}");
+    assert!(error.contains("anthropic/claude-haiku-4-5"), "{error}");
+    // Nothing was brought up for a turn that could never have run.
+    assert!(!pool.exists(), "a refused model must not start a server");
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
 fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there() {
     let mock_profile = mock_profile_redirect();
     // The third execution model, end to end through the real CLI: the harness
@@ -22261,6 +22313,8 @@ fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there()
             "keep working",
             "--system",
             "preserve this controlled system prompt",
+            "--model",
+            "anthropic/claude-haiku-4-5",
             "--bin",
             &bin_override("opencode"),
             "--compact",
@@ -22318,6 +22372,16 @@ fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there()
             .any(|line| line.starts_with("POST /api/session/ses_mock/prompt")),
         "{served}"
     );
+    // The model reached the SESSION, split into the provider and id its route
+    // requires. It reaches nothing else on this path — there is no harness argv
+    // here — so a run whose `--model` stopped here runs on whatever the pooled
+    // server picks by itself, which live was a free model answering 401.
+    let create = served
+        .lines()
+        .find(|line| line.starts_with("POST /api/session HTTP"))
+        .expect("the session was created on the control server");
+    assert!(create.contains(r#""providerID":"anthropic""#), "{create}");
+    assert!(create.contains(r#""id":"claude-haiku-4-5""#), "{create}");
     let prompt_request = served
         .lines()
         .find(|line| line.starts_with("POST /api/session/ses_mock/prompt"))
@@ -22446,8 +22510,8 @@ fn pooled_controlled_run(
 #[test]
 fn per_turn_settings_do_not_widen_the_pool_key() {
     // Two dispatches differing ONLY in what is negotiated per turn — working
-    // directory, model, permission mode, prompt, system prompt, timeout — must
-    // land on the same pool entry. The entry's directory name IS the key, so a
+    // directory, model (provider and id both), permission mode, prompt, system
+    // prompt, timeout — must land on the same pool entry. The entry's directory name IS the key, so a
     // second one would mean every dispatch starts its own ~137MB server and the
     // pool buys nothing; the key is allowed to widen only on the harness id and
     // the `key_env` its `ServerSpec` declares.
@@ -22469,7 +22533,7 @@ fn per_turn_settings_do_not_widen_the_pool_key() {
             "--mode",
             "bypass",
             "--model",
-            "one-model",
+            "provider-one/model-a",
             "--system",
             "first system",
             "--timeout",
@@ -22488,7 +22552,7 @@ fn per_turn_settings_do_not_widen_the_pool_key() {
             "--mode",
             "default",
             "--model",
-            "another-model",
+            "provider-two/model-b",
             "--system",
             "second system",
             "--timeout",

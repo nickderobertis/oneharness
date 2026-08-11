@@ -120,32 +120,15 @@ for declaration in "${CONTROLLABLE[@]}"; do
             skipped+=("$id")
             continue
         }
-        # OpenCode is the one harness here whose model does NOT ride `--model`:
-        # its turn is submitted to a pooled `opencode serve` over HTTP, and that
-        # prompt request carries the text alone (`domain::http::prompt_request`),
-        # so `OH_MODEL` reaches nothing. This phase ran without a model for that
-        # reason — the only opencode e2e that did, while `e2e-opencode.sh` pins
-        # `anthropic/claude-haiku-4-5` because "OpenCode needs a fully-qualified
-        # provider/model id" — and its turns died on the server side often
-        # enough to need all three attempts (22m39s on 2026-08-10) or to run out
-        # of them.
-        #
-        # So the model is delivered where the server will read it: the same
-        # `OPENCODE_CONFIG_CONTENT` inline config oneharness hands `opencode
-        # serve` for a mode (probe-verified — the server loads it and echoes it
-        # back on `/config`). Exported rather than passed, because the ambient
-        # environment is what the pooled server inherits. It cannot collide with
-        # a mode's own config here: these phases run under `--mode bypass` and
-        # `--mode default`, neither of which OpenCode expresses through the
-        # environment (only its `edit` mapping does).
-        # Built with jq rather than by interpolation: the model id comes from the
-        # environment, and a value carrying a quote would be config the server
-        # cannot parse — reported as a turn that never started, three attempts
-        # deep, which is exactly the failure this arm exists to remove.
-        export OH_MODEL=""
-        OPENCODE_CONFIG_CONTENT="$(jq -nc --arg model \
-            "${OPENCODE_E2E_MODEL:-anthropic/claude-haiku-4-5}" '{model: $model}')"
-        export OPENCODE_CONFIG_CONTENT
+        # The same fully-qualified id `e2e-opencode.sh` pins, and pinned for a
+        # sharper reason here: this phase ran with NO model at all, because a
+        # controlled opencode turn dropped `--model` on the floor. It then ran on
+        # whatever the pooled server chose by itself — live, a free model
+        # answering `Provider request failed with HTTP 401` — which is what made
+        # this the one harness needing all three attempts (22m39s on
+        # 2026-08-10) or running out of them. The model now reaches the session
+        # the turn opens, so this is an ordinary `OH_MODEL` again.
+        export OH_MODEL="${OPENCODE_E2E_MODEL:-anthropic/claude-haiku-4-5}"
         ;;
     goose)
         # Goose reads its provider/model from the environment (no --model flag

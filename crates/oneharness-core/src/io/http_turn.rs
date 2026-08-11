@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 
 use crate::domain::control::{AbsolutePath, DialAddress, RedirectInput};
 use crate::domain::http::{
-    self, ClientId, HttpShape, PermissionAsk, PermissionDecision, ResourceId, TurnAddress,
-    TurnEvent, TurnOpening,
+    self, ClientId, HttpShape, OpencodeModel, PermissionAsk, PermissionDecision, ResourceId,
+    TurnAddress, TurnEvent, TurnOpening,
 };
 use crate::domain::report::{Capture, RunInstant, Status};
 use crate::io::http::{HttpClient, StreamPoll};
@@ -215,12 +215,17 @@ fn utc_now() -> RunInstant {
 
 /// Open a turn on `address`: create the session (and, for crush, the workspace
 /// it hangs off), and tell a permissive server once that it need not ask.
+///
+/// `model` is opencode's alone: it names the model the SESSION runs on, which
+/// is where a controlled opencode turn's model has to be said (see
+/// [`OpencodeModel`]). Crush takes its own from the server it was started with.
 pub fn open(
     shape: HttpShape,
     server: DialAddress,
     cwd: &AbsolutePath,
     decision: PermissionDecision,
     client_id: &str,
+    model: Option<&OpencodeModel>,
 ) -> io::Result<HttpTurn> {
     let client = HttpClient::new(server, REQUEST_TIMEOUT);
 
@@ -233,7 +238,7 @@ pub fn open(
             session: created_id(
                 &expect_ok(
                     &client,
-                    &http::open_request(&TurnOpening::Opencode { cwd }),
+                    &http::open_request(&TurnOpening::Opencode { cwd, model }),
                     "open the control session",
                 )?
                 .body,

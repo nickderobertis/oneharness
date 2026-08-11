@@ -1347,6 +1347,17 @@ wrong:
   `location.directory`, crush's workspace `path`), which is what lets one server
   be shared across dispatches in different projects without the cwd widening the
   pool key.
+- **Opencode's model is per turn too, and the session is the only place it takes
+  one.** `POST /api/session` accepts `{"providerID": …, "id": …}` (both required
+  by the server's own `/doc` schema), and the session it answers with runs its
+  steps on exactly that. The server's config is NOT that place: `opencode serve`
+  loads a `model` from `OPENCODE_CONFIG_CONTENT` and echoes it back on `/config`
+  while creating sessions on its own choice regardless (measured against 1.18.5).
+  A session opened without a model therefore runs on whatever the server picked —
+  live that was `wandb/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B` on one host
+  and `ling-3.0-tiny-free` in CI, both answering `Provider request failed with
+  HTTP 401`. Only the first `/` splits the id: opencode's own model ids contain
+  slashes, so a `--model` naming no provider is refused rather than guessed at.
 - **Crush's routes are not where they look.** A session is created on the
   *workspace* (`POST /v1/workspaces/{id}/sessions`; `/agent/sessions` answers a
   bare `404 page not found`) and the prompt goes to `POST

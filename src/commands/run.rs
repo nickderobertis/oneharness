@@ -2164,8 +2164,17 @@ fn run_http_controlled(
                 model,
                 ..
             } => {
-                let outcome =
-                    drive_http_turn(shape, handle, spec, &bin, prompt, cwd, mode, timeout);
+                let outcome = drive_http_turn(
+                    shape,
+                    handle,
+                    spec,
+                    &bin,
+                    prompt,
+                    cwd,
+                    mode,
+                    timeout,
+                    model.as_deref(),
+                );
                 let (command, capture, session_id) = match outcome {
                     Ok((command, outcome, session_id)) => (command, outcome, Some(session_id)),
                     Err(err) => (vec![bin.clone()], http_turn::TurnOutcome::failed(err), None),
@@ -2207,7 +2216,24 @@ fn drive_http_turn(
     cwd: &control::AbsolutePath,
     mode: PermissionMode,
     timeout: Duration,
+    model: Option<&str>,
 ) -> Result<(Vec<String>, http_turn::TurnOutcome, String), String> {
+    // Parsed before anything is brought up: a model this protocol cannot name
+    // is refused rather than dropped, because dropping it runs the turn on
+    // whatever the server picks — which is how a controlled opencode turn came
+    // to run on a free model that answers 401.
+    let session_model = match (shape, model) {
+        (HttpShape::Opencode, Some(model)) => Some(http::OpencodeModel::parse(model).ok_or_else(
+            || {
+                format!(
+                    "a controlled `{}` turn names its model to the session it opens, and that route takes a provider and an id: `--model {model}` names no provider. Use the fully-qualified `<provider>/<model>` form (e.g. `anthropic/claude-haiku-4-5`), the same id `opencode run --model` takes",
+                    spec.id
+                )
+            },
+        )?),
+        // Crush's model is the server's, settled at launch.
+        _ => None,
+    };
     let server = spec.server.ok_or_else(|| {
         format!(
             "`{}` declares HTTP control but no server to run it",
@@ -2260,6 +2286,7 @@ fn drive_http_turn(
         cwd,
         decision,
         &http_turn::client_id(spec.id),
+        session_model.as_ref(),
     )
     .map_err(|err| format!("{err}"))?;
     let session_id = turn.session_id().to_string();

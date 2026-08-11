@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { z, ZodType } from "zod";
+import type { ZodType, z } from "zod";
 import {
 	type ActionEvent,
 	ActionEventSchema,
@@ -12,19 +12,13 @@ import {
 	CAPABILITIES,
 	ConfigOptionsSchema,
 	DetectOptionsSchema,
-	GateOptionsSchema,
-	HistoryClearOptionsSchema,
-	HistoryMigrateOptionsSchema,
-	InitOptionsSchema,
-	InterruptOptionsSchema,
-	MockOptionsSchema,
-	SyncOptionsSchema,
-	UsageOptionsSchema,
 	type DetectReport,
 	DetectReportSchema,
 	FallbackReportSchema,
+	GateOptionsSchema,
 	type HarnessInfo,
 	HarnessInfoSchema,
+	HistoryClearOptionsSchema,
 	type HistoryLine,
 	HistoryLineSchema,
 	type HistoryList,
@@ -33,6 +27,7 @@ import {
 	HistoryListSchema,
 	type HistoryLookup,
 	HistoryLookupSchema,
+	HistoryMigrateOptionsSchema,
 	HistoryNotFoundError,
 	type HistoryRecord,
 	HistoryRecordSchema,
@@ -44,8 +39,11 @@ import {
 	HistoryStreamEnvelopeSchema,
 	type HistoryWatchOptions,
 	HistoryWatchOptionsSchema,
+	InitOptionsSchema,
+	InterruptOptionsSchema,
 	type ListReport,
 	ListReportSchema,
+	MockOptionsSchema,
 	OneHarness,
 	OneHarnessProcessError,
 	type RunOptions,
@@ -57,7 +55,9 @@ import {
 	type RunStreamEnvelope,
 	RunStreamEnvelopeSchema,
 	SessionReportSchema,
+	SyncOptionsSchema,
 	type Usage,
+	UsageOptionsSchema,
 	UsageSchema,
 } from "../src/index.js";
 

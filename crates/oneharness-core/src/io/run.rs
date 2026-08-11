@@ -161,6 +161,17 @@ pub struct RunOutcome {
 /// discovered `oneharness.toml` files and the `ONEHARNESS_*` environment
 /// overrides, exactly as it does for the CLI. Set [`RunRequest::no_config`] for a
 /// hermetic run.
+///
+/// Several pairs of fields are *mutually exclusive on the argv*, where clap
+/// refuses them outright; here they resolve by a documented precedence rather
+/// than a new error, so a request is never rejected for a rule only the CLI
+/// spells. Setting both `stream` and `no_stream` streams (the positive wins, per
+/// [`resolve_stream`]); `mode` beats `bypass`/`no_bypass`, and `bypass` beats
+/// `no_bypass` ([`resolve_mode`]); `session` beats `resume` for the harness the
+/// session is anchored to; and `fork` without `resume` has nothing to branch
+/// from, so no adapter emits its fork flag. Everything that would actually
+/// *change what runs* is still a loud error — an unknown harness, a mode a
+/// harness cannot express, `--session` on one that exposes no id.
 #[derive(Debug, Clone, Default)]
 pub struct RunRequest {
     /// Run against every supported harness.
@@ -1258,9 +1269,10 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
         }
     }
 
-    // Every job is done (or nothing ran under --print-command, where mock
-    // wiring is refused by clap): put the workspace back before anything else
-    // can fail, so a later I/O error never leaves the ephemeral hook behind.
+    // Every job is done (or `print_command` ran none): put the workspace back
+    // before anything else can fail, so a later I/O error never leaves the
+    // ephemeral hook behind. Unconditional for that reason — a dry run that also
+    // asked for mock wiring (which the CLI's own flags refuse) still restores.
     let mock_report = mock_wiring.map(MockWiring::finish);
 
     if stream_run {

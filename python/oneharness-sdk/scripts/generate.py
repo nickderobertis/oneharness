@@ -189,6 +189,34 @@ def types_module(bundle: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def check_manifest_is_covered(capabilities: list[dict[str, Any]]) -> None:
+    """Refuse to generate an SDK missing an input root the manifest names.
+
+    The lists above map a schema root to a Python spelling; the manifest is what
+    says which roots must be there at all. Checking only what is listed leaves
+    the other direction open — a capability whose option root nobody added
+    generates a client that cannot validate or spell that verb's options.
+
+    Only the input lists can drift. An output root needs no entry: the client
+    validates against `schemas.json`, which carries the whole bundle, so a new
+    output contract is already there to check a response with — `OUTPUT_ALIASES`
+    publishes element types (`Detection`) rather than envelope roots.
+    """
+    inputs = {item["options"] for item in capabilities if item["options"]}
+    for missing, listing in (
+        (inputs - set(INPUT_ROOTS), "INPUT_ROOTS"),
+        # `history_lookup` is deliberately not a TypedDict: it is an overlapping
+        # union, which a TypedDict cannot express.
+        (inputs - {root for _, root in TYPED_DICTS} - {"history_lookup"}, "TYPED_DICTS"),
+    ):
+        if missing:
+            raise RuntimeError(
+                f"the capability manifest names root(s) absent from {listing}: "
+                f"{', '.join(sorted(missing))}; add them in "
+                "python/oneharness-sdk/scripts/generate.py and rerun just python-sdk-generate"
+            )
+
+
 def generated_files() -> dict[str, bytes]:
     """Run the Rust generator and return deterministic package files."""
     output = subprocess.check_output(
@@ -208,6 +236,7 @@ def generated_files() -> dict[str, bytes]:
         text=True,
     )
     bundle = json.loads(output)
+    check_manifest_is_covered(bundle["capabilities"])
     schemas = copy.deepcopy(bundle)
     # The capability manifest travels beside the schemas rather than inside them:
     # it is a table of argv bindings, not something a document is validated

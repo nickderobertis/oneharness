@@ -212,6 +212,31 @@ const CONTRACT_MODULES = Object.freeze([
 	},
 ]);
 
+// The two lists above map a schema root to a module and a type name; the
+// capability manifest is what says which roots must be there at all. Checking
+// only that a listed root exists leaves the other direction open — a capability
+// whose option or output root nobody added generates an SDK with no type for
+// it, and the client then has nothing to validate against. So the manifest is
+// the source, and a row here is the mapping rather than the decision.
+{
+	const typed = new Set([
+		...CONTRACT_MODULES.map((contract) => contract.key),
+		...SDK_SCHEMA_ROOTS.map((entry) => entry.key),
+	]);
+	const missing = [
+		...new Set(
+			bundle.capabilities
+				.flatMap((capability) => [capability.options, capability.output])
+				.filter((key) => key !== null && !typed.has(key)),
+		),
+	];
+	if (missing.length > 0) {
+		throw new Error(
+			`the capability manifest names schema root(s) no generated module covers: ${missing.join(", ")}. Add a row to CONTRACT_MODULES in scripts/generate.mjs and to SDK_SCHEMA_ROOTS in scripts/zod-generator.mjs, then rerun just sdk-generate`,
+		);
+	}
+}
+
 /** @param {(typeof CONTRACT_MODULES)[number]} contract */
 async function compileContract(contract) {
 	const source = bundle[contract.key];

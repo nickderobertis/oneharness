@@ -139,7 +139,10 @@ pub struct DetectRequest {
     pub all: bool,
     /// Harness id(s) to probe, `<id>` or `<id>:<variant>`.
     pub harness: Vec<String>,
-    /// Harness id(s) to drop from an all-harness sweep.
+    /// Harness id(s) to drop from a sweep. This NARROWS a selection rather than
+    /// requesting one: naming only `exclude` selects nothing and is the same
+    /// loud usage error the CLI raises, so pair it with `all` (or with the
+    /// configured `harnesses`).
     pub exclude: Vec<String>,
     /// `--bin ID=PATH` overrides, in the CLI's own spelling.
     pub bin: Vec<String>,

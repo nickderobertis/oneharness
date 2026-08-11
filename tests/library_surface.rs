@@ -201,6 +201,33 @@ fn a_consumer_probes_one_harness_binary_and_reads_its_version() {
 
 // capability: detect
 #[test]
+fn exclude_narrows_a_sweep_and_never_requests_one() {
+    // Both halves of what `exclude` means, because the name alone suggests only
+    // the first: it drops an id from a sweep, and on its own it selects nothing
+    // rather than implying the sweep — the same loud usage error the CLI raises.
+    let swept = detect::detect(&DetectRequest {
+        all: true,
+        exclude: vec!["codex".to_string()],
+        no_config: true,
+        ..DetectRequest::default()
+    })
+    .expect("an all-harness sweep minus one is a selection");
+
+    let ids: Vec<&str> = swept.detected.iter().map(|d| d.id.as_str()).collect();
+    assert!(ids.len() > 1, "the sweep is the rest of the fleet: {ids:?}");
+    assert!(!ids.contains(&"codex"), "excluded, yet probed: {ids:?}");
+
+    let error = detect::detect(&DetectRequest {
+        exclude: vec!["codex".to_string()],
+        no_config: true,
+        ..DetectRequest::default()
+    })
+    .expect_err("exclude alone selects nothing");
+    assert!(matches!(error, OneharnessError::NoSelection));
+}
+
+// capability: detect
+#[test]
 fn a_configured_binary_is_probed_without_the_caller_naming_it() {
     // `bin` overrides are what the other two tests use, so this is the half they
     // cannot see: a consumer that has a project config asks for the harness and

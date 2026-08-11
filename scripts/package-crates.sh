@@ -8,7 +8,11 @@ cd "$(dirname "$0")/.."
 
 core_tag="$(git tag --merged HEAD --list 'oneharness-core-v*' --sort=-version:refname | head -n 1)"
 if [ -z "$core_tag" ]; then
-  git fetch --quiet --tags origin || {
+  fetch_args=(--quiet --tags)
+  if [[ $(git rev-parse --is-shallow-repository) == true ]]; then
+    fetch_args+=(--unshallow)
+  fi
+  git fetch "${fetch_args[@]}" origin || {
     echo "package-crates: core release tags are absent and could not be fetched from origin; check network access and retry" >&2
     exit 1
   }

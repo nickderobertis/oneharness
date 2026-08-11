@@ -54,11 +54,21 @@ case "$1" in
     fi
     ;;
   fetch)
+    if [[ ${SHALLOW_REPOSITORY:-false} == true && $* != *--unshallow* ]]; then
+      echo "shallow fetch omitted --unshallow" >&2
+      exit 2
+    fi
     case ${FETCH_MODE:-ok} in
       ok) ;;
       fail) exit 1 ;;
       recover) touch "${CALL_LOG}.fetched" ;;
       *) echo "invalid FETCH_MODE" >&2; exit 2 ;;
+    esac
+    ;;
+  rev-parse)
+    case ${SHALLOW_REPOSITORY:-false} in
+      true|false) echo "${SHALLOW_REPOSITORY:-false}" ;;
+      *) echo "invalid SHALLOW_REPOSITORY" >&2; exit 2 ;;
     esac
     ;;
   diff)
@@ -120,7 +130,7 @@ fi
 assert_contains 'could not be fetched from origin' "$work/out"
 
 rm -f "$work/calls.fetched"
-if ! run_case env NO_TAG=1 FETCH_MODE=recover just package-crates >"$work/out" 2>&1; then
+if ! run_case env NO_TAG=1 FETCH_MODE=recover SHALLOW_REPOSITORY=true just package-crates >"$work/out" 2>&1; then
   cat "$work/out" >&2
   fail "tag fetch recovery did not continue to package verification"
 fi

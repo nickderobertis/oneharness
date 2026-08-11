@@ -49,6 +49,7 @@ cat >"$work/bin/git" <<'EOF'
 set -euo pipefail
 case "$1" in
   tag) if [[ ${NO_TAG:-0} == 0 ]]; then echo oneharness-core-v0.6.11; fi ;;
+  fetch) ;;
   diff)
     case ${GIT_DIFF_MODE:-clean} in
       clean) exit 0 ;;
@@ -88,43 +89,43 @@ run_case() {
 }
 
 : >"$work/calls"
-run_case scripts/package-crates.sh >"$work/out"
+run_case just package-crates >"$work/out"
 [[ $(wc -l <"$work/calls") -eq 2 ]] || fail "happy path did not package core then binary"
 assert_contains 'package-crates: ok' "$work/out"
 
-if run_case env CORE_PACKAGE=fail scripts/package-crates.sh >"$work/out" 2>&1; then
+if run_case env CORE_PACKAGE=fail just package-crates >"$work/out" 2>&1; then
   fail "core package failure unexpectedly passed"
 fi
 assert_contains "core package verification failed" "$work/out"
 
-if run_case env NO_TAG=1 scripts/package-crates.sh >"$work/out" 2>&1; then
+if run_case env NO_TAG=1 just package-crates >"$work/out" 2>&1; then
   fail "missing-tag case unexpectedly passed"
 fi
-assert_contains 'fetch tags from origin and retry' "$work/out"
+assert_contains 'no merged oneharness-core release tag found after fetching origin' "$work/out"
 
-if run_case env BINARY_PACKAGE=fail scripts/package-crates.sh >"$work/out" 2>&1; then
+if run_case env BINARY_PACKAGE=fail just package-crates >"$work/out" 2>&1; then
   fail "incompatible published dependency unexpectedly passed"
 fi
 assert_contains "commit the core API change as fix/feat/perf" "$work/out"
 
-if ! run_case env BINARY_PACKAGE=fail COMMIT_KIND=fix scripts/package-crates.sh >"$work/out" 2>&1; then
+if ! run_case env BINARY_PACKAGE=fail COMMIT_KIND=fix just package-crates >"$work/out" 2>&1; then
   cat "$work/out" >&2
   fail "release-worthy core fix did not permit the release-plz transition"
 fi
 assert_contains "awaits release-plz's core version bump" "$work/out"
 
-if ! run_case env BINARY_PACKAGE=fail COMMIT_KIND=breaking scripts/package-crates.sh >"$work/out" 2>&1; then
+if ! run_case env BINARY_PACKAGE=fail COMMIT_KIND=breaking just package-crates >"$work/out" 2>&1; then
   cat "$work/out" >&2
   fail "breaking core change did not permit the release-plz transition"
 fi
 assert_contains "awaits release-plz's core version bump" "$work/out"
 
-if run_case env BINARY_PACKAGE=fail COMMIT_KIND=noncore scripts/package-crates.sh >"$work/out" 2>&1; then
+if run_case env BINARY_PACKAGE=fail COMMIT_KIND=noncore just package-crates >"$work/out" 2>&1; then
   fail "release-worthy non-core commit unexpectedly excused an incompatible dependency"
 fi
 assert_contains "cannot be packaged against its published oneharness-core dependency" "$work/out"
 
-if ! run_case env BINARY_PACKAGE=fail GIT_DIFF_MODE=dirty scripts/package-crates.sh >"$work/out" 2>&1; then
+if ! run_case env BINARY_PACKAGE=fail GIT_DIFF_MODE=dirty just package-crates >"$work/out" 2>&1; then
   cat "$work/out" >&2
   fail "dirty core checkpoint did not permit pre-commit package verification"
 fi

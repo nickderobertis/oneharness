@@ -8,8 +8,15 @@ cd "$(dirname "$0")/.."
 
 core_tag="$(git tag --merged HEAD --list 'oneharness-core-v*' --sort=-version:refname | head -n 1)"
 if [ -z "$core_tag" ]; then
-  echo "package-crates: no merged oneharness-core release tag found; fetch tags from origin and retry" >&2
-  exit 1
+  git fetch --quiet --tags origin || {
+    echo "package-crates: core release tags are absent and could not be fetched from origin; check network access and retry" >&2
+    exit 1
+  }
+  core_tag="$(git tag --merged HEAD --list 'oneharness-core-v*' --sort=-version:refname | head -n 1)"
+  if [ -z "$core_tag" ]; then
+    echo "package-crates: no merged oneharness-core release tag found after fetching origin; restore the release tags and retry" >&2
+    exit 1
+  fi
 fi
 
 core_output="$(mktemp)"

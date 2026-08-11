@@ -25,11 +25,14 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
         config: args.config.clone(),
         no_config: args.no_config,
     })?;
-    let pending_changes = report.pending_changes();
+    // `--check` is the CI mode: it writes nothing, so a difference it found is
+    // still pending and exits 1, like a formatter's check mode. A real sync
+    // has already written that same difference, so it exits 0 — which is why
+    // the mode is tested here, at the exit mapping, rather than folded into
+    // `changes()` where a write-mode report would have to deny its own writes.
+    let pending_changes = report.check && report.changes();
     print_json(&report, args.compact)?;
 
-    // `--check` is the CI mode: exit 1 when a sync is pending, like a
-    // formatter's check mode. A real sync that wrote files exits 0.
     if pending_changes {
         eprintln!("oneharness: harness configs are out of sync (run `oneharness sync`)");
         return Ok(1);

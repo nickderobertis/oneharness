@@ -169,19 +169,26 @@ pub struct SyncReport {
 }
 
 impl SyncReport {
-    /// Whether anything is out of sync — what the CLI's `--check` turns into a
-    /// non-zero exit. Always false for a real sync, which has just written the
-    /// changes it found.
+    /// Whether this report describes a config file that differs from the
+    /// policy — created, updated, or a hook that is not already installed.
+    ///
+    /// This answers only "did anything differ", not "should a caller fail".
+    /// Under `--check` nothing was written, so a difference is still pending
+    /// and [`SyncReport::check`] is what turns it into the CLI's non-zero
+    /// exit; after a real sync the same difference has just been written, so
+    /// the caller is looking at what *changed*, not at work left to do.
+    /// Folding `check` in here would make a write-mode report claim nothing
+    /// changed when it had rewritten every file, which is the opposite of what
+    /// a library consumer inspecting the report is asking.
     #[must_use]
-    pub fn pending_changes(&self) -> bool {
-        self.check
-            && self.results.iter().any(|result| {
-                matches!(result.status, SyncStatus::Created | SyncStatus::Updated)
-                    || result
-                        .hooks
-                        .iter()
-                        .any(|hook| hook.status != FileStatus::Unchanged)
-            })
+    pub fn changes(&self) -> bool {
+        self.results.iter().any(|result| {
+            matches!(result.status, SyncStatus::Created | SyncStatus::Updated)
+                || result
+                    .hooks
+                    .iter()
+                    .any(|hook| hook.status != FileStatus::Unchanged)
+        })
     }
 }
 

@@ -342,7 +342,14 @@ fn a_consumer_syncs_a_policy_into_a_harness_config_and_re_syncs_idempotently() {
 
     let second = sync::sync(&request).expect("re-syncing is safe");
     assert_eq!(second.results[0].status, SyncStatus::Unchanged);
-    assert!(!second.pending_changes());
+    assert!(
+        !second.changes(),
+        "an idempotent re-sync changed nothing, so there is nothing to report"
+    );
+    assert!(
+        first.changes(),
+        "the first sync created the file, and a write-mode report must say so rather than denying its own writes"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -361,7 +368,7 @@ fn a_check_only_sync_writes_nothing_and_says_a_change_is_pending() {
     .expect("a check-only sync reports rather than writes");
 
     assert!(report.check);
-    assert!(report.pending_changes(), "the pending change is reported");
+    assert!(report.changes(), "the pending change is reported");
     assert!(
         !dir.join(".claude").join("settings.json").exists(),
         "a check must not write the file it describes"

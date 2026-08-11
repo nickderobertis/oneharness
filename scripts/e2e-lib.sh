@@ -1000,8 +1000,30 @@ oh_edit_enforce() {
 #
 # A short prompt and no freeze window: this is a termination check, not an
 # interrupt one, so it costs a fraction of the phases around it.
+#
+# Attempts, like the two phases before it, and for the reason stated there: a
+# turn the harness's OWN provider refused proves nothing about the mode's
+# policy, because it never reached the question. This was the only control phase
+# that ran once, so opencode's intermittent `Provider request failed with HTTP
+# 401: x-api-key header is required` retired it every time while the retrying
+# phases beside it passed on their first attempt — the suite reading another
+# party's outage as a control-mode violation.
 #   $1 harness id
 oh_control_mode_enforce() {
+    local id="$1" attempt attempts=3 started=$SECONDS
+    for attempt in $(seq 1 "$attempts"); do
+        if _oh_control_mode_enforce_once "$id"; then
+            note "  ok: a controlled turn under --mode default ended (attempt $attempt of $attempts, $((SECONDS - started))s)"
+            return 0
+        fi
+        note "  control-mode: attempt $attempt was retired by the harness's own turn failing, not by the mode; retrying"
+    done
+    fail "$id: a controlled turn under --mode default never got far enough to end — the harness's own turn failed on all $attempts attempts ($((SECONDS - started))s), so its provider or credential is what to look at first, not the control path"
+}
+
+# One attempt. Returns 0 when the turn ended, 1 when the harness's own turn
+# failed (retryable — no verdict either way). Anything else calls fail().
+_oh_control_mode_enforce_once() {
     local id="$1"
     local bin sandbox store name report status
     bin="$(oh_bin)"
@@ -1043,15 +1065,20 @@ oh_control_mode_enforce() {
         # what separates "the mode's policy never arrived" from "it answered and
         # only its ENDING never came".
         _oh_control_evidence "$sandbox" "$report"
+        # And the frames are also where the harness says it never got that far.
+        # A turn its own provider refused is the inconclusive outcome the
+        # redirect phase already names: nothing follows about a policy from a
+        # turn that never ran under it.
+        if [ -n "$(_oh_harness_errors "$report")" ]; then
+            rm -rf "$sandbox"
+            return 1
+        fi
         rm -rf "$sandbox"
         fail "$id: a controlled turn under --mode default did not end cleanly (status=${status:-<no readable status in the report>}) — the harness may be waiting on a permission request oneharness did not answer, or the mode's own policy did not reach the controlled launch. Next: run \`oneharness run --harness $id --control --session probe --mode default --prompt hi\` and read the report's \`results[0].stdout\` for the last protocol frame it saw; if the harness asked permission and nothing answered, the fix is in \`domain::dialogue\`, and if it never asked, compare the launch argv against \`domain::control\`'s control_mode_parity grid"
         ;;
     esac
-    # Silent on success. Unlike the per-harness suites that call the other
-    # `oh_*_enforce` helpers, `e2e-control.sh` already names this phase before it
-    # runs and reports the harness's verdict after it, so a PASS line here is the
-    # same fact a third time. Failure still says everything.
     rm -rf "$sandbox"
+    return 0
 }
 
 # --- hook enforcement --------------------------------------------------------
@@ -1714,6 +1741,23 @@ _oh_step_count() {
 # `_oh_step_count`, so waiting on it needs no shell expression.
 _oh_steps_at_least() {
     [ "$(_oh_step_count "$1")" -ge "$2" ]
+}
+
+# The errors the HARNESS itself reported on its event stream, one per line, or
+# nothing. A turn its own provider refused is a different thing from a turn that
+# ran, and a phase has to tell them apart before it calls one a contract
+# violation — reading `Provider request failed with HTTP 401` as a control-mode
+# failure blames this feature for someone else's outage.
+#
+# Both shapes an `error` comes in: an object with a message (opencode's step
+# failures) and a bare string (its `session.error`).
+#   $1 report path
+_oh_harness_errors() {
+    [ -s "$1" ] || return 0
+    jq -r '.results[0].stdout // ""' "$1" 2>/dev/null \
+        | jq -R -r 'fromjson? | .. | objects | select(has("error")) | .error
+                    | if type == "object" then (.message? // empty) else (select(type == "string")) end' 2>/dev/null \
+        || true
 }
 
 # Whether the wait for a turn to get going is over — either because it did (two

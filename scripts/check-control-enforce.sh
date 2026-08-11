@@ -115,6 +115,23 @@ evidence_case "the error a frame carried" "HTTP 429: rate limited" "$evidence_tm
 evidence_case "a run that said nothing" "wrote nothing to stderr" "$evidence_tmp" "$evidence_tmp/absent.json"
 evidence_case "a run with no report" "no parseable report" "$evidence_tmp" "$evidence_tmp/absent.json"
 
+# Telling a turn the harness's own provider refused from a turn that ran. Every
+# phase leans on this before calling a turn that did not end a contract
+# violation, and reading a 401 as one is how the suite blames this feature for
+# another party's outage.
+[ -n "$(_oh_harness_errors "$evidence_tmp/errors.json")" ] ||
+    fail "an error the harness reported was not read back from its frames"
+# Both shapes count: an object with a message, and the bare string
+# `session.error` carries.
+[ -n "$(_oh_harness_errors "$evidence_tmp/frames.json")" ] ||
+    fail "an error the harness reported as a bare string was not read back"
+printf '%s\n' '{"results":[{"status":"timeout","stdout":"{\"type\":\"session.idle\",\"data\":{}}"}]}' \
+    >"$evidence_tmp/clean.json"
+[ -z "$(_oh_harness_errors "$evidence_tmp/clean.json")" ] ||
+    fail "a transcript with no error in it must not be read as the harness failing"
+[ -z "$(_oh_harness_errors "$evidence_tmp/absent.json")" ] ||
+    fail "a missing report must yield no harness error rather than a made-up one"
+
 # The wait that decides an attempt has settled. It must come back for EITHER
 # answer — the work started, or the run that was doing it is gone — because a
 # wait that only watched the step files spent its whole window on a run that had

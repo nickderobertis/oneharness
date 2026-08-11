@@ -59,11 +59,21 @@ while IFS= read -r commit; do
   fi
 done < <(git rev-list "$core_tag"..HEAD)
 
-if [ "$pending_core_release" = true ]; then
+registry_core_mismatch=false
+if grep -Eq 'oneharness-core-[0-9]+\.[0-9]+\.[0-9]+/' "$output_file" &&
+  grep -Eq "could not compile \`oneharness\`|failed to select a version for the requirement \`oneharness-core" "$output_file"; then
+  registry_core_mismatch=true
+fi
+
+if [ "$pending_core_release" = true ] && [ "$registry_core_mismatch" = true ]; then
   echo "package-crates: binary package awaits release-plz's core version bump; core package verified" >&2
   exit 0
 fi
 
 cat "$output_file" >&2
+if [ "$pending_core_release" = true ]; then
+  echo "package-crates: binary packaging failed for a reason other than its registry-resolved oneharness-core transition; fix the Cargo diagnostics above and rerun 'just package-crates'" >&2
+  exit 1
+fi
 echo "package-crates: binary cannot be packaged against its published oneharness-core dependency, and no release-worthy core change will make release-plz bump it; commit the core API change as fix/feat/perf (or BREAKING CHANGE), then rerun 'just package-crates'" >&2
 exit 1

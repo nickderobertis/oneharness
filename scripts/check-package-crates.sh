@@ -39,7 +39,12 @@ if [[ $* == *"crates/oneharness-core/Cargo.toml"* && ${CORE_PACKAGE:-ok} == fail
   exit 101
 fi
 if [[ $* == *"Cargo.toml"* && $* != *"crates/oneharness-core/Cargo.toml"* && ${BINARY_PACKAGE:-ok} == fail ]]; then
-  echo "simulated registry dependency mismatch" >&2
+  if [[ ${BINARY_FAILURE_KIND:-core-mismatch} == core-mismatch ]]; then
+    echo '  --> /registry/src/oneharness-core-0.6.11/src/io/http_turn.rs:592:8' >&2
+    echo 'error: could not compile `oneharness` (lib) due to previous error' >&2
+  else
+    echo 'error: simulated unrelated binary package failure' >&2
+  fi
   exit 101
 fi
 EOF
@@ -149,6 +154,11 @@ if ! run_case env BINARY_PACKAGE=fail COMMIT_KIND=fix just package-crates >"$wor
   fail "release-worthy core fix did not permit the release-plz transition"
 fi
 assert_contains "awaits release-plz's core version bump" "$work/out"
+
+if run_case env BINARY_PACKAGE=fail BINARY_FAILURE_KIND=unrelated COMMIT_KIND=fix just package-crates >"$work/out" 2>&1; then
+  fail "unrelated binary failure unexpectedly passed during a pending core release"
+fi
+assert_contains "failed for a reason other than its registry-resolved oneharness-core transition" "$work/out"
 
 if ! run_case env BINARY_PACKAGE=fail COMMIT_KIND=breaking just package-crates >"$work/out" 2>&1; then
   cat "$work/out" >&2

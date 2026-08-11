@@ -1339,7 +1339,11 @@ describe("OneHarness", () => {
 					noConfig: false,
 				},
 			],
-			["InitOptions", InitOptionsSchema, { path: "/tmp/oneharness.toml", force: true }],
+			[
+				"InitOptions",
+				InitOptionsSchema,
+				{ path: "/tmp/oneharness.toml", force: true },
+			],
 			[
 				"UsageOptions",
 				UsageOptionsSchema,

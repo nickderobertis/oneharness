@@ -29,13 +29,19 @@
   },
   "history_list_options": {
     "all_projects": "allProjects",
+    "config": "config",
     "history_dir": "historyDir",
-    "project": "project"
+    "no_config": "noConfig",
+    "project": "project",
+    "variant": "variant"
   },
   "history_lookup": {
+    "all": "all",
     "all_projects": "allProjects",
+    "config": "config",
     "history_dir": "historyDir",
     "last": "last",
+    "no_config": "noConfig",
     "project": "project",
     "session": "session"
   },
@@ -47,10 +53,13 @@
   "history_watch_options": {
     "after": "after",
     "all_projects": "allProjects",
+    "config": "config",
     "events": "events",
     "history_dir": "historyDir",
     "labels": "labels",
-    "project": "project"
+    "no_config": "noConfig",
+    "project": "project",
+    "variant": "variant"
   },
   "init_options": {
     "force": "force",

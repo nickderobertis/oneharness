@@ -3790,10 +3790,22 @@
       "all_projects": {
         "type": "boolean"
       },
+      "config": {
+        "description": "Load configuration from exactly this file, skipping user/project\ndiscovery.",
+        "type": "string"
+      },
       "history_dir": {
         "type": "string"
       },
+      "no_config": {
+        "description": "Ignore every configuration file.",
+        "type": "boolean"
+      },
       "project": {
+        "type": "string"
+      },
+      "variant": {
+        "description": "Narrow to one configured harness identity (`claude-code:work`).",
         "type": "string"
       }
     },
@@ -3806,8 +3818,16 @@
         "additionalProperties": false,
         "description": "A [`HistoryLookup`] that selects the most recent session.",
         "properties": {
+          "all": {
+            "description": "Show every record in the session rather than the run summaries.",
+            "type": "boolean"
+          },
           "all_projects": {
             "type": "boolean"
+          },
+          "config": {
+            "description": "Load configuration from exactly this file, skipping user/project\ndiscovery.",
+            "type": "string"
           },
           "history_dir": {
             "type": "string"
@@ -3815,6 +3835,10 @@
           "last": {
             "const": true,
             "description": "Select the most recent session. Only `true` selects, so this variant\naccepts no other value.",
+            "type": "boolean"
+          },
+          "no_config": {
+            "description": "Ignore every configuration file.",
             "type": "boolean"
           },
           "project": {
@@ -3834,14 +3858,26 @@
         "additionalProperties": false,
         "description": "A [`HistoryLookup`] that names its session.",
         "properties": {
+          "all": {
+            "description": "Show every record in the session rather than the run summaries.",
+            "type": "boolean"
+          },
           "all_projects": {
             "type": "boolean"
+          },
+          "config": {
+            "description": "Load configuration from exactly this file, skipping user/project\ndiscovery.",
+            "type": "string"
           },
           "history_dir": {
             "type": "string"
           },
           "last": {
             "description": "Whether the most recent session was asked for instead. An ordinary\n`bool`, so a caller holding a `boolean` can pass it straight through.\n`true` here also satisfies [`HistoryLookup::Last`], which the union tries\nfirst \u2014 so a lookup that reaches this variant always meant the name.",
+            "type": "boolean"
+          },
+          "no_config": {
+            "description": "Ignore every configuration file.",
             "type": "boolean"
           },
           "project": {
@@ -11887,6 +11923,10 @@
       "all_projects": {
         "type": "boolean"
       },
+      "config": {
+        "description": "Load configuration from exactly this file, skipping user/project\ndiscovery.",
+        "type": "string"
+      },
       "events": {
         "type": "boolean"
       },
@@ -11896,7 +11936,15 @@
       "labels": {
         "$ref": "#/$defs/HistoryLabels"
       },
+      "no_config": {
+        "description": "Ignore every configuration file.",
+        "type": "boolean"
+      },
       "project": {
+        "type": "string"
+      },
+      "variant": {
+        "description": "Narrow to one configured harness identity (`claude-code:work`).",
         "type": "string"
       }
     },

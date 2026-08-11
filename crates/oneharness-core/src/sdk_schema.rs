@@ -102,6 +102,40 @@ pub fn bundle() -> SdkSchemaBundle {
     }
 }
 
+/// Collect every property name a schema root accepts, following the `$ref`s of
+/// a union's branches.
+///
+/// Used by `every_bound_option_is_a_field_of_its_options_contract` and shared
+/// with nothing else: a lookup contract is an untagged union whose branches are
+/// definitions, so "does this option exist?" cannot be answered from the root's
+/// own `properties` alone.
+#[cfg(test)]
+fn accepted_properties(node: &serde_json::Value, root: &serde_json::Value) -> Vec<String> {
+    let mut names = Vec::new();
+    if let Some(properties) = node.get("properties").and_then(|v| v.as_object()) {
+        names.extend(properties.keys().cloned());
+    }
+    for keyword in ["anyOf", "oneOf"] {
+        for branch in node
+            .get(keyword)
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            match branch.get("$ref").and_then(|v| v.as_str()) {
+                Some(reference) => {
+                    let name = reference.rsplit('/').next().unwrap_or_default();
+                    if let Some(target) = root.pointer(&format!("/$defs/{name}")) {
+                        names.extend(accepted_properties(target, root));
+                    }
+                }
+                None => names.extend(accepted_properties(branch, root)),
+            }
+        }
+    }
+    names
+}
+
 fn history_stream_schema() -> Schema {
     // llmlint: ignore[no_panics_on_recoverable_errors] SDK schema generation is a build-time codegen boundary, and every sibling schema transformation in this module treats an impossible schemars-to-JSON failure as a generator invariant; returning a partial bundle would be less actionable than failing generation here.
     let mut value = serde_json::to_value(schema_for_serialize::<HistoryStreamEnvelope>())
@@ -824,6 +858,48 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn every_bound_option_is_a_field_of_its_options_contract() {
+        // The manifest says which SDK option renders which CLI flag, and the
+        // options contract is what a caller may actually set. When the two
+        // disagree the flag is unreachable from every SDK at once — silently,
+        // because the argv builder simply never sees the key. That is how
+        // `history list --variant`, `--config` and `--no-config` came to be
+        // bound by the manifest and settable by nobody.
+        let emitted = serde_json::to_value(bundle()).expect("the bundle serializes");
+        let mut unreachable: Vec<String> = Vec::new();
+        for capability in crate::domain::capability::CAPABILITIES {
+            let Some(root) = capability.options else {
+                continue;
+            };
+            let contract = &emitted[root];
+            let fields = accepted_properties(contract, contract);
+            for binding in capability.bindings {
+                if !fields.iter().any(|field| field == binding.option) {
+                    unreachable.push(format!(
+                        "{}: `{}` (rendering `{}`) is not a field of `{root}`",
+                        capability.method,
+                        binding.option,
+                        if binding.flag.is_empty() {
+                            "a positional argument"
+                        } else {
+                            binding.flag
+                        },
+                    ));
+                }
+            }
+        }
+        assert!(
+            unreachable.is_empty(),
+            "every bound option must be a field a caller can set, or the flag it renders is \
+             reachable from no SDK at all. Add the field to the options struct in \
+             `domain::sdk`, or drop the binding and declare the flag uncovered with a \
+             reason:\n  {}",
+            unreachable.join("\n  ")
+        );
+    }
+
     use super::*;
     use serde_json::json;
 

@@ -56,8 +56,11 @@ class RunOptions(_RunOptionsOptional):
 
 class _HistoryListOptionsOptional(TypedDict, total=False):
     all_projects: bool
+    config: str
     history_dir: str
+    no_config: bool
     project: str
+    variant: str
 
 
 class HistoryListOptions(_HistoryListOptionsOptional):
@@ -67,10 +70,13 @@ class HistoryListOptions(_HistoryListOptionsOptional):
 class _HistoryWatchOptionsOptional(TypedDict, total=False):
     after: str
     all_projects: bool
+    config: str
     events: bool
     history_dir: str
     labels: dict[str, str]
+    no_config: bool
     project: str
+    variant: str
 
 
 class HistoryWatchOptions(_HistoryWatchOptionsOptional):

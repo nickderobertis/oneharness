@@ -435,6 +435,19 @@ pub struct HistoryLookupByLast {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub history_dir: Option<String>,
+    /// Show every record in the session rather than the run summaries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub all: Option<bool>,
+    /// Load configuration from exactly this file, skipping user/project
+    /// discovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub config: Option<String>,
+    /// Ignore every configuration file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub no_config: Option<bool>,
 }
 
 /// A [`HistoryLookup`] that names its session.
@@ -461,6 +474,19 @@ pub struct HistoryLookupBySession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub history_dir: Option<String>,
+    /// Show every record in the session rather than the run summaries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub all: Option<bool>,
+    /// Load configuration from exactly this file, skipping user/project
+    /// discovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub config: Option<String>,
+    /// Ignore every configuration file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub no_config: Option<bool>,
 }
 
 /// Options accepted by `OneHarness.historyList()` in the published Node SDK.
@@ -477,6 +503,19 @@ pub struct HistoryListOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub history_dir: Option<String>,
+    /// Narrow to one configured harness identity (`claude-code:work`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub variant: Option<String>,
+    /// Load configuration from exactly this file, skipping user/project
+    /// discovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub config: Option<String>,
+    /// Ignore every configuration file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub no_config: Option<bool>,
 }
 
 /// Options accepted by the language SDKs' continuous history iterators.
@@ -506,6 +545,19 @@ pub struct HistoryWatchOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub events: Option<bool>,
+    /// Narrow to one configured harness identity (`claude-code:work`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub variant: Option<String>,
+    /// Load configuration from exactly this file, skipping user/project
+    /// discovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub config: Option<String>,
+    /// Ignore every configuration file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub no_config: Option<bool>,
 }
 
 /// Options accepted by the language SDKs' `detect()`.
@@ -936,6 +988,9 @@ mod tests {
             project: None,
             all_projects: Some(true),
             history_dir: Some("/tmp/oneharness-history".to_string()),
+            all: None,
+            config: None,
+            no_config: None,
         });
 
         let value = serde_json::to_value(&lookup).expect("serialize history lookup");
@@ -958,6 +1013,9 @@ mod tests {
             project: Some("oneharness".to_string()),
             all_projects: None,
             history_dir: None,
+            all: None,
+            config: None,
+            no_config: None,
         });
 
         let value = serde_json::to_value(&lookup).expect("serialize history lookup");
@@ -995,6 +1053,9 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
+                all: None,
+                config: None,
+                no_config: None,
             })
         );
         assert_eq!(
@@ -1006,6 +1067,9 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
+                all: None,
+                config: None,
+                no_config: None,
             })
         );
     }
@@ -1026,6 +1090,9 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
+                all: None,
+                config: None,
+                no_config: None,
             })
         );
         // Dropping `last` to `false` fails the `Last` variant, so the same
@@ -1041,6 +1108,9 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
+                all: None,
+                config: None,
+                no_config: None,
             })
         );
     }
@@ -1060,6 +1130,9 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
+                all: None,
+                config: None,
+                no_config: None,
             })
         );
     }
@@ -1143,6 +1216,9 @@ mod tests {
             project: None,
             all_projects: Some(true),
             history_dir: Some("/tmp/oneharness-history".to_string()),
+            variant: None,
+            config: None,
+            no_config: None,
         };
 
         let value = serde_json::to_value(&options).expect("serialize history list options");
@@ -1165,6 +1241,9 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
+                variant: None,
+                config: None,
+                no_config: None,
             }
         );
     }

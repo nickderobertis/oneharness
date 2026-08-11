@@ -1093,8 +1093,11 @@ export const HistoryListSchema: z.ZodType<HistoryList> = z.array(z.lazy(() => Hi
 
 export const HistoryListOptionsSchema: z.ZodType<HistoryListOptions> = z.strictObject({
   allProjects: z.boolean().optional(),
+  config: z.string().optional(),
   historyDir: z.string().optional(),
+  noConfig: z.boolean().optional(),
   project: z.string().optional(),
+  variant: z.string().optional(),
 });
 
 export const HistoryLookupSchema: z.ZodType<HistoryLookup> = z.union([
@@ -1103,17 +1106,23 @@ export const HistoryLookupSchema: z.ZodType<HistoryLookup> = z.union([
 ]);
 
 export const HistoryLookupByLastSchema: z.ZodType<HistoryLookupByLast> = z.strictObject({
+  all: z.boolean().optional(),
   allProjects: z.boolean().optional(),
+  config: z.string().optional(),
   historyDir: z.string().optional(),
   last: z.literal(true).refine((value) => value !== undefined, { message: "Required" }),
+  noConfig: z.boolean().optional(),
   project: z.string().optional(),
   session: z.string().optional(),
 });
 
 export const HistoryLookupBySessionSchema: z.ZodType<HistoryLookupBySession> = z.strictObject({
+  all: z.boolean().optional(),
   allProjects: z.boolean().optional(),
+  config: z.string().optional(),
   historyDir: z.string().optional(),
   last: z.boolean().optional(),
+  noConfig: z.boolean().optional(),
   project: z.string().optional(),
   session: z
     .string()
@@ -2069,10 +2078,13 @@ export const HistoryWatchOptionsSchema: z.ZodType<HistoryWatchOptions> = z.stric
     .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
     .optional(),
   allProjects: z.boolean().optional(),
+  config: z.string().optional(),
   events: z.boolean().optional(),
   historyDir: z.string().optional(),
   labels: z.lazy(() => HistoryLabelsSchema).optional(),
+  noConfig: z.boolean().optional(),
   project: z.string().optional(),
+  variant: z.string().optional(),
 });
 
 export const HookEntrySchema: z.ZodType<HookEntry> = z.strictObject({

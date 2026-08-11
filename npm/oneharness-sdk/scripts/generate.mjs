@@ -1,11 +1,11 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { compile } from "json-schema-to-typescript";
+import { format } from "prettier";
 // Not published (`files` is dist + README), so reaching the repo's shared
 // generator wrapper here is safe: this script only ever runs from a checkout.
 import { schemaBundle } from "../../../scripts/sdk-generator.mjs";
-import { compile } from "json-schema-to-typescript";
-import { format } from "prettier";
 import { generatedFileMatches } from "./generated-file.mjs";
 import {
 	exactOptionalProperties,

@@ -39,7 +39,13 @@ if [[ $* == *"crates/oneharness-core/Cargo.toml"* && ${CORE_PACKAGE:-ok} == fail
   exit 101
 fi
 if [[ $* == *"Cargo.toml"* && $* != *"crates/oneharness-core/Cargo.toml"* && ${BINARY_PACKAGE:-ok} == fail ]]; then
-  if [[ ${BINARY_FAILURE_KIND:-core-mismatch} == core-mismatch ]]; then
+  if [[ ${BINARY_FAILURE_KIND:-core-mismatch} == version-select ]]; then
+    echo 'error: failed to select a version for the requirement `oneharness-core = "^0.6.12"`' >&2
+    echo 'candidate versions found which did not match: 0.6.11' >&2
+    echo 'location searched: crates.io index' >&2
+    echo 'required by package `oneharness v0.6.14`' >&2
+    echo 'registry/src/oneharness-core-0.6.11/' >&2
+  elif [[ ${BINARY_FAILURE_KIND:-core-mismatch} == core-mismatch ]]; then
     if [[ ${REGISTRY_PATH_KIND:-unix} == windows ]]; then
       echo '  --> C:\registry\src\oneharness-core-0.6.11\src\io\http_turn.rs:592:8' >&2
     else
@@ -168,6 +174,12 @@ assert_contains "commit the core API change as fix/feat/perf" "$work/out"
 if ! run_case env BINARY_PACKAGE=fail COMMIT_KIND=fix just package-crates >"$work/out" 2>&1; then
   cat "$work/out" >&2
   fail "release-worthy core fix did not permit the release-plz transition"
+fi
+assert_contains "awaits release-plz's core version bump" "$work/out"
+
+if ! run_case env BINARY_PACKAGE=fail BINARY_FAILURE_KIND=version-select COMMIT_KIND=fix just package-crates >"$work/out" 2>&1; then
+  cat "$work/out" >&2
+  fail "unpublished release-plz core version did not permit the release transition"
 fi
 assert_contains "awaits release-plz's core version bump" "$work/out"
 

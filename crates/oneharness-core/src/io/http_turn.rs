@@ -7,6 +7,8 @@
 //! the server blocks on until the turn ends. The interrupt is then one more
 //! request against the same session, which is what lets a *separate* process
 //! reach the live turn.
+//! Server readiness is therefore coupled to the launched process as well as
+//! the address; callers must never treat an unrelated listener as that server.
 //!
 //! Every route and payload is pure ([`crate::domain::http`]); this owns only
 //! sockets, threads and the clock.

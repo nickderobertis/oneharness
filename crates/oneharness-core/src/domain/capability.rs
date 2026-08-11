@@ -19,32 +19,73 @@
 use serde::Serialize;
 
 /// How one SDK option reaches the CLI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
-#[serde(rename_all = "kebab-case")]
+///
+/// The flag lives *in* the variants that have one, so "a positional argument
+/// carrying `--harness`" and "a `--flag VALUE` binding with no flag" are not
+/// states this type can hold. They used to be: `flag` and `kind` sat beside
+/// each other and a runtime assertion in `tests/capability.rs` was all that
+/// stood between the manifest and an SDK rendering `--` as an argument.
+///
+/// The serialized shape is unchanged — flat `{"flag": …, "kind": …}`, with
+/// `""` for the flagless variants — because both SDK generators read it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlagKind {
     /// A bare positional argument, appended in binding order.
     Positional,
     /// `--flag VALUE`, once.
-    Value,
+    Value(&'static str),
     /// `--flag VALUE`, once per array element.
-    Repeated,
+    Repeated(&'static str),
     /// `--flag`, present only when the option is true.
-    Switch,
+    Switch(&'static str),
     /// `--flag KEY=VALUE`, once per map entry.
-    KeyValue,
+    KeyValue(&'static str),
     /// Every array element appended verbatim after a `--` separator.
     Trailing,
 }
 
+impl FlagKind {
+    /// The CLI spelling this binding renders, or `None` when it renders a bare
+    /// argument. A caller that wants the wire spelling wants
+    /// [`OptionBinding::flag`], which is `""` rather than absent.
+    #[must_use]
+    pub const fn flag(self) -> Option<&'static str> {
+        match self {
+            FlagKind::Positional | FlagKind::Trailing => None,
+            FlagKind::Value(flag)
+            | FlagKind::Repeated(flag)
+            | FlagKind::Switch(flag)
+            | FlagKind::KeyValue(flag) => Some(flag),
+        }
+    }
+
+    /// The discriminant the SDK generators switch on.
+    #[must_use]
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            FlagKind::Positional => "positional",
+            FlagKind::Value(_) => "value",
+            FlagKind::Repeated(_) => "repeated",
+            FlagKind::Switch(_) => "switch",
+            FlagKind::KeyValue(_) => "key-value",
+            FlagKind::Trailing => "trailing",
+        }
+    }
+}
+
+impl Serialize for FlagKind {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.wire_name())
+    }
+}
+
 /// One SDK option and the CLI flag it renders to.
-#[derive(Debug, Clone, Copy, Serialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy)]
 pub struct OptionBinding {
     /// The option's name in the SDK input contract (camelCase; the Python SDK
     /// accepts the same key, so one spelling serves both).
     pub option: &'static str,
-    /// The CLI spelling it renders to. `""` for [`FlagKind::Positional`] and
-    /// [`FlagKind::Trailing`], which have no flag.
-    pub flag: &'static str,
+    /// How it renders, including the flag when it has one.
     pub kind: FlagKind,
     /// Another option whose truth suppresses this one.
     ///
@@ -54,6 +95,34 @@ pub struct OptionBinding {
     /// resolving to "the most recent" — must render only `--last`. Declaring the
     /// suppression keeps that rule in the manifest instead of in each SDK.
     pub unless: Option<&'static str>,
+}
+
+impl OptionBinding {
+    /// The CLI spelling this binding renders, `""` when it renders a bare
+    /// argument — the wire spelling both SDK generators read.
+    #[must_use]
+    pub const fn flag(&self) -> &'static str {
+        match self.kind.flag() {
+            Some(flag) => flag,
+            None => "",
+        }
+    }
+}
+
+impl Serialize for OptionBinding {
+    /// Flattened by hand so the enum's payload stays out of the wire shape:
+    /// the generators have always read `{option, flag, kind, unless}`, and
+    /// making the invalid combinations unrepresentable in Rust is not a reason
+    /// to reshape a contract two SDKs generate from.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut out = serializer.serialize_struct("OptionBinding", 4)?;
+        out.serialize_field("option", self.option)?;
+        out.serialize_field("flag", self.flag())?;
+        out.serialize_field("kind", &self.kind)?;
+        out.serialize_field("unless", &self.unless)?;
+        out.end()
+    }
 }
 
 /// A CLI flag no SDK option renders, and why that is correct.
@@ -67,23 +136,57 @@ pub struct UncoveredFlag {
 }
 
 /// How a verb's stdout reaches an SDK caller.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
-#[serde(rename_all = "kebab-case")]
+///
+/// The output contract's schema root lives *in* the variants that validate
+/// one, so "JSON stdout with nothing to validate it against" and "text stdout
+/// carrying an output schema" cannot be written. The first of those is the
+/// defect that ships as an SDK method typed `unknown`; it was previously held
+/// off by a runtime assertion rather than by the type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StdoutShape {
-    /// One JSON document, validated against the capability's output schema.
-    Json,
+    /// One JSON document, validated against the named schema root.
+    Json(&'static str),
     /// One validated JSON document per line, yielded as it arrives.
-    Jsonl,
+    Jsonl(&'static str),
     /// Not a contract at all. `init` writes a human confirmation line by
     /// design — its deliverable is the file — and `gate`/`mock` answer with a
     /// harness's own native verdict, or with nothing at all when the call is
     /// allowed through. The SDK returns the text (or `null`) rather than
-    /// pretending it parsed a document.
+    /// pretending it parsed a document. There is no schema root because there
+    /// is no document.
     Text,
 }
 
+impl StdoutShape {
+    /// The schema root this capability's output validates against, or `None`
+    /// for [`StdoutShape::Text`], which has no document.
+    #[must_use]
+    pub const fn output(self) -> Option<&'static str> {
+        match self {
+            StdoutShape::Json(root) | StdoutShape::Jsonl(root) => Some(root),
+            StdoutShape::Text => None,
+        }
+    }
+
+    /// The discriminant the SDK generators switch on.
+    #[must_use]
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            StdoutShape::Json(_) => "json",
+            StdoutShape::Jsonl(_) => "jsonl",
+            StdoutShape::Text => "text",
+        }
+    }
+}
+
+impl Serialize for StdoutShape {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.wire_name())
+    }
+}
+
 /// One thing this CLI can do, and how each consumer surface reaches it.
-#[derive(Debug, Clone, Copy, Serialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy)]
 pub struct Capability {
     /// The SDK method name in camelCase. The Python SDK snake-cases it, so
     /// `historyList` is `history_list` there — one declaration, both spellings.
@@ -93,16 +196,13 @@ pub struct Capability {
     /// The schema root of its input contract, or `None` for a verb that takes
     /// no options at all.
     pub options: Option<&'static str>,
-    /// The schema root of its output contract.
+    /// How the SDK reads the verb's stdout, and — for the JSON shapes — the
+    /// schema root its output validates against.
     ///
-    /// `None` only for a [`StdoutShape::Text`] capability, which has no document
-    /// to validate at all. A capability that emits JSON must name a root the
-    /// bundle emits: `a_json_capability_names_an_output_contract` refuses the
-    /// `None`, and `every_named_schema_root_is_emitted_by_the_bundle` refuses a
-    /// root with no source behind it — so "an SDK method returning `unknown`"
-    /// cannot be reached from either direction.
-    pub output: Option<&'static str>,
-    /// How the SDK reads the verb's stdout.
+    /// The root cannot disagree with the shape, because it lives inside it.
+    /// `every_named_schema_root_is_emitted_by_the_bundle` still refuses a root
+    /// with no source behind it, so "an SDK method returning `unknown`" is
+    /// unreachable from both directions: one by the type, one by that test.
     pub stdout: StdoutShape,
     /// Whether the call writes a payload to the CLI's stdin (the hook verbs).
     pub stdin: bool,
@@ -118,7 +218,35 @@ pub struct Capability {
     pub uncovered: &'static [UncoveredFlag],
 }
 
+impl Serialize for Capability {
+    /// Flattened by hand for the same reason as [`OptionBinding`]: the wire
+    /// shape both SDK generators read keeps `stdout` and `output` as separate
+    /// keys, and folding the root into the variant is a Rust-side invariant,
+    /// not a contract change.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut out = serializer.serialize_struct("Capability", 9)?;
+        out.serialize_field("method", self.method)?;
+        out.serialize_field("argv", self.argv)?;
+        out.serialize_field("options", &self.options)?;
+        out.serialize_field("output", &self.output())?;
+        out.serialize_field("stdout", &self.stdout)?;
+        out.serialize_field("stdin", &self.stdin)?;
+        out.serialize_field("rust", self.rust)?;
+        out.serialize_field("always", self.always)?;
+        out.serialize_field("bindings", self.bindings)?;
+        out.serialize_field("uncovered", self.uncovered)?;
+        out.end()
+    }
+}
+
 impl Capability {
+    /// The schema root of its output contract, or `None` for a text verb.
+    #[must_use]
+    pub const fn output(&self) -> Option<&'static str> {
+        self.stdout.output()
+    }
+
     /// The Python SDK's spelling of [`Capability::method`].
     #[must_use]
     pub fn python_method(&self) -> String {
@@ -135,24 +263,17 @@ impl Capability {
     }
 }
 
-const fn bind(option: &'static str, flag: &'static str, kind: FlagKind) -> OptionBinding {
+const fn bind(option: &'static str, kind: FlagKind) -> OptionBinding {
     OptionBinding {
         option,
-        flag,
         kind,
         unless: None,
     }
 }
 
-const fn bind_unless(
-    option: &'static str,
-    flag: &'static str,
-    kind: FlagKind,
-    unless: &'static str,
-) -> OptionBinding {
+const fn bind_unless(option: &'static str, kind: FlagKind, unless: &'static str) -> OptionBinding {
     OptionBinding {
         option,
-        flag,
         kind,
         unless: Some(unless),
     }
@@ -170,48 +291,48 @@ const TEXT_FORMAT: &str =
 /// Bindings shared by `run` and `runStream`: both drive the same verb, and the
 /// two methods differ only in how they read its stdout.
 const RUN_BINDINGS: &[OptionBinding] = &[
-    bind("prompt", "--prompt", FlagKind::Value),
-    bind("batchPrompts", "--prompt", FlagKind::Repeated),
-    bind("promptFiles", "--prompt-file", FlagKind::Repeated),
-    bind("harnesses", "--harness", FlagKind::Repeated),
-    bind("mockHarnesses", "--mock-harness", FlagKind::Repeated),
-    bind_unless("all", "--all", FlagKind::Switch, "harnesses"),
-    bind("exclude", "--exclude", FlagKind::Repeated),
-    bind("models", "--model", FlagKind::Repeated),
-    bind("system", "--system", FlagKind::Value),
-    bind_unless("systemFile", "--system-file", FlagKind::Value, "system"),
-    bind("reasoning", "--reasoning", FlagKind::Value),
-    bind("resume", "--resume", FlagKind::Value),
-    bind("fork", "--fork", FlagKind::Switch),
-    bind("session", "--session", FlagKind::Value),
-    bind("sessionDir", "--session-dir", FlagKind::Value),
-    bind("control", "--control", FlagKind::Switch),
-    bind("outputFormat", "--output-format", FlagKind::Value),
-    bind("events", "--events", FlagKind::Switch),
-    bind("mockRules", "--mock-rules", FlagKind::Value),
-    bind("spyFile", "--spy-file", FlagKind::Value),
-    bind("schema", "--schema", FlagKind::Value),
-    bind("schemaMaxRetries", "--schema-max-retries", FlagKind::Value),
-    bind("outputDir", "--output-dir", FlagKind::Value),
-    bind("timeoutSeconds", "--timeout", FlagKind::Value),
-    bind("cwd", "--cwd", FlagKind::Value),
-    bind("env", "--env", FlagKind::KeyValue),
-    bind("mode", "--mode", FlagKind::Value),
-    bind("permitPrompts", "--permit-prompts", FlagKind::Switch),
-    bind_unless("config", "--config", FlagKind::Value, "noConfig"),
-    bind("noConfig", "--no-config", FlagKind::Switch),
-    bind("maxParallel", "--max-parallel", FlagKind::Value),
-    bind("batchStrategy", "--batch-strategy", FlagKind::Value),
-    bind("runMode", "--run-mode", FlagKind::Value),
-    bind("printCommand", "--print-command", FlagKind::Switch),
-    bind("bins", "--bin", FlagKind::KeyValue),
-    bind("requireAvailable", "--require-available", FlagKind::Switch),
-    bind_unless("history", "--history", FlagKind::Switch, "noHistory"),
-    bind("noHistory", "--no-history", FlagKind::Switch),
-    bind("historyDir", "--history-dir", FlagKind::Value),
-    bind("historyName", "--history-name", FlagKind::Value),
-    bind("historyLabels", "--history-label", FlagKind::KeyValue),
-    bind("passthrough", "", FlagKind::Trailing),
+    bind("prompt", FlagKind::Value("--prompt")),
+    bind("batchPrompts", FlagKind::Repeated("--prompt")),
+    bind("promptFiles", FlagKind::Repeated("--prompt-file")),
+    bind("harnesses", FlagKind::Repeated("--harness")),
+    bind("mockHarnesses", FlagKind::Repeated("--mock-harness")),
+    bind_unless("all", FlagKind::Switch("--all"), "harnesses"),
+    bind("exclude", FlagKind::Repeated("--exclude")),
+    bind("models", FlagKind::Repeated("--model")),
+    bind("system", FlagKind::Value("--system")),
+    bind_unless("systemFile", FlagKind::Value("--system-file"), "system"),
+    bind("reasoning", FlagKind::Value("--reasoning")),
+    bind("resume", FlagKind::Value("--resume")),
+    bind("fork", FlagKind::Switch("--fork")),
+    bind("session", FlagKind::Value("--session")),
+    bind("sessionDir", FlagKind::Value("--session-dir")),
+    bind("control", FlagKind::Switch("--control")),
+    bind("outputFormat", FlagKind::Value("--output-format")),
+    bind("events", FlagKind::Switch("--events")),
+    bind("mockRules", FlagKind::Value("--mock-rules")),
+    bind("spyFile", FlagKind::Value("--spy-file")),
+    bind("schema", FlagKind::Value("--schema")),
+    bind("schemaMaxRetries", FlagKind::Value("--schema-max-retries")),
+    bind("outputDir", FlagKind::Value("--output-dir")),
+    bind("timeoutSeconds", FlagKind::Value("--timeout")),
+    bind("cwd", FlagKind::Value("--cwd")),
+    bind("env", FlagKind::KeyValue("--env")),
+    bind("mode", FlagKind::Value("--mode")),
+    bind("permitPrompts", FlagKind::Switch("--permit-prompts")),
+    bind_unless("config", FlagKind::Value("--config"), "noConfig"),
+    bind("noConfig", FlagKind::Switch("--no-config")),
+    bind("maxParallel", FlagKind::Value("--max-parallel")),
+    bind("batchStrategy", FlagKind::Value("--batch-strategy")),
+    bind("runMode", FlagKind::Value("--run-mode")),
+    bind("printCommand", FlagKind::Switch("--print-command")),
+    bind("bins", FlagKind::KeyValue("--bin")),
+    bind("requireAvailable", FlagKind::Switch("--require-available")),
+    bind_unless("history", FlagKind::Switch("--history"), "noHistory"),
+    bind("noHistory", FlagKind::Switch("--no-history")),
+    bind("historyDir", FlagKind::Value("--history-dir")),
+    bind("historyName", FlagKind::Value("--history-name")),
+    bind("historyLabels", FlagKind::KeyValue("--history-label")),
+    bind("passthrough", FlagKind::Trailing),
 ];
 
 /// The `run` flags neither run method binds. The two `--mode` shorthands are
@@ -248,8 +369,7 @@ pub const CAPABILITIES: &[Capability] = &[
         method: "run",
         argv: &["run"],
         options: Some("run_options"),
-        output: Some("run_report"),
-        stdout: StdoutShape::Json,
+        stdout: StdoutShape::Json("run_report"),
         stdin: false,
         rust: "oneharness_core::io::run::run",
         always: &["--compact", "--no-stream"],
@@ -260,8 +380,7 @@ pub const CAPABILITIES: &[Capability] = &[
         method: "runStream",
         argv: &["run"],
         options: Some("run_options"),
-        output: Some("run_stream_envelope"),
-        stdout: StdoutShape::Jsonl,
+        stdout: StdoutShape::Jsonl("run_stream_envelope"),
         stdin: false,
         rust: "oneharness_core::io::run::run",
         always: &["--compact", "--stream"],
@@ -274,8 +393,7 @@ pub const CAPABILITIES: &[Capability] = &[
         // the CLI gives it nothing to narrow or steer.
         argv: &["list"],
         options: None,
-        output: Some("list_report"),
-        stdout: StdoutShape::Json,
+        stdout: StdoutShape::Json("list_report"),
         stdin: false,
         rust: "oneharness_core::io::registry::list",
         always: &["--compact"],
@@ -286,19 +404,18 @@ pub const CAPABILITIES: &[Capability] = &[
         method: "detect",
         argv: &["detect"],
         options: Some("detect_options"),
-        output: Some("detect_report"),
-        stdout: StdoutShape::Json,
+        stdout: StdoutShape::Json("detect_report"),
         stdin: false,
         rust: "oneharness_core::io::detect::detect",
         always: &["--compact"],
         bindings: &[
-            bind("harnesses", "--harness", FlagKind::Repeated),
-            bind_unless("all", "--all", FlagKind::Switch, "harnesses"),
-            bind("exclude", "--exclude", FlagKind::Repeated),
-            bind("bins", "--bin", FlagKind::KeyValue),
-            bind_unless("config", "--config", FlagKind::Value, "noConfig"),
-            bind("noConfig", "--no-config", FlagKind::Switch),
-            bind("requireAvailable", "--require-available", FlagKind::Switch),
+            bind("harnesses", FlagKind::Repeated("--harness")),
+            bind_unless("all", FlagKind::Switch("--all"), "harnesses"),
+            bind("exclude", FlagKind::Repeated("--exclude")),
+            bind("bins", FlagKind::KeyValue("--bin")),
+            bind_unless("config", FlagKind::Value("--config"), "noConfig"),
+            bind("noConfig", FlagKind::Switch("--no-config")),
+            bind("requireAvailable", FlagKind::Switch("--require-available")),
         ],
         uncovered: &[],
     },
@@ -306,15 +423,14 @@ pub const CAPABILITIES: &[Capability] = &[
         method: "config",
         argv: &["config"],
         options: Some("config_options"),
-        output: Some("config_report"),
-        stdout: StdoutShape::Json,
+        stdout: StdoutShape::Json("config_report"),
         stdin: false,
         rust: "oneharness_core::domain::config::explain",
         always: &["--compact"],
         bindings: &[
-            bind("cwd", "--cwd", FlagKind::Value),
-            bind_unless("config", "--config", FlagKind::Value, "noConfig"),
-            bind("noConfig", "--no-config", FlagKind::Switch),
+            bind("cwd", FlagKind::Value("--cwd")),
+            bind_unless("config", FlagKind::Value("--config"), "noConfig"),
+            bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[],
     },
@@ -322,18 +438,17 @@ pub const CAPABILITIES: &[Capability] = &[
         method: "sync",
         argv: &["sync"],
         options: Some("sync_options"),
-        output: Some("sync_report"),
-        stdout: StdoutShape::Json,
+        stdout: StdoutShape::Json("sync_report"),
         stdin: false,
         rust: "oneharness_core::io::sync::sync",
         always: &["--compact"],
         bindings: &[
-            bind("cwd", "--cwd", FlagKind::Value),
-            bind("harnesses", "--harness", FlagKind::Repeated),
-            bind("check", "--check", FlagKind::Switch),
-            bind("global", "--global", FlagKind::Switch),
-            bind_unless("config", "--config", FlagKind::Value, "noConfig"),
-            bind("noConfig", "--no-config", FlagKind::Switch),
+            bind("cwd", FlagKind::Value("--cwd")),
+            bind("harnesses", FlagKind::Repeated("--harness")),
+            bind("check", FlagKind::Switch("--check")),
+            bind("global", FlagKind::Switch("--global")),
+            bind_unless("config", FlagKind::Value("--config"), "noConfig"),
+            bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[],
     },
@@ -341,14 +456,13 @@ pub const CAPABILITIES: &[Capability] = &[
         method: "init",
         argv: &["init"],
         options: Some("init_options"),
-        output: None,
         stdout: StdoutShape::Text,
         stdin: false,
         rust: "oneharness_core::io::init::init",
         always: &[],
         bindings: &[
-            bind("path", "", FlagKind::Positional),
-            bind("force", "--force", FlagKind::Switch),
+            bind("path", FlagKind::Positional),
+            bind("force", FlagKind::Switch("--force")),
         ],
         uncovered: &[],
     },
@@ -356,20 +470,19 @@ pub const CAPABILITIES: &[Capability] = &[
         method: "usage",
         argv: &["usage"],
         options: Some("usage_options"),
-        output: Some("usage_report"),
-        stdout: StdoutShape::Json,
+        stdout: StdoutShape::Json("usage_report"),
         stdin: false,
         rust: "oneharness_core::io::usage::report",
         always: &["--compact"],
         bindings: &[
-            bind("harnesses", "--harness", FlagKind::Repeated),
-            bind_unless("all", "--all", FlagKind::Switch, "harnesses"),
-            bind("exclude", "--exclude", FlagKind::Repeated),
-            bind("bins", "--bin", FlagKind::KeyValue),
-            bind("cwd", "--cwd", FlagKind::Value),
-            bind("timeoutSeconds", "--timeout", FlagKind::Value),
-            bind_unless("config", "--config", FlagKind::Value, "noConfig"),
-            bind("noConfig", "--no-config", FlagKind::Switch),
+            bind("harnesses", FlagKind::Repeated("--harness")),
+            bind_unless("all", FlagKind::Switch("--all"), "harnesses"),
+            bind("exclude", FlagKind::Repeated("--exclude")),
+            bind("bins", FlagKind::KeyValue("--bin")),
+            bind("cwd", FlagKind::Value("--cwd")),
+            bind("timeoutSeconds", FlagKind::Value("--timeout")),
+            bind_unless("config", FlagKind::Value("--config"), "noConfig"),
+            bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[skip("--format", TEXT_FORMAT)],
     },
@@ -377,15 +490,14 @@ pub const CAPABILITIES: &[Capability] = &[
         method: "gate",
         argv: &["gate"],
         options: Some("gate_options"),
-        output: None,
         stdout: StdoutShape::Text,
         stdin: true,
         rust: "oneharness_core::domain::gate::render_deny",
         always: &[],
         bindings: &[
-            bind("harness", "", FlagKind::Positional),
-            bind("denyIfContains", "--deny-if-contains", FlagKind::Value),
-            bind("reason", "--reason", FlagKind::Value),
+            bind("harness", FlagKind::Positional),
+            bind("denyIfContains", FlagKind::Value("--deny-if-contains")),
+            bind("reason", FlagKind::Value("--reason")),
         ],
         uncovered: &[],
     },
@@ -393,15 +505,14 @@ pub const CAPABILITIES: &[Capability] = &[
         method: "mock",
         argv: &["mock"],
         options: Some("mock_options"),
-        output: None,
         stdout: StdoutShape::Text,
         stdin: true,
         rust: "oneharness_core::domain::mock::decide",
         always: &[],
         bindings: &[
-            bind("harness", "", FlagKind::Positional),
-            bind("rules", "--rules", FlagKind::Value),
-            bind("spyFile", "--spy-file", FlagKind::Value),
+            bind("harness", FlagKind::Positional),
+            bind("rules", FlagKind::Value("--rules")),
+            bind("spyFile", FlagKind::Value("--spy-file")),
         ],
         uncovered: &[],
     },
@@ -409,16 +520,15 @@ pub const CAPABILITIES: &[Capability] = &[
         method: "interrupt",
         argv: &["interrupt"],
         options: Some("interrupt_options"),
-        output: Some("interrupt_response"),
-        stdout: StdoutShape::Json,
+        stdout: StdoutShape::Json("interrupt_response"),
         stdin: false,
         rust: "oneharness_core::io::control::send",
         always: &["--compact"],
         bindings: &[
-            bind("session", "--session", FlagKind::Value),
-            bind("input", "--input", FlagKind::Value),
-            bind("sessionDir", "--session-dir", FlagKind::Value),
-            bind("cwd", "--cwd", FlagKind::Value),
+            bind("session", FlagKind::Value("--session")),
+            bind("input", FlagKind::Value("--input")),
+            bind("sessionDir", FlagKind::Value("--session-dir")),
+            bind("cwd", FlagKind::Value("--cwd")),
         ],
         uncovered: &[],
     },
@@ -426,20 +536,19 @@ pub const CAPABILITIES: &[Capability] = &[
         method: "history",
         argv: &["history", "show"],
         options: Some("history_lookup"),
-        output: Some("history_records"),
-        stdout: StdoutShape::Json,
+        stdout: StdoutShape::Json("history_records"),
         stdin: false,
         rust: "oneharness_core::io::history::read_session",
         always: &["--compact"],
         bindings: &[
-            bind_unless("session", "", FlagKind::Positional, "last"),
-            bind("last", "--last", FlagKind::Switch),
-            bind("all", "--all", FlagKind::Switch),
-            bind_unless("project", "--project", FlagKind::Value, "allProjects"),
-            bind("allProjects", "--all-projects", FlagKind::Switch),
-            bind("historyDir", "--history-dir", FlagKind::Value),
-            bind_unless("config", "--config", FlagKind::Value, "noConfig"),
-            bind("noConfig", "--no-config", FlagKind::Switch),
+            bind_unless("session", FlagKind::Positional, "last"),
+            bind("last", FlagKind::Switch("--last")),
+            bind("all", FlagKind::Switch("--all")),
+            bind_unless("project", FlagKind::Value("--project"), "allProjects"),
+            bind("allProjects", FlagKind::Switch("--all-projects")),
+            bind("historyDir", FlagKind::Value("--history-dir")),
+            bind_unless("config", FlagKind::Value("--config"), "noConfig"),
+            bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[skip("--format", TEXT_FORMAT)],
     },
@@ -447,18 +556,17 @@ pub const CAPABILITIES: &[Capability] = &[
         method: "historyList",
         argv: &["history", "list"],
         options: Some("history_list_options"),
-        output: Some("history_list"),
-        stdout: StdoutShape::Json,
+        stdout: StdoutShape::Json("history_list"),
         stdin: false,
         rust: "oneharness_core::io::history::list_sessions",
         always: &["--compact"],
         bindings: &[
-            bind("variant", "--variant", FlagKind::Value),
-            bind_unless("project", "--project", FlagKind::Value, "allProjects"),
-            bind("allProjects", "--all-projects", FlagKind::Switch),
-            bind("historyDir", "--history-dir", FlagKind::Value),
-            bind_unless("config", "--config", FlagKind::Value, "noConfig"),
-            bind("noConfig", "--no-config", FlagKind::Switch),
+            bind("variant", FlagKind::Value("--variant")),
+            bind_unless("project", FlagKind::Value("--project"), "allProjects"),
+            bind("allProjects", FlagKind::Switch("--all-projects")),
+            bind("historyDir", FlagKind::Value("--history-dir")),
+            bind_unless("config", FlagKind::Value("--config"), "noConfig"),
+            bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[skip("--format", TEXT_FORMAT)],
     },
@@ -466,21 +574,20 @@ pub const CAPABILITIES: &[Capability] = &[
         method: "historyWatch",
         argv: &["history", "watch"],
         options: Some("history_watch_options"),
-        output: Some("history_stream_envelope"),
-        stdout: StdoutShape::Jsonl,
+        stdout: StdoutShape::Jsonl("history_stream_envelope"),
         stdin: false,
         rust: "oneharness_core::io::history::HistoryWatcher",
         always: &["--format", "jsonl"],
         bindings: &[
-            bind("after", "--after", FlagKind::Value),
-            bind("labels", "--label", FlagKind::KeyValue),
-            bind("variant", "--variant", FlagKind::Value),
-            bind_unless("project", "--project", FlagKind::Value, "allProjects"),
-            bind("allProjects", "--all-projects", FlagKind::Switch),
-            bind("historyDir", "--history-dir", FlagKind::Value),
-            bind("events", "--events", FlagKind::Switch),
-            bind_unless("config", "--config", FlagKind::Value, "noConfig"),
-            bind("noConfig", "--no-config", FlagKind::Switch),
+            bind("after", FlagKind::Value("--after")),
+            bind("labels", FlagKind::KeyValue("--label")),
+            bind("variant", FlagKind::Value("--variant")),
+            bind_unless("project", FlagKind::Value("--project"), "allProjects"),
+            bind("allProjects", FlagKind::Switch("--all-projects")),
+            bind("historyDir", FlagKind::Value("--history-dir")),
+            bind("events", FlagKind::Switch("--events")),
+            bind_unless("config", FlagKind::Value("--config"), "noConfig"),
+            bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[],
     },
@@ -488,18 +595,17 @@ pub const CAPABILITIES: &[Capability] = &[
         method: "historyClear",
         argv: &["history", "clear"],
         options: Some("history_clear_options"),
-        output: Some("history_clear_report"),
-        stdout: StdoutShape::Json,
+        stdout: StdoutShape::Json("history_clear_report"),
         stdin: false,
         rust: "oneharness_core::io::history::remove_sessions",
         always: &["--compact"],
         bindings: &[
-            bind_unless("project", "--project", FlagKind::Value, "allProjects"),
-            bind("allProjects", "--all-projects", FlagKind::Switch),
-            bind("yes", "--yes", FlagKind::Switch),
-            bind("historyDir", "--history-dir", FlagKind::Value),
-            bind_unless("config", "--config", FlagKind::Value, "noConfig"),
-            bind("noConfig", "--no-config", FlagKind::Switch),
+            bind_unless("project", FlagKind::Value("--project"), "allProjects"),
+            bind("allProjects", FlagKind::Switch("--all-projects")),
+            bind("yes", FlagKind::Switch("--yes")),
+            bind("historyDir", FlagKind::Value("--history-dir")),
+            bind_unless("config", FlagKind::Value("--config"), "noConfig"),
+            bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[],
     },
@@ -507,15 +613,14 @@ pub const CAPABILITIES: &[Capability] = &[
         method: "historyMigrate",
         argv: &["history", "migrate"],
         options: Some("history_migrate_options"),
-        output: Some("history_migrate_report"),
-        stdout: StdoutShape::Json,
+        stdout: StdoutShape::Json("history_migrate_report"),
         stdin: false,
         rust: "oneharness_core::io::history::migrate",
         always: &["--compact"],
         bindings: &[
-            bind("historyDir", "--history-dir", FlagKind::Value),
-            bind_unless("config", "--config", FlagKind::Value, "noConfig"),
-            bind("noConfig", "--no-config", FlagKind::Switch),
+            bind("historyDir", FlagKind::Value("--history-dir")),
+            bind_unless("config", FlagKind::Value("--config"), "noConfig"),
+            bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[],
     },

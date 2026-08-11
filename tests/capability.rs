@@ -18,7 +18,7 @@
 use std::collections::BTreeSet;
 
 use clap::CommandFactory;
-use oneharness_core::domain::capability::{Capability, FlagKind, StdoutShape, CAPABILITIES};
+use oneharness_core::domain::capability::{Capability, CAPABILITIES};
 
 /// Verbs that are deliberately not capabilities, with the reason.
 ///
@@ -72,8 +72,8 @@ fn decided_flags(capability: &Capability) -> BTreeSet<String> {
     capability
         .bindings
         .iter()
-        .filter(|binding| !binding.flag.is_empty())
-        .map(|binding| binding.flag.to_string())
+        .filter_map(|binding| binding.kind.flag())
+        .map(str::to_string)
         .chain(
             capability
                 .always
@@ -171,25 +171,11 @@ fn a_declined_flag_carries_a_reason_a_reader_can_act_on() {
     }
 }
 
-#[test]
-fn a_positional_binding_names_no_flag_and_a_flag_binding_names_one() {
-    // The SDK argv builders switch on exactly this, so a binding that says
-    // "positional" while carrying a flag (or the reverse) builds a broken call.
-    for capability in CAPABILITIES {
-        for binding in capability.bindings {
-            let flagless = matches!(binding.kind, FlagKind::Positional | FlagKind::Trailing);
-            assert_eq!(
-                binding.flag.is_empty(),
-                flagless,
-                "`{}` binds `{}` as {:?} with flag {:?}",
-                capability.method,
-                binding.option,
-                binding.kind,
-                binding.flag
-            );
-        }
-    }
-}
+// A binding that says "positional" while carrying a flag — or the reverse —
+// used to be asserted here. It is now unrepresentable: `FlagKind` holds the
+// flag inside the variants that have one, so there is no state to test. The
+// SDK argv builders switch on exactly that discriminant, and a type is a
+// stronger guarantee for them than a test that has to remember to look.
 
 #[test]
 fn a_suppressing_option_is_one_the_same_capability_binds() {
@@ -213,33 +199,12 @@ fn a_suppressing_option_is_one_the_same_capability_binds() {
     }
 }
 
-#[test]
-fn a_json_capability_names_an_output_contract() {
-    // The gap this closes is an SDK method that spawns, reads a JSON document,
-    // and hands the caller `unknown` because nothing describes it. A `Text`
-    // capability legitimately has no document; one that prints JSON has no
-    // excuse, and saying so here is what keeps a future verb from shipping with
-    // an inline `serde_json::json!` report no consumer can validate.
-    for capability in CAPABILITIES {
-        if capability.stdout == StdoutShape::Text {
-            assert!(
-                capability.output.is_none(),
-                "`{}` emits text but names the output contract `{:?}`",
-                capability.method,
-                capability.output
-            );
-            continue;
-        }
-        assert!(
-            capability.output.is_some(),
-            "`{}` emits {:?} but names no output contract. Give the verb's report a \
-             schema-carrying Rust type and add its root to `sdk_schema::bundle`; an SDK \
-             cannot validate a document nothing describes.",
-            capability.method,
-            capability.stdout
-        );
-    }
-}
+// "A JSON capability names an output contract" was asserted here too. It is
+// now unrepresentable for the same reason: `StdoutShape::Json`/`Jsonl` carry
+// their schema root, and `Text` has no field to put one in. The half that a
+// type cannot state — that the named root is one `bundle()` actually emits —
+// is still a test, and still runs, in `sdk_schema`'s
+// `every_named_schema_root_is_emitted_by_the_bundle`.
 
 #[test]
 fn method_names_are_unique_and_translate_to_python() {

@@ -846,7 +846,7 @@ mod tests {
         let emitted = serde_json::to_value(bundle()).expect("the bundle serializes");
         let emitted = emitted.as_object().expect("the bundle is an object");
         for capability in crate::domain::capability::CAPABILITIES {
-            for root in capability.options.into_iter().chain(capability.output) {
+            for root in capability.options.into_iter().chain(capability.output()) {
                 assert!(
                     emitted.contains_key(root),
                     "capability `{}` names the schema root `{root}`, which `bundle()` does not \
@@ -881,10 +881,10 @@ mod tests {
                         "{}: `{}` (rendering `{}`) is not a field of `{root}`",
                         capability.method,
                         binding.option,
-                        if binding.flag.is_empty() {
+                        if binding.flag().is_empty() {
                             "a positional argument"
                         } else {
-                            binding.flag
+                            binding.flag()
                         },
                     ));
                 }

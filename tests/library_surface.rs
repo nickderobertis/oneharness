@@ -25,7 +25,7 @@ use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::detect::{self, DetectRequest};
 use oneharness_core::io::init::{self, InitRequest};
 use oneharness_core::io::registry::{self, ListRequest};
-use oneharness_core::io::sync::{self, SyncRequest};
+use oneharness_core::io::sync::{self, SyncRequest, SyncStatus};
 use oneharness_core::io::usage::{self, UsageRequest};
 
 #[path = "support/library_fixture.rs"]
@@ -274,13 +274,13 @@ fn a_consumer_syncs_a_policy_into_a_harness_config_and_re_syncs_idempotently() {
     let first = sync::sync(&request).expect("the policy merges into the harness config");
     let result = &first.results[0];
     assert_eq!(result.harness, "claude-code");
-    assert_eq!(result.status, "created");
+    assert_eq!(result.status, SyncStatus::Created);
     let written = std::fs::read_to_string(dir.join(".claude").join("settings.json"))
         .expect("sync wrote the harness's own config file");
     assert!(written.contains("Bash(echo *)"), "got {written}");
 
     let second = sync::sync(&request).expect("re-syncing is safe");
-    assert_eq!(second.results[0].status, "unchanged");
+    assert_eq!(second.results[0].status, SyncStatus::Unchanged);
     assert!(!second.pending_changes());
     let _ = std::fs::remove_dir_all(&dir);
 }

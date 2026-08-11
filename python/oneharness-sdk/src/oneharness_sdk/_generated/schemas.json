@@ -13765,6 +13765,26 @@
   },
   "sync_report": {
     "$defs": {
+      "FileStatus": {
+        "description": "What applying a fragment did (or, under `check`, would do) to one file.\n\nSerialized as the report token itself, so the wire value and the variant a\nconsumer matches on cannot drift apart.",
+        "oneOf": [
+          {
+            "const": "created",
+            "description": "The file did not exist and was (or would be) created.",
+            "type": "string"
+          },
+          {
+            "const": "updated",
+            "description": "The file existed and its content changed (or would change).",
+            "type": "string"
+          },
+          {
+            "const": "unchanged",
+            "description": "The file already contains everything the fragment asks for.",
+            "type": "string"
+          }
+        ]
+      },
       "HookFileResult": {
         "description": "One installed `[[hooks]]` file.",
         "properties": {
@@ -13772,7 +13792,7 @@
             "type": "string"
           },
           "status": {
-            "type": "string"
+            "$ref": "#/$defs/FileStatus"
           }
         },
         "required": [
@@ -13802,8 +13822,7 @@
             "type": "array"
           },
           "status": {
-            "description": "`created` / `updated` / `unchanged` for `file`, or `skipped` when no\npermission/settings fragment applies. Hook files carry their own status.",
-            "type": "string"
+            "$ref": "#/$defs/SyncStatus"
           },
           "unmapped": {
             "description": "Top-level settings that have no mapping for this harness (e.g. a\ntop-level `allowed_tools` while the harness has no allow-list concept)\n\u2014 visible here and warned on stderr, never silently dropped.",
@@ -13821,6 +13840,31 @@
           "unmapped"
         ],
         "type": "object"
+      },
+      "SyncStatus": {
+        "description": "What one harness's permission/settings sync did (or would do).\n\n[`FileStatus`] plus the one outcome a *file* never has: a harness with no\npermission/settings fragment to apply at all. Keeping them one closed set \u2014\nrather than the report's earlier free string \u2014 is what makes an unreachable\nstatus unconstructible and lets the contract publish the four values.",
+        "oneOf": [
+          {
+            "const": "created",
+            "description": "The file did not exist and was (or would be) created.",
+            "type": "string"
+          },
+          {
+            "const": "updated",
+            "description": "The file existed and its content changed (or would change).",
+            "type": "string"
+          },
+          {
+            "const": "unchanged",
+            "description": "The file already contains everything the fragment asks for.",
+            "type": "string"
+          },
+          {
+            "const": "skipped",
+            "description": "No permission/settings fragment applies to this harness, so there was no\nfile to write. Hook files carry their own [`FileStatus`].",
+            "type": "string"
+          }
+        ]
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",

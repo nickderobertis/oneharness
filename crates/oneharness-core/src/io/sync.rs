@@ -13,7 +13,13 @@ use crate::domain::sync::deep_merge;
 use crate::errors::OneharnessError;
 
 /// What applying a fragment did (or, under `check`, would do) to one file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Serialized as the report token itself, so the wire value and the variant a
+/// consumer matches on cannot drift apart.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, schemars::JsonSchema, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum FileStatus {
     /// The file did not exist and was (or would be) created.
     Created,
@@ -21,6 +27,38 @@ pub enum FileStatus {
     Updated,
     /// The file already contains everything the fragment asks for.
     Unchanged,
+}
+
+/// What one harness's permission/settings sync did (or would do).
+///
+/// [`FileStatus`] plus the one outcome a *file* never has: a harness with no
+/// permission/settings fragment to apply at all. Keeping them one closed set —
+/// rather than the report's earlier free string — is what makes an unreachable
+/// status unconstructible and lets the contract publish the four values.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, schemars::JsonSchema, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum SyncStatus {
+    /// The file did not exist and was (or would be) created.
+    Created,
+    /// The file existed and its content changed (or would change).
+    Updated,
+    /// The file already contains everything the fragment asks for.
+    Unchanged,
+    /// No permission/settings fragment applies to this harness, so there was no
+    /// file to write. Hook files carry their own [`FileStatus`].
+    Skipped,
+}
+
+impl From<FileStatus> for SyncStatus {
+    fn from(status: FileStatus) -> Self {
+        match status {
+            FileStatus::Created => Self::Created,
+            FileStatus::Updated => Self::Updated,
+            FileStatus::Unchanged => Self::Unchanged,
+        }
+    }
 }
 
 /// Merge `fragment` into the harness's config file under `project_dir`.
@@ -138,9 +176,11 @@ impl SyncReport {
     pub fn pending_changes(&self) -> bool {
         self.check
             && self.results.iter().any(|result| {
-                result.status == "created"
-                    || result.status == "updated"
-                    || result.hooks.iter().any(|hook| hook.status != "unchanged")
+                matches!(result.status, SyncStatus::Created | SyncStatus::Updated)
+                    || result
+                        .hooks
+                        .iter()
+                        .any(|hook| hook.status != FileStatus::Unchanged)
             })
     }
 }
@@ -152,9 +192,13 @@ pub struct SyncResult {
     /// The permission/settings config file written (or that would be written);
     /// `null` when nothing of that kind is configured for this harness.
     pub file: Option<String>,
-    /// `created` / `updated` / `unchanged` for `file`, or `skipped` when no
-    /// permission/settings fragment applies. Hook files carry their own status.
-    pub status: &'static str,
+    // NO doc comment, and a `//` rather than a `///` one for the same reason: a
+    // `$ref` with a sibling `description` is merged inline by
+    // json-schema-to-typescript instead of resolving to the named type, so the
+    // generated SDK would lose `SyncStatus` as an exported name and `zod.ts`
+    // would fail to import it. `SyncStatus`'s own definition carries the
+    // description, including what `skipped` means here.
+    pub status: SyncStatus,
     /// Normalized `[[hooks]]` files installed into this harness (a Goose hook
     /// writes two). Empty when no `[[hooks]]` entry targets it.
     pub hooks: Vec<HookFileResult>,
@@ -168,16 +212,7 @@ pub struct SyncResult {
 #[derive(Debug, Clone, schemars::JsonSchema, serde::Serialize)]
 pub struct HookFileResult {
     pub file: String,
-    pub status: &'static str,
-}
-
-/// The report token for a file status.
-fn status_str(status: FileStatus) -> &'static str {
-    match status {
-        FileStatus::Created => "created",
-        FileStatus::Updated => "updated",
-        FileStatus::Unchanged => "unchanged",
-    }
+    pub status: FileStatus,
 }
 
 /// Merge the unified policy settings into each selected harness's own config
@@ -282,7 +317,7 @@ pub fn sync(request: &SyncRequest) -> Result<SyncReport, OneharnessError> {
             );
         }
         let (file, status) = match plan.fragment {
-            None => (None, "skipped"),
+            None => (None, SyncStatus::Skipped),
             // A configured permission/settings fragment has no user-global
             // mapping, so refuse it loudly rather than silently writing only the
             // hooks and leaving the rules behind.
@@ -292,7 +327,7 @@ pub fn sync(request: &SyncRequest) -> Result<SyncReport, OneharnessError> {
             Some(fragment) => {
                 let sync_spec = spec.sync.as_ref().expect("fragment implies a sync target");
                 let (path, status) = apply(&project_dir, sync_spec, &fragment, request.check)?;
-                (Some(path.display().to_string()), status_str(status))
+                (Some(path.display().to_string()), status.into())
             }
         };
 
@@ -308,7 +343,7 @@ pub fn sync(request: &SyncRequest) -> Result<SyncReport, OneharnessError> {
             for write in crate::io::hooks::install(scope, spec, &hook, request.check)? {
                 hooks.push(HookFileResult {
                     file: write.path.display().to_string(),
-                    status: status_str(write.status),
+                    status: write.status,
                 });
             }
         }

@@ -1,6 +1,23 @@
 /* Generated from oneharness-core. Do not edit. */
 
 /**
+ * What applying a fragment did (or, under `check`, would do) to one file.
+ *
+ * Serialized as the report token itself, so the wire value and the variant a
+ * consumer matches on cannot drift apart.
+ */
+export type FileStatus = "created" | "updated" | "unchanged";
+/**
+ * What one harness's permission/settings sync did (or would do).
+ *
+ * [`FileStatus`] plus the one outcome a *file* never has: a harness with no
+ * permission/settings fragment to apply at all. Keeping them one closed set —
+ * rather than the report's earlier free string — is what makes an unreachable
+ * status unconstructible and lets the contract publish the four values.
+ */
+export type SyncStatus = "created" | "updated" | "unchanged" | "skipped";
+
+/**
  * The `oneharness sync` output contract.
  */
 export interface SyncReport {
@@ -31,11 +48,7 @@ export interface SyncResult {
    * writes two). Empty when no `[[hooks]]` entry targets it.
    */
   hooks: HookFileResult[];
-  /**
-   * `created` / `updated` / `unchanged` for `file`, or `skipped` when no
-   * permission/settings fragment applies. Hook files carry their own status.
-   */
-  status: string;
+  status: SyncStatus;
   /**
    * Top-level settings that have no mapping for this harness (e.g. a
    * top-level `allowed_tools` while the harness has no allow-list concept)
@@ -49,6 +62,6 @@ export interface SyncResult {
  */
 export interface HookFileResult {
   file: string;
-  status: string;
+  status: FileStatus;
   [k: string]: unknown;
 }

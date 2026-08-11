@@ -61,7 +61,7 @@ import type { HistoryLabels, OutputFormat, PermissionMode, RunMode, RunOptions }
 import type { HarnessInfo, ListReport, ModeInfo, VariantInfo } from "./registry.js";
 import type { RunStreamEnvelope } from "./run-stream-envelope.js";
 import type { SyncOptions } from "./sync-options.js";
-import type { HookFileResult, SyncReport, SyncResult } from "./sync-report.js";
+import type { FileStatus, HookFileResult, SyncReport, SyncResult, SyncStatus } from "./sync-report.js";
 import type { UsageOptions } from "./usage-options.js";
 import type {
   AuthMode,
@@ -361,6 +361,12 @@ export const Field9Schema: z.ZodType<Field9> = z.looseObject({
     .union([z.lazy(() => RunModeSchema), z.null()])
     .refine((value) => value !== undefined, { message: "Required" }),
 });
+
+export const FileStatusSchema: z.ZodType<FileStatus> = z.union([
+  z.literal("created"),
+  z.literal("updated"),
+  z.literal("unchanged"),
+]);
 
 export const GateOptionsSchema: z.ZodType<GateOptions> = z.strictObject({
   denyIfContains: z.string().optional(),
@@ -2096,7 +2102,7 @@ export const HookEntrySchema: z.ZodType<HookEntry> = z.strictObject({
 
 export const HookFileResultSchema: z.ZodType<HookFileResult> = z.looseObject({
   file: z.string().refine((value) => value !== undefined, { message: "Required" }),
-  status: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  status: z.lazy(() => FileStatusSchema).refine((value) => value !== undefined, { message: "Required" }),
 });
 
 export const IdentitySelectorSchema: z.ZodType<IdentitySelector> = z.union([
@@ -2382,9 +2388,16 @@ export const SyncResultSchema: z.ZodType<SyncResult> = z.looseObject({
   file: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
   hooks: z.array(z.lazy(() => HookFileResultSchema)).refine((value) => value !== undefined, { message: "Required" }),
-  status: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  status: z.lazy(() => SyncStatusSchema).refine((value) => value !== undefined, { message: "Required" }),
   unmapped: z.array(z.string()).refine((value) => value !== undefined, { message: "Required" }),
 });
+
+export const SyncStatusSchema: z.ZodType<SyncStatus> = z.union([
+  z.literal("created"),
+  z.literal("updated"),
+  z.literal("unchanged"),
+  z.literal("skipped"),
+]);
 
 export const TimingSourceSchema: z.ZodType<TimingSource> = z.union([
   z.literal("provider_measured"),

@@ -217,25 +217,80 @@ def check_manifest_is_covered(capabilities: list[dict[str, Any]]) -> None:
             )
 
 
+# Keep the quoted cause to the tail, where a cargo error actually is.
+_CAUSE_LINES = 20
+
+
+def _tail(text: str) -> list[str]:
+    lines = [line for line in (text or "").splitlines() if line.strip()]
+    if len(lines) <= _CAUSE_LINES:
+        return lines
+    omitted = len(lines) - _CAUSE_LINES
+    return [
+        f"… {omitted} earlier line(s) omitted; run the command below for all of it",
+        *lines[-_CAUSE_LINES:],
+    ]
+
+
+def _schema_bundle() -> dict:
+    """Return the Rust contract bundle, or exit with a bounded diagnostic.
+
+    `check_output` raises on a failed build, and an uncaught `CalledProcessError`
+    prints a Python traceback through this script's own frames — a stack trace
+    for a Rust compile error, naming neither the generator nor what to run next.
+    `SystemExit` carries the message without the traceback.
+    """
+    argv = [
+        "cargo",
+        "run",
+        "-q",
+        "-p",
+        "oneharness",
+        "--features",
+        "sdk-schema",
+        "--example",
+        "generate_sdk_schema",
+    ]
+    try:
+        completed = subprocess.run(
+            argv,
+            cwd=ROOT,
+            encoding="utf-8",
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+    except FileNotFoundError:
+        raise SystemExit(
+            "python-sdk-generate: cargo is not on PATH, so the contract bundle cannot be built.\n"
+            "  fix: install the pinned Rust toolchain (just bootstrap), then rerun "
+            "`just python-sdk-generate`."
+        ) from None
+    except subprocess.CalledProcessError as error:
+        cause = "\n".join(f"    {line}" for line in _tail(error.stderr))
+        said = f"  cargo said:\n{cause}\n" if cause else ""
+        raise SystemExit(
+            "python-sdk-generate: the Rust schema generator failed, so there is no "
+            f"contract to generate from.\n{said}"
+            "  fix: make the bundle build, then rerun `just python-sdk-generate`.\n"
+            f"       See it in full with: {' '.join(argv)}"
+        ) from None
+    try:
+        bundle = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise SystemExit(
+            "python-sdk-generate: the schema generator succeeded but did not emit JSON "
+            f"({error}).\n"
+            "  fix: `generate_sdk_schema` must print the bundle and nothing else — a stray\n"
+            "       `println!` in the example or in `sdk_schema::bundle` corrupts it. Then\n"
+            "       rerun `just python-sdk-generate`."
+        ) from None
+    return bundle
+
+
 def generated_files() -> dict[str, bytes]:
     """Run the Rust generator and return deterministic package files."""
-    output = subprocess.check_output(
-        [
-            "cargo",
-            "run",
-            "-q",
-            "-p",
-            "oneharness",
-            "--features",
-            "sdk-schema",
-            "--example",
-            "generate_sdk_schema",
-        ],
-        cwd=ROOT,
-        encoding="utf-8",
-        text=True,
-    )
-    bundle = json.loads(output)
+    bundle = _schema_bundle()
     check_manifest_is_covered(bundle["capabilities"])
     schemas = copy.deepcopy(bundle)
     # The capability manifest travels beside the schemas rather than inside them:

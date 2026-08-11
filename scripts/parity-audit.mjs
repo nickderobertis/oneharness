@@ -13,10 +13,10 @@
 // about code that exists rather than about an intention. Regenerate with
 // `just parity-audit`; `scripts/check-parity-audit.sh` fails when the checked-in
 // document no longer matches, so the file a reader opens is always current.
-import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { schemaBundle } from "./sdk-generator.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const doc = resolve(root, "docs/sdk-parity.md");
@@ -244,26 +244,14 @@ const FLAG_PREAMBLE = [
 	"",
 ].join("\n");
 
-const bundle = JSON.parse(
-	execFileSync(
-		"cargo",
-		[
-			"run",
-			"-q",
-			"-p",
-			"oneharness-core",
-			"--features",
-			"sdk-schema",
-			"--example",
-			"generate_core_sdk_schema",
-		],
-		{
-			cwd: root,
-			encoding: "utf8",
-			env: { ...process.env, CARGO_TARGET_DIR: generatorTarget },
-		},
-	),
-);
+const bundle = schemaBundle({
+	script: "parity-audit",
+	crate: "oneharness-core",
+	example: "generate_core_sdk_schema",
+	cwd: root,
+	target: generatorTarget,
+	rerun: "just parity-audit",
+});
 const declared = bundle.capabilities;
 const ts = typescriptMethods();
 const py = pythonMethods();

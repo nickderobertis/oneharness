@@ -13,10 +13,10 @@
 //
 // Quiet on success, one line. On failure it names each missing method and where
 // to add it.
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { schemaBundle } from "./sdk-generator.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Shared with `just sdk-generate` and the parity audit, so this reuses that
@@ -33,25 +33,14 @@ const [
 
 /** The declared manifest, straight from Rust. */
 function capabilities() {
-	const json = execFileSync(
-		"cargo",
-		[
-			"run",
-			"-q",
-			"-p",
-			"oneharness-core",
-			"--features",
-			"sdk-schema",
-			"--example",
-			"generate_core_sdk_schema",
-		],
-		{
-			cwd: root,
-			encoding: "utf8",
-			env: { ...process.env, CARGO_TARGET_DIR: generatorTarget },
-		},
-	);
-	return JSON.parse(json).capabilities;
+	return schemaBundle({
+		script: "sdk-coverage",
+		crate: "oneharness-core",
+		example: "generate_core_sdk_schema",
+		cwd: root,
+		target: generatorTarget,
+		rerun: "just lint-workflows",
+	}).capabilities;
 }
 
 /**

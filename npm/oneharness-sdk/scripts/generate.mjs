@@ -1,7 +1,9 @@
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+// Not published (`files` is dist + README), so reaching the repo's shared
+// generator wrapper here is safe: this script only ever runs from a checkout.
+import { schemaBundle } from "../../../scripts/sdk-generator.mjs";
 import { compile } from "json-schema-to-typescript";
 import { format } from "prettier";
 import { generatedFileMatches } from "./generated-file.mjs";
@@ -42,28 +44,16 @@ const readonlyArrayProperties = (declarations, schema) => {
 	}
 	return output;
 };
-const bundle = JSON.parse(
-	execFileSync(
-		"cargo",
-		[
-			"run",
-			"-q",
-			"-p",
-			"oneharness",
-			"--features",
-			"sdk-schema",
-			"--example",
-			"generate_sdk_schema",
-		],
-		{
-			cwd: root,
-			encoding: "utf8",
-			env: { ...process.env, CARGO_TARGET_DIR: generatorTarget },
-		},
-	),
-	(_key, value) =>
+const bundle = schemaBundle({
+	script: "sdk-generate",
+	crate: "oneharness",
+	example: "generate_sdk_schema",
+	cwd: root,
+	target: generatorTarget,
+	rerun: "just sdk-generate",
+	reviver: (_key, value) =>
 		typeof value === "string" ? normalizeNewlines(value) : value,
-);
+});
 /**
  * Every contract module this package publishes, in one table.
  *

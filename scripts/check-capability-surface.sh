@@ -18,8 +18,23 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 target="${CARGO_TARGET_DIR:-target/sdk-schema-generator}"
-bundle="$(CARGO_TARGET_DIR="$target" cargo run -q -p oneharness-core \
-  --features sdk-schema --example generate_core_sdk_schema)"
+generator=(cargo run -q -p oneharness-core --features sdk-schema
+  --example generate_core_sdk_schema)
+# `set -e` would abort here with cargo's raw output and no statement of which
+# gate wanted the bundle or what to run next. Say all three, and keep the quoted
+# cause to the tail — a cargo failure runs long, and the error is at the end.
+generator_err="$(mktemp)"
+trap 'rm -f "$generator_err"' EXIT
+if ! bundle="$(CARGO_TARGET_DIR="$target" "${generator[@]}" 2>"$generator_err")"; then
+  echo "check-capability-surface: the Rust schema generator failed, so there is no capability manifest to check against." >&2
+  if [ -s "$generator_err" ]; then
+    echo "  cargo said:" >&2
+    tail -n 20 "$generator_err" | sed 's/^/    /' >&2
+  fi
+  echo "  fix: make the bundle build, then rerun 'bash scripts/check-capability-surface.sh'." >&2
+  echo "       See it in full with: ${generator[*]}" >&2
+  exit 1
+fi
 
 # The methods declared in the manifest, and the ones marked in the test file.
 declared="$(printf '%s' "$bundle" | node -e '

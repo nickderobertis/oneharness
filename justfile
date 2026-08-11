@@ -143,8 +143,8 @@ e2e:
 
 # Hermetic end-to-end smoke of the *built* binary (part of `check`; CI runs it on
 # every platform). Drives list/detect/print-command + one mock spawn; no network.
-smoke:
-    @ONEHARNESS_BIN="target/debug/oneharness" ONEHARNESS_HARNESSES="codex:undeclared-smoke-sentinel" bash scripts/smoke.sh
+smoke bin="target/debug/oneharness" harnesses="codex:undeclared-smoke-sentinel":
+    @ONEHARNESS_BIN="{{bin}}" ONEHARNESS_HARNESSES="{{harnesses}}" bash scripts/smoke.sh
 
 # Opt-in live smoke against installed, authenticated harnesses. Makes real (paid)
 # model calls and needs network, so it is deliberately out of `check` and CI.

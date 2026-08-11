@@ -246,12 +246,19 @@ for declaration in "${CONTROLLABLE[@]}"; do
     # unexercised with nothing saying so — the same silent partial coverage
     # OH_E2E_NO_SKIP exists to prevent, arrived at from the other direction. One
     # CI run should say what all six harnesses did, not just the first to break.
+    #
+    # `|| exit $?` on each phase, and not for style: a subshell that is itself
+    # the left side of an `||` runs with `set -e` SUPPRESSED, so a phase's plain
+    # non-zero return would be ignored and the phases after it would run anyway.
+    # A `fail` still exits by itself, but a provider refusal returns — and
+    # without this every later phase spent another refused call, and the first
+    # refusal would have masked a genuine failure after it.
     phase_status=0
     (
         note "» $id: a real turn must actually STOP when interrupted"
-        oh_control_enforce "$id" "$mechanism"
+        oh_control_enforce "$id" "$mechanism" || exit $?
         note "» $id: an interrupt carrying --input must STOP the turn and DO the new work"
-        oh_control_redirect_enforce "$id"
+        oh_control_redirect_enforce "$id" || exit $?
         if [ -n "$mode_gap" ]; then
             note "» $id: KNOWN GAP, not run — a controlled turn under the mode's OWN policy"
             note "    $mode_gap"

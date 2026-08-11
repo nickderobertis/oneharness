@@ -12,7 +12,7 @@ if ! just smoke >"$work/recipe-out" 2>&1; then
   exit 1
 fi
 
-if just smoke bin="$work/not-executable" >"$work/out" 2>&1; then
+if ONEHARNESS_BIN="$work/not-executable" just smoke >"$work/out" 2>&1; then
   echo "check-smoke-env: invalid ONEHARNESS_BIN unexpectedly passed; fix scripts/smoke.sh executable validation and rerun 'bash scripts/check-smoke-env.sh'" >&2
   exit 1
 fi

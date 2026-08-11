@@ -19,6 +19,12 @@ grep -Fq 'release_commits = "(?s)^(feat|fix|perf)' release-plz.toml ||
   fail "release-worthy commit contract drifted from release-plz.toml"
 grep -Fq 'git_tag_name = "oneharness-core-v{{ version }}"' release-plz.toml ||
   fail "core tag namespace drifted from release-plz.toml"
+grep -Fq -- "--list 'oneharness-core-v*'" scripts/package-crates.sh ||
+  fail "package script core tag glob drifted from release-plz.toml"
+grep -Fq "release_subject_re='^(feat|fix|perf)" scripts/package-crates.sh ||
+  fail "package script release subject regex drifted from release-plz.toml"
+grep -Fq "grep -q '^BREAKING CHANGE:'" scripts/package-crates.sh ||
+  fail "package script breaking-change regex drifted from release-plz.toml"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -50,11 +56,28 @@ case "$1" in
       *) echo "invalid GIT_DIFF_MODE" >&2; exit 2 ;;
     esac
     ;;
-  rev-list) if [[ ${PENDING_FIX:-0} == 1 ]]; then echo fixcommit; fi ;;
-  show)
-    if [[ $* == *'%s'* ]]; then echo 'fix(core): publish changed API'; else echo; fi
+  rev-list)
+    case ${COMMIT_KIND:-none} in
+      none) ;;
+      fix|breaking|noncore) echo candidate ;;
+      *) echo "invalid COMMIT_KIND" >&2; exit 2 ;;
+    esac
     ;;
-  diff-tree) if [[ ${PENDING_FIX:-0} == 1 ]]; then echo crates/oneharness-core/src/lib.rs; fi ;;
+  show)
+    if [[ $* == *'%s'* ]]; then
+      case ${COMMIT_KIND:-none} in
+        fix|noncore) echo 'fix(core): publish changed API' ;;
+        breaking) echo 'chore: publish changed API' ;;
+        none) echo 'test: no release' ;;
+        *) echo "invalid COMMIT_KIND" >&2; exit 2 ;;
+      esac
+    elif [[ ${COMMIT_KIND:-none} == breaking ]]; then
+      echo 'BREAKING CHANGE: changed core API'
+    else
+      echo
+    fi
+    ;;
+  diff-tree) if [[ ${COMMIT_KIND:-none} != noncore ]]; then echo crates/oneharness-core/src/lib.rs; fi ;;
   *) exit 2 ;;
 esac
 EOF
@@ -65,8 +88,9 @@ run_case() {
 }
 
 : >"$work/calls"
-run_case scripts/package-crates.sh >/dev/null
+run_case scripts/package-crates.sh >"$work/out"
 [[ $(wc -l <"$work/calls") -eq 2 ]] || fail "happy path did not package core then binary"
+assert_contains 'package-crates: ok' "$work/out"
 
 if run_case env CORE_PACKAGE=fail scripts/package-crates.sh >"$work/out" 2>&1; then
   fail "core package failure unexpectedly passed"
@@ -83,8 +107,16 @@ if run_case env BINARY_PACKAGE=fail scripts/package-crates.sh >"$work/out" 2>&1;
 fi
 assert_contains "commit the core API change as fix/feat/perf" "$work/out"
 
-run_case env BINARY_PACKAGE=fail PENDING_FIX=1 scripts/package-crates.sh >"$work/out" 2>&1
+run_case env BINARY_PACKAGE=fail COMMIT_KIND=fix scripts/package-crates.sh >"$work/out" 2>&1
 assert_contains "awaits release-plz's core version bump" "$work/out"
+
+run_case env BINARY_PACKAGE=fail COMMIT_KIND=breaking scripts/package-crates.sh >"$work/out" 2>&1
+assert_contains "awaits release-plz's core version bump" "$work/out"
+
+if run_case env BINARY_PACKAGE=fail COMMIT_KIND=noncore scripts/package-crates.sh >"$work/out" 2>&1; then
+  fail "release-worthy non-core commit unexpectedly excused an incompatible dependency"
+fi
+assert_contains "cannot be packaged against its published oneharness-core dependency" "$work/out"
 
 run_case env BINARY_PACKAGE=fail GIT_DIFF_MODE=dirty scripts/package-crates.sh >"$work/out" 2>&1
 assert_contains "awaits release-plz's core version bump" "$work/out"

@@ -9,9 +9,18 @@ cd "$(dirname "$0")/.."
 core_tag="$(git tag --merged HEAD --list 'oneharness-core-v*' --sort=-version:refname | head -n 1)"
 if [ -z "$core_tag" ]; then
   fetch_args=(--quiet --tags)
-  if [[ $(git rev-parse --is-shallow-repository) == true ]]; then
-    fetch_args+=(--unshallow)
-  fi
+  shallow_repository="$(git rev-parse --is-shallow-repository)" || {
+    echo "package-crates: could not determine whether the checkout is shallow; fix the Git repository and retry" >&2
+    exit 1
+  }
+  case "$shallow_repository" in
+    true) fetch_args+=(--unshallow) ;;
+    false) ;;
+    *)
+      echo "package-crates: git returned an invalid shallow-repository state '$shallow_repository'; fix the Git repository and retry" >&2
+      exit 1
+      ;;
+  esac
   git fetch "${fetch_args[@]}" origin || {
     echo "package-crates: core release tags are absent and could not be fetched from origin; check network access and retry" >&2
     exit 1

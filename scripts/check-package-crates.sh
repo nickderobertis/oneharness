@@ -73,6 +73,8 @@ case "$1" in
   rev-parse)
     case ${SHALLOW_REPOSITORY:-false} in
       true|false) echo "${SHALLOW_REPOSITORY:-false}" ;;
+      fail) exit 2 ;;
+      invalid) echo unknown ;;
       *) echo "invalid SHALLOW_REPOSITORY" >&2; exit 2 ;;
     esac
     ;;
@@ -136,6 +138,16 @@ if run_case env NO_TAG=1 FETCH_MODE=fail just package-crates >"$work/out" 2>&1; 
   fail "failed tag fetch unexpectedly passed"
 fi
 assert_contains 'could not be fetched from origin' "$work/out"
+
+if run_case env NO_TAG=1 SHALLOW_REPOSITORY=fail just package-crates >"$work/out" 2>&1; then
+  fail "failed shallow-repository probe unexpectedly passed"
+fi
+assert_contains 'could not determine whether the checkout is shallow' "$work/out"
+
+if run_case env NO_TAG=1 SHALLOW_REPOSITORY=invalid just package-crates >"$work/out" 2>&1; then
+  fail "invalid shallow-repository state unexpectedly passed"
+fi
+assert_contains "invalid shallow-repository state 'unknown'" "$work/out"
 
 rm -f "$work/calls.fetched"
 if ! run_case env NO_TAG=1 FETCH_MODE=recover SHALLOW_REPOSITORY=true just package-crates >"$work/out" 2>&1; then

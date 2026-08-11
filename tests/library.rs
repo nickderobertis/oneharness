@@ -37,6 +37,8 @@ impl EventSink for ChannelSink {
     }
 }
 
+// capability: run
+// capability: runStream
 #[test]
 fn a_streaming_caller_sees_an_event_before_the_run_finishes() {
     // "As they occur" is the property, so the test has to observe an event while

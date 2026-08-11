@@ -20,7 +20,7 @@
 
 use std::path::PathBuf;
 
-use oneharness_core::domain::config;
+use oneharness_core::domain::{config, report};
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::detect::{self, DetectRequest};
 use oneharness_core::io::init::{self, InitRequest};
@@ -76,6 +76,42 @@ fn project(tag: &str, contents: &str) -> PathBuf {
     let dir = scratch(tag);
     std::fs::write(dir.join("oneharness.toml"), contents).expect("project config");
     dir
+}
+
+/// A completed harness result — the terminal line a run appends to history when
+/// it ends, which is what turns an in-flight run into a listable session.
+fn finished_result() -> report::RunResult {
+    report::RunResult {
+        harness: "claude-code".to_string(),
+        variant: None,
+        harness_id: "claude-code".to_string(),
+        bin: "claude".to_string(),
+        available: true,
+        status: report::Status::Ok,
+        prompt: None,
+        model: None,
+        exit_code: Some(0),
+        duration_ms: Some(10),
+        telemetry: None,
+        command: vec!["claude".to_string()],
+        output_format: report::OutputFormat::Json,
+        text: Some("done".to_string()),
+        text_source: Some("raw".to_string()),
+        usage: oneharness_core::domain::signals::Usage::default(),
+        usage_source: None,
+        session_id: None,
+        events: None,
+        events_source: None,
+        structured: None,
+        schema_valid: None,
+        schema_attempts: None,
+        schema_error: None,
+        failure_kind: None,
+        failure_kind_source: None,
+        stdout: "done".to_string(),
+        stderr: String::new(),
+        error: None,
+    }
 }
 
 // capability: list
@@ -378,4 +414,245 @@ fn a_scaffold_never_clobbers_an_existing_config_without_being_told_to() {
         init::starter_config()
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// capability: gate
+#[test]
+fn a_consumer_hosting_its_own_hook_runner_renders_a_harness_native_deny() {
+    // `oneharness gate` is a stdin/stdout shell over this decision, so a
+    // consumer running its own hook host answers the harness directly. The
+    // verdict shape is per harness and must stay each one's own.
+    use oneharness_core::domain::gate;
+
+    let spec = oneharness_core::domain::harness::by_id("claude-code")
+        .expect("claude-code is in the registry");
+    let shape = spec
+        .gate_deny
+        .expect("claude-code expresses a pre-tool deny");
+    let verdict: serde_json::Value = serde_json::from_str(&gate::render_deny(shape, "no network"))
+        .expect("the verdict is the harness's own JSON");
+    assert_eq!(
+        verdict["hookSpecificOutput"]["permissionDecision"], "deny",
+        "got {verdict}"
+    );
+    assert_eq!(
+        verdict["hookSpecificOutput"]["permissionDecisionReason"],
+        "no network"
+    );
+
+    // And the decision itself: a call that does not match is allowed through,
+    // which is the fall-through the gate emits nothing for.
+    assert!(gate::should_deny(
+        r#"{"command":"curl example.com"}"#,
+        "curl"
+    ));
+    assert!(!gate::should_deny(r#"{"command":"ls"}"#, "curl"));
+}
+
+// capability: mock
+#[test]
+fn a_consumer_decides_a_tool_call_against_a_ruleset_without_spawning_the_cli() {
+    // The read-write sibling of `gate`: the same hook loop, driven by a
+    // ruleset. First matching rule wins, and a call nothing matches proceeds.
+    use oneharness_core::domain::mock;
+
+    let rules = mock::parse_rules(
+        r#"{"rules":[{"match":{"tool":"Bash"},"action":{"deny":{"message":"no shell"}}}]}"#,
+    )
+    .expect("a well-formed ruleset parses");
+
+    let matched = mock::decide(
+        r#"{"tool_name":"Bash","tool_input":{"command":"ls"}}"#,
+        &rules,
+    );
+    assert!(matched.is_some(), "the Bash rule should match");
+
+    assert!(
+        mock::decide(r#"{"tool_name":"Read","tool_input":{}}"#, &rules).is_none(),
+        "an unmatched call proceeds — the responder emits nothing"
+    );
+
+    // The failure path: a ruleset that is not one is refused loudly at parse
+    // time rather than silently allowing everything through.
+    assert!(mock::parse_rules("{\"rules\":[{\"match\":{}}]}").is_err());
+}
+
+// capability: interrupt
+#[test]
+fn interrupting_a_session_nobody_is_running_is_answered_rather_than_hung() {
+    // The recovery path a supervisor hits most: it asks a run to stop and the
+    // run is already gone. That must come back as a refusal frame it can read,
+    // not a hang or a panic — and `is_ok()` is what the CLI turns into its
+    // exit code.
+    use oneharness_core::domain::control::ControlRequest;
+    use oneharness_core::io::control;
+
+    let dir = scratch("interrupt-absent");
+    let socket = dir.join("control").join("nobody.sock");
+    let response = control::send(&socket, &ControlRequest::interrupt());
+
+    assert!(
+        !response.is_ok(),
+        "there is no run behind that socket: {response:?}"
+    );
+    let rendered = serde_json::to_value(&response).expect("the frame serializes");
+    assert!(
+        rendered.get("reason").is_some(),
+        "a refusal names which refusal it is: {rendered}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// capability: historyList
+// capability: history
+// capability: historyClear
+#[test]
+fn a_consumer_lists_reads_and_clears_the_run_history_it_recorded() {
+    // One journey across three entry points, because they share a store: record
+    // a run, list it back, read its records, then delete it. A consumer building
+    // its own history view does exactly this.
+    use oneharness_core::domain::history::HistoryLabels;
+    use oneharness_core::io::history::{self, HistoryWriter};
+
+    hermetic_environment();
+    let dir = scratch("history-journey");
+    let project = scratch("history-journey-project");
+    let writer = HistoryWriter::open(&dir, &project, "a recorded run", HistoryLabels::default())
+        .expect("the store opens");
+    let run = writer.begin_run();
+    writer
+        .append_event(
+            run,
+            "claude-code",
+            oneharness_core::domain::events::ActionEvent {
+                kind: "tool_call".to_string(),
+                name: Some("Bash".to_string()),
+                input: Some(serde_json::json!({"command": "true"})),
+                output: None,
+                index: 0,
+                tool_call_id: Some("tool-1".to_string()),
+                started_at: None,
+                finished_at: None,
+                duration_ms: None,
+                status: None,
+                timing_source: None,
+            },
+        )
+        .expect("the event is durable");
+
+    // An in-flight run is not a listed session yet: `list_sessions` counts
+    // completed run records, and only events have landed so far.
+    assert!(
+        history::list_sessions(&dir, None)
+            .expect("the store lists")
+            .is_empty(),
+        "a run with no terminal record is not a session to list"
+    );
+
+    writer
+        .append_streamed(
+            run,
+            oneharness_core::domain::mode::PermissionMode::Default,
+            None,
+            "do the thing",
+            &finished_result(),
+            &std::collections::BTreeSet::from([0]),
+        )
+        .expect("the terminal record is durable");
+
+    let sessions = history::list_sessions(&dir, None).expect("the store lists");
+    assert_eq!(sessions.len(), 1, "the completed session is listed");
+    // The name is oneharness-derived and slugged, never the harness's — headless
+    // harnesses expose only an opaque session id, so there is nothing to take.
+    assert_eq!(sessions[0].name, "a-recorded-run");
+
+    let records = history::read_session(std::path::Path::new(&sessions[0].path))
+        .expect("the session materializes");
+    assert_eq!(records.len(), 1, "one completed run");
+
+    let removed = history::remove_sessions(&dir, None).expect("the store clears");
+    assert_eq!(removed.len(), 1, "clearing removed the one session");
+    assert!(
+        history::list_sessions(&dir, None)
+            .expect("the emptied store still lists")
+            .is_empty(),
+        "nothing is left after a clear"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&project);
+}
+
+// capability: historyMigrate
+#[test]
+fn a_legacy_history_store_migrates_in_process() {
+    // The 0.x whole-record stores predate the event-sourced line format, so a
+    // consumer inheriting one has to rewrite it before reading. An empty store
+    // is the boundary case: nothing to do, and no error.
+    use oneharness_core::io::history;
+
+    let dir = scratch("history-migrate");
+    let summaries = history::migrate(&dir).expect("an empty store migrates cleanly");
+    assert!(summaries.is_empty(), "nothing to rewrite: {summaries:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// capability: historyWatch
+#[test]
+fn a_consumer_follows_the_history_store_as_records_land() {
+    // The streaming view: a watcher opened on a store yields what is already
+    // there, so a consumer resuming from a cursor never has to re-scan the tree.
+    use oneharness_core::domain::history::HistoryLabels;
+    use oneharness_core::io::history::{self, HistoryWriter};
+
+    hermetic_environment();
+    let dir = scratch("history-watch");
+    let project = scratch("history-watch-project");
+    let writer = HistoryWriter::open(&dir, &project, "watched", HistoryLabels::default())
+        .expect("the store opens");
+    let run = writer.begin_run();
+    writer
+        .append_event(
+            run,
+            "opencode",
+            oneharness_core::domain::events::ActionEvent {
+                kind: "tool_call".to_string(),
+                name: Some("Bash".to_string()),
+                input: None,
+                output: None,
+                index: 0,
+                tool_call_id: None,
+                started_at: None,
+                finished_at: None,
+                duration_ms: None,
+                status: None,
+                timing_source: None,
+            },
+        )
+        .expect("the event is durable");
+
+    let mut watcher =
+        history::HistoryWatcher::open(&dir, None, HistoryLabels::default(), None, true)
+            .expect("the watcher opens on the store");
+    // Opening reconciles the index, so the event this run already appended is
+    // pending before anything new lands — which is what makes a resumed watch
+    // complete rather than only forward-looking.
+    watcher.poll().expect("the watcher reads the store");
+    let events = watcher.drain_events();
+    assert!(
+        events.iter().any(|line| line.harness == "opencode"),
+        "the already-recorded event should be waiting for a fresh watcher: {events:?}"
+    );
+
+    // The failure path: resuming from a cursor the store has never seen is a
+    // loud error, not a silent replay from the beginning.
+    let unknown = "01900000-0000-7000-8000-000000000000"
+        .parse()
+        .expect("a well-formed UUIDv7");
+    assert!(
+        history::HistoryWatcher::open(&dir, Some(unknown), HistoryLabels::default(), None, true)
+            .is_err(),
+        "an unknown cursor must be refused"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&project);
 }

@@ -410,7 +410,7 @@ pub const CAPABILITIES: &[Capability] = &[
         output: Some("control_response"),
         stdout: StdoutShape::Json,
         stdin: false,
-        rust: "oneharness_core::io::control::interrupt",
+        rust: "oneharness_core::io::control::send",
         always: &["--compact"],
         bindings: &[
             bind("session", "--session", FlagKind::Value),

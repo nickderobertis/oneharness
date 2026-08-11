@@ -24,6 +24,11 @@ use crate::io::history::SessionSummary;
 /// All core schemas shared by oneharness SDKs.
 #[derive(Debug, Serialize)]
 pub struct SdkSchemaBundle {
+    /// The declared capability surface: what each SDK must expose, and which
+    /// CLI flag each of its options renders to. Emitted alongside the schemas
+    /// because it is generation input too — the argv a typed method builds is
+    /// as much a contract as the shapes it sends and receives.
+    pub capabilities: &'static [crate::domain::capability::Capability],
     pub run_report: Schema,
     pub run_stream_envelope: Schema,
     pub run_options: Schema,
@@ -40,6 +45,7 @@ pub struct SdkSchemaBundle {
 /// Generate the shared SDK schema roots from their Rust contract types.
 pub fn bundle() -> SdkSchemaBundle {
     SdkSchemaBundle {
+        capabilities: crate::domain::capability::CAPABILITIES,
         run_report: schema_for_serialize::<RunReport>(),
         run_stream_envelope: schema_for_serialize::<RunStreamEnvelope>(),
         run_options: schema_for!(RunOptions),

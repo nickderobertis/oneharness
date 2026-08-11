@@ -151,6 +151,126 @@ for (const name of Object.keys(process.env)) {
 	if (name.startsWith("ONEHARNESS_")) delete process.env[name];
 }
 
+type JsonSchema = Record<string, unknown>;
+const bundle = JSON.parse(
+	await readFile(resolve(here, "../src/generated/schemas.json"), "utf8"),
+) as Record<string, JsonSchema>;
+
+// A string satisfying each pattern the bundle constrains one with. The default
+// is deliberately alphanumeric: it starts with `[A-Za-z0-9]`, carries no
+// control character, and uses no character a label key forbids, so it passes
+// every `not`-shaped rule at once.
+const PATTERNED: Array<[RegExp, string]> = [
+	[/T\(\[01\]/u, "2026-08-11T00:00:00.000Z"],
+	[/\{8\}-/u, "0198f0d0-7b31-7000-8000-000000000001"],
+];
+
+/**
+ * A value populating every field of one generated schema.
+ *
+ * Populating every field is the point: a generated validator is a per-field
+ * check, so a field no instance ever carries is a check no test ever runs. At
+ * every union it takes the first arm, which keeps the conditionals these
+ * schemas encode as parallel alternatives in agreement with each other.
+ */
+function populate(
+	node: JsonSchema | undefined,
+	defs: Record<string, JsonSchema>,
+): unknown {
+	if (!node) return null;
+	const scope = {
+		...defs,
+		...((node.$defs as Record<string, JsonSchema>) ?? {}),
+	};
+	const deref = (child: JsonSchema | undefined) =>
+		typeof child?.$ref === "string"
+			? scope[child.$ref.split("/").pop() as string]
+			: child;
+	const firstArm = (child: JsonSchema | undefined) => {
+		const arms = (child?.oneOf ?? child?.anyOf) as JsonSchema[] | undefined;
+		return arms ? arms[0] : child;
+	};
+	if (typeof node.$ref === "string") return populate(deref(node), scope);
+	if ("const" in node) return node.const;
+	if (Array.isArray(node.enum)) return node.enum[0];
+	// Flatten as SCHEMAS, never as the values the parts would each build, when a
+	// node's fields are spread across siblings rather than stated in one place:
+	// `allOf` parts, and a `properties` that sits BESIDE a union rather than
+	// inside it. `UsageWindow` declares `id` and `usage` itself and refines the
+	// rest through a `oneOf`, so reading only the union would drop both required
+	// fields; and merging built objects rather than schemas would let a later
+	// part's value overwrite an earlier part's variant tag.
+	if (
+		Array.isArray(node.allOf) ||
+		(node.properties && firstArm(node) !== node)
+	) {
+		const properties: Record<string, JsonSchema> = {};
+		// A variant that FORBIDS a field spells it `false`, and these variants are
+		// exclusive: a record measured at the stdout pipe carries
+		// `observed_tool_ms` and must not carry `model_ms`. Merging every part's
+		// fields without honouring that would build a document combining two
+		// variants, which the contract rightly refuses.
+		const forbidden = new Set<string>();
+		const collect = (part: JsonSchema | undefined): void => {
+			const here = deref(part);
+			if (!here) return;
+			for (const [name, child] of Object.entries(
+				(here.properties as Record<string, unknown>) ?? {},
+			)) {
+				if (child === false) {
+					forbidden.add(name);
+					delete properties[name];
+					continue;
+				}
+				if (!forbidden.has(name)) properties[name] = child as JsonSchema;
+			}
+			// A node's own `oneOf` and `allOf` are siblings, not alternatives:
+			// `history_record` carries both, and reading only the `allOf` would
+			// build a document missing every field the union half declares.
+			const arm = firstArm(here);
+			if (arm !== here) collect(arm);
+			for (const nested of (here.allOf as JsonSchema[]) ?? []) collect(nested);
+		};
+		collect(node);
+		return populate({ type: "object", properties }, scope);
+	}
+	const arms = (node.oneOf ?? node.anyOf) as JsonSchema[] | undefined;
+	if (arms) return populate(arms[0], scope);
+	const declared = node.type;
+	const kind = Array.isArray(declared)
+		? ((declared.find((item) => item !== "null") ?? "null") as string)
+		: (declared as string | undefined);
+	switch (kind) {
+		case "object": {
+			const value: Record<string, unknown> = {};
+			for (const [name, child] of Object.entries(
+				(node.properties as Record<string, JsonSchema>) ?? {},
+			))
+				value[name] = populate(child, scope);
+			const extra = node.additionalProperties;
+			if (extra && typeof extra === "object")
+				value.a = populate(extra as JsonSchema, scope);
+			return value;
+		}
+		case "array":
+			return [populate(node.items as JsonSchema, scope)];
+		case "boolean":
+			return true;
+		case "integer":
+		case "number":
+			// A window's length is `>= 1`, not `>= 0`: a bound stated in the
+			// schema has to be met or the instance is not one.
+			return typeof node.minimum === "number" ? node.minimum : 0;
+		case "null":
+			return null;
+		default: {
+			const pattern = String(node.pattern ?? "");
+			const matched = PATTERNED.find(([probe]) => probe.test(pattern));
+			return matched ? matched[1] : "a";
+		}
+	}
+}
+
 function sdk(): OneHarness {
 	return new OneHarness({
 		executable: binary,
@@ -231,6 +351,47 @@ describe("OneHarness", () => {
 			token: null,
 			store_file: null,
 		});
+	});
+
+	test("every generated validator accepts a fully populated instance of its own schema", async () => {
+		// The Zod modules are generated from the JSON Schema bundle, and both are
+		// checked in — so the two can disagree, and nothing else here would
+		// notice. This walks every root: it synthesizes a value populating every
+		// field from the schema, then parses it with the validator generated
+		// from that same schema. A field-level check the generator got wrong
+		// fails here rather than at a consumer.
+		//
+		// It is also what exercises the per-field validators at all. They are one
+		// function apiece, and a field no instance ever carries is a function no
+		// test ever calls, which is what the package's coverage floor is really
+		// asking about.
+		const exported = (await import("../src/index.js")) as unknown as Record<
+			string,
+			ZodType<unknown> | undefined
+		>;
+		const roots = Object.keys(bundle).filter((name) => name !== "capabilities");
+		expect(roots.length).toBeGreaterThan(20);
+		let checked = 0;
+		const rejections: string[] = [];
+		for (const root of roots) {
+			const name = `${root
+				.split("_")
+				.map((part) => part[0]?.toUpperCase() + part.slice(1))
+				.join("")}Schema`;
+			const schema = exported[name];
+			// Not every root is published as a validator; the ones that are must
+			// agree with the schema they were generated from.
+			if (!schema) continue;
+			const value = populate(bundle[root], {});
+			if (!schema.safeParse(value).success)
+				rejections.push(`${name}: ${JSON.stringify(value)}`);
+			checked += 1;
+		}
+		// Every root is walked before anything is asserted, so one disagreement
+		// does not hide the rest — and so the parse of every other root still
+		// happens, which is what exercises their validators.
+		expect(rejections.slice(0, 3).join("\n")).toBe("");
+		expect(checked).toBeGreaterThan(20);
 	});
 
 	test("crosses the Node to CLI boundary and preserves absent usage", async () => {

@@ -38,7 +38,7 @@ bootstrap:
 # coverage*, build, artifact smoke. Fails on any issue. `coverage` re-runs the
 # workspace suite under instrumentation and fails below {{COVERAGE_MIN}}% lines;
 # `test` stays in the gate as the fast, un-instrumented pass/fail signal.
-check: fmt-check lint lint-sh lint-workflows sdk-check python-sdk-check test coverage build smoke
+check: fmt-check lint lint-sh lint-workflows package-crates sdk-check python-sdk-check test coverage build smoke
     @echo "check: ok"
 
 # Complete pre-push gate: deterministic product/dependency checks, followed by
@@ -61,6 +61,12 @@ lint:
 # Alias for `lint`.
 clippy: lint
 
+# Package the reusable crate and the binary exactly as Cargo will verify them at
+# publish time. This belongs in every PR gate: a green tag is already too late,
+# and the registry-resolved dependency check is cheap beside the existing gate.
+package-crates:
+    @bash scripts/package-crates.sh
+
 # Lint shell scripts with shellcheck; any finding is an error. Like `cargo-deny`,
 # shellcheck is an external tool: CI installs it, and this prints an install hint
 # if it is missing rather than failing cryptically.
@@ -82,6 +88,8 @@ lint-workflows: build build-mock-harness
     @bash scripts/check-workflows.sh >/dev/null
     @bash scripts/check-workflows-e2e.sh >/dev/null
     @bash scripts/check-publish-crates.sh >/dev/null
+    @bash scripts/check-package-crates.sh >/dev/null
+    @bash scripts/check-smoke-env.sh >/dev/null
     @bash scripts/check-publish-npm.sh >/dev/null
     @bash scripts/check-local-gate.sh >/dev/null
     @bash scripts/check-sdk-install.sh >/dev/null
@@ -140,7 +148,7 @@ e2e:
 # Hermetic end-to-end smoke of the *built* binary (part of `check`; CI runs it on
 # every platform). Drives list/detect/print-command + one mock spawn; no network.
 smoke:
-    bash scripts/smoke.sh
+    @ONEHARNESS_HARNESSES="codex:undeclared-smoke-sentinel" bash scripts/smoke.sh
 
 # Opt-in live smoke against installed, authenticated harnesses. Makes real (paid)
 # model calls and needs network, so it is deliberately out of `check` and CI.

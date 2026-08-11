@@ -118,7 +118,15 @@ build_via_just() {
 # gate silently smokes an out-of-date artifact (the original footgun). Build
 # debug if neither exists.
 resolve_oneharness() {
-  if [ -n "${ONEHARNESS_BIN:-}" ]; then printf '%s' "$ONEHARNESS_BIN"; return 0; fi
+  if [ -n "${ONEHARNESS_BIN:-}" ]; then
+    local override=$ONEHARNESS_BIN
+    if ! override=$(exe_path "$override"); then
+      fail "ONEHARNESS_BIN is not an executable file" "ONEHARNESS_BIN=<path> just smoke" "" \
+        "set ONEHARNESS_BIN to a built oneharness executable, or unset it"
+    fi
+    printf '%s' "$override"
+    return 0
+  fi
   local rel deb
   rel="$(exe_path target/release/oneharness || true)"
   deb="$(exe_path target/debug/oneharness || true)"

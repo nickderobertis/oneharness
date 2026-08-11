@@ -6,6 +6,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.14](https://github.com/nickderobertis/oneharness/compare/v0.6.13...v0.6.14) - 2026-08-11
+
+### Fixed
+
+- recognize unpublished registry versions ([#1240](https://github.com/nickderobertis/oneharness/pull/1240))
+- *(core)* keep published package dependencies compatible ([#1237](https://github.com/nickderobertis/oneharness/pull/1237))
+
 ## [0.6.13](https://github.com/nickderobertis/oneharness/compare/v0.6.12...v0.6.13) - 2026-08-11
 
 ### Fixed

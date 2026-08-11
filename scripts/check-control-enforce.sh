@@ -104,6 +104,24 @@ evidence_case "the frames the harness sent" "no model configured" "$evidence_tmp
 # A turn that never ends is usually a recognizer that stopped matching, and the
 # `type` nobody handled is invisible in a tail of the ones that were.
 evidence_case "the frame vocabulary" "session.error session.idle" "$evidence_tmp" "$evidence_tmp/frames.json"
+# The same vocabulary against a `sort` that ends its lines CRLF, which is what
+# the Windows runner's does. Joining those with `tr '\n' ' '` alone leaves a CR
+# between every pair, and a CR is a line break to every log viewer — so the one
+# line this evidence exists to print came out as one type per line and the
+# assertion above could never match two adjacent ones. Stubbed rather than
+# skipped: the behavior is the platform's, but the pipeline's tolerance of it is
+# ours, and it is only checkable where a CRLF `sort` can be arranged.
+crlf_sort_dir="$(mktemp -d)"
+trap 'rm -rf "$evidence_tmp" "$crlf_sort_dir"' EXIT
+cat >"$crlf_sort_dir/sort" <<'STUB'
+#!/usr/bin/env bash
+# Stands in for the Windows runner's `sort`: same ordering, CRLF line endings.
+command sort "$@" | sed 's/$/\r/'
+STUB
+chmod +x "$crlf_sort_dir/sort"
+PATH="$crlf_sort_dir:$PATH" \
+    evidence_case "the frame vocabulary from a CRLF sort" "session.error session.idle" \
+    "$evidence_tmp" "$evidence_tmp/frames.json"
 # The error a frame carried, in full: the tail above truncates lines, and where
 # it cuts is the difference between a credential and a rate limit.
 printf '%s\n' '{"results":[{"status":"timeout","stdout":"{\"type\":\"session.next.step.failed\",\"data\":{\"error\":{\"message\":\"Provider request failed with HTTP 429: rate limited\"}}}"}]}' \
@@ -137,7 +155,7 @@ printf '%s\n' '{"results":[{"status":"timeout","stdout":"{\"type\":\"session.idl
 # wait that only watched the step files spent its whole window on a run that had
 # already exited, three times per harness.
 settled_tmp="$(mktemp -d)"
-trap 'rm -rf "$evidence_tmp" "$settled_tmp"' EXIT
+trap 'rm -rf "$evidence_tmp" "$crlf_sort_dir" "$settled_tmp"' EXIT
 sleep 30 &
 alive=$!
 _oh_control_wait_settled "$settled_tmp" "$alive" &&

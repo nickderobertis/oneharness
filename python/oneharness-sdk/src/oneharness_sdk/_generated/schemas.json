@@ -13,31 +13,31 @@
           "flag": "--prompt",
           "kind": "value",
           "option": "prompt",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--prompt",
           "kind": "repeated",
           "option": "batchPrompts",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--prompt-file",
           "kind": "repeated",
           "option": "promptFiles",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--harness",
           "kind": "repeated",
           "option": "harnesses",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--mock-harness",
           "kind": "repeated",
           "option": "mockHarnesses",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--all",
@@ -49,19 +49,19 @@
           "flag": "--exclude",
           "kind": "repeated",
           "option": "exclude",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--model",
           "kind": "repeated",
           "option": "models",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--system",
           "kind": "value",
           "option": "system",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--system-file",
@@ -73,109 +73,109 @@
           "flag": "--reasoning",
           "kind": "value",
           "option": "reasoning",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--resume",
           "kind": "value",
           "option": "resume",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--fork",
           "kind": "switch",
           "option": "fork",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--session",
           "kind": "value",
           "option": "session",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--session-dir",
           "kind": "value",
           "option": "sessionDir",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--control",
           "kind": "switch",
           "option": "control",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--output-format",
           "kind": "value",
           "option": "outputFormat",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--events",
           "kind": "switch",
           "option": "events",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--mock-rules",
           "kind": "value",
           "option": "mockRules",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--spy-file",
           "kind": "value",
           "option": "spyFile",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--schema",
           "kind": "value",
           "option": "schema",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--schema-max-retries",
           "kind": "value",
           "option": "schemaMaxRetries",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--output-dir",
           "kind": "value",
           "option": "outputDir",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--timeout",
           "kind": "value",
           "option": "timeoutSeconds",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--cwd",
           "kind": "value",
           "option": "cwd",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--env",
           "kind": "key-value",
           "option": "env",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--mode",
           "kind": "value",
           "option": "mode",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--permit-prompts",
           "kind": "switch",
           "option": "permitPrompts",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--config",
@@ -187,43 +187,43 @@
           "flag": "--no-config",
           "kind": "switch",
           "option": "noConfig",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--max-parallel",
           "kind": "value",
           "option": "maxParallel",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--batch-strategy",
           "kind": "value",
           "option": "batchStrategy",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--run-mode",
           "kind": "value",
           "option": "runMode",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--print-command",
           "kind": "switch",
           "option": "printCommand",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--bin",
           "kind": "key-value",
           "option": "bins",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--require-available",
           "kind": "switch",
           "option": "requireAvailable",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--history",
@@ -235,31 +235,31 @@
           "flag": "--no-history",
           "kind": "switch",
           "option": "noHistory",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--history-dir",
           "kind": "value",
           "option": "historyDir",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--history-name",
           "kind": "value",
           "option": "historyName",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--history-label",
           "kind": "key-value",
           "option": "historyLabels",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "",
           "kind": "trailing",
           "option": "passthrough",
-          "unless": ""
+          "unless": null
         }
       ],
       "method": "run",
@@ -296,31 +296,31 @@
           "flag": "--prompt",
           "kind": "value",
           "option": "prompt",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--prompt",
           "kind": "repeated",
           "option": "batchPrompts",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--prompt-file",
           "kind": "repeated",
           "option": "promptFiles",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--harness",
           "kind": "repeated",
           "option": "harnesses",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--mock-harness",
           "kind": "repeated",
           "option": "mockHarnesses",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--all",
@@ -332,19 +332,19 @@
           "flag": "--exclude",
           "kind": "repeated",
           "option": "exclude",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--model",
           "kind": "repeated",
           "option": "models",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--system",
           "kind": "value",
           "option": "system",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--system-file",
@@ -356,109 +356,109 @@
           "flag": "--reasoning",
           "kind": "value",
           "option": "reasoning",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--resume",
           "kind": "value",
           "option": "resume",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--fork",
           "kind": "switch",
           "option": "fork",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--session",
           "kind": "value",
           "option": "session",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--session-dir",
           "kind": "value",
           "option": "sessionDir",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--control",
           "kind": "switch",
           "option": "control",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--output-format",
           "kind": "value",
           "option": "outputFormat",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--events",
           "kind": "switch",
           "option": "events",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--mock-rules",
           "kind": "value",
           "option": "mockRules",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--spy-file",
           "kind": "value",
           "option": "spyFile",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--schema",
           "kind": "value",
           "option": "schema",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--schema-max-retries",
           "kind": "value",
           "option": "schemaMaxRetries",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--output-dir",
           "kind": "value",
           "option": "outputDir",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--timeout",
           "kind": "value",
           "option": "timeoutSeconds",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--cwd",
           "kind": "value",
           "option": "cwd",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--env",
           "kind": "key-value",
           "option": "env",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--mode",
           "kind": "value",
           "option": "mode",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--permit-prompts",
           "kind": "switch",
           "option": "permitPrompts",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--config",
@@ -470,43 +470,43 @@
           "flag": "--no-config",
           "kind": "switch",
           "option": "noConfig",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--max-parallel",
           "kind": "value",
           "option": "maxParallel",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--batch-strategy",
           "kind": "value",
           "option": "batchStrategy",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--run-mode",
           "kind": "value",
           "option": "runMode",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--print-command",
           "kind": "switch",
           "option": "printCommand",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--bin",
           "kind": "key-value",
           "option": "bins",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--require-available",
           "kind": "switch",
           "option": "requireAvailable",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--history",
@@ -518,31 +518,31 @@
           "flag": "--no-history",
           "kind": "switch",
           "option": "noHistory",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--history-dir",
           "kind": "value",
           "option": "historyDir",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--history-name",
           "kind": "value",
           "option": "historyName",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--history-label",
           "kind": "key-value",
           "option": "historyLabels",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "",
           "kind": "trailing",
           "option": "passthrough",
-          "unless": ""
+          "unless": null
         }
       ],
       "method": "runStream",
@@ -594,7 +594,7 @@
           "flag": "--harness",
           "kind": "repeated",
           "option": "harnesses",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--all",
@@ -606,13 +606,13 @@
           "flag": "--exclude",
           "kind": "repeated",
           "option": "exclude",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--bin",
           "kind": "key-value",
           "option": "bins",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--config",
@@ -624,13 +624,13 @@
           "flag": "--no-config",
           "kind": "switch",
           "option": "noConfig",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--require-available",
           "kind": "switch",
           "option": "requireAvailable",
-          "unless": ""
+          "unless": null
         }
       ],
       "method": "detect",
@@ -653,7 +653,7 @@
           "flag": "--cwd",
           "kind": "value",
           "option": "cwd",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--config",
@@ -665,7 +665,7 @@
           "flag": "--no-config",
           "kind": "switch",
           "option": "noConfig",
-          "unless": ""
+          "unless": null
         }
       ],
       "method": "config",
@@ -688,25 +688,25 @@
           "flag": "--cwd",
           "kind": "value",
           "option": "cwd",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--harness",
           "kind": "repeated",
           "option": "harnesses",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--check",
           "kind": "switch",
           "option": "check",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--global",
           "kind": "switch",
           "option": "global",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--config",
@@ -718,7 +718,7 @@
           "flag": "--no-config",
           "kind": "switch",
           "option": "noConfig",
-          "unless": ""
+          "unless": null
         }
       ],
       "method": "sync",
@@ -739,13 +739,13 @@
           "flag": "",
           "kind": "positional",
           "option": "path",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--force",
           "kind": "switch",
           "option": "force",
-          "unless": ""
+          "unless": null
         }
       ],
       "method": "init",
@@ -768,7 +768,7 @@
           "flag": "--harness",
           "kind": "repeated",
           "option": "harnesses",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--all",
@@ -780,25 +780,25 @@
           "flag": "--exclude",
           "kind": "repeated",
           "option": "exclude",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--bin",
           "kind": "key-value",
           "option": "bins",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--cwd",
           "kind": "value",
           "option": "cwd",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--timeout",
           "kind": "value",
           "option": "timeoutSeconds",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--config",
@@ -810,7 +810,7 @@
           "flag": "--no-config",
           "kind": "switch",
           "option": "noConfig",
-          "unless": ""
+          "unless": null
         }
       ],
       "method": "usage",
@@ -836,19 +836,19 @@
           "flag": "",
           "kind": "positional",
           "option": "harness",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--deny-if-contains",
           "kind": "value",
           "option": "denyIfContains",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--reason",
           "kind": "value",
           "option": "reason",
-          "unless": ""
+          "unless": null
         }
       ],
       "method": "gate",
@@ -869,19 +869,19 @@
           "flag": "",
           "kind": "positional",
           "option": "harness",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--rules",
           "kind": "value",
           "option": "rules",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--spy-file",
           "kind": "value",
           "option": "spyFile",
-          "unless": ""
+          "unless": null
         }
       ],
       "method": "mock",
@@ -904,30 +904,30 @@
           "flag": "--session",
           "kind": "value",
           "option": "session",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--input",
           "kind": "value",
           "option": "input",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--session-dir",
           "kind": "value",
           "option": "sessionDir",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--cwd",
           "kind": "value",
           "option": "cwd",
-          "unless": ""
+          "unless": null
         }
       ],
       "method": "interrupt",
       "options": "interrupt_options",
-      "output": "control_response",
+      "output": null,
       "rust": "oneharness_core::io::control::send",
       "stdin": false,
       "stdout": "json",
@@ -952,13 +952,13 @@
           "flag": "--last",
           "kind": "switch",
           "option": "last",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--all",
           "kind": "switch",
           "option": "all",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--project",
@@ -970,13 +970,13 @@
           "flag": "--all-projects",
           "kind": "switch",
           "option": "allProjects",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--history-dir",
           "kind": "value",
           "option": "historyDir",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--config",
@@ -988,7 +988,7 @@
           "flag": "--no-config",
           "kind": "switch",
           "option": "noConfig",
-          "unless": ""
+          "unless": null
         }
       ],
       "method": "history",
@@ -1017,7 +1017,7 @@
           "flag": "--variant",
           "kind": "value",
           "option": "variant",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--project",
@@ -1029,13 +1029,13 @@
           "flag": "--all-projects",
           "kind": "switch",
           "option": "allProjects",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--history-dir",
           "kind": "value",
           "option": "historyDir",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--config",
@@ -1047,7 +1047,7 @@
           "flag": "--no-config",
           "kind": "switch",
           "option": "noConfig",
-          "unless": ""
+          "unless": null
         }
       ],
       "method": "historyList",
@@ -1077,19 +1077,19 @@
           "flag": "--after",
           "kind": "value",
           "option": "after",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--label",
           "kind": "key-value",
           "option": "labels",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--variant",
           "kind": "value",
           "option": "variant",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--project",
@@ -1101,19 +1101,19 @@
           "flag": "--all-projects",
           "kind": "switch",
           "option": "allProjects",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--history-dir",
           "kind": "value",
           "option": "historyDir",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--events",
           "kind": "switch",
           "option": "events",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--config",
@@ -1125,7 +1125,7 @@
           "flag": "--no-config",
           "kind": "switch",
           "option": "noConfig",
-          "unless": ""
+          "unless": null
         }
       ],
       "method": "historyWatch",
@@ -1155,19 +1155,19 @@
           "flag": "--all-projects",
           "kind": "switch",
           "option": "allProjects",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--yes",
           "kind": "switch",
           "option": "yes",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--history-dir",
           "kind": "value",
           "option": "historyDir",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--config",
@@ -1179,12 +1179,12 @@
           "flag": "--no-config",
           "kind": "switch",
           "option": "noConfig",
-          "unless": ""
+          "unless": null
         }
       ],
       "method": "historyClear",
       "options": "history_clear_options",
-      "output": "history_clear_report",
+      "output": null,
       "rust": "oneharness_core::io::history::remove_sessions",
       "stdin": false,
       "stdout": "json",
@@ -1203,7 +1203,7 @@
           "flag": "--history-dir",
           "kind": "value",
           "option": "historyDir",
-          "unless": ""
+          "unless": null
         },
         {
           "flag": "--config",
@@ -1215,18 +1215,701 @@
           "flag": "--no-config",
           "kind": "switch",
           "option": "noConfig",
-          "unless": ""
+          "unless": null
         }
       ],
       "method": "historyMigrate",
       "options": "history_migrate_options",
-      "output": "history_migrate_report",
+      "output": null,
       "rust": "oneharness_core::io::history::migrate",
       "stdin": false,
       "stdout": "json",
       "uncovered": []
     }
   ],
+  "config_options": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "Options accepted by the language SDKs' `config()`.",
+    "properties": {
+      "config": {
+        "type": "string"
+      },
+      "cwd": {
+        "type": "string"
+      },
+      "noConfig": {
+        "type": "boolean"
+      }
+    },
+    "title": "ConfigOptions",
+    "type": "object"
+  },
+  "config_report": {
+    "$defs": {
+      "Field": {
+        "description": "One resolved field in the `oneharness config` report: the effective value\nplus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both\nare `null` when the field is unset everywhere and has no built-in default.",
+        "properties": {
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "value",
+          "source"
+        ],
+        "type": "object"
+      },
+      "Field10": {
+        "description": "One resolved field in the `oneharness config` report: the effective value\nplus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both\nare `null` when the field is unset everywhere and has no built-in default.",
+        "properties": {
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "items": {
+              "$ref": "#/$defs/HookEntry"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "value",
+          "source"
+        ],
+        "type": "object"
+      },
+      "Field2": {
+        "description": "One resolved field in the `oneharness config` report: the effective value\nplus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both\nare `null` when the field is unset everywhere and has no built-in default.",
+        "properties": {
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "value",
+          "source"
+        ],
+        "type": "object"
+      },
+      "Field3": {
+        "description": "One resolved field in the `oneharness config` report: the effective value\nplus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both\nare `null` when the field is unset everywhere and has no built-in default.",
+        "properties": {
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "value",
+          "source"
+        ],
+        "type": "object"
+      },
+      "Field4": {
+        "description": "One resolved field in the `oneharness config` report: the effective value\nplus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both\nare `null` when the field is unset everywhere and has no built-in default.",
+        "properties": {
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PermissionMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "value",
+          "source"
+        ],
+        "type": "object"
+      },
+      "Field5": {
+        "description": "One resolved field in the `oneharness config` report: the effective value\nplus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both\nare `null` when the field is unset everywhere and has no built-in default.",
+        "properties": {
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "value",
+          "source"
+        ],
+        "type": "object"
+      },
+      "Field6": {
+        "description": "One resolved field in the `oneharness config` report: the effective value\nplus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both\nare `null` when the field is unset everywhere and has no built-in default.",
+        "properties": {
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OutputFormat"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "value",
+          "source"
+        ],
+        "type": "object"
+      },
+      "Field7": {
+        "description": "One resolved field in the `oneharness config` report: the effective value\nplus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both\nare `null` when the field is unset everywhere and has no built-in default.",
+        "properties": {
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "value",
+          "source"
+        ],
+        "type": "object"
+      },
+      "Field8": {
+        "description": "One resolved field in the `oneharness config` report: the effective value\nplus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both\nare `null` when the field is unset everywhere and has no built-in default.",
+        "properties": {
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "value",
+          "source"
+        ],
+        "type": "object"
+      },
+      "Field9": {
+        "description": "One resolved field in the `oneharness config` report: the effective value\nplus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both\nare `null` when the field is unset everywhere and has no built-in default.",
+        "properties": {
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RunMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "value",
+          "source"
+        ],
+        "type": "object"
+      },
+      "HarnessReport": {
+        "description": "One harness's `[harness.<id>]` overrides, with provenance.",
+        "properties": {
+          "allowed_tools": {
+            "$ref": "#/$defs/Field2"
+          },
+          "args": {
+            "$ref": "#/$defs/Field2"
+          },
+          "bin": {
+            "$ref": "#/$defs/Field3"
+          },
+          "denied_tools": {
+            "$ref": "#/$defs/Field2"
+          },
+          "env": {
+            "additionalProperties": {
+              "$ref": "#/$defs/Field3"
+            },
+            "type": "object"
+          },
+          "hooks": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "model": {
+            "$ref": "#/$defs/Field3"
+          },
+          "reasoning": {
+            "$ref": "#/$defs/Field3"
+          },
+          "settings": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "variant": {
+            "additionalProperties": {
+              "$ref": "#/$defs/VariantReport"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "model",
+          "reasoning",
+          "bin",
+          "args",
+          "allowed_tools",
+          "denied_tools",
+          "hooks",
+          "settings",
+          "env",
+          "variant"
+        ],
+        "type": "object"
+      },
+      "HookEntry": {
+        "additionalProperties": false,
+        "description": "One `[[hooks]]` entry: a pre-tool gate installed into each targeted harness.\nThe `command` may contain `{harness}`, replaced with the harness id when the\nhook is built (so one entry can route `mygate hook {harness}` to every CLI).",
+        "properties": {
+          "command": {
+            "description": "The command the harness runs before a tool call. `{harness}` is\nsubstituted with the harness id. Required and non-empty.",
+            "type": "string"
+          },
+          "harnesses": {
+            "description": "Restrict this entry to these harness ids; absent means every harness\nbeing synced.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "matcher": {
+            "description": "Tool-name matcher in the harness's dialect (most read it as a regex);\napplied to every targeted harness as written. Absent means match-all.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plugin_name": {
+            "description": "Identity for plugin-delivered harnesses (Goose, OpenCode) and Copilot's\nper-owner file, so two tools' hooks never collide. Defaults to\n`oneharness`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timeout": {
+            "description": "Timeout in seconds, for the harnesses whose hook schema carries one\n(Goose, Crush); ignored by the others.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "command",
+          "matcher",
+          "timeout",
+          "plugin_name",
+          "harnesses"
+        ],
+        "type": "object"
+      },
+      "OutputFormat": {
+        "description": "How a harness emits its result, which decides how `text` is extracted.\n\nAlso accepted as a CLI value (`--output-format`, parsed in the `oneharness`\nbinary) and a config-file value (`output_format`, via `Deserialize`). The\nCLI parsing lives in the binary so this core crate stays free of `clap`.",
+        "oneOf": [
+          {
+            "const": "text",
+            "description": "Plain text on stdout; `text` is the trimmed stdout.",
+            "type": "string"
+          },
+          {
+            "const": "json",
+            "description": "A single JSON document on stdout.",
+            "type": "string"
+          },
+          {
+            "const": "stream-json",
+            "description": "Line-delimited JSON events on stdout.",
+            "type": "string"
+          }
+        ]
+      },
+      "PermissionMode": {
+        "description": "The unified approval mode, from least to most autonomy. A harness may not\nsupport every value (see [`crate::domain::harness::HarnessSpec::mode`]); the\ncommand layer refuses an unsupported one before spawning, never silently\ndowngrading it.",
+        "oneOf": [
+          {
+            "const": "read-only",
+            "description": "No mutations \u2014 the agent may read but not edit files or run commands \u2014\n*without* the plan workflow: it just does whatever read-only work the task\nallows. Mapped to each harness's strongest per-run no-mutation enforcement\n(Codex's read-only sandbox, Claude's deny rules, Copilot's `--deny-tool`,\nCursor's `ask` mode). The enforced counterpart to [`Self::Plan`].",
+            "type": "string"
+          },
+          {
+            "const": "plan",
+            "description": "Read and propose only \u2014 like [`Self::ReadOnly`], but additionally engages\nthe harness's *plan* workflow: research the task and write a plan rather\nthan act. Supported only where a native plan mode exists (Claude/Qwen/\nCursor/Copilot, OpenCode's `plan` agent); harnesses with no plan workflow\n(Codex, Goose, Crush) reject it \u2014 use [`Self::ReadOnly`] for those.",
+            "type": "string"
+          },
+          {
+            "const": "default",
+            "description": "The harness's normal ask flow, mapped to its cleanest *non-interactive*\nvariant so a headless run never blocks waiting for input (Claude's\n`dontAsk` deny-and-continue, Goose's fail-closed `approve`, Copilot's\nauto-deny). Where no such variant exists the harness's [`ModeHeadless`]\nis [`ModeHeadless::Hangs`].",
+            "type": "string"
+          },
+          {
+            "const": "edit",
+            "description": "Auto-approve file edits, still gate shell/commands. (Claude's\n`acceptEdits`, Qwen's `auto-edit`.)",
+            "type": "string"
+          },
+          {
+            "const": "auto",
+            "description": "Auto-approve operations the harness deems safe (a classifier), gate the\nrisky ones. (Claude's `auto`, Qwen's `auto`, Goose's `smart_approve`.)",
+            "type": "string"
+          },
+          {
+            "const": "bypass",
+            "description": "Approve everything \u2014 no prompts, no gating. The headless default, because\nan unattended agent otherwise hangs on the first approval. Every harness\nsupports it. (Claude's `bypassPermissions`, Codex's\n`--dangerously-bypass-approvals-and-sandbox`, Qwen/Crush `--yolo`, \u2026)",
+            "type": "string"
+          }
+        ]
+      },
+      "RunMode": {
+        "description": "How the selected harnesses are run. Accepted as a CLI value (`--run-mode`,\nparsed in the `oneharness` binary) and a config-file value (`run_mode`, via\n`Deserialize`); the CLI parsing lives in the binary so this core crate stays\nfree of `clap`.",
+        "oneOf": [
+          {
+            "const": "parallel",
+            "description": "Run every selected harness at once, each an independent subprocess, and\nreport them all. The default \u2014 the historical behavior.",
+            "type": "string"
+          },
+          {
+            "const": "fallback",
+            "description": "Run the selected harnesses in priority order (the `--harness` / config\norder, else registry order under `--all`), stopping at the first that\nactually runs the task; fall through only the candidates that cannot run\nat all (see [`startup_failure_reason`]).",
+            "type": "string"
+          }
+        ]
+      },
+      "VariantReport": {
+        "properties": {
+          "allowed_tools": {
+            "$ref": "#/$defs/Field2"
+          },
+          "args": {
+            "$ref": "#/$defs/Field2"
+          },
+          "bin": {
+            "$ref": "#/$defs/Field3"
+          },
+          "denied_tools": {
+            "$ref": "#/$defs/Field2"
+          },
+          "env": {
+            "additionalProperties": {
+              "$ref": "#/$defs/Field3"
+            },
+            "type": "object"
+          },
+          "env_file": {
+            "$ref": "#/$defs/Field3"
+          },
+          "env_from": {
+            "additionalProperties": {
+              "$ref": "#/$defs/Field3"
+            },
+            "type": "object"
+          },
+          "hooks": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "model": {
+            "$ref": "#/$defs/Field3"
+          },
+          "reasoning": {
+            "$ref": "#/$defs/Field3"
+          },
+          "settings": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "unset_env": {
+            "$ref": "#/$defs/Field2"
+          }
+        },
+        "required": [
+          "model",
+          "reasoning",
+          "bin",
+          "args",
+          "allowed_tools",
+          "denied_tools",
+          "hooks",
+          "settings",
+          "env_file",
+          "env_from",
+          "unset_env",
+          "env"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The `oneharness config` report: the fully layered configuration with the\nprovenance of every value, so a consumer can see exactly which file (or\ndefault) shaped each setting of a run.",
+    "properties": {
+      "all": {
+        "$ref": "#/$defs/Field"
+      },
+      "allowed_tools": {
+        "$ref": "#/$defs/Field2"
+      },
+      "bypass": {
+        "$ref": "#/$defs/Field"
+      },
+      "config_files": {
+        "description": "The files consulted, in layering order (user first, project last).",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "denied_tools": {
+        "$ref": "#/$defs/Field2"
+      },
+      "env": {
+        "additionalProperties": {
+          "$ref": "#/$defs/Field3"
+        },
+        "description": "Per-key provenance for the top-level `[env]`.",
+        "type": "object"
+      },
+      "exclude": {
+        "$ref": "#/$defs/Field2"
+      },
+      "harness": {
+        "additionalProperties": {
+          "$ref": "#/$defs/HarnessReport"
+        },
+        "description": "Per-harness overrides, with per-field provenance.",
+        "type": "object"
+      },
+      "harnesses": {
+        "$ref": "#/$defs/Field2"
+      },
+      "history": {
+        "$ref": "#/$defs/Field"
+      },
+      "history_dir": {
+        "$ref": "#/$defs/Field3"
+      },
+      "history_labels": {
+        "additionalProperties": {
+          "$ref": "#/$defs/Field3"
+        },
+        "description": "Per-key provenance for history labels.",
+        "type": "object"
+      },
+      "hooks": {
+        "$ref": "#/$defs/Field10"
+      },
+      "max_parallel": {
+        "$ref": "#/$defs/Field8"
+      },
+      "mode": {
+        "$ref": "#/$defs/Field4",
+        "description": "The configured `mode`, if any. Unset when only the legacy `bypass` field\n(or neither) is set \u2014 the effective mode then derives from `bypass`."
+      },
+      "model": {
+        "$ref": "#/$defs/Field3"
+      },
+      "models": {
+        "$ref": "#/$defs/Field2",
+        "description": "The model fan-out list (`models` / repeated `--model` / `ONEHARNESS_MODELS`),\nif any. Unset when the run uses a single per-harness model."
+      },
+      "output_format": {
+        "$ref": "#/$defs/Field6"
+      },
+      "reasoning": {
+        "$ref": "#/$defs/Field3",
+        "description": "Reasoning / thinking effort (`--reasoning` / `ONEHARNESS_REASONING`), if\nany. Forwarded to reasoning-capable harnesses only."
+      },
+      "require_available": {
+        "$ref": "#/$defs/Field"
+      },
+      "run_mode": {
+        "$ref": "#/$defs/Field9",
+        "description": "The configured run mode, if any. Unset falls back to `parallel` (the\nbuilt-in default) at run time."
+      },
+      "schema_file": {
+        "$ref": "#/$defs/Field3"
+      },
+      "schema_max_retries": {
+        "$ref": "#/$defs/Field7"
+      },
+      "schema_version": {
+        "type": "string"
+      },
+      "stream": {
+        "$ref": "#/$defs/Field",
+        "description": "Whether config asks every `run` to stream (`--stream` / ONEHARNESS_STREAM);\ndefaults to false, the built-in buffered report."
+      },
+      "system": {
+        "$ref": "#/$defs/Field3"
+      },
+      "timeout": {
+        "$ref": "#/$defs/Field5"
+      }
+    },
+    "required": [
+      "schema_version",
+      "config_files",
+      "all",
+      "harnesses",
+      "exclude",
+      "model",
+      "models",
+      "system",
+      "reasoning",
+      "bypass",
+      "mode",
+      "timeout",
+      "output_format",
+      "stream",
+      "schema_file",
+      "schema_max_retries",
+      "max_parallel",
+      "run_mode",
+      "require_available",
+      "history",
+      "history_dir",
+      "history_labels",
+      "allowed_tools",
+      "denied_tools",
+      "hooks",
+      "env",
+      "harness"
+    ],
+    "title": "ConfigReport",
+    "type": "object"
+  },
+  "detect_options": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "Options accepted by the language SDKs' `detect()`.",
+    "properties": {
+      "all": {
+        "type": "boolean"
+      },
+      "bins": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "type": "object"
+      },
+      "config": {
+        "type": "string"
+      },
+      "exclude": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "harnesses": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "noConfig": {
+        "type": "boolean"
+      },
+      "requireAvailable": {
+        "description": "Exit non-zero if any probed harness is not installed. The SDKs surface\nthat as a thrown process error rather than a report a caller must\nre-check.",
+        "type": "boolean"
+      }
+    },
+    "title": "DetectOptions",
+    "type": "object"
+  },
   "detect_report": {
     "$defs": {
       "DetectInfo": {
@@ -1282,6 +1965,62 @@
       "detected"
     ],
     "title": "DetectReport",
+    "type": "object"
+  },
+  "gate_options": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "Options accepted by the language SDKs' `gate()` \u2014 the pre-tool gate an\ninstalled hook invokes, driven directly so a consumer hosting its own hook\nrunner never has to shell out and parse.",
+    "properties": {
+      "denyIfContains": {
+        "type": "string"
+      },
+      "event": {
+        "description": "The harness's pre-tool hook event, written to the gate's stdin.",
+        "type": "string"
+      },
+      "harness": {
+        "description": "The harness whose hook protocol to speak.",
+        "minLength": 1,
+        "type": "string"
+      },
+      "reason": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "harness",
+      "event"
+    ],
+    "title": "GateOptions",
+    "type": "object"
+  },
+  "history_clear_options": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "Options accepted by the language SDKs' `historyClear()`.",
+    "properties": {
+      "allProjects": {
+        "type": "boolean"
+      },
+      "config": {
+        "type": "string"
+      },
+      "historyDir": {
+        "type": "string"
+      },
+      "noConfig": {
+        "type": "boolean"
+      },
+      "project": {
+        "type": "string"
+      },
+      "yes": {
+        "description": "Actually delete. Absent or false reports what would be removed and\nremoves nothing, so a caller can always look first.",
+        "type": "boolean"
+      }
+    },
+    "title": "HistoryClearOptions",
     "type": "object"
   },
   "history_line": {
@@ -3060,6 +3799,24 @@
     ],
     "description": "The session selector accepted by `OneHarness.history()` in the published Node\nSDK.\n\nA lookup must select a session, so the contract is a union of the only two\nways to do that: ask for the most recent one ([`HistoryLookupByLast`]), or\nname one ([`HistoryLookupBySession`]). A lookup that selects nothing \u2014 `{}`,\n`{\"session\": \"\"}`, or `{\"last\": false}` \u2014 matches neither variant and fails\nat the boundary, so `history()` never has to re-check for one.\n\nThe variants overlap on purpose, and the order is load-bearing: an untagged\nenum takes the first match, so `Last` coming first is what gives `last: true`\npriority over a name. `{\"session\": \"x\", \"last\": true}` satisfies *both*\nvariants and resolves to `Last`, selecting the most recent session rather\nthan `x`; `{\"session\": \"x\", \"last\": false}` fails `Last` and resolves to\n`Session`. That is exactly the reading of the `if (last) \u2026 else if (session)`\nrule this replaces, now decided by the union rather than re-derived after\nparsing. Zod resolves its generated union in the same order, so the Node SDK\nagrees with Rust by construction.\n\nBecause `Last` ignores the name it carries, that name is a plain `String`:\n`{\"session\": \"\", \"last\": true}` stays valid and still selects the most recent\nsession, as it always has. Only a name that actually selects has to be\nnon-empty.",
     "title": "HistoryLookup"
+  },
+  "history_migrate_options": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "Options accepted by the language SDKs' `historyMigrate()`.",
+    "properties": {
+      "config": {
+        "type": "string"
+      },
+      "historyDir": {
+        "type": "string"
+      },
+      "noConfig": {
+        "type": "boolean"
+      }
+    },
+    "title": "HistoryMigrateOptions",
+    "type": "object"
   },
   "history_record": {
     "$defs": {
@@ -11016,6 +11773,48 @@
     "title": "HistoryWatchOptions",
     "type": "object"
   },
+  "init_options": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "Options accepted by the language SDKs' `init()`.",
+    "properties": {
+      "force": {
+        "type": "boolean"
+      },
+      "path": {
+        "description": "Where to write the starter config. Absent means `oneharness.toml` in the\nworking directory, exactly as the CLI's own default.",
+        "type": "string"
+      }
+    },
+    "title": "InitOptions",
+    "type": "object"
+  },
+  "interrupt_options": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "Options accepted by the language SDKs' `interrupt()`.",
+    "properties": {
+      "cwd": {
+        "type": "string"
+      },
+      "input": {
+        "type": "string"
+      },
+      "session": {
+        "description": "The caller-owned session handle the target run was started with.",
+        "minLength": 1,
+        "type": "string"
+      },
+      "sessionDir": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session"
+    ],
+    "title": "InterruptOptions",
+    "type": "object"
+  },
   "list_report": {
     "$defs": {
       "ControlShape": {
@@ -11356,6 +12155,33 @@
       "harnesses"
     ],
     "title": "ListReport",
+    "type": "object"
+  },
+  "mock_options": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "Options accepted by the language SDKs' `mock()`.",
+    "properties": {
+      "event": {
+        "description": "The harness's pre-tool hook event, written to the responder's stdin.",
+        "type": "string"
+      },
+      "harness": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "rules": {
+        "type": "string"
+      },
+      "spyFile": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "harness",
+      "event"
+    ],
+    "title": "MockOptions",
     "type": "object"
   },
   "run_options": {
@@ -13846,5 +14672,681 @@
       }
     ],
     "title": "RunStreamEnvelope"
+  },
+  "sync_options": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "Options accepted by the language SDKs' `sync()`.",
+    "properties": {
+      "check": {
+        "description": "Report what would change and write nothing.",
+        "type": "boolean"
+      },
+      "config": {
+        "type": "string"
+      },
+      "cwd": {
+        "type": "string"
+      },
+      "global": {
+        "type": "boolean"
+      },
+      "harnesses": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "noConfig": {
+        "type": "boolean"
+      }
+    },
+    "title": "SyncOptions",
+    "type": "object"
+  },
+  "sync_report": {
+    "$defs": {
+      "HookFileResult": {
+        "description": "One installed `[[hooks]]` file.",
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file",
+          "status"
+        ],
+        "type": "object"
+      },
+      "SyncResult": {
+        "description": "What one harness's sync did (or would do).",
+        "properties": {
+          "file": {
+            "description": "The permission/settings config file written (or that would be written);\n`null` when nothing of that kind is configured for this harness.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "harness": {
+            "type": "string"
+          },
+          "hooks": {
+            "description": "Normalized `[[hooks]]` files installed into this harness (a Goose hook\nwrites two). Empty when no `[[hooks]]` entry targets it.",
+            "items": {
+              "$ref": "#/$defs/HookFileResult"
+            },
+            "type": "array"
+          },
+          "status": {
+            "description": "`created` / `updated` / `unchanged` for `file`, or `skipped` when no\npermission/settings fragment applies. Hook files carry their own status.",
+            "type": "string"
+          },
+          "unmapped": {
+            "description": "Top-level settings that have no mapping for this harness (e.g. a\ntop-level `allowed_tools` while the harness has no allow-list concept)\n\u2014 visible here and warned on stderr, never silently dropped.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "harness",
+          "file",
+          "status",
+          "hooks",
+          "unmapped"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The `oneharness sync` output contract.",
+    "properties": {
+      "check": {
+        "description": "True under `--check`: statuses describe what *would* happen.",
+        "type": "boolean"
+      },
+      "config_files": {
+        "description": "The oneharness config files the synced settings came from.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "results": {
+        "items": {
+          "$ref": "#/$defs/SyncResult"
+        },
+        "type": "array"
+      },
+      "schema_version": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "schema_version",
+      "config_files",
+      "check",
+      "results"
+    ],
+    "title": "SyncReport",
+    "type": "object"
+  },
+  "usage_options": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "Options accepted by the language SDKs' `usage()`.",
+    "properties": {
+      "all": {
+        "type": "boolean"
+      },
+      "bins": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "type": "object"
+      },
+      "config": {
+        "type": "string"
+      },
+      "cwd": {
+        "type": "string"
+      },
+      "exclude": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "harnesses": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "noConfig": {
+        "type": "boolean"
+      },
+      "timeoutSeconds": {
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "title": "UsageOptions",
+    "type": "object"
+  },
+  "usage_report": {
+    "$defs": {
+      "AuthMode": {
+        "description": "How the identity authenticates, which is what decides whether plan headroom\nexists at all.",
+        "oneOf": [
+          {
+            "const": "subscription",
+            "description": "A first-party subscription (Claude.ai, ChatGPT, a GitHub Copilot seat).",
+            "type": "string"
+          },
+          {
+            "const": "api_key",
+            "description": "An API key. Both claude-code and codex affirmatively report no plan\nheadroom in this mode \u2014 see [`UnavailableReason::ApiKeyAuth`].",
+            "type": "string"
+          },
+          {
+            "const": "unknown",
+            "description": "Not established by the probe.",
+            "type": "string"
+          }
+        ]
+      },
+      "IdentitySelector": {
+        "description": "How one identity is selected for a probe. A secret-valued selector records\nonly the variable's *name*, so a credential can never reach the report.",
+        "oneOf": [
+          {
+            "description": "An environment variable naming a credential *directory* \u2014 Claude Code's\n`CLAUDE_CONFIG_DIR`, codex's `CODEX_HOME`. The path is not a secret.",
+            "properties": {
+              "env": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "env_path",
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "env",
+              "path"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "An environment variable carrying a credential \u2014 Copilot's GitHub token.\nThe value is deliberately absent.",
+            "properties": {
+              "env": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "env_secret",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "env"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The harness's ambient credential store, with nothing overridden.",
+            "properties": {
+              "kind": {
+                "const": "ambient",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "QuotaAmount": {
+        "description": "A counter that cannot legitimately be negative. An entitlement is a ceiling\nand a consumption is an amount spent; neither has a meaning below zero, so a\nnegative one is a payload that failed to parse rather than an account state,\nand it is rejected at the boundary like [`UsedPercent`].\n\nDeliberately *not* used for [`QuotaCounters::remaining`], which is genuinely\nnegative for an account past its ceiling \u2014 the deficit is the signal there,\nso constraining it would discard a real over-consumption reading.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "QuotaCounters": {
+        "description": "The raw counters behind a metered window.",
+        "properties": {
+          "entitlement": {
+            "$ref": "#/$defs/QuotaAmount"
+          },
+          "has_quota": {
+            "description": "Whether any quota remains on this plan.",
+            "type": "boolean"
+          },
+          "overage_permitted": {
+            "description": "Whether spending past the entitlement is permitted. `has_quota: false`\n*and* `overage_permitted: false` together are the machine-readable\n\"exhausted and blocked\" signal \u2014 see [`QuotaCounters::blocked`].",
+            "type": "boolean"
+          },
+          "remaining": {
+            "description": "The server's own remaining figure, taken as authoritative rather than\nrecomputed from `entitlement - used`: Copilot's observed values disagree\nby about 1 and the server's figure wins. Signed, and the one counter here\nthat is: an account past its ceiling reports a real deficit.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "unit": {
+            "$ref": "#/$defs/QuotaUnit"
+          },
+          "used": {
+            "$ref": "#/$defs/QuotaAmount"
+          }
+        },
+        "required": [
+          "entitlement",
+          "used",
+          "remaining",
+          "has_quota",
+          "overage_permitted",
+          "unit"
+        ],
+        "type": "object"
+      },
+      "QuotaUnit": {
+        "description": "What the counters count.",
+        "oneOf": [
+          {
+            "const": "ai_credits",
+            "description": "GitHub AI credits, $0.01 each \u2014 Copilot's unit when `token_based_billing`\nis true.",
+            "type": "string"
+          },
+          {
+            "const": "unspecified",
+            "description": "The harness did not say what its counters count.",
+            "type": "string"
+          }
+        ]
+      },
+      "SchemaVersion": {
+        "description": "The report's shape version, as a type: [`SCHEMA_VERSION`] is the only value it\nhas. A report claiming a version this build does not implement is therefore\nnot something a caller can build \u2014 and one arriving on the wire is refused\nrather than stored (see [`UsageReportWire`]), so the two boundaries agree.\nSerializes as the version string a consumer reads.",
+        "type": "null"
+      },
+      "UnavailableReason": {
+        "description": "Why an identity affirmatively has no plan headroom. Distinct from\n[`UnknownReason`]: these are answers, not absences of one.",
+        "oneOf": [
+          {
+            "const": "api_key_auth",
+            "description": "API-key auth. Verified for both claude-code (`rate_limits_available:\nfalse`, `subscription_type: null`) and codex (`chatgpt authentication\nrequired to read rate limits`): the harness exposes no plan headroom in\nthis mode. This is a finding, never a guess \u2014 and it is *not*\n[`UsageAvailability::Unknown`].",
+            "type": "string"
+          },
+          {
+            "const": "not_logged_in",
+            "description": "No stored credential for the selected identity \u2014 codex's `codex account\nauthentication required to read rate limits`, a different code branch\nfrom the API-key one above.",
+            "type": "string"
+          },
+          {
+            "const": "no_windows_reported",
+            "description": "The harness answered, but carried no readable window at all.",
+            "type": "string"
+          },
+          {
+            "const": "no_plan_quota",
+            "description": "The harness has **no first-party plan quota** for headroom to exist in:\nOpenCode Zen is pay-as-you-go with nothing that resets, and Goose ships\nno first-party inference plan at all. Nothing is missing here \u2014 the\nquantity itself is undefined, which is why this is not\n[`Self::NoHeadroomReader`].",
+            "type": "string"
+          },
+          {
+            "const": "no_headroom_reader",
+            "description": "A plan quota exists but the harness exposes **no non-interactive reader**\nfor it: Cursor's dollar pools reach only its interactive TUI, Crush's\nHyper credits have no balance command or API, and Qwen's Coding Plan\nweekly quota has no reader of any kind. A future CLI release could add\none, which is exactly what separates this from [`Self::NoPlanQuota`].",
+            "type": "string"
+          }
+        ]
+      },
+      "UnknownReason": {
+        "description": "Why nothing is known. Reserved **strictly** for unprobed or probe-failed \u2014\nAPI-key auth is [`UnavailableReason::ApiKeyAuth`], not this.",
+        "oneOf": [
+          {
+            "description": "No probe was run for this identity.",
+            "properties": {
+              "kind": {
+                "const": "unprobed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A probe ran and failed, carrying the harness's own message.",
+            "properties": {
+              "kind": {
+                "const": "probe_failed",
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "message"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The harness's binary is not installed, so its probe could not run. The\nharness may well have headroom; this identity simply has no reader on\nthis machine. Mirrors a run's `skipped` status: data, never a crash.\nBuild it with [`UnknownReason::binary_missing`].",
+            "properties": {
+              "bin": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "binary_missing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "bin"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "UsageAvailability": {
+        "description": "Tri-state headroom availability.\n\nThe three states are genuinely different answers and are never collapsed:\n`available` carries real data, `unavailable` is an affirmative \"this identity\nhas no plan headroom to report\" **with a reason**, and `unknown` means only\nthat nothing was learned. There is no percentage reachable from either\nnon-available state, so neither can be rendered as `0%` used.",
+        "oneOf": [
+          {
+            "description": "Real headroom data: one entry per non-null window, never empty.",
+            "properties": {
+              "state": {
+                "const": "available",
+                "type": "string"
+              },
+              "windows": {
+                "$ref": "#/$defs/Windows"
+              }
+            },
+            "required": [
+              "state",
+              "windows"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The harness answered and affirmatively reported no plan headroom.",
+            "properties": {
+              "reason": {
+                "$ref": "#/$defs/UnavailableReason"
+              },
+              "state": {
+                "const": "unavailable",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Nothing was learned \u2014 the identity was not probed, or the probe failed.",
+            "properties": {
+              "reason": {
+                "$ref": "#/$defs/UnknownReason"
+              },
+              "state": {
+                "const": "unknown",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "UsageIdentity": {
+        "description": "One harness identity's headroom.\n\nDeserializing is a consumer boundary like the envelope's, so every string an\nidentity carries is flattened through [`without_control_chars`] on the way in\n\u2014 see [`UsageIdentityWire`].",
+        "properties": {
+          "auth_mode": {
+            "$ref": "#/$defs/AuthMode"
+          },
+          "availability": {
+            "$ref": "#/$defs/UsageAvailability"
+          },
+          "harness": {
+            "description": "Canonical harness id, matching a [`crate::domain::harness`] registry id.",
+            "type": "string"
+          },
+          "plan": {
+            "description": "The plan as the harness spells it, **verbatim**: Claude's `max` and\ncodex's `pro` are different vocabularies and are never unified into one\nenum. Absent when the harness reports no plan (an API-key session).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "selector": {
+            "$ref": "#/$defs/IdentitySelector",
+            "description": "How this identity was selected \u2014 never the credential itself."
+          },
+          "variant": {
+            "description": "The named variant this identity came from, when it was selected by a\ncomposed id (`claude-code:work`). Absent for a bare harness id, matching\n[`crate::domain::report::RunResult::variant`] \u2014 so a consumer joins a\nusage identity to the runs it describes on the same pair of fields.\n\nTwo subscriptions of one harness therefore stay distinguishable even when\ntheir [`IdentitySelector`]s do not distinguish them (a variant that\nselects an identity by credential rather than by directory).\n\nA [`VariantName`], so the field cannot be *set* to a name no config could\nhave declared \u2014 the same enforcement [`UsageReport::observed_at`] gets\nfrom [`UtcInstant`]. It serializes transparently, so the wire keeps the\nplain string [`crate::domain::report::RunResult::variant`] carries.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "harness",
+          "selector",
+          "auth_mode",
+          "availability"
+        ],
+        "type": "object"
+      },
+      "UsageWindow": {
+        "description": "One rate-limit window. Emitted only for a window the harness actually\nreported: a null window (Claude's `seven_day_opus: null`, codex's `secondary:\nnull`) means \"not applicable to this plan\", **not** \"0% used\", so it is\nomitted rather than zero-filled.",
+        "oneOf": [
+          {
+            "description": "The harness stated the length (codex's `windowDurationMins`).",
+            "properties": {
+              "window_seconds": {
+                "format": "uint64",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "window_seconds_source": {
+                "const": "reported",
+                "type": "string"
+              }
+            },
+            "required": [
+              "window_seconds_source",
+              "window_seconds"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Derived from the harness's own window key (Claude's `five_hour`).",
+            "properties": {
+              "window_seconds": {
+                "format": "uint64",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "window_seconds_source": {
+                "const": "inferred_from_id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "window_seconds_source",
+              "window_seconds"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Not derivable \u2014 an opaque key, or a calendar window with no fixed length.",
+            "properties": {
+              "window_seconds_source": {
+                "const": "unknown",
+                "type": "string"
+              }
+            },
+            "required": [
+              "window_seconds_source"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "id": {
+            "description": "The harness-native window identifier, verbatim where the harness names\none (`five_hour`, `tangelo`, `chat`) and `<limitId>/<slot>` where codex's\ntwo-level buckets are flattened.",
+            "type": "string"
+          },
+          "is_binding": {
+            "description": "Whether this is the limit currently binding, when the harness says so\n(Claude's `limits[].is_active`). Absent when it does not.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "label": {
+            "description": "A human label the harness supplied (codex's `limitName`), when it did.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resets_at": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/UtcInstant"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the window resets, always absolute RFC 3339 UTC \u2014 a [`UtcInstant`],\nso no other text is representable here. Absent when the harness reported\nno reset, or one that could not be normalized."
+          },
+          "scope": {
+            "description": "The model display name this window is scoped to, when it is scoped.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "usage": {
+            "$ref": "#/$defs/WindowUsage"
+          }
+        },
+        "required": [
+          "id",
+          "usage"
+        ],
+        "type": "object"
+      },
+      "UsedPercent": {
+        "description": "A validated percent-**used** figure, whatever polarity the harness reported.\n\nValidated at the boundary rather than trusted: a harness's payload is\nexternal input, and a `NaN`, an infinity, or a negative percentage would\nrender as a nonsense bar. A value *above* 100 is accepted and preserved\nrather than clamped \u2014 it means the harness reported consumption past its own\nceiling (an overage), which is precisely when a consumer needs the figure.",
+        "format": "double",
+        "type": "number"
+      },
+      "UtcInstant": {
+        "description": "An RFC 3339 timestamp in UTC (`Z`), in oneharness's canonical spelling.",
+        "type": "string"
+      },
+      "WindowUsage": {
+        "description": "What a window's consumption looks like. An unlimited quota carries no\ncounters, so it can never be rendered as a metered bar at 0% used.",
+        "oneOf": [
+          {
+            "properties": {
+              "counters": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/QuotaCounters"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The raw counters behind the percentage, when the harness reported\nevery one of them. Never partially fabricated, and absent rather than\nnull when the payload did not carry the full set."
+              },
+              "kind": {
+                "const": "metered",
+                "type": "string"
+              },
+              "used_percent": {
+                "$ref": "#/$defs/UsedPercent",
+                "description": "**Always percent-used**, whatever polarity the source used, and\nvalidated at the boundary \u2014 see [`UsedPercent`]."
+              }
+            },
+            "required": [
+              "kind",
+              "used_percent"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The harness reported this quota as unlimited. No counter is read: an\nunlimited Copilot snapshot reports `entitlement: 0` / `remaining: 0`\nalongside `percent_remaining: 100.0`, which are meaningless as counters.",
+            "properties": {
+              "kind": {
+                "const": "unlimited",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Windows": {
+        "description": "A non-empty list of windows. The non-emptiness is the invariant that keeps\n\"available\" from ever meaning \"no data\" \u2014 construct it with [`Windows::new`].",
+        "items": {
+          "$ref": "#/$defs/UsageWindow"
+        },
+        "type": "array"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "One usage report: every probed identity, stamped with a single observation\ntime supplied by the caller (this module reads no clock).\n\nDeserializing is a consumer boundary \u2014 `oneharness-core` is published for\nsibling tools \u2014 so the envelope is validated on the way in rather than\ntrusted: see [`UsageReportWire`].",
+    "properties": {
+      "identities": {
+        "items": {
+          "$ref": "#/$defs/UsageIdentity"
+        },
+        "type": "array"
+      },
+      "observed_at": {
+        "$ref": "#/$defs/UtcInstant",
+        "description": "The instant the identities were observed, minted by the io layer's single\nclock read. A [`UtcInstant`], so the field cannot be *set* to something\nthat is not one \u2014 see [`UsageReport::new`]."
+      },
+      "schema_version": {
+        "$ref": "#/$defs/SchemaVersion",
+        "description": "The shape version, as a type with one value \u2014 see [`SchemaVersion`]."
+      }
+    },
+    "required": [
+      "schema_version",
+      "observed_at",
+      "identities"
+    ],
+    "title": "UsageReport",
+    "type": "object"
   }
 }

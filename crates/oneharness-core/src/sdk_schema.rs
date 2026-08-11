@@ -16,7 +16,9 @@ use crate::domain::history::{
 };
 use crate::domain::report::{RunReport, RunStreamEnvelope, Status};
 use crate::domain::sdk::{
-    schema_for_serialize, HistoryListOptions, HistoryLookup, HistoryWatchOptions, RunOptions,
+    schema_for_serialize, ConfigOptions, DetectOptions, GateOptions, HistoryClearOptions,
+    HistoryListOptions, HistoryLookup, HistoryMigrateOptions, HistoryWatchOptions, InitOptions,
+    InterruptOptions, MockOptions, RunOptions, SyncOptions, UsageOptions,
 };
 use crate::domain::signals::FailureKind;
 use crate::io::history::SessionSummary;
@@ -40,6 +42,25 @@ pub struct SdkSchemaBundle {
     pub history_stream_envelope: Schema,
     pub history_records: Schema,
     pub history_list: Schema,
+    pub list_report: Schema,
+    pub detect_report: Schema,
+    // The per-verb contracts behind the capabilities beyond `run` and `history`.
+    // Every root a capability names must appear here — `capability.rs`'s
+    // `every_named_schema_root_is_emitted_by_the_bundle` is what makes that a
+    // build failure rather than an SDK pointed at a contract with no source.
+    pub detect_options: Schema,
+    pub config_options: Schema,
+    pub config_report: Schema,
+    pub sync_options: Schema,
+    pub sync_report: Schema,
+    pub init_options: Schema,
+    pub usage_options: Schema,
+    pub usage_report: Schema,
+    pub gate_options: Schema,
+    pub mock_options: Schema,
+    pub interrupt_options: Schema,
+    pub history_clear_options: Schema,
+    pub history_migrate_options: Schema,
 }
 
 /// Generate the shared SDK schema roots from their Rust contract types.
@@ -57,6 +78,21 @@ pub fn bundle() -> SdkSchemaBundle {
         history_stream_envelope: history_stream_schema(),
         history_records: history_schema(schema_for_serialize::<Vec<HistoryRecord>>()),
         history_list: schema_for_serialize::<Vec<SessionSummary>>(),
+        list_report: schema_for_serialize::<crate::io::registry::ListReport>(),
+        detect_report: schema_for_serialize::<crate::io::detect::DetectReport>(),
+        detect_options: schema_for!(DetectOptions),
+        config_options: schema_for!(ConfigOptions),
+        config_report: schema_for_serialize::<crate::domain::config::ConfigReport>(),
+        sync_options: schema_for!(SyncOptions),
+        sync_report: schema_for_serialize::<crate::io::sync::SyncReport>(),
+        init_options: schema_for!(InitOptions),
+        usage_options: schema_for!(UsageOptions),
+        usage_report: schema_for_serialize::<crate::domain::usage::UsageReport>(),
+        gate_options: schema_for!(GateOptions),
+        mock_options: schema_for!(MockOptions),
+        interrupt_options: schema_for!(InterruptOptions),
+        history_clear_options: schema_for!(HistoryClearOptions),
+        history_migrate_options: schema_for!(HistoryMigrateOptions),
     }
 }
 
@@ -759,6 +795,29 @@ fn add_v03_condition(value: &mut serde_json::Value) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn every_named_schema_root_is_emitted_by_the_bundle() {
+        // A capability names the contracts its SDK methods validate against. A
+        // root nothing emits is an SDK pointed at a contract with no generated
+        // source and no freshness gate — which is the exact defect the manifest
+        // exists to prevent, so it must not be expressible in the manifest
+        // itself. A verb whose output is not yet a typed contract says `None`.
+        let emitted = serde_json::to_value(bundle()).expect("the bundle serializes");
+        let emitted = emitted.as_object().expect("the bundle is an object");
+        for capability in crate::domain::capability::CAPABILITIES {
+            for root in capability.options.into_iter().chain(capability.output) {
+                assert!(
+                    emitted.contains_key(root),
+                    "capability `{}` names the schema root `{root}`, which `bundle()` does not \
+                     emit. Add it to `SdkSchemaBundle` (so both SDKs generate and validate \
+                     against it), or record the gap with `None` rather than naming a root that \
+                     does not exist.",
+                    capability.method
+                );
+            }
+        }
+    }
     use super::*;
     use serde_json::json;
 

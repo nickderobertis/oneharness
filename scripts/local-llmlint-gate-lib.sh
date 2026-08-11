@@ -136,6 +136,32 @@ llmlint_record_verdict() {
   find "$dir" -name '*.verdict*' -mtime +30 -delete 2>/dev/null || true
 }
 
+# Run a command with the repo's own oneharness config in charge.
+#
+# Both the availability probe and the judge itself dispatch `oneharness run
+# --config oneharness.toml`, and `--config` loads exactly that file — but the
+# `ONEHARNESS_*` environment overrides still layer on top of it by design. A host
+# that runs its own agents through oneharness carries `ONEHARNESS_HARNESSES`,
+# which then reselects: on such a host both calls died on `unknown harness
+# variant`, naming a harness this repo's config never mentions, and took the
+# whole pre-push gate with them. Nothing in the tree was wrong.
+#
+# So the policy overrides are dropped for these calls, and the config decides.
+# On a machine that has none — a developer box, CI — this is a no-op.
+#
+# `ONEHARNESS_BIN_<ID>` is deliberately kept: it says where a binary IS, not
+# which one to run, and dropping it would make the gate miss a harness the
+# developer really does have. Discovered rather than listed, so a newly added
+# override cannot reopen the hole.
+llmlint_repo_config_env() {
+  local -a stripped=()
+  local name
+  while IFS= read -r name; do
+    [[ $name == ONEHARNESS_BIN_* ]] || stripped+=(-u "$name")
+  done < <(env | sed -n 's/^\(ONEHARNESS_[A-Za-z0-9_]*\)=.*/\1/p')
+  env "${stripped[@]}" "$@"
+}
+
 llmlint_judge_available() {
   local config=$1 oneharness_bin probe_output probe_stderr status
   oneharness_bin=$(command -v oneharness) || {
@@ -151,7 +177,7 @@ llmlint_judge_available() {
     return 2
   }
   probe_stderr=$(mktemp)
-  if probe_output=$("$oneharness_bin" run --config "$config" --compact \
+  if probe_output=$(llmlint_repo_config_env "$oneharness_bin" run --config "$config" --compact \
     --prompt "Reply with exactly: available" 2>"$probe_stderr"); then
     status=0
   else

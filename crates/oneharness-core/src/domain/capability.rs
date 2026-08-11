@@ -46,14 +46,14 @@ pub struct OptionBinding {
     /// [`FlagKind::Trailing`], which have no flag.
     pub flag: &'static str,
     pub kind: FlagKind,
-    /// Another option whose truth suppresses this one, or `""`.
+    /// Another option whose truth suppresses this one.
     ///
     /// The one thing a flat binding list cannot say by itself: `history show`
     /// takes `--last` OR a session name and clap refuses both, so a lookup
     /// carrying `{session, last: true}` — which the union deliberately accepts,
     /// resolving to "the most recent" — must render only `--last`. Declaring the
     /// suppression keeps that rule in the manifest instead of in each SDK.
-    pub unless: &'static str,
+    pub unless: Option<&'static str>,
 }
 
 /// A CLI flag no SDK option renders, and why that is correct.
@@ -93,8 +93,14 @@ pub struct Capability {
     /// The schema root of its input contract, or `None` for a verb that takes
     /// no options at all.
     pub options: Option<&'static str>,
-    /// The schema root of its output contract, or `None` when the verb's stdout
-    /// is not one ([`StdoutShape::Text`]).
+    /// The schema root of its output contract.
+    ///
+    /// `None` two ways, and the difference is in [`Capability::stdout`]: a
+    /// `Text` verb has no document to validate at all, while a `Json` one whose
+    /// output is not yet a schema-carrying Rust type has a document nothing can
+    /// check. The second is a gap, recorded rather than papered over by naming a
+    /// root the bundle does not emit — which is what
+    /// `every_named_schema_root_is_emitted_by_the_bundle` refuses.
     pub output: Option<&'static str>,
     /// How the SDK reads the verb's stdout.
     pub stdout: StdoutShape,
@@ -135,7 +141,7 @@ const fn bind(option: &'static str, flag: &'static str, kind: FlagKind) -> Optio
         option,
         flag,
         kind,
-        unless: "",
+        unless: None,
     }
 }
 
@@ -151,7 +157,7 @@ const fn bind_unless(
         option,
         flag,
         kind,
-        unless,
+        unless: Some(unless),
     }
 }
 
@@ -407,7 +413,11 @@ pub const CAPABILITIES: &[Capability] = &[
         method: "interrupt",
         argv: &["interrupt"],
         options: Some("interrupt_options"),
-        output: Some("control_response"),
+        // No generated contract yet: the response's `{"v":2,…}` wire shape is
+        // hand-written rather than derived, so there is nothing for an SDK to
+        // validate against. Giving it a `JsonSchema` that matches by
+        // construction is what closes this.
+        output: None,
         stdout: StdoutShape::Json,
         stdin: false,
         rust: "oneharness_core::io::control::send",
@@ -486,7 +496,11 @@ pub const CAPABILITIES: &[Capability] = &[
         method: "historyClear",
         argv: &["history", "clear"],
         options: Some("history_clear_options"),
-        output: Some("history_clear_report"),
+        // No generated contract yet: the verb builds its report with an inline
+        // `serde_json::json!` literal rather than a schema-carrying struct, so
+        // there is no root to validate against. Giving it a type is what closes
+        // this; naming a root the bundle does not emit would only look closed.
+        output: None,
         stdout: StdoutShape::Json,
         stdin: false,
         rust: "oneharness_core::io::history::remove_sessions",
@@ -505,7 +519,9 @@ pub const CAPABILITIES: &[Capability] = &[
         method: "historyMigrate",
         argv: &["history", "migrate"],
         options: Some("history_migrate_options"),
-        output: Some("history_migrate_report"),
+        // No generated contract yet — same inline `json!` report as
+        // `historyClear` above.
+        output: None,
         stdout: StdoutShape::Json,
         stdin: false,
         rust: "oneharness_core::io::history::migrate",

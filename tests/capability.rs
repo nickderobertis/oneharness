@@ -196,16 +196,18 @@ fn a_suppressing_option_is_one_the_same_capability_binds() {
     // `unless` names a sibling option, and a typo would silently stop
     // suppressing — reintroducing the conflicting-flag call it exists to avoid.
     for capability in CAPABILITIES {
-        for binding in capability.bindings.iter().filter(|b| !b.unless.is_empty()) {
+        for binding in capability.bindings {
+            let Some(unless) = binding.unless else {
+                continue;
+            };
             assert!(
                 capability
                     .bindings
                     .iter()
-                    .any(|other| other.option == binding.unless),
-                "`{}` suppresses `{}` on `{}`, which it does not bind",
+                    .any(|other| other.option == unless),
+                "`{}` suppresses `{}` on `{unless}`, which it does not bind",
                 capability.method,
                 binding.option,
-                binding.unless
             );
         }
     }

@@ -102,12 +102,12 @@ entry point a consumer calls instead of spawning the binary; **Python** and
 | `usage` | `oneharness usage` | `oneharness_core::io::usage::report` | **no** | **no** | `usage_report` |
 | `gate` | `oneharness gate` | `oneharness_core::domain::gate::render_deny` | **no** | **no** | text (see notes) |
 | `mock` | `oneharness mock` | `oneharness_core::domain::mock::decide` | **no** | **no** | text (see notes) |
-| `interrupt` | `oneharness interrupt` | `oneharness_core::io::control::send` | **no** | **no** | `control_response` |
+| `interrupt` | `oneharness interrupt` | `oneharness_core::io::control::send` | **no** | **no** | text (see notes) |
 | `history` | `oneharness history show` | `oneharness_core::io::history::read_session` | yes | yes | `history_records` |
 | `historyList` | `oneharness history list` | `oneharness_core::io::history::list_sessions` | yes | yes | `history_list` |
 | `historyWatch` | `oneharness history watch` | `oneharness_core::io::history::HistoryWatcher` | yes | yes | `history_stream_envelope` (one per line) |
-| `historyClear` | `oneharness history clear` | `oneharness_core::io::history::remove_sessions` | **no** | **no** | `history_clear_report` |
-| `historyMigrate` | `oneharness history migrate` | `oneharness_core::io::history::migrate` | **no** | **no** | `history_migrate_report` |
+| `historyClear` | `oneharness history clear` | `oneharness_core::io::history::remove_sessions` | **no** | **no** | text (see notes) |
+| `historyMigrate` | `oneharness history migrate` | `oneharness_core::io::history::migrate` | **no** | **no** | text (see notes) |
 
 ### Flags, per capability
 

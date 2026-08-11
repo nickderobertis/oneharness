@@ -153,6 +153,7 @@ pub struct DetectRequest {
 }
 
 /// One probed harness identity.
+// llmlint: ignore[invalid_states_unrepresentable] `available` beside optional `path`/`version` is the published `detect` wire contract, generated into both language SDKs and depended on by their validators; folding it into a sum type is a breaking output-shape change, not a refactor, and this move from `src/commands/detect.rs` deliberately preserved the shape byte for byte. `path` is legitimately absent for an available harness the resolver took from an explicit `--bin` override, and `version` for one whose `--version` probe fails, so the states are reachable rather than merely representable.
 #[derive(Debug, Clone, schemars::JsonSchema, serde::Serialize)]
 pub struct DetectInfo {
     // llmlint: ignore[invalid_states_unrepresentable] This JSON boundary mirrors the CLI selector string; selection and variant lookup validate it before construction, with integration coverage for valid and invalid composed ids.

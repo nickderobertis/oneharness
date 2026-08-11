@@ -35,6 +35,33 @@ cd "$repo_root"
 # is smoked in step 3b with explicitly planted files.
 export ONEHARNESS_NO_CONFIG=1
 
+# Run the binary with config discovery ENABLED but still hermetic — the steps
+# that smoke the config layer itself, which cannot use ONEHARNESS_NO_CONFIG.
+#
+# Suspending that variable also re-enables every OTHER `ONEHARNESS_*` override,
+# so the machine's environment silently reshapes the assertion: a host that runs
+# its agents through oneharness carries `ONEHARNESS_HARNESSES` /
+# `ONEHARNESS_MODE` / `ONEHARNESS_TIMEOUT`, and a planted `harnesses` the step
+# asserts on is then overridden by whatever the host selected. Stripping them
+# here is what `tests/cli.rs`'s `run_with_config` does for the compiled-CLI
+# suite; it is the same invariant, applied to the same boundary.
+#
+# Every `ONEHARNESS_*` in the environment goes, discovered rather than listed,
+# so a newly added override cannot reopen the hole. Leading `KEY=VALUE`
+# arguments are the ones this step means to set, applied after the strip.
+oh_hermetic() {
+  local -a stripped=() assignments=()
+  local name
+  while IFS= read -r name; do
+    stripped+=(-u "$name")
+  done < <(env | sed -n 's/^\(ONEHARNESS_[A-Za-z0-9_]*\)=.*/\1/p')
+  while [ "$#" -gt 0 ] && [ "${1%%=*}" != "$1" ]; do
+    assignments+=("$1")
+    shift
+  done
+  env "${stripped[@]}" "${assignments[@]}" "$@"
+}
+
 PROMPT="oneharness smoke: reply with the single word pong"
 LAST_CMD=""
 
@@ -187,7 +214,7 @@ cfg_dir="$(mktemp -d)"
 printf 'harnesses = ["claude-code"]\nmodel = "smoke-model"\n' > "$cfg_dir/oneharness.toml"
 : > "$cfg_dir/user.toml"
 LAST_CMD="ONEHARNESS_CONFIG=$cfg_dir/user.toml $oh run --prompt <prompt> --cwd $cfg_dir --print-command --compact"
-out="$(ONEHARNESS_NO_CONFIG='' ONEHARNESS_CONFIG="$cfg_dir/user.toml" \
+out="$(oh_hermetic ONEHARNESS_CONFIG="$cfg_dir/user.toml" \
   "$oh" run --prompt "$PROMPT" --cwd "$cfg_dir" --print-command --compact)" \
   || fail "config-driven dry run exited non-zero" "$LAST_CMD" "" \
        "the oneharness.toml project config layer is broken"
@@ -199,7 +226,7 @@ n_cfg="$(count_matches "$out" '"harness":')"
 # 3b-env. The ONEHARNESS_<FIELD> environment overrides layer above the files and
 #     below the flags: ONEHARNESS_MODEL must beat the planted project model.
 LAST_CMD="ONEHARNESS_CONFIG=$cfg_dir/user.toml ONEHARNESS_MODEL=env-model $oh run --harness claude-code --prompt <prompt> --cwd $cfg_dir --print-command --compact"
-out="$(ONEHARNESS_NO_CONFIG='' ONEHARNESS_CONFIG="$cfg_dir/user.toml" ONEHARNESS_MODEL="env-model" \
+out="$(oh_hermetic ONEHARNESS_CONFIG="$cfg_dir/user.toml" ONEHARNESS_MODEL="env-model" \
   "$oh" run --harness claude-code --prompt "$PROMPT" --cwd "$cfg_dir" --print-command --compact)" \
   || fail "env-override dry run exited non-zero" "$LAST_CMD" "" \
        "the ONEHARNESS_* environment override layer is broken"
@@ -208,7 +235,7 @@ assert_contains "$out" '"--model","env-model"' "ONEHARNESS_MODEL did not overrid
 # 3c. `config` — the layering debug surface: the planted model must be shown
 #     with the project file attributed as its source.
 LAST_CMD="ONEHARNESS_CONFIG=$cfg_dir/user.toml $oh config --cwd $cfg_dir --compact"
-out="$(ONEHARNESS_NO_CONFIG='' ONEHARNESS_CONFIG="$cfg_dir/user.toml" \
+out="$(oh_hermetic ONEHARNESS_CONFIG="$cfg_dir/user.toml" \
   "$oh" config --cwd "$cfg_dir" --compact)" \
   || fail "config command exited non-zero" "$LAST_CMD"
 assert_contains "$out" '"value":"smoke-model"' "config value reporting is broken"
@@ -218,14 +245,14 @@ assert_contains "$out" 'oneharness.toml' "config source attribution is broken"
 #     (the file-based delivery for allow/deny/hooks), and prove idempotency.
 printf 'allowed_tools = ["Bash(echo *)"]\n' >> "$cfg_dir/oneharness.toml"
 LAST_CMD="ONEHARNESS_CONFIG=$cfg_dir/user.toml $oh sync --harness claude-code --cwd $cfg_dir --compact"
-out="$(ONEHARNESS_NO_CONFIG='' ONEHARNESS_CONFIG="$cfg_dir/user.toml" \
+out="$(oh_hermetic ONEHARNESS_CONFIG="$cfg_dir/user.toml" \
   "$oh" sync --harness claude-code --cwd "$cfg_dir" --compact)" \
   || fail "sync exited non-zero" "$LAST_CMD"
 assert_contains "$out" '"status":"created"' "sync did not create the harness config file"
 grep -qF 'Bash(echo *)' "$cfg_dir/.claude/settings.json" \
   || fail "synced rule missing from .claude/settings.json" "$LAST_CMD" \
        "$(cat "$cfg_dir/.claude/settings.json" 2>/dev/null || echo '<missing>')"
-out="$(ONEHARNESS_NO_CONFIG='' ONEHARNESS_CONFIG="$cfg_dir/user.toml" \
+out="$(oh_hermetic ONEHARNESS_CONFIG="$cfg_dir/user.toml" \
   "$oh" sync --harness claude-code --cwd "$cfg_dir" --compact)" \
   || fail "re-sync exited non-zero" "$LAST_CMD"
 assert_contains "$out" '"status":"unchanged"' "sync is not idempotent"
@@ -305,7 +332,7 @@ grep -qF 'run_mode = "fallback"' "$init_path" \
   || fail "scaffolded config missing run_mode" "$LAST_CMD" "$(cat "$init_path" 2>/dev/null)"
 # The scaffold must be a config the loader accepts (round-trip through `config`).
 LAST_CMD="$oh config --config $init_path --compact"
-out="$(ONEHARNESS_NO_CONFIG='' ONEHARNESS_RUN_MODE='' "$oh" config --config "$init_path" --compact)" \
+out="$(oh_hermetic "$oh" config --config "$init_path" --compact)" \
   || fail "scaffolded config does not parse via 'oneharness config'" "$LAST_CMD" "$out"
 assert_contains "$out" '"value":"fallback"' "scaffolded run_mode did not load"
 # Safe by default: a second init without --force is refused (exit 2), with --force it succeeds.

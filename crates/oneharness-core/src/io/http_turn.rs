@@ -634,8 +634,6 @@ impl std::fmt::Display for NotReady {
 /// there" into something the launch knows rather than something the window
 /// guesses — and asking again after an answer keeps a stranger's `200` from
 /// standing in for a server that is already gone.
-/// Wait for the launched server process to become ready, distinguishing an
-/// exited child from an address that merely remains silent.
 pub fn await_ready(
     shape: HttpShape,
     address: &DialAddress,

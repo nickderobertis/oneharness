@@ -8,16 +8,20 @@ cd "$(dirname "$0")/.."
 
 core_tag="$(git tag --merged HEAD --list 'oneharness-core-v*' --sort=-version:refname | head -n 1)"
 if [ -z "$core_tag" ]; then
-  echo "package-crates: no merged oneharness-core release tag found" >&2
+  echo "package-crates: no merged oneharness-core release tag found; fetch tags from origin and retry" >&2
   exit 1
 fi
 
-cargo package --locked --allow-dirty --manifest-path crates/oneharness-core/Cargo.toml
-
+core_output="$(mktemp)"
 output_file="$(mktemp)"
-trap 'rm -f "$output_file"' EXIT
+trap 'rm -f "$core_output" "$output_file"' EXIT
+if ! cargo package --locked --allow-dirty --manifest-path crates/oneharness-core/Cargo.toml >"$core_output" 2>&1; then
+  cat "$core_output" >&2
+  echo "package-crates: core package verification failed; fix the Cargo diagnostics above and rerun 'just package-crates'" >&2
+  exit 1
+fi
 if cargo package --locked --allow-dirty --manifest-path Cargo.toml >"$output_file" 2>&1; then
-  rm -f "$output_file"
+  rm -f "$core_output" "$output_file"
   trap - EXIT
   echo "package-crates: ok"
   exit 0
@@ -50,5 +54,5 @@ if [ "$pending_core_release" = true ]; then
 fi
 
 cat "$output_file" >&2
-echo "package-crates: binary cannot be packaged against its published oneharness-core dependency, and no release-worthy core change will make release-plz bump it" >&2
+echo "package-crates: binary cannot be packaged against its published oneharness-core dependency, and no release-worthy core change will make release-plz bump it; commit the core API change as fix/feat/perf (or BREAKING CHANGE), then rerun 'just package-crates'" >&2
 exit 1

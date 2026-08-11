@@ -86,7 +86,12 @@ count_matches() {
 # debug if neither exists.
 resolve_oneharness() {
   if [ -n "${inherited_oneharness_values[ONEHARNESS_BIN]:-}" ]; then
-    printf '%s' "${inherited_oneharness_values[ONEHARNESS_BIN]}"
+    local override=${inherited_oneharness_values[ONEHARNESS_BIN]}
+    if ! override=$(exe_path "$override"); then
+      fail "ONEHARNESS_BIN is not an executable file" "ONEHARNESS_BIN=<path> just smoke" "" \
+        "set ONEHARNESS_BIN to a built oneharness executable, or unset it"
+    fi
+    printf '%s' "$override"
     return 0
   fi
   local rel deb

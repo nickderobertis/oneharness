@@ -84,6 +84,7 @@ lint-workflows: build build-mock-harness
     @bash scripts/check-workflows.sh >/dev/null
     @bash scripts/check-workflows-e2e.sh >/dev/null
     @bash scripts/check-publish-crates.sh >/dev/null
+    @bash scripts/check-package-crates.sh >/dev/null
     @bash scripts/check-publish-npm.sh >/dev/null
     @bash scripts/check-local-gate.sh >/dev/null
     @bash scripts/check-sdk-install.sh >/dev/null
@@ -142,7 +143,7 @@ e2e:
 # Hermetic end-to-end smoke of the *built* binary (part of `check`; CI runs it on
 # every platform). Drives list/detect/print-command + one mock spawn; no network.
 smoke:
-    bash scripts/smoke.sh
+    ONEHARNESS_HARNESSES="codex:undeclared-smoke-sentinel" bash scripts/smoke.sh
 
 # Opt-in live smoke against installed, authenticated harnesses. Makes real (paid)
 # model calls and needs network, so it is deliberately out of `check` and CI.

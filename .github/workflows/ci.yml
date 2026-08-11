@@ -49,6 +49,28 @@ jobs:
       - name: Full gate (fmt, clippy, tests, coverage, build, smoke)
         run: just check
 
+  # Package both crates exactly as Cargo will verify them at publish time. On its
+  # own job for the same reason `deny` is — it needs the network-fetched
+  # crates.io index — and, unlike `check`, deliberately absent from release.yml:
+  # at a release tag the binary already pins the core version that same run
+  # publishes, so this check cannot be green there and must never be in a
+  # position to skip the publish jobs.
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The core release tags are what say whether an unresolvable core
+          # dependency is a release in flight or a defect; a depth-1 checkout
+          # carries none of them.
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: just package-crates
+
   # Advisory + license audit, on its own because it needs a network advisory DB.
   deny:
     runs-on: ubuntu-latest

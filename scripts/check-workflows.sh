@@ -66,6 +66,21 @@ require_line .github/workflows/ci.yml 'uses: astral-sh/setup-uv@v6' "install the
 # shellcheck disable=SC2016
 require_line .github/workflows/release.yml 'if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then' "validate release-event tags before using them in paths"
 require_line .github/workflows/ci.yml 'run: just deps-check' "use the dependency-audit command surface"
+# Packaging is verified from the PR that precedes a release, never from the
+# release: at a tag the binary already pins the core version that same run
+# publishes, so `just package-crates` is structurally red there and a release
+# gate carrying it skips every publish job (which is how v0.6.14 reached no
+# registry at all). Keep it out of release.yml and out of `check`, which
+# release.yml runs.
+require_line .github/workflows/ci.yml 'run: just package-crates' "verify packaging from the PR gate"
+if grep -q 'package-crates' .github/workflows/release.yml; then
+  fail "release.yml must not run package-crates; it cannot pass at a release tag and would skip every publish job"
+fi
+if grep -qE '^check:.*\bpackage-crates\b' justfile; then
+  fail "justfile 'check' must not depend on package-crates; release.yml runs check at the tag, where it cannot pass"
+fi
+require_line justfile 'gate remote="origin" base="": check deps-check package-crates' \
+  "verify packaging in the pre-push gate instead"
 require_line .github/workflows/ci.yml 'run: scripts/check-pr-title.sh' "validate the release-driving PR title"
 if grep -qE 'run: just (lint|lint-sh|test)$|run: bun run --cwd npm/oneharness-sdk (generate:check|build)$' .github/workflows/release.yml; then
   fail "release.yml must use just check/sdk-check instead of re-listing their stages"

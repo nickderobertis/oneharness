@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.12](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.6.11...oneharness-core-v0.6.12) - 2026-08-11
+
+### Fixed
+
+- *(core)* release process-aware readiness API ([#1239](https://github.com/nickderobertis/oneharness/pull/1239))
+
 ## [0.6.11](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.6.10...oneharness-core-v0.6.11) - 2026-08-10
 
 ### Added

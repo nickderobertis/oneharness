@@ -14780,7 +14780,8 @@
       },
       "schema_version": {
         "description": "The shape version, as a type with one value — see [`SchemaVersion`].",
-        "$ref": "#/$defs/SchemaVersion"
+        "type": "string",
+        "const": "0.1"
       }
     },
     "required": [
@@ -14921,10 +14922,6 @@
             "const": "unspecified"
           }
         ]
-      },
-      "SchemaVersion": {
-        "description": "The report's shape version, as a type: [`SCHEMA_VERSION`] is the only value it\nhas. A report claiming a version this build does not implement is therefore\nnot something a caller can build — and one arriving on the wire is refused\nrather than stored (see [`UsageReportWire`]), so the two boundaries agree.\nSerializes as the version string a consumer reads.",
-        "type": "null"
       },
       "UnavailableReason": {
         "description": "Why an identity affirmatively has no plan headroom. Distinct from\n[`UnknownReason`]: these are answers, not absences of one.",
@@ -15207,9 +15204,10 @@
         ]
       },
       "UsedPercent": {
-        "description": "A validated percent-**used** figure, whatever polarity the harness reported.\n\nValidated at the boundary rather than trusted: a harness's payload is\nexternal input, and a `NaN`, an infinity, or a negative percentage would\nrender as a nonsense bar. A value *above* 100 is accepted and preserved\nrather than clamped — it means the harness reported consumption past its own\nceiling (an overage), which is precisely when a consumer needs the figure.",
+        "description": "A validated percent-**used** figure, whatever polarity the harness reported.\n\nValidated at the boundary rather than trusted: a harness's payload is\nexternal input, and a `NaN`, an infinity, or a negative percentage would\nrender as a nonsense bar. A value *above* 100 is accepted and preserved\nrather than clamped — it means the harness reported consumption past its own\nceiling (an overage), which is precisely when a consumer needs the figure.\n\n`schemars` describes the newtype's private field rather than the `f64` the\nserde attributes make it travel as, so the derived schema constrained\nnothing at all — `with` plus the boundary's own bound is what makes the\ngenerated validators check what [`UsedPercent::new`] checks. (JSON has no\n`NaN` or infinity literal, so \"finite\" needs nothing said.)",
         "type": "number",
-        "format": "double"
+        "format": "double",
+        "minimum": 0
       },
       "UtcInstant": {
         "description": "An RFC 3339 timestamp in UTC (`Z`), in oneharness's canonical spelling.",

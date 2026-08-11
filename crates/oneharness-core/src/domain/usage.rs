@@ -105,8 +105,30 @@ impl UsageReport {
 /// not something a caller can build — and one arriving on the wire is refused
 /// rather than stored (see [`UsageReportWire`]), so the two boundaries agree.
 /// Serializes as the version string a consumer reads.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, schemars::JsonSchema)]
+///
+/// The schema is written by hand because the derive describes the *Rust* shape
+/// — a unit struct, so `null` — while [`Serialize`] writes the version string.
+/// An SDK validating a real report against the derived schema would reject
+/// every one of them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SchemaVersion;
+
+impl schemars::JsonSchema for SchemaVersion {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("SchemaVersion")
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "const": SCHEMA_VERSION,
+        })
+    }
+}
 
 impl SchemaVersion {
     /// The version text, always [`SCHEMA_VERSION`].
@@ -709,10 +731,17 @@ pub enum WindowUsage {
 /// render as a nonsense bar. A value *above* 100 is accepted and preserved
 /// rather than clamped — it means the harness reported consumption past its own
 /// ceiling (an overage), which is precisely when a consumer needs the figure.
+///
+/// `schemars` describes the newtype's private field rather than the `f64` the
+/// serde attributes make it travel as, so the derived schema constrained
+/// nothing at all — `with` plus the boundary's own bound is what makes the
+/// generated validators check what [`UsedPercent::new`] checks. (JSON has no
+/// `NaN` or infinity literal, so "finite" needs nothing said.)
 #[derive(
     Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize, schemars::JsonSchema,
 )]
 #[serde(try_from = "f64", into = "f64")]
+#[schemars(with = "f64", extend("minimum" = 0.0))]
 pub struct UsedPercent(f64);
 
 impl UsedPercent {

@@ -98,8 +98,18 @@ const CONTRACT_MODULES = Object.freeze([
 		key: "history_watch_options",
 		type: "HistoryWatchOptions",
 	},
-	{ module: "history", key: "history_record", type: "HistoryRecord", output: true },
-	{ module: "history-line", key: "history_line", type: "HistoryLine", output: true },
+	{
+		module: "history",
+		key: "history_record",
+		type: "HistoryRecord",
+		output: true,
+	},
+	{
+		module: "history-line",
+		key: "history_line",
+		type: "HistoryLine",
+		output: true,
+	},
 	{
 		module: "history-stream-envelope",
 		key: "history_stream_envelope",
@@ -139,12 +149,27 @@ const CONTRACT_MODULES = Object.freeze([
 	},
 	{ module: "detect-options", key: "detect_options", type: "DetectOptions" },
 	{ module: "config-options", key: "config_options", type: "ConfigOptions" },
-	{ module: "config-report", key: "config_report", type: "ConfigReport", output: true },
+	{
+		module: "config-report",
+		key: "config_report",
+		type: "ConfigReport",
+		output: true,
+	},
 	{ module: "sync-options", key: "sync_options", type: "SyncOptions" },
-	{ module: "sync-report", key: "sync_report", type: "SyncReport", output: true },
+	{
+		module: "sync-report",
+		key: "sync_report",
+		type: "SyncReport",
+		output: true,
+	},
 	{ module: "init-options", key: "init_options", type: "InitOptions" },
 	{ module: "usage-options", key: "usage_options", type: "UsageOptions" },
-	{ module: "usage-report", key: "usage_report", type: "UsageReport", output: true },
+	{
+		module: "usage-report",
+		key: "usage_report",
+		type: "UsageReport",
+		output: true,
+	},
 	{ module: "gate-options", key: "gate_options", type: "GateOptions" },
 	{ module: "mock-options", key: "mock_options", type: "MockOptions" },
 	{
@@ -218,6 +243,63 @@ for (const contract of CONTRACT_MODULES) {
 		await compileContract(contract),
 	);
 }
+/**
+ * The capability manifest, as data the client builds argv from.
+ *
+ * Emitting it rather than restating it in `index.ts` is what makes a method's
+ * argv the same declaration the audit and the Rust-side gates read: a flag
+ * cannot be bound in the manifest and forgotten by the client, because the
+ * client never lists flags at all.
+ */
+const capabilitiesModule = await format(
+	`/* Generated from oneharness-core. Do not edit. */
+export type FlagKind =
+	| "positional"
+	| "value"
+	| "repeated"
+	| "switch"
+	| "key-value"
+	| "trailing";
+
+/** One SDK option and the CLI flag it renders to. */
+export type OptionBinding = {
+	readonly option: string;
+	/** Empty for a positional or trailing binding, which have no flag. */
+	readonly flag: string;
+	readonly kind: FlagKind;
+	/** Another option whose truth suppresses this one. */
+	readonly unless: string | null;
+};
+
+/** How a verb's stdout reaches a caller. */
+export type StdoutShape = "json" | "jsonl" | "text";
+
+/** One thing the CLI can do, and how this client reaches it. */
+export type Capability = {
+	readonly method: string;
+	readonly argv: readonly string[];
+	readonly options: string | null;
+	readonly output: string | null;
+	readonly stdout: StdoutShape;
+	readonly stdin: boolean;
+	readonly rust: string;
+	readonly always: readonly string[];
+	readonly bindings: readonly OptionBinding[];
+	readonly uncovered: readonly { readonly flag: string; readonly reason: string }[];
+};
+
+export const CAPABILITIES = ${JSON.stringify(
+		Object.fromEntries(
+			bundle.capabilities.map((capability) => [capability.method, capability]),
+		),
+		null,
+		1,
+	)} as const satisfies Record<string, Capability>;
+
+export type CapabilityMethod = keyof typeof CAPABILITIES;
+`,
+	{ parser: "typescript", endOfLine: "lf", useTabs: true },
+);
 const zod = await format(
 	generateZodModule(bundle, SDK_SCHEMA_ROOTS, SDK_SCHEMA_ALIASES),
 	{
@@ -231,6 +313,7 @@ const zod = await format(
 const files = {
 	"schemas.json": generatedBytes(JSON.stringify(bundle, null, 2)),
 	...contractFiles,
+	"capabilities.ts": generatedBytes(capabilitiesModule),
 	"zod.ts": generatedBytes(zod),
 };
 let stale = false;

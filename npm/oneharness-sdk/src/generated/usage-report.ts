@@ -171,7 +171,7 @@ export interface UsageReport {
   /**
    * The shape version, as a type with one value — see [`SchemaVersion`].
    */
-  schema_version: null;
+  schema_version: "0.1";
   [k: string]: unknown;
 }
 /**

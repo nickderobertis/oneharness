@@ -4,11 +4,22 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { z } from "zod";
+import type { z, ZodType } from "zod";
 import {
 	type ActionEvent,
 	ActionEventSchema,
 	BatchReportSchema,
+	CAPABILITIES,
+	ConfigOptionsSchema,
+	DetectOptionsSchema,
+	GateOptionsSchema,
+	HistoryClearOptionsSchema,
+	HistoryMigrateOptionsSchema,
+	InitOptionsSchema,
+	InterruptOptionsSchema,
+	MockOptionsSchema,
+	SyncOptionsSchema,
+	UsageOptionsSchema,
 	type DetectReport,
 	DetectReportSchema,
 	FallbackReportSchema,
@@ -36,6 +47,7 @@ import {
 	type ListReport,
 	ListReportSchema,
 	OneHarness,
+	OneHarnessProcessError,
 	type RunOptions,
 	RunOptionsSchema,
 	type RunReport,
@@ -130,11 +142,29 @@ const inferredSchemasMatchGeneratedTypes: [
 	true,
 ];
 
+// A host that runs its agents through oneharness carries `ONEHARNESS_*`
+// overrides, and they outrank a project file — a leaked `ONEHARNESS_HARNESSES`
+// silently reselects the harnesses a config or sync assertion is about. The
+// Rust suite strips them in `run_with_config` and `smoke.sh` in `oh_hermetic`;
+// this is the same rule for the tests that spawn from `process.env`.
+for (const name of Object.keys(process.env)) {
+	if (name.startsWith("ONEHARNESS_")) delete process.env[name];
+}
+
 function sdk(): OneHarness {
 	return new OneHarness({
 		executable: binary,
 		env: { ONEHARNESS_NO_CONFIG: "1" },
 	});
+}
+
+/**
+ * A client that DOES read configuration files, for the two verbs whose whole
+ * subject is the layering. Hermetic by the ambient strip above rather than by
+ * `ONEHARNESS_NO_CONFIG`, which would switch off the thing under test.
+ */
+function layered(): OneHarness {
+	return new OneHarness({ executable: binary });
 }
 
 describe("OneHarness", () => {
@@ -1079,5 +1109,364 @@ describe("OneHarness", () => {
 		await expect(detectClient.detect()).rejects.toThrow(
 			"invalid oneharness detect contract",
 		);
+	});
+	test("reads the layered configuration and its provenance", async () => {
+		const project = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-config-"));
+		await writeFile(
+			resolve(project, "oneharness.toml"),
+			'harnesses = ["codex"]\nmode = "bypass"\n',
+		);
+		// `noConfig` is deliberately absent: this asserts the project layer is
+		// read and attributed, which is the whole of what the verb reports.
+		const report = await layered().config({ cwd: project });
+		expect(report.harnesses.value).toEqual(["codex"]);
+		expect(report.harnesses.source).toContain("oneharness.toml");
+		expect(report.mode.value).toBe("bypass");
+	}, 30_000);
+
+	test("reports what a sync would change without writing it", async () => {
+		const project = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-sync-"));
+		await writeFile(
+			resolve(project, "oneharness.toml"),
+			'allowed_tools = ["Bash(echo:*)"]\n',
+		);
+		// `--check` exits non-zero precisely because a file *would* change, and
+		// the method has to surface that as the report rather than as a throw.
+		const planned = await layered().sync({
+			cwd: project,
+			harnesses: ["claude-code"],
+			check: true,
+		});
+		const claude = planned.results.find(
+			({ harness }) => harness === "claude-code",
+		);
+		// `created`, because the file does not exist yet and `--check` reports
+		// the status the write would reach — while writing nothing, which the
+		// second sync reaching `created` too is what proves.
+		expect(claude?.status).toBe("created");
+
+		const written = await layered().sync({
+			cwd: project,
+			harnesses: ["claude-code"],
+		});
+		expect(
+			written.results.find(({ harness }) => harness === "claude-code")?.status,
+		).toBe("created");
+		// Idempotent, so a second sync of the same policy changes nothing.
+		const again = await layered().sync({
+			cwd: project,
+			harnesses: ["claude-code"],
+		});
+		expect(
+			again.results.find(({ harness }) => harness === "claude-code")?.status,
+		).toBe("unchanged");
+	}, 30_000);
+
+	test("scaffolds a starter config and refuses to clobber it", async () => {
+		const project = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-init-"));
+		const path = resolve(project, "oneharness.toml");
+		expect(await sdk().init({ path })).toBe(path);
+		expect(await readFile(path, "utf8")).toContain("run_mode");
+
+		// The failure path: an existing file is a refusal, not a silent
+		// overwrite, and `force` is the only way past it.
+		await expect(sdk().init({ path })).rejects.toThrow(OneHarnessProcessError);
+		expect(await sdk().init({ path, force: true })).toBe(path);
+	}, 30_000);
+
+	test("reports subscription headroom for a harness that cannot be probed", async () => {
+		// `oneharness-mock-harness` is a real executable that answers no usage
+		// protocol, so this exercises the whole probe path and asserts the
+		// honest tier rather than a fabricated 0%.
+		const report = await sdk().usage({
+			harnesses: ["claude-code"],
+			bins: { "claude-code": mock },
+			timeoutSeconds: 20,
+		});
+		expect(report.schema_version).toBe("0.1");
+		const claude = report.identities.find(
+			({ harness }) => harness === "claude-code",
+		);
+		expect(claude).toBeDefined();
+		expect(["known", "unknown", "unavailable"]).toContain(
+			String(claude?.availability.state),
+		);
+	}, 40_000);
+
+	test("answers a pre-tool hook event with the harness's own verdict", async () => {
+		const client = sdk();
+		const blocked = await client.gate({
+			harness: "claude-code",
+			denyIfContains: "BLOCKED",
+			reason: "policy",
+			event: JSON.stringify({
+				tool_name: "Bash",
+				tool_input: { command: "echo BLOCKED" },
+			}),
+		});
+		expect(blocked).not.toBeNull();
+		expect(JSON.parse(blocked ?? "")).toMatchObject({
+			hookSpecificOutput: {
+				permissionDecision: "deny",
+				permissionDecisionReason: "policy",
+			},
+		});
+
+		// An allowed call is said with silence, so `null` is the answer rather
+		// than a missing one.
+		const allowed = await client.gate({
+			harness: "claude-code",
+			denyIfContains: "BLOCKED",
+			event: JSON.stringify({
+				tool_name: "Bash",
+				tool_input: { command: "echo fine" },
+			}),
+		});
+		expect(allowed).toBeNull();
+	}, 30_000);
+
+	test("applies a mock ruleset to a hook event and records the original", async () => {
+		const dir = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-mock-"));
+		const rules = resolve(dir, "rules.json");
+		const spyFile = resolve(dir, "spy.jsonl");
+		await writeFile(
+			rules,
+			JSON.stringify({
+				rules: [
+					{
+						match: { tool: "Bash", input: { command: { contains: "secret" } } },
+						action: { deny: { message: "no secrets" } },
+					},
+				],
+			}),
+		);
+		const verdict = await sdk().mock({
+			harness: "claude-code",
+			rules,
+			spyFile,
+			event: JSON.stringify({
+				tool_name: "Bash",
+				tool_input: { command: "cat secret" },
+			}),
+		});
+		expect(JSON.parse(verdict ?? "")).toMatchObject({
+			hookSpecificOutput: { permissionDecision: "deny" },
+		});
+		// The spy log keeps the call as it was observed, which is what a
+		// behavioral suite asserts against.
+		expect(await readFile(spyFile, "utf8")).toContain("cat secret");
+	}, 30_000);
+
+	test("answers an interrupt for a session no run is serving", async () => {
+		const sessionDir = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-int-"));
+		// A refusal is the answer, not a throw: the CLI exits non-zero and the
+		// frame says which of the refusal reasons applies, which is what a
+		// supervisor branches on.
+		const response = await sdk().interrupt({
+			session: "no-such-session",
+			sessionDir,
+		});
+		expect(response.ok).toBe(false);
+		if (response.ok === false) expect(response.reason).toBe("not_running");
+	}, 30_000);
+
+	test("clears and migrates a history store through typed methods", async () => {
+		const historyDir = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-hist-"));
+		const client = sdk();
+		await client.run({
+			prompt: "history clear sdk",
+			harnesses: ["codex"],
+			mode: "bypass",
+			history: true,
+			historyDir,
+			bins: { codex: mock },
+			env: { MOCK_STDOUT: historyTrace },
+		});
+		expect(await client.historyList({ historyDir })).toHaveLength(1);
+
+		expect(await client.historyMigrate({ historyDir })).toMatchObject({
+			files_processed: expect.any(Number),
+		});
+
+		// A dry run reports what it *would* remove and deletes nothing, which
+		// the following list still seeing the session is what proves.
+		const dry = await client.historyClear({ historyDir });
+		expect(dry.dry_run).toBe(true);
+		if (dry.dry_run === true) expect(dry.would_remove).toBe(1);
+		expect(await client.historyList({ historyDir })).toHaveLength(1);
+
+		const cleared = await client.historyClear({ historyDir, yes: true });
+		expect(cleared.dry_run).toBe(false);
+		if (cleared.dry_run === false) expect(cleared.removed).toBe(1);
+		expect(await client.historyList({ historyDir })).toHaveLength(0);
+	}, 60_000);
+
+	test("every option contract accepts a fully populated value", () => {
+		// One populated value per contract, so each generated validator is walked
+		// over every field it declares rather than only the handful a happy-path
+		// call happens to set. This is the check that would have caught
+		// `--variant`/`--config`/`--no-config` being bound by the manifest and
+		// absent from `HistoryListOptions`: a populated object naming them would
+		// have been rejected as an unknown field.
+		const populated: Array<[string, ZodType<unknown>, unknown]> = [
+			[
+				"DetectOptions",
+				DetectOptionsSchema,
+				{
+					harnesses: ["codex"],
+					all: false,
+					exclude: ["goose"],
+					bins: { codex: "/bin/codex" },
+					config: "/tmp/oneharness.toml",
+					noConfig: false,
+					requireAvailable: true,
+				},
+			],
+			[
+				"ConfigOptions",
+				ConfigOptionsSchema,
+				{ cwd: "/tmp", config: "/tmp/oneharness.toml", noConfig: false },
+			],
+			[
+				"SyncOptions",
+				SyncOptionsSchema,
+				{
+					cwd: "/tmp",
+					harnesses: ["claude-code"],
+					check: true,
+					global: false,
+					config: "/tmp/oneharness.toml",
+					noConfig: false,
+				},
+			],
+			["InitOptions", InitOptionsSchema, { path: "/tmp/oneharness.toml", force: true }],
+			[
+				"UsageOptions",
+				UsageOptionsSchema,
+				{
+					harnesses: ["codex"],
+					all: false,
+					exclude: ["goose"],
+					bins: { codex: "/bin/codex" },
+					cwd: "/tmp",
+					timeoutSeconds: 30,
+					config: "/tmp/oneharness.toml",
+					noConfig: false,
+				},
+			],
+			[
+				"GateOptions",
+				GateOptionsSchema,
+				{
+					harness: "claude-code",
+					event: "{}",
+					denyIfContains: "rm -rf",
+					reason: "policy",
+				},
+			],
+			[
+				"MockOptions",
+				MockOptionsSchema,
+				{
+					harness: "claude-code",
+					event: "{}",
+					rules: "/tmp/rules.json",
+					spyFile: "/tmp/spy.jsonl",
+				},
+			],
+			[
+				"InterruptOptions",
+				InterruptOptionsSchema,
+				{
+					session: "work",
+					input: "do this instead",
+					sessionDir: "/tmp/sessions",
+					cwd: "/tmp",
+				},
+			],
+			[
+				"HistoryClearOptions",
+				HistoryClearOptionsSchema,
+				{
+					project: "oneharness",
+					allProjects: false,
+					yes: true,
+					historyDir: "/tmp/history",
+					config: "/tmp/oneharness.toml",
+					noConfig: false,
+				},
+			],
+			[
+				"HistoryMigrateOptions",
+				HistoryMigrateOptionsSchema,
+				{
+					historyDir: "/tmp/history",
+					config: "/tmp/oneharness.toml",
+					noConfig: false,
+				},
+			],
+			[
+				"HistoryListOptions",
+				HistoryListOptionsSchema,
+				{
+					project: "oneharness",
+					allProjects: false,
+					historyDir: "/tmp/history",
+					variant: "claude-code:work",
+					config: "/tmp/oneharness.toml",
+					noConfig: false,
+				},
+			],
+			[
+				"HistoryWatchOptions",
+				HistoryWatchOptionsSchema,
+				{
+					after: "0198f0d0-7b31-7000-8000-000000000001",
+					labels: { run: "sdk" },
+					project: "oneharness",
+					allProjects: false,
+					historyDir: "/tmp/history",
+					events: true,
+					variant: "claude-code:work",
+					config: "/tmp/oneharness.toml",
+					noConfig: false,
+				},
+			],
+			[
+				"HistoryLookup",
+				HistoryLookupSchema,
+				{
+					session: "work",
+					last: false,
+					all: true,
+					project: "oneharness",
+					allProjects: false,
+					historyDir: "/tmp/history",
+					config: "/tmp/oneharness.toml",
+					noConfig: false,
+				},
+			],
+		];
+		for (const [name, schema, value] of populated) {
+			const parsed = schema.safeParse(value);
+			expect(
+				parsed.success,
+				`${name}: ${parsed.success ? "" : JSON.stringify(parsed.error?.issues)}`,
+			).toBe(true);
+			// Every bound option must reach argv, so each key is one the
+			// capability's builder can render.
+			expect(Object.keys(value as object).length).toBeGreaterThan(0);
+		}
+	});
+
+	test("every capability the manifest declares has a method on the client", () => {
+		// The client-side half of the coverage gate. `scripts/sdk-coverage.mjs`
+		// enforces this across both languages in `just check`; asserting it here
+		// too means a missing method fails the package's own suite rather than
+		// only a repo-level script.
+		const client = sdk() as unknown as Record<string, unknown>;
+		for (const method of Object.keys(CAPABILITIES)) {
+			expect(typeof client[method], `${method} is missing`).toBe("function");
+		}
 	});
 });

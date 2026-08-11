@@ -2,31 +2,78 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { createInterface } from "node:readline";
 import type { ZodType } from "zod";
+import {
+	CAPABILITIES,
+	type Capability,
+	type CapabilityMethod,
+} from "./generated/capabilities.js";
+import type { ConfigOptions } from "./generated/config-options.js";
+import type { ConfigReport } from "./generated/config-report.js";
 import type { RunReport } from "./generated/contracts.js";
+import type { DetectOptions } from "./generated/detect-options.js";
 import type { DetectInfo } from "./generated/detection.js";
+import type { GateOptions } from "./generated/gate-options.js";
 import type { HistoryRecord } from "./generated/history.js";
+import type { HistoryClearOptions } from "./generated/history-clear-options.js";
+import type { HistoryClearReport } from "./generated/history-clear-report.js";
 import type { HistorySessionSummary } from "./generated/history-list.js";
 import type { HistoryListOptions } from "./generated/history-list-options.js";
 import type { HistoryLookup } from "./generated/history-lookup.js";
+import type { HistoryMigrateOptions } from "./generated/history-migrate-options.js";
+import type { HistoryMigrateReport } from "./generated/history-migrate-report.js";
 import type { HistoryStreamEnvelope } from "./generated/history-stream-envelope.js";
 import type { HistoryWatchOptions } from "./generated/history-watch-options.js";
+import type { InitOptions } from "./generated/init-options.js";
+import type { InterruptOptions } from "./generated/interrupt-options.js";
+import type { InterruptResponse } from "./generated/interrupt-response.js";
+import type { MockOptions } from "./generated/mock-options.js";
 import type { RunOptions } from "./generated/options.js";
 import type { HarnessInfo } from "./generated/registry.js";
 import type { RunStreamEnvelope } from "./generated/run-stream-envelope.js";
+import type { SyncOptions } from "./generated/sync-options.js";
+import type { SyncReport } from "./generated/sync-report.js";
+import type { UsageOptions } from "./generated/usage-options.js";
+import type { UsageReport } from "./generated/usage-report.js";
 import {
+	ConfigOptionsSchema,
+	ConfigReportSchema,
+	DetectOptionsSchema,
 	DetectReportSchema,
+	GateOptionsSchema,
+	HistoryClearOptionsSchema,
+	HistoryClearReportSchema,
 	HistoryListOptionsSchema,
 	HistoryListSchema,
 	HistoryLookupSchema,
+	HistoryMigrateOptionsSchema,
+	HistoryMigrateReportSchema,
 	HistoryRecordsSchema,
 	HistoryStreamEnvelopeSchema,
 	HistoryWatchOptionsSchema,
+	InitOptionsSchema,
+	InterruptOptionsSchema,
+	InterruptResponseSchema,
 	ListReportSchema,
+	MockOptionsSchema,
 	RunOptionsSchema,
 	RunReportSchema,
 	RunStreamEnvelopeSchema,
+	SyncOptionsSchema,
+	SyncReportSchema,
+	UsageOptionsSchema,
+	UsageReportSchema,
 } from "./generated/zod.js";
 
+export type {
+	Capability,
+	CapabilityMethod,
+	FlagKind,
+	OptionBinding,
+	StdoutShape,
+} from "./generated/capabilities.js";
+export { CAPABILITIES } from "./generated/capabilities.js";
+export type { ConfigOptions } from "./generated/config-options.js";
+export type { ConfigReport } from "./generated/config-report.js";
 export type {
 	ActionEvent,
 	BatchReport,
@@ -40,8 +87,16 @@ export type {
 	Status,
 	Usage,
 } from "./generated/contracts.js";
+export type { DetectOptions } from "./generated/detect-options.js";
 export type { DetectInfo, DetectReport } from "./generated/detection.js";
+export type { GateOptions } from "./generated/gate-options.js";
 export type { HistoryRecord } from "./generated/history.js";
+export type { HistoryClearOptions } from "./generated/history-clear-options.js";
+export type {
+	HistoryClearDryRun,
+	HistoryClearRemoved,
+	HistoryClearReport,
+} from "./generated/history-clear-report.js";
 export type { HistoryLine } from "./generated/history-line.js";
 export type {
 	HistoryList,
@@ -53,11 +108,21 @@ export type {
 	HistoryLookupByLast,
 	HistoryLookupBySession,
 } from "./generated/history-lookup.js";
+export type { HistoryMigrateOptions } from "./generated/history-migrate-options.js";
+export type { HistoryMigrateReport } from "./generated/history-migrate-report.js";
 export type { HistoryRecords } from "./generated/history-records.js";
 export type { HistoryStreamEnvelope } from "./generated/history-stream-envelope.js";
 export type { HistoryWatchOptions } from "./generated/history-watch-options.js";
+export type { InitOptions } from "./generated/init-options.js";
+export type { InterruptOptions } from "./generated/interrupt-options.js";
+export type { InterruptResponse } from "./generated/interrupt-response.js";
+export type { MockOptions } from "./generated/mock-options.js";
 export type { PermissionMode, RunOptions } from "./generated/options.js";
 export type { RunStreamEnvelope } from "./generated/run-stream-envelope.js";
+export type { SyncOptions } from "./generated/sync-options.js";
+export type { SyncReport } from "./generated/sync-report.js";
+export type { UsageOptions } from "./generated/usage-options.js";
+export type { UsageReport } from "./generated/usage-report.js";
 export type Detection = DetectInfo;
 export type {
 	HarnessInfo,
@@ -166,6 +231,47 @@ async function invokeWith(
 	});
 }
 
+/**
+ * Invoke a capability whose stdout is text rather than a JSON contract, and
+ * return it verbatim.
+ *
+ * `init` prints a confirmation line; `gate` and `mock` answer with a harness's
+ * own native verdict, or with nothing when the call is allowed. None of the
+ * three has a document to validate, so parsing one would be inventing a shape
+ * the CLI does not promise.
+ *
+ * `stdin` carries the hook event for the two gate verbs, and closing it is what
+ * tells them the event is complete.
+ */
+async function invokeText(
+	options: OneHarnessOptions,
+	args: readonly string[],
+	stdin?: string,
+): Promise<string> {
+	const bin = executable(options);
+	return await new Promise((resolve, reject) => {
+		const child = spawn(bin.command, [...bin.prefix, ...args], {
+			env: { ...process.env, ...options.env },
+			windowsHide: true,
+		});
+		let stdout = "";
+		let stderr = "";
+		child.stdout
+			.setEncoding("utf8")
+			.on("data", (chunk: string) => (stdout += chunk));
+		child.stderr
+			.setEncoding("utf8")
+			.on("data", (chunk: string) => (stderr += chunk));
+		child.on("error", reject);
+		child.on("close", (code) => {
+			if (code !== 0) return reject(processError(code, stderr));
+			resolve(stdout);
+		});
+		child.stdin.on("error", reject);
+		child.stdin.end(stdin ?? "");
+	});
+}
+
 function processError(
 	code: number | null,
 	stderr: string,
@@ -260,50 +366,117 @@ function pushMany(
 	for (const value of values ?? []) args.push(flag, value);
 }
 
-function runArguments(input: RunOptions, stream: boolean): string[] {
-	const args = ["run", "--prompt", input.prompt, "--compact"];
-	pushMany(args, "--harness", input.harnesses);
-	pushMany(args, "--model", input.models);
-	if (input.system !== undefined) args.push("--system", input.system);
-	if (input.reasoning !== undefined) args.push("--reasoning", input.reasoning);
-	if (input.resume !== undefined) args.push("--resume", input.resume);
-	if (input.session !== undefined) args.push("--session", input.session);
-	if (input.fork) args.push("--fork");
-	if (input.mode) args.push("--mode", input.mode);
-	if (input.timeoutSeconds !== undefined)
-		args.push("--timeout", String(input.timeoutSeconds));
-	if (input.events) args.push("--events");
-	if (stream) args.push("--stream");
-	if (input.history) args.push("--history");
-	if (input.historyName !== undefined)
-		args.push("--history-name", input.historyName);
-	if (input.historyDir !== undefined)
-		args.push("--history-dir", input.historyDir);
-	for (const [key, value] of Object.entries(input.historyLabels ?? {}))
-		args.push("--history-label", `${key}=${value}`);
-	for (const [key, value] of Object.entries(input.env ?? {}))
-		args.push("--env", `${key}=${value}`);
-	for (const [key, value] of Object.entries(input.bins ?? {}))
-		args.push("--bin", `${key}=${value}`);
+/**
+ * Render one capability's argv from its declared bindings.
+ *
+ * The client lists no flags of its own: `CAPABILITIES` says which option
+ * renders which flag and how, so a flag added to the CLI reaches every method
+ * as soon as the manifest binds it, and a method cannot quietly omit one. The
+ * Rust-side gates hold that manifest to clap and to the option contracts, which
+ * is what makes this table trustworthy enough to build calls from.
+ */
+function capabilityArguments(
+	method: CapabilityMethod,
+	options: object,
+): string[] {
+	// The options contracts are closed object types with no index signature, so
+	// reading a declared binding's key needs this one widening. It is safe
+	// because `every_bound_option_is_a_field_of_its_options_contract` proves in
+	// Rust that each key named here is a field of the very contract Zod just
+	// validated the value against.
+	const input = options as Readonly<Record<string, unknown>>;
+	const capability: Capability = CAPABILITIES[method];
+	const args: string[] = [...capability.argv, ...capability.always];
+	const positional: string[] = [];
+	const trailing: string[] = [];
+	for (const binding of capability.bindings) {
+		if (binding.unless !== null && input[binding.unless]) continue;
+		const value = input[binding.option];
+		if (value === undefined || value === null) continue;
+		switch (binding.kind) {
+			case "positional":
+				positional.push(String(value));
+				break;
+			case "value":
+				args.push(binding.flag, String(value));
+				break;
+			case "repeated":
+				pushMany(args, binding.flag, (value as unknown[]).map(String));
+				break;
+			case "switch":
+				if (value) args.push(binding.flag);
+				break;
+			case "key-value":
+				for (const [key, item] of Object.entries(
+					value as Record<string, unknown>,
+				))
+					args.push(binding.flag, `${key}=${String(item)}`);
+				break;
+			case "trailing":
+				trailing.push(...(value as unknown[]).map(String));
+				break;
+		}
+	}
+	args.push(...positional);
+	// After a `--` separator, so a passthrough argument that looks like a flag
+	// reaches the harness instead of being read by oneharness.
+	if (trailing.length > 0) args.push("--", ...trailing);
 	return args;
 }
 
 export class OneHarness {
 	constructor(private readonly options: OneHarnessOptions = {}) {}
 
+	/**
+	 * Validate options, render the capability's argv, invoke, validate stdout.
+	 *
+	 * Every JSON-returning method is this call with two schemas, so none of them
+	 * can drift from the manifest in how it builds a command or in what it
+	 * promises back.
+	 */
+	private async call<Options, Report>(
+		method: CapabilityMethod,
+		options: Options,
+		optionsSchema: ZodType<Options>,
+		reportSchema: ZodType<Report>,
+		{
+			acceptJsonOnNonzero = false,
+			history = false,
+			// The two labels a caller sees on a rejection. They default to the
+			// verb, and are given explicitly where a method's wording predates
+			// this shared path — those strings are what a consumer's error
+			// handling already reads, so they are contract rather than prose.
+			optionsLabel = `invalid oneharness ${CAPABILITIES[method].argv.join(" ")} options`,
+			contractLabel = `invalid oneharness ${CAPABILITIES[method].argv.join(" ")} contract`,
+		}: {
+			acceptJsonOnNonzero?: boolean;
+			history?: boolean;
+			optionsLabel?: string;
+			contractLabel?: string;
+		} = {},
+	): Promise<Report> {
+		const input = parseContract(optionsSchema, options, optionsLabel);
+		const args = capabilityArguments(method, input as object);
+		const cwd = (input as { cwd?: string }).cwd;
+		let value: unknown;
+		try {
+			value = await invokeWith(this.options, args, cwd, acceptJsonOnNonzero);
+		} catch (error) {
+			if (history && historyNotFound(error)) throw asHistoryNotFound(error);
+			throw error;
+		}
+		return parseContract(reportSchema, value, contractLabel);
+	}
+
 	async run(options: RunOptions): Promise<RunReport> {
-		const input = parseContract(
-			RunOptionsSchema,
-			options,
-			"invalid oneharness run options",
-		);
-		const args = runArguments(input, false);
-		const value = await invokeWith(this.options, args, input.cwd, true);
-		return parseContract(
-			RunReportSchema,
-			value,
-			"invalid oneharness run contract",
-		);
+		// `acceptJsonOnNonzero`, because a harness that fails is data in the
+		// report rather than a failure of the call: the CLI still prints a whole
+		// contract and exits non-zero to say some result was not `ok`.
+		return await this.call("run", options, RunOptionsSchema, RunReportSchema, {
+			acceptJsonOnNonzero: true,
+			optionsLabel: "invalid oneharness run options",
+			contractLabel: "invalid oneharness run contract",
+		});
 	}
 
 	async runMock(
@@ -323,13 +496,21 @@ export class OneHarness {
 		if (script.exitCode !== undefined) env.MOCK_EXIT = String(script.exitCode);
 		if (script.latencyMs !== undefined)
 			env.MOCK_SLEEP_MS = String(script.latencyMs);
-		const args = runArguments({ ...input, harnesses: [harness], env }, false);
-		args.push("--mock-harness", harness);
-		const value = await invokeWith(this.options, args, input.cwd, true);
-		return parseContract(
+		return await this.call(
+			"run",
+			{
+				...input,
+				harnesses: [harness],
+				mockHarnesses: [harness],
+				env,
+			},
+			RunOptionsSchema,
 			RunReportSchema,
-			value,
-			"invalid oneharness run contract",
+			{
+				acceptJsonOnNonzero: true,
+				optionsLabel: "invalid oneharness run options",
+				contractLabel: "invalid oneharness run contract",
+			},
 		);
 	}
 
@@ -341,7 +522,7 @@ export class OneHarness {
 		);
 		return invokeStreamWith(
 			this.options,
-			runArguments(input, true),
+			capabilityArguments("runStream", input),
 			RunStreamEnvelopeSchema,
 			"invalid oneharness run stream contract",
 			input.cwd,
@@ -349,7 +530,10 @@ export class OneHarness {
 	}
 
 	async list(): Promise<HarnessInfo[]> {
-		const value = await invokeWith(this.options, ["list", "--compact"]);
+		const value = await invokeWith(
+			this.options,
+			capabilityArguments("list", {}),
+		);
 		return parseContract(
 			ListReportSchema,
 			value,
@@ -357,66 +541,195 @@ export class OneHarness {
 		).harnesses;
 	}
 
-	async detect(harnesses: readonly string[] = []): Promise<Detection[]> {
-		const args = ["detect", "--compact"];
-		pushMany(args, "--harness", harnesses);
-		const value = await invokeWith(this.options, args);
-		return parseContract(
+	/**
+	 * Probe harness binaries.
+	 *
+	 * The array overload is the long-standing shape and still means "these
+	 * harnesses"; the options object is what reaches the rest of the verb's
+	 * flags (`--all`, `--exclude`, `--bin`, the config layer).
+	 */
+	async detect(
+		harnesses: readonly string[] | DetectOptions = [],
+	): Promise<Detection[]> {
+		const options: DetectOptions = Array.isArray(harnesses)
+			? { harnesses: [...harnesses] }
+			: (harnesses as DetectOptions);
+		const report = await this.call(
+			"detect",
+			options,
+			DetectOptionsSchema,
 			DetectReportSchema,
-			value,
-			"invalid oneharness detect contract",
-		).detected;
+			{
+				optionsLabel: "invalid oneharness detect options",
+				contractLabel: "invalid oneharness detect contract",
+			},
+		);
+		return report.detected;
+	}
+
+	async config(options: ConfigOptions = {}): Promise<ConfigReport> {
+		return await this.call(
+			"config",
+			options,
+			ConfigOptionsSchema,
+			ConfigReportSchema,
+		);
+	}
+
+	async sync(options: SyncOptions = {}): Promise<SyncReport> {
+		// `--check` exits non-zero when a file would change, which is the answer
+		// rather than a failure, and the report says which files those are.
+		return await this.call(
+			"sync",
+			options,
+			SyncOptionsSchema,
+			SyncReportSchema,
+			{ acceptJsonOnNonzero: true },
+		);
+	}
+
+	async usage(options: UsageOptions = {}): Promise<UsageReport> {
+		return await this.call(
+			"usage",
+			options,
+			UsageOptionsSchema,
+			UsageReportSchema,
+		);
+	}
+
+	/**
+	 * Write a starter `oneharness.toml` and return where it landed.
+	 *
+	 * The one verb whose stdout is a human confirmation line rather than a JSON
+	 * contract — the deliverable is the file — so the return is the resolved
+	 * path the caller asked for, not a parsed document.
+	 */
+	async init(options: InitOptions = {}): Promise<string> {
+		const input = parseContract(
+			InitOptionsSchema,
+			options,
+			"invalid oneharness init options",
+		);
+		await invokeText(this.options, capabilityArguments("init", input));
+		return input.path ?? "oneharness.toml";
+	}
+
+	/**
+	 * Run the pre-tool gate over one harness hook event, as that harness's own
+	 * runtime would.
+	 *
+	 * Returns the harness's native deny verdict, or `null` when the call is
+	 * allowed through — which the CLI says by printing nothing at all, so an
+	 * empty answer is the allow rather than a missing one.
+	 */
+	async gate(options: GateOptions): Promise<string | null> {
+		const input = parseContract(
+			GateOptionsSchema,
+			options,
+			"invalid oneharness gate options",
+		);
+		const verdict = await invokeText(
+			this.options,
+			capabilityArguments("gate", input),
+			input.event,
+		);
+		return verdict.trim() === "" ? null : verdict;
+	}
+
+	/** The read-write sibling of {@link gate}, driven by a rules file. */
+	async mock(options: MockOptions): Promise<string | null> {
+		const input = parseContract(
+			MockOptionsSchema,
+			options,
+			"invalid oneharness mock options",
+		);
+		const verdict = await invokeText(
+			this.options,
+			capabilityArguments("mock", input),
+			input.event,
+		);
+		return verdict.trim() === "" ? null : verdict;
+	}
+
+	/**
+	 * Abort the in-flight turn of a `run --control` session, optionally
+	 * redirecting it with `input`.
+	 *
+	 * A refusal is an answer, not a throw: the response says whether the abort
+	 * was served and, when it was not, why — which is what a supervisor branches
+	 * on. So a non-zero exit still yields the frame.
+	 */
+	async interrupt(options: InterruptOptions): Promise<InterruptResponse> {
+		return await this.call(
+			"interrupt",
+			options,
+			InterruptOptionsSchema,
+			InterruptResponseSchema,
+			{ acceptJsonOnNonzero: true },
+		);
 	}
 
 	async history(lookup: HistoryLookup): Promise<HistoryRecord[]> {
-		const input = parseContract(
-			HistoryLookupSchema,
+		// The `--last`-suppresses-a-name rule is declared, not re-derived here:
+		// the union deliberately accepts `{session, last: true}` and resolves it
+		// to "the most recent", and the manifest binds `session` with
+		// `unless: "last"` so the builder renders only `--last`. Rust, the
+		// generated Zod, and this call therefore agree by construction.
+		return await this.call(
+			"history",
 			lookup,
-			"invalid oneharness history options",
-		);
-		const args = ["history", "show", "--compact"];
-		// A lookup that selects no session is not a HistoryLookup, so only these
-		// two cases remain. The variants overlap on `{session, last: true}`, and
-		// `last: true` keeps its long-standing priority over a name — which is why
-		// the union tries the last-session variant first, in Rust and in the
-		// generated Zod alike. Ruling that case out here leaves the variant whose
-		// session the type guarantees is present.
-		if (input.last === true) args.push("--last");
-		else args.push(input.session);
-		if (input.project) args.push("--project", input.project);
-		if (input.allProjects) args.push("--all-projects");
-		if (input.historyDir) args.push("--history-dir", input.historyDir);
-		let value: unknown;
-		try {
-			value = await invokeWith(this.options, args);
-		} catch (error) {
-			if (historyNotFound(error)) throw asHistoryNotFound(error);
-			throw error;
-		}
-		return parseContract(
+			HistoryLookupSchema,
 			HistoryRecordsSchema,
-			value,
-			"invalid history contract",
+			{
+				history: true,
+				optionsLabel: "invalid oneharness history options",
+				contractLabel: "invalid history contract",
+			},
 		);
 	}
 
 	async historyList(
 		options: HistoryListOptions = {},
 	): Promise<HistorySessionSummary[]> {
-		const input = parseContract(
-			HistoryListOptionsSchema,
+		return await this.call(
+			"historyList",
 			options,
-			"invalid oneharness history list options",
-		);
-		const args = ["history", "list", "--compact"];
-		if (input.project) args.push("--project", input.project);
-		if (input.allProjects) args.push("--all-projects");
-		if (input.historyDir) args.push("--history-dir", input.historyDir);
-		const value = await invokeWith(this.options, args);
-		return parseContract(
+			HistoryListOptionsSchema,
 			HistoryListSchema,
-			value,
-			"invalid history list contract",
+			{
+				optionsLabel: "invalid oneharness history list options",
+				contractLabel: "invalid history list contract",
+			},
+		);
+	}
+
+	/**
+	 * Remove history sessions.
+	 *
+	 * A dry run until `yes` is set, and the two answers are different documents:
+	 * `dry_run` discriminates them, so a caller reads `removed` only from a run
+	 * that removed something.
+	 */
+	async historyClear(
+		options: HistoryClearOptions = {},
+	): Promise<HistoryClearReport> {
+		return await this.call(
+			"historyClear",
+			options,
+			HistoryClearOptionsSchema,
+			HistoryClearReportSchema,
+		);
+	}
+
+	/** Rewrite legacy session files to the current record version. */
+	async historyMigrate(
+		options: HistoryMigrateOptions = {},
+	): Promise<HistoryMigrateReport> {
+		return await this.call(
+			"historyMigrate",
+			options,
+			HistoryMigrateOptionsSchema,
+			HistoryMigrateReportSchema,
 		);
 	}
 
@@ -428,17 +741,9 @@ export class OneHarness {
 			options,
 			"invalid oneharness history watch options",
 		);
-		const args = ["history", "watch", "--format", "jsonl"];
-		if (input.after) args.push("--after", input.after);
-		for (const [key, value] of Object.entries(input.labels ?? {}))
-			args.push("--label", `${key}=${value}`);
-		if (input.project) args.push("--project", input.project);
-		if (input.allProjects) args.push("--all-projects");
-		if (input.historyDir) args.push("--history-dir", input.historyDir);
-		if (input.events) args.push("--events");
 		return invokeStreamWith(
 			this.options,
-			args,
+			capabilityArguments("historyWatch", input),
 			HistoryStreamEnvelopeSchema,
 			"invalid oneharness history watch contract",
 			undefined,

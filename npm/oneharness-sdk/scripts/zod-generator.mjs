@@ -123,12 +123,27 @@ export const SDK_SCHEMA_ROOTS = Object.freeze([
 	},
 ]);
 
+/**
+ * Named definitions the TypeScript compiler inlines instead of exporting, and
+ * where to reach the same type through one it does export.
+ *
+ * json-schema-to-typescript merges a `$ref` that carries a sibling `description`
+ * into its use site, so a `$defs` entry referenced only from described fields
+ * never becomes an exported name — while the Zod module still needs one to
+ * annotate its schema with. Each entry here is an indexed access onto the type
+ * that did get exported, which is the same type by construction — or, for a
+ * validated newtype over a primitive, that primitive: TypeScript has no way to
+ * carry the Rust type's constraint anyway, and the Zod schema is what enforces
+ * it at runtime.
+ */
 export const SDK_SCHEMA_ALIASES = Object.freeze({
 	AbsolutePath: 'ControlReport["socket"]',
 	BatchStrategy: 'BatchReport["strategy"]',
 	ControlShape: 'ControlReport["mechanism"]',
+	IdentitySelector: 'UsageIdentity["selector"]',
 	ModeHeadless: 'ModeInfo["headless"]',
 	SessionPhase: 'SessionReport["phase"]',
+	UsedPercent: "number",
 });
 
 /** @param {unknown} value @returns {string} */
@@ -416,8 +431,10 @@ function intersect(expression, members, path, offset = 0) {
 function objectKeywords(schema) {
 	/** @type {JsonSchemaObject} */
 	const base = {};
-	for (const keyword of ["properties", "required", "additionalProperties"]) {
-		if (schema[keyword] !== undefined) base[keyword] = schema[keyword];
+	if (schema.properties !== undefined) base.properties = schema.properties;
+	if (schema.required !== undefined) base.required = schema.required;
+	if (schema.additionalProperties !== undefined) {
+		base.additionalProperties = schema.additionalProperties;
 	}
 	if (Object.keys(base).length > 0) base.type = "object";
 	return base;

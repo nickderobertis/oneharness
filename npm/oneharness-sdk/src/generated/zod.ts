@@ -65,18 +65,15 @@ import type { HookFileResult, SyncReport, SyncResult } from "./sync-report.js";
 import type { UsageOptions } from "./usage-options.js";
 import type {
   AuthMode,
-  IdentitySelector,
   QuotaAmount,
   QuotaCounters,
   QuotaUnit,
-  SchemaVersion,
   UnavailableReason,
   UnknownReason,
   UsageAvailability,
   UsageIdentity,
   UsageReport,
   UsageWindow,
-  UsedPercent,
   WindowUsage,
   Windows,
 } from "./usage-report.js";
@@ -84,8 +81,10 @@ import type {
 export type AbsolutePath = ControlReport["socket"];
 export type BatchStrategy = BatchReport["strategy"];
 export type ControlShape = ControlReport["mechanism"];
+export type IdentitySelector = UsageIdentity["selector"];
 export type ModeHeadless = ModeInfo["headless"];
 export type SessionPhase = SessionReport["phase"];
+export type UsedPercent = number;
 
 export const AbsolutePathSchema: z.ZodType<AbsolutePath> = z.string();
 
@@ -2344,8 +2343,6 @@ export const RunStreamEnvelopeSchema: z.ZodType<RunStreamEnvelope> = z.union([
   }),
 ]);
 
-export const SchemaVersionSchema: z.ZodType<SchemaVersion> = z.null();
-
 export const SessionPhaseSchema: z.ZodType<SessionPhase> = z.union([z.literal("create"), z.literal("continue")]);
 
 export const SessionReportSchema: z.ZodType<SessionReport> = z.looseObject({
@@ -2475,7 +2472,7 @@ export const UsageReportSchema: z.ZodType<UsageReport> = z.looseObject({
     .array(z.lazy(() => UsageIdentitySchema))
     .refine((value) => value !== undefined, { message: "Required" }),
   observed_at: z.lazy(() => UtcInstantSchema).refine((value) => value !== undefined, { message: "Required" }),
-  schema_version: z.lazy(() => SchemaVersionSchema).refine((value) => value !== undefined, { message: "Required" }),
+  schema_version: z.literal("0.1").refine((value) => value !== undefined, { message: "Required" }),
 });
 
 export const UsageWindowSchema: z.ZodType<UsageWindow> = z.intersection(
@@ -2510,7 +2507,7 @@ export const UsageWindowSchema: z.ZodType<UsageWindow> = z.intersection(
   ]),
 );
 
-export const UsedPercentSchema: z.ZodType<UsedPercent> = z.number();
+export const UsedPercentSchema: z.ZodType<UsedPercent> = z.number().gte(0);
 
 export const UtcInstantSchema: z.ZodType<UtcInstant> = z.string();
 

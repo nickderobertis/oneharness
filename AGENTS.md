@@ -108,7 +108,17 @@ Use the `just` recipes; do not hand-roll equivalents.
   because a schedule has no PR to turn red. In CI `OH_E2E_NO_SKIP` makes a
   harness that drops out for want of a credential RED — without it the suite
   reports success having proven nothing for whichever harnesses went
-  unauthenticated. The control × mode grid is mostly NOT its job: the policy each
+  unauthenticated. Two absences are deliberately NOT red, because no credential
+  fixes either and reporting them so is how a suite blames this feature for
+  something else: a **provider refusal** (the account is out of quota, so the
+  request was answered and DECLINED — `_oh_provider_refusal` recognizes it from
+  the provider's own words, since the run is a clean `ok` that did nothing, and
+  the phase reports `not run: <id> (provider refused: …)` and never retries,
+  because a quota does not refill inside a suite), and a declared **known gap**
+  (`known_gap` in `e2e-control.sh`). Both are still SAID every run: an absence
+  dropped from the verdict is indistinguishable from coverage. A *rate limit* is
+  deliberately not a refusal — that turn may run on the next attempt, so it stays
+  a retryable inconclusive one. The control × mode grid is mostly NOT its job: the policy each
   mode sends with and without `--control` is pinned per harness as a unit
   assertion (`domain::control`'s `control_mode_parity`), since a live phase per
   mode would multiply an already-26-minute suite to prove a value. The one live
@@ -116,7 +126,8 @@ Use the `just` recipes; do not hand-roll equivalents.
   gating `--mode default` must END — because whether a harness HONORS the policy
   it was handed is the half a value cannot show, and because a bypass-only suite
   no longer exercises the ACP permission answer at all (copilot's controlled
-  launch now carries allow-all, so it stops asking).
+  launch now carries allow-all, so it stops asking). It is a known gap on
+  opencode — see the `--control` notes below.
 - `just sdk-check` / `just python-sdk-check` — generated-contract drift, strict
   language lint/type/test coverage, and packed-artifact subprocess e2e for the
   Node and Python SDKs. The Python gate runs on the oldest supported Python 3.9.

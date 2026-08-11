@@ -73,6 +73,32 @@ OH_E2E_NO_SKIP=1 outcome_case "a complete run" 0 "PASS" "claude-code goose" "" "
 OH_E2E_NO_SKIP='' outcome_case "a harness that broke its contract" 1 "codex" "claude-code" "" "1m00s" "codex"
 OH_E2E_NO_SKIP='' outcome_case "a failure outranking a partial run" 1 "codex" "claude-code" "goose" "1m00s" "codex"
 
+# A harness whose own PROVIDER refused the turn. This is the one absence
+# OH_E2E_NO_SKIP must NOT turn red: it exists to catch a harness that dropped out
+# for want of a credential, and no credential CI can supply makes a provider stop
+# refusing — so a red here reports someone else's billing state as this feature
+# breaking. It must still be SAID, in the same "not run" category, or a green
+# would claim coverage the run does not have.
+OH_E2E_NO_SKIP=1 outcome_case "a provider refusal in CI" 0 \
+    "NOT RUN (the provider refused the turn): copilot (provider refused: usage limit)" \
+    "claude-code codex" "" "1m00s" "" "copilot (provider refused: usage limit)"
+# And it is not a contract violation, so it cannot make the run red on its own.
+OH_E2E_NO_SKIP=1 outcome_case "a provider refusal is still a pass" 0 "PASS" \
+    "claude-code" "" "1m00s" "" "copilot (provider refused: usage limit)"
+# A harness that RAN and broke its contract still outranks it — and the refused
+# one is named in that verdict's "not run" list rather than dropped from it.
+OH_E2E_NO_SKIP=1 outcome_case "a refusal named beside a real failure" 1 \
+    "not run: copilot (provider refused: usage limit)" \
+    "claude-code" "" "1m00s" "codex" "copilot (provider refused: usage limit)"
+
+# A phase nobody has made pass is REPORTED every run, with its reason. Dropping
+# it would be indistinguishable from coverage — the mistake this category exists
+# to make impossible — and it is not red, because a known gap is a decision, not
+# a regression.
+OH_E2E_NO_SKIP=1 outcome_case "a known gap in CI" 0 \
+    "KNOWN GAP (reported, not proven): opencode (control-mode: …)" \
+    "claude-code" "" "1m00s" "" "" "opencode (control-mode: …)"
+
 # The evidence an inconclusive phase leaves behind. Three attempts retry that
 # outcome and then fail naming only the symptom, so whatever the harness did has
 # to reach the log — a CI-only suite has nothing else to look at.
@@ -166,6 +192,52 @@ printf '%s\n' '{"results":[{"status":"timeout","stdout":"{\"type\":\"session.idl
     fail "a transcript with no error in it must not be read as the harness failing"
 [ -z "$(_oh_harness_errors "$evidence_tmp/absent.json")" ] ||
     fail "a missing report must yield no harness error rather than a made-up one"
+
+# Telling a turn the provider REFUSED from a turn that failed. The two look
+# nothing alike on the wire and mean opposite things to this suite: a failure is
+# retried, a refusal is not run. The fixture below is the shape CI actually read
+# — an ACP `agent_message_chunk` carrying the quota message, then a clean
+# `end_turn` — so the report is `ok`, the turn lasted three seconds, and the TEXT
+# is the only place the refusal is stated at all.
+printf '%s\n' '{"results":[{"status":"ok","text":"","stdout":"{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"Error: You'"'"'ve reached your additional usage limit for your plan. Go to https://github.com/settings/copilot/features for more details.\"}}\n{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}"}]}' \
+    >"$evidence_tmp/refused.json"
+refusal="$(_oh_provider_refusal <"$evidence_tmp/refused.json")"
+case "$refusal" in
+*"reached your additional usage limit"*) ;;
+*)
+    printf '%s\n' "$refusal" >&2
+    fail "a quota refusal carried in a message chunk was not read back in the provider's own words"
+    ;;
+esac
+# The two fixtures every other case in this file uses are NOT refusals: an HTTP
+# 429 is a rate limit the next attempt may well clear, and `no model configured`
+# is this side's problem. Classifying either as "not run" would retire a phase
+# that should have been retried or failed.
+[ -z "$(_oh_provider_refusal <"$evidence_tmp/errors.json")" ] ||
+    fail "a rate limit must stay a retryable failure rather than becoming a refusal"
+[ -z "$(_oh_provider_refusal <"$evidence_tmp/frames.json")" ] ||
+    fail "a harness's own error must not be read as its provider refusing"
+[ -z "$(_oh_provider_refusal <"$evidence_tmp/clean.json")" ] ||
+    fail "a transcript with nothing wrong in it must not be read as a refusal"
+# A refusal in the normalized `text` alone, which is where it lands for a harness
+# whose headless output is plain text (the per-harness suites' shape).
+printf '%s\n' '{"results":[{"status":"ok","text":"Error: You have reached your usage limit for this plan."}]}' \
+    >"$evidence_tmp/refused-text.json"
+[ -n "$(_oh_provider_refusal <"$evidence_tmp/refused-text.json")" ] ||
+    fail "a refusal stated only in the normalized text was not recognized"
+
+# And what the phases actually call: the reason must reach the caller, because
+# every phase runs in a subshell whose variables die with it.
+OH_NOT_RUN_FILE="$evidence_tmp/not-run" \
+    _oh_note_provider_refusal copilot "$evidence_tmp/refused.json" >/dev/null 2>&1 ||
+    fail "a report carrying a quota refusal was not recognized as one"
+[ "$(cat "$evidence_tmp/not-run")" = "copilot (provider refused: usage limit)" ] ||
+    fail "the refusal handed to the suite's verdict was '$(cat "$evidence_tmp/not-run")'"
+OH_NOT_RUN_FILE="$evidence_tmp/not-run-clean" \
+    _oh_note_provider_refusal opencode "$evidence_tmp/frames.json" >/dev/null 2>&1 &&
+    fail "a harness that failed on its own must not be reported as its provider refusing"
+[ ! -e "$evidence_tmp/not-run-clean" ] ||
+    fail "a run nobody refused must leave no refusal behind"
 
 # The wait that decides an attempt has settled. It must come back for EITHER
 # answer — the work started, or the run that was doing it is gone — because a

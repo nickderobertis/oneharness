@@ -55,6 +55,22 @@ skip() {
     exit 0
 }
 
+# A turn the harness's own PROVIDER refused — the account is out of quota, so
+# the request was answered and declined. The phase proved nothing either way, and
+# unlike a skip() this stays green even under OH_E2E_NO_SKIP: that flag exists to
+# catch a harness that dropped out for want of a credential, and no credential CI
+# can supply makes a provider stop refusing. Turning it red would report someone
+# else's billing state as this feature breaking, which is the misattribution that
+# cost a night on the branch this was added for.
+#
+# Loud on the way out, because a run that reports NOT RUN has proven less than
+# its exit code suggests. Reserved for a refusal `_oh_provider_refusal`
+# recognized; every other absence is still skip().
+not_run() {
+    printf 'NOT RUN: %s\n' "$*" >&2
+    exit 0
+}
+
 # A required tool's absence is a SKIP, not a failure (e.g. no jq on the box).
 need() { command -v "$1" >/dev/null 2>&1 || skip "required tool not found: $1"; }
 
@@ -918,6 +934,17 @@ oh_mode_enforce() {
     note "  mode-enforce[bypass]: the same command must run under --mode bypass (control)"
     oh_run "$id" "$prompt" --mode bypass --cwd "$sandbox"
     if [ ! -e "$sandbox/$file" ]; then
+        # An agent whose provider refused the turn wrote nothing because it never
+        # ran, not because `bypass` stopped it — and reading that as a broken
+        # positive control condemns the whole phase for someone else's quota.
+        # Checked BEFORE the failure, and only for a refusal in the provider's
+        # own words; anything else still fails here.
+        local refusal
+        refusal="$(printf '%s' "$OH_REPORT" | _oh_provider_refusal)"
+        if [ -n "$refusal" ]; then
+            rm -rf "$sandbox"
+            not_run "$id: its own provider refused the turn, so the $mode positive control never ran: $refusal"
+        fi
         oh_dump
         rm -rf "$sandbox"
         fail "$id: positive control failed ($file absent under --mode bypass) — the $mode block can't be trusted (does the harness run shell headlessly?)"
@@ -1010,11 +1037,18 @@ oh_edit_enforce() {
 # party's outage as a control-mode violation.
 #   $1 harness id
 oh_control_mode_enforce() {
-    local id="$1" attempt attempts=3 started=$SECONDS
+    local id="$1" attempt attempts=3 started=$SECONDS status
     for attempt in $(seq 1 "$attempts"); do
-        if _oh_control_mode_enforce_once "$id"; then
+        status=0
+        _oh_control_mode_enforce_once "$id" || status=$?
+        if [ "$status" -eq 0 ]; then
             note "  ok: a controlled turn under --mode default ended (attempt $attempt of $attempts, $((SECONDS - started))s)"
             return 0
+        fi
+        # A REFUSED turn is not the same as a failed one, and only the failed one
+        # is worth another window: a quota does not refill inside this suite.
+        if [ "$status" -eq "$_OH_NOT_RUN" ]; then
+            return "$_OH_NOT_RUN"
         fi
         note "  control-mode: attempt $attempt was retired by the harness's own turn failing, not by the mode; retrying"
     done
@@ -1022,7 +1056,9 @@ oh_control_mode_enforce() {
 }
 
 # One attempt. Returns 0 when the turn ended, 1 when the harness's own turn
-# failed (retryable — no verdict either way). Anything else calls fail().
+# failed (retryable — no verdict either way), and `$_OH_NOT_RUN` when its
+# provider refused the turn outright (no verdict, and no retry either). Anything
+# else calls fail().
 _oh_control_mode_enforce_once() {
     local id="$1"
     local bin sandbox store name report status
@@ -1050,6 +1086,15 @@ _oh_control_mode_enforce_once() {
     # and defaulting that to "fine" is how a phase goes green having proven
     # nothing. Only the statuses that mean the turn ENDED are accepted.
     status="$(jq -er '.results[0].status' <"$report" 2>/dev/null || true)"
+    # Ahead of the status, because a refusal outranks it in BOTH directions. A
+    # turn the provider declined ends promptly and cleanly — copilot answered a
+    # quota refusal with `{"stopReason":"end_turn"}` in three seconds — so
+    # reading `ok` off it would pass this phase having never put the mode's
+    # policy to a single question.
+    if _oh_note_provider_refusal "$id" "$report"; then
+        rm -rf "$sandbox"
+        return "$_OH_NOT_RUN"
+    fi
     case "$status" in
     skipped)
         rm -rf "$sandbox"
@@ -1066,9 +1111,9 @@ _oh_control_mode_enforce_once() {
         # only its ENDING never came".
         _oh_control_evidence "$sandbox" "$report"
         # And the frames are also where the harness says it never got that far.
-        # A turn its own provider refused is the inconclusive outcome the
-        # redirect phase already names: nothing follows about a policy from a
-        # turn that never ran under it.
+        # A turn its own provider REFUSED was already answered above; this is the
+        # other half — a turn that failed on its own and may well succeed on the
+        # next window, so it is retried rather than reported.
         if [ -n "$(_oh_harness_errors "$report")" ]; then
             rm -rf "$sandbox"
             return 1
@@ -1295,11 +1340,20 @@ oh_control_enforce() {
     # prompt below), so a harness that needs the retries is telling you
     # something. Which attempt won is reported for exactly that reason — a phase
     # that passes on the third every night is a phase about to fail.
-    local attempt attempts=3 started=$SECONDS
+    local attempt attempts=3 started=$SECONDS status
     for attempt in $(seq 1 "$attempts"); do
-        if _oh_control_enforce_once "$id" "$attempt" "$expected_mechanism"; then
+        status=0
+        _oh_control_enforce_once "$id" "$attempt" "$expected_mechanism" || status=$?
+        if [ "$status" -eq 0 ]; then
             note "PASS: $id control enforcement (attempt $attempt of $attempts, $((SECONDS - started))s)"
             return 0
+        fi
+        # A turn the provider refused never started, so there is nothing to
+        # retry: the quota will not refill inside this suite. The attempt already
+        # said so in the provider's own words; hand the verdict up rather than
+        # spending two more windows to reach the same non-answer.
+        if [ "$status" -eq "$_OH_NOT_RUN" ]; then
+            return "$_OH_NOT_RUN"
         fi
         note "  control-enforce: attempt $attempt was inconclusive (the turn ended, or finished every step, before the interrupt landed); retrying"
     done
@@ -1374,6 +1428,12 @@ _oh_control_enforce_once() {
         wait "$run_pid" 2>/dev/null || true
         note "  control-enforce: the agent never produced two steps"
         _oh_control_evidence "$sandbox" "$report"
+        # An agent that did no work because its own provider refused the turn is
+        # not this feature failing to keep a turn in flight.
+        if _oh_note_provider_refusal "$id" "$report"; then
+            rm -rf "$sandbox"
+            return "$_OH_NOT_RUN"
+        fi
         rm -rf "$sandbox"
         return 1
     fi
@@ -1383,6 +1443,12 @@ _oh_control_enforce_once() {
         wait "$run_pid" 2>/dev/null || true
         note "  control-enforce: the run ended before any work could be interrupted ($(_oh_step_count "$sandbox") step files)"
         _oh_control_evidence "$sandbox" "$report"
+        # The shape a quota refusal takes: the turn ends in seconds having run
+        # nothing, and only the message it carried says why.
+        if _oh_note_provider_refusal "$id" "$report"; then
+            rm -rf "$sandbox"
+            return "$_OH_NOT_RUN"
+        fi
         rm -rf "$sandbox"
         return 1
     fi
@@ -1510,11 +1576,17 @@ oh_control_redirect_enforce() {
     # the retries are a backstop for a turn that never starts, so a harness
     # spending them is the finding, and a transcript that never says which
     # attempt won cannot tell anyone that.
-    local attempt attempts=3 started=$SECONDS
+    local attempt attempts=3 started=$SECONDS status
     for attempt in $(seq 1 "$attempts"); do
-        if _oh_control_redirect_enforce_once "$id" "$attempt"; then
+        status=0
+        _oh_control_redirect_enforce_once "$id" "$attempt" || status=$?
+        if [ "$status" -eq 0 ]; then
             note "PASS: $id redirection enforcement (attempt $attempt of $attempts, $((SECONDS - started))s)"
             return 0
+        fi
+        # Nothing to retry: the provider refused, and it will refuse again.
+        if [ "$status" -eq "$_OH_NOT_RUN" ]; then
+            return "$_OH_NOT_RUN"
         fi
         note "  redirect-enforce: attempt $attempt was inconclusive (the turn ended, or finished every step, before the interrupt landed); retrying"
     done
@@ -1542,15 +1614,35 @@ oh_control_redirect_enforce() {
 # never ran, and it outranks both verdicts below: it is the regression this suite
 # exists to catch, so it fails the run whatever the credentials looked like.
 #
+# Two absences beside those, and NEITHER is red, because neither is a credential
+# CI could supply. A harness whose own PROVIDER refused the turn (out of quota)
+# answered and declined; reporting that red blames this feature for someone
+# else's billing state. A harness with a declared KNOWN GAP has a phase nobody
+# has made pass — reported every run, with its reason, because a cell dropped
+# from a verdict reads as coverage.
+#
 #   $1 space-separated ids proven, $2 ids skipped, $3 formatted duration,
-#   $4 ids that ran and failed
+#   $4 ids that ran and failed, $5 ids whose provider refused (with reasons),
+#   $6 ids carrying a known gap (with reasons)
 oh_control_report_outcome() {
-    local proven="$1" skipped="$2" took="$3" failed="${4:-}"
+    local proven="$1" skipped="$2" took="$3" failed="${4:-}" refused="${5:-}" gaps="${6:-}"
+    # Everything that did not run, whatever kept it from running — one list, so
+    # a reader counting harnesses against the registry does not have to.
+    local not_run="$skipped"
+    if [ -n "$refused" ]; then
+        not_run="${not_run:+$not_run }$refused"
+    fi
     if [ -n "$failed" ]; then
-        fail "turn control is NOT honored by: $failed (proven: ${proven:-none}; not run: ${skipped:-none}) after $took"
+        fail "turn control is NOT honored by: $failed (proven: ${proven:-none}; not run: ${not_run:-none}) after $took"
     fi
     if [ -z "$proven" ]; then
-        skip "no controllable harness had credentials after $took (unproven: $skipped)"
+        skip "no controllable harness proved anything after $took (unproven: ${not_run:-none})"
+    fi
+    if [ -n "$refused" ]; then
+        note "NOT RUN (the provider refused the turn): $refused"
+    fi
+    if [ -n "$gaps" ]; then
+        note "KNOWN GAP (reported, not proven): $gaps"
     fi
     if [ -n "$skipped" ]; then
         if [ -n "${OH_E2E_NO_SKIP:-}" ]; then
@@ -1615,6 +1707,12 @@ _oh_control_redirect_enforce_once() {
         wait "$run_pid" 2>/dev/null || true
         note "  redirect-enforce: the agent never produced two steps"
         _oh_control_evidence "$sandbox" "$report"
+        # See `_oh_control_enforce_once`: a turn the provider refused never ran,
+        # so it says nothing about redirection either.
+        if _oh_note_provider_refusal "$id" "$report"; then
+            rm -rf "$sandbox"
+            return "$_OH_NOT_RUN"
+        fi
         rm -rf "$sandbox"
         return 1
     fi
@@ -1622,6 +1720,10 @@ _oh_control_redirect_enforce_once() {
         wait "$run_pid" 2>/dev/null || true
         note "  redirect-enforce: the run ended before any work could be redirected ($(_oh_step_count "$sandbox") step files)"
         _oh_control_evidence "$sandbox" "$report"
+        if _oh_note_provider_refusal "$id" "$report"; then
+            rm -rf "$sandbox"
+            return "$_OH_NOT_RUN"
+        fi
         rm -rf "$sandbox"
         return 1
     fi
@@ -1762,6 +1864,80 @@ _oh_harness_errors() {
         | jq -R -r 'fromjson? | .. | objects | select(has("error")) | .error
                     | if type == "object" then (.message? // empty) else (select(type == "string")) end' 2>/dev/null \
         || true
+}
+
+# --- a turn the provider refused --------------------------------------------
+#
+# `_oh_harness_errors` above tells a turn that FAILED from one that ran. This
+# tells a turn that was never allowed to start from either: the account is out of
+# quota, so the provider answers the request and declines it. Nothing follows
+# from such a turn about any behavior of this feature, and no retry, credential
+# or CI setting changes that — so it is reported as NOT RUN, in the provider's
+# own words, rather than as this suite's harness breaking.
+
+# The phrases a provider uses to refuse a turn outright for quota. CAPTURED, not
+# guessed: the first is the copilot line CI read on 2026-08-11, which arrived as
+# an ordinary ACP `agent_message_chunk` immediately followed by
+# `{"stopReason":"end_turn"}` —
+#
+#   Error: You've reached your additional usage limit for your plan.
+#   Go to https://github.com/settings/copilot/features for more details.
+#
+# — which is why a refusal has to be read out of the TEXT: the run is a clean
+# `ok` that did nothing, and there is no status, exit code or error field saying
+# otherwise. The rest are the same family in the providers' own spelling.
+#
+# Deliberately narrow. A phrase that also fits an ordinary failure would turn a
+# real regression into a "not run", and that is much the more expensive mistake
+# of the two: an unproven cell is visible in the verdict, a misclassified one is
+# not. A transient `rate limit`/`429` is on purpose NOT here — that turn may well
+# run on the next attempt, so it stays what it already is, a retryable
+# inconclusive attempt.
+_OH_PROVIDER_REFUSAL_RE='usage limit|quota exceeded|exceeded your current quota|insufficient_quota|credit balance is too low|out of credits'
+
+# The provider's OWN message refusing this turn, or nothing. Reads a oneharness
+# report on STDIN, because the callers hold one in two shapes: a file for the
+# control phases, the `$OH_REPORT` string for the per-harness ones.
+_oh_provider_refusal() {
+    local report transcript
+    report="$(cat)"
+    transcript="$(printf '%s' "$report" | jq -r '.results[0].stdout // ""' 2>/dev/null || true)"
+    {
+        # What oneharness normalized, and how it saw the run end.
+        printf '%s' "$report" | jq -r '.results[0] | (.text // ""), (.error // "")' 2>/dev/null || true
+        # Every string inside the harness's own frames: on a driven turn the
+        # refusal is the text of a message, not a field of a result.
+        printf '%s\n' "$transcript" | jq -R -r 'fromjson? | .. | strings' 2>/dev/null || true
+        # And the transcript as it came, for a harness whose headless output is
+        # not JSON at all.
+        printf '%s\n' "$transcript"
+    } | grep -i -E "$_OH_PROVIDER_REFUSAL_RE" | head -n 1 | cut -c1-300 || true
+}
+
+# Exit status a control phase returns for a turn the provider refused, so
+# e2e-control.sh can tell it from a contract violation. Distinct from 1, which
+# every phase already uses for "inconclusive, retry".
+_OH_NOT_RUN=3
+
+# Whether the harness's own PROVIDER refused the turn this report describes —
+# and if so, say so and record it for the suite's closing verdict.
+#
+# The reason travels through a FILE because every phase in e2e-control.sh runs in
+# a subshell (so one harness's verdict cannot end the run), and a variable set
+# there is gone by the time the verdict is written.
+#   $1 harness id, $2 report path
+_oh_note_provider_refusal() {
+    local id="$1" refusal kind
+    [ -s "$2" ] || return 1
+    refusal="$(_oh_provider_refusal <"$2")" || refusal=""
+    [ -n "$refusal" ] || return 1
+    kind="$(printf '%s' "$refusal" | grep -o -i -E "$_OH_PROVIDER_REFUSAL_RE" | head -n 1)" || kind=""
+    kind="$(printf '%s' "${kind:-quota}" | tr '[:upper:]' '[:lower:]')"
+    note "  NOT RUN: $id — its own provider refused this turn, so nothing follows from it about turn control: $refusal"
+    if [ -n "${OH_NOT_RUN_FILE:-}" ]; then
+        printf '%s (provider refused: %s)\n' "$id" "$kind" >"$OH_NOT_RUN_FILE"
+    fi
+    return 0
 }
 
 # Whether the wait for a turn to get going is over — either because it did (two

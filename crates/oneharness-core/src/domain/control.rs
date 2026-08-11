@@ -1136,6 +1136,475 @@ pub struct ControlReport {
 }
 
 #[cfg(test)]
+mod control_mode_parity {
+    //! Every control-capable harness × every [`PermissionMode`]: what a
+    //! controlled run is allowed to do must be what the same mode allows
+    //! without `--control`.
+    //!
+    //! The one confirmed bug in this feature was a cell of this grid. Codex's
+    //! `--control --mode bypass` asked the app-server for `workspaceWrite`
+    //! where `codex exec` under the same mode asks for no sandbox at all, so
+    //! the controlled run was strictly MORE restricted than the uncontrolled
+    //! one — and on a host without unprivileged user namespaces every shell
+    //! call failed before running, so the turn did no work whatsoever. It
+    //! survived because the live suite drives control under `--mode bypass`
+    //! only: the one position that was broken was the only one tested.
+    //!
+    //! So this is a unit assertion over the whole grid rather than another live
+    //! phase. It reads both postures out of the REAL code — the registry's own
+    //! `build_argv` on the uncontrolled side, the protocol client on the
+    //! controlled one — and is driven off the registry, so a harness or a mode
+    //! added later arrives here unasserted and fails.
+    //!
+    //! Equality alone is a floorless property: two paths that both permit a
+    //! write agree just as well as two that both refuse one, so a `read-only`
+    //! that stopped blocking anything satisfies every cell above. The companion
+    //! `a_no_mutation_mode_withholds_the_capability_to_write` is that floor —
+    //! per harness, in that CLI's own vocabulary — and it covers the whole
+    //! registry rather than the control-capable part of it, because a mode that
+    //! fails open fails open with or without `--control`.
+
+    use serde_json::Value;
+
+    use super::{absolute_for_test, ControlShape};
+    use crate::domain::dialogue::{Dialogue, DialogueConfig, DialogueStep};
+    use crate::domain::harness::{self, BuildCtx, HarnessSpec, PromptDelivery};
+    use crate::domain::http::permits_action;
+    use crate::domain::mode::{ApprovalPosture, PermissionMode};
+
+    /// The working directory both sides are asked about. Absolute on every
+    /// platform, since a `SandboxPolicy` names writable roots by path.
+    const WORK: &str = "/work";
+
+    /// The argv the registry really builds for `mode`, differing from an
+    /// ordinary run in nothing but how the prompt is delivered.
+    fn argv_for(
+        spec: &'static HarnessSpec,
+        mode: PermissionMode,
+        delivery: PromptDelivery,
+    ) -> Vec<String> {
+        (spec.build_argv)(&BuildCtx {
+            bin: spec.default_bin,
+            prompt: "hi",
+            model: None,
+            system: None,
+            resume: None,
+            fork: false,
+            mode,
+            output_format: spec.output_format,
+            schema: None,
+            system_file: None,
+            delivery,
+        })
+    }
+
+    /// The sandbox `codex exec` asks for under `mode`, read off its real argv
+    /// and spelled in the app-server's own `SandboxPolicy` vocabulary so the
+    /// two sides are comparable at all.
+    fn codex_exec_sandbox(argv: &[String]) -> &'static str {
+        if argv
+            .iter()
+            .any(|arg| arg == "--dangerously-bypass-approvals-and-sandbox")
+        {
+            return "dangerFullAccess";
+        }
+        match argv
+            .windows(2)
+            .find(|pair| pair[0] == "--sandbox")
+            .map(|pair| pair[1].as_str())
+        {
+            Some("read-only") => "readOnly",
+            Some("workspace-write") => "workspaceWrite",
+            Some(other) => panic!("`codex exec` asks for an unmapped sandbox `{other}`"),
+            // `exec`'s own default, stated at the registry entry: no flag is
+            // the read-only sandbox, not an absent one.
+            None => "readOnly",
+        }
+    }
+
+    /// The sandbox a controlled codex turn asks its app-server for.
+    fn codex_control_sandbox(mode: PermissionMode) -> String {
+        Dialogue::new(
+            ControlShape::CodexAppServer,
+            DialogueConfig {
+                prompt: "hi".to_string(),
+                cwd: absolute_for_test(WORK),
+                model: None,
+                mode,
+                posture: posture_of(harness::by_id("codex").unwrap(), mode),
+            },
+        )
+        .expect("codex drives its turn over the app-server")
+        .codex_sandbox_policy()["type"]
+            .as_str()
+            .expect("a sandbox names its type")
+            .to_string()
+    }
+
+    /// The harness's own declaration for `mode`.
+    fn posture_of(spec: &'static HarnessSpec, mode: PermissionMode) -> ApprovalPosture {
+        spec.mode(mode)
+            .expect("the caller checked the mode is supported")
+            .posture
+    }
+
+    /// Whether a driven turn acts without asking under `mode` — answered by the
+    /// real client, through the shape it would really be asked in.
+    fn unattended_under_control(
+        spec: &'static HarnessSpec,
+        shape: ControlShape,
+        mode: PermissionMode,
+    ) -> bool {
+        match shape {
+            // ACP offers options and the client picks one (or cancels), so the
+            // answer is read off an actual reply rather than a predicate.
+            ControlShape::AcpCancel => {
+                let mut dialogue = Dialogue::new(
+                    shape,
+                    DialogueConfig {
+                        prompt: "hi".to_string(),
+                        cwd: absolute_for_test(WORK),
+                        model: None,
+                        mode,
+                        posture: posture_of(spec, mode),
+                    },
+                )
+                .expect("ACP drives its turn");
+                let step = dialogue.on_line(
+                    r#"{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"options":[{"optionId":"a","kind":"allow_once"}]}}"#,
+                );
+                let DialogueStep::Send(frames) = step else {
+                    panic!("a permission request is always answered");
+                };
+                let reply: Value = serde_json::from_str(&frames[0]).expect("a JSON reply");
+                reply["result"]["outcome"]["outcome"] == "selected"
+            }
+            // Both HTTP servers carry the posture as one decision: opencode
+            // answers each ask with it, crush declares it on the workspace.
+            _ => permits_action(
+                spec.mode(mode)
+                    .expect("the caller checked the mode is supported"),
+            )
+            .allows(),
+        }
+    }
+
+    /// Whether the harness's OWN uncontrolled run acts without asking under
+    /// `mode`, read off the argv and environment its registry entry really
+    /// produces. The token per harness is that CLI's documented don't-ask
+    /// switch — the same source `build_argv` maps the mode from. This is what
+    /// keeps `ModeSpec::posture` honest: it is compared against the mapping
+    /// rather than trusted.
+    fn unattended_without_control(spec: &'static HarnessSpec, mode: PermissionMode) -> bool {
+        let argv = argv_for(spec, mode, PromptDelivery::Argv);
+        let env = spec.mode(mode).map_or(&[][..], |declared| declared.env);
+        match spec.id {
+            "opencode" => argv
+                .iter()
+                .any(|arg| arg == "--dangerously-skip-permissions"),
+            // `GOOSE_MODE`: `approve` gates each call, `smart_approve` and
+            // `auto` both act on their own.
+            "goose" => env
+                .iter()
+                .any(|(_, value)| *value == "auto" || *value == "smart_approve"),
+            // `crush run -q` auto-approves the whole session and carries no
+            // mode on its argv at all, so it is unattended whatever was asked
+            // for — the limitation declared at its registry entry.
+            "crush" => true,
+            other => panic!("`{other}` drives its turn but has no uncontrolled posture reader"),
+        }
+    }
+
+    #[test]
+    fn a_controlled_run_allows_exactly_what_the_same_mode_allows_without_control() {
+        let mut grid: Vec<String> = Vec::new();
+        for spec in harness::all() {
+            let Some(shape) = spec.control else { continue };
+            for mode in PermissionMode::ALL {
+                let verdict = cell(spec, shape, mode);
+                grid.push(format!("{} {} {verdict}", spec.id, mode.as_str()));
+            }
+        }
+        // The whole grid, spelled out: a harness or a mode added later lands
+        // here as a line nobody wrote down, which is the point. Every cell a
+        // harness supports is an EQUALITY, because a controlled run that
+        // reshapes the policy is the bug this grid exists to catch — with one
+        // exception, spelled `known-gap:…`, which is a cell nobody has made
+        // equal yet. A gap is NAMED here rather than dropped from the grid: a
+        // missing line reads as coverage, and this feature has already lost a
+        // night to a cell that was silently absent.
+        assert_eq!(
+            grid,
+            [
+                "claude-code read-only same-argv",
+                "claude-code plan same-argv",
+                "claude-code default same-argv",
+                "claude-code edit same-argv",
+                "claude-code auto same-argv",
+                "claude-code bypass same-argv",
+                "codex read-only same-sandbox:readOnly",
+                "codex plan same-sandbox:readOnly",
+                "codex default same-sandbox:readOnly",
+                "codex edit mode-unsupported",
+                "codex auto same-sandbox:workspaceWrite",
+                "codex bypass same-sandbox:dangerFullAccess",
+                "opencode read-only same-posture:gated",
+                "opencode plan same-posture:gated",
+                "opencode default same-posture:gated",
+                // The one cell that is NOT an equality, and says so. `edit` is
+                // opencode's `OPENCODE_CONFIG_CONTENT`, which a turn submitted
+                // to a pooled server has no way to carry — so `--control --mode
+                // edit` is a usage error rather than a turn under a policy
+                // nobody asked for.
+                "opencode edit known-gap:mode-env-not-delivered-to-a-pooled-server",
+                "opencode auto mode-unsupported",
+                "opencode bypass same-posture:unattended",
+                "goose read-only mode-unsupported",
+                "goose plan mode-unsupported",
+                "goose default same-posture:gated",
+                "goose edit mode-unsupported",
+                "goose auto same-posture:unattended",
+                "goose bypass same-posture:unattended",
+                // `crush run` cannot gate, so its `default` is unattended
+                // however it is asked — and a controlled turn says the same.
+                "crush read-only mode-unsupported",
+                "crush plan mode-unsupported",
+                "crush default same-posture:unattended",
+                "crush edit mode-unsupported",
+                "crush auto mode-unsupported",
+                "crush bypass same-posture:unattended",
+                // Copilot's permission flags ride the `--acp` argv beside it, so
+                // its controlled launch carries the mode's own mapping whole.
+                "copilot read-only same-argv",
+                "copilot plan same-argv",
+                "copilot default same-argv",
+                "copilot edit same-argv",
+                "copilot auto mode-unsupported",
+                "copilot bypass same-argv",
+            ]
+        );
+    }
+
+    /// The argv with this delivery's own prefix removed, so what is left is the
+    /// policy the mode put on it.
+    ///
+    /// The prefixes are asserted rather than assumed: they are the ONLY thing
+    /// the two launches are allowed to differ in, so a change to one has to
+    /// come through here.
+    fn policy_tail(
+        spec: &'static HarnessSpec,
+        mode: PermissionMode,
+        delivery: PromptDelivery,
+    ) -> Vec<String> {
+        let argv = argv_for(spec, mode, delivery);
+        let prefix: &[&str] = match (spec.id, delivery) {
+            // The prompt is a positional; under control it is the first frame
+            // on a stdin message stream instead.
+            ("claude-code", PromptDelivery::Argv) => &[spec.default_bin, "-p", "hi"],
+            ("claude-code", PromptDelivery::ControlStream) => {
+                &[spec.default_bin, "-p", "--input-format", "stream-json"]
+            }
+            // The prompt (and the session, and the model) are negotiated on the
+            // ACP wire, so the control launch is the server switch alone.
+            ("copilot", PromptDelivery::Argv) => &[spec.default_bin, "-p", "hi"],
+            ("copilot", PromptDelivery::ControlStream) => &[spec.default_bin, "--acp"],
+            (id, _) => panic!("`{id}` has no declared control-launch prefix"),
+        };
+        assert_eq!(
+            &argv[..prefix.len()],
+            prefix,
+            "`{}` {mode:?} {delivery:?} launch prefix",
+            spec.id
+        );
+        argv[prefix.len()..].to_vec()
+    }
+
+    /// One cell of the grid: assert the two paths send the same policy, and
+    /// name how it got there. Every supported mode is an equality, except the
+    /// one delivery nobody has made equal — which answers `known-gap:…` rather
+    /// than disappearing from the grid.
+    fn cell(spec: &'static HarnessSpec, shape: ControlShape, mode: PermissionMode) -> String {
+        let Some(declared) = spec.mode(mode) else {
+            // The harness cannot express this mode at all, so the command layer
+            // refuses the run before anything spawns — with `--control` or
+            // without it. There is no pair of policies to compare.
+            return "mode-unsupported".to_string();
+        };
+        // 1. A KNOWN GAP, kept in the grid rather than dropped from it. A mode
+        //    the harness delivers through its OWN environment cannot reach a
+        //    turn submitted to a pooled server: the environment belongs to the
+        //    server process, and handing it there — which is what shipped, and
+        //    what is now reverted — made the approval mode a component of the
+        //    pool key and left a controlled `--mode default` opencode turn
+        //    ending in `status=timeout` across four CI cycles. So there is no
+        //    equality to assert here, and the honest cell says which one is
+        //    missing: the command layer refuses the mode before anything spawns
+        //    (`OneharnessError::ControlModeUnsupported`) rather than run the
+        //    turn under the server's own policy.
+        if !declared.env.is_empty() && shape.needs_pooled_server() {
+            return "known-gap:mode-env-not-delivered-to-a-pooled-server".to_string();
+        }
+        match shape {
+            // 2. The one policy the control path recomputes in its own
+            //    vocabulary, and where the bug lived.
+            ControlShape::CodexAppServer => {
+                let ordinary = codex_exec_sandbox(&argv_for(spec, mode, PromptDelivery::Argv));
+                assert_eq!(
+                    codex_control_sandbox(mode),
+                    ordinary,
+                    "`{}` asks for a different sandbox under --control for {mode:?}",
+                    spec.id
+                );
+                format!("same-sandbox:{ordinary}")
+            }
+            // 3. Harnesses whose controlled launch IS the ordinary argv:
+            //    Claude Code's control frame rides its own `-p` run, and
+            //    copilot's permission flags sit beside `--acp` (verified
+            //    against `copilot --help` and by handshaking a real one). The
+            //    mode's arguments must match byte for byte.
+            _ if MODE_RIDES_CONTROL_ARGV.contains(&spec.id) => {
+                assert_eq!(
+                    policy_tail(spec, mode, PromptDelivery::Argv),
+                    policy_tail(spec, mode, PromptDelivery::ControlStream),
+                    "`{}` sends different mode arguments under --control for {mode:?}",
+                    spec.id
+                );
+                "same-argv".to_string()
+            }
+            // 4. Everything else answers the server's permission requests, and
+            //    the answer must be the posture the harness's own run takes.
+            //    A mode delivered by environment and driven over stdio (goose's
+            //    `GOOSE_MODE`) is already equal by construction — the control
+            //    child IS an ordinary job, so it is spawned with the same job
+            //    environment an uncontrolled run gets — and this pins the wire
+            //    answer layered on top of it.
+            shape => {
+                let controlled = unattended_under_control(spec, shape, mode);
+                let ordinary = unattended_without_control(spec, mode);
+                assert_eq!(
+                    controlled, ordinary,
+                    "`{}` allows {controlled} under --control and {ordinary} without it for {mode:?}",
+                    spec.id
+                );
+                format!(
+                    "same-posture:{}",
+                    if controlled { "unattended" } else { "gated" }
+                )
+            }
+        }
+    }
+
+    /// The harnesses whose control launch carries the mode's own argument list.
+    /// Stated rather than detected, so a launch that silently stopped carrying
+    /// it fails here instead of quietly falling through to a coarser check.
+    const MODE_RIDES_CONTROL_ARGV: [&str; 2] = ["claude-code", "copilot"];
+
+    /// The tools a `read-only` Claude Code run is left holding. Restated here
+    /// rather than read from the registry: this is the assertion, so it has to
+    /// fail when the registry's list moves rather than move with it.
+    const CLAUDE_READ_ONLY_TOOLS: [&str; 5] = ["Read", "Grep", "Glob", "WebFetch", "WebSearch"];
+
+    /// How a no-mutation `mode` takes the ability to write away from the agent,
+    /// read off the argv the registry really builds and asserted present.
+    ///
+    /// Each harness answers in its own vocabulary because each CLI has its own
+    /// mechanism, and the mechanisms are not equally strong. A sandbox or a
+    /// native plan mode is enforcement the CLI owns, so a tool it gains later
+    /// arrives already inside it. An enumeration of tool names is only as good
+    /// as which side it enumerates — which is why Claude's is asserted to name
+    /// what the run MAY use. It named what the run may not (`--disallowedTools
+    /// Bash Edit Write NotebookEdit`) until claude 2.1.220 put `Task` in the
+    /// built-in set: the agent handed the shell call to a subagent the deny
+    /// rules did not reach, and the live Windows leg watched the file appear.
+    fn withholding(spec: &'static HarnessSpec, mode: PermissionMode) -> String {
+        let argv = argv_for(spec, mode, PromptDelivery::Argv);
+        let carries = |want: &[&str]| {
+            assert!(
+                argv.windows(want.len()).any(|window| window == want),
+                "`{}` {mode:?} must carry {want:?} to withhold a write; got {argv:?}",
+                spec.id
+            );
+            format!("carries:{}", want.join(" "))
+        };
+        match (spec.id, mode) {
+            ("claude-code", PermissionMode::ReadOnly) => {
+                let permitted: Vec<&str> = argv
+                    .iter()
+                    .skip_while(|arg| *arg != "--tools")
+                    .skip(1)
+                    .take_while(|arg| !arg.starts_with("--"))
+                    .map(String::as_str)
+                    .collect();
+                assert_eq!(
+                    permitted, CLAUDE_READ_ONLY_TOOLS,
+                    "`claude-code` read-only must permit exactly the read-only tools; got {argv:?}"
+                );
+                assert!(
+                    !argv.iter().any(|arg| arg == "--disallowedTools"),
+                    "`claude-code` read-only must not go back to naming what it forbids, \
+                     which leaves every tool it forgot — and every tool the CLI adds — \
+                     reachable; got {argv:?}"
+                );
+                format!("permits-only:{}", permitted.join(","))
+            }
+            ("claude-code", _) => carries(&["--permission-mode", "plan"]),
+            ("codex", _) => carries(&["--sandbox", "read-only"]),
+            ("opencode", _) => carries(&["--agent", "plan"]),
+            ("qwen", _) => carries(&["--approval-mode", "plan"]),
+            ("cursor", PermissionMode::ReadOnly) => carries(&["--mode", "ask"]),
+            // Copilot enumerates too, but over its permission vocabulary's own
+            // three categories rather than per-tool names, so denying the two
+            // that act leaves only the one that reads.
+            ("copilot", PermissionMode::ReadOnly) => {
+                carries(&["--deny-tool", "shell"]);
+                carries(&["--deny-tool", "write"])
+            }
+            ("cursor" | "copilot", _) => carries(&["--mode", "plan"]),
+            (other, _) => {
+                panic!("`{other}` supports {mode:?} but nothing here says what it takes away")
+            }
+        }
+    }
+
+    #[test]
+    fn a_no_mutation_mode_withholds_the_capability_to_write() {
+        let mut grid: Vec<String> = Vec::new();
+        for spec in harness::all() {
+            for mode in [PermissionMode::ReadOnly, PermissionMode::Plan] {
+                if spec.mode(mode).is_none() {
+                    continue;
+                }
+                grid.push(format!(
+                    "{} {} {}",
+                    spec.id,
+                    mode.as_str(),
+                    withholding(spec, mode)
+                ));
+            }
+        }
+        // Spelled out for the same reason as the grid above: a harness that
+        // gains `read-only` or `plan` later lands here as a line nobody wrote.
+        assert_eq!(
+            grid,
+            [
+                "claude-code read-only permits-only:Read,Grep,Glob,WebFetch,WebSearch",
+                "claude-code plan carries:--permission-mode plan",
+                "codex read-only carries:--sandbox read-only",
+                "codex plan carries:--sandbox read-only",
+                "opencode read-only carries:--agent plan",
+                "opencode plan carries:--agent plan",
+                "qwen read-only carries:--approval-mode plan",
+                "qwen plan carries:--approval-mode plan",
+                "copilot read-only carries:--deny-tool write",
+                "copilot plan carries:--mode plan",
+                "cursor read-only carries:--mode ask",
+                "cursor plan carries:--mode plan",
+            ]
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

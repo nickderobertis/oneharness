@@ -25,7 +25,7 @@
 use serde_json::{json, Value};
 
 use crate::domain::control::{AbsolutePath, ControlShape};
-use crate::domain::mode::PermissionMode;
+use crate::domain::harness::ModeSpec;
 
 /// The HTTP methods these control protocols use. A closed set rather than a
 /// string: a typo'd verb is a route that silently does not exist, which reads
@@ -313,8 +313,12 @@ pub enum TurnAddress {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnOpening<'a> {
     /// A session on `opencode serve`, which has no client identity and answers
-    /// each permission ask as it arrives rather than declaring a posture.
-    Opencode { cwd: &'a AbsolutePath },
+    /// each permission ask as it arrives rather than declaring a posture. The
+    /// model is named here or not at all — see [`OpencodeModel`].
+    Opencode {
+        cwd: &'a AbsolutePath,
+        model: Option<&'a OpencodeModel>,
+    },
     /// The workspace every other crush route hangs off, opened as one client
     /// identity and in one permission posture.
     Crush {
@@ -382,18 +386,68 @@ impl PermissionDecision {
 /// applies, so an HTTP turn and a protocol turn answer a permission request the
 /// same way.
 ///
-/// `Edit` is not permissive here: it promises auto-approved edits with shell
-/// still gated, and neither server's permission ask carries a sourced way to
-/// tell those apart, so allowing it would grant shell authority the mode
-/// denies. The command layer refuses `edit` on a controlled turn before
-/// anything spawns; this is the safe answer if one ever arrives anyway.
+/// Read off the harness's OWN declaration for the mode ([`ModeSpec::posture`])
+/// rather than off the normalized spectrum,
+/// because the posture a controlled turn must take is the one that mode gives
+/// *without* `--control`. Usually the two agree; where the CLI cannot honor the
+/// spectrum — `crush run` auto-approves whatever it is asked — the harness's own
+/// answer is the one that keeps the two paths under one policy.
 #[must_use]
-pub fn permits_action(mode: PermissionMode) -> PermissionDecision {
-    match mode {
-        PermissionMode::Bypass | PermissionMode::Auto => PermissionDecision::Allow,
+pub fn permits_action(mode: &ModeSpec) -> PermissionDecision {
+    if mode.posture.is_unattended() {
+        PermissionDecision::Allow
+    } else {
         // Deny is the safe default, so a mode added later refuses until someone
         // decides otherwise rather than granting on arrival.
-        _ => PermissionDecision::Deny,
+        PermissionDecision::Deny
+    }
+}
+
+/// The model an opencode turn runs on, split the way its session route names
+/// one: a provider and an id, both required.
+///
+/// A controlled opencode turn is a session on a pooled server, and the model is
+/// a property of that SESSION — not of the server, and not of the prompt. It was
+/// simply dropped: `--model` reaches `opencode run` on the argv and reached
+/// nothing at all under `--control`, so a controlled turn ran on whatever the
+/// server picked by itself. That is not a theoretical default — live it was
+/// `wandb/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B` on one host and
+/// `ling-3.0-tiny-free` in CI, both answering `Provider request failed with
+/// HTTP 401`, which is what made the live control suite's opencode phase a coin
+/// flip. Naming it in the server's own config does NOT fix that: `opencode
+/// serve` loads `OPENCODE_CONFIG_CONTENT`'s `model` and echoes it back on
+/// `/config` while the session it creates still runs on its own choice
+/// (measured against opencode 1.18.5).
+///
+/// The field names are the server's own (`{"providerID": …, "id": …}`, both
+/// required by `/doc`'s schema for `POST /api/session`), and a real session
+/// created that way answers with the model echoed back and runs its step on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpencodeModel {
+    provider: String,
+    id: String,
+}
+
+impl OpencodeModel {
+    /// Split a fully-qualified `<provider>/<model>` id — the form `opencode run
+    /// --model` documents and this route requires.
+    ///
+    /// `None` when there is no provider to name, because there is nothing to
+    /// guess: opencode's own ids carry slashes inside them
+    /// (`wandb/nvidia/NVIDIA-Nemotron-…`), so only the FIRST segment is the
+    /// provider and a bare id names none. A caller that gets `None` must refuse
+    /// rather than open a session without one — which is exactly the silent
+    /// drop this type exists to end.
+    #[must_use]
+    pub fn parse(model: &str) -> Option<Self> {
+        let (provider, id) = model.split_once('/')?;
+        if provider.is_empty() || id.is_empty() {
+            return None;
+        }
+        Some(Self {
+            provider: provider.to_string(),
+            id: id.to_string(),
+        })
     }
 }
 
@@ -404,12 +458,15 @@ pub fn open_request(opening: &TurnOpening) -> HttpRequest {
     match opening {
         // The session names its own working directory, so the server can be
         // shared by dispatches in different projects — the cwd stays a per-turn
-        // setting and never widens the pool key.
-        TurnOpening::Opencode { cwd } => HttpRequest::new(
-            Method::Post,
-            "/api/session".to_string(),
-            Some(json!({"location": {"directory": cwd.to_string()}})),
-        ),
+        // setting and never widens the pool key. The model is per turn for the
+        // same reason, and it has to be named here: see [`OpencodeModel`].
+        TurnOpening::Opencode { cwd, model } => {
+            let mut body = json!({"location": {"directory": cwd.to_string()}});
+            if let Some(model) = model {
+                body["model"] = json!({"providerID": model.provider, "id": model.id});
+            }
+            HttpRequest::new(Method::Post, "/api/session".to_string(), Some(body))
+        }
         // The workspace is where crush's `client_id` travels in the BODY — and
         // where its permission posture is declared: `yolo` is the same "act
         // without asking" the `--yolo` flag sets, applied at creation so the
@@ -1167,6 +1224,7 @@ impl SseAccumulator {
 mod tests {
     use super::*;
     use crate::domain::control::{absolute_for_test, absolute_text_for_test};
+    use crate::domain::mode::PermissionMode;
 
     fn crush_address() -> TurnAddress {
         TurnAddress::Crush {
@@ -1234,9 +1292,12 @@ mod tests {
         // names the same place from the server's process as from this one.
         let here = cwd("/work/here");
         let opencode: Value = serde_json::from_str(
-            open_request(&TurnOpening::Opencode { cwd: &here })
-                .body()
-                .unwrap(),
+            open_request(&TurnOpening::Opencode {
+                cwd: &here,
+                model: None,
+            })
+            .body()
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(opencode["location"]["directory"], here.to_string());
@@ -1248,6 +1309,57 @@ mod tests {
         )
         .unwrap();
         assert_eq!(crush["path"], here.to_string());
+    }
+
+    #[test]
+    fn an_opencode_turn_names_the_model_it_runs_on_to_the_session() {
+        // The model is per turn like the cwd above, and the session is the only
+        // place opencode takes one: its server loads a `model` from
+        // `OPENCODE_CONFIG_CONTENT` and creates sessions on a different one
+        // anyway (measured against 1.18.5), so a session opened without it runs
+        // on whatever the server picked — live, a free model answering 401.
+        let here = cwd("/work/here");
+        let model = OpencodeModel::parse("anthropic/claude-haiku-4-5").expect("qualified");
+        let body: Value = serde_json::from_str(
+            open_request(&TurnOpening::Opencode {
+                cwd: &here,
+                model: Some(&model),
+            })
+            .body()
+            .unwrap(),
+        )
+        .unwrap();
+        // The field names are the server's own, from `/doc`'s schema for
+        // `POST /api/session`, where both are required.
+        assert_eq!(body["model"]["providerID"], "anthropic");
+        assert_eq!(body["model"]["id"], "claude-haiku-4-5");
+        // A run with no model asks for none rather than sending an empty one,
+        // which the same schema would refuse.
+        let bare: Value = serde_json::from_str(
+            open_request(&TurnOpening::Opencode {
+                cwd: &here,
+                model: None,
+            })
+            .body()
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(bare.get("model").is_none(), "{bare}");
+    }
+
+    #[test]
+    fn a_model_naming_no_provider_is_refused_rather_than_guessed_at() {
+        // Only the FIRST segment is the provider: opencode's own ids carry
+        // slashes inside them, so a split anywhere else invents a provider.
+        let nested = OpencodeModel::parse("wandb/nvidia/NVIDIA-Nemotron-3.5").expect("qualified");
+        assert_eq!(nested.provider, "wandb");
+        assert_eq!(nested.id, "nvidia/NVIDIA-Nemotron-3.5");
+        // And a bare id names no provider, so there is nothing to send. The
+        // caller refuses; it must never open a session without one, because
+        // that is the silent drop that ran a controlled turn on a free model.
+        for bare in ["haiku", "", "/claude-haiku-4-5", "anthropic/"] {
+            assert!(OpencodeModel::parse(bare).is_none(), "accepted `{bare}`");
+        }
     }
 
     #[test]
@@ -1310,9 +1422,12 @@ mod tests {
         // its opening carries none of them and inventing one would be a key its
         // session-create route does not read.
         let opencode: Value = serde_json::from_str(
-            open_request(&TurnOpening::Opencode { cwd: &work })
-                .body()
-                .unwrap(),
+            open_request(&TurnOpening::Opencode {
+                cwd: &work,
+                model: None,
+            })
+            .body()
+            .unwrap(),
         )
         .unwrap();
         assert!(opencode.get("yolo").is_none(), "{opencode}");
@@ -1513,29 +1628,47 @@ mod tests {
         }
     }
 
+    /// The decision each harness's own mapping for `mode` implies.
+    fn decision_for(id: &str, mode: PermissionMode) -> PermissionDecision {
+        permits_action(
+            crate::domain::harness::by_id(id)
+                .expect("a registered harness")
+                .mode(mode)
+                .expect("a mode the harness declares"),
+        )
+    }
+
     #[test]
-    fn only_a_permissive_run_skips_the_asking() {
+    fn asking_is_skipped_only_where_the_harness_declares_it_acts_unattended() {
         assert_eq!(
-            permits_action(PermissionMode::Bypass),
+            decision_for("opencode", PermissionMode::Bypass),
             PermissionDecision::Allow
         );
         assert_eq!(
-            permits_action(PermissionMode::Default),
+            decision_for("opencode", PermissionMode::Default),
             PermissionDecision::Deny
         );
-        // A mode nobody mapped denies rather than grants, so adding one cannot
-        // hand an agent authority by omission.
+        // A mode nobody declared as unattended denies rather than grants, so
+        // adding one cannot hand an agent authority by omission.
         assert_eq!(
-            permits_action(PermissionMode::ReadOnly),
+            decision_for("opencode", PermissionMode::ReadOnly),
             PermissionDecision::Deny
         );
-        // `edit` gates shell, and a permission ask here carries no sourced way
-        // to tell an edit from a command, so a blanket allow would grant more
-        // than the mode promises. The command layer refuses it before spawning;
-        // denying is the safe answer if one ever arrives anyway.
+        // `edit` carries its policy in the harness's own config, which a turn
+        // submitted to a pooled server cannot deliver — so the command layer
+        // refuses that combination outright. Denying is the safe answer if one
+        // ever reaches the wire anyway: a permission ask carries no sourced way
+        // to tell an edit from a command.
         assert_eq!(
-            permits_action(PermissionMode::Edit),
+            decision_for("opencode", PermissionMode::Edit),
             PermissionDecision::Deny
+        );
+        // And the posture is the HARNESS's, not the spectrum's: `crush run`
+        // cannot gate at all, so its `default` acts without asking — a
+        // controlled turn that denied it would be stricter than the CLI can be.
+        assert_eq!(
+            decision_for("crush", PermissionMode::Default),
+            PermissionDecision::Allow
         );
         // Crush can be told once; opencode has no such route and answers each.
         assert!(skip_permissions_request(&crush_address(), PermissionDecision::Allow).is_some());
@@ -1820,7 +1953,10 @@ mod tests {
         let awkward = cwd("/a b/../c");
         let mut routes = vec![
             open_request(&crush_opening(&awkward, &client, PermissionDecision::Allow)),
-            open_request(&TurnOpening::Opencode { cwd: &awkward }),
+            open_request(&TurnOpening::Opencode {
+                cwd: &awkward,
+                model: None,
+            }),
             readiness_request(HttpShape::Crush),
             readiness_request(HttpShape::Opencode),
         ];

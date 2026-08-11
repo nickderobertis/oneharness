@@ -51,6 +51,47 @@ pub enum PermissionMode {
     Bypass,
 }
 
+/// What a harness's OWN run does when a tool needs approval in a given mode.
+///
+/// A two-variant type rather than a `bool` for the reason
+/// [`PermissionDecision`](crate::domain::http::PermissionDecision) is one: it
+/// decides what an agent may do, and at a call site `true`/`false` says nothing
+/// about which way round it is, while an inverted one does not fail — it
+/// quietly hands a run authority it was not given.
+///
+/// Distinct from that decision even so. This is a *fact about the harness*,
+/// declared per mode on its [`ModeSpec`](crate::domain::harness::ModeSpec) and
+/// read off its real argv/environment mapping; the decision is what a driven
+/// turn then answers a server with. Keeping them apart is what makes
+/// "the controlled posture is the uncontrolled one" a statement that can be
+/// checked rather than an identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalPosture {
+    /// The harness acts without asking.
+    Unattended,
+    /// A tool that needs approval is gated.
+    Gated,
+}
+
+impl ApprovalPosture {
+    /// The posture the normalized spectrum implies: `auto` and `bypass` mean
+    /// "act without asking", everything else gates. The default a harness gets
+    /// unless its own CLI cannot honor it.
+    #[must_use]
+    pub const fn of(mode: PermissionMode) -> Self {
+        match mode {
+            PermissionMode::Auto | PermissionMode::Bypass => ApprovalPosture::Unattended,
+            _ => ApprovalPosture::Gated,
+        }
+    }
+
+    /// Whether the harness acts without asking.
+    #[must_use]
+    pub fn is_unattended(self) -> bool {
+        matches!(self, ApprovalPosture::Unattended)
+    }
+}
+
 impl PermissionMode {
     /// Every mode, in spectrum order. The source of truth for `--help`, the
     /// `--mode` value parser, and `oneharness list`.

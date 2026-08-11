@@ -33,9 +33,9 @@ use crate::domain::dialogue::{Dialogue, DialogueConfig};
 use crate::domain::events::ActionEvent;
 use crate::domain::fallback::{self, RunMode};
 use crate::domain::harness::{self, BuildCtx, HarnessIdentity, HarnessSpec, PromptDelivery};
-use crate::domain::http::HttpShape;
+use crate::domain::http::{self, HttpShape};
 use crate::domain::mock::{self, MockDelivery};
-use crate::domain::mode::{ModeHeadless, PermissionMode};
+use crate::domain::mode::{ApprovalPosture, ModeHeadless, PermissionMode};
 use crate::domain::report::{
     BatchReport, Capture, FallThrough, FallbackReport, OutputFormat, RunReport, RunResult,
     SessionReport, Status, SCHEMA_VERSION,
@@ -298,6 +298,11 @@ const LARGE_INPUT_THRESHOLD: usize = 64 * 1024;
 /// run's own timeout bounds it further.
 const SERVER_READY_WINDOW: Duration = Duration::from_secs(90);
 
+/// How many times one dispatch will launch a control server before giving up.
+/// One relaunch, and only for a server that exited during bring-up — see
+/// [`bring_up_server`] for which failure earns it and why the other does not.
+const SERVER_START_ATTEMPTS: usize = 2;
+
 /// Temp files holding off-argv prompt/system text for the duration of a run,
 /// removed on drop — so every early return (stream path, an I/O error, normal
 /// completion) cleans them up, like the mock hook's snapshot-and-restore. Writes
@@ -534,9 +539,6 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
     // to be told which control rule they broke, not a session rule that happens
     // to catch the same shape first.
     let explicit_format = args.output_format.or(cfg.output_format);
-    // Resolved here rather than at its own use below because a driven turn
-    // negotiates approvals on the wire, so `--control` has its own rule about
-    // which modes it can express (see `validate_control`).
     let mode = resolve_mode(args, cfg);
     let control_shape = validate_control(
         args,
@@ -1039,6 +1041,14 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
                         cwd: cwd.clone(),
                         model: model.map(str::to_string),
                         mode,
+                        // The harness's own posture for this mode, not the
+                        // spectrum's: goose and copilot share one ACP shape and
+                        // do not share a mapping, and a driven turn must answer
+                        // with what the same mode gives without `--control`.
+                        posture: specs
+                            .first()
+                            .and_then(|spec| spec.mode(mode))
+                            .map_or(ApprovalPosture::of(mode), |declared| declared.posture),
                     },
                 )
             });
@@ -2287,9 +2297,15 @@ fn stream_one_harness(
 /// by (oneharness never infers one — an unaddressable run is the whole reason
 /// `--session` is required), one prompt and exactly one harness (control drives
 /// one live turn; a batch or fan-out has no single turn to interrupt), a
-/// harness that declares a *proven* control mechanism, an approval mode the
-/// mechanism can actually express, an explicit output format compatible with
-/// the mechanism, and — last — a platform with unix sockets.
+/// harness that declares a *proven* control mechanism, an explicit output
+/// format compatible with the mechanism, and — last — a platform with unix
+/// sockets.
+///
+/// The approval mode is almost never among them: `--control` no longer derives
+/// a posture for the wire, so whatever a harness supports uncontrolled it
+/// supports controlled, and an unsupported mode is `validate_modes`' refusal —
+/// the same one an ordinary run gets. The one exception is a mode delivered
+/// through the harness's own environment on a server-submitted turn; see below.
 #[allow(clippy::fn_params_excessive_bools, clippy::too_many_arguments)] // llmlint: ignore[suppressions_justified] The parameters ARE the list of independently-resolved run properties the control rules must check, each decided separately by the caller; folding them into a struct used at this single call site would hide the list rather than shorten it.
 fn validate_control(
     args: &RunRequest,
@@ -2345,17 +2361,27 @@ fn validate_control(
             supported: control_capable_ids(),
         });
     };
-    // A driven turn negotiates its approvals on the wire, so the harness's own
-    // `edit` mapping — which lives on the argv or in its config file — is not
-    // what is in play; oneharness answers each permission request itself. `edit`
-    // promises auto-approved file edits with shell still gated, and no protocol
-    // here carries a *sourced* way to tell an edit request from a command one.
-    // Answering yes to both would grant shell authority the mode denies, and
-    // answering no to both would silently downgrade `edit` toward `default`, so
-    // this is refused before spawning like any other mode a harness cannot
-    // express. Claude Code is unaffected: its control frame rides the ordinary
-    // `-p` run, whose argv carries the real `acceptEdits` mapping.
-    if shape.drives_turn() && mode == PermissionMode::Edit {
+    // Almost no mode is refused here. Where the mode's policy travels on the
+    // controlled launch itself — copilot's permission flags beside `--acp`,
+    // Claude Code's ordinary `-p` argv — a controlled run is under exactly the
+    // policy `spec.modes` declares, and an unexpressible mode is
+    // `validate_modes`' refusal, the same one an ordinary run gets.
+    //
+    // The exception is a mode whose policy is the harness's OWN environment on a
+    // turn submitted to a pooled server (opencode's `edit`, carried in
+    // `OPENCODE_CONFIG_CONTENT`). That environment belongs to the server
+    // process, not to the turn, and handing it over there was reverted: it made
+    // the mode a component of the pool key and gave a controlled `--mode
+    // default` turn a policy it never ended under (see the known gap recorded in
+    // `control_mode_parity`). Delivering nothing would run the turn under
+    // whatever policy the server was started with, which is the silent reshaping
+    // `--control` must never do — so it is a loud usage error before anything
+    // spawns.
+    if shape.needs_pooled_server()
+        && spec
+            .mode(mode)
+            .is_some_and(|declared| !declared.env.is_empty())
+    {
         return Err(OneharnessError::ControlModeUnsupported {
             id: spec.id.to_string(),
             mode: mode.as_str(),
@@ -2429,8 +2455,17 @@ fn run_http_controlled(
                 model,
                 ..
             } => {
-                let outcome =
-                    drive_http_turn(shape, handle, spec, &bin, prompt, cwd, mode, timeout);
+                let outcome = drive_http_turn(
+                    shape,
+                    handle,
+                    spec,
+                    &bin,
+                    prompt,
+                    cwd,
+                    mode,
+                    timeout,
+                    model.as_deref(),
+                );
                 let (command, capture, session_id) = match outcome {
                     Ok((command, outcome, session_id)) => (command, outcome, Some(session_id)),
                     Err(err) => (vec![bin.clone()], http_turn::TurnOutcome::failed(err), None),
@@ -2472,7 +2507,24 @@ fn drive_http_turn(
     cwd: &control::AbsolutePath,
     mode: PermissionMode,
     timeout: Duration,
+    model: Option<&str>,
 ) -> Result<(Vec<String>, http_turn::TurnOutcome, String), String> {
+    // Parsed before anything is brought up: a model this protocol cannot name
+    // is refused rather than dropped, because dropping it runs the turn on
+    // whatever the server picks — which is how a controlled opencode turn came
+    // to run on a free model that answers 401.
+    let session_model = match (shape, model) {
+        (HttpShape::Opencode, Some(model)) => Some(http::OpencodeModel::parse(model).ok_or_else(
+            || {
+                format!(
+                    "a controlled `{}` turn names its model to the session it opens, and that route takes a provider and an id: `--model {model}` names no provider. Use the fully-qualified `<provider>/<model>` form (e.g. `anthropic/claude-haiku-4-5`), the same id `opencode run --model` takes",
+                    spec.id
+                )
+            },
+        )?),
+        // Crush's model is the server's, settled at launch.
+        _ => None,
+    };
     let server = spec.server.ok_or_else(|| {
         format!(
             "`{}` declares HTTP control but no server to run it",
@@ -2481,38 +2533,42 @@ fn drive_http_turn(
     })?;
     let root = server_pool::resolve_root(None)
         .ok_or_else(|| "no state directory to keep the control-server pool in".to_string())?;
-    // Per-turn settings are deliberately not in the key: they are negotiated on
-    // the wire, and keying on them would start a fresh server per dispatch.
+    // The harness's own mapping for this mode. Resolved here rather than from
+    // the normalized spectrum, so a controlled turn runs under exactly the
+    // policy the same mode gives without `--control`. Support was checked before
+    // anything spawned, so an absent one is a bug rather than a user error.
+    let mode_spec = spec
+        .mode(mode)
+        .ok_or_else(|| format!("`{}` cannot express `--mode {}`", spec.id, mode.as_str()))?;
+    // The mode's own environment does NOT travel to the server. Handing it over
+    // was tried and reverted: it made the approval mode a component of the pool
+    // key, and the controlled `--mode default` turn it was meant to prove never
+    // ended on opencode across four CI cycles. A mode that can only be delivered
+    // that way is refused before anything spawns (`validate_control`), so the
+    // server is never launched under a policy other than its own — and the gap
+    // is recorded rather than papered over (`control_mode_parity`).
+    // Per-turn settings are deliberately not in the key either: they are
+    // negotiated on the wire, and keying on them would start a fresh server per
+    // dispatch.
     let key_env: Vec<(String, Option<String>)> = server
         .key_env
         .iter()
         .map(|name| ((*name).to_string(), std::env::var(name).ok()))
         .collect();
     let key = control::pool_key(spec.id, &key_env, &[]);
-    let address = candidate_address(server.transport, &root, &key)?;
-    let plan = server_pool::LaunchPlan::new(bin, &server, &[], address, Vec::new())
-        .map_err(|err| format!("could not plan the control server launch: {err}"))?;
-    let lease = server_pool::acquire(&root, &key, &plan, server_pool::DEFAULT_LINGER)
-        .map_err(|err| format!("could not start the control server: {err}"))?;
-    // Narrowed to a dialable address once, here, where the HTTP control path
-    // takes hold of the running server: everything downstream is then handed an
-    // address it can actually open a socket to.
-    let address = DialAddress::try_from(lease.record().address.clone()).map_err(|err| {
-        format!(
-            "the control server for `{}` cannot be reached over HTTP: {err}",
-            spec.id
-        )
-    })?;
+    let (lease, address) = bring_up_server(shape, spec, bin, &root, &key, timeout)?;
     let command = lease.record().argv.as_slice().to_vec();
 
-    // Bounded by the run's own timeout as well as the window, because a server
-    // that never comes up must not hold a dispatch past the budget its caller
-    // set: a `--timeout 5` run waiting 90s for a bring-up is a hang as far as
-    // the caller is concerned.
-    http_turn::await_ready(shape, &address, SERVER_READY_WINDOW.min(timeout))
-        .map_err(|err| format!("{err}"))?;
-    let turn = http_turn::open(shape, address, cwd, mode, &http_turn::client_id(spec.id))
-        .map_err(|err| format!("{err}"))?;
+    let decision = http::permits_action(mode_spec);
+    let turn = http_turn::open(
+        shape,
+        address,
+        cwd,
+        decision,
+        &http_turn::client_id(spec.id),
+        session_model.as_ref(),
+    )
+    .map_err(|err| format!("{err}"))?;
     let session_id = turn.session_id().to_string();
 
     // Addressable from the socket thread only while the turn is in flight, so
@@ -2521,12 +2577,77 @@ fn drive_http_turn(
     // The driver asks for a redirection each time a turn ends: an interrupt
     // commits its message to the handle, and this is where the run hands it to a
     // session that has actually gone idle.
-    let outcome = http_turn::run(&turn, prompt, mode, timeout, &|| handle.take_redirect());
+    let outcome = http_turn::run(&turn, prompt, decision, timeout, &|| handle.take_redirect());
     handle.end_http_turn();
     // The lease is released here (not at process exit), so a server nobody is
     // using can be reclaimed once its linger expires.
     drop(lease);
     Ok((command, outcome, session_id))
+}
+
+/// Lease a running control server for this dispatch: pick a candidate address,
+/// have the pool start (or reuse) a server there, and wait until it answers.
+///
+/// The wait can end two ways, and only one of them is retried. A server that
+/// EXITED during bring-up is relaunched once at a *fresh* candidate address,
+/// because losing the address is one of the ways a server dies at once: a TCP
+/// port is reserved by binding and letting go, so between the reservation and
+/// the launch it belongs to whoever asks the kernel next, and the loser dies on
+/// `EADDRINUSE`. A server that is merely SILENT is never relaunched — it is
+/// still running, and re-rolling a window the caller already bounded would just
+/// spend the budget twice.
+fn bring_up_server(
+    shape: HttpShape,
+    spec: &'static HarnessSpec,
+    bin: &str,
+    root: &std::path::Path,
+    key: &control::PoolKey,
+    timeout: Duration,
+) -> Result<(server_pool::ServerLease, DialAddress), String> {
+    // Re-read rather than taken as a parameter: the caller already proved it is
+    // there, and this is the one place the launch is assembled.
+    let server = spec.server.ok_or_else(|| {
+        format!(
+            "`{}` declares HTTP control but no server to run it",
+            spec.id
+        )
+    })?;
+    let mut attempts_left = SERVER_START_ATTEMPTS;
+    loop {
+        attempts_left -= 1;
+        let candidate = candidate_address(server.transport, root, key)?;
+        let plan = server_pool::LaunchPlan::new(bin, &server, &[], candidate, Vec::new())
+            .map_err(|err| format!("could not plan the control server launch: {err}"))?;
+        let lease = server_pool::acquire(root, key, &plan, server_pool::DEFAULT_LINGER)
+            .map_err(|err| format!("could not start the control server: {err}"))?;
+        // Narrowed to a dialable address once, here, where the HTTP control path
+        // takes hold of the running server: everything downstream is then handed
+        // an address it can actually open a socket to.
+        let address = DialAddress::try_from(lease.record().address.clone()).map_err(|err| {
+            format!(
+                "the control server for `{}` cannot be reached over HTTP: {err}",
+                spec.id
+            )
+        })?;
+        let record = lease.record().clone();
+        // Bounded by the run's own timeout as well as the window, because a
+        // server that never comes up must not hold a dispatch past the budget
+        // its caller set: a `--timeout 5` run waiting 90s for a bring-up is a
+        // hang as far as the caller is concerned.
+        match http_turn::await_ready(shape, &address, SERVER_READY_WINDOW.min(timeout), &|| {
+            record.is_running()
+        }) {
+            Ok(()) => return Ok((lease, address)),
+            Err(not_ready) => {
+                // Released before relaunching, so the pool sees the dead entry
+                // for what it is and starts a server this dispatch can vouch for.
+                drop(lease);
+                if attempts_left == 0 || !not_ready.exited() {
+                    return Err(not_ready.to_string());
+                }
+            }
+        }
+    }
 }
 
 /// Where a freshly launched server should listen. A reused one keeps its own

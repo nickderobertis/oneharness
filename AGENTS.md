@@ -100,9 +100,30 @@ Use the `just` recipes; do not hand-roll equivalents.
   does not carry, so `e2e-control.yml` (which supplies all of them) is the only
   place those three are ever proven. It runs on a `pull_request` whose paths
   touch the control feature's own sources, and on demand; a PR touching anything
-  else does not run a minute of it. In CI `OH_E2E_NO_SKIP` makes a harness that
-  drops out for want of a credential RED — without it the suite reports success
-  having proven nothing for whichever harnesses went unauthenticated.
+  else does not run a minute of it. **macOS is on the daily `schedule`, never on
+  the pull request**: this feature has broken there three times in ways Linux
+  cannot show (`/tmp`→`/private/tmp`, the shorter `sun_path` budget, a
+  refusal-reason mismatch), and a second 26-minute leg per control PR is not
+  what that is worth. A scheduled failure opens (or comments on) an issue,
+  because a schedule has no PR to turn red. In CI `OH_E2E_NO_SKIP` makes a
+  harness that drops out for want of a credential RED — without it the suite
+  reports success having proven nothing for whichever harnesses went
+  unauthenticated. Two absences are NOT red, since no credential fixes
+  either: a **provider refusal** (`_oh_provider_refusal` / `not_run`) and a
+  declared **known gap** (`known_gap`). Both are still SAID every run — an
+  absence dropped from the verdict reads as coverage. A refusal is recognized
+  from the provider's own WORDS on every path a CLI states them (`text`,
+  `error`, `stderr`, frames), because no *status* does; it is never retried, and
+  a *rate limit* is deliberately not one. The control × mode grid is mostly NOT its job: the policy each
+  mode sends with and without `--control` is pinned per harness as a unit
+  assertion (`domain::control`'s `control_mode_parity`), since a live phase per
+  mode would multiply an already-26-minute suite to prove a value. The one live
+  phase it does own is `oh_control_mode_enforce` — a controlled turn under the
+  gating `--mode default` must END — because whether a harness HONORS the policy
+  it was handed is the half a value cannot show, and because a bypass-only suite
+  no longer exercises the ACP permission answer at all (copilot's controlled
+  launch now carries allow-all, so it stops asking). On opencode it is the known
+  gap `known_gap` reports.
 - `just sdk-check` / `just python-sdk-check` — generated-contract drift, strict
   language lint/type/test coverage, and packed-artifact subprocess e2e for the
   Node and Python SDKs. The Python gate runs on the oldest supported Python 3.9.
@@ -258,15 +279,44 @@ Use the `just` recipes; do not hand-roll equivalents.
   a hazard any future Cursor dispatch also hits.
   <!-- llmlint: ignore-end[agents_md_durable_and_terse, no_redundant_instruction_pointers, comments_earn_their_place] -->
   `run --control` requires `--session` and exactly one harness; both violations
-  are loud usage errors. Declare `ControlShape` only after a live interrupt
+  are loud usage errors. For every control-capable harness and every
+  `PermissionMode` that harness supports, a controlled run must be under exactly
+  the policy the same mode gives without `--control` (the codex
+  `bypass`→`workspaceWrite` bug was one cell of that grid). The way to keep it
+  true is to DELIVER the harness's own mapping into the controlled launch rather
+  than re-derive a posture for the protocol: copilot's permission flags ride the
+  `--acp` argv beside it, goose's `GOOSE_MODE` already rides the control child's
+  job env. Only where nothing can be delivered is a posture answered on the wire,
+  and then it is the harness's own (`ModeSpec::posture`) rather than the
+  spectrum's — which is why crush's ungated `default` is unattended under control
+  too. A mode whose ONLY delivery is the harness's own config environment cannot
+  reach a turn submitted to a pooled server, so opencode's `edit` is a **loud
+  usage error** under `--control` and the approval mode stays out of the pool
+  key. That is the feature's one **known gap**, named in both places a reader
+  looks — its grid cell (`known-gap:mode-env-not-delivered-to-a-pooled-server`)
+  and a phase `e2e-control.sh` reports rather than runs. Adding a harness or a mode means adding its cell to `control_mode_parity`. Declare `ControlShape` only after a live interrupt
   through oneharness. Stdin control keeps the child stdin open, then closes it
   on `is_turn_terminal`. Dialogue control owns its JSON-RPC child per dispatch:
   codex ends on `turn/completed`, not the `turn/start` response, and ACP must
   answer `session/request_permission`. Dialogue-derived session ids are usable
   only under `--control` (`session_capable_under`). HTTP control submits turns
   through the pooled server, not the harness CLI: permission requests must be
-  answered; opencode is terminal only on idle after admission; and cwd stays a
-  per-turn value. Pool keys exclude all per-turn and per-thread settings.
+  answered; opencode is terminal only on idle after admission; and cwd — plus
+  opencode's MODEL, which its session-create route takes as a required
+  provider+id pair — stays a per-turn value. A per-turn setting the wire has no
+  place for is refused, never dropped: an opencode session opened without a
+  model runs on whatever the server picks, and live that was a free model
+  answering 401 on every turn. Its own config does not decide that — `opencode
+  serve` loads a `model` from `OPENCODE_CONFIG_CONTENT` and creates sessions on
+  another one anyway. Pool keys exclude all per-turn and per-thread settings.
+  Readiness is a question about the PROCESS oneharness launched, never about who
+  answers at its address: a TCP port is reserved by binding and letting go, so
+  between the reservation and the launch it belongs to whoever asks the kernel
+  next, and a run that took any answer could be driven against a stranger's
+  server (which is how a hermetic control test read `timeout` at random). So a
+  server that EXITED during bring-up is said so at once and relaunched once at a
+  fresh address; one that is merely SILENT is reported against the window and
+  never relaunched.
   `interrupt --input` carries a **redirection** with the abort. Atomic means
   *committed with the abort, delivered at the turn boundary*, never written
   alongside it: every mechanism drops or queues a message sent into a live turn,
@@ -539,7 +589,15 @@ aren't re-litigated each session:
   becomes a `timeout` result, per "never panic on a harness's behavior"), and
   `--permit-prompts` silences the warning. The per-harness `read-only`/`plan`
   mapping is drift-alarmed live by `oh_mode_enforce` (writes blocked under
-  read-only, allowed under bypass).
+  read-only, allowed under bypass). A no-mutation mode whose mechanism
+  enumerates TOOLS must name the ones the run may use, never the ones it may
+  not: claude's `--disallowedTools Bash Edit Write NotebookEdit` was complete
+  until 2.1.220 put `Task` in the built-in set, and an agent with no `Bash`
+  delegated the write to a subagent the deny rules did not reach. The
+  equality grid cannot catch that (both paths fail open together), so the floor
+  is its own assertion — `control_mode_parity`'s
+  `a_no_mutation_mode_withholds_the_capability_to_write`, over the whole
+  registry.
 - **Config is layered and loud.** Defaults come from `oneharness.toml` files —
   user level (`$ONEHARNESS_CONFIG` or the platform config dir) under project
   level (discovered upward from `--cwd`/cwd) under the `ONEHARNESS_<FIELD>`

@@ -1194,15 +1194,13 @@ silently is not there is worse than none:
   harness, mode, or output format — is refused with that reason instead, which is
   the one that survives changing machines. `--print-command` is exempt: it opens
   no socket and spawns nothing, and the argv it prints is the same everywhere.
-- **No `--mode edit` on a driven turn** (every mechanism except
-  `claude-control-request`). Those turns negotiate approvals on the wire, so
-  oneharness answers each permission request itself rather than the harness's
-  own `edit` mapping applying — and `edit` means *auto-approve file edits, still
-  gate shell*, which no such request carries a sourced way to distinguish.
-  Answering yes to both would grant shell authority the mode denies; answering
-  no to both would silently downgrade `edit`. Use `--mode default` (deny and
-  continue) or `--mode bypass`. Claude Code is unaffected: its control frame
-  rides the ordinary `-p` run, whose argv carries the real `acceptEdits`.
+- **No `--mode edit` on OpenCode's controlled turn.** OpenCode carries `edit`
+  in its own config environment (`OPENCODE_CONFIG_CONTENT`), which belongs to the
+  pooled `opencode serve` process a controlled turn is submitted to — not to the
+  turn — so the mode cannot travel with it. It is refused before anything spawns
+  rather than run under whatever policy that server already had. Use `--mode
+  default` (deny and continue) or `--mode bypass`. Every other harness supports
+  under `--control` whatever it supports without it, at the same policy.
 - **No `--stream` on a server-submitted mechanism** (`opencode-http`,
   `crush-http`): those turns never spawn the harness CLI, so there is no stdout
   to publish line by line — and accepting the flag would silently select the
@@ -1218,6 +1216,51 @@ a consumer can tell an interrupted turn from one that simply ended.
 
 **Without `--control` nothing changes**: no socket, no extra process, and a
 byte-identical argv.
+
+#### Approval modes under control
+
+`--control` is a lever on a turn, not a policy. **For every harness that declares
+a mechanism and every `--mode` that harness supports, a controlled run is under
+exactly the policy the same mode gives without `--control`** — pinned cell by
+cell as a unit assertion (`domain::control`'s `control_mode_parity`), which reads
+both postures out of the real code rather than out of a second table.
+
+That is an invariant with a history. `--control --mode bypass` once asked codex's
+app-server for a `workspaceWrite` sandbox where `codex exec` under the same mode
+asks for none at all, so the controlled run was *more* restricted than the
+uncontrolled one — and on a host without unprivileged user namespaces every shell
+call failed before running, so the turn did no work whatsoever.
+
+It holds because the control path delivers the harness's **own** mapping wherever
+one exists, rather than deriving a second policy for the protocol:
+
+| Harness | How the mode reaches a controlled turn |
+| --- | --- |
+| Claude Code | Its control frame rides the ordinary `-p` run, so the mode's flags are the ordinary ones, byte for byte |
+| Copilot | Its permission flags are top-level options that sit beside `--acp`, so the ACP launch carries the same `--allow-tool`/`--deny-tool`/`--mode` arguments `-p` gets |
+| Goose | `GOOSE_MODE` is injected into the ACP child exactly as into an ordinary run — the control child *is* an ordinary job |
+| OpenCode | The wire posture, for every mode the wire can carry. A mode whose only mapping is `OPENCODE_CONFIG_CONTENT` (its `edit`) is **a known gap**, refused as a usage error — see below |
+| Codex | The app-server negotiates the sandbox per turn, so its `SandboxPolicy` is asserted equal to the sandbox `codex exec` selects for that mode |
+| Crush | `crush run` cannot gate at all, so its `default` acts without asking — and a controlled turn declares the same `yolo` posture rather than gating what the CLI would not |
+
+Where a harness answers permission requests on the wire, the answer is the
+harness's own posture for that mode (`ModeSpec::posture`), not the
+normalized spectrum's — which is what lets crush's ungated `default` be expressed
+instead of refused.
+
+**One known gap, named rather than hidden.** A mode delivered *only* through the
+harness's own config environment cannot reach a turn submitted to a pooled
+server. Handing that environment to the server was tried and reverted: it made
+the approval mode a component of the pool key, and the controlled `--mode
+default` turn it was meant to prove ended in `status=timeout` on OpenCode across
+four consecutive CI cycles. So OpenCode's `edit` is a loud usage error under
+`--control`, the grid carries the cell as
+`known-gap:mode-env-not-delivered-to-a-pooled-server`, and `scripts/e2e-control.sh`
+reports OpenCode's mode phase as a known gap instead of running it. A cell
+dropped from the grid would read as coverage; a named one reads as the hole it
+is. For every other harness that suite proves the delivered policy is *honored*,
+by driving a controlled turn under the gating `--mode default` and requiring it
+to end.
 
 #### Control support matrix
 
@@ -1321,6 +1364,17 @@ wrong:
   `location.directory`, crush's workspace `path`), which is what lets one server
   be shared across dispatches in different projects without the cwd widening the
   pool key.
+- **Opencode's model is per turn too, and the session is the only place it takes
+  one.** `POST /api/session` accepts `{"providerID": …, "id": …}` (both required
+  by the server's own `/doc` schema), and the session it answers with runs its
+  steps on exactly that. The server's config is NOT that place: `opencode serve`
+  loads a `model` from `OPENCODE_CONFIG_CONTENT` and echoes it back on `/config`
+  while creating sessions on its own choice regardless (measured against 1.18.5).
+  A session opened without a model therefore runs on whatever the server picked —
+  live that was `wandb/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B` on one host
+  and `ling-3.0-tiny-free` in CI, both answering `Provider request failed with
+  HTTP 401`. Only the first `/` splits the id: opencode's own model ids contain
+  slashes, so a `--model` naming no provider is refused rather than guessed at.
 - **Crush's routes are not where they look.** A session is created on the
   *workspace* (`POST /v1/workspaces/{id}/sessions`; `/agent/sessions` answers a
   bare `404 page not found`) and the prompt goes to `POST
@@ -1952,9 +2006,10 @@ synced so the prompt never fires.
 ✓ supported & clean headless · ⚠ supported but may block on a prompt headlessly
 (warns + runs; `--timeout` backstops, `--permit-prompts` silences the warning) ·
 — unsupported (refused). `read-only` is **enforced** where marked — ˢ Codex's
-read-only sandbox (OS-enforced), ᵈ deny rules (Claude's `--disallowedTools Bash
-Edit Write NotebookEdit`, Copilot's `--deny-tool shell/write` — deny beats
-allow) — and ᵖ behavioral where its only mechanism is the plan agent (OpenCode
+read-only sandbox (OS-enforced), ᵈ tool rules (Claude's `--tools Read Grep Glob
+WebFetch WebSearch`, which narrows the built-in set to the tools that only read;
+Copilot's `--deny-tool shell/write` — deny beats allow) — and ᵖ behavioral where
+its only mechanism is the plan agent (OpenCode
 `--agent plan`, Qwen `--approval-mode plan`, so `read-only` and `plan` coincide
 there). Cursor's `read-only` is native `--mode ask`. Codex has no *native* plan
 mode in `exec`, so `plan` (ⁱ) is synthesized — the read-only sandbox enforces

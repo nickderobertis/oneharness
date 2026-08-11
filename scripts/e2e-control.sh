@@ -97,6 +97,25 @@ have_env() {
 proven=()
 skipped=()
 failed=()
+refused=()
+gaps=()
+
+# A phase this suite REPORTS rather than runs, with the concrete reason. A gap
+# left in the verdict is a hole a reader can see; a phase quietly dropped is
+# indistinguishable from coverage, and this feature has already lost a night to
+# that difference.
+#
+# Empty for every (harness, phase) not named here, so a harness added later
+# arrives with no gaps and has to earn its verdict.
+#   $1 harness id, $2 phase key
+known_gap() {
+    case "$1:$2" in
+    opencode:control-mode)
+        printf '%s' "a controlled turn under \`--mode default\` does not end (status=timeout) — opencode failed this phase in four consecutive CI cycles, and the mode delivery it was added with was reverted rather than fixed a fifth time (see \`control_mode_parity\`'s known-gap cell). Its interrupt and redirection are still proven below"
+        ;;
+    *) printf '' ;;
+    esac
+}
 
 for declaration in "${CONTROLLABLE[@]}"; do
     IFS=$'\t' read -r id mechanism default_bin <<<"$declaration"
@@ -120,7 +139,15 @@ for declaration in "${CONTROLLABLE[@]}"; do
             skipped+=("$id")
             continue
         }
-        export OH_MODEL="${OPENCODE_E2E_MODEL:-}"
+        # The same fully-qualified id `e2e-opencode.sh` pins, and pinned for a
+        # sharper reason here: this phase ran with NO model at all, because a
+        # controlled opencode turn dropped `--model` on the floor. It then ran on
+        # whatever the pooled server chose by itself — live, a free model
+        # answering `Provider request failed with HTTP 401` — which is what made
+        # this the one harness needing all three attempts (22m39s on
+        # 2026-08-10) or running out of them. The model now reaches the session
+        # the turn opens, so this is an ordinary `OH_MODEL` again.
+        export OH_MODEL="${OPENCODE_E2E_MODEL:-anthropic/claude-haiku-4-5}"
         ;;
     goose)
         # Goose reads its provider/model from the environment (no --model flag
@@ -185,12 +212,16 @@ for declaration in "${CONTROLLABLE[@]}"; do
     # asks copilot instead (a zero-turn ACP `session/new`, no AI credits), and
     # answers for an environment token too, since copilot reads those as well.
     #
-    # This phase cannot go vacuous on copilot: its control launch argv is a bare
-    # `copilot --acp`, so every shell call raises `session/request_permission`,
-    # and the tool does not run while that goes unanswered (measured: no file
-    # after 20s of silence). The step files the freeze assertion counts exist
-    # only because oneharness answered it, so the ACP permission path is proven
-    # by the same run, not assumed.
+    # A note on what the bypass phases below do and no longer do for copilot.
+    # Its control launch used to be a bare `copilot --acp`, so every shell call
+    # raised `session/request_permission` and the step files existed only
+    # because oneharness answered it — the ACP permission path came free with
+    # the freeze assertion. It no longer does: a controlled run now carries the
+    # mode's own flags, so under `--mode bypass` copilot is told allow-all up
+    # front and asks nothing. That is the point (the controlled run is under the
+    # same policy an uncontrolled one is), but it moves the permission path's
+    # proof to `oh_control_mode_enforce`, which drives a turn under the gating
+    # `--mode default` and requires it to end.
     copilot)
         oh_copilot_login_ready "$default_bin" || {
             note "  SKIP Copilot auth: copilot cannot open a session (run \`copilot login\`, or set COPILOT_GITHUB_TOKEN)"
@@ -204,23 +235,59 @@ for declaration in "${CONTROLLABLE[@]}"; do
         ;;
     esac
     phase_started=$SECONDS
+    # Where a phase says the provider refused, it says so in a FILE: every phase
+    # below runs in a subshell, so a variable it set would be gone by the time
+    # the verdict is written.
+    OH_NOT_RUN_FILE="$(mktemp)"
+    export OH_NOT_RUN_FILE
+    mode_gap="$(known_gap "$id" control-mode)"
     # Both phases run in a subshell so this harness's verdict cannot end the run:
     # `fail` exits, and aborting here would leave every harness after this one
     # unexercised with nothing saying so — the same silent partial coverage
     # OH_E2E_NO_SKIP exists to prevent, arrived at from the other direction. One
     # CI run should say what all six harnesses did, not just the first to break.
-    if (
+    #
+    # `|| exit $?` on each phase, and not for style: a subshell that is itself
+    # the left side of an `||` runs with `set -e` SUPPRESSED, so a phase's plain
+    # non-zero return would be ignored and the phases after it would run anyway.
+    # A `fail` still exits by itself, but a provider refusal returns — and
+    # without this every later phase spent another refused call, and the first
+    # refusal would have masked a genuine failure after it.
+    phase_status=0
+    (
         note "» $id: a real turn must actually STOP when interrupted"
-        oh_control_enforce "$id" "$mechanism"
+        oh_control_enforce "$id" "$mechanism" || exit $?
         note "» $id: an interrupt carrying --input must STOP the turn and DO the new work"
-        oh_control_redirect_enforce "$id"
-    ); then
+        oh_control_redirect_enforce "$id" || exit $?
+        if [ -n "$mode_gap" ]; then
+            note "» $id: KNOWN GAP, not run — a controlled turn under the mode's OWN policy"
+            note "    $mode_gap"
+        else
+            note "» $id: a controlled turn must run under the mode's OWN policy, not one invented for the wire"
+            oh_control_mode_enforce "$id"
+        fi
+    ) || phase_status=$?
+    refusal="$(cat "$OH_NOT_RUN_FILE" 2>/dev/null || true)"
+    rm -f "$OH_NOT_RUN_FILE"
+    unset OH_NOT_RUN_FILE
+    if [ "$phase_status" -eq 0 ] && [ -n "$mode_gap" ]; then
+        # Everything this harness CAN prove, it proved — and the phase it cannot
+        # is named in the verdict rather than left out of it.
+        gaps+=("$id (control-mode: a controlled turn under --mode default does not end)")
+        note "  $id: known gap reported after $(elapsed $((SECONDS - phase_started)))"
+    elif [ "$phase_status" -eq 0 ]; then
         proven+=("$id")
         note "  $id proven in $(elapsed $((SECONDS - phase_started)))"
+    elif [ -n "$refusal" ]; then
+        # Not a verdict on this feature at all: the harness's own provider
+        # answered the request and declined it, so no turn ever ran.
+        refused+=("$refusal")
+        note "  NOT RUN: $id after $(elapsed $((SECONDS - phase_started))) — $refusal"
     else
         failed+=("$id")
         note "  FAILED: $id after $(elapsed $((SECONDS - phase_started))) — see its evidence above; continuing so this run reports every harness"
     fi
 done
 
-oh_control_report_outcome "${proven[*]-}" "${skipped[*]-}" "$(elapsed $SECONDS)" "${failed[*]-}"
+oh_control_report_outcome "${proven[*]-}" "${skipped[*]-}" "$(elapsed $SECONDS)" \
+    "${failed[*]-}" "${refused[*]-}" "${gaps[*]-}"

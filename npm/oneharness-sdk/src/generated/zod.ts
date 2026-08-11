@@ -2137,15 +2137,19 @@ export const InterruptOptionsSchema: z.ZodType<InterruptOptions> = z.strictObjec
 
 export const InterruptResponseSchema: z.ZodType<InterruptResponse> = z.union([
   z.looseObject({
+    error: z.never().optional(),
     mechanism: z.lazy(() => ControlShapeSchema).refine((value) => value !== undefined, { message: "Required" }),
     ok: z.literal(true).refine((value) => value !== undefined, { message: "Required" }),
+    reason: z.never().optional(),
     redirected: z.boolean().optional(),
     v: z.literal(2).refine((value) => value !== undefined, { message: "Required" }),
   }),
   z.looseObject({
     error: z.string().refine((value) => value !== undefined, { message: "Required" }),
+    mechanism: z.never().optional(),
     ok: z.literal(false).refine((value) => value !== undefined, { message: "Required" }),
     reason: z.lazy(() => ControlReasonSchema).refine((value) => value !== undefined, { message: "Required" }),
+    redirected: z.literal(false).optional(),
     v: z.literal(2).refine((value) => value !== undefined, { message: "Required" }),
   }),
 ]);

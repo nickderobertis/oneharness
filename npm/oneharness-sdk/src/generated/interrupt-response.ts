@@ -5,8 +5,10 @@
  */
 export type InterruptResponse =
   | {
+      error?: never | undefined;
       mechanism: ControlShape;
       ok: true;
+      reason?: never | undefined;
       /**
        * Whether the request's redirection was committed with the abort. Omitted rather than sent as `false`, so a plain interrupt's answer gains no field the supervisor did not ask for.
        */
@@ -16,8 +18,10 @@ export type InterruptResponse =
     }
   | {
       error: string;
+      mechanism?: never | undefined;
       ok: false;
       reason: ControlReason;
+      redirected?: false | undefined;
       v: 2;
       [k: string]: unknown;
     };

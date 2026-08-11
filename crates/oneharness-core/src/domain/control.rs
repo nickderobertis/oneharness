@@ -878,6 +878,13 @@ impl JsonSchema for ControlResponse {
                             "type": "boolean",
                             "description": "Whether the request's redirection was committed with the abort. Omitted rather than sent as `false`, so a plain interrupt's answer gains no field the supervisor did not ask for.",
                         },
+                        // The two fields a served frame must not carry, spelled
+                        // per-property rather than as `additionalProperties:
+                        // false`: the reader accepts a field a newer oneharness
+                        // adds, so the schema must too, and only the
+                        // contradictions are excluded.
+                        "error": false,
+                        "reason": false,
                     },
                     "required": ["v", "ok", "mechanism"],
                 },
@@ -888,6 +895,11 @@ impl JsonSchema for ControlResponse {
                         "ok": { "type": "boolean", "const": false },
                         "error": { "type": "string" },
                         "reason": reason,
+                        // Nothing was delivered, so a mechanism is a
+                        // contradiction and a claimed redirection is a lie a
+                        // supervisor would act on.
+                        "mechanism": false,
+                        "redirected": { "const": false },
                     },
                     "required": ["v", "ok", "error", "reason"],
                 },
@@ -1904,6 +1916,46 @@ mod tests {
             serde_json::from_str(r#"{"v":2,"ok":true,"mechanism":"acp-cancel","redirected":true}"#)
                 .unwrap();
         assert!(redirected.is_redirected());
+    }
+
+    #[test]
+    fn the_generated_schema_accepts_exactly_the_frames_the_reader_accepts() {
+        // The hand-written `JsonSchema` is what the SDK validators are built
+        // from, and it is a second statement of the rules `Deserialize` already
+        // enforces — so the two can disagree, and a consumer would then accept
+        // a frame oneharness itself refuses. This drives both against the same
+        // frames and requires the same answer.
+        //
+        // Unknown fields are deliberately NOT part of the disagreement: the
+        // reader takes a field a newer oneharness adds, so the schema does too.
+        let schema = serde_json::to_value(schemars::schema_for!(ControlResponse))
+            .expect("the generated schema is JSON");
+        let validator = jsonschema::validator_for(&schema).expect("it is a valid JSON Schema");
+
+        for frame in [
+            r#"{"v":2,"ok":true,"mechanism":"acp-cancel"}"#,
+            r#"{"v":2,"ok":true,"mechanism":"acp-cancel","redirected":true}"#,
+            r#"{"v":2,"ok":false,"error":"nope","reason":"not_running"}"#,
+            r#"{"v":2,"ok":false,"error":"nope","reason":"not_running","redirected":false}"#,
+            r#"{"v":2,"ok":true,"mechanism":"acp-cancel","future_field":7}"#,
+            // Every contradiction the reader refuses.
+            r#"{"v":2,"ok":true}"#,
+            r#"{"v":2,"ok":true,"mechanism":"made-up"}"#,
+            r#"{"v":2,"ok":true,"mechanism":"acp-cancel","error":"nope"}"#,
+            r#"{"v":2,"ok":true,"mechanism":"acp-cancel","reason":"not_running"}"#,
+            r#"{"v":2,"ok":false,"error":"nope","reason":"not_running","mechanism":"acp-cancel"}"#,
+            r#"{"v":2,"ok":false,"reason":"not_running"}"#,
+            r#"{"v":2,"ok":false,"error":"nope"}"#,
+            r#"{"v":2,"ok":false,"error":"nope","reason":"not_running","redirected":true}"#,
+            r#"{"v":3,"ok":true,"mechanism":"claude-control-request"}"#,
+        ] {
+            let value: serde_json::Value = serde_json::from_str(frame).expect("a JSON frame");
+            assert_eq!(
+                validator.is_valid(&value),
+                serde_json::from_str::<ControlResponse>(frame).is_ok(),
+                "the schema and the reader disagree about {frame}"
+            );
+        }
     }
 
     #[test]

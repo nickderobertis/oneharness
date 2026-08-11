@@ -244,9 +244,14 @@ function populate(
 		case "object": {
 			const value: Record<string, unknown> = {};
 			for (const [name, child] of Object.entries(
-				(node.properties as Record<string, JsonSchema>) ?? {},
-			))
-				value[name] = populate(child, scope);
+				(node.properties as Record<string, unknown>) ?? {},
+			)) {
+				// `false` is how a variant FORBIDS a field — a served interrupt
+				// frame must carry no `error`. Emitting one would build a
+				// document the contract refuses on purpose.
+				if (child === false) continue;
+				value[name] = populate(child as JsonSchema, scope);
+			}
 			const extra = node.additionalProperties;
 			if (extra && typeof extra === "object")
 				value.a = populate(extra as JsonSchema, scope);

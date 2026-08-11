@@ -10823,6 +10823,7 @@
     "oneOf": [
       {
         "properties": {
+          "error": false,
           "mechanism": {
             "$ref": "#/$defs/ControlShape"
           },
@@ -10830,6 +10831,7 @@
             "const": true,
             "type": "boolean"
           },
+          "reason": false,
           "redirected": {
             "description": "Whether the request's redirection was committed with the abort. Omitted rather than sent as `false`, so a plain interrupt's answer gains no field the supervisor did not ask for.",
             "type": "boolean"
@@ -10851,12 +10853,16 @@
           "error": {
             "type": "string"
           },
+          "mechanism": false,
           "ok": {
             "const": false,
             "type": "boolean"
           },
           "reason": {
             "$ref": "#/$defs/ControlReason"
+          },
+          "redirected": {
+            "const": false
           },
           "v": {
             "const": 2,

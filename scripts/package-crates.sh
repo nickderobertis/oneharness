@@ -68,9 +68,29 @@ while IFS= read -r commit; do
   fi
 done < <(git rev-list "$core_tag"..HEAD)
 
+# Cargo states "the binary's oneharness-core dependency cannot be satisfied by
+# anything published" in two structurally different places, so this asks the
+# same question twice rather than matching one release's wording.
+#
+# It can fail while COMPILING: the requirement resolves, the source is
+# unpacked, and the build hits API the published core does not have. That
+# names a registry source path.
+#
+# Or it can fail while RESOLVING, before any source exists — so there is no
+# path to match, which is why a source-path conjunct alone silently missed
+# this. A resolver failure is the shape a new core *feature* takes: the binary
+# forwards `mock-harness` to `oneharness-core/mock-harness`, and a published
+# core without that feature is rejected at selection time.
+#
+# Both are the one transition release-plz completes by bumping and publishing
+# core. Neither is excused on its own: the `pending_core_release` conjunct
+# below is what keeps this from swallowing a binary that is simply broken.
 registry_core_mismatch=false
 if grep -Eq 'oneharness-core-[0-9]+\.[0-9]+\.[0-9]+[/\\]' "$output_file" &&
   grep -Eq "could not compile \`oneharness\`|failed to select a version for the requirement \`oneharness-core" "$output_file"; then
+  registry_core_mismatch=true
+elif grep -Eq "failed to select a version for \`oneharness-core\`" "$output_file" &&
+  grep -Eq "depends on \`oneharness-core\`, with features:" "$output_file"; then
   registry_core_mismatch=true
 fi
 

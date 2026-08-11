@@ -39,7 +39,22 @@ if [[ $* == *"crates/oneharness-core/Cargo.toml"* && ${CORE_PACKAGE:-ok} == fail
   exit 101
 fi
 if [[ $* == *"Cargo.toml"* && $* != *"crates/oneharness-core/Cargo.toml"* && ${BINARY_PACKAGE:-ok} == fail ]]; then
-  if [[ ${BINARY_FAILURE_KIND:-core-mismatch} == version-select ]]; then
+  if [[ ${BINARY_FAILURE_KIND:-core-mismatch} == missing-feature ]]; then
+    # Captured verbatim from a real `cargo package` on a tree whose core had
+    # gained the `mock-harness` feature the published version lacked. This
+    # failure happens during RESOLUTION, so — unlike every other case here —
+    # it names no registry source path; a detector requiring one misses it.
+    echo 'error: failed to prepare local package for uploading' >&2
+    echo '' >&2
+    echo 'Caused by:' >&2
+    echo '  failed to select a version for `oneharness-core`.' >&2
+    echo '      ... required by package `oneharness v0.6.13 (/repo)`' >&2
+    echo '  versions that meet the requirements `^0.6.11` are: 0.6.11' >&2
+    echo '' >&2
+    echo '  the package `oneharness` depends on `oneharness-core`, with features: `mock-harness` but `oneharness-core` does not have these features.' >&2
+    echo '' >&2
+    echo '  failed to select a version for `oneharness-core` which could resolve this conflict' >&2
+  elif [[ ${BINARY_FAILURE_KIND:-core-mismatch} == version-select ]]; then
     echo 'error: failed to select a version for the requirement `oneharness-core = "^0.6.12"`' >&2
     echo 'candidate versions found which did not match: 0.6.11' >&2
     echo 'location searched: crates.io index' >&2
@@ -182,6 +197,22 @@ if ! run_case env BINARY_PACKAGE=fail BINARY_FAILURE_KIND=version-select COMMIT_
   fail "unpublished release-plz core version did not permit the release transition"
 fi
 assert_contains "awaits release-plz's core version bump" "$work/out"
+
+# A core change that adds a FEATURE fails at resolution rather than at compile,
+# so it prints no registry source path. That shape shipped undetected once and
+# turned a legitimate release transition into a red gate; pin both halves.
+if ! run_case env BINARY_PACKAGE=fail BINARY_FAILURE_KIND=missing-feature COMMIT_KIND=fix just package-crates >"$work/out" 2>&1; then
+  cat "$work/out" >&2
+  fail "a core feature the published version lacks did not permit the release-plz transition"
+fi
+assert_contains "awaits release-plz's core version bump" "$work/out"
+
+# The same diagnostic with NO release-worthy core change must still be red:
+# release-plz would never bump core, so nothing would ever make it resolve.
+if run_case env BINARY_PACKAGE=fail BINARY_FAILURE_KIND=missing-feature just package-crates >"$work/out" 2>&1; then
+  fail "a missing core feature with no pending core release unexpectedly passed"
+fi
+assert_contains "cannot be packaged against its published oneharness-core dependency" "$work/out"
 
 if ! run_case env BINARY_PACKAGE=fail REGISTRY_PATH_KIND=windows COMMIT_KIND=fix just package-crates >"$work/out" 2>&1; then
   cat "$work/out" >&2

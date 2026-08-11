@@ -59,7 +59,6 @@ if [[ $* == *"Cargo.toml"* && $* != *"crates/oneharness-core/Cargo.toml"* && ${B
     echo 'candidate versions found which did not match: 0.6.11' >&2
     echo 'location searched: crates.io index' >&2
     echo 'required by package `oneharness v0.6.14`' >&2
-    echo 'registry/src/oneharness-core-0.6.11/' >&2
   elif [[ ${BINARY_FAILURE_KIND:-core-mismatch} == core-mismatch ]]; then
     if [[ ${REGISTRY_PATH_KIND:-unix} == windows ]]; then
       echo '  --> C:\registry\src\oneharness-core-0.6.11\src\io\http_turn.rs:592:8' >&2

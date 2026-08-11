@@ -87,7 +87,12 @@ done < <(git rev-list "$core_tag"..HEAD)
 # below is what keeps this from swallowing a binary that is simply broken.
 registry_core_mismatch=false
 if grep -Eq 'oneharness-core-[0-9]+\.[0-9]+\.[0-9]+[/\\]' "$output_file" &&
-  grep -Eq "could not compile \`oneharness\`|failed to select a version for the requirement \`oneharness-core" "$output_file"; then
+  grep -Eq "could not compile \`oneharness\`" "$output_file"; then
+  registry_core_mismatch=true
+elif grep -Eq "failed to select a version for the requirement \`oneharness-core" "$output_file" &&
+  grep -Eq 'candidate versions found which did(n.t| not) match:' "$output_file" &&
+  grep -Fq 'location searched: crates.io index' "$output_file" &&
+  grep -Eq 'required by package `oneharness v[0-9]+\.[0-9]+\.[0-9]+' "$output_file"; then
   registry_core_mismatch=true
 elif grep -Eq "failed to select a version for \`oneharness-core\`" "$output_file" &&
   grep -Eq "depends on \`oneharness-core\`, with features:" "$output_file"; then

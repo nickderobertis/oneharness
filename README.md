@@ -229,6 +229,14 @@ Missing history records, sessions, and watch cursors raise a typed
 `HistoryNotFoundError`. See the [Node SDK guide](npm/oneharness-sdk/README.md) and
 [Python SDK guide](python/oneharness-sdk/README.md).
 
+Both clients cover every verb this CLI exposes, and both build their command
+lines from the same declared manifest rather than naming flags of their own, so
+no consumer has to drop to raw argv for anything. A Rust consumer does not need
+the subprocess at all: `oneharness-core` returns each verb's report directly.
+[CLI ↔ SDK parity](docs/sdk-parity.md) is the audit — capability by capability,
+flag by flag, output field by output field, with a column per surface — and
+`just check` fails if any of it stops being true.
+
 History distinguishes provider timing from tool intervals observed by
 oneharness. `model_ms` and `tool_ms` remain reserved for harnesses with explicit
 provider lifecycle boundaries. Anthropic-envelope harnesses instead emit

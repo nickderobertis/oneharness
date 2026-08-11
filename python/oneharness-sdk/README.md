@@ -23,7 +23,9 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-The complete client surface includes `run`, `run_mock`, `run_stream`, `list`, `detect`, `history`, `history_list`, and `history_watch`. `run_mock` uses the deterministic responder shipped in the CLI; see [Testing patterns](../../docs/testing-patterns.md). `run_stream` and `history_watch` are async iterators. Every envelope is validated before it is yielded; closing or cancelling an iterator terminates its subprocess.
+The client covers every verb the CLI exposes, so nothing needs a hand-built command line: `run`, `run_mock`, `run_stream`, `list`, `detect`, `config`, `sync`, `init`, `usage`, `gate`, `mock`, `interrupt`, `history`, `history_list`, `history_watch`, `history_clear`, and `history_migrate`. That coverage is gated rather than asserted here — see [CLI ↔ SDK parity](../../docs/sdk-parity.md), which also tabulates every flag and output field. `run_mock` uses the deterministic responder shipped in the CLI; see [Testing patterns](../../docs/testing-patterns.md). `run_stream` and `history_watch` are async iterators. Every envelope is validated before it is yielded; closing or cancelling an iterator terminates its subprocess.
+
+An option whose name is a Python keyword takes the conventional trailing underscore — `sync({"global_": True})` sends `--global` — and nothing else about the spelling changes.
 
 ```python
 async for envelope in oneharness.run_stream(

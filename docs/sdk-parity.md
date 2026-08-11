@@ -108,7 +108,7 @@ spelling and only the Python caller sees the suffix.
 Read from the justfile's own `check` recipe, so this is the composition a
 run actually has rather than a second copy of it. Each recipe below is
 runnable alone while iterating; `just check` runs every one of them, along
-with `fmt-check`, `lint`, `lint-sh`, `package-crates`, `coverage`, `build`, `smoke`.
+with `fmt-check`, `lint`, `lint-sh`, `coverage`, `build`, `smoke`.
 
 | Recipe | What it holds in place |
 | --- | --- |

@@ -78,11 +78,21 @@ cat >"$work/bin/git" <<'EOF'
 set -euo pipefail
 case "$1" in
   tag)
-    if [[ ${NO_TAG:-0} == 0 || -f ${CALL_LOG}.fetched ]]; then
-      echo oneharness-core-v0.6.11
+    # The glob asks which core releases are visible at all; an exact name asks
+    # whether release-plz has already tagged the version the binary pins.
+    if [[ $* == *'oneharness-core-v*'* ]]; then
+      if [[ ${NO_TAG:-0} == 0 || -f ${CALL_LOG}.fetched ]]; then
+        echo oneharness-core-v0.6.11
+      fi
+    elif [[ ${CORE_VERSION_TAGGED:-0} == 1 ]]; then
+      echo "${*##* }"
     fi
     ;;
   fetch)
+    if [[ $* != *--force* ]]; then
+      echo "tag fetch omitted --force" >&2
+      exit 2
+    fi
     if [[ ${SHALLOW_REPOSITORY:-false} == true && $* != *--unshallow* ]]; then
       echo "shallow fetch omitted --unshallow" >&2
       exit 2
@@ -153,32 +163,66 @@ if run_case env CORE_PACKAGE=fail just package-crates >"$work/out" 2>&1; then
 fi
 assert_contains "core package verification failed" "$work/out"
 
-if run_case env NO_TAG=1 just package-crates >"$work/out" 2>&1; then
+# Release history is read only to classify a packaging failure, so a checkout
+# that cannot reach it must still verify packaging. This is the shape that took
+# a whole release down: a check whose own diagnostics failed closed.
+: >"$work/calls"
+if ! run_case env NO_TAG=1 FETCH_MODE=fail SHALLOW_REPOSITORY=fail just package-crates >"$work/out" 2>&1; then
+  cat "$work/out" >&2
+  fail "an unreadable tag state failed a packaging run that succeeded"
+fi
+assert_contains 'package-crates: ok' "$work/out"
+[[ $(wc -l <"$work/calls") -eq 2 ]] || fail "a successful packaging run consulted the release history"
+
+if run_case env NO_TAG=1 BINARY_PACKAGE=fail just package-crates >"$work/out" 2>&1; then
   fail "missing-tag case unexpectedly passed"
 fi
 assert_contains 'no merged oneharness-core release tag found after fetching origin' "$work/out"
 
-if run_case env NO_TAG=1 FETCH_MODE=fail just package-crates >"$work/out" 2>&1; then
+if run_case env NO_TAG=1 BINARY_PACKAGE=fail FETCH_MODE=fail just package-crates >"$work/out" 2>&1; then
   fail "failed tag fetch unexpectedly passed"
 fi
 assert_contains 'could not be fetched from origin' "$work/out"
+# The Cargo diagnostics are the finding whatever the tag state turns out to be;
+# a fetch that fails must never hide what it was classifying.
+assert_contains '/registry/src/oneharness-core-0.6.11/src/io/http_turn.rs' "$work/out"
 
-if run_case env NO_TAG=1 SHALLOW_REPOSITORY=fail just package-crates >"$work/out" 2>&1; then
+if run_case env NO_TAG=1 BINARY_PACKAGE=fail SHALLOW_REPOSITORY=fail just package-crates >"$work/out" 2>&1; then
   fail "failed shallow-repository probe unexpectedly passed"
 fi
 assert_contains 'could not determine whether the checkout is shallow' "$work/out"
 
-if run_case env NO_TAG=1 SHALLOW_REPOSITORY=invalid just package-crates >"$work/out" 2>&1; then
+if run_case env NO_TAG=1 BINARY_PACKAGE=fail SHALLOW_REPOSITORY=invalid just package-crates >"$work/out" 2>&1; then
   fail "invalid shallow-repository state unexpectedly passed"
 fi
 assert_contains "invalid shallow-repository state 'unknown'" "$work/out"
 
 rm -f "$work/calls.fetched"
-if ! run_case env NO_TAG=1 FETCH_MODE=recover SHALLOW_REPOSITORY=true just package-crates >"$work/out" 2>&1; then
+if ! run_case env NO_TAG=1 BINARY_PACKAGE=fail COMMIT_KIND=fix FETCH_MODE=recover \
+  SHALLOW_REPOSITORY=true just package-crates >"$work/out" 2>&1; then
   cat "$work/out" >&2
-  fail "tag fetch recovery did not continue to package verification"
+  fail "tag fetch recovery did not continue to the release-transition decision"
 fi
-assert_contains 'package-crates: ok' "$work/out"
+assert_contains "awaits release-plz's core version bump" "$work/out"
+rm -f "$work/calls.fetched"
+
+# release-plz has tagged the core version the binary pins, but release.yml has
+# yet to publish it. Nothing in the working tree can bring that forward, so the
+# window between a tag and its registry entry must not redden every PR.
+if ! run_case env BINARY_PACKAGE=fail BINARY_FAILURE_KIND=version-select CORE_VERSION_TAGGED=1 \
+  just package-crates >"$work/out" 2>&1; then
+  cat "$work/out" >&2
+  fail "an already-tagged, not-yet-published core version did not permit the pending publish"
+fi
+assert_contains 'awaits the crates.io publish of already-tagged oneharness-core' "$work/out"
+
+# That tag excuses only a version the registry does not have. A core Cargo DID
+# resolve and then failed to compile against is a source drift, and its tag must
+# not wave it through.
+if run_case env BINARY_PACKAGE=fail CORE_VERSION_TAGGED=1 just package-crates >"$work/out" 2>&1; then
+  fail "a tagged core version excused a drift against the published core"
+fi
+assert_contains "commit the core API change as fix/feat/perf" "$work/out"
 
 if run_case env BINARY_PACKAGE=fail just package-crates >"$work/out" 2>&1; then
   fail "incompatible published dependency unexpectedly passed"
@@ -239,6 +283,70 @@ if ! run_case env BINARY_PACKAGE=fail GIT_DIFF_MODE=dirty just package-crates >"
   cat "$work/out" >&2
   fail "dirty core checkpoint did not permit pre-commit package verification"
 fi
+assert_contains "awaits release-plz's core version bump" "$work/out"
+
+# The release checkout, against real Git. actions/checkout fetches a tag by SHA
+# at depth 1, so refs/tags/<tag> is a LIGHTWEIGHT ref at the commit while origin
+# carries an annotated tag object — and the deepening fetch that discovers the
+# core release tags is then rejected as "would clobber existing tag", silently,
+# because --quiet suppresses the rejection line. That is how a checkout with a
+# perfectly reachable origin reported its tags as unfetchable. Build exactly that
+# repository twice: once to prove the fixture still reproduces the hazard, once
+# to drive the script through it.
+release_bin="$work/release-bin"
+mkdir -p "$release_bin"
+cp "$work/bin/cargo" "$release_bin/cargo"
+
+origin="$work/release-origin.git"
+seed="$work/release-seed"
+git init -q --bare "$origin"
+git init -q -b main "$seed"
+git -C "$seed" config user.email test@example.com
+git -C "$seed" config user.name Test
+mkdir -p "$seed/scripts" "$seed/crates/oneharness-core/src"
+cp scripts/package-crates.sh "$seed/scripts/package-crates.sh"
+printf '[package]\nname = "oneharness-core"\nversion = "0.6.11"\n' \
+  > "$seed/crates/oneharness-core/Cargo.toml"
+printf 'pub fn seed() {}\n' > "$seed/crates/oneharness-core/src/lib.rs"
+git -C "$seed" add -A
+git -C "$seed" commit -qm 'chore: seed the release fixture'
+git -C "$seed" tag -a -m 'core release' oneharness-core-v0.6.11
+printf 'pub fn seed() {}\npub fn added() {}\n' > "$seed/crates/oneharness-core/src/lib.rs"
+git -C "$seed" commit -qam 'fix(core): change the packaged API'
+git -C "$seed" tag -a -m 'release' v0.6.14
+git -C "$seed" remote add origin "$origin"
+git -C "$seed" push -q --tags origin main
+release_sha="$(git -C "$seed" rev-parse HEAD)"
+
+# One depth-1 checkout of refs/tags/v0.6.14, exactly as actions/checkout builds it.
+release_checkout() {
+  local target="$1"
+  git init -q "$target"
+  git -C "$target" remote add origin "$origin"
+  git -C "$target" -c protocol.version=2 fetch -q --no-tags --prune \
+    --no-recurse-submodules --depth=1 origin "+$release_sha:refs/tags/v0.6.14"
+  git -C "$target" checkout -q --force refs/tags/v0.6.14
+  [[ $(git -C "$target" rev-parse --is-shallow-repository) == true ]] ||
+    fail "the release-checkout fixture is not shallow; it no longer reproduces the release gate's repository"
+}
+
+release_checkout "$work/release-hazard"
+if git -C "$work/release-hazard" fetch --tags --unshallow origin >"$work/out" 2>&1; then
+  fail "the release-checkout fixture no longer rejects an unforced tag fetch, so it cannot prove the fix"
+fi
+assert_contains 'would clobber existing tag' "$work/out"
+
+release_checkout "$work/release-run"
+if ! CALL_LOG="$work/release-calls" PATH="$release_bin:$PATH" BINARY_PACKAGE=fail \
+  bash "$work/release-run/scripts/package-crates.sh" >"$work/out" 2>&1; then
+  cat "$work/out" >&2
+  fail "package-crates could not read the release history from a depth-1 tag checkout" \
+    "restore --force on the tag fetch in scripts/package-crates.sh"
+fi
+# Reaching this verdict from a depth-1 tag checkout of an annotated tag proves
+# both halves: the clobbering fetch delivered the core tags, and --unshallow
+# delivered the history `git rev-list <core tag>..HEAD` has to walk to find the
+# release-worthy core commit. Neither is reachable in the repository as checked out.
 assert_contains "awaits release-plz's core version bump" "$work/out"
 
 echo "check-package-crates: ok"

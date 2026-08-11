@@ -66,8 +66,9 @@ Use the `just` recipes; do not hand-roll equivalents.
   and the committed pre-push hook).
 - `just check` — full gate: format check, clippy (`-D warnings`), tests, line
   coverage (hard-gated at 95%), build, smoke. Must pass before any commit or PR.
-- `just gate` — pre-push superset: `check`, dependency/license audit, llmlint
-  validation, and its merge-base diff judge (skipped locally without Codex/key).
+- `just gate` — pre-push superset: `check`, dependency/license audit, crate
+  packaging, llmlint validation, and its merge-base diff judge (skipped locally
+  without Codex/key).
   The judge is non-deterministic, so its greens are recorded and **replayed**:
   one workspace content plus one resolved base commit plus one judge config is
   judged exactly once, and `pre-push` replays what the working tree's own gate
@@ -88,6 +89,16 @@ Use the `just` recipes; do not hand-roll equivalents.
 - `just upgrade` — update dependencies, then re-run `just check`.
 - `just deps-check` — advisory/license audit (`cargo deny`); separate from the
   core gate because it needs a network-fetched advisory DB.
+- `just package-crates` — package both crates as Cargo verifies them at publish
+  time. Deliberately NOT in `check`: `release.yml` runs `check` at the tag, and
+  there the binary already pins the core version that same run publishes, so
+  this can only be red — carrying it took v0.6.14 to no registry at all. It runs
+  where it guards a release without being able to block one: `gate` and ci.yml's
+  `package` job (which needs `fetch-depth: 0` + `fetch-tags`). Two windows are
+  permitted, both of them release-plz's to close and no working tree's: a
+  release-worthy core change awaiting its bump, and a core version already
+  tagged but not yet on crates.io. The tag state is read ONLY to classify a
+  packaging failure, so a checkout that cannot reach it fails nothing else.
 - `just smoke` — hermetic end-to-end smoke of the built binary (part of `just
   check` and CI). `just smoke-live` is the opt-in variant that hits installed,
   authenticated harnesses with real model calls — never in the gate or CI.

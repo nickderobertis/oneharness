@@ -38,12 +38,12 @@ bootstrap:
 # coverage*, build, artifact smoke. Fails on any issue. `coverage` re-runs the
 # workspace suite under instrumentation and fails below {{COVERAGE_MIN}}% lines;
 # `test` stays in the gate as the fast, un-instrumented pass/fail signal.
-check: fmt-check lint lint-sh lint-workflows package-crates sdk-check python-sdk-check test coverage build smoke
+check: fmt-check lint lint-sh lint-workflows sdk-check python-sdk-check test coverage build smoke
     @echo "check: ok"
 
 # Complete pre-push gate: deterministic product/dependency checks, followed by
 # llmlint validation and its changed-file LLM judge when local credentials exist.
-gate remote="origin" base="": check deps-check
+gate remote="origin" base="": check deps-check package-crates
     @comparison=$(scripts/comparison-base.sh "{{remote}}" "{{base}}"); just lint-llm-local "$comparison"
 
 # Verify formatting without modifying files.
@@ -62,8 +62,12 @@ lint:
 clippy: lint
 
 # Package the reusable crate and the binary exactly as Cargo will verify them at
-# publish time. This belongs in every PR gate: a green tag is already too late,
-# and the registry-resolved dependency check is cheap beside the existing gate.
+# publish time. It guards a release from the PR that precedes it — `just gate`
+# and ci.yml's `package` job — and deliberately NOT from `check`, which
+# release.yml runs at the tag: there the binary already pins the core version
+# that same run publishes, so this check is structurally red and would take the
+# whole distribution down with it. Its own step for the same reason `deps-check`
+# is: it needs the network-fetched crates.io index and the release tags.
 package-crates:
     @bash scripts/package-crates.sh
 

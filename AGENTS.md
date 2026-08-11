@@ -246,19 +246,27 @@ Use the `just` recipes; do not hand-roll equivalents.
   a hazard any future Cursor dispatch also hits.
   <!-- llmlint: ignore-end[agents_md_durable_and_terse, no_redundant_instruction_pointers, comments_earn_their_place] -->
   `run --control` requires `--session` and exactly one harness; both violations
-  are loud usage errors. It refuses no *mode*: for every control-capable harness
-  and every `PermissionMode` that harness supports, a controlled run must be
-  under exactly the policy the same mode gives without `--control` (the codex
+  are loud usage errors. For every control-capable harness and every
+  `PermissionMode` that harness supports, a controlled run must be under exactly
+  the policy the same mode gives without `--control` (the codex
   `bypass`→`workspaceWrite` bug was one cell of that grid). The way to keep it
   true is to DELIVER the harness's own mapping into the controlled launch rather
   than re-derive a posture for the protocol: copilot's permission flags ride the
-  `--acp` argv beside it, opencode's mode environment is handed to the pooled
-  server (and joins its pool key, or a run could be served one started under
-  another policy), goose's `GOOSE_MODE` already rides the control child's job
-  env. Only where nothing can be delivered is a posture answered on the wire, and
-  then it is the harness's own (`ModeSpec::posture`) rather than the
+  `--acp` argv beside it, goose's `GOOSE_MODE` already rides the control child's
+  job env. Only where nothing can be delivered is a posture answered on the wire,
+  and then it is the harness's own (`ModeSpec::posture`) rather than the
   spectrum's — which is why crush's ungated `default` is unattended under control
-  too. Adding a harness or a mode means adding its cell to `control_mode_parity`. Declare `ControlShape` only after a live interrupt
+  too. A mode whose ONLY delivery is the harness's own config environment cannot
+  reach a turn submitted to a pooled server (that environment belongs to the
+  server process, which this dispatch may not have started), so opencode's `edit`
+  is a **loud usage error** under `--control` rather than a turn under whatever
+  policy the server already had. Handing it to the server was tried and reverted:
+  it made the approval mode a component of the pool key, and the controlled
+  `--mode default` turn it was meant to prove ended in `status=timeout` on
+  opencode across four consecutive CI cycles. That is a **known gap**, named as
+  its own cell in the grid (`known-gap:mode-env-not-delivered-to-a-pooled-server`)
+  and as a phase `e2e-control.sh` reports rather than runs — a cell dropped from
+  the grid reads as coverage. Adding a harness or a mode means adding its cell to `control_mode_parity`. Declare `ControlShape` only after a live interrupt
   through oneharness. Stdin control keeps the child stdin open, then closes it
   on `is_turn_terminal`. Dialogue control owns its JSON-RPC child per dispatch:
   codex ends on `turn/completed`, not the `turn/start` response, and ACP must

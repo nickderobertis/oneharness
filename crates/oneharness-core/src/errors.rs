@@ -317,6 +317,13 @@ pub enum OneharnessError {
     #[error("--control cannot be combined with --schema: the structured-output retry loop re-prompts, which would need a second turn on the control channel's open stdin")]
     ControlSchema,
 
+    #[error("harness `{id}` carries `--mode {mode}` in its own configuration environment, and a controlled turn does not hand that environment to the server it is submitted to — so the turn would run under the server's own policy rather than the one asked for. Use --mode default (deny and continue) or --mode bypass, or drop --control")]
+    ControlModeUnsupported {
+        // llmlint: ignore[invalid_states_unrepresentable] The id is echoed from the already-validated registry selection purely for the diagnostic.
+        id: String,
+        mode: &'static str,
+    },
+
     #[error("harness `{id}` needs output format `{required}` for --control, but `{selected}` was selected; drop the explicit --output-format")]
     ControlOutputFormat {
         id: String,

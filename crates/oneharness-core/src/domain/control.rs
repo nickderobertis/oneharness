@@ -1327,9 +1327,12 @@ mod control_mode_parity {
         }
         // The whole grid, spelled out: a harness or a mode added later lands
         // here as a line nobody wrote down, which is the point. Every cell a
-        // harness supports is an EQUALITY — there is no verdict for "stricter
-        // under control" or "refused under control", because a controlled run
-        // that reshapes the policy is the bug this grid exists to catch.
+        // harness supports is an EQUALITY, because a controlled run that
+        // reshapes the policy is the bug this grid exists to catch — with one
+        // exception, spelled `known-gap:…`, which is a cell nobody has made
+        // equal yet. A gap is NAMED here rather than dropped from the grid: a
+        // missing line reads as coverage, and this feature has already lost a
+        // night to a cell that was silently absent.
         assert_eq!(
             grid,
             [
@@ -1348,9 +1351,12 @@ mod control_mode_parity {
                 "opencode read-only same-posture:gated",
                 "opencode plan same-posture:gated",
                 "opencode default same-posture:gated",
-                // Delivered, not re-derived: the mode's own config reaches the
-                // server the turn runs on, exactly as it reaches `opencode run`.
-                "opencode edit same-mode-env",
+                // The one cell that is NOT an equality, and says so. `edit` is
+                // opencode's `OPENCODE_CONFIG_CONTENT`, which a turn submitted
+                // to a pooled server has no way to carry — so `--control --mode
+                // edit` is a usage error rather than a turn under a policy
+                // nobody asked for.
+                "opencode edit known-gap:mode-env-not-delivered-to-a-pooled-server",
                 "opencode auto mode-unsupported",
                 "opencode bypass same-posture:unattended",
                 "goose read-only mode-unsupported",
@@ -1414,8 +1420,9 @@ mod control_mode_parity {
     }
 
     /// One cell of the grid: assert the two paths send the same policy, and
-    /// name how it got there. Every supported mode is an equality — there is no
-    /// verdict for a controlled run that is stricter, looser, or refused.
+    /// name how it got there. Every supported mode is an equality, except the
+    /// one delivery nobody has made equal — which answers `known-gap:…` rather
+    /// than disappearing from the grid.
     fn cell(spec: &'static HarnessSpec, shape: ControlShape, mode: PermissionMode) -> String {
         let Some(declared) = spec.mode(mode) else {
             // The harness cannot express this mode at all, so the command layer
@@ -1423,12 +1430,19 @@ mod control_mode_parity {
             // without it. There is no pair of policies to compare.
             return "mode-unsupported".to_string();
         };
-        // 1. A mode the harness delivers through its OWN environment. A
-        //    controlled run hands that same environment to the server process
-        //    the turn runs in, so the policy is the identical value through the
-        //    identical mechanism rather than one re-derived for the wire.
+        // 1. A KNOWN GAP, kept in the grid rather than dropped from it. A mode
+        //    the harness delivers through its OWN environment cannot reach a
+        //    turn submitted to a pooled server: the environment belongs to the
+        //    server process, and handing it there — which is what shipped, and
+        //    what is now reverted — made the approval mode a component of the
+        //    pool key and left a controlled `--mode default` opencode turn
+        //    ending in `status=timeout` across four CI cycles. So there is no
+        //    equality to assert here, and the honest cell says which one is
+        //    missing: the command layer refuses the mode before anything spawns
+        //    (`OneharnessError::ControlModeUnsupported`) rather than run the
+        //    turn under the server's own policy.
         if !declared.env.is_empty() && shape.needs_pooled_server() {
-            return "same-mode-env".to_string();
+            return "known-gap:mode-env-not-delivered-to-a-pooled-server".to_string();
         }
         match shape {
             // 2. The one policy the control path recomputes in its own

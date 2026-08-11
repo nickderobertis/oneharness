@@ -279,6 +279,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         batch_run,
         multi_model,
         stream,
+        mode,
     )?;
     // A model fan-out multiplies the run into several (harness, model) units, so —
     // like a batch — it refuses every single-unit shape up front (loud usage
@@ -2027,11 +2028,11 @@ fn emit_stream_result(report: &RunReport) -> Result<(), OneharnessError> {
 /// format compatible with the mechanism, and — last — a platform with unix
 /// sockets.
 ///
-/// The approval mode is deliberately NOT among them. `--control` used to refuse
-/// one it could not express on the wire; it no longer derives a posture for the
-/// wire at all, so whatever a harness supports uncontrolled it supports
-/// controlled, and an unsupported mode is `validate_modes`' refusal — the same
-/// one an ordinary run gets.
+/// The approval mode is almost never among them: `--control` no longer derives
+/// a posture for the wire, so whatever a harness supports uncontrolled it
+/// supports controlled, and an unsupported mode is `validate_modes`' refusal —
+/// the same one an ordinary run gets. The one exception is a mode delivered
+/// through the harness's own environment on a server-submitted turn; see below.
 #[allow(clippy::fn_params_excessive_bools, clippy::too_many_arguments)] // llmlint: ignore[suppressions_justified] The parameters ARE the list of independently-resolved run properties the control rules must check, each decided separately by the caller; folding them into a struct used at this single call site would hide the list rather than shorten it.
 fn validate_control(
     args: &RunArgs,
@@ -2041,6 +2042,7 @@ fn validate_control(
     batch_run: bool,
     multi_model: bool,
     stream: bool,
+    mode: PermissionMode,
 ) -> Result<Option<ControlShape>, OneharnessError> {
     if !args.control {
         return Ok(None);
@@ -2086,16 +2088,32 @@ fn validate_control(
             supported: control_capable_ids(),
         });
     };
-    // No mode is refused here any more. A driven turn used to answer every
-    // permission request from the normalized spectrum, which could express
-    // neither `edit` (auto-approved edits, shell still gated) nor a CLI that
-    // cannot gate at all — so `edit` was refused rather than silently reshaped.
-    // Both controlled launches now carry the mode's OWN mapping instead: the
-    // opencode server is started with the mode's environment, and copilot's
-    // permission flags ride the `--acp` argv beside it, so a controlled run is
-    // under the policy `spec.modes` already declares. What a harness cannot
-    // express is still refused — by `validate_modes`, before this, for
-    // controlled and uncontrolled runs alike.
+    // Almost no mode is refused here. Where the mode's policy travels on the
+    // controlled launch itself — copilot's permission flags beside `--acp`,
+    // Claude Code's ordinary `-p` argv — a controlled run is under exactly the
+    // policy `spec.modes` declares, and an unexpressible mode is
+    // `validate_modes`' refusal, the same one an ordinary run gets.
+    //
+    // The exception is a mode whose policy is the harness's OWN environment on a
+    // turn submitted to a pooled server (opencode's `edit`, carried in
+    // `OPENCODE_CONFIG_CONTENT`). That environment belongs to the server
+    // process, not to the turn, and handing it over there was reverted: it made
+    // the mode a component of the pool key and gave a controlled `--mode
+    // default` turn a policy it never ended under (see the known gap recorded in
+    // `control_mode_parity`). Delivering nothing would run the turn under
+    // whatever policy the server was started with, which is the silent reshaping
+    // `--control` must never do — so it is a loud usage error before anything
+    // spawns.
+    if shape.needs_pooled_server()
+        && spec
+            .mode(mode)
+            .is_some_and(|declared| !declared.env.is_empty())
+    {
+        return Err(OneharnessError::ControlModeUnsupported {
+            id: spec.id.to_string(),
+            mode: mode.as_str(),
+        });
+    }
     // A server-submitted turn never spawns the harness CLI, so there is no
     // stdout to publish line by line. Refusing is what keeps `--stream` from
     // silently selecting the ordinary run — whose interrupt does NOT reach the
@@ -2249,34 +2267,23 @@ fn drive_http_turn(
     let mode_spec = spec
         .mode(mode)
         .ok_or_else(|| format!("`{}` cannot express `--mode {}`", spec.id, mode.as_str()))?;
-    // Where a mode is delivered by the harness's own environment (opencode's
-    // `OPENCODE_CONFIG_CONTENT`), it goes to the SERVER — that is the process
-    // the turn runs in, and `opencode serve` loads it exactly as `opencode run`
-    // does (probe-verified: the server echoes the block back on `/config`).
-    // Sending the harness's own mapping beats re-deriving the policy on the
-    // wire, which is how a controlled mode drifts from an uncontrolled one.
-    let mode_env: Vec<(String, String)> = mode_spec
-        .env
-        .iter()
-        .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
-        .collect();
-    // Per-turn settings are deliberately not in the key: they are negotiated on
-    // the wire, and keying on them would start a fresh server per dispatch. The
-    // mode's environment is NOT per-turn — it is baked into the server process
-    // at launch — so it belongs in the key, or a `--mode edit` dispatch could be
-    // handed a server someone else started under a different policy.
+    // The mode's own environment does NOT travel to the server. Handing it over
+    // was tried and reverted: it made the approval mode a component of the pool
+    // key, and the controlled `--mode default` turn it was meant to prove never
+    // ended on opencode across four CI cycles. A mode that can only be delivered
+    // that way is refused before anything spawns (`validate_control`), so the
+    // server is never launched under a policy other than its own — and the gap
+    // is recorded rather than papered over (`control_mode_parity`).
+    // Per-turn settings are deliberately not in the key either: they are
+    // negotiated on the wire, and keying on them would start a fresh server per
+    // dispatch.
     let key_env: Vec<(String, Option<String>)> = server
         .key_env
         .iter()
         .map(|name| ((*name).to_string(), std::env::var(name).ok()))
-        .chain(
-            mode_env
-                .iter()
-                .map(|(name, value)| (name.clone(), Some(value.clone()))),
-        )
         .collect();
     let key = control::pool_key(spec.id, &key_env, &[]);
-    let (lease, address) = bring_up_server(shape, spec, bin, &root, &key, mode_env, timeout)?;
+    let (lease, address) = bring_up_server(shape, spec, bin, &root, &key, timeout)?;
     let command = lease.record().argv.as_slice().to_vec();
 
     let decision = http::permits_action(mode_spec);
@@ -2322,7 +2329,6 @@ fn bring_up_server(
     bin: &str,
     root: &std::path::Path,
     key: &control::PoolKey,
-    env: Vec<(String, String)>,
     timeout: Duration,
 ) -> Result<(server_pool::ServerLease, DialAddress), String> {
     // Re-read rather than taken as a parameter: the caller already proved it is
@@ -2337,7 +2343,7 @@ fn bring_up_server(
     loop {
         attempts_left -= 1;
         let candidate = candidate_address(server.transport, root, key)?;
-        let plan = server_pool::LaunchPlan::new(bin, &server, &[], candidate, env.clone())
+        let plan = server_pool::LaunchPlan::new(bin, &server, &[], candidate, Vec::new())
             .map_err(|err| format!("could not plan the control server launch: {err}"))?;
         let lease = server_pool::acquire(root, key, &plan, server_pool::DEFAULT_LINGER)
             .map_err(|err| format!("could not start the control server: {err}"))?;

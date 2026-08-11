@@ -1193,8 +1193,13 @@ silently is not there is worse than none:
   harness, mode, or output format — is refused with that reason instead, which is
   the one that survives changing machines. `--print-command` is exempt: it opens
   no socket and spawns nothing, and the argv it prints is the same everywhere.
-- **No mode is refused by `--control` itself.** Whatever a harness supports
-  without `--control` it supports with it, under the same policy — see
+- **No `--mode edit` on OpenCode's controlled turn.** OpenCode carries `edit`
+  in its own config environment (`OPENCODE_CONFIG_CONTENT`), which belongs to the
+  pooled `opencode serve` process a controlled turn is submitted to — not to the
+  turn — so the mode cannot travel with it. It is refused before anything spawns
+  rather than run under whatever policy that server already had. Use `--mode
+  default` (deny and continue) or `--mode bypass`. Every other harness supports
+  under `--control` whatever it supports without it, at the same policy — see
   *Approval modes under control* below.
 - **No `--stream` on a server-submitted mechanism** (`opencode-http`,
   `crush-http`): those turns never spawn the harness CLI, so there is no stdout
@@ -1234,16 +1239,28 @@ one exists, rather than deriving a second policy for the protocol:
 | Claude Code | Its control frame rides the ordinary `-p` run, so the mode's flags are the ordinary ones, byte for byte |
 | Copilot | Its permission flags are top-level options that sit beside `--acp`, so the ACP launch carries the same `--allow-tool`/`--deny-tool`/`--mode` arguments `-p` gets |
 | Goose | `GOOSE_MODE` is injected into the ACP child exactly as into an ordinary run — the control child *is* an ordinary job |
-| OpenCode | A mode carried in `OPENCODE_CONFIG_CONTENT` (its `edit` mapping) is handed to the pooled `opencode serve` the turn runs on, which loads it identically; the mode is part of the server's pool key, so a run can never be handed a server started under a different policy |
+| OpenCode | The wire posture, for every mode the wire can carry. A mode whose only mapping is `OPENCODE_CONFIG_CONTENT` (its `edit`) is **a known gap**, refused as a usage error — see below |
 | Codex | The app-server negotiates the sandbox per turn, so its `SandboxPolicy` is asserted equal to the sandbox `codex exec` selects for that mode |
 | Crush | `crush run` cannot gate at all, so its `default` acts without asking — and a controlled turn declares the same `yolo` posture rather than gating what the CLI would not |
 
 Where a harness answers permission requests on the wire, the answer is the
 harness's own posture for that mode (`ModeSpec::posture`), not the
-normalized spectrum's — which is what lets crush's ungated `default` and
-opencode's config-delivered `edit` both be expressed instead of refused.
-`scripts/e2e-control.sh` then proves the delivered policy is *honored* by driving
-a controlled turn under the gating `--mode default` and requiring it to end.
+normalized spectrum's — which is what lets crush's ungated `default` be expressed
+instead of refused.
+
+**One known gap, named rather than hidden.** A mode delivered *only* through the
+harness's own config environment cannot reach a turn submitted to a pooled
+server. Handing that environment to the server was tried and reverted: it made
+the approval mode a component of the pool key, and the controlled `--mode
+default` turn it was meant to prove ended in `status=timeout` on OpenCode across
+four consecutive CI cycles. So OpenCode's `edit` is a loud usage error under
+`--control`, the grid carries the cell as
+`known-gap:mode-env-not-delivered-to-a-pooled-server`, and `scripts/e2e-control.sh`
+reports OpenCode's mode phase as a known gap instead of running it. A cell
+dropped from the grid would read as coverage; a named one reads as the hole it
+is. For every other harness that suite proves the delivered policy is *honored*,
+by driving a controlled turn under the gating `--mode default` and requiring it
+to end.
 
 #### Control support matrix
 

@@ -2,6 +2,7 @@
   "detect_report": {
     "$defs": {
       "DetectInfo": {
+        "description": "One probed harness identity.",
         "properties": {
           "available": {
             "type": "boolean"
@@ -36,6 +37,7 @@
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The `oneharness detect` output contract.",
     "properties": {
       "detected": {
         "items": {
@@ -9819,6 +9821,7 @@
         ]
       },
       "HarnessInfo": {
+        "description": "Everything the registry declares about one harness.",
         "properties": {
           "control": {
             "anyOf": [
@@ -9970,11 +9973,11 @@
         ]
       },
       "ModeInfo": {
-        "description": "One supported approval mode for a harness, with its headless behavior, in\n`oneharness list`. A [`PermissionMode`] absent from a harness's array is\nunsupported for it (a `--mode` request would be refused).",
+        "description": "One supported approval mode for a harness, with its headless behavior. A\n[`PermissionMode`] absent from a harness's array is unsupported for it (a\n`--mode` request would be refused).",
         "properties": {
           "headless": {
             "$ref": "#/$defs/ModeHeadless",
-            "description": "`\"clean\"` (never blocks headless) or `\"hangs\"` (would block on an\napproval prompt; refused without --permit-prompts)."
+            "description": "`\"clean\"` (never blocks headless) or `\"hangs\"` (would block on an\napproval prompt; refused without `--permit-prompts`)."
           },
           "mode": {
             "$ref": "#/$defs/PermissionMode"
@@ -10042,6 +10045,7 @@
         ]
       },
       "VariantInfo": {
+        "description": "One configured identity of a harness \u2014 a `[harness.<id>.variant.<name>]`\ntable, resolved the way a run would resolve it.",
         "properties": {
           "args": {
             "items": {
@@ -10107,6 +10111,7 @@
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The `oneharness list` output contract.",
     "properties": {
       "harnesses": {
         "items": {

@@ -31,7 +31,7 @@ required-features = ["sdk-schema"]
 
 [features]
 # Builds the mock harness fixture. Enabled by `just test`/`just check` and CI.
-mock-harness = []
+mock-harness = ["oneharness-core/mock-harness"]
 # Builds the Rust-owned schema generator shared by language SDKs.
 sdk-schema = ["oneharness-core/sdk-schema"]
 

@@ -9,6 +9,8 @@ pub mod detect;
 pub mod history;
 pub mod hooks;
 pub mod identity;
+// The starter-config scaffold `oneharness init` writes.
+pub mod init;
 // The raw HTTP client is an implementation detail of the controlled-turn
 // driver, not a surface a consumer of this crate should depend on: it exists
 // only because these two control servers speak HTTP.
@@ -19,6 +21,8 @@ pub(crate) mod http;
 // other two through `runner` and `server_pool`.
 pub mod http_turn;
 mod process;
+// The registry description `oneharness list` prints, as a call that returns it.
+pub mod registry;
 // The run verb's whole orchestration, behind an API that returns a report
 // instead of printing one — so the binary is a shell over it and a library
 // caller reaches the same engine without a subprocess hop.

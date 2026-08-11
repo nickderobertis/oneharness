@@ -27,11 +27,17 @@ export type PermissionMode = "read-only" | "plan" | "default" | "edit" | "auto" 
  */
 export type OutputFormat = "text" | "json" | "stream-json";
 
+/**
+ * The `oneharness list` output contract.
+ */
 export interface ListReport {
   harnesses: HarnessInfo[];
   schema_version: string;
   [k: string]: unknown;
 }
+/**
+ * Everything the registry declares about one harness.
+ */
 export interface HarnessInfo {
   /**
    * How `run --control` + `oneharness interrupt` abort an in-flight turn on
@@ -132,19 +138,23 @@ export interface HarnessInfo {
   [k: string]: unknown;
 }
 /**
- * One supported approval mode for a harness, with its headless behavior, in
- * `oneharness list`. A [`PermissionMode`] absent from a harness's array is
- * unsupported for it (a `--mode` request would be refused).
+ * One supported approval mode for a harness, with its headless behavior. A
+ * [`PermissionMode`] absent from a harness's array is unsupported for it (a
+ * `--mode` request would be refused).
  */
 export interface ModeInfo {
   /**
    * `"clean"` (never blocks headless) or `"hangs"` (would block on an
-   * approval prompt; refused without --permit-prompts).
+   * approval prompt; refused without `--permit-prompts`).
    */
   headless: "clean" | "hangs";
   mode: PermissionMode;
   [k: string]: unknown;
 }
+/**
+ * One configured identity of a harness — a `[harness.<id>.variant.<name>]`
+ * table, resolved the way a run would resolve it.
+ */
 export interface VariantInfo {
   args: string[];
   bin: string | null;

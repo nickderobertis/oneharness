@@ -7,74 +7,25 @@
 //! downstream tool that calls it twice for two differently named configs only
 //! needs the exit code and the file on disk.
 //!
-//! The starter string is pure ([`starter_config`]) so a test can round-trip it
-//! through `config::parse`; the thin write/overwrite shell is the only I/O.
+//! The scaffold itself is a library call ([`oneharness_core::io::init::init`]),
+//! so a Rust consumer writes the same file without spawning anything; this is
+//! the shell that prints the confirmation line.
 
 use crate::cli::InitArgs;
 use oneharness_core::errors::OneharnessError;
+use oneharness_core::io::init::{self, InitRequest};
 
-/// The starter `oneharness.toml` contents. A commented fallback-mode chain
-/// (codex → claude-code), the recommended shape: the same committed file works
-/// wherever one of the harnesses happens to be authenticated. Every key here is
-/// a real `FileConfig`/`HarnessConfig` field (`run_mode`, `harnesses`,
-/// `[harness.<id>].model`), so it parses via `config::parse`.
-pub fn starter_config() -> &'static str {
-    "\
-# Starter oneharness config. Keep it at your project root as `oneharness.toml`;
-# it sets the default harness/model selection for `oneharness run` in this repo.
-
-# run_mode: how the selected harnesses are run.
-#   \"parallel\" (default) runs them all at once and reports each.
-#   \"fallback\" tries them in priority order and stops at the first that can
-#   actually run, falling through only harnesses that cannot run at all (not
-#   installed, unspawnable, or an auth/quota rejection) — so one committed file
-#   works wherever a given harness happens to be authenticated.
-run_mode = \"fallback\"
-
-# harnesses: the selection, in priority order (the first is preferred under
-# fallback). See `oneharness list` for every supported id.
-harnesses = [\"codex\", \"claude-code\"]
-
-# [harness.<id>]: per-harness overrides. Model names differ per provider, so
-# each harness names its own.
-[harness.codex]
-model = \"gpt-5.5\"
-
-[harness.claude-code]
-model = \"claude-opus-4-8\"
-
-# Variants are opt-in named presets selected as <id>:<name>. Keep credential
-# values outside this file; env_from maps a uniquely named parent variable into
-# the canonical variable for only this child, while unset_env masks ambient auth.
-# [harness.claude-code.variant.work]
-# env_from = { ANTHROPIC_API_KEY = \"ANTHROPIC_API_KEY_WORK\" }
-# [harness.claude-code.variant.subscription]
-# unset_env = [\"ANTHROPIC_API_KEY\", \"CLAUDE_CODE_OAUTH_TOKEN\"]
-# env = { CLAUDE_CONFIG_DIR = \"/absolute/path/to/an/isolated/login\" }
-
-# Inspect the effective, fully layered config (and where each value came from)
-# with `oneharness config`.
-"
-}
+pub use oneharness_core::io::init::starter_config;
 
 pub fn run(args: &InitArgs) -> Result<i32, OneharnessError> {
-    // Safe by default: never clobber an existing file without --force. A read
-    // error from `try_exists` (e.g. a permission fault) is treated as "present"
-    // so we refuse rather than risk an overwrite.
-    if !args.force && args.path.try_exists().unwrap_or(true) {
-        return Err(OneharnessError::InitFileExists {
-            path: args.path.display().to_string(),
-        });
-    }
-
-    std::fs::write(&args.path, starter_config()).map_err(|source| OneharnessError::InitWrite {
-        path: args.path.display().to_string(),
-        source,
+    let report = init::init(&InitRequest {
+        path: Some(args.path.clone()),
+        force: args.force,
     })?;
 
     // A scaffold's output is the file; a plain confirmation line on stdout (not
     // a JSON envelope) matches a command a human runs interactively.
-    println!("wrote {}", args.path.display());
+    println!("wrote {}", report.path);
     Ok(0)
 }
 

@@ -9,6 +9,10 @@ repository = "https://github.com/nickderobertis/oneharness"
 
 [features]
 sdk-schema = []
+# Compiles the usage sweep's fault injectors, so the containment that keeps one
+# misbehaving probe from taking a whole report down is drivable from a test.
+# Enabled by the binary crate's feature of the same name; never in a release.
+mock-harness = []
 
 # Emits the core-only bundle, for a library consumer that wants it without the
 # CLI's roots. Named apart from the binary crate's `generate_sdk_schema` example

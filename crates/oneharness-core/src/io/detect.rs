@@ -128,6 +128,137 @@ fn first_line(bytes: &[u8]) -> Option<String> {
         .map(str::to_string)
 }
 
+/// What a [`detect`] sweep probes, as plain data.
+///
+/// Every field is one thing the CLI resolves from its own flags, so an embedder
+/// states them rather than inheriting them from a process it does not own.
+#[derive(Debug, Clone, Default)]
+pub struct DetectRequest {
+    /// Probe every supported harness. Also the default when neither `harness`
+    /// nor `exclude` names anything.
+    pub all: bool,
+    /// Harness id(s) to probe, `<id>` or `<id>:<variant>`.
+    pub harness: Vec<String>,
+    /// Harness id(s) to drop from an all-harness sweep.
+    pub exclude: Vec<String>,
+    /// `--bin ID=PATH` overrides, in the CLI's own spelling.
+    pub bin: Vec<String>,
+    /// Load configuration from exactly this file, skipping discovery.
+    pub config: Option<PathBuf>,
+    /// Ignore every configuration file.
+    pub no_config: bool,
+    /// Where project-config discovery starts. `None` means the process's
+    /// current directory, which is what the CLI uses.
+    pub cwd: Option<PathBuf>,
+}
+
+/// One probed harness identity.
+#[derive(Debug, Clone, schemars::JsonSchema, serde::Serialize)]
+pub struct DetectInfo {
+    // llmlint: ignore[invalid_states_unrepresentable] This JSON boundary mirrors the CLI selector string; selection and variant lookup validate it before construction, with integration coverage for valid and invalid composed ids.
+    pub id: String,
+    pub bin: String,
+    pub available: bool,
+    pub path: Option<String>,
+    pub version: Option<String>,
+}
+
+/// The `oneharness detect` output contract.
+#[derive(Debug, Clone, schemars::JsonSchema, serde::Serialize)]
+pub struct DetectReport {
+    pub schema_version: &'static str,
+    pub detected: Vec<DetectInfo>,
+}
+
+impl DetectReport {
+    /// Whether any probed harness was not installed — what the CLI's
+    /// `--require-available` turns into a non-zero exit.
+    #[must_use]
+    pub fn any_missing(&self) -> bool {
+        self.detected.iter().any(|info| !info.available)
+    }
+}
+
+/// Probe the selected harnesses' binaries and return the report.
+///
+/// Configured binaries apply, so this reports the same binary a run from the
+/// same directory would invoke.
+///
+/// # Errors
+///
+/// Returns a usage error for an unknown harness id, an unknown `<id>:<variant>`
+/// selector, a malformed `--bin` value, or a configuration layer that cannot be
+/// loaded — the same loud failures the CLI verb raises.
+pub fn detect(request: &DetectRequest) -> Result<DetectReport, OneharnessError> {
+    // Detection defaults to every harness; an explicit selection narrows it.
+    let all = request.all || (request.harness.is_empty() && request.exclude.is_empty());
+    let specs = crate::domain::select::select_specs(all, &request.harness, &request.exclude)?;
+    let selected_ids = crate::domain::select::dedupe_exact_ids(&request.harness);
+    let fallback;
+    let start: &std::path::Path = match request.cwd.as_deref() {
+        Some(dir) => dir,
+        None => {
+            fallback = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            &fallback
+        }
+    };
+    let loaded = crate::io::config::load(request.config.as_deref(), request.no_config, start)?;
+    for id in request.harness.iter().chain(&request.exclude) {
+        if let Some((base, variant)) = id.split_once(':') {
+            if loaded.config.variant_for(id).is_none() {
+                return Err(OneharnessError::UnknownHarnessVariant {
+                    id: id.clone(),
+                    base: base.to_string(),
+                    variant: variant.to_string(),
+                });
+            }
+        }
+    }
+    let mut config_bins: HashMap<String, String> = loaded
+        .config
+        .harness
+        .iter()
+        .filter_map(|(id, h)| h.bin.clone().map(|bin| (id.clone(), bin)))
+        .collect();
+    for (base, harness) in &loaded.config.harness {
+        for name in harness.variant.keys() {
+            let id = format!("{base}:{name}");
+            if let Some(bin) = loaded.config.bin_for(&id) {
+                config_bins.insert(id, bin.to_string());
+            }
+        }
+    }
+    let overrides = BinOverrides::parse(&request.bin)?.with_config_bins(config_bins);
+
+    let detected = specs
+        .iter()
+        .enumerate()
+        .map(|(index, spec)| {
+            let id = selected_ids
+                .get(index)
+                .map_or(spec.id.to_string(), Clone::clone);
+            let resolved = resolve_named(spec, &id, &overrides);
+            let version = if resolved.available {
+                probe_version(&resolved.bin)
+            } else {
+                None
+            };
+            DetectInfo {
+                id,
+                bin: resolved.bin,
+                available: resolved.available,
+                path: resolved.path.map(|p| p.display().to_string()),
+                version,
+            }
+        })
+        .collect();
+
+    Ok(DetectReport {
+        schema_version: crate::domain::report::SCHEMA_VERSION,
+        detected,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

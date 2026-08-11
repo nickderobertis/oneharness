@@ -12063,6 +12063,7 @@
   "list_report": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "ListReport",
+    "description": "The `oneharness list` output contract.",
     "type": "object",
     "properties": {
       "harnesses": {
@@ -12111,6 +12112,7 @@
         ]
       },
       "HarnessInfo": {
+        "description": "Everything the registry declares about one harness.",
         "type": "object",
         "properties": {
           "control": {
@@ -12262,11 +12264,11 @@
         ]
       },
       "ModeInfo": {
-        "description": "One supported approval mode for a harness, with its headless behavior, in\n`oneharness list`. A [`PermissionMode`] absent from a harness's array is\nunsupported for it (a `--mode` request would be refused).",
+        "description": "One supported approval mode for a harness, with its headless behavior. A\n[`PermissionMode`] absent from a harness's array is unsupported for it (a\n`--mode` request would be refused).",
         "type": "object",
         "properties": {
           "headless": {
-            "description": "`\"clean\"` (never blocks headless) or `\"hangs\"` (would block on an\napproval prompt; refused without --permit-prompts).",
+            "description": "`\"clean\"` (never blocks headless) or `\"hangs\"` (would block on an\napproval prompt; refused without `--permit-prompts`).",
             "$ref": "#/$defs/ModeHeadless"
           },
           "mode": {
@@ -12334,6 +12336,7 @@
         ]
       },
       "VariantInfo": {
+        "description": "One configured identity of a harness — a `[harness.<id>.variant.<name>]`\ntable, resolved the way a run would resolve it.",
         "type": "object",
         "properties": {
           "args": {
@@ -12402,6 +12405,7 @@
   "detect_report": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "DetectReport",
+    "description": "The `oneharness detect` output contract.",
     "type": "object",
     "properties": {
       "detected": {
@@ -12420,6 +12424,7 @@
     ],
     "$defs": {
       "DetectInfo": {
+        "description": "One probed harness identity.",
         "type": "object",
         "properties": {
           "available": {

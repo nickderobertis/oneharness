@@ -549,11 +549,11 @@ export class OneHarness {
 	 * flags (`--all`, `--exclude`, `--bin`, the config layer).
 	 */
 	async detect(
-		harnesses: readonly string[] | DetectOptions = [],
+		harnessesOrOptions: readonly string[] | DetectOptions = [],
 	): Promise<Detection[]> {
-		const options: DetectOptions = Array.isArray(harnesses)
-			? { harnesses: [...harnesses] }
-			: (harnesses as DetectOptions);
+		const options: DetectOptions = Array.isArray(harnessesOrOptions)
+			? { harnesses: [...harnessesOrOptions] }
+			: (harnessesOrOptions as DetectOptions);
 		const report = await this.call(
 			"detect",
 			options,

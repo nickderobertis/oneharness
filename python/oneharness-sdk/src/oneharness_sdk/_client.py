@@ -381,7 +381,7 @@ class OneHarness:
         return cast("builtins.list[HarnessInfo]", value["harnesses"])
 
     async def detect(
-        self, harnesses: Sequence[str] | DetectOptions = ()
+        self, harnesses_or_options: Sequence[str] | DetectOptions = ()
     ) -> builtins.list[Detection]:
         """Probe harness binaries.
 
@@ -389,14 +389,14 @@ class OneHarness:
         harnesses"; the options mapping is what reaches the rest of the verb's
         flags (`--all`, `--exclude`, `--bin`, the config layer).
         """
-        if isinstance(harnesses, Mapping):
-            options = harnesses
-        elif isinstance(harnesses, (str, bytes)) or not all(
-            isinstance(harness, str) for harness in harnesses
+        if isinstance(harnesses_or_options, Mapping):
+            options = harnesses_or_options
+        elif isinstance(harnesses_or_options, (str, bytes)) or not all(
+            isinstance(harness, str) for harness in harnesses_or_options
         ):
             raise ContractError("invalid oneharness detect options: harnesses must be strings")
         else:
-            options = cast("DetectOptions", {"harnesses": list(harnesses)})
+            options = cast("DetectOptions", {"harnesses": list(harnesses_or_options)})
         report = await self._call("detect", options, "detect_options", "detect_report")
         return cast("builtins.list[Detection]", report["detected"])
 

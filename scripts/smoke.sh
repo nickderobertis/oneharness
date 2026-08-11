@@ -97,6 +97,20 @@ count_matches() {
   { printf '%s' "$1" | grep -oF -- "$2" || true; } | wc -l | tr -d '[:space:]'
 }
 
+# Build through the project's own recipe rather than a second spelling of it, and
+# stay quiet: a successful smoke run says one line, so the build output is held
+# and printed only when it is the reason the run failed.
+build_via_just() {
+  local recipe=$1 what=$2 out
+  command -v just >/dev/null 2>&1 ||
+    fail "$what is not built and 'just' is not installed" "" "" \
+      "install just (see .tool-versions) and run 'just $recipe'"
+  out=$(just "$recipe" 2>&1) || {
+    printf '%s\n' "$out" >&2
+    fail "building $what failed" "" "" "the output above says why; then rerun 'just smoke'"
+  }
+}
+
 # Resolve the oneharness binary to smoke. Prefer an explicit override, then the
 # *freshest* built binary (release vs debug, by mtime). Preferring the newer of
 # the two is deliberate: `just check` rebuilds debug right before smoke, so a
@@ -115,8 +129,7 @@ resolve_oneharness() {
   fi
   [ -n "$rel" ] && { printf '%s' "$rel"; return 0; }
   [ -n "$deb" ] && { printf '%s' "$deb"; return 0; }
-  echo "smoke: building oneharness (debug)…" >&2
-  cargo build --locked >&2
+  build_via_just build "the oneharness binary"
   exe_path target/debug/oneharness || fail "could not find oneharness after build" \
     "" "" "run 'just build' and retry"
 }
@@ -126,11 +139,10 @@ resolve_mock() {
   for c in target/release/oneharness-mock-harness target/debug/oneharness-mock-harness; do
     if p="$(exe_path "$c")"; then printf '%s' "$p"; return 0; fi
   done
-  echo "smoke: building mock-harness fixture…" >&2
-  cargo build --locked --features mock-harness --bin oneharness-mock-harness >&2
+  build_via_just build-mock-harness "the mock-harness fixture"
   exe_path target/debug/oneharness-mock-harness || fail \
     "could not find mock-harness fixture after build" \
-    "" "" "run 'cargo build --features mock-harness --bin oneharness-mock-harness'"
+    "" "" "run 'just build-mock-harness'"
 }
 
 oh="$(resolve_oneharness)"

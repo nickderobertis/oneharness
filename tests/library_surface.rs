@@ -201,6 +201,40 @@ fn a_consumer_probes_one_harness_binary_and_reads_its_version() {
 
 // capability: detect
 #[test]
+fn a_configured_binary_is_probed_without_the_caller_naming_it() {
+    // `bin` overrides are what the other two tests use, so this is the half they
+    // cannot see: a consumer that has a project config asks for the harness and
+    // the configured binary is what gets probed. Nothing here names a path, so
+    // an unread `[harness.<id>] bin` (or an unread `cwd`) reports the harness as
+    // missing and fails.
+    let dir = project(
+        "detect-configured-bin",
+        &format!(
+            "[harness.opencode]\nbin = {}\n",
+            serde_json::to_string(&fixture::mock_bin().display().to_string())
+                .expect("a path is a JSON string")
+        ),
+    );
+
+    let report = detect::detect(&DetectRequest {
+        harness: vec!["opencode".to_string()],
+        cwd: Some(dir.clone()),
+        ..DetectRequest::default()
+    })
+    .expect("a project config selects the binary to probe");
+
+    assert_eq!(report.detected[0].id, "opencode");
+    assert!(
+        report.detected[0].available,
+        "the configured bin is the one probed: {:?}",
+        report.detected[0]
+    );
+    assert!(!report.any_missing());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// capability: detect
+#[test]
 fn a_harness_that_is_not_installed_is_data_rather_than_an_error() {
     // The recovery path: a consumer must be able to ask about a harness that is
     // absent and get an answer, not an exception.

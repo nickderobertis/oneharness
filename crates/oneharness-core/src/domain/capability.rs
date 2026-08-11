@@ -135,7 +135,6 @@ impl Capability {
     }
 }
 
-/// Shorthand for a bound option.
 const fn bind(option: &'static str, flag: &'static str, kind: FlagKind) -> OptionBinding {
     OptionBinding {
         option,
@@ -145,8 +144,6 @@ const fn bind(option: &'static str, flag: &'static str, kind: FlagKind) -> Optio
     }
 }
 
-/// Shorthand for a bound option another option suppresses. See
-/// [`OptionBinding::unless`].
 const fn bind_unless(
     option: &'static str,
     flag: &'static str,
@@ -161,7 +158,6 @@ const fn bind_unless(
     }
 }
 
-/// Shorthand for a flag no option renders, with the reason it need not.
 const fn skip(flag: &'static str, reason: &'static str) -> UncoveredFlag {
     UncoveredFlag { flag, reason }
 }

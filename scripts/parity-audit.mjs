@@ -288,9 +288,17 @@ const generated = [
 ].join("\n");
 
 const current = readFileSync(doc, "utf8");
-const before = current.slice(0, current.indexOf(BEGIN));
-const after = current.slice(current.indexOf(END) + END.length);
-const next = `${before}${generated}${after}`;
+const opens = current.indexOf(BEGIN);
+const closes = current.indexOf(END);
+// Refuse a document that has lost its markers rather than slicing at -1, which
+// would splice the tables into the middle of the prose and call it generated.
+if (opens === -1 || closes === -1 || closes < opens) {
+	console.error(
+		`docs/sdk-parity.md is missing its generated-block markers (${BEGIN} … ${END}); restore both, in that order, and rerun just parity-audit`,
+	);
+	process.exit(1);
+}
+const next = `${current.slice(0, opens)}${generated}${current.slice(closes + END.length)}`;
 
 if (process.argv.includes("--check")) {
 	if (next !== current) {

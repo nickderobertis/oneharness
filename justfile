@@ -85,6 +85,7 @@ lint-workflows: build build-mock-harness
     @bash scripts/check-workflows-e2e.sh >/dev/null
     @bash scripts/check-publish-crates.sh >/dev/null
     @bash scripts/check-package-crates.sh >/dev/null
+    @bash scripts/check-smoke-env.sh >/dev/null
     @bash scripts/check-publish-npm.sh >/dev/null
     @bash scripts/check-local-gate.sh >/dev/null
     @bash scripts/check-sdk-install.sh >/dev/null

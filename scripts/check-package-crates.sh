@@ -130,10 +130,4 @@ if ! run_case env BINARY_PACKAGE=fail GIT_DIFF_MODE=dirty scripts/package-crates
 fi
 assert_contains "awaits release-plz's core version bump" "$work/out"
 
-if run_case env ONEHARNESS_BIN="$work/not-executable" scripts/smoke.sh >"$work/out" 2>&1; then
-  fail "invalid ONEHARNESS_BIN unexpectedly passed smoke" \
-    "fix scripts/smoke.sh executable validation and rerun 'bash scripts/check-package-crates.sh'"
-fi
-assert_contains 'ONEHARNESS_BIN is not an executable file' "$work/out"
-
 echo "check-package-crates: ok"

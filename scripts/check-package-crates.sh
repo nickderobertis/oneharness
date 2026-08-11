@@ -107,10 +107,16 @@ if run_case env BINARY_PACKAGE=fail scripts/package-crates.sh >"$work/out" 2>&1;
 fi
 assert_contains "commit the core API change as fix/feat/perf" "$work/out"
 
-run_case env BINARY_PACKAGE=fail COMMIT_KIND=fix scripts/package-crates.sh >"$work/out" 2>&1
+if ! run_case env BINARY_PACKAGE=fail COMMIT_KIND=fix scripts/package-crates.sh >"$work/out" 2>&1; then
+  cat "$work/out" >&2
+  fail "release-worthy core fix did not permit the release-plz transition"
+fi
 assert_contains "awaits release-plz's core version bump" "$work/out"
 
-run_case env BINARY_PACKAGE=fail COMMIT_KIND=breaking scripts/package-crates.sh >"$work/out" 2>&1
+if ! run_case env BINARY_PACKAGE=fail COMMIT_KIND=breaking scripts/package-crates.sh >"$work/out" 2>&1; then
+  cat "$work/out" >&2
+  fail "breaking core change did not permit the release-plz transition"
+fi
 assert_contains "awaits release-plz's core version bump" "$work/out"
 
 if run_case env BINARY_PACKAGE=fail COMMIT_KIND=noncore scripts/package-crates.sh >"$work/out" 2>&1; then
@@ -118,7 +124,10 @@ if run_case env BINARY_PACKAGE=fail COMMIT_KIND=noncore scripts/package-crates.s
 fi
 assert_contains "cannot be packaged against its published oneharness-core dependency" "$work/out"
 
-run_case env BINARY_PACKAGE=fail GIT_DIFF_MODE=dirty scripts/package-crates.sh >"$work/out" 2>&1
+if ! run_case env BINARY_PACKAGE=fail GIT_DIFF_MODE=dirty scripts/package-crates.sh >"$work/out" 2>&1; then
+  cat "$work/out" >&2
+  fail "dirty core checkpoint did not permit pre-commit package verification"
+fi
 assert_contains "awaits release-plz's core version bump" "$work/out"
 
 if run_case env ONEHARNESS_BIN="$work/not-executable" scripts/smoke.sh >"$work/out" 2>&1; then

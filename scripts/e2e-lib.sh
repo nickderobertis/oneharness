@@ -1259,9 +1259,13 @@ _oh_control_evidence() {
         # that did nothing, and the `type` a run never saw is invisible in a
         # tail of the ones it did — this is the whole vocabulary in one line.
         note "  evidence: frame types seen —"
+        # `tr -d '\r'` before the join, because the Windows runner's `sort` ends
+        # its lines CRLF: joining those on '\n' alone leaves a CR between every
+        # pair, and a CR is a line break to every log viewer — so the one line
+        # this evidence exists to be came out as one type per line.
         jq -r '.results[0].stdout // ""' "$report" 2>/dev/null \
             | jq -R -r 'fromjson? | .type // empty' 2>/dev/null \
-            | sort -u | tr '\n' ' ' | sed 's/^/    /' >&2 || true
+            | sort -u | tr -d '\r' | tr '\n' ' ' | sed 's/^/    /' >&2 || true
         printf '\n' >&2
         # And any error a frame carried, in full. The tail above truncates each
         # line to keep a transcript readable, which is exactly long enough to

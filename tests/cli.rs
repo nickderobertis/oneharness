@@ -509,7 +509,7 @@ fn mode_flag_selects_a_permission_mode() {
 }
 
 #[test]
-fn read_only_is_distinct_from_plan_and_enforced_where_possible() {
+fn claude_read_only_exposes_only_read_tools_while_bypass_retains_all_tools() {
     // read-only on codex is the OS-enforced read-only sandbox; codex has no plan
     // workflow, so `--mode plan` is refused for it (use read-only instead).
     let ro = run(
@@ -554,8 +554,47 @@ fn read_only_is_distinct_from_plan_and_enforced_where_possible() {
         ],
         &[],
     );
-    let c = json_stdout(&claude_ro)["results"][0]["command"].to_string();
-    assert!(c.contains("--tools"), "{c}");
+    let claude_ro = json_stdout(&claude_ro);
+    let command: Vec<&str> = claude_ro["results"][0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg.as_str().unwrap())
+        .collect();
+    let tools: Vec<&str> = command
+        .iter()
+        .skip_while(|arg| **arg != "--tools")
+        .skip(1)
+        .take_while(|arg| !arg.starts_with("--"))
+        .copied()
+        .collect();
+    assert_eq!(
+        tools,
+        ["Read", "Grep", "Glob", "WebFetch", "WebSearch"],
+        "read-only must expose only tools that cannot delegate or write: {command:?}"
+    );
+
+    let claude_bypass = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--mode",
+            "bypass",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(claude_bypass.status.success());
+    let claude_bypass = json_stdout(&claude_bypass);
+    let command = claude_bypass["results"][0]["command"].as_array().unwrap();
+    assert!(
+        !command.iter().any(|arg| arg == "--tools"),
+        "bypass must retain Claude's full tool set: {command:?}"
+    );
 }
 
 #[test]

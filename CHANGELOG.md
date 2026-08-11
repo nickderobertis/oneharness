@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.13](https://github.com/nickderobertis/oneharness/compare/v0.6.12...v0.6.13) - 2026-08-11
+
+### Fixed
+
+- pin Claude read-only tools at the CLI boundary
+
 ## [0.6.12](https://github.com/nickderobertis/oneharness/compare/v0.6.11...v0.6.12) - 2026-08-10
 
 ### Fixed

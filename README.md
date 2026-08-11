@@ -1199,8 +1199,7 @@ silently is not there is worse than none:
   turn — so the mode cannot travel with it. It is refused before anything spawns
   rather than run under whatever policy that server already had. Use `--mode
   default` (deny and continue) or `--mode bypass`. Every other harness supports
-  under `--control` whatever it supports without it, at the same policy — see
-  *Approval modes under control* below.
+  under `--control` whatever it supports without it, at the same policy.
 - **No `--stream` on a server-submitted mechanism** (`opencode-http`,
   `crush-http`): those turns never spawn the harness CLI, so there is no stdout
   to publish line by line — and accepting the flag would silently select the

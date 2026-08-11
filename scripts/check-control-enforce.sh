@@ -99,6 +99,22 @@ OH_E2E_NO_SKIP=1 outcome_case "a known gap in CI" 0 \
     "KNOWN GAP (reported, not proven): opencode (control-mode: …)" \
     "claude-code" "" "1m00s" "" "" "opencode (control-mode: …)"
 
+# Where BOTH of those leniencies stop: a run that proved NOTHING. Neither a
+# refusal nor a gap is red on its own, because each sits beside harnesses that
+# did prove something — but a run where nothing did is vacuous, and reporting it
+# green in CI is precisely the false pass OH_E2E_NO_SKIP exists for. So the
+# no-proven branch stays loud whatever the reason, and says what the reason was.
+OH_E2E_NO_SKIP=1 outcome_case "nothing proven, all refused, in CI" 1 \
+    "copilot (provider refused: usage limit)" \
+    "" "" "1m00s" "" "copilot (provider refused: usage limit)"
+OH_E2E_NO_SKIP=1 outcome_case "nothing proven, only a known gap, in CI" 1 \
+    "skip disallowed" "" "" "1m00s" "" "" "opencode (control-mode: …)"
+# On a developer box the same run is an absence rather than a failure, and it
+# still has to NAME what was not run — a bare SKIP would read as "nothing to do".
+OH_E2E_NO_SKIP='' outcome_case "nothing proven, all refused, locally" 0 \
+    "copilot (provider refused: usage limit)" \
+    "" "" "1m00s" "" "copilot (provider refused: usage limit)"
+
 # The evidence an inconclusive phase leaves behind. Three attempts retry that
 # outcome and then fail naming only the symptom, so whatever the harness did has
 # to reach the log — a CI-only suite has nothing else to look at.

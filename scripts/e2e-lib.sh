@@ -1045,6 +1045,7 @@ oh_edit_enforce() {
 #   $1 harness id
 oh_control_mode_enforce() {
     local id="$1" attempt attempts=3 started=$SECONDS status
+    # llmlint: ignore-block[tool_output_is_signal] WHICH attempt won is the signal, not chatter, for the same reason `oh_control_enforce` states above it: the retries are a backstop for a turn that never starts, so a phase that passes on its third attempt every night is a phase about to fail — and a transcript that only ever printed one final line could never say so, in a CI-only suite nobody can attach a debugger to.
     for attempt in $(seq 1 "$attempts"); do
         status=0
         _oh_control_mode_enforce_once "$id" || status=$?
@@ -1059,7 +1060,8 @@ oh_control_mode_enforce() {
         fi
         note "  control-mode: attempt $attempt was retired by the harness's own turn failing, not by the mode; retrying"
     done
-    fail "$id: a controlled turn under --mode default never got far enough to end — the harness's own turn failed on all $attempts attempts ($((SECONDS - started))s), so its provider or credential is what to look at first, not the control path"
+    # llmlint: ignore-end[tool_output_is_signal]
+    fail "$id: a controlled turn under --mode default never got far enough to end — the harness's own turn failed on all $attempts attempts ($((SECONDS - started))s), so its provider or credential is what to look at first, not the control path. Next: run \`oneharness run --harness $id --control --session probe --mode default --prompt hi\` and read \`results[0].stdout\` for the error the harness reported; if it names a provider, a key or a model, fix that before reading any of this feature's code"
 }
 
 # One attempt. Returns 0 when the turn ended, 1 when the harness's own turn
@@ -1873,8 +1875,6 @@ _oh_harness_errors() {
         || true
 }
 
-# --- a turn the provider refused --------------------------------------------
-#
 # `_oh_harness_errors` above tells a turn that FAILED from one that ran. This
 # tells a turn that was never allowed to start from either: the account is out of
 # quota, so the provider answers the request and declines it. Nothing follows

@@ -233,9 +233,8 @@ Both clients cover every verb this CLI exposes, and both build their command
 lines from the same declared manifest rather than naming flags of their own, so
 no consumer has to drop to raw argv for anything. A Rust consumer does not need
 the subprocess at all: `oneharness-core` returns each verb's report directly.
-The gates that fail when any of that stops being true — and the recipe each one
-runs under, generated from the justfile rather than restated — are in
-[CLI ↔ SDK parity](docs/sdk-parity.md#which-gate-runs-them).
+Every gate run re-derives all of that from the capability manifest and from each
+client's own source, so none of it can quietly stop being true.
 
 History distinguishes provider timing from tool intervals observed by
 oneharness. `model_ms` and `tool_ms` remain reserved for harnesses with explicit

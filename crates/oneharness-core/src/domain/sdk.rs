@@ -162,6 +162,54 @@ impl JsonSchema for LiteralTrue {
     }
 }
 
+/// The literal `false`.
+///
+/// The [`LiteralTrue`] counterpart, for the other side of a discriminated pair:
+/// `history clear` prints one of two documents and `dry_run` is what tells them
+/// apart, so each frame pins its own value rather than carrying a `bool` either
+/// constructor could set wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct LiteralFalse;
+
+impl Serialize for LiteralFalse {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_bool(false)
+    }
+}
+
+impl<'de> Deserialize<'de> for LiteralFalse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        if bool::deserialize(deserializer)? {
+            Err(serde::de::Error::custom("must be `false`"))
+        } else {
+            Ok(Self)
+        }
+    }
+}
+
+impl JsonSchema for LiteralFalse {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("LiteralFalse")
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({
+            "type": "boolean",
+            "const": false,
+        })
+    }
+}
+
 /// Options accepted by `OneHarness.run()` in the published Node SDK.
 ///
 /// Unknown fields are rejected because the SDK cannot forward an option it does

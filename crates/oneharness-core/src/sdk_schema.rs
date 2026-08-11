@@ -59,8 +59,11 @@ pub struct SdkSchemaBundle {
     pub gate_options: Schema,
     pub mock_options: Schema,
     pub interrupt_options: Schema,
+    pub interrupt_response: Schema,
     pub history_clear_options: Schema,
+    pub history_clear_report: Schema,
     pub history_migrate_options: Schema,
+    pub history_migrate_report: Schema,
 }
 
 /// Generate the shared SDK schema roots from their Rust contract types.
@@ -91,8 +94,11 @@ pub fn bundle() -> SdkSchemaBundle {
         gate_options: schema_for!(GateOptions),
         mock_options: schema_for!(MockOptions),
         interrupt_options: schema_for!(InterruptOptions),
+        interrupt_response: schema_for_serialize::<crate::domain::control::ControlResponse>(),
         history_clear_options: schema_for!(HistoryClearOptions),
+        history_clear_report: schema_for_serialize::<crate::io::history::HistoryClearReport>(),
         history_migrate_options: schema_for!(HistoryMigrateOptions),
+        history_migrate_report: schema_for_serialize::<crate::io::history::HistoryMigrateReport>(),
     }
 }
 

@@ -31,9 +31,10 @@
 //! the process lifetimes, and the pool's disk state live in
 //! [`crate::io::control`] and [`crate::io::server_pool`].
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
-use schemars::JsonSchema;
+use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::history::sanitize_name;
@@ -845,6 +846,52 @@ impl<'de> Deserialize<'de> for ControlResponse {
             reason: wire
                 .reason
                 .ok_or_else(|| D::Error::custom("a refused control frame must carry a reason"))?,
+        })
+    }
+}
+
+/// The schema is written by hand for the same reason [`Serialize`] and
+/// [`Deserialize`] are: the wire frame is an `ok` flag with companions, and the
+/// Rust type is the sum that flag stands for, so no derive can bridge them. It
+/// is a `oneOf` of the two frames rather than the permissive union of their
+/// fields, because that is what `Deserialize` accepts — an SDK validator built
+/// from this schema must refuse exactly the contradictory frames the Rust
+/// reader refuses, or a consumer validates a frame oneharness itself would not.
+impl JsonSchema for ControlResponse {
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("ControlResponse")
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        let mechanism = generator.subschema_for::<ControlShape>();
+        let reason = generator.subschema_for::<ControlReason>();
+        schemars::json_schema!({
+            "description": "The answer to one `oneharness interrupt`: either the abort was served, or it was refused with a reason.",
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "v": { "type": "integer", "const": PROTOCOL_VERSION },
+                        "ok": { "type": "boolean", "const": true },
+                        "mechanism": mechanism,
+                        "redirected": {
+                            "type": "boolean",
+                            "description": "Whether the request's redirection was committed with the abort. Omitted rather than sent as `false`, so a plain interrupt's answer gains no field the supervisor did not ask for.",
+                        },
+                    },
+                    "required": ["v", "ok", "mechanism"],
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "v": { "type": "integer", "const": PROTOCOL_VERSION },
+                        "ok": { "type": "boolean", "const": false },
+                        "error": { "type": "string" },
+                        "reason": reason,
+                    },
+                    "required": ["v", "ok", "error", "reason"],
+                },
+            ],
         })
     }
 }

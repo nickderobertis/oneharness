@@ -18,7 +18,7 @@
 use std::collections::BTreeSet;
 
 use clap::CommandFactory;
-use oneharness_core::domain::capability::{Capability, FlagKind, CAPABILITIES};
+use oneharness_core::domain::capability::{Capability, FlagKind, StdoutShape, CAPABILITIES};
 
 /// Verbs that are deliberately not capabilities, with the reason.
 ///
@@ -210,6 +210,34 @@ fn a_suppressing_option_is_one_the_same_capability_binds() {
                 binding.option,
             );
         }
+    }
+}
+
+#[test]
+fn a_json_capability_names_an_output_contract() {
+    // The gap this closes is an SDK method that spawns, reads a JSON document,
+    // and hands the caller `unknown` because nothing describes it. A `Text`
+    // capability legitimately has no document; one that prints JSON has no
+    // excuse, and saying so here is what keeps a future verb from shipping with
+    // an inline `serde_json::json!` report no consumer can validate.
+    for capability in CAPABILITIES {
+        if capability.stdout == StdoutShape::Text {
+            assert!(
+                capability.output.is_none(),
+                "`{}` emits text but names the output contract `{:?}`",
+                capability.method,
+                capability.output
+            );
+            continue;
+        }
+        assert!(
+            capability.output.is_some(),
+            "`{}` emits {:?} but names no output contract. Give the verb's report a \
+             schema-carrying Rust type and add its root to `sdk_schema::bundle`; an SDK \
+             cannot validate a document nothing describes.",
+            capability.method,
+            capability.stdout
+        );
     }
 }
 

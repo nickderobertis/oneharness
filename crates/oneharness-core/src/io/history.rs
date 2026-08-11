@@ -26,6 +26,7 @@ use crate::domain::history::{
 };
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::RunResult;
+use crate::domain::sdk::{LiteralFalse, LiteralTrue};
 use crate::errors::OneharnessError;
 
 /// The file extension for every session log (line-delimited JSON).
@@ -325,12 +326,100 @@ struct HistoryEventIndexEntry {
 /// Outcome for one session file processed by [`migrate`]. Counts refer to
 /// whole legacy records and current v1.0 lines; unreadable lines are preserved
 /// byte-for-byte and reported as skipped.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct MigrationSummary {
+    // llmlint: ignore[invalid_states_unrepresentable] The session location is reported as its portable display string, which is what a JSON/SDK consumer reads back; this is an output projection, not a path this crate then does I/O through.
     pub path: String,
     pub records_migrated: usize,
     pub skipped: usize,
     pub already_current: usize,
+}
+
+/// The `oneharness history migrate` output contract.
+///
+/// A type rather than the inline `json!` literal it replaced, because an SDK
+/// cannot validate a document that has no schema — which is what left this
+/// capability's `output` unbacked in the capability manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub struct HistoryMigrateReport {
+    /// One entry per session file the migration touched.
+    pub files: Vec<MigrationSummary>,
+    /// `files.len()`, carried so a consumer reading only the summary does not
+    /// have to walk the array.
+    pub files_processed: usize,
+}
+
+impl HistoryMigrateReport {
+    /// Summarize what [`migrate`] did.
+    #[must_use]
+    pub fn new(files: Vec<MigrationSummary>) -> Self {
+        HistoryMigrateReport {
+            files_processed: files.len(),
+            files,
+        }
+    }
+}
+
+/// The `oneharness history clear` output contract.
+///
+/// `clear` is a dry run until `--yes`, and the two phases have always printed
+/// *different* documents: a real run reports `removed`, a dry run reports
+/// `would_remove` plus the hint that makes it real. That difference is the
+/// contract, so this is a sum of the two frames rather than one struct with
+/// both counts optional — which would let a consumer read a deletion count off
+/// a run that deleted nothing. Untagged, because `dry_run` is the discriminant
+/// the published shape already carries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum HistoryClearReport {
+    Removed(HistoryClearRemoved),
+    DryRun(HistoryClearDryRun),
+}
+
+/// The frame a `--yes` run prints: these files are gone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub struct HistoryClearRemoved {
+    pub removed: usize,
+    // llmlint: ignore[invalid_states_unrepresentable] These are portable display strings for a JSON/SDK consumer, the same projection `SessionSummary::path` already publishes; they are never read back as paths this crate acts on.
+    pub files: Vec<String>,
+    /// Always `false` — the field is what tells the two frames apart, so it is
+    /// a literal rather than a flag either constructor could get wrong.
+    pub dry_run: LiteralFalse,
+}
+
+/// The frame a run without `--yes` prints: these files *would* go.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub struct HistoryClearDryRun {
+    pub would_remove: usize,
+    // llmlint: ignore[invalid_states_unrepresentable] Same output-only projection as the sibling frame above; the deletion itself works from the typed paths `remove_sessions` walked, never from these strings.
+    pub files: Vec<String>,
+    pub dry_run: LiteralTrue,
+    /// How to make the dry run real. Constant text, carried in the document so
+    /// a JSON consumer gets the same guidance the text view prints.
+    pub hint: &'static str,
+}
+
+impl HistoryClearReport {
+    /// What [`remove_sessions`] deleted.
+    #[must_use]
+    pub fn removed(files: Vec<String>) -> Self {
+        HistoryClearReport::Removed(HistoryClearRemoved {
+            removed: files.len(),
+            files,
+            dry_run: LiteralFalse,
+        })
+    }
+
+    /// What a `--yes` re-run would delete, having deleted nothing.
+    #[must_use]
+    pub fn dry_run(files: Vec<String>) -> Self {
+        HistoryClearReport::DryRun(HistoryClearDryRun {
+            would_remove: files.len(),
+            files,
+            dry_run: LiteralTrue,
+            hint: "re-run with --yes to delete",
+        })
+    }
 }
 
 /// Rewrite every legacy session in a history store to v1.0 and rebuild its

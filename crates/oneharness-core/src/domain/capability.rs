@@ -95,12 +95,12 @@ pub struct Capability {
     pub options: Option<&'static str>,
     /// The schema root of its output contract.
     ///
-    /// `None` two ways, and the difference is in [`Capability::stdout`]: a
-    /// `Text` verb has no document to validate at all, while a `Json` one whose
-    /// output is not yet a schema-carrying Rust type has a document nothing can
-    /// check. The second is a gap, recorded rather than papered over by naming a
-    /// root the bundle does not emit — which is what
-    /// `every_named_schema_root_is_emitted_by_the_bundle` refuses.
+    /// `None` only for a [`StdoutShape::Text`] capability, which has no document
+    /// to validate at all. A capability that emits JSON must name a root the
+    /// bundle emits: `a_json_capability_names_an_output_contract` refuses the
+    /// `None`, and `every_named_schema_root_is_emitted_by_the_bundle` refuses a
+    /// root with no source behind it — so "an SDK method returning `unknown`"
+    /// cannot be reached from either direction.
     pub output: Option<&'static str>,
     /// How the SDK reads the verb's stdout.
     pub stdout: StdoutShape,
@@ -413,11 +413,7 @@ pub const CAPABILITIES: &[Capability] = &[
         method: "interrupt",
         argv: &["interrupt"],
         options: Some("interrupt_options"),
-        // No generated contract yet: the response's `{"v":2,…}` wire shape is
-        // hand-written rather than derived, so there is nothing for an SDK to
-        // validate against. Giving it a `JsonSchema` that matches by
-        // construction is what closes this.
-        output: None,
+        output: Some("interrupt_response"),
         stdout: StdoutShape::Json,
         stdin: false,
         rust: "oneharness_core::io::control::send",
@@ -496,11 +492,7 @@ pub const CAPABILITIES: &[Capability] = &[
         method: "historyClear",
         argv: &["history", "clear"],
         options: Some("history_clear_options"),
-        // No generated contract yet: the verb builds its report with an inline
-        // `serde_json::json!` literal rather than a schema-carrying struct, so
-        // there is no root to validate against. Giving it a type is what closes
-        // this; naming a root the bundle does not emit would only look closed.
-        output: None,
+        output: Some("history_clear_report"),
         stdout: StdoutShape::Json,
         stdin: false,
         rust: "oneharness_core::io::history::remove_sessions",
@@ -519,9 +511,7 @@ pub const CAPABILITIES: &[Capability] = &[
         method: "historyMigrate",
         argv: &["history", "migrate"],
         options: Some("history_migrate_options"),
-        // No generated contract yet — same inline `json!` report as
-        // `historyClear` above.
-        output: None,
+        output: Some("history_migrate_report"),
         stdout: StdoutShape::Json,
         stdin: false,
         rust: "oneharness_core::io::history::migrate",

@@ -30,9 +30,17 @@ esac
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-# Hermetic: the machine's real oneharness config (user-level or a project file
-# above the repo) must never shape these assertions. The config feature itself
-# is smoked in step 3b with explicitly planted files.
+# Hermetic: the machine's real oneharness config (user-level, environment, or a
+# project file above the repo) must never shape these assertions. Preserve the
+# caller's ONEHARNESS_* environment for the opt-in live phase, but remove it
+# while the planted config boundary is exercised.
+declare -a inherited_oneharness_names=()
+declare -A inherited_oneharness_values=()
+while IFS= read -r name; do
+  inherited_oneharness_names+=("$name")
+  inherited_oneharness_values["$name"]="${!name}"
+  unset "$name"
+done < <(compgen -e | grep '^ONEHARNESS_' || true)
 export ONEHARNESS_NO_CONFIG=1
 
 PROMPT="oneharness smoke: reply with the single word pong"
@@ -77,7 +85,10 @@ count_matches() {
 # gate silently smokes an out-of-date artifact (the original footgun). Build
 # debug if neither exists.
 resolve_oneharness() {
-  if [ -n "${ONEHARNESS_BIN:-}" ]; then printf '%s' "$ONEHARNESS_BIN"; return 0; fi
+  if [ -n "${inherited_oneharness_values[ONEHARNESS_BIN]:-}" ]; then
+    printf '%s' "${inherited_oneharness_values[ONEHARNESS_BIN]}"
+    return 0
+  fi
   local rel deb
   rel="$(exe_path target/release/oneharness || true)"
   deb="$(exe_path target/debug/oneharness || true)"
@@ -323,6 +334,10 @@ if [ "$LIVE" -eq 0 ]; then
 fi
 
 # --live: exercise the real adapters against installed, authenticated harnesses.
+unset ONEHARNESS_NO_CONFIG
+for name in "${inherited_oneharness_names[@]}"; do
+  export "$name=${inherited_oneharness_values[$name]}"
+done
 LAST_CMD="$oh detect --all --compact"
 det="$($oh detect --all --compact)" || fail "detect exited non-zero" "$LAST_CMD"
 if ! printf '%s' "$det" | grep -qF '"available":true'; then

@@ -38,7 +38,7 @@ bootstrap:
 # coverage*, build, artifact smoke. Fails on any issue. `coverage` re-runs the
 # workspace suite under instrumentation and fails below {{COVERAGE_MIN}}% lines;
 # `test` stays in the gate as the fast, un-instrumented pass/fail signal.
-check: fmt-check lint lint-sh lint-workflows sdk-check python-sdk-check test coverage build smoke
+check: fmt-check lint lint-sh lint-workflows package-crates sdk-check python-sdk-check test coverage build smoke
     @echo "check: ok"
 
 # Complete pre-push gate: deterministic product/dependency checks, followed by
@@ -60,6 +60,12 @@ lint:
 
 # Alias for `lint`.
 clippy: lint
+
+# Package the reusable crate and the binary exactly as Cargo will verify them at
+# publish time. This belongs in every PR gate: a green tag is already too late,
+# and the registry-resolved dependency check is cheap beside the existing gate.
+package-crates:
+    bash scripts/package-crates.sh
 
 # Lint shell scripts with shellcheck; any finding is an error. Like `cargo-deny`,
 # shellcheck is an external tool: CI installs it, and this prints an install hint

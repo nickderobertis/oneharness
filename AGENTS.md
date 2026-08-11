@@ -108,19 +108,16 @@ Use the `just` recipes; do not hand-roll equivalents.
   because a schedule has no PR to turn red. In CI `OH_E2E_NO_SKIP` makes a
   harness that drops out for want of a credential RED — without it the suite
   reports success having proven nothing for whichever harnesses went
-  unauthenticated. Two absences are deliberately NOT red, because no credential
-  fixes either and reporting them so is how a suite blames this feature for
-  something else: a **provider refusal** (the account is out of quota, so the
-  request was answered and DECLINED — `_oh_provider_refusal` recognizes it from
-  the provider's own WORDS, on every path a CLI states them (`text`, `error`,
-  `stderr`, and the frames), because no status says it: copilot's driven turn is
-  a clean `ok` that did nothing, and its `-p` run exits 1 with the message on
-  stderr alone. The phase reports `not run: <id> (provider refused: …)` and never retries,
-  because a quota does not refill inside a suite), and a declared **known gap**
-  (`known_gap` in `e2e-control.sh`). Both are still SAID every run: an absence
-  dropped from the verdict is indistinguishable from coverage. A *rate limit* is
-  deliberately not a refusal — that turn may run on the next attempt, so it stays
-  a retryable inconclusive one. The control × mode grid is mostly NOT its job: the policy each
+  unauthenticated. Two absences are NOT red, because no credential fixes either:
+  a **provider refusal** (`_oh_provider_refusal` / `not_run`) and a declared
+  **known gap** (`known_gap` in `e2e-control.sh`). Both are still SAID every run
+  — an absence dropped from the verdict is indistinguishable from coverage. A
+  refusal is recognized from the provider's own WORDS, on every path a CLI states
+  them (`text`, `error`, `stderr`, frames), because no *status* does: a driven
+  copilot turn is a clean `ok` that did nothing and its `-p` run exits 1 with the
+  message on stderr alone. It is never retried (a quota does not refill inside a
+  suite); a *rate limit* is deliberately not one, since that turn may run on the
+  next attempt. The control × mode grid is mostly NOT its job: the policy each
   mode sends with and without `--control` is pinned per harness as a unit
   assertion (`domain::control`'s `control_mode_parity`), since a live phase per
   mode would multiply an already-26-minute suite to prove a value. The one live
@@ -270,16 +267,15 @@ Use the `just` recipes; do not hand-roll equivalents.
   and then it is the harness's own (`ModeSpec::posture`) rather than the
   spectrum's — which is why crush's ungated `default` is unattended under control
   too. A mode whose ONLY delivery is the harness's own config environment cannot
-  reach a turn submitted to a pooled server (that environment belongs to the
-  server process, which this dispatch may not have started), so opencode's `edit`
+  reach a turn submitted to a pooled server — that environment belongs to the
+  server process, which this dispatch may not have started — so opencode's `edit`
   is a **loud usage error** under `--control` rather than a turn under whatever
-  policy the server already had. Handing it to the server was tried and reverted:
-  it made the approval mode a component of the pool key, and the controlled
-  `--mode default` turn it was meant to prove ended in `status=timeout` on
-  opencode across four consecutive CI cycles. That is a **known gap**, named as
-  its own cell in the grid (`known-gap:mode-env-not-delivered-to-a-pooled-server`)
-  and as a phase `e2e-control.sh` reports rather than runs — a cell dropped from
-  the grid reads as coverage. Adding a harness or a mode means adding its cell to `control_mode_parity`. Declare `ControlShape` only after a live interrupt
+  policy that server already had, and the approval mode stays out of the pool key.
+  That is this feature's one **known gap**, and it is NAMED in both places a
+  reader looks: its own grid cell
+  (`known-gap:mode-env-not-delivered-to-a-pooled-server`) and a phase
+  `e2e-control.sh` reports rather than runs. A cell dropped from either reads as
+  coverage. Adding a harness or a mode means adding its cell to `control_mode_parity`. Declare `ControlShape` only after a live interrupt
   through oneharness. Stdin control keeps the child stdin open, then closes it
   on `is_turn_terminal`. Dialogue control owns its JSON-RPC child per dispatch:
   codex ends on `turn/completed`, not the `turn/start` response, and ACP must

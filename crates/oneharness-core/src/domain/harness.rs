@@ -1123,12 +1123,11 @@ static REGISTRY: &[HarnessSpec] = &[
                     r#"{"permission":{"edit":"allow","bash":"deny"}}"#,
                 )],
                 instruction: None,
-                // The config above IS this mode's policy, and a controlled run
-                // delivers it to the server it launches (probe-verified: `opencode
-                // serve` loads `OPENCODE_CONFIG_CONTENT` and echoes this exact
-                // block back on `/config`). So the wire answer is only a backstop
-                // for an ask the config did not already decide, and declining is
-                // the safe way to answer one.
+                // The config above IS this mode's policy, and a turn submitted
+                // to a pooled server cannot carry it — so `--control --mode
+                // edit` is refused outright rather than run under the server's
+                // own policy. This posture is only the wire backstop if one ever
+                // arrives anyway; declining is the safe way to answer it.
                 posture: ApprovalPosture::Gated,
             },
             mode(PermissionMode::Bypass, ModeHeadless::Clean),

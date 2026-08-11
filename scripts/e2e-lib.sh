@@ -1020,10 +1020,8 @@ oh_edit_enforce() {
 # `control_mode_parity`): for every control-capable harness and every mode, the
 # policy the control path sends is the policy that mode sends without
 # `--control`. What that assertion cannot check is whether the harness HONORS
-# what it was handed, and two of those deliveries are new:
-#   * copilot's permission flags now ride the `--acp` argv beside the protocol
-#     switch, and
-#   * opencode's mode environment now reaches the pooled server it launches.
+# what it was handed — and copilot's delivery is new: its permission flags now
+# ride the `--acp` argv beside the protocol switch.
 #
 # So this drives ONE controlled turn under `--mode default` — the gating posture
 # — and requires it to END rather than hang. That is the narrowest thing worth a

@@ -136,29 +136,38 @@ llmlint_record_verdict() {
   find "$dir" -name '*.verdict*' -mtime +30 -delete 2>/dev/null || true
 }
 
-# Run a command with the repo's own oneharness config in charge.
+# Run a command with the repo's own oneharness config choosing the harness.
 #
-# Both the availability probe and the judge itself dispatch `oneharness run
-# --config oneharness.toml`, and `--config` loads exactly that file — but the
+# Both the availability probe and the judge dispatch `oneharness run --config
+# oneharness.toml`, and `--config` loads exactly that file — but the
 # `ONEHARNESS_*` environment overrides still layer on top of it by design. A host
 # that runs its own agents through oneharness carries `ONEHARNESS_HARNESSES`,
 # which then reselects: on such a host both calls died on `unknown harness
 # variant`, naming a harness this repo's config never mentions, and took the
-# whole pre-push gate with them. Nothing in the tree was wrong.
+# whole pre-push gate down with nothing wrong in the tree.
 #
-# So the policy overrides are dropped for these calls, and the config decides.
-# On a machine that has none — a developer box, CI — this is a no-op.
+# Only the overrides that pick a harness are dropped, and the list is deliberate
+# rather than "every ONEHARNESS_*". A broader strip also changed how the judge
+# runs — its approval mode and its timeout are the host's to set, and taking
+# them away altered the call this gate is supposed to be observing, not just
+# which harness answered it. On a machine with none of these set — a developer
+# box, CI — this is a no-op.
 #
-# `ONEHARNESS_BIN_<ID>` is deliberately kept: it says where a binary IS, not
-# which one to run, and dropping it would make the gate miss a harness the
-# developer really does have. Discovered rather than listed, so a newly added
-# override cannot reopen the hole.
+# Keep this in step with the selection fields in `domain::config::from_env`.
+llmlint_selection_env=(
+  ONEHARNESS_HARNESSES
+  ONEHARNESS_EXCLUDE
+  ONEHARNESS_ALL
+  ONEHARNESS_MODEL
+  ONEHARNESS_MODELS
+)
+
 llmlint_repo_config_env() {
   local -a stripped=()
   local name
-  while IFS= read -r name; do
-    [[ $name == ONEHARNESS_BIN_* ]] || stripped+=(-u "$name")
-  done < <(env | sed -n 's/^\(ONEHARNESS_[A-Za-z0-9_]*\)=.*/\1/p')
+  for name in "${llmlint_selection_env[@]}"; do
+    stripped+=(-u "$name")
+  done
   env "${stripped[@]}" "$@"
 }
 

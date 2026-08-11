@@ -13,7 +13,7 @@ use crate::domain::events::TelemetryTrace;
 use crate::domain::gate::DenyShape;
 use crate::domain::hooks::HookShape;
 use crate::domain::mock::{MockDelivery, RewriteShape};
-use crate::domain::mode::{ModeHeadless, PermissionMode};
+use crate::domain::mode::{ApprovalPosture, ModeHeadless, PermissionMode};
 use crate::domain::report::OutputFormat;
 use crate::domain::structured::NativeSchema;
 use crate::domain::usage::{UsageProbe, UsageSupport};
@@ -502,16 +502,46 @@ pub struct ModeSpec {
     /// for modes a harness expresses natively (their own plan/agent mode already
     /// carries the behavior). Prepended by the command layer; kept single-line.
     pub instruction: Option<&'static str>,
+    /// Whether this harness's OWN run acts without asking in this mode.
+    ///
+    /// A driven turn answers the server's permission requests itself, and the
+    /// answer has to be the posture the *same mode* gives without `--control` —
+    /// otherwise `--control` silently reshapes the policy, which is the class of
+    /// bug that made codex's controlled `bypass` more restricted than its
+    /// uncontrolled one. Usually that is the normalized spectrum (`auto` and
+    /// `bypass` mean "act without asking"), which is what [`mode`] fills in; it
+    /// is stated per harness because a CLI can be unable to honor the spectrum
+    /// at all — `crush run` auto-approves the whole session, so its `default` is
+    /// unattended however it is asked, and a controlled run that gated it would
+    /// be stricter than the CLI can be.
+    ///
+    /// Cross-checked against the argv/environment the harness really builds by
+    /// `domain::control`'s `control_mode_parity` grid, so this cannot drift into
+    /// a claim the mapping does not back.
+    pub posture: ApprovalPosture,
 }
 
-/// Shorthand for an argv-expressed mode (no environment, no instruction): the
-/// common case.
+/// Shorthand for a mode expressed on the argv (no environment, no instruction)
+/// whose posture follows the normalized spectrum: the common case.
 const fn mode(mode: PermissionMode, headless: ModeHeadless) -> ModeSpec {
     ModeSpec {
         mode,
         headless,
         env: &[],
         instruction: None,
+        posture: ApprovalPosture::of(mode),
+    }
+}
+
+/// Shorthand for a mode on a harness whose own run cannot gate at all, so it
+/// acts without asking whichever mode it was given (crush's `run -q`).
+const fn ungated_mode(mode: PermissionMode, headless: ModeHeadless) -> ModeSpec {
+    ModeSpec {
+        mode,
+        headless,
+        env: &[],
+        instruction: None,
+        posture: ApprovalPosture::Unattended,
     }
 }
 
@@ -991,6 +1021,7 @@ static REGISTRY: &[HarnessSpec] = &[
                 mode: PermissionMode::Plan,
                 headless: ModeHeadless::Clean,
                 env: &[],
+                posture: ApprovalPosture::Gated,
                 instruction: Some(CODEX_PLAN_INSTRUCTION),
             },
             mode(PermissionMode::Default, ModeHeadless::Clean),
@@ -1092,6 +1123,12 @@ static REGISTRY: &[HarnessSpec] = &[
                     r#"{"permission":{"edit":"allow","bash":"deny"}}"#,
                 )],
                 instruction: None,
+                // The config above IS this mode's policy, and a turn submitted
+                // to a pooled server cannot carry it — so `--control --mode
+                // edit` is refused outright rather than run under the server's
+                // own policy. This posture is only the wire backstop if one ever
+                // arrives anyway; declining is the safe way to answer it.
+                posture: ApprovalPosture::Gated,
             },
             mode(PermissionMode::Bypass, ModeHeadless::Clean),
         ],
@@ -1177,18 +1214,21 @@ static REGISTRY: &[HarnessSpec] = &[
                 headless: ModeHeadless::Clean,
                 env: &[("GOOSE_MODE", "approve")],
                 instruction: None,
+                posture: ApprovalPosture::Gated,
             },
             ModeSpec {
                 mode: PermissionMode::Auto,
                 headless: ModeHeadless::Clean,
                 env: &[("GOOSE_MODE", "smart_approve")],
                 instruction: None,
+                posture: ApprovalPosture::Unattended,
             },
             ModeSpec {
                 mode: PermissionMode::Bypass,
                 headless: ModeHeadless::Clean,
                 env: &[("GOOSE_MODE", "auto")],
                 instruction: None,
+                posture: ApprovalPosture::Unattended,
             },
         ],
         // Goose carries reasoning effort in provider config (`goose configure` /
@@ -1359,8 +1399,8 @@ static REGISTRY: &[HarnessSpec] = &[
         // also cannot gate, so `default` and `bypass` behave the same (bypass
         // adds the explicit `--yolo`). There is no plan/edit/auto mode on `run`.
         modes: &[
-            mode(PermissionMode::Default, ModeHeadless::Clean),
-            mode(PermissionMode::Bypass, ModeHeadless::Clean),
+            ungated_mode(PermissionMode::Default, ModeHeadless::Clean),
+            ungated_mode(PermissionMode::Bypass, ModeHeadless::Clean),
         ],
         // Crush sets reasoning through model options in `crush.json`
         // (`reasoning_effort` / `think`), not a CLI flag — the `sync`-path
@@ -1579,12 +1619,31 @@ static REGISTRY: &[HarnessSpec] = &[
     },
 ];
 
+/// The built-in tools a `read-only` Claude Code run may use, delivered as
+/// `--tools` — the set it PERMITS, so the set it withholds is everything else.
+///
+/// It was the mirror image until claude 2.1.220: `bypassPermissions` with
+/// `--disallowedTools Bash Edit Write NotebookEdit`. Naming what is forbidden is
+/// fail-open, and the CLI's own tool set is what moved under it. That version's
+/// built-ins include `Task`, which hands the turn to a subagent carrying the
+/// full set, so an agent with no `Bash` of its own delegated the shell call and
+/// the write landed (reproduced directly: the same argv plus "use the Agent tool
+/// to run `touch …`" creates the file; the live Windows leg that caught it
+/// reported `origin: {"kind":"task-notification"}` on a turn that did the write).
+/// An allowlist has no such tail: a tool the CLI adds next is out of reach
+/// because reaching it means being named here.
+///
+/// Sourced from `claude --help` (2.1.220) — `--tools` takes names "from the
+/// built-in set", and the `system`/`init` frame of a real run echoes back
+/// exactly these five.
+const CLAUDE_READ_ONLY_TOOLS: &[&str] = &["Read", "Grep", "Glob", "WebFetch", "WebSearch"];
+
 /// Claude Code's `--permission-mode` token for each normalized mode. `Default`
 /// maps to `dontAsk` (deny any un-allowed tool and continue) rather than
 /// `default` (which *aborts* the `-p` run on an un-allowed tool): the ask flow
 /// then completes headlessly instead of failing on the first prompt. `ReadOnly`
-/// rides `bypassPermissions` (allow-all, no prompts) with the mutating tools
-/// denied separately — deny rules take precedence even under bypass.
+/// rides `bypassPermissions` (allow-all, no prompts) with the available tool set
+/// narrowed to [`CLAUDE_READ_ONLY_TOOLS`] separately.
 fn claude_permission_mode(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::Plan => "plan",
@@ -1596,7 +1655,7 @@ fn claude_permission_mode(mode: PermissionMode) -> &'static str {
     }
 }
 
-/// `claude -p <prompt> --permission-mode <mode> [--disallowedTools …] [--model M]
+/// `claude -p <prompt> --permission-mode <mode> [--tools …] [--model M]
 /// [--append-system-prompt S] [--resume <id> [--fork-session]] --output-format json`
 /// (`--resume` continues a session by id; `--fork-session` branches a new session
 /// from it instead of appending — the session id is read from the result JSON's
@@ -1622,12 +1681,11 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     }
     a.push("--permission-mode".into());
     a.push(claude_permission_mode(c.mode).into());
-    // read-only: deny the mutating tools (Bash covers destructive shell; reads
-    // still run via Read/Grep/Glob). A bare name removes the tool entirely.
+    // read-only: narrow the built-in set to the tools that only read.
     if c.mode == PermissionMode::ReadOnly {
-        a.push("--disallowedTools".into());
-        for tool in ["Bash", "Edit", "Write", "NotebookEdit"] {
-            a.push(tool.into());
+        a.push("--tools".into());
+        for tool in CLAUDE_READ_ONLY_TOOLS {
+            a.push((*tool).into());
         }
     }
     if let Some(m) = c.model {
@@ -1938,16 +1996,22 @@ fn argv_crush(c: &BuildCtx) -> Vec<String> {
 /// the session when the id is new (create-or-resume) — so the caller mints and
 /// reuses a UUID; `session_id` stays null (nothing to extract).
 fn argv_copilot(c: &BuildCtx) -> Vec<String> {
-    // Control rides the Agent Client Protocol server, where `session/cancel`
-    // lives. Model, cwd, and approvals are negotiated on the wire.
-    if c.delivery.is_control_stream() {
-        return vec![c.bin.into(), "--acp".into()];
-    }
     // For a large prompt the command layer selects `PromptDelivery::Stdin` and pipes the
     // (system-prepended) prompt; copilot reads stdin as the prompt only when `-p`
     // is ABSENT (a `-p` value makes the pipe be ignored), so drop `-p` entirely.
     // Otherwise the prompt rides `-p`.
-    let mut a = if c.delivery.is_stdin_blob() {
+    let mut a = if c.delivery.is_control_stream() {
+        // Control rides the ACP server, but the approval posture does NOT move
+        // to the wire with it: `--acp` is one of copilot's own top-level
+        // options, and the permission flags below sit beside it (verified
+        // against `copilot --help` 1.0.78 and by handshaking a real
+        // `copilot --acp --allow-tool … --no-ask-user`, which answers
+        // `initialize` — copilot rejects an option it does not take, so
+        // acceptance is the evidence). Carrying them means a controlled turn
+        // runs under the mode's OWN mapping rather than a second policy
+        // invented for the protocol.
+        vec![c.bin.into(), "--acp".into()]
+    } else if c.delivery.is_stdin_blob() {
         vec![c.bin.into()]
     } else {
         vec![c.bin.into(), "-p".into(), prompt_with_system(c)]
@@ -1986,6 +2050,12 @@ fn argv_copilot(c: &BuildCtx) -> Vec<String> {
             a.push("plan".into());
         }
         _ => {}
+    }
+    // The mode is the only thing a control launch carries: the model and the
+    // session it continues are negotiated per session on the wire, so neither
+    // belongs on the argv that starts the server.
+    if c.delivery.is_control_stream() {
+        return a;
     }
     if let Some(m) = c.model {
         a.push("--model".into());
@@ -2308,24 +2378,26 @@ mod tests {
                 "mode {mode:?} should emit {token}: {argv:?}"
             );
         }
-        // read-only additionally denies the mutating tools (and only read-only
-        // does — plan/bypass leave them available to the permission system).
+        // read-only additionally narrows the built-in set to the read-only
+        // tools, and only read-only does — plan/bypass leave the whole set
+        // available to the permission system.
         let ro = (spec.build_argv)(&ctx("claude", None, PermissionMode::ReadOnly));
-        assert!(
-            ro.windows(2).any(|w| w == ["--disallowedTools", "Bash"]),
-            "read-only should deny Bash: {ro:?}"
+        let tools: Vec<&str> = ro
+            .iter()
+            .skip_while(|a| *a != "--tools")
+            .skip(1)
+            .take(CLAUDE_READ_ONLY_TOOLS.len())
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            tools, CLAUDE_READ_ONLY_TOOLS,
+            "read-only should permit exactly the read-only tools: {ro:?}"
         );
-        for tool in ["Edit", "Write", "NotebookEdit"] {
-            assert!(
-                ro.iter().any(|t| t == tool),
-                "read-only denies {tool}: {ro:?}"
-            );
-        }
         assert!(
             !(spec.build_argv)(&ctx("claude", None, PermissionMode::Plan))
                 .iter()
-                .any(|t| t == "--disallowedTools"),
-            "plan should not deny tools"
+                .any(|t| t == "--tools"),
+            "plan should not narrow the tool set"
         );
     }
 
@@ -2773,14 +2845,30 @@ mod tests {
     fn a_turn_driving_control_run_launches_that_harness_protocol_server() {
         // A control run on a turn-driving mechanism spawns the harness's OWN
         // protocol server instead of its headless run, so the launch argv is the
-        // whole command: prompt, mode and model are negotiated on the wire and
+        // whole command: the prompt and the model are negotiated on the wire and
         // must not appear on it. Pinned per harness (each sourced from that CLI
         // and re-proven by `scripts/explore-control.sh`), so a drifted subcommand
         // fails here rather than as a controlled run that never starts a turn.
+        //
+        // The APPROVAL MODE is the exception, and only where the CLI takes it
+        // beside the protocol switch: copilot's permission flags are top-level
+        // options that sit next to `--acp`, so a controlled turn runs under the
+        // mode's own mapping instead of a posture invented for the protocol
+        // (`domain::control`'s `control_mode_parity` holds the two equal). Codex
+        // and goose take theirs elsewhere — the app-server negotiates the
+        // sandbox per turn, and goose reads `GOOSE_MODE` from the environment.
         let launches = [
             ("codex", &["app-server"][..]),
             ("goose", &["acp"][..]),
-            ("copilot", &["--acp"][..]),
+            (
+                "copilot",
+                &[
+                    "--acp",
+                    "--allow-all-tools",
+                    "--allow-all-paths",
+                    "--no-ask-user",
+                ][..],
+            ),
         ];
         for (id, tail) in launches {
             let spec = by_id(id).unwrap();

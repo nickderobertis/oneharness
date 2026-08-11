@@ -317,7 +317,7 @@ pub enum OneharnessError {
     #[error("--control cannot be combined with --schema: the structured-output retry loop re-prompts, which would need a second turn on the control channel's open stdin")]
     ControlSchema,
 
-    #[error("harness `{id}` negotiates approvals on the wire under --control, where `--mode {mode}` cannot be expressed: it promises auto-approved edits with shell still gated, and the protocol's permission request carries no sourced way to tell one from the other. Use --mode default (deny and continue) or --mode bypass")]
+    #[error("harness `{id}` carries `--mode {mode}` in its own configuration environment, and a controlled turn does not hand that environment to the server it is submitted to — so the turn would run under the server's own policy rather than the one asked for. Use --mode default (deny and continue) or --mode bypass, or drop --control")]
     ControlModeUnsupported {
         // llmlint: ignore[invalid_states_unrepresentable] The id is echoed from the already-validated registry selection purely for the diagnostic.
         id: String,

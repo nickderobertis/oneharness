@@ -55,6 +55,22 @@ skip() {
     exit 0
 }
 
+# A turn the harness's own PROVIDER refused — the account is out of quota, so
+# the request was answered and declined. The phase proved nothing either way, and
+# unlike a skip() this stays green even under OH_E2E_NO_SKIP: that flag exists to
+# catch a harness that dropped out for want of a credential, and no credential CI
+# can supply makes a provider stop refusing. Turning it red would report someone
+# else's billing state as this feature breaking, which is the misattribution that
+# cost a night on the branch this was added for.
+#
+# Loud on the way out, because a run that reports NOT RUN has proven less than
+# its exit code suggests. Reserved for a refusal `_oh_provider_refusal`
+# recognized; every other absence is still skip().
+not_run() {
+    printf 'NOT RUN: %s\n' "$*" >&2
+    exit 0
+}
+
 # A required tool's absence is a SKIP, not a failure (e.g. no jq on the box).
 need() { command -v "$1" >/dev/null 2>&1 || skip "required tool not found: $1"; }
 
@@ -283,6 +299,15 @@ oh_assert_echoed() {
     source="$(oh_field '.results[0].text_source')"
 
     if [ "$status" != "ok" ]; then
+        # A turn the harness's own provider refused for quota is NOT this suite
+        # failing — nothing about oneharness was exercised by a request that was
+        # answered and declined. Checked before the failure and only for a
+        # refusal in the provider's own words; every other non-`ok` still fails.
+        local refusal
+        refusal="$(printf '%s' "$OH_REPORT" | _oh_provider_refusal)"
+        if [ -n "$refusal" ]; then
+            not_run "$id: its own provider refused the turn, so nothing was exercised: $refusal"
+        fi
         oh_dump
         fail "$id did not run cleanly: status=$status, exit_code=$exit_code"
     fi
@@ -879,7 +904,7 @@ oh_enforce_file() { printf '%s-%s%s.txt' "$1" "${RANDOM}" "${RANDOM}"; }
 
 # Live proof that a NO-MUTATION mode (`read-only` or `plan`) is HONORED by the
 # real harness — the drift alarm for the per-harness mapping (Codex's `--sandbox
-# read-only`, Claude's `--disallowedTools` / `--permission-mode plan`, Copilot's
+# read-only`, Claude's `--tools` allowlist / `--permission-mode plan`, Copilot's
 # `--deny-tool` / `--mode plan`, Cursor's `--mode ask` / `--mode plan`, Qwen's
 # `--approval-mode plan`). The agent is told to `touch` a file:
 #   * under `--mode <mode>` the write must be BLOCKED (file absent), and
@@ -918,6 +943,17 @@ oh_mode_enforce() {
     note "  mode-enforce[bypass]: the same command must run under --mode bypass (control)"
     oh_run "$id" "$prompt" --mode bypass --cwd "$sandbox"
     if [ ! -e "$sandbox/$file" ]; then
+        # An agent whose provider refused the turn wrote nothing because it never
+        # ran, not because `bypass` stopped it — and reading that as a broken
+        # positive control condemns the whole phase for someone else's quota.
+        # Checked BEFORE the failure, and only for a refusal in the provider's
+        # own words; anything else still fails here.
+        local refusal
+        refusal="$(printf '%s' "$OH_REPORT" | _oh_provider_refusal)"
+        if [ -n "$refusal" ]; then
+            rm -rf "$sandbox"
+            not_run "$id: its own provider refused the turn, so the $mode positive control never ran: $refusal"
+        fi
         oh_dump
         rm -rf "$sandbox"
         fail "$id: positive control failed ($file absent under --mode bypass) — the $mode block can't be trusted (does the harness run shell headlessly?)"
@@ -975,6 +1011,128 @@ oh_edit_enforce() {
 
     rm -rf "$sandbox"
     note "PASS: $id edit enforcement"
+}
+
+# Live proof that a CONTROLLED turn runs under the mode's own policy — the half
+# of the control x mode invariant a value cannot show.
+#
+# The equality itself is a unit assertion (`domain::control`'s
+# `control_mode_parity`): for every control-capable harness and every mode, the
+# policy the control path sends is the policy that mode sends without
+# `--control`. What that assertion cannot check is whether the harness HONORS
+# what it was handed — and copilot's delivery is new: its permission flags now
+# ride the `--acp` argv beside the protocol switch.
+#
+# So this drives ONE controlled turn under `--mode default` — the gating posture
+# — and requires it to END rather than hang. That is the narrowest thing worth a
+# live phase here, and it covers a path that would otherwise have gone dark: a
+# controlled run under `bypass` now carries copilot's allow-all flags, so it no
+# longer raises `session/request_permission` at all, and answering that request
+# is the rule an ACP client must not break (goose and copilot block forever
+# otherwise). Under `default` the ask still comes, oneharness still answers it,
+# and a turn that ends is the evidence.
+#
+# A short prompt and no freeze window: this is a termination check, not an
+# interrupt one, so it costs a fraction of the phases around it.
+#
+# Attempts, like the two phases before it, and for the reason stated there: a
+# turn the harness's OWN provider refused proves nothing about the mode's
+# policy, because it never reached the question. This was the only control phase
+# that ran once, so opencode's intermittent `Provider request failed with HTTP
+# 401: x-api-key header is required` retired it every time while the retrying
+# phases beside it passed on their first attempt — the suite reading another
+# party's outage as a control-mode violation.
+#   $1 harness id
+oh_control_mode_enforce() {
+    local id="$1" attempt attempts=3 started=$SECONDS status
+    # llmlint: ignore-block[tool_output_is_signal] WHICH attempt won is the signal, not chatter, for the same reason `oh_control_enforce` states above it: the retries are a backstop for a turn that never starts, so a phase that passes on its third attempt every night is a phase about to fail — and a transcript that only ever printed one final line could never say so, in a CI-only suite nobody can attach a debugger to.
+    for attempt in $(seq 1 "$attempts"); do
+        status=0
+        _oh_control_mode_enforce_once "$id" || status=$?
+        if [ "$status" -eq 0 ]; then
+            note "  ok: a controlled turn under --mode default ended (attempt $attempt of $attempts, $((SECONDS - started))s)"
+            return 0
+        fi
+        # A REFUSED turn is not the same as a failed one, and only the failed one
+        # is worth another window: a quota does not refill inside this suite.
+        if [ "$status" -eq "$_OH_NOT_RUN" ]; then
+            return "$_OH_NOT_RUN"
+        fi
+        note "  control-mode: attempt $attempt was retired by the harness's own turn failing, not by the mode; retrying"
+    done
+    # llmlint: ignore-end[tool_output_is_signal]
+    fail "$id: a controlled turn under --mode default never got far enough to end — the harness's own turn failed on all $attempts attempts ($((SECONDS - started))s), so its provider or credential is what to look at first, not the control path. Next: run \`oneharness run --harness $id --control --session probe --mode default --prompt hi\` and read \`results[0].stdout\` for the error the harness reported; if it names a provider, a key or a model, fix that before reading any of this feature's code"
+}
+
+# One attempt. Returns 0 when the turn ended, 1 when the harness's own turn
+# failed (retryable — no verdict either way), and `$_OH_NOT_RUN` when its
+# provider refused the turn outright (no verdict, and no retry either). Anything
+# else calls fail().
+_oh_control_mode_enforce_once() {
+    local id="$1"
+    local bin sandbox store name report status
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    sandbox="$(mktemp -d)"
+    sandbox="$(oh_native_path "$sandbox")"
+    oh_sandbox_prepare "$id" "$sandbox"
+    store="$sandbox/store"
+    name="mode-$id"
+    report="$sandbox/report.json"
+    local model_args=()
+    [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+
+    if ! ONEHARNESS_NO_CONFIG=1 timeout "${OH_CONTROL_MODE_TIMEOUT:-180}" "$bin" run \
+        --harness "$id" --prompt "Reply with the single word READY and stop." \
+        --control --session "$name" --session-dir "$store" --cwd "$sandbox" \
+        --mode default --timeout "${OH_TIMEOUT:-120}" --compact \
+        "${model_args[@]+"${model_args[@]}"}" >"$report" 2>"$sandbox/run.err"; then
+        : # a non-zero exit is still an ENDED turn; only the status below decides
+    fi
+    # The report is a subprocess's output, so it is parsed rather than trusted:
+    # a run that produced no readable status did not demonstrate a turn ending,
+    # and defaulting that to "fine" is how a phase goes green having proven
+    # nothing. Only the statuses that mean the turn ENDED are accepted.
+    status="$(jq -er '.results[0].status' <"$report" 2>/dev/null || true)"
+    # Ahead of the status, because a refusal outranks it in BOTH directions. A
+    # turn the provider declined ends promptly and cleanly — copilot answered a
+    # quota refusal with `{"stopReason":"end_turn"}` in three seconds — so
+    # reading `ok` off it would pass this phase having never put the mode's
+    # policy to a single question.
+    if _oh_note_provider_refusal "$id" "$report"; then
+        rm -rf "$sandbox"
+        return "$_OH_NOT_RUN"
+    fi
+    case "$status" in
+    skipped)
+        rm -rf "$sandbox"
+        skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+        ;;
+    ok | nonzero)
+        : # the turn ended, which is what this phase asserts
+        ;;
+    *)
+        # The same evidence an inconclusive interrupt attempt leaves, for the
+        # same reason: the frames are where the harness says whether it was
+        # asked to do anything, and `text` says whether it answered — which is
+        # what separates "the mode's policy never arrived" from "it answered and
+        # only its ENDING never came".
+        _oh_control_evidence "$sandbox" "$report"
+        # And the frames are also where the harness says it never got that far.
+        # A turn its own provider REFUSED was already answered above; this is the
+        # other half — a turn that failed on its own and may well succeed on the
+        # next window, so it is retried rather than reported.
+        if [ -n "$(_oh_harness_errors "$report")" ]; then
+            rm -rf "$sandbox"
+            return 1
+        fi
+        rm -rf "$sandbox"
+        fail "$id: a controlled turn under --mode default did not end cleanly (status=${status:-<no readable status in the report>}) — the harness may be waiting on a permission request oneharness did not answer, or the mode's own policy did not reach the controlled launch. Next: run \`oneharness run --harness $id --control --session probe --mode default --prompt hi\` and read the report's \`results[0].stdout\` for the last protocol frame it saw; if the harness asked permission and nothing answered, the fix is in \`domain::dialogue\`, and if it never asked, compare the launch argv against \`domain::control\`'s control_mode_parity grid"
+        ;;
+    esac
+    rm -rf "$sandbox"
+    return 0
 }
 
 # --- hook enforcement --------------------------------------------------------
@@ -1141,6 +1299,37 @@ _oh_control_evidence() {
                              "    error=\(.error // "none")",
                              "    text=\((.text // "")[0:300])"' \
             "$report" >&2 || true
+        # The transcript, last. For a turn driven over a protocol it is the only
+        # place the SERVER speaks: the launcher's stderr says a run failed and
+        # the `error` says how oneharness saw it end, but why the harness
+        # refused, errored or never started a turn is in the frames it sent. Its
+        # absence is what left three opencode attempts, nine minutes apart, with
+        # nothing between them but "the control server closed the event stream".
+        note "  evidence: last frames the harness sent —"
+        jq -r '.results[0].stdout // ""' "$report" 2>/dev/null \
+            | tail -n 15 | cut -c1-400 | sed 's/^/    /' >&2 || true
+        # And the kinds of frame it sent at all, deduped. A turn that never ends
+        # is usually a recognizer that no longer matches rather than a harness
+        # that did nothing, and the `type` a run never saw is invisible in a
+        # tail of the ones it did — this is the whole vocabulary in one line.
+        note "  evidence: frame types seen —"
+        # `tr -d '\r'` before the join, because the Windows runner's `sort` ends
+        # its lines CRLF: joining those on '\n' alone leaves a CR between every
+        # pair, and a CR is a line break to every log viewer — so the one line
+        # this evidence exists to be came out as one type per line.
+        jq -r '.results[0].stdout // ""' "$report" 2>/dev/null \
+            | jq -R -r 'fromjson? | .type // empty' 2>/dev/null \
+            | sort -u | tr -d '\r' | tr '\n' ' ' | sed 's/^/    /' >&2 || true
+        printf '\n' >&2
+        # And any error a frame carried, in full. The tail above truncates each
+        # line to keep a transcript readable, which is exactly long enough to
+        # print `Provider request failed with HT` and stop — and whether that
+        # ends 401, 429 or 500 is the entire difference between a credential, a
+        # rate limit, and the harness having a bad night.
+        note "  evidence: errors the harness reported —"
+        jq -r '.results[0].stdout // ""' "$report" 2>/dev/null \
+            | jq -R -r 'fromjson? | .. | objects | select(has("message")) | .message' 2>/dev/null \
+            | sort -u | tail -n 5 | cut -c1-300 | sed 's/^/    /' >&2 || true
     else
         note "  evidence: no parseable report was written (the run had not finished)"
     fi
@@ -1149,20 +1338,35 @@ _oh_control_evidence() {
 oh_control_enforce() {
     local id="$1" expected_mechanism="$2"
     # Three attempts, not two: an inconclusive attempt is a model that refused or
-    # raced, and opencode declines this fixture outright often enough (answers
-    # `ok` in under ten seconds having run no tool at all) that two attempts
-    # retire the phase on model mood rather than on control behavior. Retrying
-    # cannot hide a regression — every real contract violation below calls
-    # `fail` on the spot, and only a turn that proved NOTHING comes back here.
-    local attempt attempts=3
+    # raced, and a harness that declines this fixture outright (answers `ok` in
+    # under ten seconds having run no tool at all) would retire the phase on
+    # model mood rather than on control behavior. Retrying cannot hide a
+    # regression — every real contract violation below calls `fail` on the spot,
+    # and only a turn that proved NOTHING comes back here.
+    #
+    # It is a backstop, not the mechanism: the workload each attempt drives is
+    # sized so a turn CANNOT finish it inside the interrupt window (see the
+    # prompt below), so a harness that needs the retries is telling you
+    # something. Which attempt won is reported for exactly that reason — a phase
+    # that passes on the third every night is a phase about to fail.
+    local attempt attempts=3 started=$SECONDS status
     for attempt in $(seq 1 "$attempts"); do
-        if _oh_control_enforce_once "$id" "$attempt" "$expected_mechanism"; then
-            note "PASS: $id control enforcement"
+        status=0
+        _oh_control_enforce_once "$id" "$attempt" "$expected_mechanism" || status=$?
+        if [ "$status" -eq 0 ]; then
+            note "PASS: $id control enforcement (attempt $attempt of $attempts, $((SECONDS - started))s)"
             return 0
+        fi
+        # A turn the provider refused never started, so there is nothing to
+        # retry: the quota will not refill inside this suite. The attempt already
+        # said so in the provider's own words; hand the verdict up rather than
+        # spending two more windows to reach the same non-answer.
+        if [ "$status" -eq "$_OH_NOT_RUN" ]; then
+            return "$_OH_NOT_RUN"
         fi
         note "  control-enforce: attempt $attempt was inconclusive (the turn ended, or finished every step, before the interrupt landed); retrying"
     done
-    fail "$id: the turn never stayed in flight long enough to interrupt across $attempts attempts"
+    fail "$id: the turn never stayed in flight long enough to interrupt across $attempts attempts ($((SECONDS - started))s)"
 }
 
 # One attempt. Returns 0 on a proven interrupt, 1 when the turn ended too early
@@ -1189,9 +1393,18 @@ _oh_control_enforce_once() {
     # when the interrupt arrives, and each step must be individually observable.
     # `steps` is the ceiling the assertion below reads too, so the prompt and the
     # "did it merely finish?" test can never drift apart.
-    local steps=60 last
+    #
+    # The PAUSE is what makes staying in flight a property of the workload rather
+    # than of how fast the model happens to be. The interrupt lands as soon as
+    # two steps exist and the assertion is over ~18s later, while the work asked
+    # for is $steps × $pause seconds of sleeping — so no agent can outrun the
+    # window, and one that batches every file into a single command (the failure
+    # the ONE-PER-TOOL-CALL wording exists for) is still sleeping when the abort
+    # arrives. Three attempts remain as a backstop for a turn that never starts;
+    # they are not how this phase stays in flight.
+    local steps=60 pause=3 last
     last="$(printf 'step-%03d.txt' "$steps")"
-    local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create $steps files named step-001.txt through $last in the current directory, ONE PER TOOL CALL, sleeping 1 second between each (for example: sleep 1 && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
+    local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create $steps files named step-001.txt through $last in the current directory, ONE PER TOOL CALL, sleeping $pause seconds before each (for example: sleep $pause && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
 
     # The turn must actually run shell commands for there to be work to stop, so a
     # narrower mode would make the freeze assertion vacuous. Confined to a fresh
@@ -1215,18 +1428,36 @@ _oh_control_enforce_once() {
     note "  ok: control socket present at $socket"
 
     # Wait until the agent is demonstrably working: at least two steps done, so
-    # a frozen count afterwards means something real stopped.
-    if ! _oh_wait_for 180 _oh_steps_at_least "$sandbox" 2; then
+    # a frozen count afterwards means something real stopped. A run that has
+    # already EXITED will never produce them, so stop waiting the moment it does
+    # — waiting out the full window on a dead run is how three opencode attempts
+    # cost nine minutes to report one thing three times.
+    if ! _oh_wait_for 180 _oh_control_wait_settled "$sandbox" "$run_pid"; then
         kill "$run_pid" 2>/dev/null || true
         wait "$run_pid" 2>/dev/null || true
         note "  control-enforce: the agent never produced two steps"
         _oh_control_evidence "$sandbox" "$report"
+        # An agent that did no work because its own provider refused the turn is
+        # not this feature failing to keep a turn in flight.
+        if _oh_note_provider_refusal "$id" "$report"; then
+            rm -rf "$sandbox"
+            return "$_OH_NOT_RUN"
+        fi
         rm -rf "$sandbox"
         return 1
     fi
+    # The other way the wait settles: the run is over. Whether
+    # it did two steps first or none, there is nothing in flight to interrupt.
     if ! kill -0 "$run_pid" 2>/dev/null; then
-        note "  control-enforce: the run ended before any work could be interrupted"
+        wait "$run_pid" 2>/dev/null || true
+        note "  control-enforce: the run ended before any work could be interrupted ($(_oh_step_count "$sandbox") step files)"
         _oh_control_evidence "$sandbox" "$report"
+        # The shape a quota refusal takes: the turn ends in seconds having run
+        # nothing, and only the message it carried says why.
+        if _oh_note_provider_refusal "$id" "$report"; then
+            rm -rf "$sandbox"
+            return "$_OH_NOT_RUN"
+        fi
         rm -rf "$sandbox"
         return 1
     fi
@@ -1350,15 +1581,25 @@ _oh_control_mechanism_matches() {
 # multi-minute two-turn exchange to the step that produced it.
 oh_control_redirect_enforce() {
     local id="$1"
-    local attempt attempts=3
+    # Attempts and duration reported for the same reason as `oh_control_enforce`:
+    # the retries are a backstop for a turn that never starts, so a harness
+    # spending them is the finding, and a transcript that never says which
+    # attempt won cannot tell anyone that.
+    local attempt attempts=3 started=$SECONDS status
     for attempt in $(seq 1 "$attempts"); do
-        if _oh_control_redirect_enforce_once "$id" "$attempt"; then
-            note "PASS: $id redirection enforcement"
+        status=0
+        _oh_control_redirect_enforce_once "$id" "$attempt" || status=$?
+        if [ "$status" -eq 0 ]; then
+            note "PASS: $id redirection enforcement (attempt $attempt of $attempts, $((SECONDS - started))s)"
             return 0
+        fi
+        # Nothing to retry: the provider refused, and it will refuse again.
+        if [ "$status" -eq "$_OH_NOT_RUN" ]; then
+            return "$_OH_NOT_RUN"
         fi
         note "  redirect-enforce: attempt $attempt was inconclusive (the turn ended, or finished every step, before the interrupt landed); retrying"
     done
-    fail "$id: the turn never stayed in flight long enough to redirect across $attempts attempts"
+    fail "$id: the turn never stayed in flight long enough to redirect across $attempts attempts ($((SECONDS - started))s)"
 }
 
 # Report what a control-suite run actually proved, and decide whether a PARTIAL
@@ -1382,15 +1623,35 @@ oh_control_redirect_enforce() {
 # never ran, and it outranks both verdicts below: it is the regression this suite
 # exists to catch, so it fails the run whatever the credentials looked like.
 #
+# Two absences beside those, and NEITHER is red, because neither is a credential
+# CI could supply. A harness whose own PROVIDER refused the turn (out of quota)
+# answered and declined; reporting that red blames this feature for someone
+# else's billing state. A harness with a declared KNOWN GAP has a phase nobody
+# has made pass — reported every run, with its reason, because a cell dropped
+# from a verdict reads as coverage.
+#
 #   $1 space-separated ids proven, $2 ids skipped, $3 formatted duration,
-#   $4 ids that ran and failed
+#   $4 ids that ran and failed, $5 ids whose provider refused (with reasons),
+#   $6 ids carrying a known gap (with reasons)
 oh_control_report_outcome() {
-    local proven="$1" skipped="$2" took="$3" failed="${4:-}"
+    local proven="$1" skipped="$2" took="$3" failed="${4:-}" refused="${5:-}" gaps="${6:-}"
+    # Everything that did not run, whatever kept it from running — one list, so
+    # a reader counting harnesses against the registry does not have to.
+    local not_run="$skipped"
+    if [ -n "$refused" ]; then
+        not_run="${not_run:+$not_run }$refused"
+    fi
     if [ -n "$failed" ]; then
-        fail "turn control is NOT honored by: $failed (proven: ${proven:-none}; not run: ${skipped:-none}) after $took"
+        fail "turn control is NOT honored by: $failed (proven: ${proven:-none}; not run: ${not_run:-none}) after $took"
     fi
     if [ -z "$proven" ]; then
-        skip "no controllable harness had credentials after $took (unproven: $skipped)"
+        skip "no controllable harness proved anything after $took (unproven: ${not_run:-none})"
+    fi
+    if [ -n "$refused" ]; then
+        note "NOT RUN (the provider refused the turn): $refused"
+    fi
+    if [ -n "$gaps" ]; then
+        note "KNOWN GAP (reported, not proven): $gaps"
     fi
     if [ -n "$skipped" ]; then
         if [ -n "${OH_E2E_NO_SKIP:-}" ]; then
@@ -1425,9 +1686,10 @@ _oh_control_redirect_enforce_once() {
     local model_args=()
     [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
 
-    local steps=60 last
+    # Same workload, and same reason it is paced: see `_oh_control_enforce_once`.
+    local steps=60 pause=3 last
     last="$(printf 'step-%03d.txt' "$steps")"
-    local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create $steps files named step-001.txt through $last in the current directory, ONE PER TOOL CALL, sleeping 1 second between each (for example: sleep 1 && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
+    local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create $steps files named step-001.txt through $last in the current directory, ONE PER TOOL CALL, sleeping $pause seconds before each (for example: sleep $pause && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
     local redirect="Stop creating step-NNN.txt files immediately. Instead, using your shell tool, run exactly this one command and then stop: touch $marker.txt"
 
     # The turn must actually run shell commands for there to be work to stop and
@@ -1449,17 +1711,28 @@ _oh_control_redirect_enforce_once() {
         fail "$id: no control socket appeared at $socket (--control did not open one)"
     fi
 
-    if ! _oh_wait_for 180 _oh_steps_at_least "$sandbox" 2; then
+    if ! _oh_wait_for 180 _oh_control_wait_settled "$sandbox" "$run_pid"; then
         kill "$run_pid" 2>/dev/null || true
         wait "$run_pid" 2>/dev/null || true
         note "  redirect-enforce: the agent never produced two steps"
         _oh_control_evidence "$sandbox" "$report"
+        # See `_oh_control_enforce_once`: a turn the provider refused never ran,
+        # so it says nothing about redirection either.
+        if _oh_note_provider_refusal "$id" "$report"; then
+            rm -rf "$sandbox"
+            return "$_OH_NOT_RUN"
+        fi
         rm -rf "$sandbox"
         return 1
     fi
     if ! kill -0 "$run_pid" 2>/dev/null; then
-        note "  redirect-enforce: the run ended before any work could be redirected"
+        wait "$run_pid" 2>/dev/null || true
+        note "  redirect-enforce: the run ended before any work could be redirected ($(_oh_step_count "$sandbox") step files)"
         _oh_control_evidence "$sandbox" "$report"
+        if _oh_note_provider_refusal "$id" "$report"; then
+            rm -rf "$sandbox"
+            return "$_OH_NOT_RUN"
+        fi
         rm -rf "$sandbox"
         return 1
     fi
@@ -1583,6 +1856,108 @@ _oh_step_count() {
 # `_oh_step_count`, so waiting on it needs no shell expression.
 _oh_steps_at_least() {
     [ "$(_oh_step_count "$1")" -ge "$2" ]
+}
+
+# The errors the HARNESS itself reported on its event stream, one per line, or
+# nothing. A turn its own provider refused is a different thing from a turn that
+# ran, and a phase has to tell them apart before it calls one a contract
+# violation — reading `Provider request failed with HTTP 401` as a control-mode
+# failure blames this feature for someone else's outage.
+#
+# Both shapes an `error` comes in: an object with a message (opencode's step
+# failures) and a bare string (its `session.error`).
+#   $1 report path
+_oh_harness_errors() {
+    [ -s "$1" ] || return 0
+    jq -r '.results[0].stdout // ""' "$1" 2>/dev/null \
+        | jq -R -r 'fromjson? | .. | objects | select(has("error")) | .error
+                    | if type == "object" then (.message? // empty) else (select(type == "string")) end' 2>/dev/null \
+        || true
+}
+
+# `_oh_harness_errors` above tells a turn that FAILED from one that ran. This
+# tells a turn that was never allowed to start from either: the account is out of
+# quota, so the provider answers the request and declines it. Nothing follows
+# from such a turn about any behavior of this feature, and no retry, credential
+# or CI setting changes that — so it is reported as NOT RUN, in the provider's
+# own words, rather than as this suite's harness breaking.
+
+# The phrases a provider uses to refuse a turn outright for quota. CAPTURED, not
+# guessed: the first is the copilot line CI read on 2026-08-11, which arrived as
+# an ordinary ACP `agent_message_chunk` immediately followed by
+# `{"stopReason":"end_turn"}` —
+#
+#   Error: You've reached your additional usage limit for your plan.
+#   Go to https://github.com/settings/copilot/features for more details.
+#
+# — which is why a refusal has to be read out of the TEXT: the run is a clean
+# `ok` that did nothing, and there is no status, exit code or error field saying
+# otherwise. The rest are the same family in the providers' own spelling.
+#
+# Deliberately narrow. A phrase that also fits an ordinary failure would turn a
+# real regression into a "not run", and that is much the more expensive mistake
+# of the two: an unproven cell is visible in the verdict, a misclassified one is
+# not. A transient `rate limit`/`429` is on purpose NOT here — that turn may well
+# run on the next attempt, so it stays what it already is, a retryable
+# inconclusive attempt.
+_OH_PROVIDER_REFUSAL_RE='usage limit|quota exceeded|exceeded your current quota|insufficient_quota|credit balance is too low|out of credits'
+
+# The provider's OWN message refusing this turn, or nothing. Reads a oneharness
+# report on STDIN, because the callers hold one in two shapes: a file for the
+# control phases, the `$OH_REPORT` string for the per-harness ones.
+_oh_provider_refusal() {
+    local report transcript
+    report="$(cat)"
+    transcript="$(printf '%s' "$report" | jq -r '.results[0].stdout // ""' 2>/dev/null || true)"
+    {
+        # What oneharness normalized, how it saw the run end, and what the CLI
+        # itself printed. `stderr` is not optional here: copilot's ordinary `-p`
+        # run states the refusal ONLY there, exits 1, and leaves `text`, `error`
+        # and `stdout` all empty — so a reader that skipped it would call the
+        # same refusal a broken harness.
+        printf '%s' "$report" | jq -r '.results[0] | (.text // ""), (.error // ""), (.stderr // "")' 2>/dev/null || true
+        # Every string inside the harness's own frames: on a driven turn the
+        # refusal is the text of a message, not a field of a result.
+        printf '%s\n' "$transcript" | jq -R -r 'fromjson? | .. | strings' 2>/dev/null || true
+        # And the transcript as it came, for a harness whose headless output is
+        # not JSON at all.
+        printf '%s\n' "$transcript"
+    } | grep -i -E "$_OH_PROVIDER_REFUSAL_RE" | head -n 1 | cut -c1-300 || true
+}
+
+# Exit status a control phase returns for a turn the provider refused, so
+# e2e-control.sh can tell it from a contract violation. Distinct from 1, which
+# every phase already uses for "inconclusive, retry".
+_OH_NOT_RUN=3
+
+# Whether the harness's own PROVIDER refused the turn this report describes —
+# and if so, say so and record it for the suite's closing verdict.
+#
+# The reason travels through a FILE because every phase in e2e-control.sh runs in
+# a subshell (so one harness's verdict cannot end the run), and a variable set
+# there is gone by the time the verdict is written.
+#   $1 harness id, $2 report path
+_oh_note_provider_refusal() {
+    local id="$1" refusal kind
+    [ -s "$2" ] || return 1
+    refusal="$(_oh_provider_refusal <"$2")" || refusal=""
+    [ -n "$refusal" ] || return 1
+    kind="$(printf '%s' "$refusal" | grep -o -i -E "$_OH_PROVIDER_REFUSAL_RE" | head -n 1)" || kind=""
+    kind="$(printf '%s' "${kind:-quota}" | tr '[:upper:]' '[:lower:]')"
+    note "  NOT RUN: $id — its own provider refused this turn, so nothing follows from it about turn control: $refusal"
+    if [ -n "${OH_NOT_RUN_FILE:-}" ]; then
+        printf '%s (provider refused: %s)\n' "$id" "$kind" >"$OH_NOT_RUN_FILE"
+    fi
+    return 0
+}
+
+# Whether the wait for a turn to get going is over — either because it did (two
+# steps done) or because it never will (the run they were coming from has
+# exited). It says the wait is settled, NOT that work is underway; the caller
+# reads which of the two happened and reports them differently.
+#   $1 sandbox directory, $2 the run's pid
+_oh_control_wait_settled() {
+    _oh_steps_at_least "$1" 2 || ! kill -0 "$2" 2>/dev/null
 }
 
 # Poll `command…` until it succeeds or `seconds` elapse. Returns 1 on timeout.

@@ -555,7 +555,7 @@ fn read_only_is_distinct_from_plan_and_enforced_where_possible() {
         &[],
     );
     let c = json_stdout(&claude_ro)["results"][0]["command"].to_string();
-    assert!(c.contains("disallowedTools"), "{c}");
+    assert!(c.contains("--tools"), "{c}");
 }
 
 #[test]
@@ -20326,14 +20326,85 @@ fn control_on_a_harness_without_a_mechanism_is_a_usage_error() {
 }
 
 #[test]
-fn control_refuses_edit_mode_on_a_driven_turn_rather_than_over_granting() {
-    // A driven turn negotiates approvals on the wire, so oneharness answers each
-    // permission request itself. `edit` means auto-approved edits with shell
-    // still gated, and no protocol here carries a sourced way to tell those
-    // apart — so answering at all would either grant shell authority the mode
-    // denies or silently downgrade `edit`. Refuse before spawning instead.
-    // opencode declares `edit` AND a control mechanism, so it is exactly the
-    // combination that would otherwise reach the blanket grant.
+fn a_controlled_copilot_run_carries_the_modes_own_permission_flags() {
+    // `--control --mode edit` used to be a usage error on every driven turn.
+    // For copilot the mode is expressible because its permission flags are
+    // top-level options that sit beside `--acp` (verified against
+    // `copilot --help`, and by handshaking a real
+    // `copilot --acp --allow-tool … --no-ask-user`, which answers `initialize`
+    // — copilot rejects an option it does not take, so acceptance is the
+    // evidence). So the controlled launch carries the mode's OWN mapping, and
+    // this is the end-to-end proof through the real CLI surface: the mode is
+    // accepted, and the argv the run would spawn carries edit's flags — the
+    // same ones `-p` gets — rather than a posture invented for the protocol.
+    let store = control_store_dir("copilot-edit");
+    let store_arg = store.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "copilot",
+            "--control",
+            "--session",
+            "edits",
+            "--session-dir",
+            &store_arg,
+            "--prompt",
+            "dry-run-prompt",
+            "--mode",
+            "edit",
+            "--bin",
+            &bin_override("copilot"),
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+    );
+    // Accepted, not the exit 2 the old refusal gave.
+    assert!(output.status.success(), "{output:?}");
+    let report = json_stdout(&output);
+    assert_eq!(report["permission_mode"], "edit", "{report}");
+    let command: Vec<String> = serde_json::from_value(report["results"][0]["command"].clone())
+        .expect("the planned command");
+    assert_eq!(
+        command
+            .iter()
+            .skip(1)
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        [
+            "--acp",
+            "--allow-tool",
+            "write",
+            "--allow-tool",
+            "read",
+            "--allow-all-paths",
+            "--no-ask-user",
+        ],
+        "the controlled launch must carry edit's own flags: {command:?}"
+    );
+    assert!(
+        !command.contains(&"dry-run-prompt".to_string()),
+        "the prompt is negotiated on the ACP wire, not the argv: {command:?}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_controlled_run_refuses_a_mode_only_its_servers_environment_could_carry() {
+    // opencode carries `edit` in its OWN config environment
+    // (`OPENCODE_CONFIG_CONTENT`), and a turn submitted to a pooled server has
+    // no way to carry it: the environment belongs to the server PROCESS, which
+    // this dispatch may not have started. Delivering it there was tried and
+    // reverted — it made the approval mode a component of the pool key, and the
+    // controlled `--mode default` turn that change was meant to prove never
+    // ended on opencode across four CI cycles (`status=timeout`).
+    //
+    // So the mode is refused before anything spawns, rather than run under
+    // whatever policy the server already had. That silent reshaping is the bug
+    // `control_mode_parity` exists to catch, and the gap is recorded there as a
+    // named cell rather than dropped from the grid.
     let store = control_store_dir("edit-mode");
     let store_arg = store.display().to_string();
     let output = run(
@@ -20346,10 +20417,10 @@ fn control_refuses_edit_mode_on_a_driven_turn_rather_than_over_granting() {
             "edits",
             "--session-dir",
             &store_arg,
-            "--prompt",
-            "hi",
             "--mode",
             "edit",
+            "--prompt",
+            "hi",
             "--bin",
             &bin_override("opencode"),
         ],
@@ -20358,7 +20429,7 @@ fn control_refuses_edit_mode_on_a_driven_turn_rather_than_over_granting() {
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("negotiates approvals on the wire")
+        stderr.contains("configuration environment")
             && stderr.contains("--mode edit")
             && stderr.contains("--mode bypass"),
         "the refusal must name the mode and an expressible alternative; stderr:\n{stderr}"
@@ -20369,6 +20440,75 @@ fn control_refuses_edit_mode_on_a_driven_turn_rather_than_over_granting() {
         !store.join("control").exists(),
         "a refused control run must open no socket"
     );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_controlled_servers_pool_key_leaves_the_approval_mode_out() {
+    // The approval mode reaches a pooled server through nothing, so it is not in
+    // the pool key: two runs differing only in mode share one server. Keying on
+    // it was tried and reverted — see
+    // `a_controlled_run_refuses_a_mode_only_its_servers_environment_could_carry`
+    // — and this is the half of that revert a reader would otherwise have to
+    // infer. It is also exactly why a mode whose ONLY delivery is that
+    // environment has to be a usage error: sharing a server is safe for a mode
+    // the wire carries and silent reshaping for one it does not.
+    let store = control_store_dir("mode-poolkey");
+    let pool = store.join("pool");
+    let entries = |mode: &str| {
+        let cwd = control_store_dir(&format!("mode-poolkey-{mode}"));
+        let out = run(
+            &[
+                "run",
+                "--harness",
+                "opencode",
+                "--control",
+                "--session",
+                mode,
+                "--session-dir",
+                store.display().to_string().as_str(),
+                "--cwd",
+                cwd.display().to_string().as_str(),
+                "--mode",
+                mode,
+                "--prompt",
+                "hi",
+                "--bin",
+                &bin_override("opencode"),
+                "--timeout",
+                "20",
+                "--compact",
+            ],
+            &[
+                (
+                    "MOCK_HTTP_CONTROL_LOG",
+                    store.join("server.log").display().to_string().as_str(),
+                ),
+                ("MOCK_HTTP_CONTROL_FAULT", "refuse-session"),
+                ("XDG_STATE_HOME", pool.display().to_string().as_str()),
+            ],
+        );
+        // The session is refused, so each run is synchronous and leaves its
+        // pool entry behind without needing a turn.
+        assert_eq!(out.status.code(), Some(1), "{out:?}");
+        let _ = std::fs::remove_dir_all(&cwd);
+        std::fs::read_dir(pool.join("oneharness").join("servers"))
+            .map(|dir| {
+                dir.filter_map(Result::ok)
+                    .map(|entry| entry.file_name().to_string_lossy().to_string())
+                    .collect::<std::collections::BTreeSet<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let after_default = entries("default");
+    let after_bypass = entries("bypass");
+    assert_eq!(after_default.len(), 1, "{after_default:?}");
+    assert_eq!(
+        after_bypass, after_default,
+        "the approval mode is not delivered to the server, so it must not split the pool: {after_bypass:?}"
+    );
+
     let _ = std::fs::remove_dir_all(&store);
 }
 
@@ -22066,6 +22206,58 @@ fn a_redirection_the_harness_is_no_longer_there_for_ends_the_run_rather_than_han
 
 #[cfg(unix)]
 #[test]
+fn a_controlled_opencode_model_that_names_no_provider_is_refused_before_a_server_starts() {
+    // The route that carries an opencode turn's model takes a provider and an
+    // id, so a bare model id cannot be sent. Refusing says so; the alternative
+    // — sending the session no model — runs the turn on whatever the server
+    // picks, which is the drop that made the live control suite a coin flip.
+    let store = control_store_dir("http-model");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("http-model-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let pool = store.join("pool");
+
+    let output = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("XDG_STATE_HOME", pool.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--session",
+            "http-model",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "hi",
+            "--model",
+            "claude-haiku-4-5",
+            "--bin",
+            &bin_override("opencode"),
+            "--compact",
+        ])
+        .output()
+        .expect("the run produced a report");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    let error = report["results"][0]["error"]
+        .as_str()
+        .expect("a refused model is reported, not swallowed");
+    assert!(error.contains("names no provider"), "{error}");
+    assert!(error.contains("anthropic/claude-haiku-4-5"), "{error}");
+    // Nothing was brought up for a turn that could never have run.
+    assert!(!pool.exists(), "a refused model must not start a server");
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
 fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there() {
     let mock_profile = mock_profile_redirect();
     // The third execution model, end to end through the real CLI: the harness
@@ -22102,6 +22294,8 @@ fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there()
             "keep working",
             "--system",
             "preserve this controlled system prompt",
+            "--model",
+            "anthropic/claude-haiku-4-5",
             "--bin",
             &bin_override("opencode"),
             "--compact",
@@ -22159,6 +22353,16 @@ fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there()
             .any(|line| line.starts_with("POST /api/session/ses_mock/prompt")),
         "{served}"
     );
+    // The model reached the SESSION, split into the provider and id its route
+    // requires. It reaches nothing else on this path — there is no harness argv
+    // here — so a run whose `--model` stopped here runs on whatever the pooled
+    // server picks by itself, which live was a free model answering 401.
+    let create = served
+        .lines()
+        .find(|line| line.starts_with("POST /api/session HTTP"))
+        .expect("the session was created on the control server");
+    assert!(create.contains(r#""providerID":"anthropic""#), "{create}");
+    assert!(create.contains(r#""id":"claude-haiku-4-5""#), "{create}");
     let prompt_request = served
         .lines()
         .find(|line| line.starts_with("POST /api/session/ses_mock/prompt"))
@@ -22287,8 +22491,8 @@ fn pooled_controlled_run(
 #[test]
 fn per_turn_settings_do_not_widen_the_pool_key() {
     // Two dispatches differing ONLY in what is negotiated per turn — working
-    // directory, model, permission mode, prompt, system prompt, timeout — must
-    // land on the same pool entry. The entry's directory name IS the key, so a
+    // directory, model (provider and id both), permission mode, prompt, system
+    // prompt, timeout — must land on the same pool entry. The entry's directory name IS the key, so a
     // second one would mean every dispatch starts its own ~137MB server and the
     // pool buys nothing; the key is allowed to widen only on the harness id and
     // the `key_env` its `ServerSpec` declares.
@@ -22310,7 +22514,7 @@ fn per_turn_settings_do_not_widen_the_pool_key() {
             "--mode",
             "bypass",
             "--model",
-            "one-model",
+            "provider-one/model-a",
             "--system",
             "first system",
             "--timeout",
@@ -22329,7 +22533,7 @@ fn per_turn_settings_do_not_widen_the_pool_key() {
             "--mode",
             "default",
             "--model",
-            "another-model",
+            "provider-two/model-b",
             "--system",
             "second system",
             "--timeout",
@@ -22694,15 +22898,35 @@ fn a_control_server_that_never_answers_is_reported_rather_than_waited_out() {
     // The pool started a process and it died before binding anything. The run
     // must say so within the budget its caller set — a bring-up that outlasts
     // `--timeout` is a hang as far as that caller is concerned.
+    //
+    // Read off the PROCESS, not off a window, which is what makes this
+    // deterministic. A TCP port is reserved by binding and letting go, so a
+    // sibling test's server can be listening at this run's address by the time
+    // it dials; judged by "did anything answer in 5s", this run would then be
+    // driven against a stranger and end as whatever that stranger does — the
+    // `timeout` this assertion used to see at random. Judged by "is the server
+    // we launched still running", both spellings of the same failure — ours
+    // died, or ours lost the address and died — are the one outcome below.
     let started = std::time::Instant::now();
-    let (output, report, _) = http_control_run_with_fault("http-unready", "never-ready", "5");
+    let (output, report, served) = http_control_run_with_fault("http-unready", "never-ready", "5");
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let result = &report["results"][0];
     assert_eq!(result["status"], "spawn-error", "{report}");
     let error = result["error"].as_str().expect("a reason");
     assert!(
-        error.contains("did not answer within 5s"),
-        "the reason must name the readiness wait: {error}"
+        error.contains("the control server exited before it answered"),
+        "the reason must name the launched server's exit: {error}"
+    );
+    // Losing a reserved port is one of the ways a server dies at once, so a
+    // server that exited earns exactly one relaunch at a fresh address. The
+    // fault logs one line per launch; two attempts is the whole budget.
+    assert_eq!(
+        served
+            .lines()
+            .filter(|line| *line == "LAUNCHED never-ready")
+            .count(),
+        2,
+        "a server that died during bring-up must be relaunched once:\n{served}"
     );
     assert!(
         started.elapsed() < std::time::Duration::from_secs(60),
@@ -22711,6 +22935,140 @@ fn a_control_server_that_never_answers_is_reported_rather_than_waited_out() {
     // Nothing ran, so nothing is claimed: no session token, no answer text.
     assert!(report["session"]["token"].is_null(), "{report}");
     assert!(result["text"].is_null(), "{report}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_server_that_is_up_but_silent_is_reported_against_the_window() {
+    // The other half of "not ready", and the half that is a verdict rather than
+    // a fact: the process oneharness launched is demonstrably alive and holding
+    // its own address — it accepts every dial — and simply never answers. There
+    // is nothing to relaunch, so the readiness window is the only thing that can
+    // end the wait, and the run must report it against that window.
+    let (output, report, served) = http_control_run_with_fault("http-silent", "silent-server", "5");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "spawn-error", "{report}");
+    let error = result["error"].as_str().expect("a reason");
+    assert!(
+        error.contains("did not answer within 5s"),
+        "the reason must name the readiness window: {error}"
+    );
+    assert!(
+        !error.contains("exited before it answered"),
+        "a server that is still running has not exited: {error}"
+    );
+    // And it was NOT relaunched. A relaunch is owed to a server that DIED — a
+    // fresh address is one of the ways to recover from that — but re-rolling a
+    // window the caller already bounded would just spend their budget twice.
+    assert_eq!(
+        served
+            .lines()
+            .filter(|line| *line == "LAUNCHED silent-server")
+            .count(),
+        1,
+        "a silent server must be reported, not relaunched:\n{served}"
+    );
+    assert!(result["text"].is_null(), "{report}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_server_that_lost_its_reserved_port_is_relaunched_rather_than_reported() {
+    // The race the readiness wait used to lose, made deterministic: a control
+    // server's TCP port is reserved by binding and letting go, so between the
+    // reservation and the launch it belongs to whoever asks the kernel next,
+    // and the loser dies on `EADDRINUSE`. A dispatch that noticed only "nothing
+    // answered" would either report a failure the harness never had or — worse —
+    // drive whatever stranger now owns that address. Noticing the SERVER is
+    // gone earns it one relaunch, and the run does its work.
+    let mock_profile = mock_profile_redirect();
+    let store = control_store_dir("http-lostport");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("http-lostport-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let log = store.join("server.log");
+    let pool = store.join("pool");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
+        .env("MOCK_HTTP_CONTROL_FAULT", "lose-port")
+        .env("XDG_STATE_HOME", pool.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--session",
+            "lostport",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("opencode"),
+            "--timeout",
+            "60",
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the HTTP controlled run");
+
+    wait_until("the control socket", || {
+        store.join("control").join("lostport.sock").exists()
+    });
+    // The second server is a healthy one, so the turn really starts: without
+    // the permission answer nothing below would be evidence of a working run.
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(&log)
+            .map(|text| text.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "lostport",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    assert_eq!(report["results"][0]["status"], "ok", "{report}");
+    assert_eq!(report["control"]["interrupts"][0]["outcome"], "served");
+
+    let served = std::fs::read_to_string(&log).unwrap();
+    // Exactly one launch died: the relaunch is a budget, not a retry loop.
+    assert_eq!(
+        served
+            .lines()
+            .filter(|line| *line == "LAUNCHED lose-port")
+            .count(),
+        1,
+        "{served}"
+    );
+
+    wait_for_pooled_server_to_exit(&pool);
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[cfg(unix)]

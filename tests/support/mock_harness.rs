@@ -125,7 +125,15 @@
 //!   MOCK_HTTP_CONTROL_FAULT  with MOCK_HTTP_CONTROL_LOG, break the server the way
 //!                   a real one breaks, so the run's user-visible failure can be
 //!                   asserted: `never-ready` exits before binding at all (nothing
-//!                   ever answers), `refuse-session` answers the session-create
+//!                   ever answers), appending one `LAUNCHED never-ready` line per
+//!                   launch so a relaunch is countable, `lose-port` dies on its
+//!                   first launch the way a server that lost its reserved port
+//!                   does and comes up healthy on the relaunch, `silent-server`
+//!                   BINDS its port and stays alive but answers nothing (the
+//!                   other half of "not ready": a process that is there and
+//!                   quiet, which must be reported against the window and never
+//!                   relaunched),
+//!                   `refuse-session` answers the session-create
 //!                   route `503`, and `no-session-id` answers it `200` with a body
 //!                   naming no id, and `foreign-permission` asks permission for a
 //!                   session this run does not own, and `close-stream` stops
@@ -394,6 +402,8 @@ fn run_native_descendant() -> ! {
 enum HttpControlFault {
     None,
     NeverReady,
+    LosePort,
+    SilentServer,
     RefuseSession,
     NoSessionId,
     ForeignPermission,
@@ -415,6 +425,8 @@ impl HttpControlFault {
         {
             "" => HttpControlFault::None,
             "never-ready" => HttpControlFault::NeverReady,
+            "lose-port" => HttpControlFault::LosePort,
+            "silent-server" => HttpControlFault::SilentServer,
             "refuse-session" => HttpControlFault::RefuseSession,
             "no-session-id" => HttpControlFault::NoSessionId,
             "foreign-permission" => HttpControlFault::ForeignPermission,
@@ -452,6 +464,19 @@ fn read_bounded_line<R: std::io::BufRead>(reader: &mut R, line: &mut String) -> 
     }
 }
 
+/// Record that a control server launch happened and which fault it was serving,
+/// so a test can count the launches a dispatch made. The line is all a fault
+/// that exits before binding ever gets to say.
+fn note_launch(log_path: &str, fault: &str) {
+    if let Ok(mut log) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        let _ = writeln!(log, "LAUNCHED {fault}");
+    }
+}
+
 /// Act like an opencode-shaped HTTP control server: the third execution model,
 /// where the turn is submitted to a server rather than to a CLI.
 ///
@@ -467,10 +492,33 @@ fn run_http_control_server(log_path: &str) -> ! {
     let fault = HttpControlFault::from_env();
     // A server the pool started and that then never listens — the shape a real
     // one takes when it dies on startup. Exiting before binding is what makes
-    // the readiness wait, not a route, the thing under test.
+    // the bring-up, not a route, the thing under test. The launch is logged
+    // first, and it is the only thing this fault ever writes: a dispatch that
+    // relaunches a server which died leaves one line per attempt, so the log
+    // counts the attempts.
     if fault == HttpControlFault::NeverReady {
+        note_launch(log_path, "never-ready");
         std::process::exit(0);
     }
+    // A server that lost its reserved port to whoever asked the kernel next.
+    // The port is reserved by binding and letting go, so the loser dies on
+    // `EADDRINUSE` through no fault of its own — and only the FIRST launch
+    // does: the relaunch it is owed comes up healthy, which is the whole
+    // behavior under test. The log is what tells the two launches apart, since
+    // nothing else survives the exit.
+    let fault = if fault == HttpControlFault::LosePort {
+        if std::fs::read_to_string(log_path)
+            .unwrap_or_default()
+            .contains("LAUNCHED lose-port")
+        {
+            HttpControlFault::None
+        } else {
+            note_launch(log_path, "lose-port");
+            std::process::exit(1);
+        }
+    } else {
+        fault
+    };
     // The pool dials the port it put on the argv, so an absent or unreadable
     // one is refused rather than defaulted: binding `0` would listen on some
     // port nobody is going to connect to, which reads as a server that never
@@ -488,6 +536,33 @@ fn run_http_control_server(log_path: &str) -> ! {
     };
     let listener = std::net::TcpListener::bind(("127.0.0.1", port))
         .expect("the mock control server could not bind its port");
+    // A server that is there and says nothing. It holds the port for the whole
+    // readiness window — so the address is demonstrably ITS own, not a
+    // stranger's — accepts each dial and closes it without answering, then
+    // exits once the caller has stopped dialing so nothing is left for the pool
+    // to reclaim. Both waits are bounded; neither polls open-endedly.
+    if fault == HttpControlFault::SilentServer {
+        note_launch(log_path, "silent-server");
+        listener
+            .set_nonblocking(true)
+            .expect("the mock control server could not poll its listener");
+        let started = std::time::Instant::now();
+        let mut last_seen = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_secs(30)
+            && last_seen.elapsed() < std::time::Duration::from_millis(1500)
+        {
+            match listener.accept() {
+                // Closed without a byte of answer: a definite, immediate error
+                // for the dialer every time, so the window is the only clock.
+                Ok((socket, _)) => {
+                    last_seen = std::time::Instant::now();
+                    drop(socket);
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(25)),
+            }
+        }
+        std::process::exit(0);
+    }
     let log = std::sync::Arc::new(std::sync::Mutex::new(
         std::fs::OpenOptions::new()
             .create(true)

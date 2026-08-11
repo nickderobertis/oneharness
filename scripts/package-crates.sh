@@ -69,7 +69,7 @@ while IFS= read -r commit; do
 done < <(git rev-list "$core_tag"..HEAD)
 
 registry_core_mismatch=false
-if grep -Eq 'oneharness-core-[0-9]+\.[0-9]+\.[0-9]+/' "$output_file" &&
+if grep -Eq 'oneharness-core-[0-9]+\.[0-9]+\.[0-9]+[/\\]' "$output_file" &&
   grep -Eq "could not compile \`oneharness\`|failed to select a version for the requirement \`oneharness-core" "$output_file"; then
   registry_core_mismatch=true
 fi

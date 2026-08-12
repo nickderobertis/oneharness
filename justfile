@@ -87,6 +87,8 @@ lint-workflows: build build-mock-harness
     @bash scripts/check-capability-surface.sh >/dev/null
     @bash scripts/check-sdk-coverage.sh >/dev/null
     @bash scripts/check-sdk-coverage-test.sh >/dev/null
+    @bash scripts/check-lf-contracts.sh >/dev/null
+    @bash scripts/check-lf-contracts-test.sh >/dev/null
     @bash scripts/check-parity-audit.sh >/dev/null
     @bash scripts/report-scheduled-failure-test.sh >/dev/null
     @bash scripts/check-workflows.sh >/dev/null

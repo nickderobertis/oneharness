@@ -9,3 +9,16 @@
 /npm/oneharness-sdk/**/*.js text eol=lf
 /npm/oneharness-sdk/**/*.mjs text eol=lf
 /npm/oneharness-sdk/**/*.json text eol=lf
+
+# Same reason, for the other two generators that compare their output
+# byte-for-byte: the parity audit against `docs/sdk-parity.md`, and the Python
+# SDK's contracts against `_generated`. Both write LF, so an unpinned CRLF
+# checkout is a stale file no Linux or macOS run can see.
+/docs/sdk-parity.md text eol=lf
+/python/oneharness-sdk/**/*.py text eol=lf
+/python/oneharness-sdk/**/*.json text eol=lf
+
+# The one blob that is CRLF on purpose — what `check-lf-contracts-test.sh`
+# drives the gate at. `-text` keeps every layer, this repository's and the
+# checkout's alike, from normalizing it in either direction.
+/tests/fixtures/crlf-checkout.txt -text

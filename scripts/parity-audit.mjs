@@ -341,6 +341,52 @@ const generated = [
 	END,
 ].join("\n");
 
+/** How many changed lines per side are worth printing before the count says it. */
+const DRIFT_LINES = 12;
+
+/**
+ * Name what changed, so a red gate is readable where it failed.
+ *
+ * "Out of date" alone sends the reader to a local rerun, which is no help when
+ * the run that disagreed was on another machine — a difference only that
+ * platform produces is invisible in a log that just says the file is stale. The
+ * diff is trimmed to the changed region and bounded, and an all-invisible
+ * difference is named as one rather than printed as identical-looking lines.
+ */
+function drift(current, next) {
+	if (current.replaceAll("\r\n", "\n") === next.replaceAll("\r\n", "\n")) {
+		return [
+			"the two differ only in line endings: the checked-in copy has CRLF and the",
+			"generator writes LF. Check out this file with LF endings (see .gitattributes).",
+		];
+	}
+	const was = current.split("\n");
+	const now = next.split("\n");
+	let head = 0;
+	while (head < was.length && head < now.length && was[head] === now[head]) {
+		head += 1;
+	}
+	let tail = 0;
+	while (
+		tail < was.length - head &&
+		tail < now.length - head &&
+		was.at(-1 - tail) === now.at(-1 - tail)
+	) {
+		tail += 1;
+	}
+	const bound = (lines, sign) => {
+		const shown = lines.slice(0, DRIFT_LINES).map((line) => `${sign} ${line}`);
+		return lines.length > DRIFT_LINES
+			? [...shown, `${sign} … ${lines.length - DRIFT_LINES} more line(s)`]
+			: shown;
+	};
+	return [
+		`first difference at docs/sdk-parity.md:${head + 1} ("-" checked in, "+" generated):`,
+		...bound(was.slice(head, was.length - tail), "-"),
+		...bound(now.slice(head, now.length - tail), "+"),
+	];
+}
+
 const current = readFileSync(doc, "utf8");
 const opens = current.indexOf(BEGIN);
 const closes = current.indexOf(END);
@@ -359,6 +405,9 @@ if (process.argv.includes("--check")) {
 		console.error(
 			"docs/sdk-parity.md is out of date with the capability manifest; run just parity-audit",
 		);
+		for (const line of drift(current, next)) {
+			console.error(`  ${line}`);
+		}
 		process.exit(1);
 	}
 } else {

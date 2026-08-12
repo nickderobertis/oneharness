@@ -136,6 +136,41 @@ llmlint_record_verdict() {
   find "$dir" -name '*.verdict*' -mtime +30 -delete 2>/dev/null || true
 }
 
+# Run a command with the repo's own oneharness config choosing the harness.
+#
+# Both the availability probe and the judge dispatch `oneharness run --config
+# oneharness.toml`, and `--config` loads exactly that file — but the
+# `ONEHARNESS_*` environment overrides still layer on top of it by design. A host
+# that runs its own agents through oneharness carries `ONEHARNESS_HARNESSES`,
+# which then reselects: on such a host both calls died on `unknown harness
+# variant`, naming a harness this repo's config never mentions, and took the
+# whole pre-push gate down with nothing wrong in the tree.
+#
+# Only the overrides that pick a harness are dropped, and the list is deliberate
+# rather than "every ONEHARNESS_*". A broader strip also changed how the judge
+# runs — its approval mode and its timeout are the host's to set, and taking
+# them away altered the call this gate is supposed to be observing, not just
+# which harness answered it. On a machine with none of these set — a developer
+# box, CI — this is a no-op.
+#
+# Keep this in step with the selection fields in `domain::config::from_env`.
+llmlint_selection_env=(
+  ONEHARNESS_HARNESSES
+  ONEHARNESS_EXCLUDE
+  ONEHARNESS_ALL
+  ONEHARNESS_MODEL
+  ONEHARNESS_MODELS
+)
+
+llmlint_repo_config_env() {
+  local -a stripped=()
+  local name
+  for name in "${llmlint_selection_env[@]}"; do
+    stripped+=(-u "$name")
+  done
+  env "${stripped[@]}" "$@"
+}
+
 llmlint_judge_available() {
   local config=$1 oneharness_bin probe_output probe_stderr status
   oneharness_bin=$(command -v oneharness) || {
@@ -151,7 +186,7 @@ llmlint_judge_available() {
     return 2
   }
   probe_stderr=$(mktemp)
-  if probe_output=$("$oneharness_bin" run --config "$config" --compact \
+  if probe_output=$(llmlint_repo_config_env "$oneharness_bin" run --config "$config" --compact \
     --prompt "Reply with exactly: available" 2>"$probe_stderr"); then
     status=0
   else

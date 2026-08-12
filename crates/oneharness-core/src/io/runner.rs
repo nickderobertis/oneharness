@@ -466,6 +466,25 @@ where
     stream_job(job, control, &CancelToken::new(), on_line)
 }
 
+/// [`run_job_streaming_controlled`] under a caller-owned [`CancelToken`] — the
+/// two side channels combined, for a run that is both interruptible on its
+/// stdin and cancellable by whoever asked for it.
+///
+/// A library caller needs this even when it never passes `control`: the token is
+/// its only way to tear the tree down, since the harness leads its own process
+/// group and no signal it sends its own group reaches one.
+pub fn run_job_streaming_controlled_cancellable<F>(
+    job: &Job,
+    control: Option<&ControlledInput>,
+    cancel: &CancelToken,
+    on_line: F,
+) -> Capture
+where
+    F: FnMut(&str) -> StreamStep,
+{
+    stream_job(job, control, cancel, on_line)
+}
+
 /// The one streaming implementation both public entry points delegate to:
 /// optional turn control on the child's stdin, bounded by `cancel`.
 fn stream_job<F>(

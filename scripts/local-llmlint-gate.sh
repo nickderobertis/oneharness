@@ -58,7 +58,10 @@ else
   exit "$status"
 fi
 
-llmlint --diff --diff-base "$base"
+# Through the same environment the availability probe used: the judge dispatches
+# `oneharness run` as its own child, so an ambient `ONEHARNESS_HARNESSES` reaches
+# it too and reselects the harness away from what `oneharness.toml` names.
+llmlint_repo_config_env llmlint --diff --diff-base "$base"
 
 # Reached only on a green; `set -e` has already carried a finding out.
 if [[ -n $verdict_key ]]; then

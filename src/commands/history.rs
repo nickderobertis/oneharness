@@ -36,11 +36,7 @@ fn migrate(args: &HistoryMigrateArgs) -> Result<i32, OneharnessError> {
         args.config.as_deref(),
         args.no_config,
     )?;
-    let files = history_io::migrate(&dir)?;
-    let report = serde_json::json!({
-        "files": files,
-        "files_processed": files.len(),
-    });
+    let report = history_io::HistoryMigrateReport::new(history_io::migrate(&dir)?);
     print_json(&report, args.compact)?;
     Ok(EXIT_OK)
 }
@@ -343,26 +339,14 @@ fn clear(args: &HistoryClearArgs) -> Result<i32, OneharnessError> {
     )?;
     let slug = project_slug(args.all_projects, args.project.as_deref());
 
-    if args.yes {
-        let removed = history_io::remove_sessions(&dir, slug.as_deref())?;
-        let report = serde_json::json!({
-            "removed": removed.len(),
-            "files": removed,
-            "dry_run": false,
-        });
-        print_json(&report, args.compact)?;
+    let report = if args.yes {
+        history_io::HistoryClearReport::removed(history_io::remove_sessions(&dir, slug.as_deref())?)
     } else {
         // Dry run: report what *would* be removed, delete nothing.
         let sessions = history_io::list_sessions(&dir, slug.as_deref())?;
-        let files: Vec<String> = sessions.iter().map(|s| s.path.clone()).collect();
-        let report = serde_json::json!({
-            "would_remove": files.len(),
-            "files": files,
-            "dry_run": true,
-            "hint": "re-run with --yes to delete",
-        });
-        print_json(&report, args.compact)?;
-    }
+        history_io::HistoryClearReport::dry_run(sessions.iter().map(|s| s.path.clone()).collect())
+    };
+    print_json(&report, args.compact)?;
     Ok(EXIT_OK)
 }
 

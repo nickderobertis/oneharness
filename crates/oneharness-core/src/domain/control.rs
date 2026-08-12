@@ -31,9 +31,10 @@
 //! the process lifetimes, and the pool's disk state live in
 //! [`crate::io::control`] and [`crate::io::server_pool`].
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
-use schemars::JsonSchema;
+use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::history::sanitize_name;
@@ -845,6 +846,64 @@ impl<'de> Deserialize<'de> for ControlResponse {
             reason: wire
                 .reason
                 .ok_or_else(|| D::Error::custom("a refused control frame must carry a reason"))?,
+        })
+    }
+}
+
+/// The schema is written by hand for the same reason [`Serialize`] and
+/// [`Deserialize`] are: the wire frame is an `ok` flag with companions, and the
+/// Rust type is the sum that flag stands for, so no derive can bridge them. It
+/// is a `oneOf` of the two frames rather than the permissive union of their
+/// fields, because that is what `Deserialize` accepts — an SDK validator built
+/// from this schema must refuse exactly the contradictory frames the Rust
+/// reader refuses, or a consumer validates a frame oneharness itself would not.
+impl JsonSchema for ControlResponse {
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("ControlResponse")
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        let mechanism = generator.subschema_for::<ControlShape>();
+        let reason = generator.subschema_for::<ControlReason>();
+        schemars::json_schema!({
+            "description": "The answer to one `oneharness interrupt`: either the abort was served, or it was refused with a reason.",
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "v": { "type": "integer", "const": PROTOCOL_VERSION },
+                        "ok": { "type": "boolean", "const": true },
+                        "mechanism": mechanism,
+                        "redirected": {
+                            "type": "boolean",
+                            "description": "Whether the request's redirection was committed with the abort. Omitted rather than sent as `false`, so a plain interrupt's answer gains no field the supervisor did not ask for.",
+                        },
+                        // The two fields a served frame must not carry, spelled
+                        // per-property rather than as `additionalProperties:
+                        // false`: the reader accepts a field a newer oneharness
+                        // adds, so the schema must too, and only the
+                        // contradictions are excluded.
+                        "error": false,
+                        "reason": false,
+                    },
+                    "required": ["v", "ok", "mechanism"],
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "v": { "type": "integer", "const": PROTOCOL_VERSION },
+                        "ok": { "type": "boolean", "const": false },
+                        "error": { "type": "string" },
+                        "reason": reason,
+                        // Nothing was delivered, so a mechanism is a
+                        // contradiction and a claimed redirection is a lie a
+                        // supervisor would act on.
+                        "mechanism": false,
+                        "redirected": { "const": false },
+                    },
+                    "required": ["v", "ok", "error", "reason"],
+                },
+            ],
         })
     }
 }
@@ -1857,6 +1916,46 @@ mod tests {
             serde_json::from_str(r#"{"v":2,"ok":true,"mechanism":"acp-cancel","redirected":true}"#)
                 .unwrap();
         assert!(redirected.is_redirected());
+    }
+
+    #[test]
+    fn the_generated_schema_accepts_exactly_the_frames_the_reader_accepts() {
+        // The hand-written `JsonSchema` is what the SDK validators are built
+        // from, and it is a second statement of the rules `Deserialize` already
+        // enforces — so the two can disagree, and a consumer would then accept
+        // a frame oneharness itself refuses. This drives both against the same
+        // frames and requires the same answer.
+        //
+        // Unknown fields are deliberately NOT part of the disagreement: the
+        // reader takes a field a newer oneharness adds, so the schema does too.
+        let schema = serde_json::to_value(schemars::schema_for!(ControlResponse))
+            .expect("the generated schema is JSON");
+        let validator = jsonschema::validator_for(&schema).expect("it is a valid JSON Schema");
+
+        for frame in [
+            r#"{"v":2,"ok":true,"mechanism":"acp-cancel"}"#,
+            r#"{"v":2,"ok":true,"mechanism":"acp-cancel","redirected":true}"#,
+            r#"{"v":2,"ok":false,"error":"nope","reason":"not_running"}"#,
+            r#"{"v":2,"ok":false,"error":"nope","reason":"not_running","redirected":false}"#,
+            r#"{"v":2,"ok":true,"mechanism":"acp-cancel","future_field":7}"#,
+            // Every contradiction the reader refuses.
+            r#"{"v":2,"ok":true}"#,
+            r#"{"v":2,"ok":true,"mechanism":"made-up"}"#,
+            r#"{"v":2,"ok":true,"mechanism":"acp-cancel","error":"nope"}"#,
+            r#"{"v":2,"ok":true,"mechanism":"acp-cancel","reason":"not_running"}"#,
+            r#"{"v":2,"ok":false,"error":"nope","reason":"not_running","mechanism":"acp-cancel"}"#,
+            r#"{"v":2,"ok":false,"reason":"not_running"}"#,
+            r#"{"v":2,"ok":false,"error":"nope"}"#,
+            r#"{"v":2,"ok":false,"error":"nope","reason":"not_running","redirected":true}"#,
+            r#"{"v":3,"ok":true,"mechanism":"claude-control-request"}"#,
+        ] {
+            let value: serde_json::Value = serde_json::from_str(frame).expect("a JSON frame");
+            assert_eq!(
+                validator.is_valid(&value),
+                serde_json::from_str::<ControlResponse>(frame).is_ok(),
+                "the schema and the reader disagree about {frame}"
+            );
+        }
     }
 
     #[test]

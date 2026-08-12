@@ -6,6 +6,7 @@ import argparse
 import copy
 import difflib
 import json
+import keyword
 import re
 import subprocess
 from pathlib import Path
@@ -13,17 +14,81 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[3]
 OUTPUT = ROOT / "python" / "oneharness-sdk" / "src" / "oneharness_sdk" / "_generated"
+# Every option contract the client validates and then renders to argv. A root
+# listed here is snake-cased in the emitted schema and gets an entry in
+# `input-keys.json`, which is how the client maps a Python key back to the
+# camelCase spelling the capability manifest binds.
 INPUT_ROOTS = (
     "run_options",
     "history_lookup",
     "history_list_options",
     "history_watch_options",
+    "detect_options",
+    "config_options",
+    "sync_options",
+    "init_options",
+    "usage_options",
+    "gate_options",
+    "mock_options",
+    "interrupt_options",
+    "history_clear_options",
+    "history_migrate_options",
+)
+
+# The input roots that become a public TypedDict, and its name. `history_lookup`
+# is deliberately absent: it is an overlapping union, which a TypedDict cannot
+# express, so the client publishes it as a mapping and the JSON Schema stays the
+# thing that validates it.
+TYPED_DICTS = (
+    ("RunOptions", "run_options"),
+    ("HistoryListOptions", "history_list_options"),
+    ("HistoryWatchOptions", "history_watch_options"),
+    ("DetectOptions", "detect_options"),
+    ("ConfigOptions", "config_options"),
+    ("SyncOptions", "sync_options"),
+    ("InitOptions", "init_options"),
+    ("UsageOptions", "usage_options"),
+    ("GateOptions", "gate_options"),
+    ("MockOptions", "mock_options"),
+    ("InterruptOptions", "interrupt_options"),
+    ("HistoryClearOptions", "history_clear_options"),
+    ("HistoryMigrateOptions", "history_migrate_options"),
+)
+
+# Output contracts the client returns. Each is a validated JSON document rather
+# than a typed structure: the Python SDK checks the document against the
+# generated schema and hands back the mapping, so an additive field a newer CLI
+# emits reaches the caller instead of being dropped by a stricter type.
+OUTPUT_ALIASES = (
+    "HistoryLookup",
+    "RunReport",
+    "RunStreamEnvelope",
+    "HistoryRecord",
+    "HistoryLine",
+    "HistoryStreamEnvelope",
+    "HarnessInfo",
+    "Detection",
+    "ConfigReport",
+    "SyncReport",
+    "UsageReport",
+    "InterruptResponse",
+    "HistoryClearReport",
+    "HistoryMigrateReport",
 )
 
 
 def snake_case(value: str) -> str:
-    """Convert the Rust bundle's Node-facing camel case to Python snake case."""
-    return re.sub(r"(?<!^)(?=[A-Z])", "_", value).lower()
+    """Convert the Rust bundle's Node-facing camel case to Python snake case.
+
+    A field whose name is a Python keyword — `sync`'s `--global` — takes the
+    conventional trailing underscore. It cannot keep the bare spelling: a
+    TypedDict declares its fields as class-body annotations, and `global: bool`
+    there is a syntax error rather than a field. The generated `input-keys.json`
+    carries the mapping back, so the client still renders the CLI's own name and
+    only the Python caller sees the suffix.
+    """
+    name = re.sub(r"(?<!^)(?=[A-Z])", "_", value).lower()
+    return f"{name}_" if keyword.iskeyword(name) else name
 
 
 def pythonize(node: Any) -> Any:
@@ -108,9 +173,6 @@ def typed_dict(name: str, schema: dict[str, Any]) -> list[str]:
 
 def types_module(bundle: dict[str, Any]) -> str:
     """Generate public Python input shapes and validated output aliases."""
-    run = pythonize(bundle["run_options"])
-    history_list = pythonize(bundle["history_list_options"])
-    watch = pythonize(bundle["history_watch_options"])
     lines = [
         '"""Generated from oneharness-core. Do not edit."""',
         "",
@@ -118,50 +180,123 @@ def types_module(bundle: dict[str, Any]) -> str:
         "",
         "from collections.abc import Sequence",
         "from typing import Any, TypedDict",
-        "",
-        "",
-        *typed_dict("RunOptions", run),
-        "",
-        "",
-        *typed_dict("HistoryListOptions", history_list),
-        "",
-        "",
-        *typed_dict("HistoryWatchOptions", watch),
-        "",
-        "",
-        "HistoryLookup = dict[str, Any]",
-        "RunReport = dict[str, Any]",
-        "RunStreamEnvelope = dict[str, Any]",
-        "HistoryRecord = dict[str, Any]",
-        "HistoryLine = dict[str, Any]",
-        "HistoryStreamEnvelope = dict[str, Any]",
-        "HarnessInfo = dict[str, Any]",
-        "Detection = dict[str, Any]",
-        "",
     ]
+    for name, root in TYPED_DICTS:
+        lines.extend(("", "", *typed_dict(name, pythonize(bundle[root]))))
+    lines.extend(("", ""))
+    lines.extend(f"{alias} = dict[str, Any]" for alias in OUTPUT_ALIASES)
+    lines.append("")
     return "\n".join(lines)
+
+
+def check_manifest_is_covered(capabilities: list[dict[str, Any]]) -> None:
+    """Refuse to generate an SDK missing an input root the manifest names.
+
+    The lists above map a schema root to a Python spelling; the manifest is what
+    says which roots must be there at all. Checking only what is listed leaves
+    the other direction open — a capability whose option root nobody added
+    generates a client that cannot validate or spell that verb's options.
+
+    Only the input lists can drift. An output root needs no entry: the client
+    validates against `schemas.json`, which carries the whole bundle, so a new
+    output contract is already there to check a response with — `OUTPUT_ALIASES`
+    publishes element types (`Detection`) rather than envelope roots.
+    """
+    inputs = {item["options"] for item in capabilities if item["options"]}
+    for missing, listing in (
+        (inputs - set(INPUT_ROOTS), "INPUT_ROOTS"),
+        # `history_lookup` is deliberately not a TypedDict: it is an overlapping
+        # union, which a TypedDict cannot express.
+        (inputs - {root for _, root in TYPED_DICTS} - {"history_lookup"}, "TYPED_DICTS"),
+    ):
+        if missing:
+            raise RuntimeError(
+                f"the capability manifest names root(s) absent from {listing}: "
+                f"{', '.join(sorted(missing))}; add them in "
+                "python/oneharness-sdk/scripts/generate.py and rerun just python-sdk-generate"
+            )
+
+
+# Keep the quoted cause to the tail, where a cargo error actually is.
+_CAUSE_LINES = 20
+
+
+def _tail(text: str) -> list[str]:
+    lines = [line for line in (text or "").splitlines() if line.strip()]
+    if len(lines) <= _CAUSE_LINES:
+        return lines
+    omitted = len(lines) - _CAUSE_LINES
+    return [
+        f"… {omitted} earlier line(s) omitted; run the command below for all of it",
+        *lines[-_CAUSE_LINES:],
+    ]
+
+
+def _schema_bundle() -> dict:
+    """Return the Rust contract bundle, or exit with a bounded diagnostic.
+
+    `check_output` raises on a failed build, and an uncaught `CalledProcessError`
+    prints a Python traceback through this script's own frames — a stack trace
+    for a Rust compile error, naming neither the generator nor what to run next.
+    `SystemExit` carries the message without the traceback.
+    """
+    argv = [
+        "cargo",
+        "run",
+        "-q",
+        "-p",
+        "oneharness",
+        "--features",
+        "sdk-schema",
+        "--example",
+        "generate_sdk_schema",
+    ]
+    try:
+        completed = subprocess.run(
+            argv,
+            cwd=ROOT,
+            encoding="utf-8",
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+    except FileNotFoundError:
+        raise SystemExit(
+            "python-sdk-generate: cargo is not on PATH, so the contract bundle cannot be built.\n"
+            "  fix: install the pinned Rust toolchain (just bootstrap), then rerun "
+            "`just python-sdk-generate`."
+        ) from None
+    except subprocess.CalledProcessError as error:
+        cause = "\n".join(f"    {line}" for line in _tail(error.stderr))
+        said = f"  cargo said:\n{cause}\n" if cause else ""
+        raise SystemExit(
+            "python-sdk-generate: the Rust schema generator failed, so there is no "
+            f"contract to generate from.\n{said}"
+            "  fix: make the bundle build, then rerun `just python-sdk-generate`.\n"
+            f"       See it in full with: {' '.join(argv)}"
+        ) from None
+    try:
+        bundle = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise SystemExit(
+            "python-sdk-generate: the schema generator succeeded but did not emit JSON "
+            f"({error}).\n"
+            "  fix: `generate_sdk_schema` must print the bundle and nothing else — a stray\n"
+            "       `println!` in the example or in `sdk_schema::bundle` corrupts it. Then\n"
+            "       rerun `just python-sdk-generate`."
+        ) from None
+    return bundle
 
 
 def generated_files() -> dict[str, bytes]:
     """Run the Rust generator and return deterministic package files."""
-    output = subprocess.check_output(
-        [
-            "cargo",
-            "run",
-            "-q",
-            "-p",
-            "oneharness",
-            "--features",
-            "sdk-schema",
-            "--example",
-            "generate_sdk_schema",
-        ],
-        cwd=ROOT,
-        encoding="utf-8",
-        text=True,
-    )
-    bundle = json.loads(output)
+    bundle = _schema_bundle()
+    check_manifest_is_covered(bundle["capabilities"])
     schemas = copy.deepcopy(bundle)
+    # The capability manifest travels beside the schemas rather than inside them:
+    # it is a table of argv bindings, not something a document is validated
+    # against, and the client keys it by method to render one call's arguments.
+    capabilities = {item["method"]: item for item in schemas.pop("capabilities")}
     input_keys: dict[str, dict[str, str]] = {}
     for root in INPUT_ROOTS:
         keys: dict[str, str] = {}
@@ -176,6 +311,7 @@ def generated_files() -> dict[str, bytes]:
     return {
         "__init__.py": b'"""Rust-generated Python SDK assets."""\n',
         "schemas.json": (json.dumps(schemas, indent=2, sort_keys=True) + "\n").encode(),
+        "capabilities.json": (json.dumps(capabilities, indent=2, sort_keys=True) + "\n").encode(),
         "input-keys.json": (json.dumps(input_keys, indent=2, sort_keys=True) + "\n").encode(),
         "../_generated_types.py": types_module(bundle).encode(),
     }

@@ -5,12 +5,23 @@
 # diff); the diff-scoped run is the blocking PR check, not part of `check`.
 # Rules come from the pinned plugins below; tune one in place with
 # `override: true`. Bump a plugin's `@version` pin to pull new rules.
-version: 1
+version: 2
 files:
   # No `include`: llmlint lints the whole tree (exclude + .gitignore honored).
   # List committed files that shouldn't be judged (lock files, generated output).
   exclude:
     - "**/.git/**"
+    # The SDK artifacts emitted from `sdk_schema::bundle`. Nothing here is
+    # written by hand, so no rule about naming, comments or structure has an
+    # author to reach — and `sdk-check` / `python-sdk-check` already refuse any
+    # drift between them and their Rust source, which is the only property they
+    # can violate. Judging them is also what made the judge unable to run at
+    # all: the two `schemas.json` alone are 1.1 MB, and a diff touching them
+    # overflowed codex's 1,048,576-character input limit, erroring the whole
+    # tier rather than returning a verdict.
+    - "npm/oneharness-sdk/src/generated/**"
+    - "python/oneharness-sdk/src/oneharness_sdk/_generated/**"
+    - "python/oneharness-sdk/src/oneharness_sdk/_generated_types.py"
 rationales: true
 # No `agents` block: the harness/model are NOT pinned here. `oneharness.toml`
 # (composed alongside this file) selects them in fallback mode — codex + gpt-5.5

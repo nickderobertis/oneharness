@@ -217,7 +217,7 @@ Both SDK distributions are stamped from the root Cargo version and depend on the
 exact matching `oneharness-cli` package.
 
 The SDK declarations, input contracts, and runtime validation schemas are
-generated from one Rust JSON Schema bundle and drift-checked by `just check`.
+generated from one Rust JSON Schema bundle and drift-checked on every gate run.
 Outputs preserve unknown fields for additive forward compatibility; inputs are
 strict, so unknown option names and misspellings fail before a subprocess starts.
 `HistoryStreamEnvelope` has no independent schema version: its event variant is
@@ -228,6 +228,13 @@ readers also accept prior event-sourced versions.
 Missing history records, sessions, and watch cursors raise a typed
 `HistoryNotFoundError`. See the [Node SDK guide](npm/oneharness-sdk/README.md) and
 [Python SDK guide](python/oneharness-sdk/README.md).
+
+Both clients cover every verb this CLI exposes, and both build their command
+lines from the same declared manifest rather than naming flags of their own, so
+no consumer has to drop to raw argv for anything. A Rust consumer does not need
+the subprocess at all: `oneharness-core` returns each verb's report directly.
+Every gate run re-derives all of that from the capability manifest and from each
+client's own source, so none of it can quietly stop being true.
 
 History distinguishes provider timing from tool intervals observed by
 oneharness. `model_ms` and `tool_ms` remain reserved for harnesses with explicit
@@ -818,8 +825,9 @@ and exceeded it): nothing was exceeded, the run was stopped. A **second**
 `SIGINT`/`SIGTERM` exits immediately with `130` without waiting for teardown.
 
 Library consumers get the same guarantee without touching process signals:
-`oneharness_core::io::cancel::CancelToken` is passed to
-`runner::run_job_cancellable`, `run_job_streaming_cancellable`, or
+`oneharness_core::io::cancel::CancelToken` is passed as `RunControls::cancel` to
+`io::run::run` (see [Driving a run from Rust](#driving-a-run-from-rust-no-oneharness-process)),
+or directly to `runner::run_job_cancellable`, `run_job_streaming_cancellable`, or
 `run_jobs_with_cancel`, and cancelling it tears the tree down through the same
 path. `io::cancel::install_signal_cancel()` is the opt-in that wires the host's
 signals to it (the CLI calls it for `run`).
@@ -2060,6 +2068,52 @@ status="$(jq -r '.results[0].status' <<<"$result")"
 The same uniform interface is the intended driver for a future **cross-harness
 skill-testing framework**: set up a sandbox, fire one prompt at every harness via
 `oneharness run --all`, and assert on the JSON.
+
+### Driving a run from Rust (no `oneharness` process)
+
+A Rust consumer does not have to spawn the CLI and parse its stdout: the whole
+run is a call on the engine crate, and it **returns** the report.
+
+```rust
+use oneharness_core::io::cancel::CancelToken;
+use oneharness_core::io::run::{run, EventSink, RunControls, RunRequest, SinkStep};
+
+let request = RunRequest {
+    harness: vec!["claude-code".to_string()],
+    prompt: vec!["summarize this repo".to_string()],
+    timeout: Some(300),
+    ..RunRequest::default()
+};
+
+let cancel = CancelToken::new();          // hand a clone to your supervisor
+let outcome = run(&request, RunControls { cancel: cancel.clone(), ..Default::default() })?;
+println!("{}", outcome.report.results[0].text.as_deref().unwrap_or(""));
+# Ok::<(), oneharness_core::errors::OneharnessError>(())
+```
+
+`RunRequest` is the `oneharness run` flag surface as plain data (everything
+optional; the same `oneharness.toml` / `ONEHARNESS_*` layering applies unless you
+set `no_config`). `RunOutcome` carries the `RunReport`, the exit code the CLI
+would have returned, whether the run streamed, and the one-line failure summary
+the CLI prints to stderr. `Err` means the *request* was refused before anything
+spawned — a harness's own failure is always a `RunResult`, never an error.
+
+Three things the CLI does for itself, which an in-process caller now chooses:
+
+- **Where events go.** Set `stream: Some(true)` and pass an `EventSink`; its `event`
+  method is called as each normalized event arrives, and returning
+  `SinkStep::Stop` short-circuits the turn (the CLI's own sink is the one that
+  writes the NDJSON protocol to stdout — nothing inside the engine does).
+- **How it is cancelled.** Each harness leads its own process group / Job Object,
+  so no signal you send your own group reaches one; `RunControls::cancel` is the
+  handle that does, tearing the whole tree down and still returning a report with
+  `"status": "cancelled"`. Cancel and then *wait for the call to return* — killing
+  your own process instead orphans a live, billing harness.
+- **Whose signals apply.** `RunControls::signal_cancel` is off by default, so the
+  engine never takes over your `SIGINT`/`SIGTERM` disposition; the CLI sets it.
+
+Warnings (a history file that could not be opened, a mode that may block) go to
+**your** stderr, exactly as they did from the CLI.
 
 ## Development
 

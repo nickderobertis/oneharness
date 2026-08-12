@@ -1,5 +1,12 @@
 {
-  "files": { "includes": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.mjs", "!src/generated/**"] },
-  "formatter": { "enabled": true },
-  "linter": { "enabled": true, "rules": { "recommended": true } }
+	"files": {
+		"includes": [
+			"src/**/*.ts",
+			"test/**/*.ts",
+			"scripts/**/*.mjs",
+			"!src/generated"
+		]
+	},
+	"formatter": { "enabled": true },
+	"linter": { "enabled": true, "rules": { "recommended": true } }
 }

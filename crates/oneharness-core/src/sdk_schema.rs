@@ -16,7 +16,9 @@ use crate::domain::history::{
 };
 use crate::domain::report::{RunReport, RunStreamEnvelope, Status};
 use crate::domain::sdk::{
-    schema_for_serialize, HistoryListOptions, HistoryLookup, HistoryWatchOptions, RunOptions,
+    schema_for_serialize, ConfigOptions, DetectOptions, GateOptions, HistoryClearOptions,
+    HistoryListOptions, HistoryLookup, HistoryMigrateOptions, HistoryWatchOptions, InitOptions,
+    InterruptOptions, MockOptions, RunOptions, SyncOptions, UsageOptions,
 };
 use crate::domain::signals::FailureKind;
 use crate::io::history::SessionSummary;
@@ -24,6 +26,11 @@ use crate::io::history::SessionSummary;
 /// All core schemas shared by oneharness SDKs.
 #[derive(Debug, Serialize)]
 pub struct SdkSchemaBundle {
+    /// The declared capability surface: what each SDK must expose, and which
+    /// CLI flag each of its options renders to. Emitted alongside the schemas
+    /// because it is generation input too — the argv a typed method builds is
+    /// as much a contract as the shapes it sends and receives.
+    pub capabilities: &'static [crate::domain::capability::Capability],
     pub run_report: Schema,
     pub run_stream_envelope: Schema,
     pub run_options: Schema,
@@ -35,11 +42,34 @@ pub struct SdkSchemaBundle {
     pub history_stream_envelope: Schema,
     pub history_records: Schema,
     pub history_list: Schema,
+    pub list_report: Schema,
+    pub detect_report: Schema,
+    // The per-verb contracts behind the capabilities beyond `run` and `history`.
+    // Every root a capability names must appear here — `capability.rs`'s
+    // `every_named_schema_root_is_emitted_by_the_bundle` is what makes that a
+    // build failure rather than an SDK pointed at a contract with no source.
+    pub detect_options: Schema,
+    pub config_options: Schema,
+    pub config_report: Schema,
+    pub sync_options: Schema,
+    pub sync_report: Schema,
+    pub init_options: Schema,
+    pub usage_options: Schema,
+    pub usage_report: Schema,
+    pub gate_options: Schema,
+    pub mock_options: Schema,
+    pub interrupt_options: Schema,
+    pub interrupt_response: Schema,
+    pub history_clear_options: Schema,
+    pub history_clear_report: Schema,
+    pub history_migrate_options: Schema,
+    pub history_migrate_report: Schema,
 }
 
 /// Generate the shared SDK schema roots from their Rust contract types.
 pub fn bundle() -> SdkSchemaBundle {
     SdkSchemaBundle {
+        capabilities: crate::domain::capability::CAPABILITIES,
         run_report: schema_for_serialize::<RunReport>(),
         run_stream_envelope: schema_for_serialize::<RunStreamEnvelope>(),
         run_options: schema_for!(RunOptions),
@@ -51,7 +81,59 @@ pub fn bundle() -> SdkSchemaBundle {
         history_stream_envelope: history_stream_schema(),
         history_records: history_schema(schema_for_serialize::<Vec<HistoryRecord>>()),
         history_list: schema_for_serialize::<Vec<SessionSummary>>(),
+        list_report: schema_for_serialize::<crate::io::registry::ListReport>(),
+        detect_report: schema_for_serialize::<crate::io::detect::DetectReport>(),
+        detect_options: schema_for!(DetectOptions),
+        config_options: schema_for!(ConfigOptions),
+        config_report: schema_for_serialize::<crate::domain::config::ConfigReport>(),
+        sync_options: schema_for!(SyncOptions),
+        sync_report: schema_for_serialize::<crate::io::sync::SyncReport>(),
+        init_options: schema_for!(InitOptions),
+        usage_options: schema_for!(UsageOptions),
+        usage_report: schema_for_serialize::<crate::domain::usage::UsageReport>(),
+        gate_options: schema_for!(GateOptions),
+        mock_options: schema_for!(MockOptions),
+        interrupt_options: schema_for!(InterruptOptions),
+        interrupt_response: schema_for_serialize::<crate::domain::control::ControlResponse>(),
+        history_clear_options: schema_for!(HistoryClearOptions),
+        history_clear_report: schema_for_serialize::<crate::io::history::HistoryClearReport>(),
+        history_migrate_options: schema_for!(HistoryMigrateOptions),
+        history_migrate_report: schema_for_serialize::<crate::io::history::HistoryMigrateReport>(),
     }
+}
+
+/// Collect every property name a schema root accepts, following the `$ref`s of
+/// a union's branches.
+///
+/// Used by `every_bound_option_is_a_field_of_its_options_contract` and shared
+/// with nothing else: a lookup contract is an untagged union whose branches are
+/// definitions, so "does this option exist?" cannot be answered from the root's
+/// own `properties` alone.
+#[cfg(test)]
+fn accepted_properties(node: &serde_json::Value, root: &serde_json::Value) -> Vec<String> {
+    let mut names = Vec::new();
+    if let Some(properties) = node.get("properties").and_then(|v| v.as_object()) {
+        names.extend(properties.keys().cloned());
+    }
+    for keyword in ["anyOf", "oneOf"] {
+        for branch in node
+            .get(keyword)
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            match branch.get("$ref").and_then(|v| v.as_str()) {
+                Some(reference) => {
+                    let name = reference.rsplit('/').next().unwrap_or_default();
+                    if let Some(target) = root.pointer(&format!("/$defs/{name}")) {
+                        names.extend(accepted_properties(target, root));
+                    }
+                }
+                None => names.extend(accepted_properties(branch, root)),
+            }
+        }
+    }
+    names
 }
 
 fn history_stream_schema() -> Schema {
@@ -753,6 +835,71 @@ fn add_v03_condition(value: &mut serde_json::Value) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn every_named_schema_root_is_emitted_by_the_bundle() {
+        // A capability names the contracts its SDK methods validate against. A
+        // root nothing emits is an SDK pointed at a contract with no generated
+        // source and no freshness gate — which is the exact defect the manifest
+        // exists to prevent, so it must not be expressible in the manifest
+        // itself. A verb whose output is not yet a typed contract says `None`.
+        let emitted = serde_json::to_value(bundle()).expect("the bundle serializes");
+        let emitted = emitted.as_object().expect("the bundle is an object");
+        for capability in crate::domain::capability::CAPABILITIES {
+            for root in capability.options.into_iter().chain(capability.output()) {
+                assert!(
+                    emitted.contains_key(root),
+                    "capability `{}` names the schema root `{root}`, which `bundle()` does not \
+                     emit. Add it to `SdkSchemaBundle` (so both SDKs generate and validate \
+                     against it), or record the gap with `None` rather than naming a root that \
+                     does not exist.",
+                    capability.method
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_bound_option_is_a_field_of_its_options_contract() {
+        // The manifest says which SDK option renders which CLI flag, and the
+        // options contract is what a caller may actually set. When the two
+        // disagree the flag is unreachable from every SDK at once — silently,
+        // because the argv builder simply never sees the key. That is how
+        // `history list --variant`, `--config` and `--no-config` came to be
+        // bound by the manifest and settable by nobody.
+        let emitted = serde_json::to_value(bundle()).expect("the bundle serializes");
+        let mut unreachable: Vec<String> = Vec::new();
+        for capability in crate::domain::capability::CAPABILITIES {
+            let Some(root) = capability.options else {
+                continue;
+            };
+            let contract = &emitted[root];
+            let fields = accepted_properties(contract, contract);
+            for binding in capability.bindings {
+                if !fields.iter().any(|field| field == binding.option) {
+                    unreachable.push(format!(
+                        "{}: `{}` (rendering `{}`) is not a field of `{root}`",
+                        capability.method,
+                        binding.option,
+                        if binding.flag().is_empty() {
+                            "a positional argument"
+                        } else {
+                            binding.flag()
+                        },
+                    ));
+                }
+            }
+        }
+        assert!(
+            unreachable.is_empty(),
+            "every bound option must be a field a caller can set, or the flag it renders is \
+             reachable from no SDK at all. Add the field to the options struct in \
+             `domain::sdk`, or drop the binding and declare the flag uncovered with a \
+             reason:\n  {}",
+            unreachable.join("\n  ")
+        );
+    }
+
     use super::*;
     use serde_json::json;
 

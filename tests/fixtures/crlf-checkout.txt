@@ -1,0 +1,5 @@
+A blob that is CRLF on purpose.
+
+scripts/check-lf-contracts-test.sh needs one tracked file that reaches the
+working tree with carriage returns on every platform, so the gate it drives
+has something to catch that does not depend on a checkout converting anything.

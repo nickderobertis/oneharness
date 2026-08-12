@@ -81,14 +81,69 @@ export const SDK_SCHEMA_ROOTS = Object.freeze([
 	{ key: "history_list", type: "HistoryList", module: "history-list" },
 	{ key: "list_report", type: "ListReport", module: "registry" },
 	{ key: "detect_report", type: "DetectReport", module: "detection" },
+	{ key: "detect_options", type: "DetectOptions", module: "detect-options" },
+	{ key: "config_options", type: "ConfigOptions", module: "config-options" },
+	{ key: "config_report", type: "ConfigReport", module: "config-report" },
+	{ key: "sync_options", type: "SyncOptions", module: "sync-options" },
+	{ key: "sync_report", type: "SyncReport", module: "sync-report" },
+	{ key: "init_options", type: "InitOptions", module: "init-options" },
+	{ key: "usage_options", type: "UsageOptions", module: "usage-options" },
+	{ key: "usage_report", type: "UsageReport", module: "usage-report" },
+	{ key: "gate_options", type: "GateOptions", module: "gate-options" },
+	{ key: "mock_options", type: "MockOptions", module: "mock-options" },
+	{
+		key: "interrupt_options",
+		type: "InterruptOptions",
+		module: "interrupt-options",
+	},
+	{
+		key: "interrupt_response",
+		type: "InterruptResponse",
+		module: "interrupt-response",
+	},
+	{
+		key: "history_clear_options",
+		type: "HistoryClearOptions",
+		module: "history-clear-options",
+	},
+	{
+		key: "history_clear_report",
+		type: "HistoryClearReport",
+		module: "history-clear-report",
+	},
+	{
+		key: "history_migrate_options",
+		type: "HistoryMigrateOptions",
+		module: "history-migrate-options",
+	},
+	{
+		key: "history_migrate_report",
+		type: "HistoryMigrateReport",
+		module: "history-migrate-report",
+	},
 ]);
 
+/**
+ * Named definitions the TypeScript compiler inlines instead of exporting, and
+ * where to reach the same type through one it does export.
+ *
+ * json-schema-to-typescript merges a `$ref` that carries a sibling `description`
+ * into its use site, so a `$defs` entry referenced only from described fields
+ * never becomes an exported name — while the Zod module still needs one to
+ * annotate its schema with. Each entry here is an indexed access onto the type
+ * that did get exported, which is the same type by construction — or, for a
+ * validated newtype over a primitive, that primitive: TypeScript has no way to
+ * carry the Rust type's constraint anyway, and the Zod schema is what enforces
+ * it at runtime.
+ */
 export const SDK_SCHEMA_ALIASES = Object.freeze({
 	AbsolutePath: 'ControlReport["socket"]',
 	BatchStrategy: 'BatchReport["strategy"]',
 	ControlShape: 'ControlReport["mechanism"]',
+	IdentitySelector: 'UsageIdentity["selector"]',
 	ModeHeadless: 'ModeInfo["headless"]',
 	SessionPhase: 'SessionReport["phase"]',
+	UsedPercent: "number",
 });
 
 /** @param {unknown} value @returns {string} */
@@ -156,9 +211,20 @@ function numberExpression(schema, path, integer) {
 		]),
 		path,
 	);
+	// Every integer format schemars emits for a Rust integer, not just the ones
+	// a contract happened to use first: they all narrow to the same `z.int()`,
+	// so listing a subset only defers this generator's loud failure to whichever
+	// width the next contract reaches for (`int64`, for the usage report's
+	// quota counters).
 	const integerFormats = new Set([
+		"int8",
+		"int16",
 		"int32",
+		"int64",
+		"int128",
 		"uint",
+		"uint8",
+		"uint16",
 		"uint32",
 		"uint64",
 		"uint128",
@@ -352,6 +418,28 @@ function intersect(expression, members, path, offset = 0) {
 	);
 }
 
+/**
+ * The object-shaping keywords a schema carries beside a branch list, if any.
+ *
+ * `type: "object"` alone is not one: it says nothing a branch list does not
+ * already imply, and treating it as a base would wrap every plain union in an
+ * intersection with an unconstrained object.
+ *
+ * @param {JsonSchemaObject} schema
+ * @returns {JsonSchemaObject}
+ */
+function objectKeywords(schema) {
+	/** @type {JsonSchemaObject} */
+	const base = {};
+	if (schema.properties !== undefined) base.properties = schema.properties;
+	if (schema.required !== undefined) base.required = schema.required;
+	if (schema.additionalProperties !== undefined) {
+		base.additionalProperties = schema.additionalProperties;
+	}
+	if (Object.keys(base).length > 0) base.type = "object";
+	return base;
+}
+
 /** @param {JsonSchemaNode} schema @param {string} path @returns {string} */
 function schemaExpression(schema, path) {
 	if (schema === true) return "z.unknown()";
@@ -378,14 +466,30 @@ function schemaExpression(schema, path) {
 		// another — is stated once instead of restated inside each branch. Without
 		// it the only way to express such a rule is to split every branch by it,
 		// which multiplies a large generated contract rather than adding to it.
-		assertSupported(schema, new Set([keyword, "allOf"]), path);
+		//
+		// Object keywords are ANDed the same way, and schemars writes exactly that
+		// for a struct with a flattened enum tail: the shared fields as a plain
+		// object, the variants as a sibling `oneOf` (`UsageWindow`, whose
+		// `window_seconds_source` decides which pair of fields follows the shared
+		// `id`/`usage`). Dropping the base would validate a window missing every
+		// field it must have, so it is intersected rather than ignored.
+		const base = objectKeywords(schema);
+		assertSupported(
+			schema,
+			new Set([keyword, "allOf", ...Object.keys(base)]),
+			path,
+		);
 		const members = schema.oneOf ?? schema.anyOf ?? [];
 		const branches = union(
 			members.map((member, index) =>
 				schemaExpression(member, `${path}.${keyword}.${index}`),
 			),
 		);
-		return intersect(branches, schema.allOf, path);
+		const combined =
+			Object.keys(base).length === 0
+				? branches
+				: `z.intersection(${objectExpression(base, path)}, ${branches})`;
+		return intersect(combined, schema.allOf, path);
 	}
 	if (schema.allOf !== undefined) {
 		assertSupported(schema, new Set(["allOf"]), path);

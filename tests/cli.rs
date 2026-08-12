@@ -8097,6 +8097,46 @@ fn sync_check_reports_and_writes_nothing() {
 }
 
 #[test]
+fn a_write_mode_sync_that_changed_files_still_exits_zero() {
+    // The exit mapping's other half, asserted on its own rather than as a step
+    // in the `--check` walkthrough. A write-mode sync that creates a file has
+    // pending *changes* and must still exit 0: it just made them. Exiting 1
+    // here would fail every CI job that runs `oneharness sync` to APPLY the
+    // policy, since the first apply on any machine necessarily changes files.
+    let fx = ConfigFixture::new("sync-write-exit", "allowed_tools = [\"Read\"]\n", "");
+    let output = run_with_config(
+        &[
+            "sync",
+            "--harness",
+            "claude-code",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+
+    let value = json_stdout(&output);
+    assert_eq!(value["check"], false, "this is the write mode");
+    assert_eq!(
+        sync_result(&value, "claude-code")["status"],
+        "created",
+        "the run has to have changed something for the exit code to be the question"
+    );
+    assert!(
+        fx.dir.join(".claude/settings.json").exists(),
+        "a write-mode sync writes the file it reports"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a sync that applied its changes reports success, not `out of sync`: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn sync_refuses_a_file_it_cannot_parse_and_leaves_it_alone() {
     let fx = ConfigFixture::new("sync-jsonc", "allowed_tools = [\"Read\"]\n", "");
     let claude_dir = fx.dir.join(".claude");

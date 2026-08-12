@@ -177,7 +177,7 @@ pub struct HarnessConfig {
     pub variant: BTreeMap<VariantName, VariantConfig>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct VariantName(String);
 
@@ -270,7 +270,7 @@ pub struct VariantConfig {
 /// One `[[hooks]]` entry: a pre-tool gate installed into each targeted harness.
 /// The `command` may contain `{harness}`, replaced with the harness id when the
 /// hook is built (so one entry can route `mygate hook {harness}` to every CLI).
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HookEntry {
     /// The command the harness runs before a tool call. `{harness}` is
@@ -889,7 +889,7 @@ pub const DEFAULT_SOURCE: &str = "default";
 /// One resolved field in the `oneharness config` report: the effective value
 /// plus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both
 /// are `null` when the field is unset everywhere and has no built-in default.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct Field<T> {
     pub value: Option<T>,
     pub source: Option<String>,
@@ -922,7 +922,7 @@ impl<T> Field<T> {
 /// The `oneharness config` report: the fully layered configuration with the
 /// provenance of every value, so a consumer can see exactly which file (or
 /// default) shaped each setting of a run.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct ConfigReport {
     pub schema_version: &'static str,
     /// The files consulted, in layering order (user first, project last).
@@ -968,7 +968,7 @@ pub struct ConfigReport {
 }
 
 /// One harness's `[harness.<id>]` overrides, with provenance.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct HarnessReport {
     pub model: Field<String>,
     pub reasoning: Field<String>,
@@ -976,13 +976,16 @@ pub struct HarnessReport {
     pub args: Field<Vec<String>>,
     pub allowed_tools: Field<Vec<String>>,
     pub denied_tools: Field<Vec<String>>,
+    // llmlint: ignore[invalid_states_unrepresentable] These two fields are deliberately raw passthrough TOML — the whole point is that oneharness does not interpret a harness's own settings table — so the schema says "an arbitrary object", which is the honest description of an uninterpreted value.
+    #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
     pub hooks: Field<toml::Value>,
+    #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
     pub settings: Field<toml::Value>,
     pub env: BTreeMap<String, Field<String>>,
     pub variant: BTreeMap<String, VariantReport>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct VariantReport {
     pub model: Field<String>,
     pub reasoning: Field<String>,
@@ -990,7 +993,9 @@ pub struct VariantReport {
     pub args: Field<Vec<String>>,
     pub allowed_tools: Field<Vec<String>>,
     pub denied_tools: Field<Vec<String>>,
+    #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
     pub hooks: Field<toml::Value>,
+    #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
     pub settings: Field<toml::Value>,
     pub env_file: Field<String>,
     pub env_from: BTreeMap<String, Field<String>>,

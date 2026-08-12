@@ -26,7 +26,7 @@ use crate::domain::signals::FailureKind;
 /// parsed in the `oneharness` binary) and a config-file value (`run_mode`, via
 /// `Deserialize`); the CLI parsing lives in the binary so this core crate stays
 /// free of `clap`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum RunMode {
     /// Run every selected harness at once, each an independent subprocess, and

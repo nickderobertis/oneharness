@@ -39,10 +39,16 @@ reject() {
   exit 1
 }
 
-# Two distinct registry shapes, and they mean opposite things. A version Cargo
-# cannot select is a core release that has not reached crates.io yet; a core it
-# selected and then failed to compile against is a source drift that a bump has
-# to carry. Only the first may be waved through on the strength of a tag.
+# Three registry shapes, and the first means the opposite of the other two. A
+# version Cargo cannot select is a core release that has not reached crates.io
+# yet; a core it selected and then failed to compile — or whose published
+# FEATURES the binary's forwarding does not find — is a source drift that a bump
+# has to carry. Only the first may be waved through on the strength of a tag.
+#
+# The feature arm is its own: the binary forwards `mock-harness` to
+# `oneharness-core/mock-harness`, and a published core without that feature
+# fails before any source is unpacked, worded "for `oneharness-core`" rather
+# than "for the requirement", so neither other arm sees it.
 core_version_unpublished=false
 registry_core_mismatch=false
 if grep -Eq "failed to select a version for the requirement \`oneharness-core" "$output_file" &&
@@ -53,6 +59,9 @@ if grep -Eq "failed to select a version for the requirement \`oneharness-core" "
   registry_core_mismatch=true
 elif grep -Eq 'oneharness-core-[0-9]+\.[0-9]+\.[0-9]+[/\\]' "$output_file" &&
   grep -Eq "could not compile \`oneharness\`" "$output_file"; then
+  registry_core_mismatch=true
+elif grep -Eq "failed to select a version for \`oneharness-core\`" "$output_file" &&
+  grep -Eq "depends on \`oneharness-core\`, with features:" "$output_file"; then
   registry_core_mismatch=true
 fi
 

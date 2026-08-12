@@ -1,42 +1,142 @@
 {
+  "config_options": {
+    "config": "config",
+    "cwd": "cwd",
+    "no_config": "noConfig"
+  },
+  "detect_options": {
+    "all": "all",
+    "bins": "bins",
+    "config": "config",
+    "exclude": "exclude",
+    "harnesses": "harnesses",
+    "no_config": "noConfig",
+    "require_available": "requireAvailable"
+  },
+  "gate_options": {
+    "deny_if_contains": "denyIfContains",
+    "event": "event",
+    "harness": "harness",
+    "reason": "reason"
+  },
+  "history_clear_options": {
+    "all_projects": "allProjects",
+    "config": "config",
+    "history_dir": "historyDir",
+    "no_config": "noConfig",
+    "project": "project",
+    "yes": "yes"
+  },
   "history_list_options": {
     "all_projects": "allProjects",
+    "config": "config",
     "history_dir": "historyDir",
-    "project": "project"
+    "no_config": "noConfig",
+    "project": "project",
+    "variant": "variant"
   },
   "history_lookup": {
+    "all": "all",
     "all_projects": "allProjects",
+    "config": "config",
     "history_dir": "historyDir",
     "last": "last",
+    "no_config": "noConfig",
     "project": "project",
     "session": "session"
+  },
+  "history_migrate_options": {
+    "config": "config",
+    "history_dir": "historyDir",
+    "no_config": "noConfig"
   },
   "history_watch_options": {
     "after": "after",
     "all_projects": "allProjects",
+    "config": "config",
     "events": "events",
     "history_dir": "historyDir",
     "labels": "labels",
-    "project": "project"
+    "no_config": "noConfig",
+    "project": "project",
+    "variant": "variant"
+  },
+  "init_options": {
+    "force": "force",
+    "path": "path"
+  },
+  "interrupt_options": {
+    "cwd": "cwd",
+    "input": "input",
+    "session": "session",
+    "session_dir": "sessionDir"
+  },
+  "mock_options": {
+    "event": "event",
+    "harness": "harness",
+    "rules": "rules",
+    "spy_file": "spyFile"
   },
   "run_options": {
+    "all": "all",
+    "batch_prompts": "batchPrompts",
+    "batch_strategy": "batchStrategy",
     "bins": "bins",
+    "config": "config",
+    "control": "control",
     "cwd": "cwd",
     "env": "env",
     "events": "events",
+    "exclude": "exclude",
     "fork": "fork",
     "harnesses": "harnesses",
     "history": "history",
     "history_dir": "historyDir",
     "history_labels": "historyLabels",
     "history_name": "historyName",
+    "max_parallel": "maxParallel",
+    "mock_harnesses": "mockHarnesses",
+    "mock_rules": "mockRules",
     "mode": "mode",
     "models": "models",
+    "no_config": "noConfig",
+    "no_history": "noHistory",
+    "output_dir": "outputDir",
+    "output_format": "outputFormat",
+    "passthrough": "passthrough",
+    "permit_prompts": "permitPrompts",
+    "print_command": "printCommand",
     "prompt": "prompt",
+    "prompt_files": "promptFiles",
     "reasoning": "reasoning",
+    "require_available": "requireAvailable",
     "resume": "resume",
+    "run_mode": "runMode",
+    "schema": "schema",
+    "schema_max_retries": "schemaMaxRetries",
     "session": "session",
+    "session_dir": "sessionDir",
+    "spy_file": "spyFile",
     "system": "system",
+    "system_file": "systemFile",
+    "timeout_seconds": "timeoutSeconds"
+  },
+  "sync_options": {
+    "check": "check",
+    "config": "config",
+    "cwd": "cwd",
+    "global_": "global",
+    "harnesses": "harnesses",
+    "no_config": "noConfig"
+  },
+  "usage_options": {
+    "all": "all",
+    "bins": "bins",
+    "config": "config",
+    "cwd": "cwd",
+    "exclude": "exclude",
+    "harnesses": "harnesses",
+    "no_config": "noConfig",
     "timeout_seconds": "timeoutSeconds"
   }
 }

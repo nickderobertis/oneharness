@@ -1,4 +1,4 @@
-// llmlint: ignore-block[comments_earn_their_place] The two properties stated here — honest fleet coverage, and no probe failure taking the command down — are what every function below preserves; deferring them to `docs/harness-usage.md` is what `no_redundant_instruction_pointers` forbids.
+// llmlint: ignore-block[comments_earn_their_place] The two properties stated here — honest fleet coverage, and no probe failure taking the command down — are what the engine sweep below preserves; deferring them to `docs/harness-usage.md` is what `no_redundant_instruction_pointers` forbids.
 //! `oneharness usage` — report each harness identity's remaining subscription
 //! headroom, without spending a model turn.
 //!
@@ -18,311 +18,40 @@
 //! data in the report. Only a genuine usage error (an unknown harness id, an
 //! undeclared variant, a bad config) exits non-zero.
 // llmlint: ignore-end[comments_earn_their_place]
+//!
+//! Both properties belong to the sweep, which is a library call
+//! ([`oneharness_core::io::usage::report`]) — so a Rust consumer checking
+//! provider health gets the same [`UsageReport`] without spawning anything.
+//! This module is the shell that renders it.
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::cli::{UsageArgs, UsageFormat};
-use crate::commands::{
-    dedupe_exact_ids, print_json, print_text, select_specs, variant_environment,
-};
-use oneharness_core::domain::config::VariantName;
+use crate::commands::{print_json, print_text};
 use oneharness_core::domain::usage::{
     AuthMode, QuotaCounters, UnavailableReason, UnknownReason, UsageAvailability, UsageIdentity,
-    UsageReport, UsageWindow, UtcInstant, WindowUsage,
+    UsageReport, UsageWindow, WindowUsage,
 };
 use oneharness_core::errors::OneharnessError;
-use oneharness_core::io::config as config_io;
-use oneharness_core::io::detect::{self, BinOverrides};
-use oneharness_core::io::usage::{self as usage_io, EnvView, UsageProbeRequest};
-
-/// Probes run concurrently: identity selection is per-process for every harness
-/// here, so nothing is shared between them. Bounded so a `--all` sweep on a
-/// small machine does not start eight subprocesses at once.
-const MAX_PARALLEL_PROBES: usize = 4;
+use oneharness_core::io::usage::{self as usage_io, UsageRequest};
 
 pub fn run(args: &UsageArgs) -> Result<i32, OneharnessError> {
-    // Probing defaults to every harness; only naming one with `--harness`
-    // narrows the sweep. `--exclude` therefore means "the sweep, minus these"
-    // rather than an empty selection — and clap refuses it alongside `--harness`,
-    // where it would name ids it could not drop.
-    let all = args.all || args.harness.is_empty();
-    let specs = select_specs(all, &args.harness, &args.exclude)?;
-    let selected_ids = dedupe_exact_ids(&args.harness);
-
-    let project_start = args.cwd.clone().unwrap_or_else(|| {
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-    });
-    let loaded = config_io::load(args.config.as_deref(), args.no_config, &project_start)?;
-    // A variant that was never declared is a usage error, not an identity
-    // silently collapsed onto the base harness's credentials.
-    for id in args.harness.iter().chain(&args.exclude) {
-        if let Some((base, variant)) = id.split_once(':') {
-            if loaded.config.variant_for(id).is_none() {
-                return Err(OneharnessError::UnknownHarnessVariant {
-                    id: id.clone(),
-                    base: base.to_string(),
-                    variant: variant.to_string(),
-                });
-            }
-        }
-    }
-    let overrides = BinOverrides::parse(&args.bin)?.with_config_bins(config_bins(&loaded.config));
-    let timeout = Duration::from_secs(args.timeout);
-
-    // One plan per selected identity, built before any probe runs so a config
-    // fault fails loudly up front rather than half way through a sweep.
-    let mut plans = Vec::with_capacity(specs.len());
-    for (index, spec) in specs.iter().enumerate() {
-        let id = selected_ids
-            .get(index)
-            .map_or_else(|| spec.id.to_string(), Clone::clone);
-        let env = variant_environment(&loaded.config, &id, &project_start)?;
-        let env_remove = loaded
-            .config
-            .variant_for(&id)
-            .map_or_else(Vec::new, |variant| variant.unset_env.clone());
-        let resolved = detect::resolve_named(spec, &id, &overrides);
-        let variant = variant_of(&id)?;
-        plans.push(Plan {
-            id,
-            variant,
-            base: spec.id,
-            support: spec.usage,
-            bin: resolved.bin,
-            available: resolved.available,
-            env,
-            env_remove,
-            cwd: args.cwd.clone(),
-            timeout,
-        });
-    }
-
-    let identities = probe_all(&plans);
-    let report = UsageReport::new(now_utc(), identities);
+    let report = usage_io::report(&UsageRequest {
+        all: args.all,
+        harness: args.harness.clone(),
+        exclude: args.exclude.clone(),
+        bin: args.bin.clone(),
+        cwd: args.cwd.clone(),
+        timeout: Some(Duration::from_secs(args.timeout)),
+        config: args.config.clone(),
+        no_config: args.no_config,
+    })?;
 
     match args.format {
         UsageFormat::Json => print_json(&report, args.compact)?,
         UsageFormat::Text => print_text(&render_text(&report))?,
     }
     Ok(0)
-}
-
-/// Everything one identity's probe needs, resolved from config and the CLI.
-struct Plan {
-    /// The composed selector (`claude-code:work`), which is how a consumer joins
-    /// this entry back to the `run` invocation it describes.
-    id: String,
-    /// The variant half of [`Plan::id`], parsed once here so the probe path —
-    /// which must report an outcome for every identity, including a crashed one
-    /// — has no way left to fail. See [`variant_of`].
-    variant: Option<VariantName>,
-    /// The registry id, which is what the report's `harness` field carries.
-    base: &'static str,
-    support: oneharness_core::domain::usage::UsageSupport,
-    bin: String,
-    available: bool,
-    env: Vec<(String, String)>,
-    env_remove: Vec<String>,
-    cwd: Option<PathBuf>,
-    timeout: Duration,
-}
-
-/// The variant half of a composed selector (`claude-code:work`), so two
-/// subscriptions of one harness stay separately attributed in the report.
-///
-/// The name is checked against the declared variants before any plan is built,
-/// so this parse restates that check as the type the report's field holds
-/// rather than performing a second one. It stays fallible so an id that somehow
-/// reached here is refused loudly, rather than attributed to a name the report
-/// could never be read back with.
-fn variant_of(id: &str) -> Result<Option<VariantName>, OneharnessError> {
-    let Some((base, name)) = id.split_once(':') else {
-        return Ok(None);
-    };
-    name.parse::<VariantName>()
-        .map(Some)
-        .map_err(|_| OneharnessError::UnknownHarnessVariant {
-            id: id.to_string(),
-            base: base.to_string(),
-            variant: name.to_string(),
-        })
-}
-
-impl Plan {
-    /// Probe this identity, or record why no probe ran. Never fails: every
-    /// outcome — including a missing binary — is a normalized identity.
-    fn probe(&self) -> UsageIdentity {
-        fault_inject_probe_panic(&self.id);
-        self.probe_inner().with_variant(self.variant.clone())
-    }
-
-    fn probe_inner(&self) -> UsageIdentity {
-        let env = EnvView::new(&self.env, &self.env_remove);
-        let Some(probe) = self.support.probe() else {
-            // An affirmative "no headroom to report", stated rather than
-            // omitted. `expect` is sound: a support tier is either probed or
-            // carries a reason, and this is the not-probed half.
-            let reason = self
-                .support
-                .unprobed_reason()
-                .expect("a tier with no probe carries a reason");
-            return UsageIdentity::new(
-                self.base,
-                usage_io::selector_for(None, &env),
-                unavailable(reason),
-            );
-        };
-        if probe.spawns_harness() && !self.available {
-            return UsageIdentity::new(
-                self.base,
-                usage_io::selector_for(Some(probe), &env),
-                oneharness_core::domain::usage::ParsedUsage::unknown(
-                    UnknownReason::binary_missing(&self.bin),
-                ),
-            );
-        }
-        let probed = usage_io::probe(&UsageProbeRequest {
-            probe,
-            bin: self.bin.clone(),
-            cwd: self.cwd.clone(),
-            env: self.env.clone(),
-            env_remove: self.env_remove.clone(),
-            timeout: self.timeout,
-        });
-        UsageIdentity::new(self.base, probed.selector, probed.parsed)
-    }
-
-    /// What this identity reports when its probe panicked outright. Nothing was
-    /// learned, which is exactly `unknown` — and saying so keeps the rest of the
-    /// report readable.
-    fn crashed(&self) -> UsageIdentity {
-        self.probe_failed("the probe stopped unexpectedly")
-    }
-
-    fn worker_start_failed(&self, error: &std::io::Error) -> UsageIdentity {
-        self.probe_failed(&format!("could not start probe worker: {error}"))
-    }
-
-    fn probe_failed(&self, message: &str) -> UsageIdentity {
-        UsageIdentity::new(
-            self.base,
-            usage_io::selector_for(
-                self.support.probe(),
-                &EnvView::new(&self.env, &self.env_remove),
-            ),
-            oneharness_core::domain::usage::ParsedUsage::unknown(UnknownReason::ProbeFailed {
-                message: message.to_string(),
-            }),
-        )
-        .with_variant(self.variant.clone())
-    }
-}
-
-/// Comma-separated harness ids whose probe must panic outright, read by
-/// [`fault_inject_probe_panic`].
-///
-/// A panicking probe is a *bug*, not an input: no payload, timeout, or missing
-/// binary produces one, so [`probe_all`]'s containment — itself the fix for a
-/// probe that took a whole report down — has nothing that can drive it through
-/// the CLI a consumer runs. This injects one, and is compiled only into the
-/// `mock-harness` test build, exactly like the mock harness fixture binary, so
-/// it cannot exist in a shipped `oneharness`.
-#[cfg(feature = "mock-harness")]
-const PANIC_PROBE_ENV: &str = "MOCK_PANIC_PROBE";
-
-#[cfg(feature = "mock-harness")]
-fn fault_inject_probe_panic(id: &str) {
-    let faulted = std::env::var(PANIC_PROBE_ENV).unwrap_or_default();
-    assert!(
-        !faulted.split(',').any(|name| name == id),
-        "fault-injected probe panic for `{id}`"
-    );
-}
-
-#[cfg(not(feature = "mock-harness"))]
-fn fault_inject_probe_panic(_id: &str) {}
-
-#[cfg(feature = "mock-harness")]
-fn fault_inject_thread_failure(id: &str) -> std::io::Result<()> {
-    let faulted = std::env::var("MOCK_FAIL_PROBE_THREAD").unwrap_or_default();
-    if faulted.split(',').any(|name| name == id) {
-        return Err(std::io::Error::other("fault-injected resource exhaustion"));
-    }
-    Ok(())
-}
-
-#[cfg(not(feature = "mock-harness"))]
-fn fault_inject_thread_failure(_id: &str) -> std::io::Result<()> {
-    Ok(())
-}
-
-fn unavailable(reason: UnavailableReason) -> oneharness_core::domain::usage::ParsedUsage {
-    oneharness_core::domain::usage::ParsedUsage {
-        auth_mode: AuthMode::Unknown,
-        plan: None,
-        availability: UsageAvailability::Unavailable { reason },
-    }
-}
-
-/// Run every plan's probe concurrently, preserving selection order.
-///
-/// Each probe is joined individually, so one that panics becomes *that
-/// identity's* `unknown` instead of taking the whole report down with it. A
-/// report is the deliverable here; losing seven readings because the eighth
-/// harness misbehaved is the failure mode this command exists to avoid.
-fn probe_all(plans: &[Plan]) -> Vec<UsageIdentity> {
-    let mut identities = Vec::with_capacity(plans.len());
-    // Bounded concurrency without a work queue: the selection is at most the
-    // registry's size, so a chunk at a time is both simpler and enough.
-    for chunk in plans.chunks(MAX_PARALLEL_PROBES.max(1)) {
-        std::thread::scope(|scope| {
-            let running: Vec<_> = chunk
-                .iter()
-                .map(|plan| {
-                    fault_inject_thread_failure(&plan.id)?;
-                    std::thread::Builder::new().spawn_scoped(scope, || plan.probe())
-                })
-                .collect();
-            for (plan, worker) in chunk.iter().zip(running) {
-                identities.push(match worker {
-                    Ok(handle) => handle.join().unwrap_or_else(|_| plan.crashed()),
-                    Err(error) => plan.worker_start_failed(&error),
-                });
-            }
-        });
-    }
-    identities
-}
-
-fn config_bins(
-    config: &oneharness_core::domain::config::FileConfig,
-) -> std::collections::HashMap<String, String> {
-    let mut bins: std::collections::HashMap<String, String> = config
-        .harness
-        .iter()
-        .filter_map(|(id, harness)| harness.bin.clone().map(|bin| (id.clone(), bin)))
-        .collect();
-    for (base, harness) in &config.harness {
-        for name in harness.variant.keys() {
-            let id = format!("{base}:{name}");
-            if let Some(bin) = config.bin_for(&id) {
-                bins.insert(id, bin.to_string());
-            }
-        }
-    }
-    bins
-}
-
-/// The single clock read for the whole report — the io layer's job, so the
-/// domain stays pure and every identity is stamped with one observation time.
-/// Minted as a [`UtcInstant`], which is canonical by construction from epoch
-/// seconds, so the report's documented UTC contract holds without a re-parse.
-fn now_utc() -> UtcInstant {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs() as i64);
-    UtcInstant::from_epoch(secs)
 }
 
 /// Render the report for a human. The rule the JSON contract encodes carries
@@ -457,6 +186,7 @@ fn unknown_label(reason: &UnknownReason) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oneharness_core::domain::usage::UtcInstant;
     use oneharness_core::domain::usage::{
         IdentitySelector, QuotaAmount, UsedPercent, WindowDuration, Windows,
     };

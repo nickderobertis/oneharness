@@ -15,8 +15,11 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::domain::batch::BatchStrategy;
+use crate::domain::fallback::RunMode;
 use crate::domain::history::{HistoryId, HistoryLabels};
 use crate::domain::mode::PermissionMode;
+use crate::domain::report::OutputFormat;
 
 /// Generate a schema for a value emitted by oneharness.
 ///
@@ -159,6 +162,54 @@ impl JsonSchema for LiteralTrue {
     }
 }
 
+/// The literal `false`.
+///
+/// The [`LiteralTrue`] counterpart, for the other side of a discriminated pair:
+/// `history clear` prints one of two documents and `dry_run` is what tells them
+/// apart, so each frame pins its own value rather than carrying a `bool` either
+/// constructor could set wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct LiteralFalse;
+
+impl Serialize for LiteralFalse {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_bool(false)
+    }
+}
+
+impl<'de> Deserialize<'de> for LiteralFalse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        if bool::deserialize(deserializer)? {
+            Err(serde::de::Error::custom("must be `false`"))
+        } else {
+            Ok(Self)
+        }
+    }
+}
+
+impl JsonSchema for LiteralFalse {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("LiteralFalse")
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({
+            "type": "boolean",
+            "const": false,
+        })
+    }
+}
+
 /// Options accepted by `OneHarness.run()` in the published Node SDK.
 ///
 /// Unknown fields are rejected because the SDK cannot forward an option it does
@@ -191,6 +242,13 @@ pub struct RunOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub fork: Option<bool>,
+    // The four enum-typed options here carry NO doc comment on purpose, and a
+    // `//` comment rather than a `///` one for the same reason: a `$ref` with a
+    // sibling `description` is merged inline by json-schema-to-typescript
+    // instead of resolving to the named type, so the generated SDK loses
+    // `PermissionMode`/`OutputFormat`/`RunMode`/`BatchStrategy` as exported
+    // names and `zod.ts` then fails to import them. Each enum's own definition
+    // carries the description.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "PermissionMode")]
     pub mode: Option<PermissionMode>,
@@ -221,6 +279,103 @@ pub struct RunOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "BTreeMap<String, String>")]
     pub bins: Option<BTreeMap<String, String>>,
+    /// Further prompts, making this a **batch**: one harness fanned over each
+    /// prompt, sharing the cacheable `system`/model prefix. Combined order is
+    /// `prompt`, then these, then `promptFiles` — the CLI's own order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    pub batch_prompts: Option<Vec<NonEmptyString>>,
+    /// Files each holding one whole prompt, or `-` for stdin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    pub prompt_files: Option<Vec<String>>,
+    /// Replace these selected harnesses' provider processes with oneharness's
+    /// deterministic `MOCK_*`-scripted responder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    pub mock_harnesses: Option<Vec<String>>,
+    /// Run against every supported harness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub all: Option<bool>,
+    /// Harness id(s) to drop from an all-harness run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    pub exclude: Option<Vec<String>>,
+    /// Read the system prompt from a file — the counterpart to `system` for a
+    /// value too large to pass on the argv.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub system_file: Option<String>,
+    /// Directory the `session` store lives in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub session_dir: Option<String>,
+    /// Open the out-of-band turn-control socket, so a separate `interrupt()`
+    /// can abort the in-flight turn without killing this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub control: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "OutputFormat")]
+    pub output_format: Option<OutputFormat>,
+    /// Mock/spy the selected harnesses' tool calls for this run only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub mock_rules: Option<String>,
+    /// Append one JSONL record per observed tool call to this file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub spy_file: Option<String>,
+    /// Constrain each harness's final answer to this JSON Schema file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub schema: Option<String>,
+    /// Max retries when a response fails schema validation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "u32")]
+    pub schema_max_retries: Option<u32>,
+    /// Write each harness's raw stdout/stderr under this directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub output_dir: Option<String>,
+    /// Silence the warning that the chosen mode may block on an approval prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub permit_prompts: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub config: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub no_config: Option<bool>,
+    /// Maximum harnesses (or, in a batch, prompts) to run concurrently.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "u32")]
+    pub max_parallel: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "BatchStrategy")]
+    pub batch_strategy: Option<BatchStrategy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "RunMode")]
+    pub run_mode: Option<RunMode>,
+    /// Build and report each command without executing it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub print_command: Option<bool>,
+    /// Treat a not-installed harness as a failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub require_available: Option<bool>,
+    /// Do NOT record history for this run, overriding config or the
+    /// `ONEHARNESS_HISTORY` environment override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub no_history: Option<bool>,
+    /// Extra arguments appended verbatim to each harness command, after `--`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    pub passthrough: Option<Vec<String>>,
 }
 
 /// The session selector accepted by `OneHarness.history()` in the published Node
@@ -280,6 +435,19 @@ pub struct HistoryLookupByLast {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub history_dir: Option<String>,
+    /// Show every record in the session rather than the run summaries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub all: Option<bool>,
+    /// Load configuration from exactly this file, skipping user/project
+    /// discovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub config: Option<String>,
+    /// Ignore every configuration file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub no_config: Option<bool>,
 }
 
 /// A [`HistoryLookup`] that names its session.
@@ -306,6 +474,19 @@ pub struct HistoryLookupBySession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub history_dir: Option<String>,
+    /// Show every record in the session rather than the run summaries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub all: Option<bool>,
+    /// Load configuration from exactly this file, skipping user/project
+    /// discovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub config: Option<String>,
+    /// Ignore every configuration file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub no_config: Option<bool>,
 }
 
 /// Options accepted by `OneHarness.historyList()` in the published Node SDK.
@@ -322,6 +503,19 @@ pub struct HistoryListOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub history_dir: Option<String>,
+    /// Narrow to one configured harness identity (`claude-code:work`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub variant: Option<String>,
+    /// Load configuration from exactly this file, skipping user/project
+    /// discovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub config: Option<String>,
+    /// Ignore every configuration file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub no_config: Option<bool>,
 }
 
 /// Options accepted by the language SDKs' continuous history iterators.
@@ -351,6 +545,236 @@ pub struct HistoryWatchOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub events: Option<bool>,
+    /// Narrow to one configured harness identity (`claude-code:work`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub variant: Option<String>,
+    /// Load configuration from exactly this file, skipping user/project
+    /// discovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub config: Option<String>,
+    /// Ignore every configuration file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub no_config: Option<bool>,
+}
+
+/// Options accepted by the language SDKs' `detect()`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "DetectOptions")]
+pub struct DetectOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    pub harnesses: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub all: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    pub exclude: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "BTreeMap<String, String>")]
+    pub bins: Option<BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub config: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub no_config: Option<bool>,
+    /// Exit non-zero if any probed harness is not installed. The SDKs surface
+    /// that as a thrown process error rather than a report a caller must
+    /// re-check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub require_available: Option<bool>,
+}
+
+/// Options accepted by the language SDKs' `config()`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "ConfigOptions")]
+pub struct ConfigOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub config: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub no_config: Option<bool>,
+}
+
+/// Options accepted by the language SDKs' `sync()`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "SyncOptions")]
+pub struct SyncOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    pub harnesses: Option<Vec<String>>,
+    /// Report what would change and write nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub check: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub global: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub config: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub no_config: Option<bool>,
+}
+
+/// Options accepted by the language SDKs' `init()`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "InitOptions")]
+pub struct InitOptions {
+    /// Where to write the starter config. Absent means `oneharness.toml` in the
+    /// working directory, exactly as the CLI's own default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub force: Option<bool>,
+}
+
+/// Options accepted by the language SDKs' `usage()`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "UsageOptions")]
+pub struct UsageOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    pub harnesses: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub all: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    pub exclude: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "BTreeMap<String, String>")]
+    pub bins: Option<BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "u64")]
+    pub timeout_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub config: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub no_config: Option<bool>,
+}
+
+/// Options accepted by the language SDKs' `gate()` — the pre-tool gate an
+/// installed hook invokes, driven directly so a consumer hosting its own hook
+/// runner never has to shell out and parse.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "GateOptions")]
+pub struct GateOptions {
+    /// The harness whose hook protocol to speak.
+    pub harness: NonEmptyString,
+    /// The harness's pre-tool hook event, written to the gate's stdin.
+    #[schemars(with = "String")]
+    pub event: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub deny_if_contains: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub reason: Option<String>,
+}
+
+/// Options accepted by the language SDKs' `mock()`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "MockOptions")]
+pub struct MockOptions {
+    pub harness: NonEmptyString,
+    /// The harness's pre-tool hook event, written to the responder's stdin.
+    #[schemars(with = "String")]
+    pub event: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub rules: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub spy_file: Option<String>,
+}
+
+/// Options accepted by the language SDKs' `interrupt()`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "InterruptOptions")]
+pub struct InterruptOptions {
+    /// The caller-owned session handle the target run was started with.
+    pub session: NonEmptyString,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub input: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub session_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub cwd: Option<String>,
+}
+
+/// Options accepted by the language SDKs' `historyClear()`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "HistoryClearOptions")]
+pub struct HistoryClearOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub all_projects: Option<bool>,
+    /// Actually delete. Absent or false reports what would be removed and
+    /// removes nothing, so a caller can always look first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub yes: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub history_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub config: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub no_config: Option<bool>,
+}
+
+/// Options accepted by the language SDKs' `historyMigrate()`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "HistoryMigrateOptions")]
+pub struct HistoryMigrateOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub history_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub config: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub no_config: Option<bool>,
 }
 
 #[cfg(test)]
@@ -509,6 +933,30 @@ mod tests {
             history_labels: None,
             env: None,
             bins: None,
+            batch_prompts: None,
+            prompt_files: None,
+            mock_harnesses: None,
+            all: None,
+            exclude: None,
+            system_file: None,
+            session_dir: None,
+            control: None,
+            output_format: None,
+            mock_rules: None,
+            spy_file: None,
+            schema: None,
+            schema_max_retries: None,
+            output_dir: None,
+            permit_prompts: None,
+            config: None,
+            no_config: None,
+            max_parallel: None,
+            batch_strategy: None,
+            run_mode: None,
+            print_command: None,
+            require_available: None,
+            no_history: None,
+            passthrough: None,
         };
 
         let value = serde_json::to_value(&options).expect("serialize SDK options");
@@ -540,6 +988,9 @@ mod tests {
             project: None,
             all_projects: Some(true),
             history_dir: Some("/tmp/oneharness-history".to_string()),
+            all: None,
+            config: None,
+            no_config: None,
         });
 
         let value = serde_json::to_value(&lookup).expect("serialize history lookup");
@@ -562,6 +1013,9 @@ mod tests {
             project: Some("oneharness".to_string()),
             all_projects: None,
             history_dir: None,
+            all: None,
+            config: None,
+            no_config: None,
         });
 
         let value = serde_json::to_value(&lookup).expect("serialize history lookup");
@@ -599,6 +1053,9 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
+                all: None,
+                config: None,
+                no_config: None,
             })
         );
         assert_eq!(
@@ -610,6 +1067,9 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
+                all: None,
+                config: None,
+                no_config: None,
             })
         );
     }
@@ -630,6 +1090,9 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
+                all: None,
+                config: None,
+                no_config: None,
             })
         );
         // Dropping `last` to `false` fails the `Last` variant, so the same
@@ -645,6 +1108,9 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
+                all: None,
+                config: None,
+                no_config: None,
             })
         );
     }
@@ -664,6 +1130,9 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
+                all: None,
+                config: None,
+                no_config: None,
             })
         );
     }
@@ -747,6 +1216,9 @@ mod tests {
             project: None,
             all_projects: Some(true),
             history_dir: Some("/tmp/oneharness-history".to_string()),
+            variant: None,
+            config: None,
+            no_config: None,
         };
 
         let value = serde_json::to_value(&options).expect("serialize history list options");
@@ -769,6 +1241,9 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
+                variant: None,
+                config: None,
+                no_config: None,
             }
         );
     }

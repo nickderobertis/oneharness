@@ -3,12 +3,16 @@ name = "oneharness-core"
 version = "0.6.12"
 edition = "2021"
 rust-version = "1.86"
-description = "Reusable engine behind the oneharness CLI: harness registry, hook rendering/installation, and harness config sync."
+description = "Reusable engine behind the oneharness CLI: the run driver, harness registry, hook rendering/installation, and harness config sync."
 license = "MIT"
 repository = "https://github.com/nickderobertis/oneharness"
 
 [features]
 sdk-schema = []
+# Compiles the usage sweep's fault injectors, so the containment that keeps one
+# misbehaving probe from taking a whole report down is drivable from a test.
+# Enabled by the binary crate's feature of the same name; never in a release.
+mock-harness = []
 
 # Emits the core-only bundle, for a library consumer that wants it without the
 # CLI's roots. Named apart from the binary crate's `generate_sdk_schema` example

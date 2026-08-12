@@ -31,13 +31,26 @@ export type HistoryLookup = HistoryLookupByLast | HistoryLookupBySession;
  * Select the most recent session.
  */
 export interface HistoryLookupByLast {
+  /**
+   * Show every record in the session rather than the run summaries.
+   */
+  all?: boolean | undefined;
   allProjects?: boolean | undefined;
+  /**
+   * Load configuration from exactly this file, skipping user/project
+   * discovery.
+   */
+  config?: string | undefined;
   historyDir?: string | undefined;
   /**
    * Select the most recent session. Only `true` selects, so this variant
    * accepts no other value.
    */
   last: true;
+  /**
+   * Ignore every configuration file.
+   */
+  noConfig?: boolean | undefined;
   project?: string | undefined;
   /**
    * A name may accompany `last: true` — it is what the caller would have
@@ -51,7 +64,16 @@ export interface HistoryLookupByLast {
  * Select the session named by `session`.
  */
 export interface HistoryLookupBySession {
+  /**
+   * Show every record in the session rather than the run summaries.
+   */
+  all?: boolean | undefined;
   allProjects?: boolean | undefined;
+  /**
+   * Load configuration from exactly this file, skipping user/project
+   * discovery.
+   */
+  config?: string | undefined;
   historyDir?: string | undefined;
   /**
    * Whether the most recent session was asked for instead. An ordinary
@@ -60,6 +82,10 @@ export interface HistoryLookupBySession {
    * first — so a lookup that reaches this variant always meant the name.
    */
   last?: boolean | undefined;
+  /**
+   * Ignore every configuration file.
+   */
+  noConfig?: boolean | undefined;
   project?: string | undefined;
   /**
    * The oneharness-derived session name recorded by `run --history`. This is

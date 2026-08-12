@@ -74,7 +74,7 @@ pub const SCHEMA_VERSION: &str = "0.1";
 /// Deserializing is a consumer boundary — `oneharness-core` is published for
 /// sibling tools — so the envelope is validated on the way in rather than
 /// trusted: see [`UsageReportWire`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "UsageReportWire")]
 pub struct UsageReport {
     /// The shape version, as a type with one value — see [`SchemaVersion`].
@@ -105,8 +105,30 @@ impl UsageReport {
 /// not something a caller can build — and one arriving on the wire is refused
 /// rather than stored (see [`UsageReportWire`]), so the two boundaries agree.
 /// Serializes as the version string a consumer reads.
+///
+/// The schema is written by hand because the derive describes the *Rust* shape
+/// — a unit struct, so `null` — while [`Serialize`] writes the version string.
+/// An SDK validating a real report against the derived schema would reject
+/// every one of them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SchemaVersion;
+
+impl schemars::JsonSchema for SchemaVersion {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("SchemaVersion")
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "const": SCHEMA_VERSION,
+        })
+    }
+}
 
 impl SchemaVersion {
     /// The version text, always [`SCHEMA_VERSION`].
@@ -146,7 +168,7 @@ impl Serialize for SchemaVersion {
 ///   refused, and an equivalent UTC spelling (`+00:00`, a sub-second fraction)
 ///   is canonicalized — so the field a consumer reads always means what it
 ///   documents, exactly as [`UsageWindow::resets_at`] does.
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct UsageReportWire {
     schema_version: String,
     observed_at: String,
@@ -284,7 +306,7 @@ impl<'de> Deserialize<'de> for UtcInstant {
 /// Deserializing is a consumer boundary like the envelope's, so every string an
 /// identity carries is flattened through [`without_control_chars`] on the way in
 /// — see [`UsageIdentityWire`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "UsageIdentityWire")]
 pub struct UsageIdentity {
     // llmlint: ignore[invalid_states_unrepresentable] `RunResult::harness` and `HistoryRunRecord::harness` are the established representation for a registry id on the wire, and matching them is what lets a consumer join a usage identity to a run; a newtype here would make this one contract spell it differently from every sibling.
@@ -360,7 +382,7 @@ impl UsageIdentity {
 ///
 /// The readable text is kept: each control character becomes a space, so a
 /// reader still sees what the report said.
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct UsageIdentityWire {
     harness: String,
     #[serde(default)]
@@ -467,7 +489,7 @@ fn flatten_optional(text: &mut Option<String>) {
 
 /// How one identity is selected for a probe. A secret-valued selector records
 /// only the variable's *name*, so a credential can never reach the report.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum IdentitySelector {
     /// An environment variable naming a credential *directory* — Claude Code's
@@ -498,7 +520,7 @@ impl IdentitySelector {
 
 /// How the identity authenticates, which is what decides whether plan headroom
 /// exists at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthMode {
     /// A first-party subscription (Claude.ai, ChatGPT, a GitHub Copilot seat).
@@ -517,7 +539,7 @@ pub enum AuthMode {
 /// has no plan headroom to report" **with a reason**, and `unknown` means only
 /// that nothing was learned. There is no percentage reachable from either
 /// non-available state, so neither can be rendered as `0%` used.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum UsageAvailability {
     /// Real headroom data: one entry per non-null window, never empty.
@@ -555,7 +577,7 @@ impl UsageAvailability {
 
 /// Why an identity affirmatively has no plan headroom. Distinct from
 /// [`UnknownReason`]: these are answers, not absences of one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum UnavailableReason {
     /// API-key auth. Verified for both claude-code (`rate_limits_available:
@@ -586,7 +608,7 @@ pub enum UnavailableReason {
 
 /// Why nothing is known. Reserved **strictly** for unprobed or probe-failed —
 /// API-key auth is [`UnavailableReason::ApiKeyAuth`], not this.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UnknownReason {
     /// No probe was run for this identity.
@@ -619,7 +641,7 @@ impl UnknownReason {
 
 /// A non-empty list of windows. The non-emptiness is the invariant that keeps
 /// "available" from ever meaning "no data" — construct it with [`Windows::new`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "Vec<UsageWindow>", into = "Vec<UsageWindow>")]
 pub struct Windows(Vec<UsageWindow>);
 
@@ -654,7 +676,7 @@ impl From<Windows> for Vec<UsageWindow> {
 /// reported: a null window (Claude's `seven_day_opus: null`, codex's `secondary:
 /// null`) means "not applicable to this plan", **not** "0% used", so it is
 /// omitted rather than zero-filled.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UsageWindow {
     /// The harness-native window identifier, verbatim where the harness names
     /// one (`five_hour`, `tangelo`, `chat`) and `<limitId>/<slot>` where codex's
@@ -683,7 +705,7 @@ pub struct UsageWindow {
 
 /// What a window's consumption looks like. An unlimited quota carries no
 /// counters, so it can never be rendered as a metered bar at 0% used.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WindowUsage {
     Metered {
@@ -709,8 +731,17 @@ pub enum WindowUsage {
 /// render as a nonsense bar. A value *above* 100 is accepted and preserved
 /// rather than clamped — it means the harness reported consumption past its own
 /// ceiling (an overage), which is precisely when a consumer needs the figure.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
+///
+/// `schemars` describes the newtype's private field rather than the `f64` the
+/// serde attributes make it travel as, so the derived schema constrained
+/// nothing at all — `with` plus the boundary's own bound is what makes the
+/// generated validators check what [`UsedPercent::new`] checks. (JSON has no
+/// `NaN` or infinity literal, so "finite" needs nothing said.)
+#[derive(
+    Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(try_from = "f64", into = "f64")]
+#[schemars(with = "f64", extend("minimum" = 0.0))]
 pub struct UsedPercent(f64);
 
 impl UsedPercent {
@@ -748,7 +779,9 @@ impl From<UsedPercent> for f64 {
 /// Deliberately *not* used for [`QuotaCounters::remaining`], which is genuinely
 /// negative for an account past its ceiling — the deficit is the signal there,
 /// so constraining it would discard a real over-consumption reading.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(try_from = "i64", into = "u64")]
 pub struct QuotaAmount(u64);
 
@@ -780,7 +813,7 @@ impl From<QuotaAmount> for u64 {
 }
 
 /// The raw counters behind a metered window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct QuotaCounters {
     pub entitlement: QuotaAmount,
     pub used: QuotaAmount,
@@ -808,7 +841,7 @@ impl QuotaCounters {
 }
 
 /// What the counters count.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum QuotaUnit {
     /// GitHub AI credits, $0.01 each — Copilot's unit when `token_based_billing`
@@ -828,7 +861,7 @@ pub enum QuotaUnit {
 /// window, so "no length" is [`Self::Unknown`] — the state a consumer already
 /// handles — rather than a `window_seconds` of 0 that a renderer would divide by
 /// or display as an instantaneous quota.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "window_seconds_source", rename_all = "snake_case")]
 pub enum WindowDuration {
     /// The harness stated the length (codex's `windowDurationMins`).

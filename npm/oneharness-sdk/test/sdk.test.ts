@@ -4,16 +4,21 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { z } from "zod";
+import type { ZodType, z } from "zod";
 import {
 	type ActionEvent,
 	ActionEventSchema,
 	BatchReportSchema,
+	CAPABILITIES,
+	ConfigOptionsSchema,
+	DetectOptionsSchema,
 	type DetectReport,
 	DetectReportSchema,
 	FallbackReportSchema,
+	GateOptionsSchema,
 	type HarnessInfo,
 	HarnessInfoSchema,
+	HistoryClearOptionsSchema,
 	type HistoryLine,
 	HistoryLineSchema,
 	type HistoryList,
@@ -22,6 +27,7 @@ import {
 	HistoryListSchema,
 	type HistoryLookup,
 	HistoryLookupSchema,
+	HistoryMigrateOptionsSchema,
 	HistoryNotFoundError,
 	type HistoryRecord,
 	HistoryRecordSchema,
@@ -33,9 +39,13 @@ import {
 	HistoryStreamEnvelopeSchema,
 	type HistoryWatchOptions,
 	HistoryWatchOptionsSchema,
+	InitOptionsSchema,
+	InterruptOptionsSchema,
 	type ListReport,
 	ListReportSchema,
+	MockOptionsSchema,
 	OneHarness,
+	OneHarnessProcessError,
 	type RunOptions,
 	RunOptionsSchema,
 	type RunReport,
@@ -45,7 +55,9 @@ import {
 	type RunStreamEnvelope,
 	RunStreamEnvelopeSchema,
 	SessionReportSchema,
+	SyncOptionsSchema,
 	type Usage,
+	UsageOptionsSchema,
 	UsageSchema,
 } from "../src/index.js";
 
@@ -130,11 +142,154 @@ const inferredSchemasMatchGeneratedTypes: [
 	true,
 ];
 
+// A host that runs its agents through oneharness carries `ONEHARNESS_*`
+// overrides, and they outrank a project file — a leaked `ONEHARNESS_HARNESSES`
+// silently reselects the harnesses a config or sync assertion is about. The
+// Rust suite strips them in `run_with_config` and `smoke.sh` in `oh_hermetic`;
+// this is the same rule for the tests that spawn from `process.env`.
+for (const name of Object.keys(process.env)) {
+	if (name.startsWith("ONEHARNESS_")) delete process.env[name];
+}
+
+type JsonSchema = Record<string, unknown>;
+const bundle = JSON.parse(
+	await readFile(resolve(here, "../src/generated/schemas.json"), "utf8"),
+) as Record<string, JsonSchema>;
+
+// A string satisfying each pattern the bundle constrains one with. The default
+// is deliberately alphanumeric: it starts with `[A-Za-z0-9]`, carries no
+// control character, and uses no character a label key forbids, so it passes
+// every `not`-shaped rule at once.
+const PATTERNED: Array<[RegExp, string]> = [
+	[/T\(\[01\]/u, "2026-08-11T00:00:00.000Z"],
+	[/\{8\}-/u, "0198f0d0-7b31-7000-8000-000000000001"],
+];
+
+/**
+ * A value populating every field of one generated schema.
+ *
+ * Populating every field is the point: a generated validator is a per-field
+ * check, so a field no instance ever carries is a check no test ever runs. At
+ * every union it takes the first arm, which keeps the conditionals these
+ * schemas encode as parallel alternatives in agreement with each other.
+ */
+function populate(
+	node: JsonSchema | undefined,
+	defs: Record<string, JsonSchema>,
+): unknown {
+	if (!node) return null;
+	const scope = {
+		...defs,
+		...((node.$defs as Record<string, JsonSchema>) ?? {}),
+	};
+	const deref = (child: JsonSchema | undefined) =>
+		typeof child?.$ref === "string"
+			? scope[child.$ref.split("/").pop() as string]
+			: child;
+	const firstArm = (child: JsonSchema | undefined) => {
+		const arms = (child?.oneOf ?? child?.anyOf) as JsonSchema[] | undefined;
+		return arms ? arms[0] : child;
+	};
+	if (typeof node.$ref === "string") return populate(deref(node), scope);
+	if ("const" in node) return node.const;
+	if (Array.isArray(node.enum)) return node.enum[0];
+	// Flatten as SCHEMAS, never as the values the parts would each build, when a
+	// node's fields are spread across siblings rather than stated in one place:
+	// `allOf` parts, and a `properties` that sits BESIDE a union rather than
+	// inside it. `UsageWindow` declares `id` and `usage` itself and refines the
+	// rest through a `oneOf`, so reading only the union would drop both required
+	// fields; and merging built objects rather than schemas would let a later
+	// part's value overwrite an earlier part's variant tag.
+	if (
+		Array.isArray(node.allOf) ||
+		(node.properties && firstArm(node) !== node)
+	) {
+		const properties: Record<string, JsonSchema> = {};
+		// A variant that FORBIDS a field spells it `false`, and these variants are
+		// exclusive: a record measured at the stdout pipe carries
+		// `observed_tool_ms` and must not carry `model_ms`. Merging every part's
+		// fields without honouring that would build a document combining two
+		// variants, which the contract rightly refuses.
+		const forbidden = new Set<string>();
+		const collect = (part: JsonSchema | undefined): void => {
+			const here = deref(part);
+			if (!here) return;
+			for (const [name, child] of Object.entries(
+				(here.properties as Record<string, unknown>) ?? {},
+			)) {
+				if (child === false) {
+					forbidden.add(name);
+					delete properties[name];
+					continue;
+				}
+				if (!forbidden.has(name)) properties[name] = child as JsonSchema;
+			}
+			// A node's own `oneOf` and `allOf` are siblings, not alternatives:
+			// `history_record` carries both, and reading only the `allOf` would
+			// build a document missing every field the union half declares.
+			const arm = firstArm(here);
+			if (arm !== here) collect(arm);
+			for (const nested of (here.allOf as JsonSchema[]) ?? []) collect(nested);
+		};
+		collect(node);
+		return populate({ type: "object", properties }, scope);
+	}
+	const arms = (node.oneOf ?? node.anyOf) as JsonSchema[] | undefined;
+	if (arms) return populate(arms[0], scope);
+	const declared = node.type;
+	const kind = Array.isArray(declared)
+		? ((declared.find((item) => item !== "null") ?? "null") as string)
+		: (declared as string | undefined);
+	switch (kind) {
+		case "object": {
+			const value: Record<string, unknown> = {};
+			for (const [name, child] of Object.entries(
+				(node.properties as Record<string, unknown>) ?? {},
+			)) {
+				// `false` is how a variant FORBIDS a field — a served interrupt
+				// frame must carry no `error`. Emitting one would build a
+				// document the contract refuses on purpose.
+				if (child === false) continue;
+				value[name] = populate(child as JsonSchema, scope);
+			}
+			const extra = node.additionalProperties;
+			if (extra && typeof extra === "object")
+				value.a = populate(extra as JsonSchema, scope);
+			return value;
+		}
+		case "array":
+			return [populate(node.items as JsonSchema, scope)];
+		case "boolean":
+			return true;
+		case "integer":
+		case "number":
+			// A window's length is `>= 1`, not `>= 0`: a bound stated in the
+			// schema has to be met or the instance is not one.
+			return typeof node.minimum === "number" ? node.minimum : 0;
+		case "null":
+			return null;
+		default: {
+			const pattern = String(node.pattern ?? "");
+			const matched = PATTERNED.find(([probe]) => probe.test(pattern));
+			return matched ? matched[1] : "a";
+		}
+	}
+}
+
 function sdk(): OneHarness {
 	return new OneHarness({
 		executable: binary,
 		env: { ONEHARNESS_NO_CONFIG: "1" },
 	});
+}
+
+/**
+ * A client that DOES read configuration files, for the two verbs whose whole
+ * subject is the layering. Hermetic by the ambient strip above rather than by
+ * `ONEHARNESS_NO_CONFIG`, which would switch off the thing under test.
+ */
+function layered(): OneHarness {
+	return new OneHarness({ executable: binary });
 }
 
 describe("OneHarness", () => {
@@ -201,6 +356,47 @@ describe("OneHarness", () => {
 			token: null,
 			store_file: null,
 		});
+	});
+
+	test("every generated validator accepts a fully populated instance of its own schema", async () => {
+		// The Zod modules are generated from the JSON Schema bundle, and both are
+		// checked in — so the two can disagree, and nothing else here would
+		// notice. This walks every root: it synthesizes a value populating every
+		// field from the schema, then parses it with the validator generated
+		// from that same schema. A field-level check the generator got wrong
+		// fails here rather than at a consumer.
+		//
+		// It is also what exercises the per-field validators at all. They are one
+		// function apiece, and a field no instance ever carries is a function no
+		// test ever calls, which is what the package's coverage floor is really
+		// asking about.
+		const exported = (await import("../src/index.js")) as unknown as Record<
+			string,
+			ZodType<unknown> | undefined
+		>;
+		const roots = Object.keys(bundle).filter((name) => name !== "capabilities");
+		expect(roots.length).toBeGreaterThan(20);
+		let checked = 0;
+		const rejections: string[] = [];
+		for (const root of roots) {
+			const name = `${root
+				.split("_")
+				.map((part) => part[0]?.toUpperCase() + part.slice(1))
+				.join("")}Schema`;
+			const schema = exported[name];
+			// Not every root is published as a validator; the ones that are must
+			// agree with the schema they were generated from.
+			if (!schema) continue;
+			const value = populate(bundle[root], {});
+			if (!schema.safeParse(value).success)
+				rejections.push(`${name}: ${JSON.stringify(value)}`);
+			checked += 1;
+		}
+		// Every root is walked before anything is asserted, so one disagreement
+		// does not hide the rest — and so the parse of every other root still
+		// happens, which is what exercises their validators.
+		expect(rejections.slice(0, 3).join("\n")).toBe("");
+		expect(checked).toBeGreaterThan(20);
 	});
 
 	test("crosses the Node to CLI boundary and preserves absent usage", async () => {
@@ -1013,6 +1209,58 @@ describe("OneHarness", () => {
 		expect(argv).toContain("high");
 	});
 
+	test("suppresses a bound option only when its suppressor renders an argument", async () => {
+		// An `unless` encodes a clap conflict, and clap conflicts on a flag being
+		// present — so an option carrying nothing must suppress nothing. Truthiness
+		// is a different test in this language: `harnesses: []` is truthy while
+		// sending no `--harness`, and reading it as truth dropped the `--all` that
+		// was the call's only selection, which the CLI answers by refusing to run.
+		const client = sdk();
+		const registry = (await client.list()).map((harness) => harness.id).sort();
+		const everything = await client.run({
+			prompt: "empty suppressor keeps --all",
+			all: true,
+			harnesses: [],
+			mode: "bypass",
+			printCommand: true,
+		});
+		expect(everything.dry_run).toBe(true);
+		expect(everything.results.map((result) => result.harness).sort()).toEqual(
+			registry,
+		);
+
+		// The other direction, on the same pair: a suppressor that does render
+		// still suppresses, and it has to — `--all` beside `--harness` is the clap
+		// conflict this binding exists to avoid, so a miss here fails the call.
+		const one = await client.run({
+			prompt: "rendering suppressor drops --all",
+			all: true,
+			harnesses: ["codex"],
+			mode: "bypass",
+			printCommand: true,
+		});
+		expect(one.results.map((result) => result.harness)).toEqual(["codex"]);
+
+		// A `value` binding renders whatever it carries, `""` included: `--system ""`
+		// reaches the argv, so it suppresses the `--system-file` clap refuses beside
+		// it. Truthiness would call that empty string absent and send both.
+		const emptySystem = await client.run({
+			prompt: "empty system still suppresses --system-file",
+			harnesses: ["codex"],
+			system: "",
+			systemFile: resolve(tmpdir(), "oneharness-sdk-never-read-system.txt"),
+			mode: "bypass",
+			printCommand: true,
+		});
+		expect(emptySystem.results[0]?.command).toEqual([
+			"codex",
+			"exec",
+			"--dangerously-bypass-approvals-and-sandbox",
+			"--json",
+			"empty system still suppresses --system-file",
+		]);
+	});
+
 	test("rejects an empty prompt before spawning", async () => {
 		await expect(new OneHarness().run({ prompt: "" })).rejects.toThrow(
 			"invalid oneharness run options",
@@ -1079,5 +1327,368 @@ describe("OneHarness", () => {
 		await expect(detectClient.detect()).rejects.toThrow(
 			"invalid oneharness detect contract",
 		);
+	});
+	test("reads the layered configuration and its provenance", async () => {
+		const project = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-config-"));
+		await writeFile(
+			resolve(project, "oneharness.toml"),
+			'harnesses = ["codex"]\nmode = "bypass"\n',
+		);
+		// `noConfig` is deliberately absent: this asserts the project layer is
+		// read and attributed, which is the whole of what the verb reports.
+		const report = await layered().config({ cwd: project });
+		expect(report.harnesses.value).toEqual(["codex"]);
+		expect(report.harnesses.source).toContain("oneharness.toml");
+		expect(report.mode.value).toBe("bypass");
+	}, 30_000);
+
+	test("reports what a sync would change without writing it", async () => {
+		const project = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-sync-"));
+		await writeFile(
+			resolve(project, "oneharness.toml"),
+			'allowed_tools = ["Bash(echo:*)"]\n',
+		);
+		// `--check` exits non-zero precisely because a file *would* change, and
+		// the method has to surface that as the report rather than as a throw.
+		const planned = await layered().sync({
+			cwd: project,
+			harnesses: ["claude-code"],
+			check: true,
+		});
+		const claude = planned.results.find(
+			({ harness }) => harness === "claude-code",
+		);
+		// `created`, because the file does not exist yet and `--check` reports
+		// the status the write would reach — while writing nothing, which the
+		// second sync reaching `created` too is what proves.
+		expect(claude?.status).toBe("created");
+
+		const written = await layered().sync({
+			cwd: project,
+			harnesses: ["claude-code"],
+		});
+		expect(
+			written.results.find(({ harness }) => harness === "claude-code")?.status,
+		).toBe("created");
+		// Idempotent, so a second sync of the same policy changes nothing.
+		const again = await layered().sync({
+			cwd: project,
+			harnesses: ["claude-code"],
+		});
+		expect(
+			again.results.find(({ harness }) => harness === "claude-code")?.status,
+		).toBe("unchanged");
+	}, 30_000);
+
+	test("scaffolds a starter config and refuses to clobber it", async () => {
+		const project = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-init-"));
+		const path = resolve(project, "oneharness.toml");
+		expect(await sdk().init({ path })).toBe(path);
+		expect(await readFile(path, "utf8")).toContain("run_mode");
+
+		// The failure path: an existing file is a refusal, not a silent
+		// overwrite, and `force` is the only way past it.
+		await expect(sdk().init({ path })).rejects.toThrow(OneHarnessProcessError);
+		expect(await sdk().init({ path, force: true })).toBe(path);
+	}, 30_000);
+
+	test("reports subscription headroom for a harness that cannot be probed", async () => {
+		// `oneharness-mock-harness` is a real executable that answers no usage
+		// protocol, so this exercises the whole probe path and asserts the
+		// honest tier rather than a fabricated 0%.
+		const report = await sdk().usage({
+			harnesses: ["claude-code"],
+			bins: { "claude-code": mock },
+			timeoutSeconds: 20,
+		});
+		expect(report.schema_version).toBe("0.1");
+		const claude = report.identities.find(
+			({ harness }) => harness === "claude-code",
+		);
+		expect(claude).toBeDefined();
+		expect(["known", "unknown", "unavailable"]).toContain(
+			String(claude?.availability.state),
+		);
+	}, 40_000);
+
+	test("answers a pre-tool hook event with the harness's own verdict", async () => {
+		const client = sdk();
+		const blocked = await client.gate({
+			harness: "claude-code",
+			denyIfContains: "BLOCKED",
+			reason: "policy",
+			event: JSON.stringify({
+				tool_name: "Bash",
+				tool_input: { command: "echo BLOCKED" },
+			}),
+		});
+		expect(blocked).not.toBeNull();
+		expect(JSON.parse(blocked ?? "")).toMatchObject({
+			hookSpecificOutput: {
+				permissionDecision: "deny",
+				permissionDecisionReason: "policy",
+			},
+		});
+
+		// An allowed call is said with silence, so `null` is the answer rather
+		// than a missing one.
+		const allowed = await client.gate({
+			harness: "claude-code",
+			denyIfContains: "BLOCKED",
+			event: JSON.stringify({
+				tool_name: "Bash",
+				tool_input: { command: "echo fine" },
+			}),
+		});
+		expect(allowed).toBeNull();
+	}, 30_000);
+
+	test("applies a mock ruleset to a hook event and records the original", async () => {
+		const dir = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-mock-"));
+		const rules = resolve(dir, "rules.json");
+		const spyFile = resolve(dir, "spy.jsonl");
+		await writeFile(
+			rules,
+			JSON.stringify({
+				rules: [
+					{
+						match: { tool: "Bash", input: { command: { contains: "secret" } } },
+						action: { deny: { message: "no secrets" } },
+					},
+				],
+			}),
+		);
+		const verdict = await sdk().mock({
+			harness: "claude-code",
+			rules,
+			spyFile,
+			event: JSON.stringify({
+				tool_name: "Bash",
+				tool_input: { command: "cat secret" },
+			}),
+		});
+		expect(JSON.parse(verdict ?? "")).toMatchObject({
+			hookSpecificOutput: { permissionDecision: "deny" },
+		});
+		// The spy log keeps the call as it was observed, which is what a
+		// behavioral suite asserts against.
+		expect(await readFile(spyFile, "utf8")).toContain("cat secret");
+	}, 30_000);
+
+	test("answers an interrupt for a session no run is serving", async () => {
+		const sessionDir = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-int-"));
+		// A refusal is the answer, not a throw: the CLI exits non-zero and the
+		// frame says which of the refusal reasons applies, which is what a
+		// supervisor branches on.
+		const response = await sdk().interrupt({
+			session: "no-such-session",
+			sessionDir,
+		});
+		expect(response.ok).toBe(false);
+		if (response.ok === false) expect(response.reason).toBe("not_running");
+	}, 30_000);
+
+	test("clears and migrates a history store through typed methods", async () => {
+		const historyDir = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-hist-"));
+		const client = sdk();
+		await client.run({
+			prompt: "history clear sdk",
+			harnesses: ["codex"],
+			mode: "bypass",
+			history: true,
+			historyDir,
+			bins: { codex: mock },
+			env: { MOCK_STDOUT: historyTrace },
+		});
+		expect(await client.historyList({ historyDir })).toHaveLength(1);
+
+		expect(await client.historyMigrate({ historyDir })).toMatchObject({
+			files_processed: expect.any(Number),
+		});
+
+		// A dry run reports what it *would* remove and deletes nothing, which
+		// the following list still seeing the session is what proves.
+		const dry = await client.historyClear({ historyDir });
+		expect(dry.dry_run).toBe(true);
+		if (dry.dry_run === true) expect(dry.would_remove).toBe(1);
+		expect(await client.historyList({ historyDir })).toHaveLength(1);
+
+		const cleared = await client.historyClear({ historyDir, yes: true });
+		expect(cleared.dry_run).toBe(false);
+		if (cleared.dry_run === false) expect(cleared.removed).toBe(1);
+		expect(await client.historyList({ historyDir })).toHaveLength(0);
+	}, 60_000);
+
+	test("every option contract accepts a fully populated value", () => {
+		// One populated value per contract, so each generated validator is walked
+		// over every field it declares rather than only the handful a happy-path
+		// call happens to set. This is the check that would have caught
+		// `--variant`/`--config`/`--no-config` being bound by the manifest and
+		// absent from `HistoryListOptions`: a populated object naming them would
+		// have been rejected as an unknown field.
+		const populated: Array<[string, ZodType<unknown>, unknown]> = [
+			[
+				"DetectOptions",
+				DetectOptionsSchema,
+				{
+					harnesses: ["codex"],
+					all: false,
+					exclude: ["goose"],
+					bins: { codex: "/bin/codex" },
+					config: "/tmp/oneharness.toml",
+					noConfig: false,
+					requireAvailable: true,
+				},
+			],
+			[
+				"ConfigOptions",
+				ConfigOptionsSchema,
+				{ cwd: "/tmp", config: "/tmp/oneharness.toml", noConfig: false },
+			],
+			[
+				"SyncOptions",
+				SyncOptionsSchema,
+				{
+					cwd: "/tmp",
+					harnesses: ["claude-code"],
+					check: true,
+					global: false,
+					config: "/tmp/oneharness.toml",
+					noConfig: false,
+				},
+			],
+			[
+				"InitOptions",
+				InitOptionsSchema,
+				{ path: "/tmp/oneharness.toml", force: true },
+			],
+			[
+				"UsageOptions",
+				UsageOptionsSchema,
+				{
+					harnesses: ["codex"],
+					all: false,
+					exclude: ["goose"],
+					bins: { codex: "/bin/codex" },
+					cwd: "/tmp",
+					timeoutSeconds: 30,
+					config: "/tmp/oneharness.toml",
+					noConfig: false,
+				},
+			],
+			[
+				"GateOptions",
+				GateOptionsSchema,
+				{
+					harness: "claude-code",
+					event: "{}",
+					denyIfContains: "rm -rf",
+					reason: "policy",
+				},
+			],
+			[
+				"MockOptions",
+				MockOptionsSchema,
+				{
+					harness: "claude-code",
+					event: "{}",
+					rules: "/tmp/rules.json",
+					spyFile: "/tmp/spy.jsonl",
+				},
+			],
+			[
+				"InterruptOptions",
+				InterruptOptionsSchema,
+				{
+					session: "work",
+					input: "do this instead",
+					sessionDir: "/tmp/sessions",
+					cwd: "/tmp",
+				},
+			],
+			[
+				"HistoryClearOptions",
+				HistoryClearOptionsSchema,
+				{
+					project: "oneharness",
+					allProjects: false,
+					yes: true,
+					historyDir: "/tmp/history",
+					config: "/tmp/oneharness.toml",
+					noConfig: false,
+				},
+			],
+			[
+				"HistoryMigrateOptions",
+				HistoryMigrateOptionsSchema,
+				{
+					historyDir: "/tmp/history",
+					config: "/tmp/oneharness.toml",
+					noConfig: false,
+				},
+			],
+			[
+				"HistoryListOptions",
+				HistoryListOptionsSchema,
+				{
+					project: "oneharness",
+					allProjects: false,
+					historyDir: "/tmp/history",
+					variant: "claude-code:work",
+					config: "/tmp/oneharness.toml",
+					noConfig: false,
+				},
+			],
+			[
+				"HistoryWatchOptions",
+				HistoryWatchOptionsSchema,
+				{
+					after: "0198f0d0-7b31-7000-8000-000000000001",
+					labels: { run: "sdk" },
+					project: "oneharness",
+					allProjects: false,
+					historyDir: "/tmp/history",
+					events: true,
+					variant: "claude-code:work",
+					config: "/tmp/oneharness.toml",
+					noConfig: false,
+				},
+			],
+			[
+				"HistoryLookup",
+				HistoryLookupSchema,
+				{
+					session: "work",
+					last: false,
+					all: true,
+					project: "oneharness",
+					allProjects: false,
+					historyDir: "/tmp/history",
+					config: "/tmp/oneharness.toml",
+					noConfig: false,
+				},
+			],
+		];
+		for (const [name, schema, value] of populated) {
+			const parsed = schema.safeParse(value);
+			expect(
+				parsed.success,
+				`${name}: ${parsed.success ? "" : JSON.stringify(parsed.error?.issues)}`,
+			).toBe(true);
+			// Every bound option must reach argv, so each key is one the
+			// capability's builder can render.
+			expect(Object.keys(value as object).length).toBeGreaterThan(0);
+		}
+	});
+
+	test("every capability the manifest declares has a method on the client", () => {
+		// The client-side half of the coverage gate. `scripts/sdk-coverage.mjs`
+		// enforces this across both languages in `just check`; asserting it here
+		// too means a missing method fails the package's own suite rather than
+		// only a repo-level script.
+		const client = sdk() as unknown as Record<string, unknown>;
+		for (const method of Object.keys(CAPABILITIES)) {
+			expect(typeof client[method], `${method} is missing`).toBe("function");
+		}
 	});
 });

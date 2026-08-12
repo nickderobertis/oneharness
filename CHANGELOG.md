@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.15](https://github.com/nickderobertis/oneharness/compare/v0.6.14...v0.6.15) - 2026-08-12
+
+### Added
+
+- close the SDK gaps against the CLI and gate the drift ([#1241](https://github.com/nickderobertis/oneharness/pull/1241))
+
 ## [0.6.14](https://github.com/nickderobertis/oneharness/compare/v0.6.13...v0.6.14) - 2026-08-11
 
 ### Fixed

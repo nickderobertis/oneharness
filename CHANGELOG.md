@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.16](https://github.com/nickderobertis/oneharness/compare/v0.6.15...v0.6.16) - 2026-08-13
+
+### Added
+
+- let a run opt out of the per-harness timeout entirely ([#1244](https://github.com/nickderobertis/oneharness/pull/1244))
+
 ## [0.6.15](https://github.com/nickderobertis/oneharness/compare/v0.6.14...v0.6.15) - 2026-08-12
 
 ### Added

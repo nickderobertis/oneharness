@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/nickderobertis/oneharness/compare/v0.7.0...v0.7.1) - 2026-08-13
+
+### Added
+
+- let the deterministic harness answer per selection ([#1249](https://github.com/nickderobertis/oneharness/pull/1249))
+
 ## [0.7.0](https://github.com/nickderobertis/oneharness/compare/v0.6.16...v0.7.0) - 2026-08-13
 
 ### Added

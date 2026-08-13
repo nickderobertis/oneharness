@@ -712,7 +712,7 @@ fn unsupported_mode_for_a_harness_is_refused() {
 #[test]
 fn hang_prone_mode_warns_but_runs_and_permit_prompts_silences_it() {
     // cursor's `default` could block on an approval prompt headlessly, so
-    // oneharness warns — but still runs it (the --timeout is the backstop),
+    // oneharness warns — but still runs it (the approval safety deadline is the backstop),
     // rather than refusing. `--permit-prompts` silences the warning.
     let base = [
         "run",
@@ -729,6 +729,10 @@ fn hang_prone_mode_warns_but_runs_and_permit_prompts_silences_it() {
     assert!(output.status.success(), "hang-prone mode should still run");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("may block on an interactive"), "{stderr}");
+    assert!(
+        stderr.contains("120s approval-wait safety deadline"),
+        "{stderr}"
+    );
     assert_eq!(json_stdout(&output)["permission_mode"], "default");
     let mut unlimited = base.to_vec();
     unlimited.extend(["--timeout", "0"]);
@@ -752,9 +756,8 @@ fn run_help_explains_how_to_disable_the_timeout() {
     let output = run(&["run", "--help"], &[]);
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
-    assert!(help.contains("Pass 0"), "{help}");
-    assert!(help.contains("timeout = 0"), "{help}");
-    assert!(help.contains("no timeout"), "{help}");
+    assert!(help.contains("By default there is no deadline"), "{help}");
+    assert!(help.contains("use 0 explicitly"), "{help}");
 }
 
 #[test]
@@ -7877,8 +7880,8 @@ fn config_command_no_config_shows_pure_defaults() {
         let value = json_stdout(&output);
         assert!(value["config_files"].as_array().unwrap().is_empty());
         assert!(value["model"]["value"].is_null());
-        assert_eq!(value["timeout"]["value"], 120);
-        assert_eq!(value["timeout"]["source"], "default");
+        assert!(value["timeout"]["value"].is_null());
+        assert!(value["timeout"]["source"].is_null());
     }
 }
 

@@ -407,8 +407,9 @@ Useful `run` flags:
   files without a JSON parser).
 - `-- <args…>` — extra arguments appended verbatim to each harness command (for
   single-harness runs, since flags differ per harness).
-- `--timeout <secs>` — per-harness timeout (default 120); pass `0` for no
-  timeout. With a positive limit, a hang becomes a `timeout` result that names
+- `--timeout <secs>` — optional per-harness timeout; by default a run has no
+  deadline. `0` remains an explicit synonym for that default. With a positive
+  limit, a hang becomes a `timeout` result that names
   the harness and enforced deadline, not a provider failure. oneharness owns the launcher's whole
   process tree, terminates descendants too, and bounds final pipe draining, so a
   native child cannot survive an npm/Node wrapper or hold the report open.
@@ -419,8 +420,9 @@ Useful `run` flags:
   requested from each harness (default `default`; see *Approval modes* below). A
   mode a selected harness **can't express** is a loud usage error before anything
   spawns; one that **may block on a prompt** headlessly is warned about and run,
-  with `--timeout` as the backstop. Choosing `--timeout 0` makes any such
-  approval wait unbounded and produces an explicit warning.
+  with a 120-second approval-wait safety deadline when no timeout was selected.
+  Choosing `--timeout 0` explicitly removes that safety valve, makes any such
+  approval wait unbounded, and produces a strengthened warning.
 - `--no-bypass` / `--bypass` — shorthands for `--mode default` / `--mode bypass`;
   `--bypass` forces bypass on over a config's `mode` / `bypass`.
 - `--permit-prompts` — silence the "may block on a prompt" warning for the chosen
@@ -517,7 +519,7 @@ models = ["opus", "sonnet"]     # repeated --model: fan out over the model axis
 system = "Be terse."            # --system
 bypass = true                   # legacy --bypass toggle (opt-in; default false)
 mode = "default"                # --mode; beats `bypass` (default: "default")
-timeout = 120                   # --timeout, in seconds; 0 means no timeout
+# timeout = 300                # --timeout, in seconds; omitted or 0 means none
 output_format = "json"          # --output-format
 stream = false                  # --stream / --no-stream (incremental events)
 schema_file = "person.json"     # --schema (structured output; relative to project)
@@ -1998,9 +2000,10 @@ harness's own mechanism; `oneharness list` shows the per-harness `modes` (each
 tagged `clean` or `hangs`), and the report echoes `permission_mode`. A harness
 that **can't express** a requested mode is a loud usage error *before* anything
 spawns (there's no command to build). A mode that **may block on a prompt**
-headlessly (a `hangs` tag) is warned about on stderr but still run, with the
-`--timeout` as the backstop (a real hang becomes a `timeout` result, never an
-infinite stall). An explicit `--timeout 0` removes that backstop and strengthens
+headlessly (a `hangs` tag) is warned about on stderr but still run. When the
+caller omitted a general timeout, this case alone receives a 120-second
+approval-wait safety deadline, so an unattended prompt cannot silently stall
+forever. An explicit `--timeout 0` removes that backstop and strengthens
 the warning to say the wait is unbounded; `--permit-prompts` silences it once
 allow-rules are synced so the prompt never fires.
 

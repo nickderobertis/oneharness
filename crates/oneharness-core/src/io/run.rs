@@ -239,7 +239,7 @@ pub struct RunRequest {
     pub schema_max_retries: Option<u32>,
     /// Also write each harness's raw stdout/stderr under this directory.
     pub output_dir: Option<PathBuf>,
-    /// Per-harness timeout in seconds (default 120); zero means no timeout.
+    /// Per-harness timeout in seconds; omitted or zero means no timeout.
     pub timeout: Option<u64>,
     /// Working directory each harness process runs in; also where project
     /// config discovery starts.
@@ -608,9 +608,6 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
         validate_session_output_format(session_wiring.as_ref(), explicit_format)?;
     }
     validate_stream(stream, &specs, batch_run, schema.is_some(), fallback_mode)?;
-    // Omission preserves the long-standing safety backstop. Zero is the one
-    // explicit opt-out shared by the CLI, config, and library request.
-    let timeout = Duration::from_secs(args.timeout.or(cfg.timeout).unwrap_or(120));
     // Resolve the approval mode (CLI --mode > --bypass/--no-bypass > config
     // `mode` > config `bypass` > the built-in default, which is `default`). A
     // mode a selected harness *cannot express* is refused here (a command can't
@@ -618,16 +615,25 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
     // run. A positive per-harness `--timeout` is its backstop; an explicit zero
     // gets a stronger warning because it deliberately makes that wait unbounded.
     validate_modes(mode, &specs)?;
+    let requested_timeout = args.timeout.or(cfg.timeout);
+    let hang_prone_ids = hang_prone(mode, &specs);
+    // Ordinary turns follow the caller's lifecycle when no deadline is asked
+    // for. Prompt-capable headless modes are the exception: omission must not
+    // turn an unattended approval prompt into a silent infinite stall. An
+    // explicit zero remains the deliberate opt-out introduced in 0.6.16.
+    let timeout = effective_timeout(requested_timeout, !hang_prone_ids.is_empty());
     // A reasoning/effort setting for a harness that has no headless argv surface
     // for it is refused here (no way to deliver it) — a loud usage error rather
     // than a silent drop, mirroring an unsupported mode.
     validate_reasoning(args, cfg, &specs)?;
     if !args.permit_prompts {
-        for id in hang_prone(mode, &specs) {
-            let protection = if timeout.is_zero() {
+        for id in hang_prone_ids {
+            let protection = if requested_timeout == Some(0) {
                 "--timeout 0 disables the deadline, so this approval wait is unbounded"
+            } else if requested_timeout.is_none() {
+                "applying a 120s approval-wait safety deadline (pass --timeout 0 to opt out)"
             } else {
-                "relying on --timeout as the deadline backstop"
+                "relying on the requested --timeout as the deadline backstop"
             };
             eprintln!(
                 "oneharness: warning: `--mode {}` may block on an interactive approval prompt for \
@@ -4040,8 +4046,8 @@ fn validate_reasoning(
 
 /// The selected harnesses for which `mode` is supported but would block on an
 /// interactive approval prompt headlessly (`ModeHeadless::Hangs`). The caller
-/// warns about each (unless `--permit-prompts`) but still runs them — the
-/// per-harness `--timeout` turns any real hang into a `timeout` result.
+/// warns about each (unless `--permit-prompts`) but still runs them with the
+/// approval-wait safety deadline when the caller omitted a timeout.
 fn hang_prone(mode: PermissionMode, specs: &[&'static HarnessSpec]) -> Vec<&'static str> {
     specs
         .iter()
@@ -4051,6 +4057,10 @@ fn hang_prone(mode: PermissionMode, specs: &[&'static HarnessSpec]) -> Vec<&'sta
         })
         .map(|spec| spec.id)
         .collect()
+}
+
+fn effective_timeout(requested: Option<u64>, prompt_capable: bool) -> Duration {
+    Duration::from_secs(requested.unwrap_or(if prompt_capable { 120 } else { 0 }))
 }
 
 fn parse_env(values: &[String]) -> Result<Vec<(String, String)>, OneharnessError> {
@@ -4664,6 +4674,14 @@ mod tests {
         assert!(hang_prone(PermissionMode::Default, &[claude]).is_empty());
         assert!(hang_prone(PermissionMode::Plan, &[crush]).is_empty());
         assert!(hang_prone(PermissionMode::Bypass, &[cursor, claude]).is_empty());
+    }
+
+    #[test]
+    fn only_an_omitted_timeout_in_a_prompt_capable_mode_gets_the_safety_deadline() {
+        assert_eq!(effective_timeout(None, false), Duration::ZERO);
+        assert_eq!(effective_timeout(None, true), Duration::from_secs(120));
+        assert_eq!(effective_timeout(Some(0), true), Duration::ZERO);
+        assert_eq!(effective_timeout(Some(17), true), Duration::from_secs(17));
     }
 
     #[test]

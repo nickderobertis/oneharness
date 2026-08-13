@@ -6,6 +6,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** runs without `--timeout` or a configured `timeout` now have no
+  deadline. Callers relying on the former 120-second default must pass
+  `--timeout 120`, set `timeout = 120`, or set `RunRequest::timeout` to
+  `Some(120)`. Explicit zero remains a supported synonym for no deadline.
+  Prompt-capable headless modes retain a 120-second approval-wait safety
+  deadline unless the caller explicitly selects a timeout (including zero).
+
 ## [0.6.16](https://github.com/nickderobertis/oneharness/compare/v0.6.15...v0.6.16) - 2026-08-13
 
 ### Added

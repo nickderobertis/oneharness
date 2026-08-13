@@ -37,6 +37,34 @@ impl EventSink for ChannelSink {
     }
 }
 
+#[test]
+fn an_omitted_library_timeout_outlives_the_former_120_second_default() {
+    // This is intentionally wall-clock evidence at the public library boundary:
+    // resolving `None` is not enough to prove a hidden runner default cannot
+    // still kill the child. The mock crosses the old deadline, then exits cleanly.
+    let request = RunRequest {
+        timeout: None,
+        ..request(
+            "claude-code",
+            &[
+                ("MOCK_SLEEP_MS", "121000"),
+                (
+                    "MOCK_STDOUT",
+                    r#"{"result":"finished after the old deadline"}"#,
+                ),
+            ],
+        )
+    };
+    let started = Instant::now();
+    let outcome = run(&request, RunControls::default()).expect("the mock run is valid");
+    assert!(started.elapsed() >= Duration::from_secs(120));
+    assert_eq!(outcome.report.results[0].status, Status::Ok);
+    assert_eq!(
+        outcome.report.results[0].text.as_deref(),
+        Some("finished after the old deadline")
+    );
+}
+
 // capability: run
 // capability: runStream
 #[test]

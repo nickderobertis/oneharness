@@ -60,3 +60,22 @@ const report = await new OneHarness().runMock(
 
 The SDK helpers cover stdout, stderr, exit, and latency. Put advanced variables
 in the run options' `env` map; explicit helper script values take precedence.
+
+`MOCK_ATTEMPT_FILE` sequences invocations across process boundaries: each new
+mock responder reads and increments the shared file before choosing
+`MOCK_STDOUT_1`, `MOCK_STDOUT_2`, and so on. This lets a sequential multi-party
+test give an agent and its judge different adapter-shaped responses even when
+both inherit one process-wide environment. Give both oneharness invocations the
+same counter path and numbered responses; the first can select one harness with
+`--mock-harness` and the second another. The SDKs expose the same mechanism
+through the run options' `env` map.
+
+The counter orders invocations; it does not route by harness id. Do not use it
+to assign identities inside one parallel multi-harness invocation, where launch
+order is intentionally unspecified.
+
+This deterministic responder replaces a whole paid provider process while
+retaining oneharness's real adapter argv and parsing. In contrast,
+`oneharness mock` and `run --mock-rules` intercept individual tool calls made by
+a real model; the statement that whole-harness mocking is out of scope for that
+hook feature does not apply to `run --mock-harness`.

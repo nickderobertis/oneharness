@@ -20253,6 +20253,54 @@ fn a_controlled_turn_with_an_omitted_timeout_outlives_the_former_default() {
 
 #[cfg(unix)]
 #[test]
+fn the_control_mock_refuses_an_invalid_result_delay() {
+    let store = control_store_dir("invalid-result-delay");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("invalid-result-delay-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let turn_log = store.join("turn.log").display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "invalid-delay",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "start",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+            "--env",
+            &mock_profile_redirect(),
+        ],
+        &[
+            ("MOCK_TURN_LOG", &turn_log),
+            ("MOCK_TURN_RESULT_DELAY_MS", "later"),
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let report = json_stdout(&output);
+    assert!(
+        report["results"][0]["stderr"]
+            .as_str()
+            .expect("captured harness stderr")
+            .contains("MOCK_TURN_RESULT_DELAY_MS must be milliseconds"),
+        "{report}"
+    );
+    assert_eq!(report["results"][0]["status"], "nonzero", "{report}");
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
 fn control_interrupt_redirects_the_turn_with_a_message_in_one_operation() {
     let mock_profile = mock_profile_redirect();
     // The point of carrying a message with the interrupt: the supervisor sends

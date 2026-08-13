@@ -1157,9 +1157,16 @@ fn run_controlled_turn(log_path: &str) -> ! {
             break;
         }
         if let Ok(delay) = std::env::var("MOCK_TURN_RESULT_DELAY_MS") {
-            let delay = delay
-                .parse::<u64>()
-                .expect("MOCK_TURN_RESULT_DELAY_MS must be milliseconds");
+            let delay = match delay.parse::<u64>() {
+                Ok(delay) if delay <= MAX_REPLY_DELAY_MS => delay,
+                _ => {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "mock harness: MOCK_TURN_RESULT_DELAY_MS must be milliseconds from 0 through {MAX_REPLY_DELAY_MS}"
+                    );
+                    std::process::exit(2);
+                }
+            };
             std::thread::sleep(std::time::Duration::from_millis(delay));
         }
         let once = std::env::var_os("MOCK_TURN_ONCE").is_some();

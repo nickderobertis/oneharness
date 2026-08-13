@@ -25,7 +25,11 @@
 //! emitted them, so a warning a run produces is never silently dropped.
 
 use std::collections::BTreeSet;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// Finite backstop applied only when an omitted timeout meets a mode that may
+/// wait for interactive approval headlessly.
+pub const APPROVAL_WAIT_TIMEOUT_SECS: u64 = 120;
 
 use crate::domain::batch::{self, BatchStrategy};
 use crate::domain::control::{self, ControlReport, ControlShape, DialAddress};
@@ -610,10 +614,8 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
     validate_stream(stream, &specs, batch_run, schema.is_some(), fallback_mode)?;
     // Resolve the approval mode (CLI --mode > --bypass/--no-bypass > config
     // `mode` > config `bypass` > the built-in default, which is `default`). A
-    // mode a selected harness *cannot express* is refused here (a command can't
-    // be built); a mode that *might block on a prompt* is warned about but still
-    // run. A positive per-harness `--timeout` is its backstop; an explicit zero
-    // gets a stronger warning because it deliberately makes that wait unbounded.
+    // A mode a selected harness cannot express is refused here. A prompt-capable
+    // mode still runs, with a safety deadline unless the caller selected zero.
     validate_modes(mode, &specs)?;
     let requested_timeout = args.timeout.or(cfg.timeout);
     let hang_prone_ids = hang_prone(mode, &specs);
@@ -621,7 +623,7 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
     // for. Prompt-capable headless modes are the exception: omission must not
     // turn an unattended approval prompt into a silent infinite stall. An
     // explicit zero remains the deliberate opt-out introduced in 0.6.16.
-    let timeout = effective_timeout(requested_timeout, !hang_prone_ids.is_empty());
+    let timeout = effective_timeout(requested_timeout, !hang_prone_ids.is_empty())?;
     // A reasoning/effort setting for a harness that has no headless argv surface
     // for it is refused here (no way to deliver it) — a loud usage error rather
     // than a silent drop, mirroring an unsupported mode.
@@ -3992,8 +3994,8 @@ fn resolve_mode(args: &RunRequest, cfg: &crate::domain::config::FileConfig) -> P
 /// express*: there is no command to build for it, so it is a loud usage error
 /// ([`OneharnessError::ModeUnsupported`]) rather than a silent downgrade. A mode
 /// that is supported but might *block on a prompt* headlessly is not refused
-/// here — see [`hang_prone`] (it is warned about and run, with `--timeout` as
-/// the backstop). Reports the first offending harness, mirroring `validate_resume`.
+/// here — see [`hang_prone`] (it is warned about and run with the approval-wait
+/// safety deadline). Reports the first offending harness, mirroring `validate_resume`.
 fn validate_modes(
     mode: PermissionMode,
     specs: &[&'static HarnessSpec],
@@ -4059,8 +4061,20 @@ fn hang_prone(mode: PermissionMode, specs: &[&'static HarnessSpec]) -> Vec<&'sta
         .collect()
 }
 
-fn effective_timeout(requested: Option<u64>, prompt_capable: bool) -> Duration {
-    Duration::from_secs(requested.unwrap_or(if prompt_capable { 120 } else { 0 }))
+fn effective_timeout(
+    requested: Option<u64>,
+    prompt_capable: bool,
+) -> Result<Duration, OneharnessError> {
+    let seconds = requested.unwrap_or(if prompt_capable {
+        APPROVAL_WAIT_TIMEOUT_SECS
+    } else {
+        0
+    });
+    let timeout = Duration::from_secs(seconds);
+    if !timeout.is_zero() && Instant::now().checked_add(timeout).is_none() {
+        return Err(OneharnessError::TimeoutOutOfRange { seconds });
+    }
+    Ok(timeout)
 }
 
 fn parse_env(values: &[String]) -> Result<Vec<(String, String)>, OneharnessError> {
@@ -4656,8 +4670,8 @@ mod tests {
             validate_modes(PermissionMode::Plan, &[crush]),
             Err(OneharnessError::ModeUnsupported { .. })
         ));
-        // A supported-but-hang-prone mode is NOT refused — it runs (with a
-        // warning + timeout backstop). cursor `default` is hang-prone but valid.
+        // A supported-but-hang-prone mode is not refused; cursor `default` is
+        // valid and receives its safety deadline later in run planning.
         assert!(validate_modes(PermissionMode::Default, &[cursor]).is_ok());
         assert!(validate_modes(PermissionMode::Plan, &[claude]).is_ok());
         assert!(validate_modes(PermissionMode::Bypass, &[crush, cursor, claude]).is_ok());
@@ -4678,10 +4692,20 @@ mod tests {
 
     #[test]
     fn only_an_omitted_timeout_in_a_prompt_capable_mode_gets_the_safety_deadline() {
-        assert_eq!(effective_timeout(None, false), Duration::ZERO);
-        assert_eq!(effective_timeout(None, true), Duration::from_secs(120));
-        assert_eq!(effective_timeout(Some(0), true), Duration::ZERO);
-        assert_eq!(effective_timeout(Some(17), true), Duration::from_secs(17));
+        assert_eq!(effective_timeout(None, false).unwrap(), Duration::ZERO);
+        assert_eq!(
+            effective_timeout(None, true).unwrap(),
+            Duration::from_secs(APPROVAL_WAIT_TIMEOUT_SECS)
+        );
+        assert_eq!(effective_timeout(Some(0), true).unwrap(), Duration::ZERO);
+        assert_eq!(
+            effective_timeout(Some(17), true).unwrap(),
+            Duration::from_secs(17)
+        );
+        assert!(matches!(
+            effective_timeout(Some(u64::MAX), false),
+            Err(OneharnessError::TimeoutOutOfRange { .. })
+        ));
     }
 
     #[test]

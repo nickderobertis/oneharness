@@ -68,6 +68,9 @@ pub enum OneharnessError {
     #[error("could not locate the running oneharness executable for --mock-harness: {0}")]
     MockHarnessExecutable(std::io::Error),
 
+    #[error("timeout {seconds}s is too large to represent as a deadline on this platform")]
+    TimeoutOutOfRange { seconds: u64 },
+
     #[error("no prompt provided: pass --prompt <text> or --prompt-file <path>")]
     NoPrompt,
 

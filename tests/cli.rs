@@ -739,6 +739,14 @@ fn hang_prone_mode_warns_but_runs_and_permit_prompts_silences_it() {
     let output = run(&unlimited, &[]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("approval wait is unbounded"), "{stderr}");
+    let mut bounded = base.to_vec();
+    bounded.extend(["--timeout", "7"]);
+    let output = run(&bounded, &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("requested --timeout as the deadline backstop"),
+        "{stderr}"
+    );
     // --permit-prompts silences the warning.
     let mut with_permit = base.to_vec();
     with_permit.push("--permit-prompts");
@@ -752,12 +760,73 @@ fn hang_prone_mode_warns_but_runs_and_permit_prompts_silences_it() {
 }
 
 #[test]
-fn run_help_explains_how_to_disable_the_timeout() {
+fn run_help_explains_the_no_deadline_default_and_explicit_zero_synonym() {
     let output = run(&["run", "--help"], &[]);
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
     assert!(help.contains("By default there is no deadline"), "{help}");
     assert!(help.contains("use 0 explicitly"), "{help}");
+    let safety = format!(
+        "{}s approval-wait safety",
+        oneharness_core::io::run::APPROVAL_WAIT_TIMEOUT_SECS
+    );
+    assert!(help.contains(&safety), "{help}");
+    let readme_safety = format!(
+        "{}-second approval-wait safety",
+        oneharness_core::io::run::APPROVAL_WAIT_TIMEOUT_SECS
+    );
+    assert!(include_str!("../README.md").contains(&readme_safety));
+    assert!(include_str!("../AGENTS.md").contains(&readme_safety));
+    assert!(include_str!("../CHANGELOG.md").contains(&readme_safety));
+}
+
+#[test]
+fn timeout_too_large_for_a_platform_deadline_is_a_usage_error() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--timeout",
+            &u64::MAX.to_string(),
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("too large to represent as a deadline")
+    );
+}
+
+#[test]
+fn omitted_timeout_still_terminates_a_prompt_capable_headless_mode() {
+    // Cursor's default mode is registry-declared prompt-capable. With no
+    // general timeout selected, this real subprocess must be stopped by the
+    // separate approval-wait safety deadline instead of stalling forever.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "cursor",
+            "--prompt",
+            "hi",
+            "--mode",
+            "default",
+            "--bin",
+            &bin_override("cursor"),
+            "--compact",
+        ],
+        &[("MOCK_SLEEP_MS", "121000")],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let result = &json_stdout(&output)["results"][0];
+    assert_eq!(result["status"], "timeout");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("120s approval-wait safety deadline"));
 }
 
 #[test]

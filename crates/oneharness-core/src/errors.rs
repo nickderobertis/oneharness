@@ -312,9 +312,15 @@ pub enum OneharnessError {
         "--control on a fallback chain needs one turn-control mechanism for the whole chain, because any candidate can end up holding the channel: {first} and {second} do not share one. Chain identities of the same harness, or drop --control"
     )]
     ControlMixedMechanisms {
-        // llmlint: ignore[invalid_states_unrepresentable] Both are echoed from the already-validated registry selection purely for the diagnostic, each pairing a harness id with the mechanism it declared.
+        // llmlint: ignore-block[invalid_states_unrepresentable] Both are rendered
+        // from the already-validated registry selection purely for the
+        // diagnostic, each pairing a harness id with the mechanism it declared.
+        // Scoped to both fields because the disagreement IS the finding — an
+        // ignore on `first` alone leaves the half that names the other side of
+        // it unsuppressed.
         first: String,
         second: String,
+        // llmlint: ignore-end[invalid_states_unrepresentable]
     },
 
     #[error("--control drives one live turn, so it cannot be combined with a batch run (more than one prompt)")]

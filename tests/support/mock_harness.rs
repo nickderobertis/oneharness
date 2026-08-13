@@ -410,6 +410,7 @@ enum HttpControlFault {
     CloseStream,
     RefusePrompt,
     HangPrompt,
+    SlowTurn,
     RefuseEvents,
     UnreadableEvents,
     RedirectInterrupt,
@@ -433,6 +434,7 @@ impl HttpControlFault {
             "close-stream" => HttpControlFault::CloseStream,
             "refuse-prompt" => HttpControlFault::RefusePrompt,
             "hang-prompt" => HttpControlFault::HangPrompt,
+            "slow-turn" => HttpControlFault::SlowTurn,
             "refuse-events" => HttpControlFault::RefuseEvents,
             "unreadable-events" => HttpControlFault::UnreadableEvents,
             "redirect-interrupt" => HttpControlFault::RedirectInterrupt,
@@ -713,6 +715,16 @@ fn run_http_control_server(log_path: &str) -> ! {
                             &mut socket,
                             "{\"type\":\"permission.requested\",\"data\":{\"id\":\"per_1\",\"sessionID\":\"ses_mock\"}}",
                         );
+                        if fault == HttpControlFault::SlowTurn {
+                            std::thread::sleep(std::time::Duration::from_millis(1500));
+                            send(
+                                &mut socket,
+                                "{\"type\":\"session.next.text.ended\",\"data\":{\"text\":\"slow controlled answer\"}}",
+                            );
+                            send(&mut socket, "{\"type\":\"session.idle\",\"data\":{}}");
+                            exit_shortly();
+                            return;
+                        }
                     }
                     if aborted.load(std::sync::atomic::Ordering::SeqCst) {
                         // A refused redirection ends the run through the

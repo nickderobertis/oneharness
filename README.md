@@ -407,8 +407,9 @@ Useful `run` flags:
   files without a JSON parser).
 - `-- <args…>` — extra arguments appended verbatim to each harness command (for
   single-harness runs, since flags differ per harness).
-- `--timeout <secs>` — per-harness timeout (default 120); a hang becomes a
-  `timeout` result, not a stuck process. oneharness owns the launcher's whole
+- `--timeout <secs>` — per-harness timeout (default 120); pass `0` for no
+  timeout. With a positive limit, a hang becomes a `timeout` result that names
+  the harness and enforced deadline, not a provider failure. oneharness owns the launcher's whole
   process tree, terminates descendants too, and bounds final pipe draining, so a
   native child cannot survive an npm/Node wrapper or hold the report open.
 - `--cwd <dir>` / `--env KEY=VALUE` — run each harness in a directory / with extra
@@ -418,7 +419,8 @@ Useful `run` flags:
   requested from each harness (default `default`; see *Approval modes* below). A
   mode a selected harness **can't express** is a loud usage error before anything
   spawns; one that **may block on a prompt** headlessly is warned about and run,
-  with `--timeout` as the backstop.
+  with `--timeout` as the backstop. Choosing `--timeout 0` makes any such
+  approval wait unbounded and produces an explicit warning.
 - `--no-bypass` / `--bypass` — shorthands for `--mode default` / `--mode bypass`;
   `--bypass` forces bypass on over a config's `mode` / `bypass`.
 - `--permit-prompts` — silence the "may block on a prompt" warning for the chosen
@@ -515,7 +517,7 @@ models = ["opus", "sonnet"]     # repeated --model: fan out over the model axis
 system = "Be terse."            # --system
 bypass = true                   # legacy --bypass toggle (opt-in; default false)
 mode = "default"                # --mode; beats `bypass` (default: "default")
-timeout = 120                   # --timeout, in seconds
+timeout = 120                   # --timeout, in seconds; 0 means no timeout
 output_format = "json"          # --output-format
 stream = false                  # --stream / --no-stream (incremental events)
 schema_file = "person.json"     # --schema (structured output; relative to project)
@@ -1998,8 +2000,9 @@ that **can't express** a requested mode is a loud usage error *before* anything
 spawns (there's no command to build). A mode that **may block on a prompt**
 headlessly (a `hangs` tag) is warned about on stderr but still run, with the
 `--timeout` as the backstop (a real hang becomes a `timeout` result, never an
-infinite stall); `--permit-prompts` silences that warning once allow-rules are
-synced so the prompt never fires.
+infinite stall). An explicit `--timeout 0` removes that backstop and strengthens
+the warning to say the wait is unbounded; `--permit-prompts` silences it once
+allow-rules are synced so the prompt never fires.
 
 | `--mode` | claude-code | codex | opencode | goose | qwen | crush | copilot | cursor |
 |------------|:-----------:|:-----:|:--------:|:-----:|:----:|:-----:|:-------:|:------:|

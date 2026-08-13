@@ -730,6 +730,11 @@ fn hang_prone_mode_warns_but_runs_and_permit_prompts_silences_it() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("may block on an interactive"), "{stderr}");
     assert_eq!(json_stdout(&output)["permission_mode"], "default");
+    let mut unlimited = base.to_vec();
+    unlimited.extend(["--timeout", "0"]);
+    let output = run(&unlimited, &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("approval wait is unbounded"), "{stderr}");
     // --permit-prompts silences the warning.
     let mut with_permit = base.to_vec();
     with_permit.push("--permit-prompts");
@@ -740,6 +745,16 @@ fn hang_prone_mode_warns_but_runs_and_permit_prompts_silences_it() {
         !stderr.contains("may block"),
         "warning should be silenced: {stderr}"
     );
+}
+
+#[test]
+fn run_help_explains_how_to_disable_the_timeout() {
+    let output = run(&["run", "--help"], &[]);
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("Pass 0"), "{help}");
+    assert!(help.contains("timeout = 0"), "{help}");
+    assert!(help.contains("no timeout"), "{help}");
 }
 
 #[test]
@@ -4767,7 +4782,82 @@ fn slow_harness_times_out() {
     let value = json_stdout(&output);
     let result = &value["results"][0];
     assert_eq!(result["status"], "timeout");
-    assert!(result["error"].as_str().unwrap().contains("timeout"));
+    let error = result["error"].as_str().unwrap();
+    assert!(error.contains("harness `claude-code`"), "{error}");
+    assert!(error.contains("1s timeout"), "{error}");
+    assert!(error.contains("was killed"), "{error}");
+}
+
+#[test]
+fn cli_zero_timeout_allows_a_slow_turn_to_finish() {
+    // The same real subprocess boundary the timeout test drives, but the mock
+    // outlives a one-second deadline and must still be allowed to finish.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--timeout",
+            "0",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_SLEEP_MS", "1500"),
+            ("MOCK_STDOUT", r#"{"result":"finished without a deadline"}"#),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result = &json_stdout(&output)["results"][0];
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["text"], "finished without a deadline");
+}
+
+#[test]
+fn streaming_cli_zero_timeout_allows_a_slow_turn_to_finish() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--timeout",
+            "0",
+            "--bin",
+            &bin_override("claude-code"),
+            "--stream",
+        ],
+        &[
+            ("MOCK_SLEEP_MS", "1500"),
+            (
+                "MOCK_STDOUT",
+                r#"{"type":"result","result":"streamed without a deadline"}"#,
+            ),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let terminal: Value = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each stream line is JSON"))
+        .find(|line: &Value| line["type"] == "result")
+        .expect("a terminal result line");
+    assert_eq!(terminal["report"]["results"][0]["status"], "ok");
+    assert_eq!(
+        terminal["report"]["results"][0]["text"],
+        "streamed without a deadline"
+    );
 }
 
 #[cfg(any(unix, windows))]
@@ -6927,6 +7017,40 @@ fn config_timeout_applies() {
     assert_eq!(output.status.code(), Some(1));
     let value = json_stdout(&output);
     assert_eq!(value["results"][0]["status"], "timeout");
+}
+
+#[test]
+fn config_zero_timeout_allows_a_slow_turn_to_finish() {
+    let fx = ConfigFixture::new("no-timeout", "timeout = 0\n", "");
+    let bin = bin_override("claude-code");
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin,
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[
+            ("MOCK_SLEEP_MS", "1500"),
+            ("MOCK_STDOUT", r#"{"result":"config unlimited"}"#),
+        ],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        json_stdout(&output)["results"][0]["text"],
+        "config unlimited"
+    );
 }
 
 #[test]
@@ -23270,8 +23394,24 @@ fn a_control_server_that_never_answers_the_prompt_cannot_outlast_the_run_budget(
         "the blocked prompt request never reached the server:\n{served}"
     );
     // The worker is still blocked when the timeout is recorded, so no later
-    // socket error is fabricated as though it had already been observed.
-    assert!(result["error"].is_null(), "{report}");
+    // socket error is fabricated as though it had already been observed. The
+    // deadline itself is still explicit and actionable.
+    let error = result["error"].as_str().expect("a deadline reason");
+    assert!(error.contains("harness `opencode`"), "{error}");
+    assert!(error.contains("1s deadline"), "{error}");
+    assert!(error.contains("terminated by oneharness"), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_http_controlled_turn_with_zero_timeout_has_no_deadline() {
+    let started = std::time::Instant::now();
+    let (output, report, _served) = http_control_run_with_fault("http-unlimited", "slow-turn", "0");
+    assert!(output.status.success(), "{output:?}");
+    assert!(started.elapsed() >= std::time::Duration::from_millis(1400));
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "ok", "{report}");
+    assert_eq!(result["text"], "slow controlled answer", "{report}");
 }
 
 #[cfg(unix)]

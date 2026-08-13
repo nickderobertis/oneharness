@@ -239,7 +239,7 @@ pub struct RunRequest {
     pub schema_max_retries: Option<u32>,
     /// Also write each harness's raw stdout/stderr under this directory.
     pub output_dir: Option<PathBuf>,
-    /// Per-harness timeout in seconds (default 120).
+    /// Per-harness timeout in seconds (default 120); zero means no timeout.
     pub timeout: Option<u64>,
     /// Working directory each harness process runs in; also where project
     /// config discovery starts.
@@ -608,12 +608,15 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
         validate_session_output_format(session_wiring.as_ref(), explicit_format)?;
     }
     validate_stream(stream, &specs, batch_run, schema.is_some(), fallback_mode)?;
+    // Omission preserves the long-standing safety backstop. Zero is the one
+    // explicit opt-out shared by the CLI, config, and library request.
+    let timeout = Duration::from_secs(args.timeout.or(cfg.timeout).unwrap_or(120));
     // Resolve the approval mode (CLI --mode > --bypass/--no-bypass > config
     // `mode` > config `bypass` > the built-in default, which is `default`). A
     // mode a selected harness *cannot express* is refused here (a command can't
     // be built); a mode that *might block on a prompt* is warned about but still
-    // run, with the per-harness `--timeout` as the backstop (a hang becomes a
-    // `timeout` result, never an infinite stall).
+    // run. A positive per-harness `--timeout` is its backstop; an explicit zero
+    // gets a stronger warning because it deliberately makes that wait unbounded.
     validate_modes(mode, &specs)?;
     // A reasoning/effort setting for a harness that has no headless argv surface
     // for it is refused here (no way to deliver it) — a loud usage error rather
@@ -621,9 +624,14 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
     validate_reasoning(args, cfg, &specs)?;
     if !args.permit_prompts {
         for id in hang_prone(mode, &specs) {
+            let protection = if timeout.is_zero() {
+                "--timeout 0 disables the deadline, so this approval wait is unbounded"
+            } else {
+                "relying on --timeout as the deadline backstop"
+            };
             eprintln!(
                 "oneharness: warning: `--mode {}` may block on an interactive approval prompt for \
-                 harness `{id}` headlessly; relying on --timeout. Sync allow-rules (and pass \
+                 harness `{id}` headlessly; {protection}. Sync allow-rules (and pass \
                  --permit-prompts to silence this), or use --mode bypass / read-only.",
                 mode.as_str()
             );
@@ -683,7 +691,6 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
     // argv-limit escape hatch, mirroring `--prompt-file`), then config `system`.
     let system_text: Option<String> = resolve_system(args)?.or_else(|| cfg.system.clone());
     let system = system_text.as_deref();
-    let timeout = args.timeout.or(cfg.timeout).unwrap_or(120);
     let require_available = args.require_available || cfg.require_available.unwrap_or(false);
 
     // History (opt-in): --history/--no-history beats config `history`; the
@@ -978,7 +985,7 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
                 cwd: args.cwd.clone(),
                 env: job_env,
                 env_remove,
-                timeout: Duration::from_secs(timeout),
+                timeout,
                 stdin: built.stdin,
             });
             plan.push(Plan::Pending {
@@ -1127,7 +1134,7 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
             prompt,
             &control_cwd(args)?,
             mode,
-            Duration::from_secs(timeout),
+            timeout,
         );
         (results, None)
     } else if let Some(input) = controlled.as_ref().filter(|_| !jobs.is_empty()) {
@@ -2634,9 +2641,12 @@ fn bring_up_server(
         // server that never comes up must not hold a dispatch past the budget
         // its caller set: a `--timeout 5` run waiting 90s for a bring-up is a
         // hang as far as the caller is concerned.
-        match http_turn::await_ready(shape, &address, SERVER_READY_WINDOW.min(timeout), &|| {
-            record.is_running()
-        }) {
+        let ready_timeout = if timeout.is_zero() {
+            SERVER_READY_WINDOW
+        } else {
+            SERVER_READY_WINDOW.min(timeout)
+        };
+        match http_turn::await_ready(shape, &address, ready_timeout, &|| record.is_running()) {
             Ok(()) => return Ok((lease, address)),
             Err(not_ready) => {
                 // Released before relaunching, so the pool sees the dead entry
@@ -3471,6 +3481,10 @@ fn executed_result(
     // the harness's (absent) one — even though the process exited 0.
     let error = match &deferred {
         Some(d) => Some(deferred_tool_error(spec.id, d.tool.as_deref())),
+        None if capture.status == Status::Timeout => capture
+            .error
+            .as_ref()
+            .map(|why| format!("harness `{}` hit its oneharness deadline: {why}", spec.id)),
         None => capture.error.clone(),
     };
     RunResult {

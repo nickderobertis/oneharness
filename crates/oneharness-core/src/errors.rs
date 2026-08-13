@@ -304,7 +304,7 @@ pub enum OneharnessError {
     },
 
     #[error(
-        "--control drives one live turn, so it needs exactly one harness (selected: {selected})"
+        "--control needs exactly one harness in the parallel run mode (control drives one live turn), but these were selected: {selected}. Use --run-mode fallback to bind control to a priority chain"
     )]
     ControlSingleHarness { selected: String },
 

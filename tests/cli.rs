@@ -23976,3 +23976,129 @@ fn control_with_a_model_fan_out_is_a_usage_error() {
     );
     let _ = std::fs::remove_dir_all(&store);
 }
+
+#[cfg(unix)]
+#[test]
+fn control_accepts_a_five_identity_fallback_chain() {
+    let mock = mock_bin().display().to_string();
+    let mut project = format!("harnesses = [\"claude-code:a\", \"claude-code:b\", \"claude-code:c\", \"claude-code:d\", \"claude-code:e\"]\nrun_mode = \"fallback\"\n[harness.claude-code]\nbin = '{mock}'\n");
+    for variant in ["a", "b", "c", "d", "e"] {
+        project.push_str(&format!("[harness.claude-code.variant.{variant}]\n"));
+    }
+    let fx = ConfigFixture::new("control-five-fallback", &project, "");
+    let store = control_store_dir("five");
+    let output = run_with_config(
+        &[
+            "run",
+            "--control",
+            "--session",
+            "chain",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+            "--env",
+            &mock_profile_redirect(),
+        ],
+        &[(
+            "MOCK_STDOUT",
+            r#"{"type":"result","subtype":"success","result":"served","session_id":"mock-session"}"#,
+        )],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    assert_eq!(report["fallback"]["ran"], "claude-code:a");
+    assert_eq!(report["results"].as_array().unwrap().len(), 1);
+    assert_eq!(report["results"][0]["status"], "ok");
+    assert!(report["control"]["socket"].is_string());
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn control_still_refuses_multiple_harnesses_in_parallel_mode() {
+    let output = run(
+        &[
+            "run",
+            "--control",
+            "--session",
+            "parallel",
+            "--harness",
+            "claude-code,codex",
+            "--prompt",
+            "hi",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("parallel run mode"), "{stderr}");
+    assert!(stderr.contains("--run-mode fallback"), "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn controlled_fallback_states_when_later_candidate_loses_control() {
+    let mock = mock_bin().display().to_string();
+    let rejection = include_str!("fixtures/claude-session-limit-api-error.json").trim();
+    let rejection = serde_json::to_string(rejection).unwrap();
+    let success = serde_json::to_string(
+        r#"{"type":"result","subtype":"success","result":"served","session_id":"later"}"#,
+    )
+    .unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code:primary", "claude-code:reserve"]
+        run_mode = "fallback"
+        [harness.claude-code]
+        bin = '{mock}'
+        [harness.claude-code.variant.primary]
+        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {rejection} }}
+        [harness.claude-code.variant.reserve]
+        env = {{ MOCK_STDOUT = {success} }}
+    "#
+    );
+    let fx = ConfigFixture::new("control-fallback-drop", &project, "");
+    let store = control_store_dir("drop");
+    let output = run_with_config(
+        &[
+            "run",
+            "--control",
+            "--session",
+            "chain",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+            "--env",
+            &mock_profile_redirect(),
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    assert_eq!(report["fallback"]["fell_through"][0]["reason"], "quota");
+    assert_eq!(report["fallback"]["ran"], "claude-code:reserve");
+    assert_eq!(report["results"].as_array().unwrap().len(), 2);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("later candidates continue without control"),
+        "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}

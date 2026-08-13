@@ -551,6 +551,7 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
         schema.is_some(),
         batch_run,
         multi_model,
+        fallback_mode,
         stream,
         mode,
     )?;
@@ -902,7 +903,10 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
             base_prompt: unit_prompt.to_string(),
             extra,
             system_file: None,
-            delivery: if control_shape.is_some() {
+            delivery: if control_shape.is_some()
+                && session_anchor.as_ref().map(HarnessIdentity::as_str)
+                    == Some(selected_id.as_str())
+            {
                 PromptDelivery::ControlStream
             } else {
                 PromptDelivery::Argv
@@ -971,7 +975,10 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
             // same delivery) and may write a temp file for the system prompt.
             plan_large_input(&mut harness_plan, spec, system, job_index, &mut temp_files)?;
             let built = harness_plan.build(schema.as_ref(), None);
-            if control_shape.is_some() {
+            if control_shape.is_some()
+                && session_anchor.as_ref().map(HarnessIdentity::as_str)
+                    == Some(selected_id.as_str())
+            {
                 control_prompt = Some(built.prompt.clone());
             }
             // Env layers, applied in order (the runner is last-write-wins):
@@ -1090,7 +1097,9 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
             handle: listener.handle_ref(),
             prompt: prompt.to_string(),
         });
+    let controlled_fallback = fallback_mode && controlled.is_some() && !args.print_command;
     let (mut results, mut fallback_report): (Vec<RunResult>, Option<FallbackReport>) = if stream_run
+        || controlled_fallback
     {
         // One id per plan entry, not per selected harness: a model fan-out
         // repeats a harness once per model, so `selected_ids` is the wrong axis
@@ -1104,6 +1113,7 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
             history_writer.as_ref(),
             &unit_ids,
             controlled.as_ref(),
+            session_anchor.as_ref().map(HarnessIdentity::as_str),
             &mut event_sink,
             &cancel,
         );
@@ -1117,7 +1127,10 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
         // continue with. Applied before the report is built, so nothing already
         // published has to be retracted.
         if let Some(input) = controlled.as_ref() {
-            for result in &mut streamed_results {
+            for result in streamed_results.iter_mut().filter(|result| {
+                session_anchor.as_ref().map(HarnessIdentity::as_str)
+                    == Some(result.harness_id.as_str())
+            }) {
                 apply_dialogue_signals(result, input.handle);
             }
         }
@@ -1316,7 +1329,7 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
     // asked for mock wiring (which the CLI's own flags refuse) still restores.
     let mock_report = mock_wiring.map(MockWiring::finish);
 
-    if stream_run {
+    if stream_run || controlled_fallback {
         record_streamed_history(
             &history_writer,
             mode,
@@ -2141,6 +2154,7 @@ fn stream_plan(
     history_writer: Option<&HistoryWriter>,
     unit_ids: &[&str],
     controlled: Option<&runner::ControlledInput>,
+    control_anchor: Option<&str>,
     sink: &mut Option<&mut dyn EventSink>,
     cancel: &CancelToken,
 ) -> StreamedPlan {
@@ -2175,7 +2189,7 @@ fn stream_plan(
                     harness_id: unit_ids[index],
                 },
                 history_writer.zip(run_id),
-                controlled,
+                controlled.filter(|_| control_anchor == Some(unit_ids[index])),
                 sink,
                 cancel,
             ),
@@ -2192,6 +2206,12 @@ fn stream_plan(
         });
         if !fallback_mode || !keep_going {
             break;
+        }
+        if controlled.is_some() && control_anchor == Some(unit_ids[index]) {
+            eprintln!(
+                "oneharness: warning: controlled fallback candidate `{}` could not run; later candidates continue without control because a live control channel cannot change harness mechanisms",
+                unit_ids[index]
+            );
         }
     }
     StreamedPlan {
@@ -2313,8 +2333,9 @@ fn stream_one_harness(
 /// failure this feature must never have is a supervisor being told the lever
 /// exists when it does not. In order: a caller-owned handle to address the run
 /// by (oneharness never infers one — an unaddressable run is the whole reason
-/// `--session` is required), one prompt and exactly one harness (control drives
-/// one live turn; a batch or fan-out has no single turn to interrupt), a
+/// `--session` is required), one prompt and exactly one concurrent turn (one
+/// harness in parallel mode, or a sequential fallback chain; a batch or fan-out
+/// has no single turn to interrupt), a
 /// harness that declares a *proven* control mechanism, an explicit output
 /// format compatible with the mechanism, and — last — a platform with unix
 /// sockets.
@@ -2332,6 +2353,7 @@ fn validate_control(
     schema: bool,
     batch_run: bool,
     multi_model: bool,
+    fallback_mode: bool,
     stream: bool,
     mode: PermissionMode,
 ) -> Result<Option<ControlShape>, OneharnessError> {
@@ -2357,13 +2379,20 @@ fn validate_control(
             why: "control drives one live turn, and a fan-out has no single turn to interrupt",
         });
     }
+    // Parallel selection starts every harness together, while fallback starts
+    // candidates one at a time. Control needs the former to name one harness;
+    // the latter is already one live turn and binds to the session anchor.
+    // If that anchor cannot run, the chain deliberately continues without
+    // control and says so on stderr: a bound channel cannot safely change its
+    // harness-specific mechanism while a supervisor may be addressing it.
+    //
     // The validate/retry loop re-prompts, which is a second turn — and the
     // control channel owns the one open stdin. Refuse rather than silently
     // running with retries disabled.
     if schema {
         return Err(OneharnessError::ControlSchema);
     }
-    if specs.len() != 1 {
+    if specs.len() != 1 && !fallback_mode {
         return Err(OneharnessError::ControlSingleHarness {
             selected: specs
                 .iter()

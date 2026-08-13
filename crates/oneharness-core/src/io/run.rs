@@ -551,7 +551,7 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
         schema.is_some(),
         batch_run,
         multi_model,
-        fallback_mode,
+        run_mode,
         stream,
         mode,
     )?;
@@ -1123,7 +1123,7 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
             history_writer.as_ref(),
             &unit_ids,
             controlled.as_ref(),
-            session_anchor.as_ref().map(HarnessIdentity::as_str),
+            session_anchor.as_ref(),
             &mut event_sink,
             &cancel,
         );
@@ -2168,7 +2168,7 @@ fn stream_plan(
     history_writer: Option<&HistoryWriter>,
     unit_ids: &[&str],
     controlled: Option<&runner::ControlledInput>,
-    control_anchor: Option<&str>,
+    control_anchor: Option<&HarnessIdentity>,
     sink: &mut Option<&mut dyn EventSink>,
     cancel: &CancelToken,
 ) -> StreamedPlan {
@@ -2203,7 +2203,9 @@ fn stream_plan(
                     harness_id: unit_ids[index],
                 },
                 history_writer.zip(run_id),
-                controlled.filter(|_| control_anchor == Some(unit_ids[index])),
+                controlled.filter(|_| {
+                    control_anchor.is_some_and(|anchor| anchor.as_str() == unit_ids[index])
+                }),
                 sink,
                 cancel,
             ),
@@ -2221,7 +2223,9 @@ fn stream_plan(
         if !fallback_mode || !keep_going {
             break;
         }
-        if controlled.is_some() && control_anchor == Some(unit_ids[index]) {
+        if controlled.is_some()
+            && control_anchor.is_some_and(|anchor| anchor.as_str() == unit_ids[index])
+        {
             eprintln!(
                 "oneharness: warning: controlled fallback candidate `{}` could not run; later candidates continue without control because a live control channel cannot change harness mechanisms",
                 unit_ids[index]
@@ -2367,7 +2371,7 @@ fn validate_control(
     schema: bool,
     batch_run: bool,
     multi_model: bool,
-    fallback_mode: bool,
+    run_mode: RunMode,
     stream: bool,
     mode: PermissionMode,
 ) -> Result<Option<ControlShape>, OneharnessError> {
@@ -2405,7 +2409,7 @@ fn validate_control(
     // If that anchor cannot run, the chain deliberately continues without
     // control and says so on stderr: a bound channel cannot safely change its
     // harness-specific mechanism while a supervisor may be addressing it.
-    if specs.len() != 1 && !fallback_mode {
+    if specs.len() != 1 && run_mode != RunMode::Fallback {
         return Err(OneharnessError::ControlSingleHarness {
             selected: specs
                 .iter()

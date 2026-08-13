@@ -24374,3 +24374,84 @@ fn controlled_fallback_binds_control_to_a_later_anchor_the_session_moved_to() {
     assert!(second["control"]["socket"].is_string());
     let _ = std::fs::remove_dir_all(&store);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_controlled_fallback_chain_streams_its_anchors_turn() {
+    // Control and `--stream` on the same chain is the combination the refusal
+    // used to make unreachable — a supervisor had to give up live visibility to
+    // keep the lever. Both now ride the one sequential driver: the anchor's turn
+    // goes out over the control stream while its events reach the consumer as
+    // they happen, and the terminal envelope still names the socket.
+    let mock = mock_bin().display().to_string();
+    let transcript = serde_json::to_string(&format!(
+        "{}\n{}\n{}\n",
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo hi"}}]}}"#,
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"hi"}]}}"#,
+        r#"{"type":"result","subtype":"success","result":"served","session_id":"primary"}"#,
+    ))
+    .unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code:primary", "claude-code:reserve"]
+        run_mode = "fallback"
+        [harness.claude-code]
+        bin = '{mock}'
+        [harness.claude-code.variant.primary]
+        env = {{ MOCK_STDOUT = {transcript} }}
+        [harness.claude-code.variant.reserve]
+    "#
+    );
+    let fx = ConfigFixture::new("control-fallback-stream", &project, "");
+    let store = control_store_dir("stream");
+    let output = run_with_config(
+        &[
+            "run",
+            "--control",
+            "--stream",
+            "--session",
+            "chain",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelopes = stream_envelopes(&output);
+    assert_eq!(envelopes.len(), 3, "{envelopes:#?}");
+    assert_eq!(envelopes[0]["event"]["kind"], "tool_call");
+    assert_eq!(envelopes[1]["event"]["kind"], "tool_result");
+    assert_eq!(envelopes[2]["type"], "result");
+
+    let report = &envelopes[2]["report"];
+    assert_eq!(report["fallback"]["ran"], "claude-code:primary");
+    let results = report["results"].as_array().unwrap();
+    assert_eq!(
+        results.len(),
+        1,
+        "the chain stopped at its anchor: {report}"
+    );
+    assert_eq!(results[0]["status"], "ok");
+    // The anchor ran under control (prompt on the held-open stdin, not the argv)
+    // and the supervisor's address is on the report it just read.
+    let command: Vec<&str> = results[0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg.as_str().unwrap())
+        .collect();
+    assert!(command.contains(&"--input-format"), "{command:?}");
+    assert!(!command.contains(&"hi"), "{command:?}");
+    assert!(report["control"]["socket"].is_string(), "{report}");
+    let _ = std::fs::remove_dir_all(&store);
+}

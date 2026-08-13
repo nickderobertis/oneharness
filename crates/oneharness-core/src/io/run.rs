@@ -1115,7 +1115,7 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
         // repeats a harness once per model, so `selected_ids` is the wrong axis
         // to attribute a streamed event to.
         let unit_ids: Vec<&str> = units.iter().map(|(_, id, _, _)| id.as_str()).collect();
-        let streamed = stream_plan(
+        let streamed = drive_plan_sequentially(
             plan,
             &jobs,
             fallback_mode,
@@ -2138,7 +2138,7 @@ fn record_streamed_history(
     }
 }
 
-/// What [`stream_plan`] produced; `fallback` is `Some` only in fallback mode.
+/// What [`drive_plan_sequentially`] produced; `fallback` is `Some` only in fallback mode.
 struct StreamedPlan {
     results: Vec<RunResult>,
     fallback: Option<FallbackReport>,
@@ -2149,9 +2149,11 @@ struct StreamedPlan {
 /// events to `sink` as they arrive. In fallback mode a candidate is one plan
 /// entry — a harness, or a (harness, model) pair when a model list is the chain.
 ///
-/// `--stream` is one of two callers: a controlled fallback chain takes this
-/// driver too, because control needs the sequential one. There `sink` is `None`
-/// (the caller asked for a buffered report), so the live half is history alone.
+/// Two callers want this rather than the parallel driver, and only one of them
+/// is `--stream`: a controlled fallback chain needs the sequential order too,
+/// because control drives one live turn. There `sink` is `None` (the caller
+/// asked for a buffered report), so the live half is history alone — which is
+/// why the name is the ordering, not the protocol.
 ///
 /// Publishing a candidate before the chain has settled is safe: one that
 /// published an event has, by construction, a tool event in its result (the
@@ -2160,7 +2162,7 @@ struct StreamedPlan {
 /// through, and a candidate that does fall through published nothing.
 // llmlint: ignore[suppressions_justified] The allow is justified here: every parameter is one already-resolved input of the streamed chain — the plan and its jobs, the two mode flags the chain reads, and the four side channels (history, attribution, control, sink/cancel) — assembled by the single caller from four different places, so a struct would move the list one call up rather than shorten it.
 #[allow(clippy::too_many_arguments)]
-fn stream_plan(
+fn drive_plan_sequentially(
     plan: Vec<Plan>,
     jobs: &[Job],
     fallback_mode: bool,
@@ -2418,13 +2420,33 @@ fn validate_control(
                 .join(", "),
         });
     }
-    let spec = specs[0];
-    let Some(shape) = spec.control else {
-        return Err(OneharnessError::ControlUnsupported {
-            id: spec.id.to_string(),
-            supported: control_capable_ids(),
-        });
-    };
+    // Any candidate can end up holding the channel: a chain that falls through
+    // moves the session's handle to whoever served the turn, and the next
+    // dispatch anchors control there. The mechanism is the harness's own, and the
+    // socket a supervisor already holds cannot change mechanisms between
+    // dispatches — so a chain is controllable only when every candidate declares
+    // control and they all declare the SAME one. Refuse before anything spawns
+    // rather than binding one harness's mechanism to another's turn.
+    let mut mechanism = None;
+    for spec in specs {
+        let Some(shape) = spec.control else {
+            return Err(OneharnessError::ControlUnsupported {
+                id: spec.id.to_string(),
+                supported: control_capable_ids(),
+            });
+        };
+        match mechanism {
+            None => mechanism = Some((spec, shape)),
+            Some((first, first_shape)) if first_shape != shape => {
+                return Err(OneharnessError::ControlMixedMechanisms {
+                    first: format!("{} ({})", first.id, first_shape.as_str()),
+                    second: format!("{} ({})", spec.id, shape.as_str()),
+                });
+            }
+            Some(_) => {}
+        }
+    }
+    let (spec, shape) = mechanism.expect("a selection always has at least one harness");
     // Almost no mode is refused here. Where the mode's policy travels on the
     // controlled launch itself — copilot's permission flags beside `--acp`,
     // Claude Code's ordinary `-p` argv — a controlled run is under exactly the
@@ -2824,7 +2846,7 @@ fn control_capable_ids() -> String {
 /// A **fallback** chain may list several candidates — harnesses, and each
 /// harness's models (the multi-model half is refused in [`validate_multi_model`],
 /// which allows it here for the same reason): only the candidate that runs ever
-/// publishes (see [`stream_plan`]), so there is nothing to interleave.
+/// publishes (see [`drive_plan_sequentially`]), so there is nothing to interleave.
 fn validate_stream(
     stream: bool,
     specs: &[&'static HarnessSpec],
@@ -2983,7 +3005,7 @@ fn run_fork_batch(
 /// Fallback drives several harnesses in priority order for one prompt, stopping
 /// at the first that runs — so a multi-prompt batch and the explicit `--resume` /
 /// `--fork` continuations (each pins one *specific* harness's native id) are loud
-/// usage errors here. `--stream` is *not* refused (see [`stream_plan`]).
+/// usage errors here. `--stream` is *not* refused (see [`drive_plan_sequentially`]).
 /// `--session` is *not* refused either: the
 /// higher-level named handle binds to the anchor (the first session-capable
 /// harness in the chain), which fallback settles on under stable availability —
@@ -3021,7 +3043,7 @@ fn validate_fallback(batch_run: bool, args: &RunRequest) -> Result<(), Oneharnes
 /// concurrent results whose event streams would interleave on one stdout, so it
 /// stays refused; in `fallback` the (harness, model) pairs are a priority chain
 /// run one at a time with a single outcome — the same shape a multi-harness
-/// chain streams in (see [`stream_plan`] and [`validate_stream`]).
+/// chain streams in (see [`drive_plan_sequentially`] and [`validate_stream`]).
 fn validate_multi_model(
     batch_run: bool,
     fallback_mode: bool,
@@ -3143,7 +3165,7 @@ fn run_fallback(
 /// try the next candidate.
 ///
 /// Both drivers call this — the buffered [`run_fallback`] and the streaming
-/// [`stream_plan`] — on the same normalized [`RunResult`], so a streamed chain
+/// [`drive_plan_sequentially`] — on the same normalized [`RunResult`], so a streamed chain
 /// and a buffered chain cannot select different candidates.
 fn fallback_step(
     result: &RunResult,

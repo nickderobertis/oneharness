@@ -24455,3 +24455,58 @@ fn a_controlled_fallback_chain_streams_its_anchors_turn() {
     assert!(report["control"]["socket"].is_string(), "{report}");
     let _ = std::fs::remove_dir_all(&store);
 }
+
+#[test]
+fn control_refuses_a_fallback_chain_whose_candidates_control_differently() {
+    // A chain accepts `--control` because it runs one live turn, not because the
+    // candidates are interchangeable. Any of them can end up holding the channel
+    // — the session's handle moves to whoever serves the turn — and the socket a
+    // supervisor already addresses cannot change mechanisms between dispatches.
+    // So mixed mechanisms are refused before anything spawns, naming both.
+    let output = run(
+        &[
+            "run",
+            "--control",
+            "--run-mode",
+            "fallback",
+            "--session",
+            "mixed",
+            "--harness",
+            "claude-code,codex",
+            "--prompt",
+            "hi",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("claude-code (claude-control-request)"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("codex (codex-app-server)"), "{stderr}");
+
+    // A candidate with no mechanism at all is the other half of the same rule:
+    // it could anchor the chain and then there would be no lever.
+    let none = run(
+        &[
+            "run",
+            "--control",
+            "--run-mode",
+            "fallback",
+            "--session",
+            "mixed",
+            "--harness",
+            "claude-code,qwen",
+            "--prompt",
+            "hi",
+        ],
+        &[],
+    );
+    assert_eq!(none.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&none.stderr);
+    assert!(
+        stderr.contains("harness `qwen` has no out-of-band turn control"),
+        "{stderr}"
+    );
+}

@@ -4865,6 +4865,52 @@ fn shipped_mock_harness_runs_without_fixture_binary() {
 
 #[test]
 fn shipped_mock_harness_scripts_two_party_responses_across_processes() {
+    fn run_conversation(env: &[(&str, &str)]) -> Result<(String, serde_json::Value), String> {
+        let invoke = |harness, prompt| {
+            let output = run(
+                &[
+                    "run",
+                    "--harness",
+                    harness,
+                    "--mock-harness",
+                    harness,
+                    "--prompt",
+                    prompt,
+                    "--compact",
+                ],
+                env,
+            );
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let report = json_stdout(&output);
+            let result = &report["results"][0];
+            result["text"]
+                .as_str()
+                .or_else(|| result["stdout"].as_str())
+                .expect("party should return captured output")
+                .to_string()
+        };
+
+        let agent_text = invoke("claude-code", "act");
+        let judge_text = invoke("codex", "judge the agent turn");
+        let verdict = serde_json::from_str::<serde_json::Value>(&judge_text)
+            .ok()
+            .filter(serde_json::Value::is_object)
+            .ok_or_else(|| format!("supervisor did not return a JSON object; got: {judge_text}"))?;
+        Ok((agent_text, verdict))
+    }
+
+    // Reproduce the consumer's original process-wide response: both selected
+    // harnesses settle, but the supervisor receives the agent's plain answer.
+    let failure = run_conversation(&[("MOCK_STDOUT", "done")]).unwrap_err();
+    assert_eq!(
+        failure,
+        "supervisor did not return a JSON object; got: done"
+    );
+
     let counter = temp_counter("two-party-processes");
     let env = [
         ("MOCK_ATTEMPT_FILE", counter.as_str()),
@@ -4880,56 +4926,11 @@ fn shipped_mock_harness_scripts_two_party_responses_across_processes() {
         ),
     ];
 
-    let agent = run(
-        &[
-            "run",
-            "--harness",
-            "claude-code",
-            "--mock-harness",
-            "claude-code",
-            "--prompt",
-            "act",
-            "--compact",
-        ],
-        &env,
-    );
-    assert!(
-        agent.status.success(),
-        "{}",
-        String::from_utf8_lossy(&agent.stderr)
-    );
-    assert_eq!(
-        json_stdout(&agent)["results"][0]["text"],
-        "agent turn complete"
-    );
-
-    // This is a second oneharness process and a different adapter selection.
-    // The file-backed attempt survives that process boundary, so the judge gets
-    // its own wire shape instead of inheriting the agent's plain response.
-    let judge = run(
-        &[
-            "run",
-            "--harness",
-            "codex",
-            "--mock-harness",
-            "codex",
-            "--prompt",
-            "judge",
-            "--compact",
-        ],
-        &env,
-    );
-    assert!(
-        judge.status.success(),
-        "{}",
-        String::from_utf8_lossy(&judge.stderr)
-    );
-    let judge_report = json_stdout(&judge);
-    let judge_text = judge_report["results"][0]["text"]
-        .as_str()
-        .expect("judge should return text");
-    let verdict: serde_json::Value =
-        serde_json::from_str(judge_text).expect("supervisor should receive a JSON object");
+    // Repeat the same conversation through the same caller-facing selection
+    // path. The file-backed attempt survives the process boundary, so the judge
+    // gets its own wire shape instead of inheriting the agent's plain response.
+    let (agent_text, verdict) = run_conversation(&env).expect("both parties should settle");
+    assert_eq!(agent_text, "agent turn complete");
     assert_eq!(verdict, serde_json::json!({"accepted": true}));
     assert_eq!(std::fs::read_to_string(counter).unwrap(), "2");
 }

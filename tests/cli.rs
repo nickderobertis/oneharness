@@ -830,6 +830,58 @@ fn omitted_timeout_still_terminates_a_prompt_capable_headless_mode() {
 }
 
 #[test]
+fn omitted_timeout_safety_is_scoped_to_the_prompt_capable_parallel_job() {
+    // Both real subprocess jobs cross the former default. Cursor's prompt-capable
+    // mode receives the safety deadline, while clean Claude must retain the new
+    // no-deadline default and publish its answer after that deadline has passed.
+    let mock_bin = mock_bin();
+    let mock = mock_bin.display();
+    let project = format!(
+        r#"
+        harnesses = ["cursor", "claude-code"]
+
+        [harness.cursor]
+        bin = '{mock}'
+        [harness.cursor.env]
+        MOCK_SLEEP_MS = "121000"
+
+        [harness.claude-code]
+        bin = '{mock}'
+        [harness.claude-code.env]
+        MOCK_SLEEP_MS = "121000"
+        MOCK_STDOUT = '{{"result":"clean sibling finished"}}'
+        "#
+    );
+    let fx = ConfigFixture::new("mixed-timeout-safety", &project, "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--mode",
+            "default",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let report = json_stdout(&output);
+    let results = report["results"].as_array().unwrap();
+    let cursor = results.iter().find(|r| r["harness"] == "cursor").unwrap();
+    let claude = results
+        .iter()
+        .find(|r| r["harness"] == "claude-code")
+        .unwrap();
+    assert_eq!(cursor["status"], "timeout");
+    assert_eq!(claude["status"], "ok");
+    assert_eq!(claude["text"], "clean sibling finished");
+    assert!(claude["duration_ms"].as_u64().unwrap() >= 120_000);
+}
+
+#[test]
 fn default_is_the_global_default_mode() {
     // With no --mode/--bypass, the resolved mode is `default` (not bypass).
     let output = run(

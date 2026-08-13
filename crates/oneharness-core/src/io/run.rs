@@ -623,7 +623,9 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
     // for. Prompt-capable headless modes are the exception: omission must not
     // turn an unattended approval prompt into a silent infinite stall. An
     // explicit zero remains the deliberate opt-out introduced in 0.6.16.
-    let timeout = effective_timeout(requested_timeout, !hang_prone_ids.is_empty())?;
+    // Validate an explicit invocation-wide timeout once. When it is omitted,
+    // each job resolves its own safety deadline from its harness's mode below.
+    effective_timeout(requested_timeout, false)?;
     // A reasoning/effort setting for a harness that has no headless argv surface
     // for it is refused here (no way to deliver it) — a loud usage error rather
     // than a silent drop, mirroring an unsupported mode.
@@ -962,6 +964,11 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
             ))));
         } else {
             let job_index = jobs.len();
+            let job_timeout = effective_timeout(
+                requested_timeout,
+                spec.mode(mode)
+                    .is_some_and(|mode| mode.headless == ModeHeadless::Hangs),
+            )?;
             // Large prompt / system: deliver it off the argv (temp file / stdin)
             // where the harness supports it, so it never trips the OS argv ceiling.
             // Mutates `harness_plan` (so the structured-output retry rebuilds the
@@ -993,7 +1000,7 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
                 cwd: args.cwd.clone(),
                 env: job_env,
                 env_remove,
-                timeout,
+                timeout: job_timeout,
                 stdin: built.stdin,
             });
             plan.push(Plan::Pending {
@@ -1142,7 +1149,12 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
             prompt,
             &control_cwd(args)?,
             mode,
-            timeout,
+            effective_timeout(
+                requested_timeout,
+                specs[0]
+                    .mode(mode)
+                    .is_some_and(|mode| mode.headless == ModeHeadless::Hangs),
+            )?,
         );
         (results, None)
     } else if let Some(input) = controlled.as_ref().filter(|_| !jobs.is_empty()) {

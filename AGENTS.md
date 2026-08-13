@@ -603,9 +603,10 @@ aren't re-litigated each session:
   would `hangs` (`HarnessSpec.modes` / `ModeSpec`). The command layer refuses an
   *unsupported* mode before spawning (no command to build — a loud usage error,
   never a silent downgrade); a *supported-but-`hangs`* mode is warned about on
-  stderr and still run, with the per-harness `--timeout` as the backstop (a hang
-  becomes a `timeout` result, per "never panic on a harness's behavior"), and
-  `--permit-prompts` silences the warning. The per-harness `read-only`/`plan`
+  stderr and still run. Ordinary omitted-timeout runs have no deadline, but this
+  case alone gets a 120-second approval-wait safety deadline; explicit
+  `--timeout 0` removes it. `--permit-prompts` silences the warning. The
+  per-harness `read-only`/`plan`
   mapping is drift-alarmed live by `oh_mode_enforce` (writes blocked under
   read-only, allowed under bypass). A no-mutation mode whose mechanism
   enumerates TOOLS must name the ones the run may use, never the ones it may

@@ -722,8 +722,9 @@ pub struct RunArgs {
     #[arg(long, value_name = "DIR")]
     pub output_dir: Option<PathBuf>,
 
-    /// Per-harness timeout in seconds (default 120, or `timeout` from config).
-    /// Pass 0 (or set `timeout = 0` in config) for no timeout.
+    /// Per-harness timeout in seconds. By default there is no deadline (or use
+    /// 0 explicitly). Prompt-capable modes retain a 120s approval-wait safety
+    /// deadline unless a timeout, including 0, is explicitly selected.
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
 
@@ -739,9 +740,8 @@ pub struct RunArgs {
     /// auto, or bypass (default: default). Each harness maps it to its native
     /// mechanism; `oneharness list` shows which modes each supports. A mode a
     /// selected harness can't express is refused up front; one that may block on
-    /// a prompt headlessly is warned about and run, with --timeout as the
-    /// backstop. Setting --timeout 0 removes that protection, so use
-    /// --permit-prompts only when an unbounded approval wait is acceptable.
+    /// a prompt headlessly is warned about and run with a 120s approval-wait
+    /// safety deadline. Setting --timeout 0 explicitly removes that protection.
     /// Supersedes --bypass / --no-bypass.
     #[arg(long, value_parser = mode_parser(), conflicts_with_all = ["bypass", "no_bypass"])]
     pub mode: Option<PermissionMode>,

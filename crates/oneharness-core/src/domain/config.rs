@@ -66,7 +66,7 @@ pub struct FileConfig {
     /// / `auto` / `bypass`. Beats `bypass` when both are set. The CLI's `--mode`
     /// (and `--bypass` / `--no-bypass`) always win.
     pub mode: Option<PermissionMode>,
-    /// Per-harness timeout in seconds (like `--timeout`); zero means no timeout.
+    /// Per-harness timeout in seconds (like `--timeout`); omitted or zero means no timeout.
     pub timeout: Option<u64>,
     /// Output format override (like `--output-format`).
     pub output_format: Option<OutputFormat>,
@@ -1173,7 +1173,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         // built-in default is false; `mode` is the richer field.
         bypass: pick(layers, |c| c.bypass).or_default(false),
         mode: pick(layers, |c| c.mode),
-        timeout: pick(layers, |c| c.timeout).or_default(120),
+        timeout: pick(layers, |c| c.timeout),
         output_format: pick(layers, |c| c.output_format),
         stream: pick(layers, |c| c.stream).or_default(false),
         schema_file: pick(layers, |c| c.schema_file.clone()),
@@ -1700,7 +1700,7 @@ variant = true
         assert!(report.config_files.is_empty());
         assert_eq!(report.model, Field::unset());
         assert_eq!(report.bypass, Field::default_value(false));
-        assert_eq!(report.timeout, Field::default_value(120));
+        assert_eq!(report.timeout, Field::unset());
         assert_eq!(report.require_available, Field::default_value(false));
         assert!(report.env.is_empty());
         assert!(report.harness.is_empty());

@@ -712,7 +712,7 @@ fn unsupported_mode_for_a_harness_is_refused() {
 #[test]
 fn hang_prone_mode_warns_but_runs_and_permit_prompts_silences_it() {
     // cursor's `default` could block on an approval prompt headlessly, so
-    // oneharness warns — but still runs it (the --timeout is the backstop),
+    // oneharness warns — but still runs it (the approval safety deadline is the backstop),
     // rather than refusing. `--permit-prompts` silences the warning.
     let base = [
         "run",
@@ -729,12 +729,24 @@ fn hang_prone_mode_warns_but_runs_and_permit_prompts_silences_it() {
     assert!(output.status.success(), "hang-prone mode should still run");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("may block on an interactive"), "{stderr}");
+    assert!(
+        stderr.contains("120s approval-wait safety deadline"),
+        "{stderr}"
+    );
     assert_eq!(json_stdout(&output)["permission_mode"], "default");
     let mut unlimited = base.to_vec();
     unlimited.extend(["--timeout", "0"]);
     let output = run(&unlimited, &[]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("approval wait is unbounded"), "{stderr}");
+    let mut bounded = base.to_vec();
+    bounded.extend(["--timeout", "7"]);
+    let output = run(&bounded, &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("requested --timeout as the deadline backstop"),
+        "{stderr}"
+    );
     // --permit-prompts silences the warning.
     let mut with_permit = base.to_vec();
     with_permit.push("--permit-prompts");
@@ -748,13 +760,125 @@ fn hang_prone_mode_warns_but_runs_and_permit_prompts_silences_it() {
 }
 
 #[test]
-fn run_help_explains_how_to_disable_the_timeout() {
+fn run_help_explains_the_no_deadline_default_and_explicit_zero_synonym() {
     let output = run(&["run", "--help"], &[]);
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
-    assert!(help.contains("Pass 0"), "{help}");
-    assert!(help.contains("timeout = 0"), "{help}");
-    assert!(help.contains("no timeout"), "{help}");
+    assert!(help.contains("By default there is no deadline"), "{help}");
+    assert!(help.contains("use 0 explicitly"), "{help}");
+    let safety = format!(
+        "{}s approval-wait safety",
+        oneharness_core::io::run::APPROVAL_WAIT_TIMEOUT_SECS
+    );
+    assert!(help.contains(&safety), "{help}");
+    let readme_safety = format!(
+        "{}-second approval-wait safety",
+        oneharness_core::io::run::APPROVAL_WAIT_TIMEOUT_SECS
+    );
+    assert!(include_str!("../README.md").contains(&readme_safety));
+    assert!(include_str!("../AGENTS.md").contains(&readme_safety));
+    assert!(include_str!("../CHANGELOG.md").contains(&readme_safety));
+}
+
+#[test]
+fn timeout_too_large_for_a_platform_deadline_is_a_usage_error() {
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--timeout",
+            &u64::MAX.to_string(),
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("too large to represent as a deadline")
+    );
+}
+
+#[test]
+fn omitted_timeout_still_terminates_a_prompt_capable_headless_mode() {
+    // Cursor's default mode is registry-declared prompt-capable. With no
+    // general timeout selected, this real subprocess must be stopped by the
+    // separate approval-wait safety deadline instead of stalling forever.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "cursor",
+            "--prompt",
+            "hi",
+            "--mode",
+            "default",
+            "--bin",
+            &bin_override("cursor"),
+            "--compact",
+        ],
+        &[("MOCK_SLEEP_MS", "121000")],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let result = &json_stdout(&output)["results"][0];
+    assert_eq!(result["status"], "timeout");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("120s approval-wait safety deadline"));
+}
+
+#[test]
+fn omitted_timeout_safety_is_scoped_to_the_prompt_capable_parallel_job() {
+    // Both real subprocess jobs cross the former default. Cursor's prompt-capable
+    // mode receives the safety deadline, while clean Claude must retain the new
+    // no-deadline default and publish its answer after that deadline has passed.
+    let mock_bin = mock_bin();
+    let mock = mock_bin.display();
+    let project = format!(
+        r#"
+        harnesses = ["cursor", "claude-code"]
+
+        [harness.cursor]
+        bin = '{mock}'
+        [harness.cursor.env]
+        MOCK_SLEEP_MS = "121000"
+
+        [harness.claude-code]
+        bin = '{mock}'
+        [harness.claude-code.env]
+        MOCK_SLEEP_MS = "121000"
+        MOCK_STDOUT = '{{"result":"clean sibling finished"}}'
+        "#
+    );
+    let fx = ConfigFixture::new("mixed-timeout-safety", &project, "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--mode",
+            "default",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let report = json_stdout(&output);
+    let results = report["results"].as_array().unwrap();
+    let cursor = results.iter().find(|r| r["harness"] == "cursor").unwrap();
+    let claude = results
+        .iter()
+        .find(|r| r["harness"] == "claude-code")
+        .unwrap();
+    assert_eq!(cursor["status"], "timeout");
+    assert_eq!(claude["status"], "ok");
+    assert_eq!(claude["text"], "clean sibling finished");
+    assert!(claude["duration_ms"].as_u64().unwrap() >= 120_000);
 }
 
 #[test]
@@ -7877,8 +8001,8 @@ fn config_command_no_config_shows_pure_defaults() {
         let value = json_stdout(&output);
         assert!(value["config_files"].as_array().unwrap().is_empty());
         assert!(value["model"]["value"].is_null());
-        assert_eq!(value["timeout"]["value"], 120);
-        assert_eq!(value["timeout"]["source"], "default");
+        assert!(value["timeout"]["value"].is_null());
+        assert!(value["timeout"]["source"].is_null());
     }
 }
 
@@ -20075,6 +20199,102 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
     assert_eq!(report["session"]["name"], "watched");
     assert_eq!(report["session"]["token"], "sess-ctl");
 
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_controlled_turn_with_an_omitted_timeout_outlives_the_former_default() {
+    let store = control_store_dir("omitted-timeout");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("omitted-timeout-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let turn_log = store.join("turn.log");
+    let turn_log_arg = turn_log.display().to_string();
+    let started = std::time::Instant::now();
+
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "long-control",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "finish the supervised turn",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+            "--env",
+            &mock_profile_redirect(),
+        ],
+        &[
+            ("MOCK_TURN_LOG", &turn_log_arg),
+            ("MOCK_TURN_RESULT_DELAY_MS", "121000"),
+        ],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert!(started.elapsed() >= std::time::Duration::from_secs(120));
+    let report = json_stdout(&output);
+    assert_eq!(report["results"][0]["status"], "ok", "{report}");
+    assert_eq!(report["results"][0]["text"], "mock turn", "{report}");
+    let log = std::fs::read_to_string(&turn_log).expect("controlled turn log");
+    assert!(log.contains("finish the supervised turn"), "{log}");
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_control_mock_refuses_an_invalid_result_delay() {
+    let store = control_store_dir("invalid-result-delay");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("invalid-result-delay-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let turn_log = store.join("turn.log").display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "invalid-delay",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "start",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+            "--env",
+            &mock_profile_redirect(),
+        ],
+        &[
+            ("MOCK_TURN_LOG", &turn_log),
+            ("MOCK_TURN_RESULT_DELAY_MS", "later"),
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let report = json_stdout(&output);
+    assert!(
+        report["results"][0]["stderr"]
+            .as_str()
+            .expect("captured harness stderr")
+            .contains("MOCK_TURN_RESULT_DELAY_MS must be milliseconds"),
+        "{report}"
+    );
+    assert_eq!(report["results"][0]["status"], "nonzero", "{report}");
     let _ = std::fs::remove_dir_all(&store);
     let _ = std::fs::remove_dir_all(&cwd);
 }

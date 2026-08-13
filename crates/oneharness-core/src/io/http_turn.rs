@@ -315,7 +315,7 @@ pub fn run(
 ) -> TurnOutcome {
     let started = Instant::now();
     let started_at = utc_now();
-    let deadline = started + timeout;
+    let deadline = (!timeout.is_zero()).then(|| started + timeout);
     let transcript = Arc::new(Mutex::new(Vec::<String>::new()));
     let text = Arc::new(Mutex::new(String::new()));
     // llmlint: ignore[names_match_behavior] Accurate finding, deferred by the planner rather than fixed here: this flag is raised only when the submitter gives up (the prompt was refused or could not be sent), never when the turn ends — that is `ended`, off `TurnEvent::Finished`. Renaming it touches four sites in a path this change does not otherwise enter, and this branch is closing two named cross-platform test failures.
@@ -440,7 +440,7 @@ pub fn run(
             }
             in_flight = false;
         }
-        if Instant::now() >= deadline {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             timed_out = true;
             break;
         }
@@ -525,7 +525,12 @@ pub fn run(
     // says the budget was exceeded — while still carrying whatever was noticed
     // on the way, which is the only place that reason survives.
     let end = match (timed_out, error) {
-        (true, why) => TurnEnd::TimedOut(why),
+        (true, why) => TurnEnd::TimedOut(Some(why.unwrap_or_else(|| {
+            format!(
+                "the harness turn exceeded its {}s deadline and was terminated by oneharness",
+                timeout.as_secs()
+            )
+        }))),
         (false, Some(why)) => TurnEnd::DidNotFinish(why),
         (false, None) => TurnEnd::Completed,
     };

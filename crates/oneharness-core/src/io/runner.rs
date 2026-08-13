@@ -342,7 +342,7 @@ pub fn run_job_cancellable(job: &Job, cancel: &CancelToken) -> Capture {
         feed_stdin(&mut process, bytes);
     }
 
-    let deadline = start + job.timeout;
+    let deadline = (!job.timeout.is_zero()).then(|| start + job.timeout);
     let (status, exit_code, finish) = match wait_or_cancel(&mut process, deadline, cancel) {
         Wait::Exited(exit) => {
             let code = exit.code();
@@ -592,17 +592,20 @@ where
         on_line(line)
     };
 
-    let deadline = start + job.timeout;
+    let deadline = (!job.timeout.is_zero()).then(|| start + job.timeout);
     let mut pending = Vec::new();
     let end = loop {
         if cancellation_requested(cancel) {
             break StreamEnd::Cancelled;
         }
         let now = Instant::now();
-        if now >= deadline {
+        if deadline.is_some_and(|deadline| now >= deadline) {
             break StreamEnd::TimedOut;
         }
-        match process.recv_stdout_until(deadline.min(now + CANCEL_POLL_SLICE)) {
+        let poll_until = deadline.map_or(now + CANCEL_POLL_SLICE, |deadline| {
+            deadline.min(now + CANCEL_POLL_SLICE)
+        });
+        match process.recv_stdout_until(poll_until) {
             PipeEvent::Data(chunk) => {
                 pending.extend_from_slice(&chunk);
                 if deliver_complete_lines(&mut pending, &mut on_line) == StreamStep::Stop {
@@ -710,20 +713,22 @@ enum Wait {
     Failed,
 }
 
-/// Wait for the child until `deadline`, waking every [`CANCEL_POLL_SLICE`] to
-/// re-check cancellation. The slice is the only reason a cancellation is ever
-/// observed: a plain wait to the deadline would hold the run for the harness's
-/// whole timeout after the caller had already given up on it.
-fn wait_or_cancel(process: &mut Process, deadline: Instant, cancel: &CancelToken) -> Wait {
+/// Wait for the child until an optional `deadline`, waking every
+/// [`CANCEL_POLL_SLICE`] to re-check cancellation. The slice is the only reason
+/// cancellation is observed for an unbounded run or before a distant deadline.
+fn wait_or_cancel(process: &mut Process, deadline: Option<Instant>, cancel: &CancelToken) -> Wait {
     loop {
         if cancellation_requested(cancel) {
             return Wait::Cancelled;
         }
         let now = Instant::now();
-        if now >= deadline {
+        if deadline.is_some_and(|deadline| now >= deadline) {
             return Wait::TimedOut;
         }
-        match process.wait_until(deadline.min(now + CANCEL_POLL_SLICE)) {
+        let poll_until = deadline.map_or(now + CANCEL_POLL_SLICE, |deadline| {
+            deadline.min(now + CANCEL_POLL_SLICE)
+        });
+        match process.wait_until(poll_until) {
             Ok(Some(exit)) => return Wait::Exited(exit),
             // The slice elapsed; the loop decides whether that was the deadline.
             Ok(None) => {}

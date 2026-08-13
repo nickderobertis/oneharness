@@ -66,7 +66,7 @@ pub struct FileConfig {
     /// / `auto` / `bypass`. Beats `bypass` when both are set. The CLI's `--mode`
     /// (and `--bypass` / `--no-bypass`) always win.
     pub mode: Option<PermissionMode>,
-    /// Per-harness timeout in seconds (like `--timeout`).
+    /// Per-harness timeout in seconds (like `--timeout`); zero means no timeout.
     pub timeout: Option<u64>,
     /// Output format override (like `--output-format`).
     pub output_format: Option<OutputFormat>,

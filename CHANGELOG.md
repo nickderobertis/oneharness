@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.2](https://github.com/nickderobertis/oneharness/compare/v0.7.1...v0.7.2) - 2026-08-13
+
+### Fixed
+
+- bind a controllable turn to a fallback chain ([#1251](https://github.com/nickderobertis/oneharness/pull/1251))
+
 ## [0.7.1](https://github.com/nickderobertis/oneharness/compare/v0.7.0...v0.7.1) - 2026-08-13
 
 ### Added

@@ -24510,3 +24510,100 @@ fn control_refuses_a_fallback_chain_whose_candidates_control_differently() {
         "{stderr}"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_controlled_fallback_chain_drives_a_shared_mechanism_across_harnesses() {
+    // A chain does not have to be one harness's identities — it has to be one
+    // mechanism. Goose and Copilot both control through ACP, so a chain of the
+    // two is accepted, and the anchor's turn is driven over the JSON-RPC
+    // dialogue exactly as it is without the chain: the client answers
+    // `session/request_permission` (a real ACP harness never starts work
+    // otherwise) and a supervisor's interrupt reaches the live turn.
+    let mock_profile = mock_profile_redirect();
+    let store = control_store_dir("acp-chain");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("acp-chain-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let acp_log = store.join("acp.log");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_ACP_LOG", acp_log.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "goose,copilot",
+            "--run-mode",
+            "fallback",
+            "--control",
+            "--session",
+            "acpchain",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("goose"),
+            "--bin",
+            &bin_override("copilot"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the ACP controlled chain");
+
+    wait_until("the control socket", || {
+        store.join("control").join("acpchain.sock").exists()
+    });
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(&acp_log)
+            .map(|log| log.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "acpchain",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    assert_eq!(json_stdout(&interrupt)["mechanism"], "acp-cancel");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    // The anchor did the work, so the chain stopped there and the second
+    // mechanism-compatible candidate never spawned a server of its own.
+    assert_eq!(report["fallback"]["ran"], "goose");
+    assert_eq!(report["results"].as_array().unwrap().len(), 1);
+    assert_eq!(report["control"]["mechanism"], "acp-cancel");
+    assert_eq!(report["control"]["interrupts"].as_array().unwrap().len(), 1);
+    let log = std::fs::read_to_string(&acp_log).unwrap();
+    assert!(
+        log.lines().any(|line| line.contains("session/cancel")),
+        "the interrupt reached the anchor's dialogue: {log}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}

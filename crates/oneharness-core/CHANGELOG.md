@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.6.14...oneharness-core-v0.7.0) - 2026-08-13
+
+### Added
+
+- [**breaking**] run a turn with no timeout unless one is asked for ([#1246](https://github.com/nickderobertis/oneharness/pull/1246))
+- let a run opt out of the per-harness timeout entirely ([#1244](https://github.com/nickderobertis/oneharness/pull/1244))
+- close the SDK gaps against the CLI and gate the drift ([#1241](https://github.com/nickderobertis/oneharness/pull/1241))
+- carry a redirection with an out-of-band interrupt ([#1230](https://github.com/nickderobertis/oneharness/pull/1230))
+- out-of-band turn control via a socket and `oneharness interrupt` ([#1225](https://github.com/nickderobertis/oneharness/pull/1225))
+- cancel a run's harness tree on signal and expose telemetry on results ([#1222](https://github.com/nickderobertis/oneharness/pull/1222))
+- stream config key and absent-home auth fallthrough ([#1220](https://github.com/nickderobertis/oneharness/pull/1220))
+- stream a fallback chain instead of refusing it ([#1213](https://github.com/nickderobertis/oneharness/pull/1213))
+- [**breaking**] omit absent usage fields from the wire and pin the v0.1 golden;… ([#1198](https://github.com/nickderobertis/oneharness/pull/1198))
+- record observed tool timing for Anthropic-envelope harnesses ([#1196](https://github.com/nickderobertis/oneharness/pull/1196))
+- add first-class harness variants ([#1186](https://github.com/nickderobertis/oneharness/pull/1186))
+- incremental event persistence and live event-level history watch ([#1175](https://github.com/nickderobertis/oneharness/pull/1175))
+- [**breaking**] add event-sourced history migration; define event-sourced histor… ([#1173](https://github.com/nickderobertis/oneharness/pull/1173))
+- ship deterministic mock harness for CLI + all SDKs ([#1171](https://github.com/nickderobertis/oneharness/pull/1171))
+- add resumable labeled history and SDK parity ([#1146](https://github.com/nickderobertis/oneharness/pull/1146))
+- *(sdk)* export generated Zod schemas ([#1139](https://github.com/nickderobertis/oneharness/pull/1139))
+- detect and classify claude-code deferred-tool dead-ends (tool_deferred)
+- add init subcommand to scaffold a starter config ([#1129](https://github.com/nickderobertis/oneharness/pull/1129))
+- configure reasoning/thinking effort per harness ([#1122](https://github.com/nickderobertis/oneharness/pull/1122))
+- fan out over multiple models in parallel and fallback modes ([#1120](https://github.com/nickderobertis/oneharness/pull/1120))
+- add fallback run mode (--run-mode fallback) ([#1118](https://github.com/nickderobertis/oneharness/pull/1118))
+- deliver large prompts/system off the argv to harnesses ([#1115](https://github.com/nickderobertis/oneharness/pull/1115)) ([#1116](https://github.com/nickderobertis/oneharness/pull/1116))
+- uniform --session handle ([#1112](https://github.com/nickderobertis/oneharness/pull/1112))
+- add --system-file so a large system prompt bypasses the argv limit ([#1109](https://github.com/nickderobertis/oneharness/pull/1109))
+- opt-in standardized run history + `history` view/manage verb ([#1101](https://github.com/nickderobertis/oneharness/pull/1101))
+- mock/spy responder — per-tool-call deny/rewrite/stub with regex matching ([#1099](https://github.com/nickderobertis/oneharness/pull/1099))
+- normalized tool-call events + streaming across the harness matrix ([#1097](https://github.com/nickderobertis/oneharness/pull/1097))
+- same-prefix batch run mode (one harness over N prompts, cache-aware) ([#1088](https://github.com/nickderobertis/oneharness/pull/1088))
+- surface prompt-cache token counts in normalized usage ([#1086](https://github.com/nickderobertis/oneharness/pull/1086))
+- extend session continuation to all harnesses and add --fork
+- [**breaking**] normalized --mode approval modes across all harnesses ([#1079](https://github.com/nickderobertis/oneharness/pull/1079))
+- ONEHARNESS_&lt;FIELD&gt; environment config overrides ([#1077](https://github.com/nickderobertis/oneharness/pull/1077))
+- structured output (JSON Schema) for run ([#1072](https://github.com/nickderobertis/oneharness/pull/1072))
+- *(opencode)* forward session id from the plugin shim ([#1070](https://github.com/nickderobertis/oneharness/pull/1070))
+- user-global hook install, runtime gate command, and live hook-enforcement e2e
+
+### Fixed
+
+- *(core)* release process-aware readiness API ([#1239](https://github.com/nickderobertis/oneharness/pull/1239))
+- record history for a run that failed before it could be measured ([#1217](https://github.com/nickderobertis/oneharness/pull/1217))
+- classify a zero-work 429 as quota so a chain falls through ([#1215](https://github.com/nickderobertis/oneharness/pull/1215))
+- *(fallback)* fall through a zero-work session-limit rejection ([#1211](https://github.com/nickderobertis/oneharness/pull/1211))
+- *(fallback)* classify codex usage limits as quota ([#1208](https://github.com/nickderobertis/oneharness/pull/1208))
+- *(fallback)* classify Claude subscription limits as quota ([#1204](https://github.com/nickderobertis/oneharness/pull/1204))
+- *(usage)* wait for codex's rate-limit answer instead of closing its stdin ([#1202](https://github.com/nickderobertis/oneharness/pull/1202))
+- close harness variant CI regressions ([#1191](https://github.com/nickderobertis/oneharness/pull/1191))
+- emit complete v1.0 telemetry for boundaried file_change items; loc… ([#1183](https://github.com/nickderobertis/oneharness/pull/1183))
+- *(history)* address llmlint findings in event-sourced history ([#1177](https://github.com/nickderobertis/oneharness/pull/1177))
+- *(sdk)* accept unavailable history timing ([#1164](https://github.com/nickderobertis/oneharness/pull/1164))
+- degrade unsupported history telemetry gracefully ([#1161](https://github.com/nickderobertis/oneharness/pull/1161))
+- *(history)* harden macOS timing test; add e2e; rename fixture ([#1157](https://github.com/nickderobertis/oneharness/pull/1157))
+- terminate timed-out process trees and preserve telemetry ([#1147](https://github.com/nickderobertis/oneharness/pull/1147))
+- harden SDK release lifecycle ([#1137](https://github.com/nickderobertis/oneharness/pull/1137))
+- allow --session in fallback run mode ([#1127](https://github.com/nickderobertis/oneharness/pull/1127))
+- *(cursor)* deliver reasoning as a model-id tier suffix ([#1125](https://github.com/nickderobertis/oneharness/pull/1125))
+- spawn multi-line args against Windows .cmd-shim harnesses ([#1075](https://github.com/nickderobertis/oneharness/pull/1075))
+- *(hooks)* honor Claude hook timeout and make the Goose manifest description caller-brandable
+
 ## [0.6.14](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.6.13...oneharness-core-v0.6.14) - 2026-08-13
 
 ### Added

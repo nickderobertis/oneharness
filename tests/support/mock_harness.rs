@@ -80,6 +80,8 @@
 //!                   interrupt's redirection is delivered); EOF ends the process.
 //!                   This is the hermetic stand-in for Claude Code's
 //!                   `-p --input-format stream-json` control channel: the turn is
+//!   MOCK_TURN_RESULT_DELAY_MS  with MOCK_TURN_LOG, wait this many milliseconds
+//!                   after receiving a turn message before emitting its result.
 //!                   observably in flight (the prompt frame appears in the log),
 //!                   so a test can drive a *separate* `oneharness interrupt`
 //!                   process against the live run.
@@ -1153,6 +1155,12 @@ fn run_controlled_turn(log_path: &str) -> ! {
         // to answer, and emitting another document would invent a turn.
         if !ended {
             break;
+        }
+        if let Ok(delay) = std::env::var("MOCK_TURN_RESULT_DELAY_MS") {
+            let delay = delay
+                .parse::<u64>()
+                .expect("MOCK_TURN_RESULT_DELAY_MS must be milliseconds");
+            std::thread::sleep(std::time::Duration::from_millis(delay));
         }
         let once = std::env::var_os("MOCK_TURN_ONCE").is_some();
         let result = std::env::var("MOCK_TURN_RESULT").unwrap_or_else(|_| {

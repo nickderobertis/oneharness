@@ -625,7 +625,7 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
     // explicit zero remains the deliberate opt-out introduced in 0.6.16.
     // Validate an explicit invocation-wide timeout once. When it is omitted,
     // each job resolves its own safety deadline from its harness's mode below.
-    effective_timeout(requested_timeout, false)?;
+    effective_timeout(requested_timeout, TimeoutPolicy::Ordinary)?;
     // A reasoning/effort setting for a harness that has no headless argv surface
     // for it is refused here (no way to deliver it) — a loud usage error rather
     // than a silent drop, mirroring an unsupported mode.
@@ -964,11 +964,7 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
             ))));
         } else {
             let job_index = jobs.len();
-            let job_timeout = effective_timeout(
-                requested_timeout,
-                spec.mode(mode)
-                    .is_some_and(|mode| mode.headless == ModeHeadless::Hangs),
-            )?;
+            let job_timeout = effective_timeout(requested_timeout, timeout_policy(spec, mode))?;
             // Large prompt / system: deliver it off the argv (temp file / stdin)
             // where the harness supports it, so it never trips the OS argv ceiling.
             // Mutates `harness_plan` (so the structured-output retry rebuilds the
@@ -1149,12 +1145,7 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
             prompt,
             &control_cwd(args)?,
             mode,
-            effective_timeout(
-                requested_timeout,
-                specs[0]
-                    .mode(mode)
-                    .is_some_and(|mode| mode.headless == ModeHeadless::Hangs),
-            )?,
+            effective_timeout(requested_timeout, timeout_policy(specs[0], mode))?,
         );
         (results, None)
     } else if let Some(input) = controlled.as_ref().filter(|_| !jobs.is_empty()) {
@@ -4073,14 +4064,30 @@ fn hang_prone(mode: PermissionMode, specs: &[&'static HarnessSpec]) -> Vec<&'sta
         .collect()
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TimeoutPolicy {
+    Ordinary,
+    ApprovalWaitSafety,
+}
+
+fn timeout_policy(spec: &HarnessSpec, mode: PermissionMode) -> TimeoutPolicy {
+    if spec
+        .mode(mode)
+        .is_some_and(|mode| mode.headless == ModeHeadless::Hangs)
+    {
+        TimeoutPolicy::ApprovalWaitSafety
+    } else {
+        TimeoutPolicy::Ordinary
+    }
+}
+
 fn effective_timeout(
     requested: Option<u64>,
-    prompt_capable: bool,
+    policy: TimeoutPolicy,
 ) -> Result<Duration, OneharnessError> {
-    let seconds = requested.unwrap_or(if prompt_capable {
-        APPROVAL_WAIT_TIMEOUT_SECS
-    } else {
-        0
+    let seconds = requested.unwrap_or(match policy {
+        TimeoutPolicy::Ordinary => 0,
+        TimeoutPolicy::ApprovalWaitSafety => APPROVAL_WAIT_TIMEOUT_SECS,
     });
     let timeout = Duration::from_secs(seconds);
     if !timeout.is_zero() && Instant::now().checked_add(timeout).is_none() {
@@ -4704,18 +4711,24 @@ mod tests {
 
     #[test]
     fn only_an_omitted_timeout_in_a_prompt_capable_mode_gets_the_safety_deadline() {
-        assert_eq!(effective_timeout(None, false).unwrap(), Duration::ZERO);
         assert_eq!(
-            effective_timeout(None, true).unwrap(),
+            effective_timeout(None, TimeoutPolicy::Ordinary).unwrap(),
+            Duration::ZERO
+        );
+        assert_eq!(
+            effective_timeout(None, TimeoutPolicy::ApprovalWaitSafety).unwrap(),
             Duration::from_secs(APPROVAL_WAIT_TIMEOUT_SECS)
         );
-        assert_eq!(effective_timeout(Some(0), true).unwrap(), Duration::ZERO);
         assert_eq!(
-            effective_timeout(Some(17), true).unwrap(),
+            effective_timeout(Some(0), TimeoutPolicy::ApprovalWaitSafety).unwrap(),
+            Duration::ZERO
+        );
+        assert_eq!(
+            effective_timeout(Some(17), TimeoutPolicy::ApprovalWaitSafety).unwrap(),
             Duration::from_secs(17)
         );
         assert!(matches!(
-            effective_timeout(Some(u64::MAX), false),
+            effective_timeout(Some(u64::MAX), TimeoutPolicy::Ordinary),
             Err(OneharnessError::TimeoutOutOfRange { .. })
         ));
     }

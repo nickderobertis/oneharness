@@ -20205,6 +20205,54 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
 
 #[cfg(unix)]
 #[test]
+fn a_controlled_turn_with_an_omitted_timeout_outlives_the_former_default() {
+    let store = control_store_dir("omitted-timeout");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("omitted-timeout-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let turn_log = store.join("turn.log");
+    let turn_log_arg = turn_log.display().to_string();
+    let started = std::time::Instant::now();
+
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "long-control",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "finish the supervised turn",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+            "--env",
+            &mock_profile_redirect(),
+        ],
+        &[
+            ("MOCK_TURN_LOG", &turn_log_arg),
+            ("MOCK_TURN_RESULT_DELAY_MS", "121000"),
+        ],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert!(started.elapsed() >= std::time::Duration::from_secs(120));
+    let report = json_stdout(&output);
+    assert_eq!(report["results"][0]["status"], "ok", "{report}");
+    assert_eq!(report["results"][0]["text"], "mock turn", "{report}");
+    let log = std::fs::read_to_string(&turn_log).expect("controlled turn log");
+    assert!(log.contains("finish the supervised turn"), "{log}");
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
 fn control_interrupt_redirects_the_turn_with_a_message_in_one_operation() {
     let mock_profile = mock_profile_redirect();
     // The point of carrying a message with the interrupt: the supervisor sends

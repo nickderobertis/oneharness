@@ -1052,7 +1052,8 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
         event_sink = None;
     }
     let mut forked = false;
-    // Empty off the streaming path, where history is written once at the end.
+    // Empty off the sequential driver (which a controlled fallback chain takes
+    // without `--stream` too), where history is written once at the end.
     let mut streamed_history: Vec<StreamedHistory> = Vec::new();
     // Open the control socket before anything spawns, so a supervisor that races
     // the dispatch finds an address rather than a gap — but after the plan loop,
@@ -1096,8 +1097,9 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
     };
     // A control-enabled run holds the child's stdin open for the whole turn, so
     // the socket's listener thread can push an interrupt into the live process.
-    // It is single-harness/single-prompt by construction (validate_control), so
-    // there is exactly one job to drive this way.
+    // It is single-prompt by construction (validate_control), and drives exactly
+    // one job: the session anchor's. A fallback chain may plan several, but only
+    // one candidate is ever live and only that one was built for this delivery.
     let controlled = control_listener
         .as_ref()
         .zip(control_prompt.as_deref())
@@ -2143,9 +2145,13 @@ struct StreamedPlan {
     history: Vec<StreamedHistory>,
 }
 
-/// Drive the plan under `--stream`, publishing each candidate's normalized
+/// Drive the plan one candidate at a time, publishing each one's normalized
 /// events to `sink` as they arrive. In fallback mode a candidate is one plan
 /// entry — a harness, or a (harness, model) pair when a model list is the chain.
+///
+/// `--stream` is one of two callers: a controlled fallback chain takes this
+/// driver too, because control needs the sequential one. There `sink` is `None`
+/// (the caller asked for a buffered report), so the live half is history alone.
 ///
 /// Publishing a candidate before the chain has settled is safe: one that
 /// published an event has, by construction, a tool event in its result (the
@@ -2387,19 +2393,18 @@ fn validate_control(
             why: "control drives one live turn, and a fan-out has no single turn to interrupt",
         });
     }
-    // Parallel selection starts every harness together, while fallback starts
-    // candidates one at a time. Control needs the former to name one harness;
-    // the latter is already one live turn and binds to the session anchor.
-    // If that anchor cannot run, the chain deliberately continues without
-    // control and says so on stderr: a bound channel cannot safely change its
-    // harness-specific mechanism while a supervisor may be addressing it.
-    //
     // The validate/retry loop re-prompts, which is a second turn — and the
     // control channel owns the one open stdin. Refuse rather than silently
     // running with retries disabled.
     if schema {
         return Err(OneharnessError::ControlSchema);
     }
+    // Parallel selection starts every harness together, while fallback starts
+    // candidates one at a time. Control needs the former to name one harness;
+    // the latter is already one live turn and binds to the session anchor.
+    // If that anchor cannot run, the chain deliberately continues without
+    // control and says so on stderr: a bound channel cannot safely change its
+    // harness-specific mechanism while a supervisor may be addressing it.
     if specs.len() != 1 && !fallback_mode {
         return Err(OneharnessError::ControlSingleHarness {
             selected: specs

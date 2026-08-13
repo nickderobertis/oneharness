@@ -24199,3 +24199,178 @@ fn controlled_fallback_records_its_streamed_history_under_the_live_run() {
     let _ = std::fs::remove_dir_all(&history);
     let _ = std::fs::remove_dir_all(&store);
 }
+
+#[cfg(unix)]
+#[test]
+fn control_on_a_fallback_chain_prints_the_planned_commands() {
+    // `--control` with a chain is no longer a usage error, so a dry run of one
+    // now plans instead of refusing. It must stay a *dry* run: every candidate's
+    // command shown, nothing spawned, and no socket opened for a supervisor to
+    // find an address the run never serves.
+    let mock = mock_bin().display().to_string();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code:primary", "claude-code:reserve"]
+        run_mode = "fallback"
+        [harness.claude-code]
+        bin = '{mock}'
+        [harness.claude-code.variant.primary]
+        [harness.claude-code.variant.reserve]
+    "#
+    );
+    let fx = ConfigFixture::new("control-fallback-dry", &project, "");
+    let store = control_store_dir("dry");
+    let output = run_with_config(
+        &[
+            "run",
+            "--control",
+            "--session",
+            "chain",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    assert_eq!(report["dry_run"], true);
+    assert!(
+        report["control"].is_null(),
+        "no socket on a dry run: {report}"
+    );
+    let results = report["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2, "every candidate is planned: {report}");
+    // The anchor's command is the control delivery it would actually launch
+    // with (the prompt goes over the held-open stdin, so it is not on the argv);
+    // the candidate behind it is the ordinary inline form.
+    let anchor: Vec<&str> = results[0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg.as_str().unwrap())
+        .collect();
+    assert_eq!(results[0]["harness_id"], "claude-code:primary");
+    assert!(anchor.contains(&"--input-format"), "{anchor:?}");
+    assert!(!anchor.contains(&"hi"), "{anchor:?}");
+    let behind: Vec<&str> = results[1]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg.as_str().unwrap())
+        .collect();
+    assert_eq!(results[1]["harness_id"], "claude-code:reserve");
+    assert!(behind.contains(&"hi"), "{behind:?}");
+    assert!(!behind.contains(&"--input-format"), "{behind:?}");
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
+fn controlled_fallback_binds_control_to_a_later_anchor_the_session_moved_to() {
+    // The control channel binds to the session anchor, not to the head of the
+    // chain. Once a turn has fallen through to the reserve identity the handle
+    // continues there, so the NEXT controlled dispatch must drive that candidate
+    // over the control stream — and leave the head of the chain on the ordinary
+    // argv delivery it would get without `--control` at all.
+    let mock = mock_bin().display().to_string();
+    let rejection = include_str!("fixtures/claude-session-limit-api-error.json").trim();
+    let rejection = serde_json::to_string(rejection).unwrap();
+    let success = serde_json::to_string(
+        r#"{"type":"result","subtype":"success","result":"served","session_id":"reserve"}"#,
+    )
+    .unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code:primary", "claude-code:reserve"]
+        run_mode = "fallback"
+        [harness.claude-code]
+        bin = '{mock}'
+        [harness.claude-code.variant.primary]
+        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {rejection} }}
+        [harness.claude-code.variant.reserve]
+        env = {{ MOCK_STDOUT = {success} }}
+    "#
+    );
+    let fx = ConfigFixture::new("control-fallback-anchor", &project, "");
+    let store = control_store_dir("anchor");
+    let dispatch = || {
+        run_with_config(
+            &[
+                "run",
+                "--control",
+                "--session",
+                "chain",
+                "--session-dir",
+                &store.display().to_string(),
+                "--prompt",
+                "hi",
+                "--cwd",
+                &fx.cwd(),
+                "--compact",
+            ],
+            &[],
+            &fx.user_config(),
+        )
+    };
+    // First dispatch: the anchor is the head of the chain, which is out of
+    // quota, so the handle moves to the reserve identity that served the turn.
+    let first = dispatch();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first = json_stdout(&first);
+    assert_eq!(first["fallback"]["ran"], "claude-code:reserve");
+    assert_eq!(first["session"]["token"], "reserve");
+
+    // Second dispatch: same chain, and the head is still out of quota — but the
+    // control stream is now bound to the candidate the session moved to.
+    let second = dispatch();
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second = json_stdout(&second);
+    let results = second["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    let command = |result: &Value| -> Vec<String> {
+        result["command"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|arg| arg.as_str().unwrap().to_string())
+            .collect()
+    };
+    let head = command(&results[0]);
+    assert_eq!(results[0]["harness_id"], "claude-code:primary");
+    assert!(
+        head.contains(&"hi".to_string()) && !head.contains(&"--input-format".to_string()),
+        "the head of the chain is not the anchor, so it runs uncontrolled: {head:?}"
+    );
+    let anchor = command(&results[1]);
+    assert_eq!(results[1]["harness_id"], "claude-code:reserve");
+    assert!(
+        anchor.contains(&"--input-format".to_string()) && !anchor.contains(&"hi".to_string()),
+        "the anchor takes the control delivery: {anchor:?}"
+    );
+    // Bound, and reported as such: the anchor resumed its own session token and
+    // stderr never announced control being dropped.
+    assert!(anchor.contains(&"--resume".to_string()), "{anchor:?}");
+    assert_eq!(second["fallback"]["ran"], "claude-code:reserve");
+    assert!(second["control"]["socket"].is_string());
+    let _ = std::fs::remove_dir_all(&store);
+}

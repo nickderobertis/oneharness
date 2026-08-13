@@ -4864,6 +4864,77 @@ fn shipped_mock_harness_runs_without_fixture_binary() {
 }
 
 #[test]
+fn shipped_mock_harness_scripts_two_party_responses_across_processes() {
+    let counter = temp_counter("two-party-processes");
+    let env = [
+        ("MOCK_ATTEMPT_FILE", counter.as_str()),
+        (
+            "MOCK_STDOUT_1",
+            r#"{"type":"result","result":"agent turn complete"}"#,
+        ),
+        (
+            "MOCK_STDOUT_2",
+            r#"{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"judge","type":"agent_message","text":"{\"accepted\":true}"}}
+{"type":"turn.completed"}"#,
+        ),
+    ];
+
+    let agent = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--mock-harness",
+            "claude-code",
+            "--prompt",
+            "act",
+            "--compact",
+        ],
+        &env,
+    );
+    assert!(
+        agent.status.success(),
+        "{}",
+        String::from_utf8_lossy(&agent.stderr)
+    );
+    assert_eq!(
+        json_stdout(&agent)["results"][0]["text"],
+        "agent turn complete"
+    );
+
+    // This is a second oneharness process and a different adapter selection.
+    // The file-backed attempt survives that process boundary, so the judge gets
+    // its own wire shape instead of inheriting the agent's plain response.
+    let judge = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--mock-harness",
+            "codex",
+            "--prompt",
+            "judge",
+            "--compact",
+        ],
+        &env,
+    );
+    assert!(
+        judge.status.success(),
+        "{}",
+        String::from_utf8_lossy(&judge.stderr)
+    );
+    let judge_report = json_stdout(&judge);
+    let judge_text = judge_report["results"][0]["text"]
+        .as_str()
+        .expect("judge should return text");
+    let verdict: serde_json::Value =
+        serde_json::from_str(judge_text).expect("supervisor should receive a JSON object");
+    assert_eq!(verdict, serde_json::json!({"accepted": true}));
+    assert_eq!(std::fs::read_to_string(counter).unwrap(), "2");
+}
+
+#[test]
 fn nonzero_exit_is_reported_and_fails_the_run() {
     let output = run(
         &[

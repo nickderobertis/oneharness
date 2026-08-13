@@ -23976,3 +23976,773 @@ fn control_with_a_model_fan_out_is_a_usage_error() {
     );
     let _ = std::fs::remove_dir_all(&store);
 }
+
+#[cfg(unix)]
+#[test]
+fn control_accepts_a_five_identity_fallback_chain() {
+    let mock = mock_bin().display().to_string();
+    let mut project = format!("harnesses = [\"claude-code:a\", \"claude-code:b\", \"claude-code:c\", \"claude-code:d\", \"claude-code:e\"]\nrun_mode = \"fallback\"\n[harness.claude-code]\nbin = '{mock}'\n");
+    for variant in ["a", "b", "c", "d", "e"] {
+        project.push_str(&format!("[harness.claude-code.variant.{variant}]\n"));
+    }
+    let fx = ConfigFixture::new("control-five-fallback", &project, "");
+    let store = control_store_dir("five");
+    let output = run_with_config(
+        &[
+            "run",
+            "--control",
+            "--session",
+            "chain",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+            "--env",
+            &mock_profile_redirect(),
+        ],
+        &[(
+            "MOCK_STDOUT",
+            r#"{"type":"result","subtype":"success","result":"served","session_id":"mock-session"}"#,
+        )],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    assert_eq!(report["fallback"]["ran"], "claude-code:a");
+    assert_eq!(report["results"].as_array().unwrap().len(), 1);
+    assert_eq!(report["results"][0]["status"], "ok");
+    assert!(report["control"]["socket"].is_string());
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn control_still_refuses_multiple_harnesses_in_parallel_mode() {
+    let output = run(
+        &[
+            "run",
+            "--control",
+            "--session",
+            "parallel",
+            "--harness",
+            "claude-code,codex",
+            "--prompt",
+            "hi",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("parallel run mode"), "{stderr}");
+    assert!(stderr.contains("--run-mode fallback"), "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn controlled_fallback_states_when_later_candidate_loses_control() {
+    let mock = mock_bin().display().to_string();
+    let rejection = include_str!("fixtures/claude-session-limit-api-error.json").trim();
+    let rejection = serde_json::to_string(rejection).unwrap();
+    let success = serde_json::to_string(
+        r#"{"type":"result","subtype":"success","result":"served","session_id":"later"}"#,
+    )
+    .unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code:primary", "claude-code:reserve"]
+        run_mode = "fallback"
+        [harness.claude-code]
+        bin = '{mock}'
+        [harness.claude-code.variant.primary]
+        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {rejection} }}
+        [harness.claude-code.variant.reserve]
+        env = {{ MOCK_STDOUT = {success} }}
+    "#
+    );
+    let fx = ConfigFixture::new("control-fallback-drop", &project, "");
+    let store = control_store_dir("drop");
+    let output = run_with_config(
+        &[
+            "run",
+            "--control",
+            "--session",
+            "chain",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+            "--env",
+            &mock_profile_redirect(),
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    assert_eq!(report["fallback"]["fell_through"][0]["reason"], "quota");
+    assert_eq!(report["fallback"]["ran"], "claude-code:reserve");
+    assert_eq!(report["results"].as_array().unwrap().len(), 2);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("later candidates continue without control"),
+        "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
+fn controlled_fallback_records_its_streamed_history_under_the_live_run() {
+    // A controlled fallback chain runs on the streamed driver even without
+    // `--stream` (control needs the sequential one), so each candidate's events
+    // are persisted live under a run id minted before the turn starts. The
+    // closing record must then be written under *that* id, with those events
+    // withheld — a fresh id would orphan every event a watcher already read and
+    // write the whole transcript into history a second time.
+    let mock = mock_bin().display().to_string();
+    let rejection = include_str!("fixtures/claude-session-limit-api-error.json").trim();
+    let rejection = serde_json::to_string(rejection).unwrap();
+    let transcript = serde_json::to_string(&format!(
+        "{}\n{}\n{}\n",
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo hi"}}]}}"#,
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"hi"}]}}"#,
+        r#"{"type":"result","subtype":"success","result":"served","session_id":"reserve"}"#,
+    ))
+    .unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code:primary", "claude-code:reserve"]
+        run_mode = "fallback"
+        [harness.claude-code]
+        bin = '{mock}'
+        [harness.claude-code.variant.primary]
+        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {rejection} }}
+        [harness.claude-code.variant.reserve]
+        env = {{ MOCK_STDOUT = {transcript} }}
+    "#
+    );
+    let fx = ConfigFixture::new("control-fallback-history", &project, "");
+    let store = control_store_dir("hist");
+    let history = hist_dir("control-fallback-history");
+    let output = run_with_config(
+        &[
+            "run",
+            "--control",
+            "--session",
+            "chain",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--history",
+            "--history-dir",
+            &history.display().to_string(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // No `--stream`, so stdout is exactly one buffered report: the events this
+    // driver publishes live belong to history and the report, not to a protocol
+    // this consumer never asked for (`json_stdout` refuses trailing lines).
+    let report = json_stdout(&output);
+    assert_eq!(report["fallback"]["ran"], "claude-code:reserve");
+    let results = report["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[1]["events"].as_array().unwrap().len(), 2);
+
+    let history_file = report["history_file"].as_str().unwrap();
+    let lines: Vec<Value> = std::fs::read_to_string(history_file)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let runs: Vec<&Value> = lines.iter().filter(|line| line["type"] == "run").collect();
+    assert_eq!(runs.len(), 2, "both attempts recorded: {lines:#?}");
+    let events: Vec<&Value> = lines
+        .iter()
+        .filter(|line| line["type"] == "event")
+        .collect();
+    // Persisted once, live — not again by the closing record.
+    assert_eq!(events.len(), 2, "{lines:#?}");
+    let ran = runs
+        .iter()
+        .find(|run| run["harness_id"] == "claude-code:reserve")
+        .unwrap_or_else(|| panic!("no record for the candidate that ran: {lines:#?}"));
+    assert!(
+        events
+            .iter()
+            .all(|event| event["run_id"] == ran["history_id"]),
+        "events belong to the run that closed them: {lines:#?}"
+    );
+    let _ = std::fs::remove_dir_all(&history);
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
+fn control_on_a_fallback_chain_prints_the_planned_commands() {
+    // `--control` with a chain is no longer a usage error, so a dry run of one
+    // now plans instead of refusing. It must stay a *dry* run: every candidate's
+    // command shown, nothing spawned, and no socket opened for a supervisor to
+    // find an address the run never serves.
+    let mock = mock_bin().display().to_string();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code:primary", "claude-code:reserve"]
+        run_mode = "fallback"
+        [harness.claude-code]
+        bin = '{mock}'
+        [harness.claude-code.variant.primary]
+        [harness.claude-code.variant.reserve]
+    "#
+    );
+    let fx = ConfigFixture::new("control-fallback-dry", &project, "");
+    let store = control_store_dir("dry");
+    let output = run_with_config(
+        &[
+            "run",
+            "--control",
+            "--session",
+            "chain",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    assert_eq!(report["dry_run"], true);
+    assert!(
+        report["control"].is_null(),
+        "no socket on a dry run: {report}"
+    );
+    let results = report["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2, "every candidate is planned: {report}");
+    // The anchor's command is the control delivery it would actually launch
+    // with (the prompt goes over the held-open stdin, so it is not on the argv);
+    // the candidate behind it is the ordinary inline form.
+    let anchor: Vec<&str> = results[0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg.as_str().unwrap())
+        .collect();
+    assert_eq!(results[0]["harness_id"], "claude-code:primary");
+    assert!(anchor.contains(&"--input-format"), "{anchor:?}");
+    assert!(!anchor.contains(&"hi"), "{anchor:?}");
+    let behind: Vec<&str> = results[1]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg.as_str().unwrap())
+        .collect();
+    assert_eq!(results[1]["harness_id"], "claude-code:reserve");
+    assert!(behind.contains(&"hi"), "{behind:?}");
+    assert!(!behind.contains(&"--input-format"), "{behind:?}");
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
+fn controlled_fallback_binds_control_to_a_later_anchor_the_session_moved_to() {
+    // The control channel binds to the session anchor, not to the head of the
+    // chain. Once a turn has fallen through to the reserve identity the handle
+    // continues there, so the NEXT controlled dispatch must drive that candidate
+    // over the control stream — and leave the head of the chain on the ordinary
+    // argv delivery it would get without `--control` at all.
+    let mock = mock_bin().display().to_string();
+    let rejection = include_str!("fixtures/claude-session-limit-api-error.json").trim();
+    let rejection = serde_json::to_string(rejection).unwrap();
+    let success = serde_json::to_string(
+        r#"{"type":"result","subtype":"success","result":"served","session_id":"reserve"}"#,
+    )
+    .unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code:primary", "claude-code:reserve"]
+        run_mode = "fallback"
+        [harness.claude-code]
+        bin = '{mock}'
+        [harness.claude-code.variant.primary]
+        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {rejection} }}
+        [harness.claude-code.variant.reserve]
+        env = {{ MOCK_STDOUT = {success} }}
+    "#
+    );
+    let fx = ConfigFixture::new("control-fallback-anchor", &project, "");
+    let store = control_store_dir("anchor");
+    let dispatch = || {
+        run_with_config(
+            &[
+                "run",
+                "--control",
+                "--session",
+                "chain",
+                "--session-dir",
+                &store.display().to_string(),
+                "--prompt",
+                "hi",
+                "--cwd",
+                &fx.cwd(),
+                "--compact",
+            ],
+            &[],
+            &fx.user_config(),
+        )
+    };
+    // First dispatch: the anchor is the head of the chain, which is out of
+    // quota, so the handle moves to the reserve identity that served the turn.
+    let first = dispatch();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first = json_stdout(&first);
+    assert_eq!(first["fallback"]["ran"], "claude-code:reserve");
+    assert_eq!(first["session"]["token"], "reserve");
+
+    // Second dispatch: same chain, and the head is still out of quota — but the
+    // control stream is now bound to the candidate the session moved to.
+    let second = dispatch();
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second = json_stdout(&second);
+    let results = second["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    let command = |result: &Value| -> Vec<String> {
+        result["command"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|arg| arg.as_str().unwrap().to_string())
+            .collect()
+    };
+    let head = command(&results[0]);
+    assert_eq!(results[0]["harness_id"], "claude-code:primary");
+    assert!(
+        head.contains(&"hi".to_string()) && !head.contains(&"--input-format".to_string()),
+        "the head of the chain is not the anchor, so it runs uncontrolled: {head:?}"
+    );
+    let anchor = command(&results[1]);
+    assert_eq!(results[1]["harness_id"], "claude-code:reserve");
+    assert!(
+        anchor.contains(&"--input-format".to_string()) && !anchor.contains(&"hi".to_string()),
+        "the anchor takes the control delivery: {anchor:?}"
+    );
+    // Bound, and reported as such: the anchor resumed its own session token and
+    // stderr never announced control being dropped.
+    assert!(anchor.contains(&"--resume".to_string()), "{anchor:?}");
+    assert_eq!(second["fallback"]["ran"], "claude-code:reserve");
+    assert!(second["control"]["socket"].is_string());
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_controlled_fallback_chain_streams_its_anchors_turn() {
+    // Control and `--stream` on the same chain is the combination the refusal
+    // used to make unreachable — a supervisor had to give up live visibility to
+    // keep the lever. Both now ride the one sequential driver: the anchor's turn
+    // goes out over the control stream while its events reach the consumer as
+    // they happen, and the terminal envelope still names the socket.
+    let mock = mock_bin().display().to_string();
+    let transcript = serde_json::to_string(&format!(
+        "{}\n{}\n{}\n",
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo hi"}}]}}"#,
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"hi"}]}}"#,
+        r#"{"type":"result","subtype":"success","result":"served","session_id":"primary"}"#,
+    ))
+    .unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code:primary", "claude-code:reserve"]
+        run_mode = "fallback"
+        [harness.claude-code]
+        bin = '{mock}'
+        [harness.claude-code.variant.primary]
+        env = {{ MOCK_STDOUT = {transcript} }}
+        [harness.claude-code.variant.reserve]
+    "#
+    );
+    let fx = ConfigFixture::new("control-fallback-stream", &project, "");
+    let store = control_store_dir("stream");
+    let output = run_with_config(
+        &[
+            "run",
+            "--control",
+            "--stream",
+            "--session",
+            "chain",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelopes = stream_envelopes(&output);
+    assert_eq!(envelopes.len(), 3, "{envelopes:#?}");
+    assert_eq!(envelopes[0]["event"]["kind"], "tool_call");
+    assert_eq!(envelopes[1]["event"]["kind"], "tool_result");
+    assert_eq!(envelopes[2]["type"], "result");
+
+    let report = &envelopes[2]["report"];
+    assert_eq!(report["fallback"]["ran"], "claude-code:primary");
+    let results = report["results"].as_array().unwrap();
+    assert_eq!(
+        results.len(),
+        1,
+        "the chain stopped at its anchor: {report}"
+    );
+    assert_eq!(results[0]["status"], "ok");
+    // The anchor ran under control (prompt on the held-open stdin, not the argv)
+    // and the supervisor's address is on the report it just read.
+    let command: Vec<&str> = results[0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg.as_str().unwrap())
+        .collect();
+    assert!(command.contains(&"--input-format"), "{command:?}");
+    assert!(!command.contains(&"hi"), "{command:?}");
+    assert!(report["control"]["socket"].is_string(), "{report}");
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn control_refuses_a_fallback_chain_whose_candidates_control_differently() {
+    // A chain accepts `--control` because it runs one live turn, not because the
+    // candidates are interchangeable. Any of them can end up holding the channel
+    // — the session's handle moves to whoever serves the turn — and the socket a
+    // supervisor already addresses cannot change mechanisms between dispatches.
+    // So mixed mechanisms are refused before anything spawns, naming both.
+    let output = run(
+        &[
+            "run",
+            "--control",
+            "--run-mode",
+            "fallback",
+            "--session",
+            "mixed",
+            "--harness",
+            "claude-code,codex",
+            "--prompt",
+            "hi",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("claude-code (claude-control-request)"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("codex (codex-app-server)"), "{stderr}");
+
+    // A candidate with no mechanism at all is the other half of the same rule:
+    // it could anchor the chain and then there would be no lever.
+    let none = run(
+        &[
+            "run",
+            "--control",
+            "--run-mode",
+            "fallback",
+            "--session",
+            "mixed",
+            "--harness",
+            "claude-code,qwen",
+            "--prompt",
+            "hi",
+        ],
+        &[],
+    );
+    assert_eq!(none.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&none.stderr);
+    assert!(
+        stderr.contains("harness `qwen` has no out-of-band turn control"),
+        "{stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_controlled_fallback_chain_drives_a_shared_mechanism_across_harnesses() {
+    // A chain does not have to be one harness's identities — it has to be one
+    // mechanism. Goose and Copilot both control through ACP, so a chain of the
+    // two is accepted, and the anchor's turn is driven over the JSON-RPC
+    // dialogue exactly as it is without the chain: the client answers
+    // `session/request_permission` (a real ACP harness never starts work
+    // otherwise) and a supervisor's interrupt reaches the live turn.
+    let mock_profile = mock_profile_redirect();
+    let store = control_store_dir("acp-chain");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("acp-chain-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let acp_log = store.join("acp.log");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_ACP_LOG", acp_log.display().to_string())
+        .args([
+            "run",
+            "--harness",
+            "goose,copilot",
+            "--run-mode",
+            "fallback",
+            "--control",
+            "--session",
+            "acpchain",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("goose"),
+            "--bin",
+            &bin_override("copilot"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the ACP controlled chain");
+
+    wait_until("the control socket", || {
+        store.join("control").join("acpchain.sock").exists()
+    });
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(&acp_log)
+            .map(|log| log.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "acpchain",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    assert_eq!(json_stdout(&interrupt)["mechanism"], "acp-cancel");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    // The anchor did the work, so the chain stopped there and the second
+    // mechanism-compatible candidate never spawned a server of its own.
+    assert_eq!(report["fallback"]["ran"], "goose");
+    assert_eq!(report["results"].as_array().unwrap().len(), 1);
+    assert_eq!(report["control"]["mechanism"], "acp-cancel");
+    assert_eq!(report["control"]["interrupts"].as_array().unwrap().len(), 1);
+    let log = std::fs::read_to_string(&acp_log).unwrap();
+    assert!(
+        log.lines().any(|line| line.contains("session/cancel")),
+        "the interrupt reached the anchor's dialogue: {log}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_controlled_fallback_chain_of_one_still_submits_its_turn_to_a_pooled_server() {
+    // The third mechanism family never spawns the harness CLI at all, so it must
+    // not be routed through the sequential CLI driver a chain otherwise takes:
+    // `--run-mode fallback` with one candidate is the same single turn it always
+    // was, leased from the pool and interrupted on the server.
+    let mock = mock_bin().display().to_string();
+    let project = format!(
+        r#"
+        harnesses = ["opencode"]
+        run_mode = "fallback"
+        [harness.opencode]
+        bin = '{mock}'
+    "#
+    );
+    let fx = ConfigFixture::new("control-fallback-http", &project, "");
+    let store = control_store_dir("http-chain");
+    let store_arg = store.display().to_string();
+    let log = store.join("server.log");
+    let pool = store.join("pool");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_CONFIG", fx.user_config())
+        .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
+        // A pool root inside the test's own temp tree, so it can never reuse or
+        // disturb a real server on the developer's machine.
+        .env("XDG_STATE_HOME", pool.display().to_string())
+        .args([
+            "run",
+            "--control",
+            "--session",
+            "httpchain",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &fx.cwd(),
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--model",
+            "anthropic/claude-haiku-4-5",
+            "--compact",
+            "--env",
+            &mock_profile_redirect(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the HTTP controlled chain");
+
+    wait_until("the control socket", || {
+        store.join("control").join("httpchain.sock").exists()
+    });
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(&log)
+            .map(|text| text.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "httpchain",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    assert_eq!(json_stdout(&interrupt)["mechanism"], "opencode-http");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    assert_eq!(report["results"].as_array().unwrap().len(), 1);
+    assert_eq!(report["control"]["mechanism"], "opencode-http");
+    assert_eq!(report["control"]["interrupts"][0]["outcome"], "served");
+    assert_eq!(report["results"][0]["session_id"], "ses_mock");
+    // The server was launched, not the harness's headless run — the difference
+    // the CLI driver would have silently erased.
+    let command = report["results"][0]["command"].as_array().unwrap();
+    assert_eq!(command[1], "serve", "{command:?}");
+    let served = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        served
+            .lines()
+            .any(|line| line.starts_with("POST /api/session/ses_mock/interrupt")),
+        "{served}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn control_refuses_a_server_backed_chain_of_more_than_one_candidate() {
+    // Falling through a server-submitted turn means leasing a SECOND server for
+    // the next candidate — a second live turn the one socket cannot address.
+    // Refused before anything spawns rather than fanned out over every
+    // candidate's server, or quietly run through a CLI driver that is not this
+    // mechanism at all.
+    let fx = ConfigFixture::new(
+        "control-http-chain-refused",
+        "[harness.opencode.variant.primary]\n[harness.opencode.variant.reserve]\n",
+        "",
+    );
+    let output = run_with_config(
+        &[
+            "run",
+            "--control",
+            "--run-mode",
+            "fallback",
+            "--session",
+            "pooled",
+            "--harness",
+            "opencode:primary,opencode:reserve",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("pooled server"), "{stderr}");
+    assert!(stderr.contains("opencode-http"), "{stderr}");
+}

@@ -304,9 +304,38 @@ pub enum OneharnessError {
     },
 
     #[error(
-        "--control drives one live turn, so it needs exactly one harness (selected: {selected})"
+        "--control needs exactly one harness in the parallel run mode (control drives one live turn), but these were selected: {selected}. Use --run-mode fallback to bind control to a priority chain"
     )]
     ControlSingleHarness { selected: String },
+
+    #[error(
+        "--control on a fallback chain needs one turn-control mechanism for the whole chain, because any candidate can end up holding the channel: {first} and {second} do not share one. Chain identities of the same harness, or drop --control"
+    )]
+    ControlMixedMechanisms {
+        // llmlint: ignore-block[invalid_states_unrepresentable] Both are rendered
+        // from the already-validated registry selection purely for the
+        // diagnostic, each pairing a harness id with the mechanism it declared.
+        // Scoped to both fields because the disagreement IS the finding — an
+        // ignore on `first` alone leaves the half that names the other side of
+        // it unsuppressed.
+        first: String,
+        second: String,
+        // llmlint: ignore-end[invalid_states_unrepresentable]
+    },
+
+    #[error(
+        "harness `{id}` submits its controlled turn to a pooled server (`{mechanism}`), so a fallback chain of more than one candidate would need a second server — and a second live turn — for the candidate it fell through to. Select one candidate, or drop --control"
+    )]
+    ControlServerChain {
+        // llmlint: ignore-block[invalid_states_unrepresentable] Both are rendered
+        // from the already-validated registry selection purely for the
+        // diagnostic: the harness that anchors the chain and the mechanism it
+        // declared. Scoped to both because naming the harness without the
+        // mechanism it is refused FOR is the half a reader cannot act on.
+        id: String,
+        mechanism: String,
+        // llmlint: ignore-end[invalid_states_unrepresentable]
+    },
 
     #[error("--control drives one live turn, so it cannot be combined with a batch run (more than one prompt)")]
     ControlBatch,

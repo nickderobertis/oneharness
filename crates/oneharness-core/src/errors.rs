@@ -323,6 +323,20 @@ pub enum OneharnessError {
         // llmlint: ignore-end[invalid_states_unrepresentable]
     },
 
+    #[error(
+        "harness `{id}` submits its controlled turn to a pooled server (`{mechanism}`), so a fallback chain of more than one candidate would need a second server — and a second live turn — for the candidate it fell through to. Select one candidate, or drop --control"
+    )]
+    ControlServerChain {
+        // llmlint: ignore-block[invalid_states_unrepresentable] Both are rendered
+        // from the already-validated registry selection purely for the
+        // diagnostic: the harness that anchors the chain and the mechanism it
+        // declared. Scoped to both because naming the harness without the
+        // mechanism it is refused FOR is the half a reader cannot act on.
+        id: String,
+        mechanism: String,
+        // llmlint: ignore-end[invalid_states_unrepresentable]
+    },
+
     #[error("--control drives one live turn, so it cannot be combined with a batch run (more than one prompt)")]
     ControlBatch,
 

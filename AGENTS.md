@@ -302,8 +302,11 @@ Use the `just` recipes; do not hand-roll equivalents.
   to whoever serves the turn and any of them can end up holding the socket.
   Control binds to the session anchor; an anchor that cannot run leaves the rest
   of the chain running WITHOUT control and says so on stderr, rather than
-  re-binding a live channel to another harness's mechanism. Every violation is a
-  loud usage error. For every control-capable harness and every
+  re-binding a live channel to another harness's mechanism. A server-submitted
+  mechanism never spawns the harness CLI, so it keeps its own execution path
+  instead of the chain's sequential CLI driver, and a chain longer than one
+  candidate is refused: falling through would lease a SECOND server. Every
+  violation is a loud usage error. For every control-capable harness and every
   `PermissionMode` that harness supports, a controlled run must be under exactly
   the policy the same mode gives without `--control` (the codex
   `bypass`→`workspaceWrite` bug was one cell of that grid). The way to keep it

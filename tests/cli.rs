@@ -24607,3 +24607,142 @@ fn a_controlled_fallback_chain_drives_a_shared_mechanism_across_harnesses() {
     let _ = std::fs::remove_dir_all(&store);
     let _ = std::fs::remove_dir_all(&cwd);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_controlled_fallback_chain_of_one_still_submits_its_turn_to_a_pooled_server() {
+    // The third mechanism family never spawns the harness CLI at all, so it must
+    // not be routed through the sequential CLI driver a chain otherwise takes:
+    // `--run-mode fallback` with one candidate is the same single turn it always
+    // was, leased from the pool and interrupted on the server.
+    let mock = mock_bin().display().to_string();
+    let project = format!(
+        r#"
+        harnesses = ["opencode"]
+        run_mode = "fallback"
+        [harness.opencode]
+        bin = '{mock}'
+    "#
+    );
+    let fx = ConfigFixture::new("control-fallback-http", &project, "");
+    let store = control_store_dir("http-chain");
+    let store_arg = store.display().to_string();
+    let log = store.join("server.log");
+    let pool = store.join("pool");
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_CONFIG", fx.user_config())
+        .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
+        // A pool root inside the test's own temp tree, so it can never reuse or
+        // disturb a real server on the developer's machine.
+        .env("XDG_STATE_HOME", pool.display().to_string())
+        .args([
+            "run",
+            "--control",
+            "--session",
+            "httpchain",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &fx.cwd(),
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--model",
+            "anthropic/claude-haiku-4-5",
+            "--compact",
+            "--env",
+            &mock_profile_redirect(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the HTTP controlled chain");
+
+    wait_until("the control socket", || {
+        store.join("control").join("httpchain.sock").exists()
+    });
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(&log)
+            .map(|text| text.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "httpchain",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    assert_eq!(json_stdout(&interrupt)["mechanism"], "opencode-http");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    assert_eq!(report["results"].as_array().unwrap().len(), 1);
+    assert_eq!(report["control"]["mechanism"], "opencode-http");
+    assert_eq!(report["control"]["interrupts"][0]["outcome"], "served");
+    assert_eq!(report["results"][0]["session_id"], "ses_mock");
+    // The server was launched, not the harness's headless run — the difference
+    // the CLI driver would have silently erased.
+    let command = report["results"][0]["command"].as_array().unwrap();
+    assert_eq!(command[1], "serve", "{command:?}");
+    let served = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        served
+            .lines()
+            .any(|line| line.starts_with("POST /api/session/ses_mock/interrupt")),
+        "{served}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn control_refuses_a_server_backed_chain_of_more_than_one_candidate() {
+    // Falling through a server-submitted turn means leasing a SECOND server for
+    // the next candidate — a second live turn the one socket cannot address.
+    // Refused before anything spawns rather than fanned out over every
+    // candidate's server, or quietly run through a CLI driver that is not this
+    // mechanism at all.
+    let fx = ConfigFixture::new(
+        "control-http-chain-refused",
+        "[harness.opencode.variant.primary]\n[harness.opencode.variant.reserve]\n",
+        "",
+    );
+    let output = run_with_config(
+        &[
+            "run",
+            "--control",
+            "--run-mode",
+            "fallback",
+            "--session",
+            "pooled",
+            "--harness",
+            "opencode:primary,opencode:reserve",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("pooled server"), "{stderr}");
+    assert!(stderr.contains("opencode-http"), "{stderr}");
+}

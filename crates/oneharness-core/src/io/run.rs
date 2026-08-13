@@ -1107,7 +1107,15 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
             handle: listener.handle_ref(),
             prompt: prompt.to_string(),
         });
-    let controlled_fallback = fallback_mode && controlled.is_some() && !args.print_command;
+    // A server-submitted mechanism is deliberately NOT here: its turn never
+    // spawns the harness CLI, so the sequential CLI driver below would run the
+    // wrong thing entirely. It keeps taking the HTTP branch, which is why a
+    // *chain* of one is still exactly the run it was before control learned
+    // about chains — and why a longer one is refused up front (validate_control).
+    let controlled_fallback = fallback_mode
+        && controlled.is_some()
+        && !args.print_command
+        && control_shape.and_then(HttpShape::of).is_none();
     let (mut results, mut fallback_report): (Vec<RunResult>, Option<FallbackReport>) = if stream_run
         || controlled_fallback
     {
@@ -2447,6 +2455,19 @@ fn validate_control(
         }
     }
     let (spec, shape) = mechanism.expect("a selection always has at least one harness");
+    // A server-submitted turn never spawns the harness CLI, and falling through
+    // it means leasing a *second* server for the next candidate — a second live
+    // turn the one socket cannot address. Nothing about that is decided yet, so
+    // a chain longer than one candidate is refused here rather than fanned out
+    // over every candidate's server (which is what the HTTP path would do) or
+    // quietly run through the CLI driver (which is not this mechanism at all).
+    // A chain of ONE is untouched: it is the same single turn it always was.
+    if specs.len() != 1 && shape.needs_pooled_server() {
+        return Err(OneharnessError::ControlServerChain {
+            id: spec.id.to_string(),
+            mechanism: shape.as_str().to_string(),
+        });
+    }
     // Almost no mode is refused here. Where the mode's policy travels on the
     // controlled launch itself — copilot's permission flags beside `--acp`,
     // Claude Code's ordinary `-p` argv — a controlled run is under exactly the

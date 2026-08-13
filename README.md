@@ -1207,7 +1207,11 @@ silently is not there is worse than none:
   candidate can end up holding the socket. Control binds to the session anchor;
   if that candidate cannot run, the chain deliberately continues *without*
   control and says so on stderr rather than re-binding a live channel to another
-  harness's mechanism.
+  harness's mechanism. A **server-submitted** mechanism (`opencode-http`,
+  `crush-http`) is the exception: falling through one of those turns would lease
+  a second server — a second live turn the one socket cannot address — so a chain
+  of more than one candidate is refused. A chain of one is the same single turn
+  it always was.
 - **Unix only** (the socket has no Windows equivalent in `std`). Checked last, so
   a request that is *also* wrong in a platform-independent way — an unsupported
   harness, mode, or output format — is refused with that reason instead, which is

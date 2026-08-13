@@ -2017,7 +2017,8 @@ allow-rules are synced so the prompt never fires.
 | `bypass`   | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 ✓ supported & clean headless · ⚠ supported but may block on a prompt headlessly
-(warns + runs; `--timeout` backstops, `--permit-prompts` silences the warning) ·
+(warns + runs; an omitted timeout gets the 120-second approval-wait safety
+deadline, while `--timeout 0` opts out and `--permit-prompts` silences the warning) ·
 — unsupported (refused). `read-only` is **enforced** where marked — ˢ Codex's
 read-only sandbox (OS-enforced), ᵈ tool rules (Claude's `--tools Read Grep Glob
 WebFetch WebSearch`, which narrows the built-in set to the tools that only read;

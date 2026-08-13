@@ -24102,3 +24102,100 @@ fn controlled_fallback_states_when_later_candidate_loses_control() {
     );
     let _ = std::fs::remove_dir_all(&store);
 }
+
+#[cfg(unix)]
+#[test]
+fn controlled_fallback_records_its_streamed_history_under_the_live_run() {
+    // A controlled fallback chain runs on the streamed driver even without
+    // `--stream` (control needs the sequential one), so each candidate's events
+    // are persisted live under a run id minted before the turn starts. The
+    // closing record must then be written under *that* id, with those events
+    // withheld — a fresh id would orphan every event a watcher already read and
+    // write the whole transcript into history a second time.
+    let mock = mock_bin().display().to_string();
+    let rejection = include_str!("fixtures/claude-session-limit-api-error.json").trim();
+    let rejection = serde_json::to_string(rejection).unwrap();
+    let transcript = serde_json::to_string(&format!(
+        "{}\n{}\n{}\n",
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo hi"}}]}}"#,
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"hi"}]}}"#,
+        r#"{"type":"result","subtype":"success","result":"served","session_id":"reserve"}"#,
+    ))
+    .unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code:primary", "claude-code:reserve"]
+        run_mode = "fallback"
+        [harness.claude-code]
+        bin = '{mock}'
+        [harness.claude-code.variant.primary]
+        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {rejection} }}
+        [harness.claude-code.variant.reserve]
+        env = {{ MOCK_STDOUT = {transcript} }}
+    "#
+    );
+    let fx = ConfigFixture::new("control-fallback-history", &project, "");
+    let store = control_store_dir("hist");
+    let history = hist_dir("control-fallback-history");
+    let output = run_with_config(
+        &[
+            "run",
+            "--control",
+            "--session",
+            "chain",
+            "--session-dir",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--history",
+            "--history-dir",
+            &history.display().to_string(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // No `--stream`, so stdout is exactly one buffered report: the events this
+    // driver publishes live belong to history and the report, not to a protocol
+    // this consumer never asked for (`json_stdout` refuses trailing lines).
+    let report = json_stdout(&output);
+    assert_eq!(report["fallback"]["ran"], "claude-code:reserve");
+    let results = report["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[1]["events"].as_array().unwrap().len(), 2);
+
+    let history_file = report["history_file"].as_str().unwrap();
+    let lines: Vec<Value> = std::fs::read_to_string(history_file)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let runs: Vec<&Value> = lines.iter().filter(|line| line["type"] == "run").collect();
+    assert_eq!(runs.len(), 2, "both attempts recorded: {lines:#?}");
+    let events: Vec<&Value> = lines
+        .iter()
+        .filter(|line| line["type"] == "event")
+        .collect();
+    // Persisted once, live — not again by the closing record.
+    assert_eq!(events.len(), 2, "{lines:#?}");
+    let ran = runs
+        .iter()
+        .find(|run| run["harness_id"] == "claude-code:reserve")
+        .unwrap_or_else(|| panic!("no record for the candidate that ran: {lines:#?}"));
+    assert!(
+        events
+            .iter()
+            .all(|event| event["run_id"] == ran["history_id"]),
+        "events belong to the run that closed them: {lines:#?}"
+    );
+    let _ = std::fs::remove_dir_all(&history);
+    let _ = std::fs::remove_dir_all(&store);
+}

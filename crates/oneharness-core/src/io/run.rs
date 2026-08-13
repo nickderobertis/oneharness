@@ -1043,6 +1043,14 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
     // Schedule and run the jobs. `--print-command` never executes, so it always
     // takes the last branch, which emits the planned rows.
     let stream_run = stream && !args.print_command;
+    // Events are published only to a consumer that asked for the stream protocol.
+    // A controlled fallback chain takes the same sequential driver *without*
+    // `--stream` (control needs it), and there the caller is reading one buffered
+    // report — an event line on that stdout belongs to no protocol it agreed to,
+    // and `RunOutcome::streamed` would not even close it with a terminal envelope.
+    if !stream_run {
+        event_sink = None;
+    }
     let mut forked = false;
     // Empty off the streaming path, where history is written once at the end.
     let mut streamed_history: Vec<StreamedHistory> = Vec::new();

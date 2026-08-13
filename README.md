@@ -1201,17 +1201,28 @@ silently is not there is worse than none:
 - **Exactly one live turn.** In the default `parallel` run mode that means
   exactly one harness, which must declare a control mechanism (`control` in
   `oneharness list`). A `--run-mode fallback` chain starts its candidates one at
-  a time, so it is already one turn and is accepted whatever its length — but
-  every candidate must declare a mechanism and they must all declare the *same*
-  one, because the chain's handle moves to whoever serves the turn and any
-  candidate can end up holding the socket. Control binds to the session anchor;
-  if that candidate cannot run, the chain deliberately continues *without*
-  control and says so on stderr rather than re-binding a live channel to another
-  harness's mechanism. A **server-submitted** mechanism (`opencode-http`,
-  `crush-http`) is the exception: falling through one of those turns would lease
-  a second server — a second live turn the one socket cannot address — so a chain
-  of more than one candidate is refused. A chain of one is the same single turn
-  it always was.
+  a time — it reaches candidate N+1 only because candidate N has finished — so it
+  is already one turn and is accepted whatever its length, **whatever mechanisms
+  its candidates use**. Every candidate must declare one, because any of them can
+  end up serving and a supervisor told the lever exists must never find the
+  candidate serving them has none; they do *not* have to declare the same one.
+  The mechanism is **late-bound**: the socket address is the run's for its whole
+  lifetime, and what sits behind it is whichever candidate is serving — bound as
+  that candidate takes the turn, released when the turn ends, and re-bound by the
+  next one if the chain falls through. So a chain may mix `claude-code`'s stdin
+  frame, `codex`'s app-server and a **server-submitted** mechanism
+  (`opencode-http`, `crush-http`) freely; falling through a pooled-server turn
+  releases its lease before the next candidate leases anything, so there is never
+  a second live turn.
+
+  An interrupt is therefore answered by whatever is bound when it arrives, and
+  the answer names *that* mechanism. In the window where nothing is bound —
+  before the first candidate opens a turn, across a fall-through, after the last
+  one ends — it is `no_active_turn`. That is deliberate: queuing the abort for
+  whichever candidate binds next would land a supervisor's stop on a turn they
+  never saw start, and reaching back to the candidate that just finished would
+  write at a mechanism nobody is on. The run's `control.mechanism` reports the
+  one that served (before any turn opens, the one the chain starts on).
 - **Unix only** (the socket has no Windows equivalent in `std`). Checked last, so
   a request that is *also* wrong in a platform-independent way — an unsupported
   harness, mode, or output format — is refused with that reason instead, which is
@@ -1228,7 +1239,10 @@ silently is not there is worse than none:
   `crush-http`): those turns never spawn the harness CLI, so there is no stdout
   to publish line by line — and accepting the flag would silently select the
   ordinary run, whose interrupt does not reach the turn. The report still
-  carries the whole event transcript as the result's `stdout`.
+  carries the whole event transcript as the result's `stdout`. On a chain this
+  is refused if *any* candidate declares one: `--stream` is a promise about the
+  run's stdout made before a candidate is chosen, and discovering mid-chain that
+  the serving one cannot keep it is the silent downgrade the flag prevents.
 
 The socket is created mode `0600` under a `0700` directory and removed when the
 run exits. A dispatch killed with `SIGKILL` cannot run its cleanup, so a stale

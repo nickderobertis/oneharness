@@ -608,8 +608,16 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
     // selects the anchor harness's preferred session-bearing format.
     // A mechanism that drives the turn over its own protocol captures the
     // session id on the wire, so the harness's stdout format has no bearing on
-    // it — checking one here would refuse a perfectly good pairing.
-    if !control_shape.is_some_and(ControlShape::drives_turn) {
+    // it — checking one here would refuse a perfectly good pairing. Read off the
+    // ANCHOR's own mechanism rather than the chain's first: this is a question
+    // about the identity the session is bound to, and in a chain whose
+    // candidates control differently those are not the same harness.
+    let anchor_control = control_shape.and_then(|_| {
+        let anchor = session_anchor.as_ref()?;
+        let index = selected_ids.iter().position(|id| id == anchor.as_str())?;
+        specs[index].control
+    });
+    if !anchor_control.is_some_and(ControlShape::drives_turn) {
         validate_session_output_format(session_wiring.as_ref(), explicit_format)?;
     }
     validate_stream(stream, &specs, batch_run, schema.is_some(), fallback_mode)?;
@@ -772,15 +780,29 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
     let mut plan: Vec<Plan> = Vec::with_capacity(units.len());
     let mut jobs: Vec<Job> = Vec::new();
     let mut job_plans: Vec<HarnessPlan> = Vec::new();
-    // The assembled prompt a control-enabled run delivers as its first stdin
-    // frame (the adapter left the positional off). One harness, one prompt.
-    let mut control_prompt: Option<String> = None;
+    // The assembled prompt each control-enabled candidate delivers as its first
+    // stdin frame (the adapter left the positional off), by plan-entry index.
+    //
+    // Per candidate rather than one for the run: a chain binds the mechanism of
+    // whoever serves, and the prompt is that candidate's own — a mode's
+    // `instruction` is prepended per harness, so two candidates can assemble
+    // different text from the same `--prompt`. `None` for an entry that never
+    // built one (a skipped candidate, or any entry at all when control is off).
+    let mut control_prompts: Vec<Option<String>> = Vec::with_capacity(units.len());
     // Temp files backing off-argv system prompts, cleaned up on drop (covers every
     // return path below). Never populated under --print-command (nothing spawns).
     let mut temp_files = TempPromptFiles::default();
 
     for (spec, selected_id, unit_model, unit_prompt) in &units {
         let spec = *spec;
+        // THIS candidate's control mechanism, not the run's: every one of them
+        // can serve the turn, so each is planned for the delivery and output
+        // format its own mechanism needs. `validate_control` already refused a
+        // controlled selection holding a candidate that declares none.
+        let unit_control = control_shape.and(spec.control);
+        // The prompt this candidate would open its turn with, kept only when it
+        // is planned for the control delivery (so it never appears on the argv).
+        let mut unit_control_prompt: Option<String> = None;
         // On a batch run each result records the prompt it ran (they differ);
         // on an ordinary run the single top-level `prompt` covers them all.
         let result_prompt = batch_run.then(|| unit_prompt.to_string());
@@ -794,7 +816,7 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
         // expose a provider/tool boundary trace select its required format;
         // others still write history with the timing fields absent.
         let telemetry_spec = history_writer.is_some().then_some(spec.telemetry).flatten();
-        let chosen_format = control_shape
+        let chosen_format = unit_control
             .and_then(ControlShape::required_format)
             .unwrap_or_else(|| {
                 explicit_format.unwrap_or_else(|| {
@@ -903,10 +925,12 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
             base_prompt: unit_prompt.to_string(),
             extra,
             system_file: None,
-            delivery: if control_shape.is_some()
-                && session_anchor.as_ref().map(HarnessIdentity::as_str)
-                    == Some(selected_id.as_str())
-            {
+            // Every candidate of a controlled run, not just the session anchor:
+            // the one that ends up serving opens its turn over the control
+            // channel, and which one that is, is decided while the chain runs.
+            // A candidate planned for the argv delivery it would get without
+            // `--control` could not be interrupted at all if it served.
+            delivery: if unit_control.is_some() {
                 PromptDelivery::ControlStream
             } else {
                 PromptDelivery::Argv
@@ -922,7 +946,7 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
             // never its CLI, so that is the command a dry run must show — with
             // the address left as its placeholder, because the pool picks one
             // only when it actually starts a server.
-            let planned_command = control_shape
+            let planned_command = unit_control
                 .and_then(HttpShape::of)
                 .and(spec.server)
                 .map(|server| {
@@ -975,11 +999,8 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
             // same delivery) and may write a temp file for the system prompt.
             plan_large_input(&mut harness_plan, spec, system, job_index, &mut temp_files)?;
             let built = harness_plan.build(schema.as_ref(), None);
-            if control_shape.is_some()
-                && session_anchor.as_ref().map(HarnessIdentity::as_str)
-                    == Some(selected_id.as_str())
-            {
-                control_prompt = Some(built.prompt.clone());
+            if unit_control.is_some() {
+                unit_control_prompt = Some(built.prompt.clone());
             }
             // Env layers, applied in order (the runner is last-write-wins):
             // the harness's declared defaults, then any env that delivers the
@@ -1016,7 +1037,11 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
             });
             job_plans.push(harness_plan);
         }
+        // One entry per plan entry, whichever branch produced it, so the driver
+        // can index a candidate's prompt by the position it runs in.
+        control_prompts.push(unit_control_prompt);
     }
+    debug_assert_eq!(control_prompts.len(), plan.len());
 
     // Own SIGINT/SIGTERM for the spawn phase only. A harness is its own
     // process-group leader, so a signal that killed oneharness outright would
@@ -1056,37 +1081,18 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
     // without `--stream` too), where history is written once at the end.
     let mut streamed_history: Vec<StreamedHistory> = Vec::new();
     // Open the control socket before anything spawns, so a supervisor that races
-    // the dispatch finds an address rather than a gap — but after the plan loop,
-    // because a server-backed mechanism needs the assembled prompt to open its
-    // protocol conversation. `--print-command` executes nothing, so it opens
-    // nothing.
+    // the dispatch finds an address rather than a gap. The ADDRESS is all that is
+    // opened here: which mechanism sits behind it is the serving candidate's, and
+    // a chain has not chosen one yet — so the socket is bound unbound, and an
+    // interrupt racing the first spawn is an honest `no_active_turn`.
+    // `--print-command` executes nothing, so it opens nothing.
     let control_listener = match control_shape.filter(|_| !args.print_command) {
-        Some(shape) => {
+        Some(starts_on) => {
             let wiring = session_wiring
                 .as_ref()
                 .expect("validate_control refuses --control without --session");
             let path = control::socket_path(&wiring.dir, &wiring.name);
-            let cwd = control_cwd(args)?;
-            let dialogue = control_prompt.as_deref().and_then(|prompt| {
-                Dialogue::new(
-                    shape,
-                    DialogueConfig {
-                        prompt: prompt.to_string(),
-                        cwd: cwd.clone(),
-                        model: model.map(str::to_string),
-                        mode,
-                        // The harness's own posture for this mode, not the
-                        // spectrum's: goose and copilot share one ACP shape and
-                        // do not share a mapping, and a driven turn must answer
-                        // with what the same mode gives without `--control`.
-                        posture: specs
-                            .first()
-                            .and_then(|spec| spec.mode(mode))
-                            .map_or(ApprovalPosture::of(mode), |declared| declared.posture),
-                    },
-                )
-            });
-            Some(control_io::bind(&path, shape, dialogue).map_err(|source| {
+            Some(control_io::bind(&path, starts_on).map_err(|source| {
                 OneharnessError::ControlSocket {
                     path: path.display().to_string(),
                     source,
@@ -1095,27 +1101,24 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
         }
         None => None,
     };
-    // A control-enabled run holds the child's stdin open for the whole turn, so
-    // the socket's listener thread can push an interrupt into the live process.
-    // It is single-prompt by construction (validate_control), and drives exactly
-    // one job: the session anchor's. A fallback chain may plan several, but only
-    // one candidate is ever live and only that one was built for this delivery.
-    let controlled = control_listener
-        .as_ref()
-        .zip(control_prompt.as_deref())
-        .map(|(listener, prompt)| runner::ControlledInput {
+    // Everything the sequential driver needs to bind a candidate's mechanism as
+    // it takes the turn. The per-turn values (cwd, mode, model) are the run's;
+    // the prompt and the mechanism are the candidate's.
+    let controlled = match control_listener.as_ref() {
+        Some(listener) => Some(ControlledChain {
             handle: listener.handle_ref(),
-            prompt: prompt.to_string(),
-        });
-    // A server-submitted mechanism is deliberately NOT here: its turn never
-    // spawns the harness CLI, so the sequential CLI driver below would run the
-    // wrong thing entirely. It keeps taking the HTTP branch, which is why a
-    // *chain* of one is still exactly the run it was before control learned
-    // about chains — and why a longer one is refused up front (validate_control).
-    let controlled_fallback = fallback_mode
-        && controlled.is_some()
-        && !args.print_command
-        && control_shape.and_then(HttpShape::of).is_none();
+            prompts: &control_prompts,
+            cwd: control_cwd(args)?,
+            mode,
+            model: model.map(str::to_string),
+        }),
+        None => None,
+    };
+    // A server-submitted mechanism takes this driver too. It never spawns the
+    // harness CLI, so the driver submits its turn to the pooled server instead of
+    // running the job — which is what lets a chain hold both kinds. Outside a
+    // chain the single-turn HTTP branch below is unchanged.
+    let controlled_fallback = fallback_mode && controlled.is_some() && !args.print_command;
     let (mut results, mut fallback_report): (Vec<RunResult>, Option<FallbackReport>) = if stream_run
         || controlled_fallback
     {
@@ -1131,33 +1134,18 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
             history_writer.as_ref(),
             &unit_ids,
             controlled.as_ref(),
-            session_anchor.as_ref(),
             &mut event_sink,
             &cancel,
         );
         streamed_history = streamed.history;
-        let mut streamed_results = streamed.results;
-        // A driven turn's signals come off the dialogue in the streaming path
-        // exactly as they do in the buffered one — the stream published events
-        // as they happened, but the session id and answer are only knowable
-        // from the protocol frames, and without this the terminal envelope
-        // carries the raw JSON-RPC transcript as `text` and no session token to
-        // continue with. Applied before the report is built, so nothing already
-        // published has to be retracted.
-        if let Some(input) = controlled.as_ref() {
-            for result in streamed_results.iter_mut().filter(|result| {
-                session_anchor.as_ref().map(HarnessIdentity::as_str)
-                    == Some(result.harness_id.as_str())
-            }) {
-                apply_dialogue_signals(result, input.handle);
-            }
-        }
-        (streamed_results, streamed.fallback)
-    } else if let Some(((shape, listener), prompt)) = control_shape
+        // A driven turn's signals are applied per candidate, inside the driver:
+        // they come off that candidate's own protocol conversation, and the next
+        // candidate's binding replaces it.
+        (streamed.results, streamed.fallback)
+    } else if let Some((shape, listener)) = control_shape
         .and_then(HttpShape::of)
         .filter(|_| !args.print_command)
         .zip(control_listener.as_ref())
-        .zip(control_prompt.as_deref())
     {
         // The third execution model: the harness CLI is never spawned at all.
         // Its interrupt only reaches a turn the SERVER is running (driving one
@@ -1165,26 +1153,46 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
         // submits the turn over HTTP and the socket's interrupt is one more
         // request against that same session.
         //
-        // The prompt is part of the pattern, not an `expect`: a harness whose
-        // binary is missing never reaches the branch that assembles one, and its
-        // plan holds a `skipped` row already. Falling through publishes that row
-        // — an absent CLI is data in the report, never a panic.
+        // Parallel selection is exactly one harness under `--control`, so this
+        // is that one candidate's turn: `run_http_controlled` binds the channel
+        // to its mechanism for the turn's lifetime, exactly as a chain does.
+        //
+        // The empty prompt is part of the pattern, not an `expect`: a harness
+        // whose binary is missing never reaches the branch that assembles one,
+        // and its plan holds a `skipped` row already. Falling through publishes
+        // that row — an absent CLI is data in the report, never a panic.
         let results = run_http_controlled(
             shape,
             listener.handle_ref(),
             plan,
-            prompt,
+            &control_prompts
+                .first()
+                .cloned()
+                .flatten()
+                .unwrap_or_default(),
             &control_cwd(args)?,
             mode,
             effective_timeout(requested_timeout, timeout_policy(specs[0], mode))?,
         );
         (results, None)
-    } else if let Some(input) = controlled.as_ref().filter(|_| !jobs.is_empty()) {
+    } else if let Some(chain) = controlled.as_ref().filter(|_| !jobs.is_empty()) {
         // One turn, one capture: `--schema` (the only thing that re-runs a job)
-        // is refused alongside `--control` up front.
+        // is refused alongside `--control` up front. Parallel selection is one
+        // harness under `--control`, so the single candidate binds the channel
+        // once for the run's one turn — the same binding a chain does per
+        // candidate, on a chain of one.
+        let shape = specs[0]
+            .control
+            .expect("validate_control refuses a controlled harness with no mechanism");
+        let prompt = chain.prompt(0);
+        chain.bind(shape, specs[0], &prompt);
+        let input = runner::ControlledInput {
+            handle: chain.handle,
+            prompt,
+        };
         let capture = runner::run_job_streaming_controlled_cancellable(
             &jobs[0],
-            Some(input),
+            Some(&input),
             &cancel,
             |_| runner::StreamStep::Continue,
         );
@@ -1211,11 +1219,15 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
                         prompt,
                         model,
                     );
-                    apply_dialogue_signals(&mut result, input.handle);
+                    // Read off the conversation before the mechanism is
+                    // released: a driven turn's session id and answer are
+                    // knowable only from its protocol frames.
+                    apply_dialogue_signals(&mut result, chain.handle);
                     result
                 }
             })
             .collect();
+        chain.handle.release();
         (results, None)
     } else if fallback_mode && !args.print_command {
         // Sequential fallback: run the priority chain until one harness runs.
@@ -2146,6 +2158,62 @@ fn record_streamed_history(
     }
 }
 
+/// Everything a controlled run's driver needs to bind the mechanism of the
+/// candidate that is about to serve.
+///
+/// This is the late binding, in data. A fallback chain reaches candidate N+1
+/// only because candidate N has finished, so exactly one candidate is ever
+/// serving — but *which* one is decided while the chain runs, not before it. So
+/// the driver carries the run-wide per-turn settings (working directory, mode,
+/// model) plus every candidate's own assembled prompt, and takes the rest —
+/// mechanism, protocol conversation, approval posture — from the candidate
+/// itself at the moment it takes the turn.
+struct ControlledChain<'a> {
+    /// The shared handle behind the run's socket address. The address is the
+    /// run's for its whole lifetime; what sits behind it changes per candidate.
+    handle: &'a control_io::ControlHandle,
+    /// One entry per plan entry: the prompt that candidate opens its turn with,
+    /// or `None` for an entry that never assembled one (a skipped candidate).
+    prompts: &'a [Option<String>],
+    cwd: control::AbsolutePath,
+    mode: PermissionMode,
+    model: Option<String>,
+}
+
+impl ControlledChain<'_> {
+    /// Bind the channel to `spec`'s mechanism for the turn it is about to
+    /// serve, building the protocol conversation the shape needs.
+    fn bind(&self, shape: ControlShape, spec: &'static HarnessSpec, prompt: &str) {
+        let dialogue = Dialogue::new(
+            shape,
+            DialogueConfig {
+                prompt: prompt.to_string(),
+                cwd: self.cwd.clone(),
+                model: self.model.clone(),
+                mode: self.mode,
+                // The harness's own posture for this mode, not the spectrum's:
+                // goose and copilot share one ACP shape and do not share a
+                // mapping, and a driven turn must answer with what the same mode
+                // gives without `--control`. Read off the candidate that is
+                // SERVING, so a chain holding both answers as whichever is live.
+                posture: spec
+                    .mode(self.mode)
+                    .map_or(ApprovalPosture::of(self.mode), |declared| declared.posture),
+            },
+        );
+        self.handle.bind(shape, dialogue);
+    }
+
+    /// The prompt plan entry `index` opens its turn with.
+    fn prompt(&self, index: usize) -> String {
+        self.prompts
+            .get(index)
+            .cloned()
+            .flatten()
+            .unwrap_or_default()
+    }
+}
+
 /// What [`drive_plan_sequentially`] produced; `fallback` is `Some` only in fallback mode.
 struct StreamedPlan {
     results: Vec<RunResult>,
@@ -2177,8 +2245,7 @@ fn drive_plan_sequentially(
     multi_model: bool,
     history_writer: Option<&HistoryWriter>,
     unit_ids: &[&str],
-    controlled: Option<&runner::ControlledInput>,
-    control_anchor: Option<&HarnessIdentity>,
+    controlled: Option<&ControlledChain<'_>>,
     sink: &mut Option<&mut dyn EventSink>,
     cancel: &CancelToken,
 ) -> StreamedPlan {
@@ -2202,8 +2269,8 @@ fn drive_plan_sequentially(
                 job_index,
                 prompt,
                 model,
-            } => stream_one_harness(
-                StreamedUnit {
+            } => {
+                let unit = StreamedUnit {
                     job: &jobs[job_index],
                     spec,
                     bin: &bin,
@@ -2211,14 +2278,25 @@ fn drive_plan_sequentially(
                     prompt,
                     model,
                     harness_id: unit_ids[index],
-                },
-                history_writer.zip(run_id),
-                controlled.filter(|_| {
-                    control_anchor.is_some_and(|anchor| anchor.as_str() == unit_ids[index])
-                }),
-                sink,
-                cancel,
-            ),
+                };
+                match controlled {
+                    // Every candidate, not just one chosen up front: the channel
+                    // binds to whichever is serving and releases when its turn
+                    // ends, so a chain that falls through carries control with
+                    // it instead of leaving the rest of the run unaddressable.
+                    Some(chain) => drive_controlled_candidate(
+                        unit,
+                        chain,
+                        index,
+                        history_writer.zip(run_id),
+                        sink,
+                        cancel,
+                    ),
+                    None => {
+                        stream_one_harness(unit, history_writer.zip(run_id), None, sink, cancel)
+                    }
+                }
+            }
         };
         let StreamedHarness {
             result,
@@ -2233,20 +2311,78 @@ fn drive_plan_sequentially(
         if !fallback_mode || !keep_going {
             break;
         }
-        if controlled.is_some()
-            && control_anchor.is_some_and(|anchor| anchor.as_str() == unit_ids[index])
-        {
-            eprintln!(
-                "oneharness: warning: controlled fallback candidate `{}` could not run; later candidates continue without control because a live control channel cannot change harness mechanisms",
-                unit_ids[index]
-            );
-        }
     }
     StreamedPlan {
         results,
         fallback: fallback_mode.then_some(FallbackReport { ran, fell_through }),
         history,
     }
+}
+
+/// Run one candidate of a controlled run with the channel bound to **its**
+/// mechanism, and release it the moment that candidate's turn ends.
+///
+/// This is where a chain stops reasoning over the candidate set and starts
+/// reasoning over the candidate that is serving. The mechanism is read off
+/// `unit.spec`, not off the selection, so a chain whose candidates control
+/// differently serves each one over its own — one at a time, which is the only
+/// way a chain ever runs them. Between two candidates nothing is bound at all,
+/// so an interrupt that arrives across a fall-through is `no_active_turn` rather
+/// than a frame written at a mechanism nobody is on.
+fn drive_controlled_candidate(
+    unit: StreamedUnit<'_>,
+    chain: &ControlledChain<'_>,
+    index: usize,
+    history: Option<(&HistoryWriter, crate::domain::history::HistoryId)>,
+    sink: &mut Option<&mut dyn EventSink>,
+    cancel: &CancelToken,
+) -> StreamedHarness {
+    let spec = unit.spec;
+    let shape = spec
+        .control
+        .expect("validate_control refuses a controlled candidate with no mechanism");
+    let prompt = chain.prompt(index);
+    // A server-submitted candidate never spawns the harness CLI at all, so it
+    // takes its own execution model here rather than the job the plan built for
+    // it. Nothing about that is shared with the candidate beside it in the
+    // chain — which is exactly why the mechanism is bound per candidate.
+    if let Some(http) = HttpShape::of(shape) {
+        return StreamedHarness {
+            result: http_controlled_result(
+                http,
+                chain.handle,
+                HttpCandidate {
+                    spec,
+                    bin: unit.bin.to_string(),
+                    output_format: unit.output_format,
+                    result_prompt: unit.prompt,
+                    model: unit.model,
+                    timeout: unit.job.timeout,
+                },
+                &prompt,
+                &chain.cwd,
+                chain.mode,
+            ),
+            persisted_event_indexes: BTreeSet::new(),
+        };
+    }
+    chain.bind(shape, spec, &prompt);
+    let mut streamed = stream_one_harness(
+        unit,
+        history,
+        Some(&runner::ControlledInput {
+            handle: chain.handle,
+            prompt,
+        }),
+        sink,
+        cancel,
+    );
+    // Read off the conversation before it is released: the session id and the
+    // answer a driven turn produced are knowable only from its protocol frames,
+    // and the next candidate's binding replaces them.
+    apply_dialogue_signals(&mut streamed.result, chain.handle);
+    chain.handle.release();
+    streamed
 }
 
 /// One harness's finished streaming run. The events *outside*
@@ -2353,9 +2489,14 @@ fn stream_one_harness(
     }
 }
 
-/// Validate a `--control` request and return the mechanism that will back it,
-/// or `None` when the flag was not passed (which must change nothing at all —
-/// no socket, no extra process, and a byte-identical argv).
+/// Validate a `--control` request and return the mechanism the channel *starts*
+/// on — the first candidate's — or `None` when the flag was not passed (which
+/// must change nothing at all: no socket, no extra process, and a byte-identical
+/// argv).
+///
+/// `Some` means "this run is controlled", not "this run is on one mechanism". A
+/// fallback chain binds each candidate's own as it takes the turn, so the value
+/// here is only what the report names until the first one does.
 ///
 /// Every check here is a *loud usage error* before anything spawns, because the
 /// failure this feature must never have is a supervisor being told the lever
@@ -2363,10 +2504,10 @@ fn stream_one_harness(
 /// by (oneharness never infers one — an unaddressable run is the whole reason
 /// `--session` is required), one prompt and exactly one concurrent turn (one
 /// harness in parallel mode, or a sequential fallback chain; a batch or fan-out
-/// has no single turn to interrupt), a
-/// harness that declares a *proven* control mechanism, an explicit output
-/// format compatible with the mechanism, and — last — a platform with unix
-/// sockets.
+/// has no single turn to interrupt), then — for *every* candidate, since every
+/// candidate can serve — a *proven* control mechanism, an expressible mode, and
+/// an explicit output format compatible with that mechanism, and — last — a
+/// platform with unix sockets.
 ///
 /// The approval mode is almost never among them: `--control` no longer derives
 /// a posture for the wire, so whatever a harness supports uncontrolled it
@@ -2415,10 +2556,8 @@ fn validate_control(
     }
     // Parallel selection starts every harness together, while fallback starts
     // candidates one at a time. Control needs the former to name one harness;
-    // the latter is already one live turn and binds to the session anchor.
-    // If that anchor cannot run, the chain deliberately continues without
-    // control and says so on stderr: a bound channel cannot safely change its
-    // harness-specific mechanism while a supervisor may be addressing it.
+    // the latter is already one live turn, and the channel binds to whichever
+    // candidate is serving it.
     if specs.len() != 1 && run_mode != RunMode::Fallback {
         return Err(OneharnessError::ControlSingleHarness {
             selected: specs
@@ -2428,14 +2567,23 @@ fn validate_control(
                 .join(", "),
         });
     }
-    // Any candidate can end up holding the channel: a chain that falls through
-    // moves the session's handle to whoever served the turn, and the next
-    // dispatch anchors control there. The mechanism is the harness's own, and the
-    // socket a supervisor already holds cannot change mechanisms between
-    // dispatches — so a chain is controllable only when every candidate declares
-    // control and they all declare the SAME one. Refuse before anything spawns
-    // rather than binding one harness's mechanism to another's turn.
-    let mut mechanism = None;
+    // Every candidate is checked, because every candidate can serve: a chain
+    // reaches candidate N+1 only when candidate N has finished, so which one
+    // holds the channel is decided while the chain runs, not here.
+    //
+    // What is decided here is only what would be true of a candidate WHATEVER it
+    // ends up doing — it declares no control surface at all, it cannot express
+    // this mode, its mechanism pins a format the caller pinned differently. Each
+    // is a property of the request, so each is a loud usage error before
+    // anything spawns; a supervisor told the lever exists must never find that
+    // the candidate serving them has none.
+    //
+    // What is NOT decided here is which mechanism the channel speaks. That is
+    // the serving candidate's, bound as it takes the turn and released when the
+    // turn ends (`ControlHandle::bind`), so a chain whose candidates control
+    // differently is a chain of differing mechanisms served one at a time —
+    // never two at once, and never one harness's mechanism bound to another's
+    // turn.
     for spec in specs {
         let Some(shape) = spec.control else {
             return Err(OneharnessError::ControlUnsupported {
@@ -2443,75 +2591,58 @@ fn validate_control(
                 supported: control_capable_ids(),
             });
         };
-        match mechanism {
-            None => mechanism = Some((spec, shape)),
-            Some((first, first_shape)) if first_shape != shape => {
-                return Err(OneharnessError::ControlMixedMechanisms {
-                    first: format!("{} ({})", first.id, first_shape.as_str()),
-                    second: format!("{} ({})", spec.id, shape.as_str()),
-                });
-            }
-            Some(_) => {}
-        }
-    }
-    let (spec, shape) = mechanism.expect("a selection always has at least one harness");
-    // A server-submitted turn never spawns the harness CLI, and falling through
-    // it means leasing a *second* server for the next candidate — a second live
-    // turn the one socket cannot address. Nothing about that is decided yet, so
-    // a chain longer than one candidate is refused here rather than fanned out
-    // over every candidate's server (which is what the HTTP path would do) or
-    // quietly run through the CLI driver (which is not this mechanism at all).
-    // A chain of ONE is untouched: it is the same single turn it always was.
-    if specs.len() != 1 && shape.needs_pooled_server() {
-        return Err(OneharnessError::ControlServerChain {
-            id: spec.id.to_string(),
-            mechanism: shape.as_str().to_string(),
-        });
-    }
-    // Almost no mode is refused here. Where the mode's policy travels on the
-    // controlled launch itself — copilot's permission flags beside `--acp`,
-    // Claude Code's ordinary `-p` argv — a controlled run is under exactly the
-    // policy `spec.modes` declares, and an unexpressible mode is
-    // `validate_modes`' refusal, the same one an ordinary run gets.
-    //
-    // The exception is a mode whose policy is the harness's OWN environment on a
-    // turn submitted to a pooled server (opencode's `edit`, carried in
-    // `OPENCODE_CONFIG_CONTENT`). That environment belongs to the server
-    // process, not to the turn, and handing it over there was reverted: it made
-    // the mode a component of the pool key and gave a controlled `--mode
-    // default` turn a policy it never ended under (see the known gap recorded in
-    // `control_mode_parity`). Delivering nothing would run the turn under
-    // whatever policy the server was started with, which is the silent reshaping
-    // `--control` must never do — so it is a loud usage error before anything
-    // spawns.
-    if shape.needs_pooled_server()
-        && spec
-            .mode(mode)
-            .is_some_and(|declared| !declared.env.is_empty())
-    {
-        return Err(OneharnessError::ControlModeUnsupported {
-            id: spec.id.to_string(),
-            mode: mode.as_str(),
-        });
-    }
-    // A server-submitted turn never spawns the harness CLI, so there is no
-    // stdout to publish line by line. Refusing is what keeps `--stream` from
-    // silently selecting the ordinary run — whose interrupt does NOT reach the
-    // turn, which is the whole reason this mechanism exists.
-    if stream && HttpShape::of(shape).is_some() {
-        return Err(OneharnessError::ControlStreamUnsupported {
-            id: spec.id.to_string(),
-        });
-    }
-    if let (Some(required), Some(explicit)) = (shape.required_format(), explicit_format) {
-        if required != explicit {
-            return Err(OneharnessError::ControlOutputFormat {
+        // Almost no mode is refused here. Where the mode's policy travels on the
+        // controlled launch itself — copilot's permission flags beside `--acp`,
+        // Claude Code's ordinary `-p` argv — a controlled run is under exactly
+        // the policy `spec.modes` declares, and an unexpressible mode is
+        // `validate_modes`' refusal, the same one an ordinary run gets.
+        //
+        // The exception is a mode whose policy is the harness's OWN environment
+        // on a turn submitted to a pooled server (opencode's `edit`, carried in
+        // `OPENCODE_CONFIG_CONTENT`). That environment belongs to the server
+        // process, not to the turn, and handing it over there was reverted: it
+        // made the mode a component of the pool key and gave a controlled
+        // `--mode default` turn a policy it never ended under (see the known gap
+        // recorded in `control_mode_parity`). Delivering nothing would run the
+        // turn under whatever policy the server was started with, which is the
+        // silent reshaping `--control` must never do.
+        if shape.needs_pooled_server()
+            && spec
+                .mode(mode)
+                .is_some_and(|declared| !declared.env.is_empty())
+        {
+            return Err(OneharnessError::ControlModeUnsupported {
                 id: spec.id.to_string(),
-                required: required.as_str().to_string(),
-                selected: explicit.as_str().to_string(),
+                mode: mode.as_str(),
             });
         }
+        // A server-submitted turn never spawns the harness CLI, so there is no
+        // stdout to publish line by line. Refusing is what keeps `--stream` from
+        // silently selecting the ordinary run — whose interrupt does NOT reach
+        // the turn, which is the whole reason this mechanism exists. Refused for
+        // ANY candidate that declares one, not just the first: `--stream` is a
+        // promise about this run's stdout made before a candidate is chosen, and
+        // discovering mid-chain that the serving one cannot keep it is the
+        // silent downgrade the flag exists to prevent.
+        if stream && HttpShape::of(shape).is_some() {
+            return Err(OneharnessError::ControlStreamUnsupported {
+                id: spec.id.to_string(),
+            });
+        }
+        if let (Some(required), Some(explicit)) = (shape.required_format(), explicit_format) {
+            if required != explicit {
+                return Err(OneharnessError::ControlOutputFormat {
+                    id: spec.id.to_string(),
+                    required: required.as_str().to_string(),
+                    selected: explicit.as_str().to_string(),
+                });
+            }
+        }
     }
+    let shape = specs
+        .first()
+        .and_then(|spec| spec.control)
+        .expect("a selection always has at least one harness, and each declares control here");
     // Last, and only for a run that would actually open one. Every check above
     // states something about the REQUEST — this harness has no control surface,
     // this mode is not expressible, this format is incompatible — and each is
@@ -2561,45 +2692,98 @@ fn run_http_controlled(
                 prompt: result_prompt,
                 model,
                 ..
-            } => {
-                let outcome = drive_http_turn(
-                    shape,
-                    handle,
-                    spec,
-                    &bin,
-                    prompt,
-                    cwd,
-                    mode,
-                    timeout,
-                    model.as_deref(),
-                );
-                let (command, capture, session_id) = match outcome {
-                    Ok((command, outcome, session_id)) => (command, outcome, Some(session_id)),
-                    Err(err) => (vec![bin.clone()], http_turn::TurnOutcome::failed(err), None),
-                };
-                let mut result = executed_result(
+            } => http_controlled_result(
+                shape,
+                handle,
+                HttpCandidate {
                     spec,
                     bin,
-                    command,
                     output_format,
-                    &capture.to_capture(),
-                    None,
-                    1,
                     result_prompt,
                     model,
-                );
-                // The turn's own signals: the server's session id, and the text
-                // the event stream carried. Both `None` rather than guessed when
-                // the turn produced neither.
-                result.session_id = session_id;
-                if let Some(text) = capture.text() {
-                    result.text = Some(text.to_string());
-                    result.text_source = Some(format!("http:{}", shape.shape().as_str()));
-                }
-                result
-            }
+                    timeout,
+                },
+                prompt,
+                cwd,
+                mode,
+            ),
         })
         .collect()
+}
+
+/// One plan entry, as the server-submitted execution model needs it.
+///
+/// Its own type because this model shares nothing with the CLI job the plan also
+/// built for the entry: the argv is never spawned, and the `command` the result
+/// records is the SERVER's launch instead.
+struct HttpCandidate {
+    spec: &'static HarnessSpec,
+    bin: String,
+    output_format: OutputFormat,
+    /// The per-result prompt on a batch run; `None` otherwise.
+    result_prompt: Option<String>,
+    model: Option<String>,
+    timeout: Duration,
+}
+
+/// Submit one candidate's turn to its pooled control server and shape the answer
+/// into the ordinary result envelope.
+///
+/// Shared by the single-turn HTTP driver and the sequential chain driver, so a
+/// server-submitted candidate reached through a fallback chain is exactly the
+/// turn it is on its own — the same lease, the same session, the same recorded
+/// server argv.
+fn http_controlled_result(
+    shape: HttpShape,
+    handle: &control_io::ControlHandle,
+    candidate: HttpCandidate,
+    prompt: &str,
+    cwd: &control::AbsolutePath,
+    mode: PermissionMode,
+) -> RunResult {
+    let HttpCandidate {
+        spec,
+        bin,
+        output_format,
+        result_prompt,
+        model,
+        timeout,
+    } = candidate;
+    let outcome = drive_http_turn(
+        shape,
+        handle,
+        spec,
+        &bin,
+        prompt,
+        cwd,
+        mode,
+        timeout,
+        model.as_deref(),
+    );
+    let (command, capture, session_id) = match outcome {
+        Ok((command, outcome, session_id)) => (command, outcome, Some(session_id)),
+        Err(err) => (vec![bin.clone()], http_turn::TurnOutcome::failed(err), None),
+    };
+    let mut result = executed_result(
+        spec,
+        bin,
+        command,
+        output_format,
+        &capture.to_capture(),
+        None,
+        1,
+        result_prompt,
+        model,
+    );
+    // The turn's own signals: the server's session id, and the text the event
+    // stream carried. Both `None` rather than guessed when the turn produced
+    // neither.
+    result.session_id = session_id;
+    if let Some(text) = capture.text() {
+        result.text = Some(text.to_string());
+        result.text_source = Some(format!("http:{}", shape.shape().as_str()));
+    }
+    result
 }
 
 /// Bring up the harness's control server (reusing a pooled one where a live
@@ -2679,13 +2863,19 @@ fn drive_http_turn(
     let session_id = turn.session_id().to_string();
 
     // Addressable from the socket thread only while the turn is in flight, so
-    // an interrupt before or after it is an honest `no_active_turn`.
+    // an interrupt before or after it is an honest `no_active_turn`. The
+    // mechanism is bound here rather than for the run, so a chain that reaches
+    // this candidate after falling through a CLI-driven one moves the channel
+    // onto the server with it — and releases it again below, leaving the next
+    // candidate free to bind its own.
+    handle.bind(shape.shape(), None);
     handle.begin_http_turn(turn.clone());
     // The driver asks for a redirection each time a turn ends: an interrupt
     // commits its message to the handle, and this is where the run hands it to a
     // session that has actually gone idle.
     let outcome = http_turn::run(&turn, prompt, decision, timeout, &|| handle.take_redirect());
     handle.end_http_turn();
+    handle.release();
     // The lease is released here (not at process exit), so a server nobody is
     // using can be reclaimed once its linger expires.
     drop(lease);

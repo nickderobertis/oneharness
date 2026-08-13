@@ -79,13 +79,15 @@ enum TurnState {
     Active(std::process::ChildStdin),
 }
 
-/// What drives — and therefore what interrupts — this run's turn.
+/// What drives — and therefore what interrupts — the turn a candidate is
+/// serving.
 ///
-/// Exactly one applies, fixed from the [`ControlShape`] before the turn starts:
-/// [`Dialogue::new`] answers `Some` only for the two protocol shapes, which are
-/// disjoint from the ones [`HttpShape::of`] recognizes. Modelling them as one
-/// value rather than a field each is what makes "a dialogue *and* an HTTP turn"
-/// unspellable instead of merely unreachable.
+/// Exactly one applies, decided from the serving candidate's [`ControlShape`]
+/// when it takes the turn: [`Dialogue::new`] answers `Some` only for the two
+/// protocol shapes, which are disjoint from the ones [`HttpShape::of`]
+/// recognizes. Modelling them as one value rather than a field each is what
+/// makes "a dialogue *and* an HTTP turn" unspellable instead of merely
+/// unreachable.
 enum Backend {
     /// Control rides the harness's ordinary run: nothing to negotiate, and an
     /// interrupt is a frame written to the child's own stdin.
@@ -100,8 +102,31 @@ enum Backend {
     Http(Option<HttpTurn>),
 }
 
+/// The mechanism the channel is bound to right now: the shape it speaks, and
+/// the backend that speaks it.
+///
+/// One value rather than two fields on the handle, because the two are only
+/// ever decided together — by the candidate that is serving. Holding a shape
+/// without the backend that speaks it would be a channel naming a mechanism it
+/// is not on, which is exactly the state a supervisor must never be able to
+/// address.
+struct Mechanism {
+    shape: ControlShape,
+    backend: Backend,
+}
+
 /// Shared, thread-safe access to a run's control mechanism plus the audit trail
 /// of everything it served (which the report echoes).
+///
+/// The mechanism is **late-bound**: a fallback chain reaches candidate N+1 only
+/// because candidate N has finished, so exactly one candidate is ever serving —
+/// but *which* one, and therefore which mechanism, is not knowable before the
+/// chain runs. So the handle is created unbound, each candidate binds its own
+/// mechanism as it takes the turn ([`ControlHandle::bind`]) and releases it when
+/// that turn ends ([`ControlHandle::release`]), and an interrupt is served by
+/// whatever is bound at the moment it arrives. Between candidates nothing is,
+/// which is why a fall-through answers `no_active_turn` rather than reaching a
+/// mechanism that is not the serving one.
 ///
 /// Every lock here recovers from poisoning (`into_inner`) rather than
 /// propagating a panic: control is a side channel, and a worker that panicked
@@ -109,14 +134,16 @@ enum Backend {
 /// The guarded state is a stdin handle and an append-only log, neither of which
 /// a panic can leave half-updated in a way a later write would misread.
 pub struct ControlHandle {
-    shape: ControlShape,
+    /// The mechanism the report names: the last one bound, or — before any
+    /// candidate has taken the turn — the one the chain would start on.
+    reported: Mutex<ControlShape>,
     state: Mutex<TurnState>,
     events: Mutex<Vec<ControlEvent>>,
     requests: Mutex<u64>,
-    /// The mechanism driving the turn. Locked *before* `state` everywhere, so
-    /// the two paths that touch both (serving an interrupt, advancing on a
-    /// line) can never deadlock against each other.
-    backend: Mutex<Backend>,
+    /// The serving candidate's mechanism, or `None` between candidates. Locked
+    /// *before* `state` everywhere, so the two paths that touch both (serving an
+    /// interrupt, advancing on a line) can never deadlock against each other.
+    mechanism: Mutex<Option<Mechanism>>,
     /// A redirection an interrupt committed. Only the stdin and HTTP backends
     /// use it — a dialogue holds its own, because opening the replacement turn
     /// is a protocol decision rather than a write.
@@ -142,26 +169,69 @@ enum Redirect {
 }
 
 impl ControlHandle {
+    /// An unbound handle whose report names `starts_on` until a candidate binds
+    /// its own mechanism.
+    ///
+    /// Unbound rather than serving `starts_on` straight away: the run has not
+    /// chosen a candidate yet, and an interrupt arriving now must be
+    /// `no_active_turn` rather than a frame written at a mechanism nobody is on.
     #[must_use]
-    pub fn new(shape: ControlShape) -> Self {
-        Self::with_dialogue(shape, None)
+    pub fn new(starts_on: ControlShape) -> Self {
+        ControlHandle {
+            reported: Mutex::new(starts_on),
+            state: Mutex::new(TurnState::Idle),
+            events: Mutex::new(Vec::new()),
+            requests: Mutex::new(0),
+            mechanism: Mutex::new(None),
+            redirect: Mutex::new(Redirect::None),
+        }
     }
 
-    /// A handle whose turn is driven by `dialogue` (a server-backed mechanism).
-    #[must_use]
-    pub fn with_dialogue(shape: ControlShape, dialogue: Option<Dialogue>) -> Self {
+    /// Bind the channel to the mechanism of the candidate that is about to
+    /// serve, driving its turn over `dialogue` where the shape has one.
+    ///
+    /// This is the whole of late binding: the socket a supervisor addresses is
+    /// the run's for its whole lifetime, and what sits behind it is whichever
+    /// candidate is serving. Called before the candidate's turn opens; every
+    /// interrupt served from here until [`Self::release`] reaches that turn.
+    pub fn bind(&self, shape: ControlShape, dialogue: Option<Dialogue>) {
         let backend = match dialogue {
             Some(dialogue) => Backend::Dialogue(dialogue),
             None if HttpShape::of(shape).is_some() => Backend::Http(None),
             None => Backend::Stdin,
         };
-        ControlHandle {
-            shape,
-            state: Mutex::new(TurnState::Idle),
-            events: Mutex::new(Vec::new()),
-            requests: Mutex::new(0),
-            backend: Mutex::new(backend),
-            redirect: Mutex::new(Redirect::None),
+        *self.mechanism() = Some(Mechanism { shape, backend });
+        *self
+            .reported
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = shape;
+    }
+
+    /// Release the serving candidate's mechanism: its turn is over, so an
+    /// interrupt arriving before the next candidate binds is `no_active_turn`
+    /// rather than a request against a turn that has finished.
+    ///
+    /// A redirection still held here belonged to the turn that just ended, so it
+    /// is reported and dropped rather than carried across a fall-through: a
+    /// message a supervisor aimed at one candidate's turn must never be
+    /// delivered into a different candidate's fresh one, which nobody saw start.
+    ///
+    /// Each field is taken in its own statement so no two of these locks are
+    /// ever held at once — the ordering the rest of this type relies on
+    /// (`mechanism` before `redirect` before `state`) is a nesting rule, and the
+    /// cheapest way to obey it here is to nest nothing.
+    pub fn release(&self) {
+        *self.mechanism() = None;
+        let held = std::mem::replace(&mut *self.redirect(), Redirect::None);
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = TurnState::Idle;
+        if !matches!(held, Redirect::None) {
+            eprintln!(
+                "oneharness: warning: the interrupted turn ended before its redirection could be \
+                 delivered; the message was not carried to another candidate"
+            );
         }
     }
 
@@ -169,22 +239,31 @@ impl ControlHandle {
     /// exists on the control server — before that there is no turn to address,
     /// and `interrupt` correctly answers `no_active_turn`.
     pub fn begin_http_turn(&self, turn: HttpTurn) {
-        *self.backend() = Backend::Http(Some(turn));
+        if let Some(mechanism) = self.mechanism().as_mut() {
+            mechanism.backend = Backend::Http(Some(turn));
+        }
     }
 
     /// Release the HTTP turn: it is over, so a later interrupt is
     /// `no_active_turn` rather than a request against a finished session.
     pub fn end_http_turn(&self) {
-        *self.backend() = Backend::Http(None);
+        if let Some(mechanism) = self.mechanism().as_mut() {
+            mechanism.backend = Backend::Http(None);
+        }
     }
 
     /// The frames that open the turn: a dialogue's handshake, or the prompt
-    /// frame for a mechanism that rides the harness's ordinary run.
+    /// frame for a mechanism that rides the harness's ordinary run. Empty when
+    /// nothing is bound — there is no turn to open.
     pub fn open_frames(&self, prompt: &str) -> Vec<String> {
-        match &mut *self.backend() {
+        let mut mechanism = self.mechanism();
+        let Some(mechanism) = mechanism.as_mut() else {
+            return Vec::new();
+        };
+        match &mut mechanism.backend {
             Backend::Dialogue(dialogue) => dialogue.open(),
             Backend::Stdin | Backend::Http(_) => {
-                crate::domain::control::prompt_frame(self.shape, prompt)
+                crate::domain::control::prompt_frame(mechanism.shape, prompt)
                     .into_iter()
                     .collect()
             }
@@ -198,13 +277,20 @@ impl ControlHandle {
     /// exit and output will report far more usefully than a panic would.
     pub fn advance(&self, line: &str) -> bool {
         let step = {
-            match &mut *self.backend() {
+            let mut mechanism = self.mechanism();
+            // Nothing is bound, so there is no turn this line can be part of and
+            // none for the caller to keep open.
+            let Some(mechanism) = mechanism.as_mut() else {
+                return true;
+            };
+            let shape = mechanism.shape;
+            match &mut mechanism.backend {
                 Backend::Dialogue(dialogue) => dialogue.on_line(line),
                 // No conversation to advance: the harness's own end-of-turn
                 // document is the only signal, and there is nothing to write
                 // back.
                 Backend::Stdin | Backend::Http(_) => {
-                    if !crate::domain::control::is_turn_terminal(self.shape, line) {
+                    if !crate::domain::control::is_turn_terminal(shape, line) {
                         return false;
                     }
                     // The aborted turn just ended, which is the first moment
@@ -212,7 +298,7 @@ impl ControlHandle {
                     // committed: written mid-turn it is silently dropped, and
                     // written after `end_turn` closes stdin there is nothing to
                     // write to. So the turn is kept open for one more round.
-                    return !self.open_redirected_turn();
+                    return !self.open_redirected_turn(shape);
                 }
             }
         };
@@ -230,9 +316,9 @@ impl ControlHandle {
     /// The harness's native session id, when the dialogue captured one.
     #[must_use]
     pub fn session_id(&self) -> Option<String> {
-        match &*self.backend() {
-            Backend::Dialogue(dialogue) => dialogue.session_id().map(str::to_string),
-            Backend::Stdin | Backend::Http(_) => None,
+        match self.mechanism().as_ref().map(|m| &m.backend) {
+            Some(Backend::Dialogue(dialogue)) => dialogue.session_id().map(str::to_string),
+            Some(Backend::Stdin | Backend::Http(_)) | None => None,
         }
     }
 
@@ -240,11 +326,11 @@ impl ControlHandle {
     /// `None` when the turn produced none — never fabricated.
     #[must_use]
     pub fn text(&self) -> Option<(String, &'static str)> {
-        match &*self.backend() {
-            Backend::Dialogue(dialogue) => {
+        match self.mechanism().as_ref().map(|m| &m.backend) {
+            Some(Backend::Dialogue(dialogue)) => {
                 dialogue.text().map(|text| (text, dialogue.text_source()))
             }
-            Backend::Stdin | Backend::Http(_) => None,
+            Some(Backend::Stdin | Backend::Http(_)) | None => None,
         }
     }
 
@@ -257,11 +343,14 @@ impl ControlHandle {
     /// process — nothing about a spawned run applies to them.
     #[must_use]
     pub fn drives_turn_over_stdin(&self) -> bool {
-        matches!(&*self.backend(), Backend::Dialogue(_))
+        matches!(
+            self.mechanism().as_ref().map(|m| &m.backend),
+            Some(Backend::Dialogue(_))
+        )
     }
 
-    fn backend(&self) -> std::sync::MutexGuard<'_, Backend> {
-        self.backend
+    fn mechanism(&self) -> std::sync::MutexGuard<'_, Option<Mechanism>> {
+        self.mechanism
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -302,9 +391,12 @@ impl ControlHandle {
     /// Whether a redirection is committed and not yet delivered.
     #[must_use]
     pub fn has_pending_redirect(&self) -> bool {
-        match &*self.backend() {
-            Backend::Dialogue(dialogue) => dialogue.has_pending_redirect(),
-            Backend::Stdin | Backend::Http(_) => !matches!(&*self.redirect(), Redirect::None),
+        match self.mechanism().as_ref().map(|m| &m.backend) {
+            Some(Backend::Dialogue(dialogue)) => dialogue.has_pending_redirect(),
+            Some(Backend::Stdin | Backend::Http(_)) => !matches!(&*self.redirect(), Redirect::None),
+            // Nothing is serving, so nothing is owed: `release` reports and
+            // drops anything an ended turn was still holding.
+            None => false,
         }
     }
 
@@ -315,11 +407,14 @@ impl ControlHandle {
     /// (and therefore stdin) open for the answer. A write that fails is reported
     /// and the turn ends, because the message has nowhere left to go and a run
     /// that waited on it would hang until its timeout.
-    fn open_redirected_turn(&self) -> bool {
+    ///
+    /// `shape` is passed in rather than read back off the handle: the caller is
+    /// already holding the `mechanism` lock it would have to take.
+    fn open_redirected_turn(&self, shape: ControlShape) -> bool {
         let Some(input) = self.take_redirect() else {
             return false;
         };
-        let Some(frame) = prompt_frame(self.shape, input.as_str()) else {
+        let Some(frame) = prompt_frame(shape, input.as_str()) else {
             return false;
         };
         match self.write_line(&frame) {
@@ -334,9 +429,15 @@ impl ControlHandle {
         }
     }
 
+    /// The mechanism the run's `control` block names: the one the serving
+    /// candidate bound, or — if the chain never got as far as opening a turn —
+    /// the one it would have started on.
     #[must_use]
     pub fn shape(&self) -> ControlShape {
-        self.shape
+        *self
+            .reported
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Park the child's stdin and mark a turn in flight.
@@ -397,8 +498,16 @@ impl ControlHandle {
     /// "stopped, and your message is the run's to deliver" and "nothing
     /// happened, and your message is still yours". There is no third state where
     /// the turn is dead and the redirection was dropped.
+    ///
+    /// Which mechanism that is, is read from the binding at the moment the
+    /// request arrives — so on a fallback chain the abort reaches whichever
+    /// candidate is serving, and in the window where none is (before the first
+    /// turn, across a fall-through, after the last) it is `no_active_turn`. The
+    /// binding is taken under the same lock a candidate binds and releases it
+    /// under, so there is no instant at which an interrupt could reach a
+    /// mechanism that is not the serving one.
     fn interrupt(&self, redirect: Option<&RedirectInput>) -> ControlResponse {
-        /// How the live backend delivers an abort, decided under the backend
+        /// How the live backend delivers an abort, decided under the mechanism
         /// lock and carried out after it is released: an HTTP abort is a
         /// network request and a frame is a write to the child, and neither
         /// should be held against the thread advancing the turn.
@@ -415,51 +524,69 @@ impl ControlHandle {
                 ControlReason::NoActiveTurn,
             )
         };
-        // The answer for a delivered abort, which says whether the redirection
-        // went with it. Built once so every success path reports the same thing.
-        let served = || match redirect {
-            Some(_) => ControlResponse::redirected(self.shape),
-            None => ControlResponse::served(self.shape),
-        };
+        /// A stdin-borne shape this build has no interrupt frame for. Named
+        /// rather than inlined because the arm it answers sits four levels into
+        /// the mechanism match, where the message would be unreadable.
+        fn not_wired_for_stdin(shape: ControlShape) -> ControlResponse {
+            ControlResponse::refused(
+                format!(
+                    "the `{}` control mechanism is not wired for stdin-borne interrupts",
+                    shape.as_str()
+                ),
+                ControlReason::Unsupported,
+            )
+        }
         let commit = |input: Option<&RedirectInput>| match input {
             Some(input) => Redirect::Committed(input.clone()),
             None => Redirect::None,
         };
-        let delivery = match &mut *self.backend() {
-            Backend::Http(turn) => match turn.clone() {
-                Some(turn) => {
-                    // Committed before the request goes out: the run's own
-                    // driver reads it when the aborted turn ends, and the server
-                    // holds the session either way, so it cannot be lost in the
-                    // gap the abort opens.
-                    *self.redirect() = commit(redirect);
-                    Delivery::Request(turn)
-                }
-                None => return no_active_turn(),
-            },
-            // A server-backed mechanism addresses the live thread/session by
-            // the ids the dialogue captured, so it alone knows whether there is
-            // a turn to abort at all — and it takes the redirection over itself,
-            // because opening the replacement turn is a protocol decision.
-            Backend::Dialogue(dialogue) => match dialogue.interrupt(redirect) {
-                Some(frames) => Delivery::Frames(frames),
-                None => return no_active_turn(),
-            },
-            Backend::Stdin => match interrupt_frame(self.shape, &self.next_request_id()) {
-                Some(frame) => {
-                    *self.redirect() = commit(redirect);
-                    Delivery::Frames(vec![frame])
-                }
-                None => {
-                    return ControlResponse::refused(
-                        format!(
-                            "the `{}` control mechanism is not wired for stdin-borne interrupts",
-                            self.shape.as_str()
-                        ),
-                        ControlReason::Unsupported,
-                    )
-                }
-            },
+        // The serving candidate's mechanism, read under the lock it is bound
+        // and released under. Nothing bound is a run between turns — before the
+        // first candidate opens one, across a chain's fall-through, or after the
+        // last one ended — which is exactly `no_active_turn`.
+        let (shape, delivery) = {
+            let mut mechanism = self.mechanism();
+            let Some(mechanism) = mechanism.as_mut() else {
+                return no_active_turn();
+            };
+            let shape = mechanism.shape;
+            let delivery = match &mut mechanism.backend {
+                Backend::Http(turn) => match turn.clone() {
+                    Some(turn) => {
+                        // Committed before the request goes out: the run's own
+                        // driver reads it when the aborted turn ends, and the
+                        // server holds the session either way, so it cannot be
+                        // lost in the gap the abort opens.
+                        *self.redirect() = commit(redirect);
+                        Delivery::Request(turn)
+                    }
+                    None => return no_active_turn(),
+                },
+                // A server-backed mechanism addresses the live thread/session by
+                // the ids the dialogue captured, so it alone knows whether there
+                // is a turn to abort at all — and it takes the redirection over
+                // itself, because opening the replacement turn is a protocol
+                // decision.
+                Backend::Dialogue(dialogue) => match dialogue.interrupt(redirect) {
+                    Some(frames) => Delivery::Frames(frames),
+                    None => return no_active_turn(),
+                },
+                Backend::Stdin => match interrupt_frame(shape, &self.next_request_id()) {
+                    Some(frame) => {
+                        *self.redirect() = commit(redirect);
+                        Delivery::Frames(vec![frame])
+                    }
+                    None => return not_wired_for_stdin(shape),
+                },
+            };
+            (shape, delivery)
+        };
+        // The answer for a delivered abort, which says whether the redirection
+        // went with it, and names the mechanism that actually took it — the
+        // serving candidate's, never the chain's first.
+        let served = || match redirect {
+            Some(_) => ControlResponse::redirected(shape),
+            None => ControlResponse::served(shape),
         };
         let frames = match delivery {
             Delivery::Request(turn) => {
@@ -509,7 +636,11 @@ impl ControlHandle {
     /// holds anything: the backend that took it is the one that has it.
     fn abandon_redirect(&self) {
         *self.redirect() = Redirect::None;
-        if let Backend::Dialogue(dialogue) = &mut *self.backend() {
+        if let Some(Mechanism {
+            backend: Backend::Dialogue(dialogue),
+            ..
+        }) = self.mechanism().as_mut()
+        {
             dialogue.abandon_redirect();
         }
     }
@@ -579,11 +710,7 @@ mod imp {
     /// serving. A pre-existing file is removed first only when nothing is
     /// listening on it, so two concurrent runs of the same session name cannot
     /// silently steal each other's address.
-    pub fn bind(
-        path: &Path,
-        shape: ControlShape,
-        dialogue: Option<Dialogue>,
-    ) -> io::Result<ControlListener> {
+    pub fn bind(path: &Path, starts_on: ControlShape) -> io::Result<ControlListener> {
         // Canonicalize the directory before binding: the socket path is an
         // address handed to a *different* process, and a relative one resolves
         // differently depending on where that process runs.
@@ -620,7 +747,7 @@ mod imp {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         listener.set_nonblocking(true)?;
 
-        let handle = Arc::new(ControlHandle::with_dialogue(shape, dialogue));
+        let handle = Arc::new(ControlHandle::new(starts_on));
         let worker_handle = Arc::clone(&handle);
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let worker = std::thread::spawn(move || serve_loop(listener, worker_handle, &rx));
@@ -788,11 +915,7 @@ mod imp {
 mod imp {
     use super::*;
 
-    pub fn bind(
-        _path: &Path,
-        _shape: ControlShape,
-        _dialogue: Option<Dialogue>,
-    ) -> io::Result<ControlListener> {
+    pub fn bind(_path: &Path, _starts_on: ControlShape) -> io::Result<ControlListener> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "unix domain sockets are unavailable on this platform",
@@ -812,17 +935,15 @@ mod imp {
     pub fn shutdown(_listener: &mut ControlListener) {}
 }
 
-/// Bind the run's control socket at `path`, serving `shape`'s mechanism.
+/// Bind the run's control socket at `path`.
 ///
-/// `dialogue` is the protocol conversation that drives the turn for a
-/// server-backed mechanism; `None` for one that rides the harness's ordinary
-/// run (Claude Code).
-pub fn bind(
-    path: &Path,
-    shape: ControlShape,
-    dialogue: Option<Dialogue>,
-) -> io::Result<ControlListener> {
-    imp::bind(path, shape, dialogue)
+/// The address is the run's for its whole lifetime and says nothing about which
+/// harness is behind it: the mechanism is bound per candidate, as each takes the
+/// turn ([`ControlHandle::bind`]). `starts_on` is only what the report names
+/// until the first candidate binds its own — an address a supervisor can already
+/// reach, on a run that has not opened a turn yet, has no mechanism to name.
+pub fn bind(path: &Path, starts_on: ControlShape) -> io::Result<ControlListener> {
+    imp::bind(path, starts_on)
 }
 
 /// Send one control request to the run listening at `path`.
@@ -881,7 +1002,7 @@ mod tests {
         let dir = temp_dir("lifecycle");
         let path = socket_path(&dir, "flow");
         {
-            let listener = bind(&path, ControlShape::ClaudeControlRequest, None).unwrap();
+            let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
             assert!(path.exists(), "socket should exist while the run is alive");
             let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "socket must be owner-only");
@@ -895,7 +1016,7 @@ mod tests {
     fn interrupt_without_an_active_turn_is_refused_with_no_active_turn() {
         let dir = temp_dir("noturn");
         let path = socket_path(&dir, "idle");
-        let _listener = bind(&path, ControlShape::ClaudeControlRequest, None).unwrap();
+        let _listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         let response = send(&path, &ControlRequest::interrupt());
         assert!(!response.is_ok());
         assert_eq!(response.reason(), Some(ControlReason::NoActiveTurn));
@@ -918,10 +1039,10 @@ mod tests {
         let path = socket_path(&dir, "stale");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"").unwrap();
-        let listener = bind(&path, ControlShape::ClaudeControlRequest, None).unwrap();
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         assert_eq!(listener.path(), path);
         // And a live listener refuses to be displaced.
-        let conflict = bind(&path, ControlShape::ClaudeControlRequest, None);
+        let conflict = bind(&path, ControlShape::ClaudeControlRequest);
         assert!(conflict.is_err(), "a live socket must not be stolen");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -931,7 +1052,7 @@ mod tests {
         use std::io::Read;
         let dir = temp_dir("served");
         let path = socket_path(&dir, "live");
-        let listener = bind(&path, ControlShape::ClaudeControlRequest, None).unwrap();
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         let handle = listener.handle();
 
         // A real child process standing in for the harness: it echoes whatever
@@ -942,6 +1063,9 @@ mod tests {
             .stdout(std::process::Stdio::piped())
             .spawn()
             .unwrap();
+        // Bind the mechanism the candidate serving this turn speaks, then park
+        // its stdin: the channel is unbound until a candidate takes the turn.
+        handle.bind(ControlShape::ClaudeControlRequest, None);
         handle.begin_turn(child.stdin.take().unwrap());
 
         let response = send(&path, &ControlRequest::interrupt());
@@ -973,6 +1097,206 @@ mod tests {
     }
 
     #[test]
+    fn an_interrupt_between_two_candidates_reaches_neither_of_them() {
+        use std::io::Read;
+        // The fall-through window, held open deliberately: candidate A's turn
+        // has ended and candidate B has not opened one. It is the one state a
+        // running chain passes through that nothing outside the process can time
+        // reliably — precisely because nothing happens in it — so it is driven
+        // here, against the same socket `oneharness interrupt` dials.
+        //
+        // The answer is `no_active_turn`: there IS no live turn, and the honest
+        // refusal is the only one that cannot mislead. Queuing the abort for
+        // whichever candidate binds next would land a supervisor's stop on a
+        // turn they never saw start — the silent reshaping `--control` exists to
+        // avoid — and reaching back to the candidate that just finished would
+        // write at a mechanism nobody is on.
+        let dir = temp_dir("fall-through");
+        let path = socket_path(&dir, "chain");
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let handle = listener.handle();
+
+        let spawn_candidate = || {
+            std::process::Command::new("cat")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        };
+
+        // Candidate A serves its turn.
+        let mut first = spawn_candidate();
+        handle.bind(ControlShape::ClaudeControlRequest, None);
+        handle.begin_turn(first.stdin.take().unwrap());
+        // The abort is served, and names the mechanism that took it.
+        let served = send(&path, &ControlRequest::interrupt());
+        assert!(served.is_ok(), "{served:?}");
+        let claude = Some(ControlShape::ClaudeControlRequest);
+        assert_eq!(served.mechanism(), claude, "{served:?}");
+
+        // A's turn ends and the chain falls through: nothing is bound.
+        handle.release();
+        // An interrupt arriving across a fall-through reaches nothing at all.
+        let between = send(&path, &ControlRequest::interrupt());
+        let no_turn = Some(ControlReason::NoActiveTurn);
+        assert_eq!(between.reason(), no_turn, "{}", between.to_line());
+
+        // The sharp half. Candidate B is spawned and its stdin is parked — the
+        // driver does that for every controlled candidate — but B has not bound
+        // its mechanism yet. A live pipe is NOT a live turn: an abort written
+        // here would reach B's process addressed in the mechanism A was on, and
+        // B never asked for it. So the answer is still `no_active_turn`, and B's
+        // stdin stays untouched.
+        let mut second = spawn_candidate();
+        handle.begin_turn(second.stdin.take().unwrap());
+        let parked = send(&path, &ControlRequest::interrupt());
+        assert_eq!(parked.reason(), no_turn, "{}", parked.to_line());
+
+        // Now B binds, on the same socket the supervisor has held throughout.
+        // The address never changed; what is behind it did.
+        handle.bind(ControlShape::ClaudeControlRequest, None);
+        // A released channel re-arms for the next candidate.
+        let again = send(&path, &ControlRequest::interrupt());
+        assert!(again.is_ok(), "{again:?}");
+        handle.release();
+
+        // Delivered where it was aimed, and only there: A got the first abort, B
+        // the second, and neither got the one sent in between.
+        let delivered = |child: &mut std::process::Child| {
+            let mut text = String::new();
+            child
+                .stdout
+                .take()
+                .unwrap()
+                .read_to_string(&mut text)
+                .unwrap();
+            child.wait().ok();
+            text.lines().filter(|line| !line.trim().is_empty()).count()
+        };
+        assert_eq!(delivered(&mut first), 1, "candidate A took only its own");
+        assert_eq!(delivered(&mut second), 1, "candidate B took only its own");
+
+        // Four requests reached the run; the report records the two refusals
+        // beside the two that were served rather than hiding them.
+        let events = handle.events();
+        assert_eq!(events.len(), 4, "{events:?}");
+        assert!(events[0].is_served());
+        assert!(!events[1].is_served());
+        assert!(!events[2].is_served());
+        assert!(events[3].is_served());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_unbound_channel_opens_nothing_and_drives_nothing() {
+        // The state a controlled run is in before its first candidate takes the
+        // turn, and again between a chain's candidates. Every accessor has to
+        // answer for "nobody is serving" rather than for the last one that was —
+        // a handle that still offered the previous candidate's frames, session
+        // id or answer would attribute one candidate's turn to another.
+        let dir = temp_dir("unbound");
+        let path = socket_path(&dir, "idle");
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let handle = listener.handle_ref();
+        // There is no turn to open, and a line belongs to no turn — so the
+        // caller is not held open waiting for one to end.
+        assert!(handle.open_frames("keep working").is_empty());
+        assert!(handle.advance(r#"{"type":"result","subtype":"success"}"#));
+        assert!(handle.session_id().is_none());
+        assert!(handle.text().is_none());
+        assert!(!handle.drives_turn_over_stdin());
+        assert!(!handle.has_pending_redirect());
+        assert!(handle.take_redirect().is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_redirection_its_own_turn_never_delivered_is_not_carried_to_the_next_candidate() {
+        use crate::domain::control::RedirectInput;
+        // A supervisor aimed this message at one candidate's turn. If that turn
+        // ends without ever delivering it — the harness died, the chain fell
+        // through — the message is reported and dropped, never handed to the
+        // next candidate's fresh turn. Delivering it there would run work the
+        // supervisor asked of a turn that no longer exists, on a harness they
+        // never saw start.
+        let dir = temp_dir("redirect-dropped");
+        let path = socket_path(&dir, "live");
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let handle = listener.handle();
+        let mut child = std::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        handle.bind(ControlShape::ClaudeControlRequest, None);
+        handle.begin_turn(child.stdin.take().unwrap());
+
+        let response = send(
+            &path,
+            &ControlRequest::redirect(RedirectInput::new("do X instead").unwrap()),
+        );
+        // The run owns the message from the interrupt onwards.
+        assert!(response.is_ok(), "{response:?}");
+        assert!(handle.has_pending_redirect());
+
+        // The turn ends without the run ever writing it (no terminal document
+        // reached `advance`), and the candidate is released.
+        // A released channel owes the next candidate nothing.
+        handle.release();
+        assert!(!handle.has_pending_redirect());
+        assert!(handle.take_redirect().is_none());
+
+        // The next candidate binds and opens its turn with its OWN prompt only.
+        handle.bind(ControlShape::ClaudeControlRequest, None);
+        let frames = handle.open_frames("the next candidate's prompt");
+        // The dropped redirection must not open another candidate's turn.
+        assert_eq!(frames.len(), 1, "{frames:?}");
+        assert!(!frames[0].contains("do X instead"), "{frames:?}");
+        child.kill().ok();
+        child.wait().ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_reported_mechanism_follows_the_candidate_that_bound_it() {
+        use crate::domain::control::AbsolutePath;
+        use crate::domain::dialogue::DialogueConfig;
+        use crate::domain::mode::{ApprovalPosture, PermissionMode};
+        // A chain's `control` block must name the mechanism that ended up
+        // serving, not the one it was planned to start on — otherwise a
+        // consumer reading the report concludes something different from the
+        // supervisor who held the socket.
+        let dir = temp_dir("reported");
+        let path = socket_path(&dir, "moves");
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let handle = listener.handle();
+        // Before any candidate binds, the report names the one the chain would
+        // start on.
+        assert_eq!(handle.shape(), ControlShape::ClaudeControlRequest);
+
+        let dialogue = Dialogue::new(
+            ControlShape::CodexAppServer,
+            DialogueConfig {
+                prompt: "keep working".to_string(),
+                cwd: AbsolutePath::new(&dir).unwrap(),
+                model: None,
+                mode: PermissionMode::Bypass,
+                posture: ApprovalPosture::Unattended,
+            },
+        );
+        assert!(dialogue.is_some(), "codex control is a dialogue shape");
+        // The serving candidate's mechanism is the one reported.
+        handle.bind(ControlShape::CodexAppServer, dialogue);
+        assert_eq!(handle.shape(), ControlShape::CodexAppServer);
+
+        // And releasing does not rewrite history: the mechanism that served is
+        // still what the finished run reports.
+        handle.release();
+        assert_eq!(handle.shape(), ControlShape::CodexAppServer);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn a_redirection_reaches_the_child_only_once_the_aborted_turn_has_ended() {
         use crate::domain::control::RedirectInput;
         use std::io::Read;
@@ -984,7 +1308,7 @@ mod tests {
         // itself, at the one moment the harness will accept it.
         let dir = temp_dir("redirect");
         let path = socket_path(&dir, "live");
-        let listener = bind(&path, ControlShape::ClaudeControlRequest, None).unwrap();
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         let handle = listener.handle();
 
         // A real child again: the assertion is on bytes that reached a process,
@@ -994,6 +1318,9 @@ mod tests {
             .stdout(std::process::Stdio::piped())
             .spawn()
             .unwrap();
+        // Bind the mechanism the candidate serving this turn speaks, then park
+        // its stdin: the channel is unbound until a candidate takes the turn.
+        handle.bind(ControlShape::ClaudeControlRequest, None);
         handle.begin_turn(child.stdin.take().unwrap());
 
         let response = send(
@@ -1057,7 +1384,7 @@ mod tests {
         // reading a refusal still owns its message and can send it elsewhere.
         let dir = temp_dir("redirect-refused");
         let path = socket_path(&dir, "idle");
-        let listener = bind(&path, ControlShape::ClaudeControlRequest, None).unwrap();
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         let response = send(
             &path,
             &ControlRequest::redirect(RedirectInput::new("do X instead").unwrap()),
@@ -1081,7 +1408,7 @@ mod tests {
         // read timeout expires.
         let dir = temp_dir("unbounded");
         let path = socket_path(&dir, "flood");
-        let listener = bind(&path, ControlShape::ClaudeControlRequest, None).unwrap();
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         let mut stream = UnixStream::connect(&path).unwrap();
         stream
             .set_write_timeout(Some(std::time::Duration::from_secs(5)))
@@ -1171,7 +1498,7 @@ mod tests {
         use std::os::unix::net::UnixStream;
         let dir = temp_dir("malformed");
         let path = socket_path(&dir, "bad");
-        let listener = bind(&path, ControlShape::ClaudeControlRequest, None).unwrap();
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         let mut stream = UnixStream::connect(&path).unwrap();
         stream
             .write_all(b"{\"v\":9,\"verb\":\"interrupt\"}\n")

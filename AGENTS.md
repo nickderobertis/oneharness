@@ -298,15 +298,27 @@ Use the `just` recipes; do not hand-roll equivalents.
   <!-- llmlint: ignore-end[agents_md_durable_and_terse, no_redundant_instruction_pointers, comments_earn_their_place] -->
   `run --control` requires `--session` and one live TURN — exactly one harness in
   `parallel`, or a fallback chain of any length (it starts candidates one at a
-  time) whose candidates all declare the SAME mechanism, since the handle moves
-  to whoever serves the turn and any of them can end up holding the socket.
-  Control binds to the session anchor; an anchor that cannot run leaves the rest
-  of the chain running WITHOUT control and says so on stderr, rather than
-  re-binding a live channel to another harness's mechanism. A server-submitted
-  mechanism never spawns the harness CLI, so it keeps its own execution path
-  instead of the chain's sequential CLI driver, and a chain longer than one
-  candidate is refused: falling through would lease a SECOND server. Every
-  violation is a loud usage error. For every control-capable harness and every
+  time), whose candidates may declare DIFFERENT mechanisms. The mechanism is
+  **late-bound**: the socket address is the run's for its whole lifetime, and the
+  serving candidate binds its own mechanism as it takes the turn
+  (`ControlHandle::bind`) and releases it when the turn ends. So `validate_control`
+  may only refuse what is true of a candidate WHATEVER it does — no mechanism at
+  all, an inexpressible mode, a format its mechanism pins differently — and must
+  never reason over the candidate SET where it means the serving candidate. Two
+  refusals that did (mixed mechanisms; a pooled-server chain, on the false premise
+  that falling through leases a second server) were removed in favour of binding
+  late; a third, control bound only to the session ANCHOR, was the same mistake
+  and is gone with them — every candidate now takes the control delivery, since
+  any of them can serve. `PromptDelivery::ControlStream`, the required output
+  format, and the protocol conversation are all per candidate. A server-submitted
+  candidate keeps its own execution model *inside* the sequential driver
+  (`http_controlled_result`), so a chain can hold both kinds; its lease is
+  released with its turn, so there is never a second live one. An interrupt is
+  answered by whatever is bound when it arrives; in the window where nothing is
+  (before the first turn, across a fall-through, after the last) it is
+  `no_active_turn` — never queued for the next candidate, which would land a
+  supervisor's stop on a turn they never saw start. Every violation of what IS
+  refused is a loud usage error. For every control-capable harness and every
   `PermissionMode` that harness supports, a controlled run must be under exactly
   the policy the same mode gives without `--control` (the codex
   `bypass`→`workspaceWrite` bug was one cell of that grid). The way to keep it

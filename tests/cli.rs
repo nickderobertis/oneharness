@@ -20539,7 +20539,6 @@ fn a_redirection_refused_by_an_idle_run_is_not_reported_as_delivered() {
     let listener = oneharness_core::io::control::bind(
         &socket_path(&store, "idle"),
         oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
-        None,
     )
     .expect("bound an idle control socket");
 
@@ -20590,7 +20589,6 @@ fn a_previous_version_supervisor_is_refused_across_the_socket_rather_than_half_u
     let _listener = oneharness_core::io::control::bind(
         &path,
         oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
-        None,
     )
     .expect("bound a control socket");
 
@@ -21139,7 +21137,6 @@ fn interrupt_between_turns_reports_no_active_turn() {
     let listener = oneharness_core::io::control::bind(
         &socket_path(&store, "idle"),
         oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
-        None,
     )
     .unwrap();
 
@@ -21899,7 +21896,6 @@ fn interrupt_defaults_to_the_platform_session_store_and_prints_readable_json() {
     let _listener = oneharness_core::io::control::bind(
         &socket_path(&store, "defaulted"),
         oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
-        None,
     )
     .unwrap();
 
@@ -24045,7 +24041,11 @@ fn control_still_refuses_multiple_harnesses_in_parallel_mode() {
 
 #[cfg(unix)]
 #[test]
-fn controlled_fallback_states_when_later_candidate_loses_control() {
+fn controlled_fallback_carries_control_to_the_candidate_that_served() {
+    // A chain that falls through does NOT lose its lever. The channel binds to
+    // whichever candidate is serving, so the reserve identity that actually ran
+    // holds it — the run says nothing about control being dropped, because
+    // nothing was dropped.
     let mock = mock_bin().display().to_string();
     let rejection = include_str!("fixtures/claude-session-limit-api-error.json").trim();
     let rejection = serde_json::to_string(rejection).unwrap();
@@ -24053,6 +24053,14 @@ fn controlled_fallback_states_when_later_candidate_loses_control() {
         r#"{"type":"result","subtype":"success","result":"served","session_id":"later"}"#,
     )
     .unwrap();
+    let store = control_store_dir("drop");
+    std::fs::create_dir_all(&store).unwrap();
+    // The serving candidate acts like a control-capable harness whose stdin is a
+    // message stream, so the frames it actually received are on disk: that is
+    // what proves the turn was opened over the channel and not merely planned
+    // for it.
+    let turn_log = store.join("reserve-turn.log");
+    let turn_log_arg = turn_log.display().to_string();
     let project = format!(
         r#"
         harnesses = ["claude-code:primary", "claude-code:reserve"]
@@ -24062,11 +24070,10 @@ fn controlled_fallback_states_when_later_candidate_loses_control() {
         [harness.claude-code.variant.primary]
         env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {rejection} }}
         [harness.claude-code.variant.reserve]
-        env = {{ MOCK_STDOUT = {success} }}
+        env = {{ MOCK_STDOUT = {success}, MOCK_TURN_LOG = '{turn_log_arg}' }}
     "#
     );
     let fx = ConfigFixture::new("control-fallback-drop", &project, "");
-    let store = control_store_dir("drop");
     let output = run_with_config(
         &[
             "run",
@@ -24095,10 +24102,31 @@ fn controlled_fallback_states_when_later_candidate_loses_control() {
     assert_eq!(report["fallback"]["fell_through"][0]["reason"], "quota");
     assert_eq!(report["fallback"]["ran"], "claude-code:reserve");
     assert_eq!(report["results"].as_array().unwrap().len(), 2);
+    // The candidate that served took its turn over the control stream (the
+    // prompt is on the channel, not the argv), and the report names the
+    // mechanism it was bound to.
+    let served: Vec<&str> = report["results"][1]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg.as_str().unwrap())
+        .collect();
+    assert!(served.contains(&"--input-format"), "{served:?}");
+    assert!(!served.contains(&"hi"), "{served:?}");
+    assert_eq!(report["control"]["mechanism"], "claude-control-request");
+    // Planned for the channel AND opened on it: the prompt reached the serving
+    // candidate as a control frame. A chain that bound only its head would leave
+    // this candidate's stdin holding nothing at all.
+    let frames = std::fs::read_to_string(&turn_log).expect("the serving candidate logged its turn");
+    let opened = frames
+        .lines()
+        .find(|line| line.contains("\"type\":\"user\""))
+        .unwrap_or_else(|| panic!("no prompt frame reached the serving candidate:\n{frames}"));
+    assert!(opened.contains("hi"), "{opened}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("later candidates continue without control"),
-        "{stderr}"
+        !stderr.contains("without control"),
+        "a fall-through no longer costs the run its lever: {stderr}"
     );
     let _ = std::fs::remove_dir_all(&store);
 }
@@ -24252,27 +24280,24 @@ fn control_on_a_fallback_chain_prints_the_planned_commands() {
     );
     let results = report["results"].as_array().unwrap();
     assert_eq!(results.len(), 2, "every candidate is planned: {report}");
-    // The anchor's command is the control delivery it would actually launch
-    // with (the prompt goes over the held-open stdin, so it is not on the argv);
-    // the candidate behind it is the ordinary inline form.
-    let anchor: Vec<&str> = results[0]["command"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|arg| arg.as_str().unwrap())
-        .collect();
-    assert_eq!(results[0]["harness_id"], "claude-code:primary");
-    assert!(anchor.contains(&"--input-format"), "{anchor:?}");
-    assert!(!anchor.contains(&"hi"), "{anchor:?}");
-    let behind: Vec<&str> = results[1]["command"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|arg| arg.as_str().unwrap())
-        .collect();
-    assert_eq!(results[1]["harness_id"], "claude-code:reserve");
-    assert!(behind.contains(&"hi"), "{behind:?}");
-    assert!(!behind.contains(&"--input-format"), "{behind:?}");
+    // EVERY candidate's command is the control delivery it would actually launch
+    // with (the prompt goes over the held-open stdin, so it is not on the argv),
+    // because any of them can end up serving the turn. A candidate shown with
+    // the inline form is one a fall-through would reach uncontrollable.
+    for (index, id) in ["claude-code:primary", "claude-code:reserve"]
+        .into_iter()
+        .enumerate()
+    {
+        let command: Vec<&str> = results[index]["command"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|arg| arg.as_str().unwrap())
+            .collect();
+        assert_eq!(results[index]["harness_id"], id);
+        assert!(command.contains(&"--input-format"), "{id}: {command:?}");
+        assert!(!command.contains(&"hi"), "{id}: {command:?}");
+    }
     let _ = std::fs::remove_dir_all(&store);
 }
 
@@ -24282,8 +24307,8 @@ fn controlled_fallback_binds_control_to_a_later_anchor_the_session_moved_to() {
     // The control channel binds to the session anchor, not to the head of the
     // chain. Once a turn has fallen through to the reserve identity the handle
     // continues there, so the NEXT controlled dispatch must drive that candidate
-    // over the control stream — and leave the head of the chain on the ordinary
-    // argv delivery it would get without `--control` at all.
+    // over the control stream. The *session* token stays the anchor's alone; the
+    // control delivery is every candidate's, since any of them can serve.
     let mock = mock_bin().display().to_string();
     let rejection = include_str!("fixtures/claude-session-limit-api-error.json").trim();
     let rejection = serde_json::to_string(rejection).unwrap();
@@ -24355,11 +24380,14 @@ fn controlled_fallback_binds_control_to_a_later_anchor_the_session_moved_to() {
             .map(|arg| arg.as_str().unwrap().to_string())
             .collect()
     };
+    // Every candidate takes the control delivery, because every candidate can
+    // serve: the head is planned for it too, so a chain that stopped there would
+    // still be interruptible rather than silently uncontrolled.
     let head = command(&results[0]);
     assert_eq!(results[0]["harness_id"], "claude-code:primary");
     assert!(
-        head.contains(&"hi".to_string()) && !head.contains(&"--input-format".to_string()),
-        "the head of the chain is not the anchor, so it runs uncontrolled: {head:?}"
+        head.contains(&"--input-format".to_string()) && !head.contains(&"hi".to_string()),
+        "every candidate takes the control delivery: {head:?}"
     );
     let anchor = command(&results[1]);
     assert_eq!(results[1]["harness_id"], "claude-code:reserve");
@@ -24367,9 +24395,14 @@ fn controlled_fallback_binds_control_to_a_later_anchor_the_session_moved_to() {
         anchor.contains(&"--input-format".to_string()) && !anchor.contains(&"hi".to_string()),
         "the anchor takes the control delivery: {anchor:?}"
     );
-    // Bound, and reported as such: the anchor resumed its own session token and
-    // stderr never announced control being dropped.
+    // The SESSION, though, still binds to one identity: only the anchor is
+    // handed the stored token, because a native token is not portable between
+    // identities. Control moving per candidate must not move that with it.
     assert!(anchor.contains(&"--resume".to_string()), "{anchor:?}");
+    assert!(
+        !head.contains(&"--resume".to_string()),
+        "a non-anchor candidate is never handed the anchor's token: {head:?}"
+    );
     assert_eq!(second["fallback"]["ran"], "claude-code:reserve");
     assert!(second["control"]["socket"].is_string());
     let _ = std::fs::remove_dir_all(&store);
@@ -24457,12 +24490,14 @@ fn a_controlled_fallback_chain_streams_its_anchors_turn() {
 }
 
 #[test]
-fn control_refuses_a_fallback_chain_whose_candidates_control_differently() {
-    // A chain accepts `--control` because it runs one live turn, not because the
-    // candidates are interchangeable. Any of them can end up holding the channel
-    // — the session's handle moves to whoever serves the turn — and the socket a
-    // supervisor already addresses cannot change mechanisms between dispatches.
-    // So mixed mechanisms are refused before anything spawns, naming both.
+fn control_accepts_a_fallback_chain_whose_candidates_control_differently() {
+    // A chain runs exactly one candidate at a time — it reaches candidate N+1
+    // only because candidate N has finished — so there is never a second live
+    // turn and never two mechanisms in play. The channel binds to whichever
+    // candidate is serving, so claude-code's stdin frame and codex's app-server
+    // can be two links of one chain, and each candidate is planned for its own
+    // control delivery.
+    let store = control_store_dir("mixed-plan");
     let output = run(
         &[
             "run",
@@ -24471,23 +24506,50 @@ fn control_refuses_a_fallback_chain_whose_candidates_control_differently() {
             "fallback",
             "--session",
             "mixed",
+            "--session-dir",
+            &store.display().to_string(),
             "--harness",
             "claude-code,codex",
             "--prompt",
             "hi",
+            "--print-command",
+            "--compact",
         ],
         &[],
     );
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("claude-code (claude-control-request)"),
-        "{stderr}"
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert!(stderr.contains("codex (codex-app-server)"), "{stderr}");
+    let report = json_stdout(&output);
+    let results = report["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2, "{report}");
+    // Each candidate's planned command is the one ITS mechanism needs: claude's
+    // stdin message stream, codex's app-server. Neither carries the prompt, and
+    // neither was reshaped into the other's form.
+    let command = |index: usize| -> Vec<String> {
+        results[index]["command"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|arg| arg.as_str().unwrap().to_string())
+            .collect()
+    };
+    let claude = command(0);
+    assert_eq!(results[0]["harness_id"], "claude-code");
+    assert!(claude.contains(&"--input-format".to_string()), "{claude:?}");
+    assert!(!claude.contains(&"hi".to_string()), "{claude:?}");
+    let codex = command(1);
+    assert_eq!(results[1]["harness_id"], "codex");
+    assert!(codex.contains(&"app-server".to_string()), "{codex:?}");
+    assert!(!codex.contains(&"hi".to_string()), "{codex:?}");
+    let _ = std::fs::remove_dir_all(&store);
 
-    // A candidate with no mechanism at all is the other half of the same rule:
-    // it could anchor the chain and then there would be no lever.
+    // The narrower rule that remains: a candidate with NO mechanism is still
+    // refused, because it could serve the turn and then there would be no lever
+    // at all. That is a property of the request, true whichever candidate runs.
     let none = run(
         &[
             "run",
@@ -24711,18 +24773,158 @@ fn a_controlled_fallback_chain_of_one_still_submits_its_turn_to_a_pooled_server(
     let _ = std::fs::remove_dir_all(&store);
 }
 
+#[cfg(unix)]
 #[test]
-fn control_refuses_a_server_backed_chain_of_more_than_one_candidate() {
-    // Falling through a server-submitted turn means leasing a SECOND server for
-    // the next candidate — a second live turn the one socket cannot address.
-    // Refused before anything spawns rather than fanned out over every
-    // candidate's server, or quietly run through a CLI driver that is not this
-    // mechanism at all.
+fn an_interrupt_after_a_fall_through_reaches_the_mechanism_that_served() {
+    // The whole point of late binding, proven by running it. The chain's head is
+    // claude-code — a `control_request` frame on the run's own stdin — and it is
+    // out of quota, so the turn falls through to codex, whose control is a
+    // `turn/interrupt` over the app-server's JSON-RPC protocol. Nothing about
+    // those two mechanisms is shared.
+    //
+    // A supervisor's interrupt arrives at the one address the run has published
+    // the whole time and must reach whichever candidate is SERVING: it names
+    // `codex-app-server`, the app-server sees an abort addressed to its live
+    // thread and turn, and nothing was ever written at the mechanism the chain
+    // started on.
+    let mock = mock_bin().display().to_string();
+    let rejection = include_str!("fixtures/claude-session-limit-api-error.json").trim();
+    let rejection = serde_json::to_string(rejection).unwrap();
+    let store = control_store_dir("mixed-chain");
+    let store_arg = store.display().to_string();
+    let log = store.join("app-server.log");
+    std::fs::create_dir_all(&store).unwrap();
+    let log_arg = log.display().to_string();
+    // Per-harness env, because both candidates are the same mock binary and each
+    // has to behave like a different real harness: the head answers with a real
+    // quota rejection and exits, the candidate behind it speaks app-server.
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "codex"]
+        run_mode = "fallback"
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {rejection} }}
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_CODEX_APP_SERVER_LOG = '{log_arg}' }}
+    "#
+    );
+    let fx = ConfigFixture::new("control-mixed-chain", &project, "");
+    let cwd_arg = fx.cwd();
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_CONFIG", fx.user_config())
+        .args([
+            "run",
+            "--control",
+            "--session",
+            "mixedchain",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--compact",
+            "--env",
+            &mock_profile_redirect(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the mixed-mechanism controlled chain");
+
+    wait_until("the control socket", || {
+        store.join("control").join("mixedchain.sock").exists()
+    });
+    // The chain has fallen through and the SECOND candidate's turn is genuinely
+    // in flight: `turn/start` is answered with an in-progress turn, so there is
+    // something for the abort below to stop.
+    wait_until("the fell-through candidate's turn to start", || {
+        std::fs::read_to_string(&log)
+            .map(|text| text.contains("turn/start"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "mixedchain",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    // The mechanism the supervisor is told about is the SERVING candidate's, not
+    // the one the chain started on. This single assertion is what the old
+    // refusal existed to make unreachable.
+    assert_eq!(json_stdout(&interrupt)["mechanism"], "codex-app-server");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    assert_eq!(
+        report["fallback"]["fell_through"][0]["harness"],
+        "claude-code"
+    );
+    assert_eq!(report["fallback"]["fell_through"][0]["reason"], "quota");
+    assert_eq!(report["fallback"]["ran"], "codex");
+    // The run's own `control` block names the mechanism that served too, so a
+    // consumer reading the report reaches the same conclusion the supervisor did
+    // — never the mechanism the chain was planned to start on.
+    assert_eq!(report["control"]["mechanism"], "codex-app-server");
+    assert_eq!(report["control"]["interrupts"][0]["outcome"], "served");
+    // The turn's own signals come off the wire the serving candidate spoke on.
+    assert_eq!(report["results"][1]["session_id"], "mock-codex-thread");
+    assert_eq!(
+        report["results"][1]["text_source"],
+        "jsonrpc:codex-app-server"
+    );
+
+    // And the abort really landed on that candidate's live turn, addressed to
+    // both coordinates the app-server requires.
+    let served = std::fs::read_to_string(&log).unwrap();
+    let abort = served
+        .lines()
+        .find(|line| line.contains("turn/interrupt"))
+        .unwrap_or_else(|| panic!("no interrupt reached the serving candidate:\n{served}"));
+    assert!(
+        abort.contains("mock-codex-thread") && abort.contains("mock-codex-turn"),
+        "the interrupt must name the thread and the turn: {abort}"
+    );
+    assert!(
+        !served.contains("INTERRUPT_MISADDRESSED"),
+        "the app-server rejected the interrupt's coordinates:\n{served}"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
+fn control_accepts_a_server_backed_chain_of_more_than_one_candidate() {
+    // Falling through a server-submitted turn does NOT mean two live turns: the
+    // chain reaches the second candidate only once the first has finished, and
+    // its lease is released with it. So a pooled-server chain plans every
+    // candidate's own server launch and binds the channel to whichever one ends
+    // up serving.
     let fx = ConfigFixture::new(
-        "control-http-chain-refused",
+        "control-http-chain-planned",
         "[harness.opencode.variant.primary]\n[harness.opencode.variant.reserve]\n",
         "",
     );
+    let store = control_store_dir("pooled-plan");
     let output = run_with_config(
         &[
             "run",
@@ -24731,18 +24933,44 @@ fn control_refuses_a_server_backed_chain_of_more_than_one_candidate() {
             "fallback",
             "--session",
             "pooled",
+            "--session-dir",
+            &store.display().to_string(),
             "--harness",
             "opencode:primary,opencode:reserve",
             "--prompt",
             "hi",
             "--cwd",
             &fx.cwd(),
+            "--print-command",
+            "--compact",
         ],
         &[],
         &fx.user_config(),
     );
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("pooled server"), "{stderr}");
-    assert!(stderr.contains("opencode-http"), "{stderr}");
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    let results = report["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2, "{report}");
+    for (index, id) in ["opencode:primary", "opencode:reserve"]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(results[index]["harness_id"], id);
+        let command: Vec<&str> = results[index]["command"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|arg| arg.as_str().unwrap())
+            .collect();
+        assert!(
+            command.contains(&"serve"),
+            "{id} plans its own server launch: {command:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&store);
 }

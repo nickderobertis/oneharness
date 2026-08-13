@@ -296,8 +296,14 @@ Use the `just` recipes; do not hand-roll equivalents.
   `CURSOR_API_KEY` from its child: passing it authenticates rather than selects,
   a hazard any future Cursor dispatch also hits.
   <!-- llmlint: ignore-end[agents_md_durable_and_terse, no_redundant_instruction_pointers, comments_earn_their_place] -->
-  `run --control` requires `--session` and exactly one harness; both violations
-  are loud usage errors. For every control-capable harness and every
+  `run --control` requires `--session` and one live TURN — exactly one harness in
+  `parallel`, or a fallback chain of any length (it starts candidates one at a
+  time) whose candidates all declare the SAME mechanism, since the handle moves
+  to whoever serves the turn and any of them can end up holding the socket.
+  Control binds to the session anchor; an anchor that cannot run leaves the rest
+  of the chain running WITHOUT control and says so on stderr, rather than
+  re-binding a live channel to another harness's mechanism. Every violation is a
+  loud usage error. For every control-capable harness and every
   `PermissionMode` that harness supports, a controlled run must be under exactly
   the policy the same mode gives without `--control` (the codex
   `bypass`→`workspaceWrite` bug was one cell of that grid). The way to keep it

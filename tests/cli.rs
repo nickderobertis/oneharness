@@ -25014,6 +25014,148 @@ fn a_controlled_fallback_chain_of_one_still_submits_its_turn_to_a_pooled_server(
 
 #[cfg(unix)]
 #[test]
+fn a_chain_that_falls_through_to_a_pooled_server_candidate_runs_it_on_its_own_model() {
+    // A chain can hold both execution models, and the server-submitted one keeps
+    // its own INSIDE the sequential driver. Proven by running it rather than by
+    // printing commands: the head is claude-code on its stdin message stream and
+    // is out of quota, so the chain falls through to opencode, whose turn is
+    // leased from the pool and never spawns a harness CLI at all.
+    //
+    // The lease is taken only once the head has finished, which is why a chain
+    // longer than one candidate is not a second live server — and the channel
+    // binds to the pooled mechanism at that point, so the supervisor's interrupt
+    // goes out on the server's own route.
+    let mock = mock_bin().display().to_string();
+    let rejection = include_str!("fixtures/claude-session-limit-api-error.json").trim();
+    let rejection = serde_json::to_string(rejection).unwrap();
+    let store = control_store_dir("http-fallthrough");
+    let store_arg = store.display().to_string();
+    let turn_log = store.join("head-turn.log");
+    let turn_log_arg = turn_log.display().to_string();
+    let log = store.join("server.log");
+    let pool = store.join("pool");
+    // The head takes `MOCK_TURN_LOG`, which the mock dispatches BEFORE its HTTP
+    // server mode — so the run-wide `MOCK_HTTP_CONTROL_LOG` below reaches only
+    // the candidate that is actually meant to be a server.
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "opencode"]
+        run_mode = "fallback"
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_TURN_LOG = '{turn_log_arg}', MOCK_TURN_RESULT = {rejection} }}
+        [harness.opencode]
+        bin = '{mock}'
+    "#
+    );
+    let fx = ConfigFixture::new("control-http-fallthrough", &project, "");
+    let cwd_arg = fx.cwd();
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_CONFIG", fx.user_config())
+        .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
+        .env("XDG_STATE_HOME", pool.display().to_string())
+        .args([
+            "run",
+            "--control",
+            "--session",
+            "httpfall",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--model",
+            "anthropic/claude-haiku-4-5",
+            "--compact",
+            "--env",
+            &mock_profile_redirect(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the falling-through HTTP chain");
+
+    // Waited for FIRST, because it is the claim: a pooled candidate reached by a
+    // fall-through still runs on its own server. Routed through the sequential
+    // CLI driver instead, no server is ever launched, the turn is over in
+    // milliseconds and there is nothing for a supervisor to address — so this is
+    // where that regression stops, naming what was missing.
+    wait_until("the pooled candidate's own server to take the turn", || {
+        std::fs::read_to_string(&log)
+            .map(|text| text.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+    wait_until("the control socket", || {
+        store.join("control").join("httpfall.sock").exists()
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "httpfall",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    // Bound to the candidate that fell through TO, not the one the chain started
+    // on: the supervisor is told the pooled mechanism.
+    assert_eq!(json_stdout(&interrupt)["mechanism"], "opencode-http");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    assert_eq!(
+        report["fallback"]["fell_through"][0]["harness"],
+        "claude-code"
+    );
+    assert_eq!(report["fallback"]["fell_through"][0]["reason"], "quota");
+    assert_eq!(report["fallback"]["ran"], "opencode");
+    assert_eq!(report["control"]["mechanism"], "opencode-http");
+    assert_eq!(report["control"]["interrupts"][0]["outcome"], "served");
+    // The pooled candidate ran on its OWN execution model: the recorded command
+    // is the server's launch, not a headless CLI invocation the sequential
+    // driver would otherwise have given it.
+    let served: Vec<&str> = report["results"][1]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg.as_str().unwrap())
+        .collect();
+    assert_eq!(report["results"][1]["harness_id"], "opencode");
+    assert_eq!(served[1], "serve", "{served:?}");
+    assert_eq!(report["results"][1]["session_id"], "ses_mock");
+    // And the abort landed on the server's own route for that session.
+    let requests = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        requests
+            .lines()
+            .any(|line| line.starts_with("POST /api/session/ses_mock/interrupt")),
+        "{requests}"
+    );
+    // The head really did take its turn over the stdin mechanism first, so this
+    // chain exercised both execution models in one run.
+    let head = std::fs::read_to_string(&turn_log).expect("the head logged its turn");
+    assert!(head.contains("keep working"), "{head}");
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
 fn an_interrupt_after_a_fall_through_reaches_the_mechanism_that_served() {
     // The whole point of late binding, proven by running it. The chain's head is
     // claude-code — a `control_request` frame on the run's own stdin — and it is

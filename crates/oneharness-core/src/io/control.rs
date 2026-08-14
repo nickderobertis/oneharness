@@ -110,9 +110,43 @@ enum Backend {
 /// without the backend that speaks it would be a channel naming a mechanism it
 /// is not on, which is exactly the state a supervisor must never be able to
 /// address.
+///
+/// [`Mechanism::bind`] is the only place the pair is chosen, so a shape can
+/// never be recorded against a backend that does not speak it. The two turn
+/// accessors that write to a bound mechanism afterwards
+/// ([`ControlHandle::begin_http_turn`], [`ControlHandle::end_http_turn`]) swap
+/// an `Http` backend's live turn, which is that backend's payload rather than
+/// its family.
 struct Mechanism {
     shape: ControlShape,
     backend: Backend,
+}
+
+impl Mechanism {
+    /// The backend for `shape`, paired with the shape that backend actually
+    /// speaks.
+    ///
+    /// A `Dialogue` is built for exactly one shape and answers only that
+    /// protocol, so it — not the caller's argument — says what this mechanism
+    /// is; passing a shape the conversation does not speak cannot produce a
+    /// mechanism claiming it. The two backends that hold no conversation are
+    /// derived from the shape itself, so they agree by construction as well.
+    fn bind(shape: ControlShape, dialogue: Option<Dialogue>) -> Self {
+        match dialogue {
+            Some(dialogue) => Mechanism {
+                shape: dialogue.shape(),
+                backend: Backend::Dialogue(dialogue),
+            },
+            None if HttpShape::of(shape).is_some() => Mechanism {
+                shape,
+                backend: Backend::Http(None),
+            },
+            None => Mechanism {
+                shape,
+                backend: Backend::Stdin,
+            },
+        }
+    }
 }
 
 /// Shared, thread-safe access to a run's control mechanism plus the audit trail
@@ -195,16 +229,15 @@ impl ControlHandle {
     /// candidate is serving. Called before the candidate's turn opens; every
     /// interrupt served from here until [`Self::release`] reaches that turn.
     pub fn bind(&self, shape: ControlShape, dialogue: Option<Dialogue>) {
-        let backend = match dialogue {
-            Some(dialogue) => Backend::Dialogue(dialogue),
-            None if HttpShape::of(shape).is_some() => Backend::Http(None),
-            None => Backend::Stdin,
-        };
-        *self.mechanism() = Some(Mechanism { shape, backend });
+        let mechanism = Mechanism::bind(shape, dialogue);
+        // Reported from the mechanism rather than from the argument, so the
+        // shape a supervisor is told is the one that will answer them.
+        let bound = mechanism.shape;
+        *self.mechanism() = Some(mechanism);
         *self
             .reported
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = shape;
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = bound;
     }
 
     /// Release the serving candidate's mechanism: its turn is over, so an
@@ -1293,6 +1326,40 @@ mod tests {
         // still what the finished run reports.
         handle.release();
         assert_eq!(handle.shape(), ControlShape::CodexAppServer);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_conversation_decides_the_mechanism_rather_than_the_shape_passed_beside_it() {
+        use crate::domain::control::AbsolutePath;
+        use crate::domain::dialogue::DialogueConfig;
+        use crate::domain::mode::{ApprovalPosture, PermissionMode};
+        // A dialogue answers exactly one protocol, so it — not the argument
+        // beside it — is what the channel is on. Reporting the argument instead
+        // would let the run name `claude-control-request` while an app-server
+        // conversation held the turn, and a supervisor addressing the mechanism
+        // they were told about would be writing at one nobody is on.
+        let dir = temp_dir("mismatch");
+        let path = socket_path(&dir, "paired");
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let handle = listener.handle();
+        let dialogue = Dialogue::new(
+            ControlShape::CodexAppServer,
+            DialogueConfig {
+                prompt: "keep working".to_string(),
+                cwd: AbsolutePath::new(&dir).unwrap(),
+                model: None,
+                mode: PermissionMode::Bypass,
+                posture: ApprovalPosture::Unattended,
+            },
+        );
+
+        // Bound with a shape that is not the conversation's.
+        handle.bind(ControlShape::ClaudeControlRequest, dialogue);
+        assert_eq!(handle.shape(), ControlShape::CodexAppServer);
+        // And the backend really is the conversation, so what is reported and
+        // what would answer an interrupt are the same mechanism.
+        assert!(handle.drives_turn_over_stdin());
         std::fs::remove_dir_all(&dir).ok();
     }
 

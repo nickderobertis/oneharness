@@ -264,6 +264,15 @@ impl Dialogue {
         self.pending_redirect = None;
     }
 
+    /// The shape this conversation was built for, and the only protocol it
+    /// speaks: every frame it writes and every line it accepts is that shape's.
+    /// A caller binding it can therefore read the mechanism off the dialogue
+    /// instead of carrying a second copy that could disagree with it.
+    #[must_use]
+    pub fn shape(&self) -> ControlShape {
+        self.shape
+    }
+
     /// The harness's native session identifier, once the server minted one.
     #[must_use]
     pub fn session_id(&self) -> Option<&str> {

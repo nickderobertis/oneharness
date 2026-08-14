@@ -2159,15 +2159,9 @@ fn record_streamed_history(
 }
 
 /// Everything a controlled run's driver needs to bind the mechanism of the
-/// candidate that is about to serve.
-///
-/// This is the late binding, in data. A fallback chain reaches candidate N+1
-/// only because candidate N has finished, so exactly one candidate is ever
-/// serving — but *which* one is decided while the chain runs, not before it. So
-/// the driver carries the run-wide per-turn settings (working directory, mode,
-/// model) plus every candidate's own assembled prompt, and takes the rest —
-/// mechanism, protocol conversation, approval posture — from the candidate
-/// itself at the moment it takes the turn.
+/// candidate that is about to serve: the run-wide per-turn settings plus every
+/// candidate's assembled prompt. The rest — mechanism, conversation, approval
+/// posture — comes from the candidate itself as it takes the turn.
 struct ControlledChain<'a> {
     /// The shared handle behind the run's socket address. The address is the
     /// run's for its whole lifetime; what sits behind it changes per candidate.

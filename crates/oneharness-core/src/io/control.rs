@@ -82,41 +82,26 @@ enum TurnState {
 /// What drives — and therefore what interrupts — the turn a candidate is
 /// serving.
 ///
-/// Exactly one applies, decided from the serving candidate's [`ControlShape`]
-/// when it takes the turn: [`Dialogue::new`] answers `Some` only for the two
-/// protocol shapes, which are disjoint from the ones [`HttpShape::of`]
-/// recognizes. Modelling them as one value rather than a field each is what
-/// makes "a dialogue *and* an HTTP turn" unspellable instead of merely
-/// unreachable.
-///
-/// Each variant carries whatever its own shape is knowable from, so
-/// [`Backend::shape`] is *derived* rather than stored beside it. A shape held
-/// as a second field could be set to one the backend does not speak — a channel
-/// naming a mechanism it is not on, which is the one thing a supervisor must
-/// never be able to address — and no assignment anywhere could be trusted to
-/// keep the two in step.
+/// Each variant carries what its own shape is knowable from, so
+/// [`Backend::shape`] is derived. A shape stored beside it could be set to one
+/// the backend does not speak — a channel naming a mechanism it is not on,
+/// which is the one thing a supervisor must never be able to address.
 enum Backend {
-    /// Control rides the harness's ordinary run: nothing to negotiate, and an
-    /// interrupt is a frame written to the child's own stdin. Claude Code's
-    /// mechanism is the only one that works this way — it is exactly the shape
-    /// that neither drives a turn nor needs a server — so the variant needs no
-    /// payload to say which shape it is.
+    /// Control rides the harness's ordinary run: an interrupt is a frame on the
+    /// child's own stdin. Claude Code's is the only mechanism that neither
+    /// drives a turn nor needs a server, so the variant needs no payload.
     Stdin,
-    /// A JSON-RPC conversation on the child's stdin drives the turn, and is the
-    /// only thing that knows the ids an interrupt has to address. It was built
-    /// for one protocol and answers only that one, so it reports its own shape.
+    /// A JSON-RPC conversation drives the turn and is the only thing that knows
+    /// the ids an interrupt has to address.
     Dialogue(Dialogue),
-    /// The turn was submitted to a control server, so an interrupt is one more
-    /// request against the same session — there is no stdin in this path at
-    /// all. The [`HttpShape`] is which server; the turn is `Some` only between
-    /// the turn opening and ending, which is exactly the window in which there
-    /// is something to abort.
+    /// Submitted to a control server, so an interrupt is one more request
+    /// against the same session. The turn is `Some` only between its opening
+    /// and its end — the window in which there is something to abort.
     Http(HttpShape, Option<HttpTurn>),
 }
 
 impl Backend {
-    /// The mechanism this backend speaks — read off the backend itself, so the
-    /// shape a supervisor is told is always the one that would answer them.
+    /// The mechanism this backend speaks.
     fn shape(&self) -> ControlShape {
         match self {
             Backend::Stdin => ControlShape::ClaudeControlRequest,
@@ -134,37 +119,25 @@ impl Backend {
     }
 }
 
-/// What a candidate binds when it takes the turn — one variant per mechanism
-/// family, each carrying whatever its own shape is knowable from.
+/// What a candidate binds when it takes the turn: [`ControlHandle::bind`]'s
+/// whole argument.
 ///
-/// This is the whole public surface of [`ControlHandle::bind`], and it is an
-/// enum rather than a `(ControlShape, Option<Dialogue>)` pair so that a shape
-/// and a conversation that do not speak it cannot be handed over together. A
-/// caller cannot name codex's mechanism while passing an ACP conversation, or
-/// claim a pooled server for a shape that has none: there is no field to
-/// disagree with. [`Binding::for_shape`] is the one place a `ControlShape`
-/// becomes one of these, so the mapping lives in a single arm-per-family match
-/// instead of at every call site.
+/// An enum rather than a `(ControlShape, Option<Dialogue>)` pair, so a shape
+/// and a conversation that does not speak it cannot be handed over together.
 pub enum Binding {
-    /// Control rides the harness's ordinary run — Claude Code's control frame
-    /// on the child's own stdin.
+    /// Claude Code's control frame on the child's own stdin.
     Stdin,
-    /// A JSON-RPC conversation drives the turn and reports the protocol it was
-    /// built for. Boxed because it dwarfs the other two variants, which would
-    /// otherwise cost every binding a conversation's worth of stack.
+    /// A JSON-RPC conversation, which reports the protocol it was built for.
+    /// Boxed because it dwarfs the other two variants.
     Dialogue(Box<Dialogue>),
-    /// The turn is submitted to a pooled control server of this shape.
+    /// A turn submitted to a pooled control server of this shape.
     PooledServer(HttpShape),
 }
 
 impl Binding {
-    /// The binding for `shape`, given the conversation [`Dialogue::new`] built
-    /// for it — `Some` exactly for the shapes that drive a turn over one.
-    ///
-    /// A dialogue is taken at its word: it was constructed for the shape it is
-    /// being bound against, and it is the only thing that knows the ids an
-    /// interrupt must address. The remaining shapes split on whether they
-    /// submit to a pooled server.
+    /// The binding for `shape`, given whatever [`Dialogue::new`] built for it.
+    /// The one place a `ControlShape` becomes a `Binding`, so the family
+    /// mapping lives here rather than at each call site.
     #[must_use]
     pub fn for_shape(shape: ControlShape, dialogue: Option<Dialogue>) -> Self {
         match (dialogue, HttpShape::of(shape)) {

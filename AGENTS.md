@@ -300,26 +300,20 @@ Use the `just` recipes; do not hand-roll equivalents.
   `parallel`, or a fallback chain of any length (it starts candidates one at a
   time), whose candidates may declare DIFFERENT mechanisms. The mechanism is
   **late-bound**: the socket address is the run's, and the serving candidate
-  binds its own mechanism as it takes the turn (`ControlHandle::bind`, whose
-  `Backend` derives the shape so the two can never disagree) and releases it
-  when the turn ends. So `validate_control` may only refuse what is true of a
-  candidate WHATEVER it does — no mechanism at all, an inexpressible mode, a
-  format its mechanism pins differently — and never over the candidate SET where
-  it means the serving candidate. Mixed mechanisms and a multi-candidate
-  pooled-server chain are therefore both accepted: one candidate serves at a
-  time, so one mechanism and one lease are live at a time. Every candidate takes
-  the control delivery — `PromptDelivery::ControlStream`, the required output
-  format, the protocol conversation — while the session token stays the anchor's
-  (it is not portable between identities). A server-submitted candidate keeps
-  its own execution model *inside* the sequential driver
-  (`http_controlled_result`), so a chain can hold both kinds and can fall
-  through either way. An interrupt is answered by whatever is bound when it
-  arrives, and is `no_active_turn` when nothing is (before the first turn, across
-  a fall-through, after the last); a redirection its own turn never delivered is
-  reported and dropped there, never carried to the next candidate. `--stream` is
-  refused for ANY candidate submitting to a server, not just the first: it
-  promises this run's stdout before a candidate is chosen. Every violation is a
-  loud usage error. For every control-capable harness and every `PermissionMode`
+  binds its own as it takes the turn and releases it when the turn ends. So
+  `validate_control` may only refuse what is true of a candidate WHATEVER it
+  does — no mechanism at all, an inexpressible mode, a format its mechanism pins
+  differently — and never over the candidate SET where it means the serving one.
+  Mixed mechanisms and a multi-candidate pooled-server chain are therefore both
+  accepted: one candidate serves at a time, so one mechanism and one lease are
+  live at a time. Every candidate takes the control delivery; only the session
+  token stays the anchor's, not being portable between identities. Every
+  candidate-wise refusal must hold for a candidate in ANY position, so each one
+  needs a test with the offending candidate second. An interrupt reaches
+  whatever is bound, and is `no_active_turn` when nothing is; a redirection its
+  own turn never delivered is dropped there and said, never carried to the next
+  candidate. Every violation is a loud usage error. For every control-capable
+  harness and every `PermissionMode`
   that harness supports, a controlled run must be under exactly the policy the
   same mode gives without `--control` (the codex `bypass`→`workspaceWrite` bug
   was one cell of that grid). The way to keep it

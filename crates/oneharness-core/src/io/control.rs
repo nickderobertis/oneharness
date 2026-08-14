@@ -249,7 +249,7 @@ impl ControlHandle {
     /// are ever held at once — the ordering the rest of this type relies on
     /// (`mechanism` before `redirect` before `state`) is a nesting rule, and the
     /// cheapest way to obey it here is to nest nothing.
-    pub fn release(&self) {
+    pub(crate) fn release(&self) {
         let undelivered = matches!(
             self.mechanism().take(),
             Some(Backend::Dialogue(dialogue)) if dialogue.has_pending_redirect()

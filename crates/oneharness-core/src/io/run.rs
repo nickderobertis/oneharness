@@ -1037,8 +1037,6 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
             });
             job_plans.push(harness_plan);
         }
-        // One entry per plan entry, whichever branch produced it, so the driver
-        // can index a candidate's prompt by the position it runs in.
         control_prompts.push(unit_control_prompt);
     }
     debug_assert_eq!(control_prompts.len(), plan.len());
@@ -1105,7 +1103,7 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
     // it takes the turn. The per-turn values (cwd, mode, model) are the run's;
     // the prompt and the mechanism are the candidate's.
     let controlled = match control_listener.as_ref() {
-        Some(listener) => Some(ControlledChain {
+        Some(listener) => Some(ControlledRun {
             handle: listener.handle_ref(),
             prompts: &control_prompts,
             cwd: control_cwd(args)?,
@@ -2162,7 +2160,7 @@ fn record_streamed_history(
 /// candidate that is about to serve: the run-wide per-turn settings plus every
 /// candidate's assembled prompt. The rest — mechanism, conversation, approval
 /// posture — comes from the candidate itself as it takes the turn.
-struct ControlledChain<'a> {
+struct ControlledRun<'a> {
     /// The shared handle behind the run's socket address. The address is the
     /// run's for its whole lifetime; what sits behind it changes per candidate.
     handle: &'a control_io::ControlHandle,
@@ -2174,7 +2172,7 @@ struct ControlledChain<'a> {
     model: Option<String>,
 }
 
-impl ControlledChain<'_> {
+impl ControlledRun<'_> {
     /// Bind the channel to `spec`'s mechanism for the turn it is about to
     /// serve, building the protocol conversation the shape needs.
     fn bind(&self, shape: ControlShape, spec: &'static HarnessSpec, prompt: &str) {
@@ -2247,7 +2245,7 @@ fn drive_plan_sequentially(
     multi_model: bool,
     history_writer: Option<&HistoryWriter>,
     unit_ids: &[&str],
-    controlled: Option<&ControlledChain<'_>>,
+    controlled: Option<&ControlledRun<'_>>,
     sink: &mut Option<&mut dyn EventSink>,
     cancel: &CancelToken,
 ) -> StreamedPlan {
@@ -2258,8 +2256,6 @@ fn drive_plan_sequentially(
     for (index, entry) in plan.into_iter().enumerate() {
         let run_id = history_writer.map(HistoryWriter::begin_run);
         let streamed = match entry {
-            // Unavailable/skipped — nothing to stream, but it still takes its
-            // place in the chain below.
             Plan::Ready(result) => StreamedHarness {
                 result: *result,
                 persisted_event_indexes: BTreeSet::new(),
@@ -2333,7 +2329,7 @@ fn drive_plan_sequentially(
 /// than a frame written at a mechanism nobody is on.
 fn drive_controlled_candidate(
     unit: StreamedUnit<'_>,
-    chain: &ControlledChain<'_>,
+    chain: &ControlledRun<'_>,
     index: usize,
     history: Option<(&HistoryWriter, crate::domain::history::HistoryId)>,
     sink: &mut Option<&mut dyn EventSink>,

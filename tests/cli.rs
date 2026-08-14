@@ -23938,6 +23938,101 @@ fn streaming_a_server_submitted_controlled_turn_is_a_usage_error() {
 }
 
 #[test]
+fn streaming_is_refused_for_a_server_submitted_candidate_anywhere_in_the_chain() {
+    // `--stream` is a promise about THIS RUN's stdout, made before a candidate is
+    // chosen. A chain whose head streams fine but whose reserve submits its turn
+    // to a server cannot keep that promise, so the refusal has to name the
+    // reserve and land up front — discovering it after the head has fallen
+    // through would strand a supervisor mid-run with a downgrade they never
+    // agreed to, and quietly selecting the ordinary CLI run instead would leave
+    // them holding a lever whose interrupt does not reach the turn.
+    let mock = mock_bin().display().to_string();
+    let store = control_store_dir("stream-late-http");
+    let store_arg = store.display().to_string();
+    // A spawn ledger: the mock appends a line per invocation, so the file's
+    // ABSENCE is the proof that the refusal beat every candidate to it.
+    let spawned = store.join("spawned.log");
+    let spawned_arg = spawned.display().to_string();
+    // claude-code first (a stdin message stream, which streams perfectly well),
+    // opencode second (an HTTP control server, which has no CLI stdout at all).
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "opencode"]
+        run_mode = "fallback"
+        [harness.claude-code]
+        bin = '{mock}'
+        [harness.opencode]
+        bin = '{mock}'
+    "#
+    );
+    let fx = ConfigFixture::new("control-stream-late-http", &project, "");
+    let cwd_arg = fx.cwd();
+    let output = run_with_config(
+        &[
+            "run",
+            "--control",
+            "--stream",
+            "--session",
+            "latehttp",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "hi",
+            "--compact",
+        ],
+        &[("MOCK_LOG_FILE", &spawned_arg)],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Named by the candidate that cannot keep the promise, not by the head that
+    // could: a supervisor has to know which link of the chain to change.
+    assert!(stderr.contains("`opencode`"), "{stderr}");
+    assert!(
+        stderr.contains("submits its controlled turn to a server"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("--stream"), "{stderr}");
+    // Up front, before any harness ran: no candidate was spawned, so nothing
+    // was billed and no turn was half-taken on the way to the refusal.
+    assert!(
+        !spawned.exists(),
+        "a harness ran before the refusal: {:?}",
+        std::fs::read_to_string(&spawned)
+    );
+
+    // The same chain without `--stream` is accepted, so the refusal is about the
+    // combination and not about a chain that mixes mechanisms.
+    let ok = run_with_config(
+        &[
+            "run",
+            "--control",
+            "--session",
+            "latehttp2",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "hi",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        ok.status.success(),
+        "exit {:?}: {}",
+        ok.status.code(),
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[test]
 fn control_with_a_model_fan_out_is_a_usage_error() {
     // A fan-out multiplies the run into several (harness, model) units, and the
     // controlled path drives exactly one live turn — so there is no single turn
@@ -24128,6 +24223,150 @@ fn controlled_fallback_carries_control_to_the_candidate_that_served() {
         !stderr.contains("without control"),
         "a fall-through no longer costs the run its lever: {stderr}"
     );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_redirection_its_candidate_never_delivered_is_said_and_dropped_at_the_fall_through() {
+    // What a supervisor OBSERVES when a controlled candidate releases holding a
+    // redirection. They interrupt the head of a chain with `--input` and are
+    // told the message was taken; that candidate's turn then ends without ever
+    // running it, because the identity is out of session quota, and the chain
+    // falls through to the reserve.
+    //
+    // The message must not go with it. Delivering it into the reserve's fresh
+    // turn would run work the supervisor aimed at a turn that no longer exists,
+    // on a harness they never saw start — so it is dropped, and the run SAYS so
+    // on stderr rather than letting the message disappear silently.
+    let mock = mock_bin().display().to_string();
+    let store = control_store_dir("redirect-fallthrough");
+    let store_arg = store.display().to_string();
+    let head_log = store.join("head-turn.log");
+    let head_log_arg = head_log.display().to_string();
+    let reserve_log = store.join("reserve-turn.log");
+    let reserve_log_arg = reserve_log.display().to_string();
+    // The head holds its turn open so the interrupt lands on a live one. It then
+    // declares the provider's session-limit rejection and exits with the turn it
+    // was aborted out of, WITHOUT its terminal `result` document — the shape a
+    // harness that dies mid-turn leaves behind. So the turn ends at EOF with the
+    // redirection still in the run's hands, which is the state `release` has to
+    // answer for. The rejection declares no work, so the chain falls through it
+    // rather than stopping here.
+    let rejection = serde_json::to_string(
+        r#"{"type":"system","subtype":"error","terminal_reason":"api_error","api_error_status":429,"result":"You've hit your session limit · resets 1pm"}"#,
+    )
+    .unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code:primary", "claude-code:reserve"]
+        run_mode = "fallback"
+        [harness.claude-code]
+        bin = '{mock}'
+        [harness.claude-code.variant.primary]
+        env = {{ MOCK_TURN_LOG = '{head_log_arg}', MOCK_TURN_HOLD = "1", MOCK_TURN_ONCE = "1", MOCK_TURN_RESULT = {rejection} }}
+        [harness.claude-code.variant.reserve]
+        env = {{ MOCK_TURN_LOG = '{reserve_log_arg}' }}
+    "#
+    );
+    let fx = ConfigFixture::new("control-redirect-fallthrough", &project, "");
+    let cwd_arg = fx.cwd();
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_CONFIG", fx.user_config())
+        .args([
+            "run",
+            "--control",
+            "--session",
+            "dropped",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "keep working",
+            "--timeout",
+            "60",
+            "--compact",
+            "--env",
+            &mock_profile_redirect(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the controlled chain");
+
+    wait_until("the control socket", || {
+        store.join("control").join("dropped.sock").exists()
+    });
+    wait_until("the head candidate's turn to start", || {
+        std::fs::read_to_string(&head_log)
+            .map(|log| log.contains("keep working"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "dropped",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--input",
+            "do X instead",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    // The supervisor is told the run took their message, so they stop owning it
+    // — which is exactly why its loss has to be announced.
+    assert_eq!(json_stdout(&interrupt)["redirected"], true);
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    // The chain did fall through, so there genuinely was another candidate the
+    // message could have been carried to.
+    assert_eq!(
+        report["fallback"]["fell_through"][0]["harness"],
+        "claude-code:primary"
+    );
+    assert_eq!(report["fallback"]["fell_through"][0]["reason"], "quota");
+    assert_eq!(report["fallback"]["ran"], "claude-code:reserve");
+    assert_eq!(report["control"]["interrupts"][0]["redirected"], true);
+
+    // Said: a message the run accepted and could not deliver is never lost in
+    // silence — the supervisor learns their redirection did not run.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("the message was not carried to another candidate"),
+        "the dropped redirection was not reported: {stderr}"
+    );
+
+    // And dropped: asserted at the harness, because "the run finished" and "the
+    // redirected work happened somewhere" are different claims and only the
+    // turn logs can tell them apart. The reserve opened its turn with the run's
+    // OWN prompt and never saw the supervisor's message.
+    let reserve = std::fs::read_to_string(&reserve_log).expect("the reserve logged its turn");
+    assert!(
+        reserve.contains("keep working"),
+        "the reserve never took the turn:\n{reserve}"
+    );
+    assert!(
+        !reserve.contains("do X instead"),
+        "a redirection aimed at the head's turn landed in the reserve's:\n{reserve}"
+    );
+    // Nor did it reach the head after its own turn had ended.
+    let head = std::fs::read_to_string(&head_log).unwrap();
+    assert!(!head.contains("do X instead"), "head turn log:\n{head}");
     let _ = std::fs::remove_dir_all(&store);
 }
 

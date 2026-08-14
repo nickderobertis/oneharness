@@ -123,7 +123,10 @@ impl Backend {
 ///
 /// An enum rather than a `(ControlShape, Option<Dialogue>)` pair, so a shape
 /// and a conversation that does not speak it cannot be handed over together.
-pub enum Binding {
+/// Crate-internal, like [`ControlHandle::bind`]: which candidate holds the
+/// channel is the runner's to decide, and a consumer rebinding it out of band
+/// would move the socket off the turn its own run is serving.
+pub(crate) enum Binding {
     /// Claude Code's control frame on the child's own stdin.
     Stdin,
     /// A JSON-RPC conversation, which reports the protocol it was built for.
@@ -212,7 +215,7 @@ impl ControlHandle {
     /// the run's for its whole lifetime, and what sits behind it is whichever
     /// candidate is serving. Called before the candidate's turn opens; every
     /// interrupt served from here until [`Self::release`] reaches that turn.
-    pub fn bind(&self, binding: Binding) {
+    pub(crate) fn bind(&self, binding: Binding) {
         let backend = Backend::of(binding);
         // Reported from the backend, which is the only thing that knows what it
         // speaks — so the shape a supervisor is told is the one answering them.

@@ -134,20 +134,6 @@ pub enum Binding {
     PooledServer(HttpShape),
 }
 
-impl Binding {
-    /// The binding for `shape`, given whatever [`Dialogue::new`] built for it.
-    /// The one place a `ControlShape` becomes a `Binding`, so the family
-    /// mapping lives here rather than at each call site.
-    #[must_use]
-    pub fn for_shape(shape: ControlShape, dialogue: Option<Dialogue>) -> Self {
-        match (dialogue, HttpShape::of(shape)) {
-            (Some(dialogue), _) => Binding::Dialogue(Box::new(dialogue)),
-            (None, Some(http)) => Binding::PooledServer(http),
-            (None, None) => Binding::Stdin,
-        }
-    }
-}
-
 /// Shared, thread-safe access to a run's control mechanism plus the audit trail
 /// of everything it served (which the report echoes).
 ///
@@ -252,16 +238,20 @@ impl ControlHandle {
     /// asking would lose a codex or ACP redirection in silence — the one
     /// outcome this warning exists to prevent.
     ///
-    /// Each field is taken in its own statement so no two of these locks are
-    /// ever held at once — the ordering the rest of this type relies on
+    /// The backend is taken and inspected under ONE acquisition of its lock:
+    /// reading it, letting go, then clearing it would leave a window in which an
+    /// interrupt could commit a redirection into a conversation that is about to
+    /// be dropped — accepted, then discarded in the silence this reports.
+    ///
+    /// Each field is still taken in its own statement so no two of these locks
+    /// are ever held at once — the ordering the rest of this type relies on
     /// (`mechanism` before `redirect` before `state`) is a nesting rule, and the
     /// cheapest way to obey it here is to nest nothing.
     pub fn release(&self) {
         let undelivered = matches!(
-            self.mechanism().as_ref(),
+            self.mechanism().take(),
             Some(Backend::Dialogue(dialogue)) if dialogue.has_pending_redirect()
         );
-        *self.mechanism() = None;
         let held = std::mem::replace(&mut *self.redirect(), Redirect::None);
         *self
             .state

@@ -2195,8 +2195,16 @@ impl ControlledChain<'_> {
                     .map_or(ApprovalPosture::of(self.mode), |declared| declared.posture),
             },
         );
-        self.handle
-            .bind(control_io::Binding::for_shape(shape, dialogue));
+        // One arm per mechanism family, chosen from the shape right here: a
+        // conversation binds as itself and carries its own protocol, so nothing
+        // downstream is handed a shape that could contradict it.
+        self.handle.bind(match dialogue {
+            Some(dialogue) => control_io::Binding::Dialogue(Box::new(dialogue)),
+            None => match HttpShape::of(shape) {
+                Some(http) => control_io::Binding::PooledServer(http),
+                None => control_io::Binding::Stdin,
+            },
+        });
     }
 
     /// The prompt plan entry `index` opens its turn with.

@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/nickderobertis/oneharness/compare/v0.7.2...v0.8.0) - 2026-08-14
+
+### Fixed
+
+- [**breaking**] bind a controlled turn's mechanism to the candidate serving it ([#1253](https://github.com/nickderobertis/oneharness/pull/1253))
+
 ## [0.7.2](https://github.com/nickderobertis/oneharness/compare/v0.7.1...v0.7.2) - 2026-08-13
 
 ### Fixed

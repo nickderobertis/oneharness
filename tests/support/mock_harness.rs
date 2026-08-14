@@ -110,6 +110,11 @@
 //!                   of the turn), and end it on `turn/completed` only once a
 //!                   `turn/interrupt` naming the thread and turn arrives. Every
 //!                   received line is appended to the log.
+//!   MOCK_CODEX_DIE_ON_INTERRUPT  with MOCK_CODEX_APP_SERVER_LOG, acknowledge the
+//!                   interrupt and then EXIT without the `turn/completed` that
+//!                   ends the turn, appending `DIED_AFTER_INTERRUPT`. The
+//!                   conversation is gone holding a redirection it committed, so
+//!                   a test can drive the run's report of that loss.
 //!   MOCK_HTTP_CONTROL_LOG  if set to a path, act like an **opencode-shaped HTTP
 //!                   control server** on the `--port` from its own argv: create a
 //!                   session, block the turn on a permission request, and abort it
@@ -128,7 +133,11 @@
 //!                   a real one breaks, so the run's user-visible failure can be
 //!                   asserted: `never-ready` exits before binding at all (nothing
 //!                   ever answers), appending one `LAUNCHED never-ready` line per
-//!                   launch so a relaunch is countable, `lose-port` dies on its
+//!                   launch so a relaunch is countable, `first-candidate-dies`
+//!                   does the same for the first CANDIDATE's two launches (its
+//!                   own plus the relaunch it is owed) and then comes up healthy,
+//!                   so a chain falls through one pooled candidate onto the
+//!                   next, `lose-port` dies on its
 //!                   first launch the way a server that lost its reserved port
 //!                   does and comes up healthy on the relaunch, `silent-server`
 //!                   BINDS its port and stays alive but answers nothing (the
@@ -404,6 +413,7 @@ fn run_native_descendant() -> ! {
 enum HttpControlFault {
     None,
     NeverReady,
+    FirstCandidateDies,
     LosePort,
     SilentServer,
     RefuseSession,
@@ -428,6 +438,7 @@ impl HttpControlFault {
         {
             "" => HttpControlFault::None,
             "never-ready" => HttpControlFault::NeverReady,
+            "first-candidate-dies" => HttpControlFault::FirstCandidateDies,
             "lose-port" => HttpControlFault::LosePort,
             "silent-server" => HttpControlFault::SilentServer,
             "refuse-session" => HttpControlFault::RefuseSession,
@@ -510,6 +521,25 @@ fn run_http_control_server(log_path: &str) -> ! {
     // does: the relaunch it is owed comes up healthy, which is the whole
     // behavior under test. The log is what tells the two launches apart, since
     // nothing else survives the exit.
+    // A server that will not come up for the FIRST candidate of a chain and does
+    // for the one behind it. A candidate is owed one relaunch, so it spends the
+    // first two launches; the third is the next candidate's and serves normally.
+    // Counted out of the shared log because the pool launches these, and a
+    // per-candidate environment does not reach a process the pool starts.
+    let fault = if fault == HttpControlFault::FirstCandidateDies {
+        let launched = std::fs::read_to_string(log_path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| *line == "LAUNCHED first-candidate-dies")
+            .count();
+        if launched < 2 {
+            note_launch(log_path, "first-candidate-dies");
+            std::process::exit(0);
+        }
+        HttpControlFault::None
+    } else {
+        fault
+    };
     let fault = if fault == HttpControlFault::LosePort {
         if std::fs::read_to_string(log_path)
             .unwrap_or_default()
@@ -998,6 +1028,14 @@ fn run_codex_app_server(log_path: &str) -> ! {
                     continue;
                 }
                 send(&json!({"jsonrpc": "2.0", "id": id, "result": {}}));
+                // A server that accepts the abort and then dies before saying
+                // the turn ended. The client is left holding a redirection it
+                // committed to a conversation that will never open its next
+                // turn, which is the loss the run has to report.
+                if std::env::var_os("MOCK_CODEX_DIE_ON_INTERRUPT").is_some() {
+                    append("DIED_AFTER_INTERRUPT");
+                    std::process::exit(0);
+                }
                 send(&json!({
                     "jsonrpc": "2.0",
                     "method": "turn/completed",

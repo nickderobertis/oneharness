@@ -298,29 +298,36 @@ Use the `just` recipes; do not hand-roll equivalents.
   <!-- llmlint: ignore-end[agents_md_durable_and_terse, no_redundant_instruction_pointers, comments_earn_their_place] -->
   `run --control` requires `--session` and one live TURN — exactly one harness in
   `parallel`, or a fallback chain of any length (it starts candidates one at a
-  time) whose candidates all declare the SAME mechanism, since the handle moves
-  to whoever serves the turn and any of them can end up holding the socket.
-  Control binds to the session anchor; an anchor that cannot run leaves the rest
-  of the chain running WITHOUT control and says so on stderr, rather than
-  re-binding a live channel to another harness's mechanism. A server-submitted
-  mechanism never spawns the harness CLI, so it keeps its own execution path
-  instead of the chain's sequential CLI driver, and a chain longer than one
-  candidate is refused: falling through would lease a SECOND server. Every
-  violation is a loud usage error. For every control-capable harness and every
-  `PermissionMode` that harness supports, a controlled run must be under exactly
-  the policy the same mode gives without `--control` (the codex
-  `bypass`→`workspaceWrite` bug was one cell of that grid). The way to keep it
-  true is to DELIVER the harness's own mapping into the controlled launch rather
-  than re-derive a posture for the protocol: copilot's permission flags ride the
-  `--acp` argv beside it, goose's `GOOSE_MODE` already rides the control child's
-  job env. Only where nothing can be delivered is a posture answered on the wire,
-  and then it is the harness's own (`ModeSpec::posture`) rather than the
-  spectrum's — which is why crush's ungated `default` is unattended under control
-  too. A mode whose ONLY delivery is the harness's own config environment cannot
-  reach a turn submitted to a pooled server, so opencode's `edit` is a **loud
-  usage error** under `--control` and the approval mode stays out of the pool
-  key. That is the feature's one **known gap**, named in both places a reader
-  looks — its grid cell (`known-gap:mode-env-not-delivered-to-a-pooled-server`)
+  time), whose candidates may declare DIFFERENT mechanisms. The mechanism is
+  **late-bound**: the socket address is the run's, and the serving candidate
+  binds its own as it takes the turn and releases it when the turn ends. So
+  `validate_control` may only refuse what is true of a candidate WHATEVER it
+  does — no mechanism at all, an inexpressible mode, a format its mechanism pins
+  differently — and never over the candidate SET where it means the serving one.
+  Mixed mechanisms and a multi-candidate pooled-server chain are therefore both
+  accepted: one candidate serves at a time, so one mechanism and one lease are
+  live at a time. Every candidate takes the control delivery; only the session
+  token stays the anchor's, since it is not portable between identities. Every
+  candidate-wise refusal must hold for a candidate in ANY position, so each one
+  needs a test with the offending candidate second. An interrupt reaches
+  whatever is bound, and is `no_active_turn` when nothing is; a redirection its
+  own turn never delivered is dropped there and said, never carried to the next
+  candidate. Every violation is a loud usage error. For every control-capable
+  harness and every `PermissionMode` that harness supports, a controlled run
+  must be under exactly the policy the same mode gives without `--control` (the
+  codex `bypass`→`workspaceWrite` bug was one cell of that grid). The way to
+  keep it true is to DELIVER the harness's own mapping into the controlled
+  launch rather than re-derive a posture for the protocol: copilot's permission
+  flags ride the `--acp` argv beside it, goose's `GOOSE_MODE` already rides the
+  control child's job env. Only where nothing can be delivered is a posture
+  answered on the wire, and then it is the harness's own (`ModeSpec::posture`)
+  rather than the spectrum's — which is why crush's ungated `default` is
+  unattended under control too. A mode whose ONLY delivery is the harness's own
+  config environment cannot reach a turn submitted to a pooled server, so
+  opencode's `edit` is a **loud usage error** under `--control` and the approval
+  mode stays out of the pool key. That is the feature's one **known gap**, named
+  in both places a reader looks — its grid cell
+  (`known-gap:mode-env-not-delivered-to-a-pooled-server`)
   and a phase `e2e-control.sh` reports rather than runs. Adding a harness or a mode means adding its cell to `control_mode_parity`. Declare `ControlShape` only after a live interrupt
   through oneharness. Stdin control keeps the child stdin open, then closes it
   on `is_turn_terminal`. Dialogue control owns its JSON-RPC child per dispatch:

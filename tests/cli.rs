@@ -25246,6 +25246,251 @@ fn a_chain_that_falls_through_to_a_pooled_server_candidate_runs_it_on_its_own_mo
 
 #[cfg(unix)]
 #[test]
+fn a_resumed_sessions_output_format_is_judged_by_its_anchors_own_mechanism() {
+    // Whether a named session can use an explicit output format is a question
+    // about the identity the session is BOUND to, and in a chain whose
+    // candidates control differently that is not the head. goose captures its
+    // session id on the ACP wire, so it needs no session-bearing stdout format
+    // at all — while claude-code, the head here, drives no turn of its own and
+    // would have the check applied on its behalf.
+    //
+    // Read off the head instead and the resumed run is refused for a format the
+    // anchor never needed, stranding a session that works.
+    let mock = mock_bin().display().to_string();
+    let rejection = include_str!("fixtures/claude-session-limit-api-error.json").trim();
+    let rejection = serde_json::to_string(rejection).unwrap();
+    let store = control_store_dir("anchor-fmt");
+    let store_arg = store.display().to_string();
+    let head_log = store.join("head-turn.log");
+    let head_log_arg = head_log.display().to_string();
+    let acp_log = store.join("acp.log");
+    let acp_log_arg = acp_log.display().to_string();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "goose"]
+        run_mode = "fallback"
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_TURN_LOG = '{head_log_arg}', MOCK_TURN_RESULT = {rejection} }}
+        [harness.goose]
+        bin = '{mock}'
+        env = {{ MOCK_ACP_LOG = '{acp_log_arg}' }}
+    "#
+    );
+    let fx = ConfigFixture::new("control-anchor-format", &project, "");
+    let cwd_arg = fx.cwd();
+
+    // First, move the session onto goose: the head is out of quota, so the
+    // reserve serves and the id its conversation minted is what gets stored.
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_CONFIG", fx.user_config())
+        .args([
+            "run",
+            "--control",
+            "--session",
+            "anchorfmt",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--timeout",
+            "60",
+            "--compact",
+            "--env",
+            &mock_profile_redirect(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the anchoring run");
+    wait_until("the permission exchange", || {
+        std::fs::read_to_string(&acp_log)
+            .map(|log| log.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+    // An ACP turn ends on a cancel, so this is how the anchoring run finishes.
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "anchorfmt",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    let first = child
+        .wait_with_output()
+        .expect("the anchoring run finished");
+    let first: Value = serde_json::from_slice(&first.stdout).expect("a JSON report");
+    assert_eq!(first["fallback"]["ran"], "goose");
+    assert!(
+        first["session"]["token"].is_string(),
+        "the conversation's id must be stored for the resume below: {first}"
+    );
+
+    // Now resume it, pinning a format goose can carry no session in. Accepted,
+    // because the anchor does not need one: it reads its id off the wire.
+    // `--print-command` keeps this to the validation it is about — the refusal,
+    // if it came, would land before anything spawned.
+    let resumed = run_with_config(
+        &[
+            "run",
+            "--control",
+            "--session",
+            "anchorfmt",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--output-format",
+            "stream-json",
+            "--prompt",
+            "keep working",
+            "--print-command",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        resumed.status.success(),
+        "the anchor's own mechanism was not consulted; exit {:?}: {}",
+        resumed.status.code(),
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
+fn each_candidate_in_a_chain_opens_its_turn_with_its_own_assembled_prompt() {
+    // The prompt is the serving candidate's, not the run's. A mode whose policy
+    // is a behavioral INSTRUCTION is prepended per harness — codex's `plan`
+    // carries one and claude-code's does not — so the same `--prompt` assembles
+    // different text for two links of one chain. Planning one prompt for the run
+    // would send whichever candidate served the other one's instructions, and
+    // under `--mode plan` that is the difference between a candidate that plans
+    // and one that starts editing.
+    let mock = mock_bin().display().to_string();
+    let rejection = include_str!("fixtures/claude-session-limit-api-error.json").trim();
+    let rejection = serde_json::to_string(rejection).unwrap();
+    let store = control_store_dir("per-cand-prompt");
+    let store_arg = store.display().to_string();
+    let head_log = store.join("head-turn.log");
+    let head_log_arg = head_log.display().to_string();
+    let codex_log = store.join("app-server.log");
+    let codex_log_arg = codex_log.display().to_string();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "codex"]
+        run_mode = "fallback"
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_TURN_LOG = '{head_log_arg}', MOCK_TURN_RESULT = {rejection} }}
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_CODEX_APP_SERVER_LOG = '{codex_log_arg}' }}
+    "#
+    );
+    let fx = ConfigFixture::new("control-per-candidate-prompt", &project, "");
+    let cwd_arg = fx.cwd();
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_CONFIG", fx.user_config())
+        .args([
+            "run",
+            "--control",
+            "--session",
+            "percand",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "plan",
+            "--prompt",
+            "tidy the parser",
+            "--timeout",
+            "60",
+            "--compact",
+            "--env",
+            &mock_profile_redirect(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the controlled chain");
+
+    // The chain has fallen through and the serving candidate's turn is open.
+    wait_until("the fell-through candidate's turn to start", || {
+        std::fs::read_to_string(&codex_log)
+            .map(|text| text.contains("turn/start"))
+            .unwrap_or(false)
+    });
+    // That conversation holds its turn open until it is aborted, so this is how
+    // the run finishes; the prompts are already on disk by now.
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "percand",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    assert_eq!(report["fallback"]["ran"], "codex");
+
+    // The head opened its turn with the bare prompt: claude-code's `plan` needs
+    // no instruction, so nothing was prepended for it.
+    let head = std::fs::read_to_string(&head_log).expect("the head logged its turn");
+    let opened = head
+        .lines()
+        .find(|line| line.contains("\"type\":\"user\""))
+        .unwrap_or_else(|| panic!("no prompt frame reached the head:\n{head}"));
+    assert!(opened.contains("tidy the parser"), "{opened}");
+    assert!(
+        !opened.contains("PLAN MODE"),
+        "the head was handed the other candidate's instruction: {opened}"
+    );
+
+    // The candidate that served assembled its OWN: codex's plan instruction
+    // rides the same prompt, on the wire its conversation opened the turn with.
+    let served =
+        std::fs::read_to_string(&codex_log).expect("the serving candidate logged its turn");
+    let start = served
+        .lines()
+        .find(|line| line.contains("turn/start"))
+        .unwrap_or_else(|| panic!("no turn reached the serving candidate:\n{served}"));
+    assert!(start.contains("PLAN MODE"), "{start}");
+    assert!(start.contains("tidy the parser"), "{start}");
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
 fn a_redirection_a_dead_conversation_still_held_is_reported_rather_than_lost() {
     // The dialogue mechanisms keep their committed redirection inside the
     // conversation rather than in the handle's own store, so releasing the

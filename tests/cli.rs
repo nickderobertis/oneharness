@@ -25599,6 +25599,145 @@ fn a_redirection_a_dead_conversation_still_held_is_reported_rather_than_lost() {
 
 #[cfg(unix)]
 #[test]
+fn a_chain_of_two_pooled_server_candidates_leases_them_one_at_a_time() {
+    // The chain this branch stopped refusing, run rather than planned. Both
+    // candidates submit their turn to a pooled server; the first never comes up,
+    // so the chain falls through to the second, which leases its OWN server and
+    // serves the turn. That is the whole answer to the premise the old refusal
+    // rested on — falling through would lease a SECOND server — because the
+    // chain only reaches the reserve once the head is finished with, so the two
+    // leases never overlap.
+    //
+    // The pool launches these servers, so a per-candidate environment does not
+    // reach them: one shared log, and the fault counts launches out of it.
+    let mock = mock_bin().display().to_string();
+    let store = control_store_dir("pooled-chain");
+    let store_arg = store.display().to_string();
+    let log = store.join("servers.log");
+    let pool = store.join("pool");
+    let project = format!(
+        r#"
+        harnesses = ["opencode:primary", "opencode:reserve"]
+        run_mode = "fallback"
+        [harness.opencode]
+        bin = '{mock}'
+        [harness.opencode.variant.primary]
+        [harness.opencode.variant.reserve]
+    "#
+    );
+    let fx = ConfigFixture::new("control-pooled-chain", &project, "");
+    let cwd_arg = fx.cwd();
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_CONFIG", fx.user_config())
+        .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
+        .env("MOCK_HTTP_CONTROL_FAULT", "first-candidate-dies")
+        .env("XDG_STATE_HOME", pool.display().to_string())
+        .args([
+            "run",
+            "--control",
+            "--session",
+            "pooledchain",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--model",
+            "anthropic/claude-haiku-4-5",
+            "--timeout",
+            "20",
+            "--compact",
+            "--env",
+            &mock_profile_redirect(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the pooled chain");
+
+    // The RESERVE's server took the turn, which can only happen after the head's
+    // failed and the chain fell through to it.
+    wait_until("the second candidate's server to take the turn", || {
+        std::fs::read_to_string(&log)
+            .map(|text| text.contains("PERMISSION_ANSWERED"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "pooledchain",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    // Rebound onto the second server, not still addressing the first.
+    assert_eq!(json_stdout(&interrupt)["mechanism"], "opencode-http");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    assert_eq!(
+        report["fallback"]["fell_through"][0]["harness"],
+        "opencode:primary"
+    );
+    assert_eq!(
+        report["fallback"]["fell_through"][0]["reason"],
+        "spawn-error"
+    );
+    assert_eq!(report["fallback"]["ran"], "opencode:reserve");
+    assert_eq!(report["control"]["mechanism"], "opencode-http");
+    assert_eq!(report["control"]["interrupts"][0]["outcome"], "served");
+    assert_eq!(report["results"][1]["session_id"], "ses_mock");
+    let served = std::fs::read_to_string(&log).unwrap();
+    // The abort went to the session on the server that was serving.
+    assert!(
+        served
+            .lines()
+            .any(|line| line.starts_with("POST /api/session/ses_mock/interrupt")),
+        "{served}"
+    );
+    // The head spent its own launch and the relaunch it is owed, and neither
+    // bound anything — so exactly ONE server ever held a session, which is the
+    // premise the old refusal got wrong.
+    assert_eq!(
+        served
+            .lines()
+            .filter(|line| *line == "LAUNCHED first-candidate-dies")
+            .count(),
+        2,
+        "{served}"
+    );
+    assert_eq!(
+        served.matches("PERMISSION_ANSWERED").count(),
+        1,
+        "more than one server served a turn:\n{served}"
+    );
+    // And the reserve's lease is given back with its turn.
+    assert!(
+        wait_for_pooled_server_to_exit(&pool),
+        "the serving candidate's server outlived the turn it served"
+    );
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
 fn a_pooled_server_candidate_that_never_comes_up_falls_through_to_the_next() {
     // The other direction, and the one that proves the pooled model is a link in
     // the chain rather than a terminus. The head is opencode, whose server dies

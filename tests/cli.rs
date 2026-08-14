@@ -25828,6 +25828,153 @@ fn a_pooled_server_candidate_that_never_comes_up_falls_through_to_the_next() {
 
 #[cfg(unix)]
 #[test]
+fn an_interrupt_in_the_gap_between_two_candidates_reports_no_active_turn() {
+    // The interval late binding creates, driven through a real run rather than
+    // against a handle. Releasing a candidate leaves NOTHING bound until the
+    // next one takes the turn, and a supervisor holding the run's socket can
+    // interrupt inside that gap. They must be told `no_active_turn`: the run is
+    // alive, so `not_running` would send them away for good, and writing the
+    // frame anyway would land a stop at a mechanism nobody is on.
+    //
+    // One socket answers both ways here. The first interrupt reaches the head's
+    // live turn; the second is sent after that turn ended and while the
+    // reserve's pooled server is still coming up, and is refused.
+    let mock = mock_bin().display().to_string();
+    let store = control_store_dir("gap-no-turn");
+    let store_arg = store.display().to_string();
+    std::fs::create_dir_all(&store).unwrap();
+    let head_log = store.join("head-turn.log");
+    let head_log_arg = head_log.display().to_string();
+    let server_log = store.join("server.log");
+    let pool = store.join("pool");
+    // The head holds its turn open so the first interrupt lands on a live one,
+    // then ends on the provider's session-limit rejection — which declares no
+    // work, so the chain falls THROUGH it rather than stopping there.
+    let rejection = include_str!("fixtures/claude-session-limit-api-error.json").trim();
+    let rejection = serde_json::to_string(rejection).unwrap();
+    // The reserve is a pooled server that stays up but never answers its
+    // readiness route. That holds the run inside the gap for the whole
+    // `--timeout` window instead of a race-length instant, so what is asserted
+    // is the interval itself rather than a lucky arrival.
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "opencode"]
+        run_mode = "fallback"
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_TURN_LOG = '{head_log_arg}', MOCK_TURN_HOLD = "1", MOCK_TURN_ONCE = "1", MOCK_TURN_RESULT = {rejection} }}
+        [harness.opencode]
+        bin = '{mock}'
+    "#
+    );
+    let fx = ConfigFixture::new("control-gap-no-turn", &project, "");
+    let cwd_arg = fx.cwd();
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_CONFIG", fx.user_config())
+        .env("MOCK_HTTP_CONTROL_LOG", server_log.display().to_string())
+        .env("MOCK_HTTP_CONTROL_FAULT", "silent-server")
+        .env("XDG_STATE_HOME", pool.display().to_string())
+        .args([
+            "run",
+            "--control",
+            "--session",
+            "gap",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--timeout",
+            "5",
+            "--compact",
+            "--env",
+            &mock_profile_redirect(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the controlled chain");
+
+    wait_until("the control socket", || {
+        store.join("control").join("gap.sock").exists()
+    });
+    wait_until("the head candidate's turn to start", || {
+        std::fs::read_to_string(&head_log)
+            .map(|log| log.contains("keep working"))
+            .unwrap_or(false)
+    });
+
+    // Bound: the head is serving, so the abort reaches its turn.
+    let live = run(
+        &[
+            "interrupt",
+            "--session",
+            "gap",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(live.status.success(), "{live:?}");
+    assert_eq!(json_stdout(&live)["ok"], true);
+
+    // The head is out of quota now, and the chain has moved on to bringing up
+    // the reserve's server. That launch line is the proof the run is IN the
+    // gap: the head released to get here, and a pooled candidate binds only
+    // once its server answers — which this one never will.
+    wait_until("the reserve's server to be launched", || {
+        std::fs::read_to_string(&server_log)
+            .map(|log| log.contains("silent-server"))
+            .unwrap_or(false)
+    });
+
+    let gap = run(
+        &[
+            "interrupt",
+            "--session",
+            "gap",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    // Refused — and refused with the reason that keeps a supervisor retrying
+    // rather than giving up on a run that is still very much alive.
+    assert_eq!(gap.status.code(), Some(1), "{gap:?}");
+    let frame = json_stdout(&gap);
+    assert_eq!(frame["ok"], false);
+    assert_eq!(frame["reason"], "no_active_turn", "{frame}");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    // There genuinely was a gap to interrupt in: the head ended and the chain
+    // went on to another candidate.
+    assert_eq!(
+        report["fallback"]["fell_through"][0]["harness"], "claude-code",
+        "{report}"
+    );
+    // Both attempts are on the run's own record, the refused one included, so a
+    // supervisor's failed stop is visible in the report and not only to them.
+    let interrupts = report["control"]["interrupts"]
+        .as_array()
+        .expect("the report lists the interrupts");
+    assert_eq!(interrupts.len(), 2, "{report}");
+    wait_for_pooled_server_to_exit(&pool);
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
 fn an_interrupt_after_a_fall_through_reaches_the_mechanism_that_served() {
     // The whole point of late binding, proven by running it. The chain's head is
     // claude-code — a `control_request` frame on the run's own stdin — and it is

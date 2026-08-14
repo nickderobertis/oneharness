@@ -88,63 +88,54 @@ enum TurnState {
 /// recognizes. Modelling them as one value rather than a field each is what
 /// makes "a dialogue *and* an HTTP turn" unspellable instead of merely
 /// unreachable.
+///
+/// Each variant carries whatever its own shape is knowable from, so
+/// [`Backend::shape`] is *derived* rather than stored beside it. A shape held
+/// as a second field could be set to one the backend does not speak — a channel
+/// naming a mechanism it is not on, which is the one thing a supervisor must
+/// never be able to address — and no assignment anywhere could be trusted to
+/// keep the two in step.
 enum Backend {
     /// Control rides the harness's ordinary run: nothing to negotiate, and an
-    /// interrupt is a frame written to the child's own stdin.
+    /// interrupt is a frame written to the child's own stdin. Claude Code's
+    /// mechanism is the only one that works this way — it is exactly the shape
+    /// that neither drives a turn nor needs a server — so the variant needs no
+    /// payload to say which shape it is.
     Stdin,
     /// A JSON-RPC conversation on the child's stdin drives the turn, and is the
-    /// only thing that knows the ids an interrupt has to address.
+    /// only thing that knows the ids an interrupt has to address. It was built
+    /// for one protocol and answers only that one, so it reports its own shape.
     Dialogue(Dialogue),
     /// The turn was submitted to a control server, so an interrupt is one more
     /// request against the same session — there is no stdin in this path at
-    /// all. `Some` only between the turn opening and ending, which is exactly
-    /// the window in which there is something to abort.
-    Http(Option<HttpTurn>),
+    /// all. The [`HttpShape`] is which server; the turn is `Some` only between
+    /// the turn opening and ending, which is exactly the window in which there
+    /// is something to abort.
+    Http(HttpShape, Option<HttpTurn>),
 }
 
-/// The mechanism the channel is bound to right now: the shape it speaks, and
-/// the backend that speaks it.
-///
-/// One value rather than two fields on the handle, because the two are only
-/// ever decided together — by the candidate that is serving. Holding a shape
-/// without the backend that speaks it would be a channel naming a mechanism it
-/// is not on, which is exactly the state a supervisor must never be able to
-/// address.
-///
-/// [`Mechanism::bind`] is the only place the pair is chosen, so a shape can
-/// never be recorded against a backend that does not speak it. The two turn
-/// accessors that write to a bound mechanism afterwards
-/// ([`ControlHandle::begin_http_turn`], [`ControlHandle::end_http_turn`]) swap
-/// an `Http` backend's live turn, which is that backend's payload rather than
-/// its family.
-struct Mechanism {
-    shape: ControlShape,
-    backend: Backend,
-}
+impl Backend {
+    /// The mechanism this backend speaks — read off the backend itself, so the
+    /// shape a supervisor is told is always the one that would answer them.
+    fn shape(&self) -> ControlShape {
+        match self {
+            Backend::Stdin => ControlShape::ClaudeControlRequest,
+            Backend::Dialogue(dialogue) => dialogue.shape(),
+            Backend::Http(http, _) => http.shape(),
+        }
+    }
 
-impl Mechanism {
-    /// The backend for `shape`, paired with the shape that backend actually
-    /// speaks.
+    /// The backend for the candidate about to serve `shape`, driving its turn
+    /// over `dialogue` where the shape has one.
     ///
-    /// A `Dialogue` is built for exactly one shape and answers only that
-    /// protocol, so it — not the caller's argument — says what this mechanism
-    /// is; passing a shape the conversation does not speak cannot produce a
-    /// mechanism claiming it. The two backends that hold no conversation are
-    /// derived from the shape itself, so they agree by construction as well.
+    /// `dialogue` decides on its own because it is only ever built by
+    /// [`Dialogue::new`] for the shape it is being bound against; the remaining
+    /// shapes split on whether they submit to a pooled server.
     fn bind(shape: ControlShape, dialogue: Option<Dialogue>) -> Self {
-        match dialogue {
-            Some(dialogue) => Mechanism {
-                shape: dialogue.shape(),
-                backend: Backend::Dialogue(dialogue),
-            },
-            None if HttpShape::of(shape).is_some() => Mechanism {
-                shape,
-                backend: Backend::Http(None),
-            },
-            None => Mechanism {
-                shape,
-                backend: Backend::Stdin,
-            },
+        match (dialogue, HttpShape::of(shape)) {
+            (Some(dialogue), _) => Backend::Dialogue(dialogue),
+            (None, Some(http)) => Backend::Http(http, None),
+            (None, None) => Backend::Stdin,
         }
     }
 }
@@ -177,7 +168,7 @@ pub struct ControlHandle {
     /// The serving candidate's mechanism, or `None` between candidates. Locked
     /// *before* `state` everywhere, so the two paths that touch both (serving an
     /// interrupt, advancing on a line) can never deadlock against each other.
-    mechanism: Mutex<Option<Mechanism>>,
+    mechanism: Mutex<Option<Backend>>,
     /// A redirection an interrupt committed. Only the stdin and HTTP backends
     /// use it — a dialogue holds its own, because opening the replacement turn
     /// is a protocol decision rather than a write.
@@ -229,11 +220,11 @@ impl ControlHandle {
     /// candidate is serving. Called before the candidate's turn opens; every
     /// interrupt served from here until [`Self::release`] reaches that turn.
     pub fn bind(&self, shape: ControlShape, dialogue: Option<Dialogue>) {
-        let mechanism = Mechanism::bind(shape, dialogue);
-        // Reported from the mechanism rather than from the argument, so the
-        // shape a supervisor is told is the one that will answer them.
-        let bound = mechanism.shape;
-        *self.mechanism() = Some(mechanism);
+        let backend = Backend::bind(shape, dialogue);
+        // Reported from the backend rather than from the argument, so the shape
+        // a supervisor is told is the one that will answer them.
+        let bound = backend.shape();
+        *self.mechanism() = Some(backend);
         *self
             .reported
             .lock()
@@ -272,16 +263,16 @@ impl ControlHandle {
     /// exists on the control server — before that there is no turn to address,
     /// and `interrupt` correctly answers `no_active_turn`.
     pub fn begin_http_turn(&self, turn: HttpTurn) {
-        if let Some(mechanism) = self.mechanism().as_mut() {
-            mechanism.backend = Backend::Http(Some(turn));
+        if let Some(Backend::Http(_, live)) = self.mechanism().as_mut() {
+            *live = Some(turn);
         }
     }
 
     /// Release the HTTP turn: it is over, so a later interrupt is
     /// `no_active_turn` rather than a request against a finished session.
     pub fn end_http_turn(&self) {
-        if let Some(mechanism) = self.mechanism().as_mut() {
-            mechanism.backend = Backend::Http(None);
+        if let Some(Backend::Http(_, live)) = self.mechanism().as_mut() {
+            *live = None;
         }
     }
 
@@ -289,14 +280,15 @@ impl ControlHandle {
     /// frame for a mechanism that rides the harness's ordinary run. Empty when
     /// nothing is bound — there is no turn to open.
     pub fn open_frames(&self, prompt: &str) -> Vec<String> {
-        let mut mechanism = self.mechanism();
-        let Some(mechanism) = mechanism.as_mut() else {
+        let mut backend = self.mechanism();
+        let Some(backend) = backend.as_mut() else {
             return Vec::new();
         };
-        match &mut mechanism.backend {
+        let shape = backend.shape();
+        match backend {
             Backend::Dialogue(dialogue) => dialogue.open(),
-            Backend::Stdin | Backend::Http(_) => {
-                crate::domain::control::prompt_frame(mechanism.shape, prompt)
+            Backend::Stdin | Backend::Http(..) => {
+                crate::domain::control::prompt_frame(shape, prompt)
                     .into_iter()
                     .collect()
             }
@@ -310,19 +302,19 @@ impl ControlHandle {
     /// exit and output will report far more usefully than a panic would.
     pub fn advance(&self, line: &str) -> bool {
         let step = {
-            let mut mechanism = self.mechanism();
+            let mut backend = self.mechanism();
             // Nothing is bound, so there is no turn this line can be part of and
             // none for the caller to keep open.
-            let Some(mechanism) = mechanism.as_mut() else {
+            let Some(backend) = backend.as_mut() else {
                 return true;
             };
-            let shape = mechanism.shape;
-            match &mut mechanism.backend {
+            let shape = backend.shape();
+            match backend {
                 Backend::Dialogue(dialogue) => dialogue.on_line(line),
                 // No conversation to advance: the harness's own end-of-turn
                 // document is the only signal, and there is nothing to write
                 // back.
-                Backend::Stdin | Backend::Http(_) => {
+                Backend::Stdin | Backend::Http(..) => {
                     if !crate::domain::control::is_turn_terminal(shape, line) {
                         return false;
                     }
@@ -349,9 +341,9 @@ impl ControlHandle {
     /// The harness's native session id, when the dialogue captured one.
     #[must_use]
     pub fn session_id(&self) -> Option<String> {
-        match self.mechanism().as_ref().map(|m| &m.backend) {
+        match self.mechanism().as_ref() {
             Some(Backend::Dialogue(dialogue)) => dialogue.session_id().map(str::to_string),
-            Some(Backend::Stdin | Backend::Http(_)) | None => None,
+            Some(Backend::Stdin | Backend::Http(..)) | None => None,
         }
     }
 
@@ -359,11 +351,11 @@ impl ControlHandle {
     /// `None` when the turn produced none — never fabricated.
     #[must_use]
     pub fn text(&self) -> Option<(String, &'static str)> {
-        match self.mechanism().as_ref().map(|m| &m.backend) {
+        match self.mechanism().as_ref() {
             Some(Backend::Dialogue(dialogue)) => {
                 dialogue.text().map(|text| (text, dialogue.text_source()))
             }
-            Some(Backend::Stdin | Backend::Http(_)) | None => None,
+            Some(Backend::Stdin | Backend::Http(..)) | None => None,
         }
     }
 
@@ -376,13 +368,10 @@ impl ControlHandle {
     /// process — nothing about a spawned run applies to them.
     #[must_use]
     pub fn drives_turn_over_stdin(&self) -> bool {
-        matches!(
-            self.mechanism().as_ref().map(|m| &m.backend),
-            Some(Backend::Dialogue(_))
-        )
+        matches!(self.mechanism().as_ref(), Some(Backend::Dialogue(_)))
     }
 
-    fn mechanism(&self) -> std::sync::MutexGuard<'_, Option<Mechanism>> {
+    fn mechanism(&self) -> std::sync::MutexGuard<'_, Option<Backend>> {
         self.mechanism
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -424,9 +413,11 @@ impl ControlHandle {
     /// Whether a redirection is committed and not yet delivered.
     #[must_use]
     pub fn has_pending_redirect(&self) -> bool {
-        match self.mechanism().as_ref().map(|m| &m.backend) {
+        match self.mechanism().as_ref() {
             Some(Backend::Dialogue(dialogue)) => dialogue.has_pending_redirect(),
-            Some(Backend::Stdin | Backend::Http(_)) => !matches!(&*self.redirect(), Redirect::None),
+            Some(Backend::Stdin | Backend::Http(..)) => {
+                !matches!(&*self.redirect(), Redirect::None)
+            }
             // Nothing is serving, so nothing is owed: `release` reports and
             // drops anything an ended turn was still holding.
             None => false,
@@ -578,13 +569,13 @@ impl ControlHandle {
         // first candidate opens one, across a chain's fall-through, or after the
         // last one ended — which is exactly `no_active_turn`.
         let (shape, delivery) = {
-            let mut mechanism = self.mechanism();
-            let Some(mechanism) = mechanism.as_mut() else {
+            let mut backend = self.mechanism();
+            let Some(backend) = backend.as_mut() else {
                 return no_active_turn();
             };
-            let shape = mechanism.shape;
-            let delivery = match &mut mechanism.backend {
-                Backend::Http(turn) => match turn.clone() {
+            let shape = backend.shape();
+            let delivery = match backend {
+                Backend::Http(_, turn) => match turn.clone() {
                     Some(turn) => {
                         // Committed before the request goes out: the run's own
                         // driver reads it when the aborted turn ends, and the
@@ -669,11 +660,7 @@ impl ControlHandle {
     /// holds anything: the backend that took it is the one that has it.
     fn abandon_redirect(&self) {
         *self.redirect() = Redirect::None;
-        if let Some(Mechanism {
-            backend: Backend::Dialogue(dialogue),
-            ..
-        }) = self.mechanism().as_mut()
-        {
+        if let Some(Backend::Dialogue(dialogue)) = self.mechanism().as_mut() {
             dialogue.abandon_redirect();
         }
     }

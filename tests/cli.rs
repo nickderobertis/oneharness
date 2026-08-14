@@ -25156,6 +25156,96 @@ fn a_chain_that_falls_through_to_a_pooled_server_candidate_runs_it_on_its_own_mo
 
 #[cfg(unix)]
 #[test]
+fn a_pooled_server_candidate_that_never_comes_up_falls_through_to_the_next() {
+    // The other direction, and the one that proves the pooled model is a link in
+    // the chain rather than a terminus. The head is opencode, whose server dies
+    // during bring-up, so that candidate could not run the task at all — a
+    // startup failure like any other, which the chain must fall THROUGH rather
+    // than stop on because a server that will not start says nothing about the
+    // next candidate.
+    //
+    // The channel then rebinds from a pooled server to a stdin message stream:
+    // the run reports the mechanism claude-code actually served on, not the
+    // `opencode-http` the chain was planned to start on.
+    let mock = mock_bin().display().to_string();
+    let store = control_store_dir("http-head-dies");
+    let store_arg = store.display().to_string();
+    let turn_log = store.join("reserve-turn.log");
+    let turn_log_arg = turn_log.display().to_string();
+    let pool = store.join("pool");
+    let project = format!(
+        r#"
+        harnesses = ["opencode", "claude-code"]
+        run_mode = "fallback"
+        [harness.opencode]
+        bin = '{mock}'
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_TURN_LOG = '{turn_log_arg}' }}
+    "#
+    );
+    let fx = ConfigFixture::new("control-http-head-dies", &project, "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--control",
+            "--session",
+            "httpdies",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &fx.cwd(),
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--model",
+            "anthropic/claude-haiku-4-5",
+            "--timeout",
+            "5",
+            "--compact",
+        ],
+        &[
+            (
+                "MOCK_HTTP_CONTROL_LOG",
+                store.join("server.log").display().to_string().as_str(),
+            ),
+            ("MOCK_HTTP_CONTROL_FAULT", "never-ready"),
+            ("XDG_STATE_HOME", pool.display().to_string().as_str()),
+        ],
+        &fx.user_config(),
+    );
+    // The run SUCCEEDS: a candidate behind the dead server did the work.
+    assert!(
+        output.status.success(),
+        "exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    assert_eq!(report["results"][0]["harness_id"], "opencode");
+    assert_eq!(report["results"][0]["status"], "spawn-error", "{report}");
+    assert_eq!(report["fallback"]["fell_through"][0]["harness"], "opencode");
+    assert_eq!(
+        report["fallback"]["fell_through"][0]["reason"],
+        "spawn-error"
+    );
+    assert_eq!(report["fallback"]["ran"], "claude-code");
+    // Rebound to the candidate that served: a run still reporting the pooled
+    // mechanism would hand a supervisor an address for a server that is gone.
+    assert_eq!(report["control"]["mechanism"], "claude-control-request");
+    // And the candidate behind it genuinely took its turn over that mechanism.
+    let frames = std::fs::read_to_string(&turn_log).expect("the serving candidate logged its turn");
+    assert!(
+        frames.contains("keep working"),
+        "the reserve never took the turn:\n{frames}"
+    );
+    wait_for_pooled_server_to_exit(&pool);
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
 fn an_interrupt_after_a_fall_through_reaches_the_mechanism_that_served() {
     // The whole point of late binding, proven by running it. The chain's head is
     // claude-code — a `control_request` frame on the run's own stdin — and it is

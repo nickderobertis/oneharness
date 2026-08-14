@@ -299,32 +299,30 @@ Use the `just` recipes; do not hand-roll equivalents.
   `run --control` requires `--session` and one live TURN — exactly one harness in
   `parallel`, or a fallback chain of any length (it starts candidates one at a
   time), whose candidates may declare DIFFERENT mechanisms. The mechanism is
-  **late-bound**: the socket address is the run's for its whole lifetime, and the
-  serving candidate binds its own mechanism as it takes the turn
-  (`ControlHandle::bind`) and releases it when the turn ends. So `validate_control`
-  may only refuse what is true of a candidate WHATEVER it does — no mechanism at
-  all, an inexpressible mode, a format its mechanism pins differently — and must
-  never reason over the candidate SET where it means the serving candidate: a
-  chain whose candidates control DIFFERENTLY is served one mechanism at a time,
-  and a pooled-server chain leases one server at a time, so neither is a refusal.
-  Control binds per candidate and never to the session ANCHOR alone — every
-  candidate takes the control delivery, since any of them can serve, while the
-  session token stays the anchor's (it is not portable between identities).
-  `PromptDelivery::ControlStream`, the required output format, and the protocol
-  conversation are all per candidate. A server-submitted candidate keeps its own
-  execution model *inside* the sequential driver
-  (`http_controlled_result`), so a chain can hold both kinds; its lease is
-  released with its turn, so there is never a second live one. An interrupt is
-  answered by whatever is bound when it arrives; in the window where nothing is
-  (before the first turn, across a fall-through, after the last) it is
-  `no_active_turn` — never queued for the next candidate, which would land a
-  supervisor's stop on a turn they never saw start. `--stream` is refused for ANY
-  candidate whose mechanism submits to a server, not just the first: it promises
-  this run's stdout before a candidate is chosen. Every violation is a loud usage
-  error. For every control-capable harness and every `PermissionMode` that
-  harness supports, a controlled run must be under exactly the policy the same
-  mode gives without `--control` (the codex
-  `bypass`→`workspaceWrite` bug was one cell of that grid). The way to keep it
+  **late-bound**: the socket address is the run's, and the serving candidate
+  binds its own mechanism as it takes the turn (`ControlHandle::bind`, whose
+  `Backend` derives the shape so the two can never disagree) and releases it
+  when the turn ends. So `validate_control` may only refuse what is true of a
+  candidate WHATEVER it does — no mechanism at all, an inexpressible mode, a
+  format its mechanism pins differently — and never over the candidate SET where
+  it means the serving candidate. Mixed mechanisms and a multi-candidate
+  pooled-server chain are therefore both accepted: one candidate serves at a
+  time, so one mechanism and one lease are live at a time. Every candidate takes
+  the control delivery — `PromptDelivery::ControlStream`, the required output
+  format, the protocol conversation — while the session token stays the anchor's
+  (it is not portable between identities). A server-submitted candidate keeps
+  its own execution model *inside* the sequential driver
+  (`http_controlled_result`), so a chain can hold both kinds and can fall
+  through either way. An interrupt is answered by whatever is bound when it
+  arrives, and is `no_active_turn` when nothing is (before the first turn, across
+  a fall-through, after the last); a redirection its own turn never delivered is
+  reported and dropped there, never carried to the next candidate. `--stream` is
+  refused for ANY candidate submitting to a server, not just the first: it
+  promises this run's stdout before a candidate is chosen. Every violation is a
+  loud usage error. For every control-capable harness and every `PermissionMode`
+  that harness supports, a controlled run must be under exactly the policy the
+  same mode gives without `--control` (the codex `bypass`→`workspaceWrite` bug
+  was one cell of that grid). The way to keep it
   true is to DELIVER the harness's own mapping into the controlled launch rather
   than re-derive a posture for the protocol: copilot's permission flags ride the
   `--acp` argv beside it, goose's `GOOSE_MODE` already rides the control child's

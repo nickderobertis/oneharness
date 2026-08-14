@@ -2201,7 +2201,8 @@ impl ControlledChain<'_> {
                     .map_or(ApprovalPosture::of(self.mode), |declared| declared.posture),
             },
         );
-        self.handle.bind(shape, dialogue);
+        self.handle
+            .bind(control_io::Binding::for_shape(shape, dialogue));
     }
 
     /// The prompt plan entry `index` opens its turn with.
@@ -2868,7 +2869,9 @@ fn drive_http_turn(
     // this candidate after falling through a CLI-driven one moves the channel
     // onto the server with it — and releases it again below, leaving the next
     // candidate free to bind its own.
-    handle.bind(shape.shape(), None);
+    // Named by the server it is submitted to, so the binding carries no shape
+    // that could disagree with the mechanism actually serving.
+    handle.bind(control_io::Binding::PooledServer(shape));
     handle.begin_http_turn(turn.clone());
     // The driver asks for a redirection each time a turn ends: an interrupt
     // commits its message to the handle, and this is where the run hands it to a

@@ -125,17 +125,52 @@ impl Backend {
         }
     }
 
-    /// The backend for the candidate about to serve `shape`, driving its turn
-    /// over `dialogue` where the shape has one.
+    fn of(binding: Binding) -> Self {
+        match binding {
+            Binding::Stdin => Backend::Stdin,
+            Binding::Dialogue(dialogue) => Backend::Dialogue(*dialogue),
+            Binding::PooledServer(http) => Backend::Http(http, None),
+        }
+    }
+}
+
+/// What a candidate binds when it takes the turn — one variant per mechanism
+/// family, each carrying whatever its own shape is knowable from.
+///
+/// This is the whole public surface of [`ControlHandle::bind`], and it is an
+/// enum rather than a `(ControlShape, Option<Dialogue>)` pair so that a shape
+/// and a conversation that do not speak it cannot be handed over together. A
+/// caller cannot name codex's mechanism while passing an ACP conversation, or
+/// claim a pooled server for a shape that has none: there is no field to
+/// disagree with. [`Binding::for_shape`] is the one place a `ControlShape`
+/// becomes one of these, so the mapping lives in a single arm-per-family match
+/// instead of at every call site.
+pub enum Binding {
+    /// Control rides the harness's ordinary run — Claude Code's control frame
+    /// on the child's own stdin.
+    Stdin,
+    /// A JSON-RPC conversation drives the turn and reports the protocol it was
+    /// built for. Boxed because it dwarfs the other two variants, which would
+    /// otherwise cost every binding a conversation's worth of stack.
+    Dialogue(Box<Dialogue>),
+    /// The turn is submitted to a pooled control server of this shape.
+    PooledServer(HttpShape),
+}
+
+impl Binding {
+    /// The binding for `shape`, given the conversation [`Dialogue::new`] built
+    /// for it — `Some` exactly for the shapes that drive a turn over one.
     ///
-    /// `dialogue` decides on its own because it is only ever built by
-    /// [`Dialogue::new`] for the shape it is being bound against; the remaining
-    /// shapes split on whether they submit to a pooled server.
-    fn bind(shape: ControlShape, dialogue: Option<Dialogue>) -> Self {
+    /// A dialogue is taken at its word: it was constructed for the shape it is
+    /// being bound against, and it is the only thing that knows the ids an
+    /// interrupt must address. The remaining shapes split on whether they
+    /// submit to a pooled server.
+    #[must_use]
+    pub fn for_shape(shape: ControlShape, dialogue: Option<Dialogue>) -> Self {
         match (dialogue, HttpShape::of(shape)) {
-            (Some(dialogue), _) => Backend::Dialogue(dialogue),
-            (None, Some(http)) => Backend::Http(http, None),
-            (None, None) => Backend::Stdin,
+            (Some(dialogue), _) => Binding::Dialogue(Box::new(dialogue)),
+            (None, Some(http)) => Binding::PooledServer(http),
+            (None, None) => Binding::Stdin,
         }
     }
 }
@@ -213,16 +248,16 @@ impl ControlHandle {
     }
 
     /// Bind the channel to the mechanism of the candidate that is about to
-    /// serve, driving its turn over `dialogue` where the shape has one.
+    /// serve.
     ///
     /// This is the whole of late binding: the socket a supervisor addresses is
     /// the run's for its whole lifetime, and what sits behind it is whichever
     /// candidate is serving. Called before the candidate's turn opens; every
     /// interrupt served from here until [`Self::release`] reaches that turn.
-    pub fn bind(&self, shape: ControlShape, dialogue: Option<Dialogue>) {
-        let backend = Backend::bind(shape, dialogue);
-        // Reported from the backend rather than from the argument, so the shape
-        // a supervisor is told is the one that will answer them.
+    pub fn bind(&self, binding: Binding) {
+        let backend = Backend::of(binding);
+        // Reported from the backend, which is the only thing that knows what it
+        // speaks — so the shape a supervisor is told is the one answering them.
         let bound = backend.shape();
         *self.mechanism() = Some(backend);
         *self
@@ -1085,7 +1120,7 @@ mod tests {
             .unwrap();
         // Bind the mechanism the candidate serving this turn speaks, then park
         // its stdin: the channel is unbound until a candidate takes the turn.
-        handle.bind(ControlShape::ClaudeControlRequest, None);
+        handle.bind(Binding::Stdin);
         handle.begin_turn(child.stdin.take().unwrap());
 
         let response = send(&path, &ControlRequest::interrupt());
@@ -1146,7 +1181,7 @@ mod tests {
 
         // Candidate A serves its turn.
         let mut first = spawn_candidate();
-        handle.bind(ControlShape::ClaudeControlRequest, None);
+        handle.bind(Binding::Stdin);
         handle.begin_turn(first.stdin.take().unwrap());
         // The abort is served, and names the mechanism that took it.
         let served = send(&path, &ControlRequest::interrupt());
@@ -1174,7 +1209,7 @@ mod tests {
 
         // Now B binds, on the same socket the supervisor has held throughout.
         // The address never changed; what is behind it did.
-        handle.bind(ControlShape::ClaudeControlRequest, None);
+        handle.bind(Binding::Stdin);
         // A released channel re-arms for the next candidate.
         let again = send(&path, &ControlRequest::interrupt());
         assert!(again.is_ok(), "{again:?}");
@@ -1248,7 +1283,7 @@ mod tests {
             .stdout(std::process::Stdio::piped())
             .spawn()
             .unwrap();
-        handle.bind(ControlShape::ClaudeControlRequest, None);
+        handle.bind(Binding::Stdin);
         handle.begin_turn(child.stdin.take().unwrap());
 
         let response = send(
@@ -1267,7 +1302,7 @@ mod tests {
         assert!(handle.take_redirect().is_none());
 
         // The next candidate binds and opens its turn with its OWN prompt only.
-        handle.bind(ControlShape::ClaudeControlRequest, None);
+        handle.bind(Binding::Stdin);
         let frames = handle.open_frames("the next candidate's prompt");
         // The dropped redirection must not open another candidate's turn.
         assert_eq!(frames.len(), 1, "{frames:?}");
@@ -1306,7 +1341,7 @@ mod tests {
         );
         assert!(dialogue.is_some(), "codex control is a dialogue shape");
         // The serving candidate's mechanism is the one reported.
-        handle.bind(ControlShape::CodexAppServer, dialogue);
+        handle.bind(Binding::Dialogue(Box::new(dialogue.unwrap())));
         assert_eq!(handle.shape(), ControlShape::CodexAppServer);
 
         // And releasing does not rewrite history: the mechanism that served is
@@ -1317,36 +1352,25 @@ mod tests {
     }
 
     #[test]
-    fn the_conversation_decides_the_mechanism_rather_than_the_shape_passed_beside_it() {
-        use crate::domain::control::AbsolutePath;
-        use crate::domain::dialogue::DialogueConfig;
-        use crate::domain::mode::{ApprovalPosture, PermissionMode};
-        // A dialogue answers exactly one protocol, so it — not the argument
-        // beside it — is what the channel is on. Reporting the argument instead
-        // would let the run name `claude-control-request` while an app-server
-        // conversation held the turn, and a supervisor addressing the mechanism
-        // they were told about would be writing at one nobody is on.
-        let dir = temp_dir("mismatch");
-        let path = socket_path(&dir, "paired");
+    fn a_pooled_binding_reports_the_server_it_names_rather_than_the_chain_head() {
+        // `Binding` makes the mismatch this used to have to assert against
+        // unspellable: a conversation carries its own protocol and a pooled
+        // binding its own server, so no shape can be handed over beside one that
+        // contradicts it. What is still worth pinning is that the report follows
+        // the binding — a channel still naming the chain's first mechanism would
+        // hand a supervisor an address that answers for a different candidate.
+        let dir = temp_dir("pooled-binding");
+        let path = socket_path(&dir, "named");
         let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         let handle = listener.handle();
-        let dialogue = Dialogue::new(
-            ControlShape::CodexAppServer,
-            DialogueConfig {
-                prompt: "keep working".to_string(),
-                cwd: AbsolutePath::new(&dir).unwrap(),
-                model: None,
-                mode: PermissionMode::Bypass,
-                posture: ApprovalPosture::Unattended,
-            },
-        );
+        assert_eq!(handle.shape(), ControlShape::ClaudeControlRequest);
 
-        // Bound with a shape that is not the conversation's.
-        handle.bind(ControlShape::ClaudeControlRequest, dialogue);
-        assert_eq!(handle.shape(), ControlShape::CodexAppServer);
-        // And the backend really is the conversation, so what is reported and
-        // what would answer an interrupt are the same mechanism.
-        assert!(handle.drives_turn_over_stdin());
+        let http = HttpShape::of(ControlShape::OpencodeHttp).expect("opencode submits to a server");
+        handle.bind(Binding::PooledServer(http));
+        assert_eq!(handle.shape(), ControlShape::OpencodeHttp);
+        // Not a stdin-driven turn, so nothing about the chain's head survived
+        // the rebinding.
+        assert!(!handle.drives_turn_over_stdin());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1374,7 +1398,7 @@ mod tests {
             .unwrap();
         // Bind the mechanism the candidate serving this turn speaks, then park
         // its stdin: the channel is unbound until a candidate takes the turn.
-        handle.bind(ControlShape::ClaudeControlRequest, None);
+        handle.bind(Binding::Stdin);
         handle.begin_turn(child.stdin.take().unwrap());
 
         let response = send(

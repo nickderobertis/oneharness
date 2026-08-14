@@ -24032,6 +24032,96 @@ fn streaming_is_refused_for_a_server_submitted_candidate_anywhere_in_the_chain()
     let _ = std::fs::remove_dir_all(&store);
 }
 
+/// A chain whose head is fine and whose reserve is not, planned but never run.
+///
+/// Every `validate_control` refusal reasons over EVERY candidate, because any
+/// of them can end up serving — so each of these has to be provable with the
+/// offending candidate somewhere other than first, and provable before a
+/// harness starts. Returns the refusal and whether anything spawned on the way
+/// to it.
+#[cfg(unix)]
+fn later_candidate_refusal(tag: &str, harnesses: &str, extra: &[&str]) -> (Output, bool) {
+    let mock = mock_bin().display().to_string();
+    let store = control_store_dir(tag);
+    let spawned = store.join("spawned.log");
+    let spawned_arg = spawned.display().to_string();
+    let project = format!(
+        r#"
+        harnesses = [{harnesses}]
+        run_mode = "fallback"
+        [harness.claude-code]
+        bin = '{mock}'
+        [harness.opencode]
+        bin = '{mock}'
+    "#
+    );
+    let fx = ConfigFixture::new(&format!("control-later-{tag}"), &project, "");
+    let store_arg = store.display().to_string();
+    let cwd_arg = fx.cwd();
+    let mut args = vec![
+        "run",
+        "--control",
+        "--session",
+        "later",
+        "--session-dir",
+        &store_arg,
+        "--cwd",
+        &cwd_arg,
+        "--prompt",
+        "hi",
+        "--compact",
+    ];
+    args.extend_from_slice(extra);
+    let output = run_with_config(&args, &[("MOCK_LOG_FILE", &spawned_arg)], &fx.user_config());
+    let ran = spawned.exists();
+    let _ = std::fs::remove_dir_all(&store);
+    (output, ran)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_later_candidates_pooled_mode_delivery_is_refused_before_the_head_runs() {
+    // opencode's `edit` policy travels only in the harness's own configuration
+    // environment, which a turn submitted to a pooled server never receives — so
+    // that turn would run under whatever policy the server was started with,
+    // the silent reshaping `--control` must never do. The candidate declaring it
+    // is second here, and the refusal still names it and still lands before the
+    // head takes a turn.
+    let (output, ran) = later_candidate_refusal(
+        "mode-late",
+        r#""claude-code", "opencode""#,
+        &["--mode", "edit"],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("`opencode`"), "{stderr}");
+    assert!(
+        stderr.contains("does not hand that environment to the server"),
+        "{stderr}"
+    );
+    assert!(!ran, "a harness ran before the refusal");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_later_candidates_required_output_format_is_refused_before_the_head_runs() {
+    // The other way round: the pooled candidate is the head and pins no format,
+    // while the claude-code candidate behind it can only speak `stream-json`
+    // under control. `--output-format json` is a promise about the run, so the
+    // conflict is the reserve's and is answered up front rather than after a
+    // fall-through has already reached it.
+    let (output, ran) = later_candidate_refusal(
+        "fmt-late",
+        r#""opencode", "claude-code""#,
+        &["--output-format", "json"],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("`claude-code`"), "{stderr}");
+    assert!(stderr.contains("stream-json"), "{stderr}");
+    assert!(!ran, "a harness ran before the refusal");
+}
+
 #[test]
 fn control_with_a_model_fan_out_is_a_usage_error() {
     // A fan-out multiplies the run into several (harness, model) units, and the

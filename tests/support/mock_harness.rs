@@ -110,6 +110,11 @@
 //!                   of the turn), and end it on `turn/completed` only once a
 //!                   `turn/interrupt` naming the thread and turn arrives. Every
 //!                   received line is appended to the log.
+//!   MOCK_CODEX_DIE_ON_INTERRUPT  with MOCK_CODEX_APP_SERVER_LOG, acknowledge the
+//!                   interrupt and then EXIT without the `turn/completed` that
+//!                   ends the turn, appending `DIED_AFTER_INTERRUPT`. The
+//!                   conversation is gone holding a redirection it committed, so
+//!                   a test can drive the run's report of that loss.
 //!   MOCK_HTTP_CONTROL_LOG  if set to a path, act like an **opencode-shaped HTTP
 //!                   control server** on the `--port` from its own argv: create a
 //!                   session, block the turn on a permission request, and abort it
@@ -998,6 +1003,14 @@ fn run_codex_app_server(log_path: &str) -> ! {
                     continue;
                 }
                 send(&json!({"jsonrpc": "2.0", "id": id, "result": {}}));
+                // A server that accepts the abort and then dies before saying
+                // the turn ended. The client is left holding a redirection it
+                // committed to a conversation that will never open its next
+                // turn, which is the loss the run has to report.
+                if std::env::var_os("MOCK_CODEX_DIE_ON_INTERRUPT").is_some() {
+                    append("DIED_AFTER_INTERRUPT");
+                    std::process::exit(0);
+                }
                 send(&json!({
                     "jsonrpc": "2.0",
                     "method": "turn/completed",

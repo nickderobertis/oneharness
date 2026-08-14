@@ -247,19 +247,27 @@ impl ControlHandle {
     /// is reported and dropped rather than carried across a fall-through: a
     /// message a supervisor aimed at one candidate's turn must never be
     /// delivered into a different candidate's fresh one, which nobody saw start.
+    /// Both stores are asked, because which one holds it depends on the
+    /// mechanism: a dialogue keeps its own, and dropping the backend without
+    /// asking would lose a codex or ACP redirection in silence — the one
+    /// outcome this warning exists to prevent.
     ///
     /// Each field is taken in its own statement so no two of these locks are
     /// ever held at once — the ordering the rest of this type relies on
     /// (`mechanism` before `redirect` before `state`) is a nesting rule, and the
     /// cheapest way to obey it here is to nest nothing.
     pub fn release(&self) {
+        let undelivered = matches!(
+            self.mechanism().as_ref(),
+            Some(Backend::Dialogue(dialogue)) if dialogue.has_pending_redirect()
+        );
         *self.mechanism() = None;
         let held = std::mem::replace(&mut *self.redirect(), Redirect::None);
         *self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = TurnState::Idle;
-        if !matches!(held, Redirect::None) {
+        if undelivered || !matches!(held, Redirect::None) {
             eprintln!(
                 "oneharness: warning: the interrupted turn ended before its redirection could be \
                  delivered; the message was not carried to another candidate"

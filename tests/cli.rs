@@ -25246,6 +25246,107 @@ fn a_chain_that_falls_through_to_a_pooled_server_candidate_runs_it_on_its_own_mo
 
 #[cfg(unix)]
 #[test]
+fn a_redirection_a_dead_conversation_still_held_is_reported_rather_than_lost() {
+    // The dialogue mechanisms keep their committed redirection inside the
+    // conversation rather than in the handle's own store, so releasing the
+    // candidate drops it with the backend. A supervisor was told the run took
+    // their message; if that store is not asked on the way out, the message
+    // disappears in silence — the one outcome the notice exists to prevent, and
+    // it must read the same whichever mechanism was serving.
+    //
+    // Here codex's app-server acknowledges the abort and dies before ever
+    // saying the turn ended, so the conversation is gone still holding it.
+    let mock = mock_bin().display().to_string();
+    let store = control_store_dir("dialogue-drop");
+    let store_arg = store.display().to_string();
+    let log = store.join("app-server.log");
+    let log_arg = log.display().to_string();
+    let project = format!(
+        r#"
+        harnesses = ["codex"]
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_CODEX_APP_SERVER_LOG = '{log_arg}', MOCK_CODEX_DIE_ON_INTERRUPT = "1" }}
+    "#
+    );
+    let fx = ConfigFixture::new("control-dialogue-drop", &project, "");
+    let cwd_arg = fx.cwd();
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_CONFIG", fx.user_config())
+        .args([
+            "run",
+            "--control",
+            "--session",
+            "dlgdrop",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--timeout",
+            "60",
+            "--compact",
+            "--env",
+            &mock_profile_redirect(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the controlled codex run");
+
+    wait_until("the control socket", || {
+        store.join("control").join("dlgdrop.sock").exists()
+    });
+    wait_until("the conversation's turn to start", || {
+        std::fs::read_to_string(&log)
+            .map(|text| text.contains("turn/start"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "dlgdrop",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--input",
+            "do X instead",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    // The supervisor is told the conversation took their message.
+    assert_eq!(json_stdout(&interrupt)["redirected"], true);
+
+    let output = child.wait_with_output().expect("run did not finish");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    assert_eq!(report["control"]["mechanism"], "codex-app-server");
+    assert_eq!(report["control"]["interrupts"][0]["redirected"], true);
+    // Said — the same notice a stdin-borne mechanism gives, because the promise
+    // is the run's and not any one mechanism's.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("the message was not carried to another candidate"),
+        "a dialogue's undelivered redirection was dropped in silence: {stderr}"
+    );
+    // And it really never ran: the server died on the abort, so no second turn
+    // was ever opened for it.
+    let served = std::fs::read_to_string(&log).unwrap();
+    assert!(served.contains("DIED_AFTER_INTERRUPT"), "{served}");
+    assert!(!served.contains("do X instead"), "{served}");
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+#[cfg(unix)]
+#[test]
 fn a_pooled_server_candidate_that_never_comes_up_falls_through_to_the_next() {
     // The other direction, and the one that proves the pooled model is a link in
     // the chain rather than a terminus. The head is opencode, whose server dies

@@ -2207,7 +2207,6 @@ impl ControlledChain<'_> {
         });
     }
 
-    /// The prompt plan entry `index` opens its turn with.
     fn prompt(&self, index: usize) -> String {
         self.prompts
             .get(index)

@@ -101,7 +101,6 @@ enum Backend {
 }
 
 impl Backend {
-    /// The mechanism this backend speaks.
     fn shape(&self) -> ControlShape {
         match self {
             Backend::Stdin => ControlShape::ClaudeControlRequest,

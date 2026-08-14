@@ -25241,6 +25241,13 @@ fn a_chain_that_falls_through_to_a_pooled_server_candidate_runs_it_on_its_own_mo
     // chain exercised both execution models in one run.
     let head = std::fs::read_to_string(&turn_log).expect("the head logged its turn");
     assert!(head.contains("keep working"), "{head}");
+    // Nothing is left leased behind the turn: the server the chain reached goes
+    // away with it, which is why reaching a pooled candidate through a
+    // fall-through never adds up to two live ones.
+    assert!(
+        wait_for_pooled_server_to_exit(&pool),
+        "the pooled candidate's server outlived the turn it served"
+    );
     let _ = std::fs::remove_dir_all(&store);
 }
 

@@ -2272,6 +2272,10 @@ mod tests {
         }
     }
 
+    // Unix-gated with the budget it exercises: off unix there is no `sun_path`
+    // to overrun, and `SOCKET_ADDRESS_MAX` says so by being unbounded — so no
+    // store is ever past it and this refusal has nothing to refuse.
+    #[cfg(unix)]
     #[test]
     fn a_store_past_the_budget_is_a_loud_error_naming_the_path_length_and_limit() {
         // A realistic deep store: a session dir inside a versioned worktree,
@@ -2288,6 +2292,22 @@ mod tests {
         assert!(said.contains(&error.path().display().to_string()), "{said}");
         assert!(said.contains(&error.bytes().to_string()), "{said}");
         assert!(said.contains(&error.limit().to_string()), "{said}");
+    }
+
+    /// The other side of that gate. A refusal borrowed from a platform whose
+    /// limit does not apply is its own silent breakage — a control channel
+    /// declined for a `sun_path` the host has no notion of — so the store the
+    /// unix test cannot address must still be addressable here.
+    #[cfg(not(unix))]
+    #[test]
+    fn a_deep_store_is_addressable_where_there_is_no_sun_path_to_overrun() {
+        let store = PathBuf::from(
+            "/home/nick.guest/.onevcs/workspaces/github.com-nickderobertis-oneharness-e6efbed8d311/runs/s-3b0f64620cdc/worktree/.oneharness/sessions",
+        );
+        let path = socket_path(&store, &graph_session_name())
+            .expect("no budget off unix means no store is past it");
+        assert_eq!(socket_address_within_limit(&path), Ok(()));
+        assert!(path.starts_with(store.join(CONTROL_DIR)));
     }
 
     // Unix-gated with the budget it exercises: off unix there is no `sun_path`

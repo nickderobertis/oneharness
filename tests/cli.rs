@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use oneharness_core::domain::events::{ActionEvent, TimingSource, ToolCallStatus};
+use oneharness_core::domain::fallback::FallThroughReason;
 use oneharness_core::domain::history::{HistoryLabels, HistoryLine, HistoryStreamEnvelope};
 use oneharness_core::domain::report::{RunStreamEnvelope, Status};
 use oneharness_core::domain::session;
@@ -7040,7 +7041,7 @@ CLAUDE_CONFIG_DIR = "OH_TEST_EMPTY_HOME"
             let fallback = report.fallback.as_ref().expect("a fallback report");
             assert_eq!(fallback.ran.as_deref(), Some("claude-code:empty"));
             assert_eq!(fallback.fell_through[0].harness, "claude-code:absent");
-            assert_eq!(fallback.fell_through[0].reason, "auth");
+            assert_eq!(fallback.fell_through[0].reason, FallThroughReason::Auth);
             assert_eq!(report.results[0].status, Status::Skipped);
             assert_eq!(report.results[0].failure_kind, Some(FailureKind::Auth));
         }

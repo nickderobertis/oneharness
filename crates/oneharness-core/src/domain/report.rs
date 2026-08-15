@@ -12,6 +12,7 @@ use serde_json::Value;
 use crate::domain::batch::BatchStrategy;
 use crate::domain::control::ControlReport;
 use crate::domain::events::ActionEvent;
+use crate::domain::fallback::FallThroughReason;
 use crate::domain::mode::PermissionMode;
 use crate::domain::session::SessionPhase;
 use crate::domain::signals::{FailureKind, Usage};
@@ -623,10 +624,12 @@ pub struct FallbackReport {
 pub struct FallThrough {
     /// Canonical harness id.
     pub harness: String,
-    /// Short reason token (`not-installed` / `spawn-error` / `auth` / `quota` /
-    /// `session-not-found` / `untrusted-directory` / `input-too-large` /
-    /// `model-not-found` / `rate-limit`).
-    pub reason: String,
+    // Documented on [`FallThroughReason`] itself, not here: a description
+    // alongside the `$ref` makes the TypeScript generator inline the union
+    // instead of naming the type, and the zod schema then imports a name
+    // `contracts.ts` never exported. `status` above carries no field doc for the
+    // same reason.
+    pub reason: FallThroughReason,
     /// This candidate's own account of why it could not run — the provider's
     /// machine-readable refusal verbatim when it named one (Codex's
     /// `{"input_error_code":"input_too_large",…}`), else the run's normalized

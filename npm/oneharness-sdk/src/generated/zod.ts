@@ -28,6 +28,7 @@ import type {
   ExecutionTelemetry,
   FailureKind,
   FallThrough,
+  FallThroughReason,
   FallbackReport,
   RunReport,
   RunResult,
@@ -297,8 +298,20 @@ export const FailureKindSchema: z.ZodType<FailureKind> = z.union([
 export const FallThroughSchema: z.ZodType<FallThrough> = z.looseObject({
   detail: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
-  reason: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  reason: z.lazy(() => FallThroughReasonSchema).refine((value) => value !== undefined, { message: "Required" }),
 });
+
+export const FallThroughReasonSchema: z.ZodType<FallThroughReason> = z.union([
+  z.literal("not-installed"),
+  z.literal("spawn-error"),
+  z.literal("auth"),
+  z.literal("quota"),
+  z.literal("session-not-found"),
+  z.literal("untrusted-directory"),
+  z.literal("input-too-large"),
+  z.literal("model-not-found"),
+  z.literal("rate-limit"),
+]);
 
 export const FallbackReportSchema: z.ZodType<FallbackReport> = z.looseObject({
   fell_through: z

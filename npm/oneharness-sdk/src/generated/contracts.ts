@@ -51,6 +51,26 @@ export type ControlReason = "unsupported" | "no_active_turn" | "not_running";
  * frame's `v` is what leaves room for `steer` later.
  */
 export type ControlVerb = "interrupt";
+/**
+ * Why a candidate fell through — the closed set [`startup_failure_reason`]
+ * decides and [`crate::domain::report::FallThrough`] reports.
+ *
+ * A type rather than a token, because the set is closed and every reader
+ * downstream branches on it: a value no classifier produced cannot be built,
+ * and the JSON spelling below is the schema's rather than each call site's. A
+ * new variant is a report `schema_version` bump like any other enum value, since
+ * a consumer matching exhaustively learns of it only from the version.
+ */
+export type FallThroughReason =
+  | "not-installed"
+  | "spawn-error"
+  | "auth"
+  | "quota"
+  | "session-not-found"
+  | "untrusted-directory"
+  | "input-too-large"
+  | "model-not-found"
+  | "rate-limit";
 export type ToolCallStatus = "completed" | "failed" | "timeout" | "interrupted";
 /**
  * How a normalized tool interval was obtained.
@@ -325,12 +345,7 @@ export interface FallThrough {
    * Canonical harness id.
    */
   harness: string;
-  /**
-   * Short reason token (`not-installed` / `spawn-error` / `auth` / `quota` /
-   * `session-not-found` / `untrusted-directory` / `input-too-large` /
-   * `model-not-found` / `rate-limit`).
-   */
-  reason: string;
+  reason: FallThroughReason;
   [k: string]: unknown;
 }
 /**

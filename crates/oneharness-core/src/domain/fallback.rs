@@ -93,10 +93,60 @@ impl RunWork {
     }
 }
 
+/// Why a candidate fell through — the closed set [`startup_failure_reason`]
+/// decides and [`crate::domain::report::FallThrough`] reports.
+///
+/// A type rather than a token, because the set is closed and every reader
+/// downstream branches on it: a value no classifier produced cannot be built,
+/// and the JSON spelling below is the schema's rather than each call site's. A
+/// new variant is a report `schema_version` bump like any other enum value, since
+/// a consumer matching exhaustively learns of it only from the version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum FallThroughReason {
+    /// The binary was not on PATH.
+    NotInstalled,
+    /// It resolved but could not be executed.
+    SpawnError,
+    /// This identity is not authenticated.
+    Auth,
+    /// This account is out of quota or credits.
+    Quota,
+    /// The session asked for does not exist for this identity.
+    SessionNotFound,
+    /// The harness refused the working directory before making the request.
+    UntrustedDirectory,
+    /// The harness refused the input's size before making the request.
+    InputTooLarge,
+    /// This model is unavailable — only on a model fan-out.
+    ModelNotFound,
+    /// This model cannot serve the request right now — only on a model fan-out.
+    RateLimit,
+}
+
+impl FallThroughReason {
+    /// The JSON token this reason serializes to, for the diagnostics and tests
+    /// that need the raw string.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FallThroughReason::NotInstalled => "not-installed",
+            FallThroughReason::SpawnError => "spawn-error",
+            FallThroughReason::Auth => "auth",
+            FallThroughReason::Quota => "quota",
+            FallThroughReason::SessionNotFound => "session-not-found",
+            FallThroughReason::UntrustedDirectory => "untrusted-directory",
+            FallThroughReason::InputTooLarge => "input-too-large",
+            FallThroughReason::ModelNotFound => "model-not-found",
+            FallThroughReason::RateLimit => "rate-limit",
+        }
+    }
+}
+
 /// Why a harness **could not run the task at all** — the conditions that make a
-/// fallback run fall through to the next candidate. Returns a short reason token
-/// when the outcome is a startup failure, or `None` when the harness *did* run
-/// (so a fallback run stops there).
+/// fallback run fall through to the next candidate. Returns the reason when the
+/// outcome is a startup failure, or `None` when the harness *did* run (so a
+/// fallback run stops there).
 ///
 /// [`RunWork::Done`] short-circuits every reason below: falling through a
 /// candidate that already worked burns the next one's quota re-running what
@@ -166,7 +216,7 @@ pub fn startup_failure_reason(
     failure_kind: Option<FailureKind>,
     model_fallback: bool,
     work: RunWork,
-) -> Option<&'static str> {
+) -> Option<FallThroughReason> {
     if work == RunWork::Done {
         return None;
     }
@@ -174,21 +224,29 @@ pub fn startup_failure_reason(
         (_, Some(FailureKind::Auth))
             if matches!(status, Status::Ok | Status::Nonzero | Status::Skipped) =>
         {
-            Some("auth")
+            Some(FallThroughReason::Auth)
         }
         (_, Some(FailureKind::Quota)) if matches!(status, Status::Ok | Status::Nonzero) => {
-            Some("quota")
+            Some(FallThroughReason::Quota)
         }
-        (Status::Nonzero, Some(FailureKind::SessionNotFound)) => Some("session-not-found"),
-        (Status::Nonzero, Some(FailureKind::UntrustedDirectory)) => Some("untrusted-directory"),
-        (Status::Nonzero, Some(FailureKind::InputTooLarge)) => Some("input-too-large"),
-        (Status::Skipped, _) => Some("not-installed"),
-        (Status::SpawnError, _) => Some("spawn-error"),
+        (Status::Nonzero, Some(FailureKind::SessionNotFound)) => {
+            Some(FallThroughReason::SessionNotFound)
+        }
+        (Status::Nonzero, Some(FailureKind::UntrustedDirectory)) => {
+            Some(FallThroughReason::UntrustedDirectory)
+        }
+        (Status::Nonzero, Some(FailureKind::InputTooLarge)) => {
+            Some(FallThroughReason::InputTooLarge)
+        }
+        (Status::Skipped, _) => Some(FallThroughReason::NotInstalled),
+        (Status::SpawnError, _) => Some(FallThroughReason::SpawnError),
         (Status::Nonzero, _) => match failure_kind {
             // Only when a model list is being tried: an unusable/over-limit model
             // means "try the next model", not "stop with a real failure".
-            Some(FailureKind::ModelNotFound) if model_fallback => Some("model-not-found"),
-            Some(FailureKind::RateLimit) if model_fallback => Some("rate-limit"),
+            Some(FailureKind::ModelNotFound) if model_fallback => {
+                Some(FallThroughReason::ModelNotFound)
+            }
+            Some(FailureKind::RateLimit) if model_fallback => Some(FallThroughReason::RateLimit),
             _ => None,
         },
         (Status::Ok | Status::Timeout | Status::Cancelled | Status::Planned, _) => None,
@@ -234,11 +292,11 @@ mod tests {
         // Structural "could not run": not installed, or resolved-but-unspawnable.
         assert_eq!(
             startup_failure_reason(Status::Skipped, None, false, RunWork::None),
-            Some("not-installed")
+            Some(FallThroughReason::NotInstalled)
         );
         assert_eq!(
             startup_failure_reason(Status::SpawnError, None, false, RunWork::None),
-            Some("spawn-error")
+            Some(FallThroughReason::SpawnError)
         );
         // Provisioning "could not run": rejected before any work.
         assert_eq!(
@@ -248,7 +306,7 @@ mod tests {
                 false,
                 RunWork::None
             ),
-            Some("auth")
+            Some(FallThroughReason::Auth)
         );
         assert_eq!(
             startup_failure_reason(
@@ -257,7 +315,7 @@ mod tests {
                 false,
                 RunWork::None
             ),
-            Some("quota")
+            Some(FallThroughReason::Quota)
         );
         // A candidate that was not run *because* its identity is unprovisioned
         // carries the credential reason, not the missing-binary one.
@@ -268,7 +326,7 @@ mod tests {
                 false,
                 RunWork::None
             ),
-            Some("auth")
+            Some(FallThroughReason::Auth)
         );
         for status in [Status::Skipped, Status::SpawnError] {
             assert!(is_startup_failure(status, None, false, RunWork::None));
@@ -294,7 +352,7 @@ mod tests {
                 false,
                 RunWork::None
             ),
-            Some("session-not-found")
+            Some(FallThroughReason::SessionNotFound)
         );
         assert!(is_startup_failure(
             Status::Nonzero,
@@ -317,8 +375,11 @@ mod tests {
         // request was made, so the task is untouched and the next candidate —
         // which may hold the trust, or the room — gets it.
         for (kind, reason) in [
-            (FailureKind::UntrustedDirectory, "untrusted-directory"),
-            (FailureKind::InputTooLarge, "input-too-large"),
+            (
+                FailureKind::UntrustedDirectory,
+                FallThroughReason::UntrustedDirectory,
+            ),
+            (FailureKind::InputTooLarge, FallThroughReason::InputTooLarge),
         ] {
             assert_eq!(
                 startup_failure_reason(Status::Nonzero, Some(kind), false, RunWork::None),
@@ -429,7 +490,7 @@ mod tests {
                 true,
                 RunWork::None
             ),
-            Some("model-not-found")
+            Some(FallThroughReason::ModelNotFound)
         );
         assert_eq!(
             startup_failure_reason(
@@ -438,7 +499,7 @@ mod tests {
                 true,
                 RunWork::None
             ),
-            Some("rate-limit")
+            Some(FallThroughReason::RateLimit)
         );
         assert!(is_startup_failure(
             Status::Nonzero,
@@ -471,7 +532,7 @@ mod tests {
         // The structural/provisioning reasons are unchanged by the model flag.
         assert_eq!(
             startup_failure_reason(Status::Skipped, None, true, RunWork::None),
-            Some("not-installed")
+            Some(FallThroughReason::NotInstalled)
         );
         assert_eq!(
             startup_failure_reason(
@@ -480,7 +541,7 @@ mod tests {
                 true,
                 RunWork::None
             ),
-            Some("auth")
+            Some(FallThroughReason::Auth)
         );
     }
 

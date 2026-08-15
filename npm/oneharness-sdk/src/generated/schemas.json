@@ -1833,14 +1833,63 @@
             "type": "string"
           },
           "reason": {
-            "description": "Short reason token (`not-installed` / `spawn-error` / `auth` / `quota` /\n`session-not-found` / `untrusted-directory` / `input-too-large` /\n`model-not-found` / `rate-limit`).",
-            "type": "string"
+            "$ref": "#/$defs/FallThroughReason"
           }
         },
         "required": [
           "harness",
           "reason",
           "detail"
+        ]
+      },
+      "FallThroughReason": {
+        "description": "Why a candidate fell through — the closed set [`startup_failure_reason`]\ndecides and [`crate::domain::report::FallThrough`] reports.\n\nA type rather than a token, because the set is closed and every reader\ndownstream branches on it: a value no classifier produced cannot be built,\nand the JSON spelling below is the schema's rather than each call site's. A\nnew variant is a report `schema_version` bump like any other enum value, since\na consumer matching exhaustively learns of it only from the version.",
+        "oneOf": [
+          {
+            "description": "The binary was not on PATH.",
+            "type": "string",
+            "const": "not-installed"
+          },
+          {
+            "description": "It resolved but could not be executed.",
+            "type": "string",
+            "const": "spawn-error"
+          },
+          {
+            "description": "This identity is not authenticated.",
+            "type": "string",
+            "const": "auth"
+          },
+          {
+            "description": "This account is out of quota or credits.",
+            "type": "string",
+            "const": "quota"
+          },
+          {
+            "description": "The session asked for does not exist for this identity.",
+            "type": "string",
+            "const": "session-not-found"
+          },
+          {
+            "description": "The harness refused the working directory before making the request.",
+            "type": "string",
+            "const": "untrusted-directory"
+          },
+          {
+            "description": "The harness refused the input's size before making the request.",
+            "type": "string",
+            "const": "input-too-large"
+          },
+          {
+            "description": "This model is unavailable — only on a model fan-out.",
+            "type": "string",
+            "const": "model-not-found"
+          },
+          {
+            "description": "This model cannot serve the request right now — only on a model fan-out.",
+            "type": "string",
+            "const": "rate-limit"
+          }
         ]
       },
       "FallbackReport": {
@@ -2803,14 +2852,63 @@
             "type": "string"
           },
           "reason": {
-            "description": "Short reason token (`not-installed` / `spawn-error` / `auth` / `quota` /\n`session-not-found` / `untrusted-directory` / `input-too-large` /\n`model-not-found` / `rate-limit`).",
-            "type": "string"
+            "$ref": "#/$defs/FallThroughReason"
           }
         },
         "required": [
           "harness",
           "reason",
           "detail"
+        ]
+      },
+      "FallThroughReason": {
+        "description": "Why a candidate fell through — the closed set [`startup_failure_reason`]\ndecides and [`crate::domain::report::FallThrough`] reports.\n\nA type rather than a token, because the set is closed and every reader\ndownstream branches on it: a value no classifier produced cannot be built,\nand the JSON spelling below is the schema's rather than each call site's. A\nnew variant is a report `schema_version` bump like any other enum value, since\na consumer matching exhaustively learns of it only from the version.",
+        "oneOf": [
+          {
+            "description": "The binary was not on PATH.",
+            "type": "string",
+            "const": "not-installed"
+          },
+          {
+            "description": "It resolved but could not be executed.",
+            "type": "string",
+            "const": "spawn-error"
+          },
+          {
+            "description": "This identity is not authenticated.",
+            "type": "string",
+            "const": "auth"
+          },
+          {
+            "description": "This account is out of quota or credits.",
+            "type": "string",
+            "const": "quota"
+          },
+          {
+            "description": "The session asked for does not exist for this identity.",
+            "type": "string",
+            "const": "session-not-found"
+          },
+          {
+            "description": "The harness refused the working directory before making the request.",
+            "type": "string",
+            "const": "untrusted-directory"
+          },
+          {
+            "description": "The harness refused the input's size before making the request.",
+            "type": "string",
+            "const": "input-too-large"
+          },
+          {
+            "description": "This model is unavailable — only on a model fan-out.",
+            "type": "string",
+            "const": "model-not-found"
+          },
+          {
+            "description": "This model cannot serve the request right now — only on a model fan-out.",
+            "type": "string",
+            "const": "rate-limit"
+          }
         ]
       },
       "FallbackReport": {

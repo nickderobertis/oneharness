@@ -1458,7 +1458,7 @@ fn failure_summary(report: &RunReport, require_available: bool) -> String {
             let chain = fb
                 .fell_through
                 .iter()
-                .map(|f| format!("{} [{}]", f.harness, f.reason))
+                .map(|f| format!("{} [{}]", f.harness, f.reason.as_str()))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!(
@@ -3406,7 +3406,7 @@ fn fallback_step(
         Some(reason) => {
             fell_through.push(FallThrough {
                 harness: result.harness.clone(),
-                reason: reason.to_string(),
+                reason,
                 detail: result.error.clone(),
             });
             true

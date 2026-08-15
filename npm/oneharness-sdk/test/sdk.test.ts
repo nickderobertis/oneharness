@@ -349,8 +349,6 @@ describe("OneHarness", () => {
 		).toEqual({
 			fell_through: [
 				{
-					// The provider's own cause travels with the reason token, so a
-					// caller reading only the fallback block can act on it.
 					detail:
 						'harness `codex` refused the request before running it: {"input_error_code":"input_too_large"}',
 					harness: "codex",

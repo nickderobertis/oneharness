@@ -100,7 +100,16 @@ require_line .github/workflows/ci.yml 'uses: ./.github/actions/setup-just' "inst
 # missing, so the setting alone is a check that can silently do nothing.
 require_line release-plz.toml 'semver_check = true' "detect API breaking changes rather than trusting the commit subject"
 require_line .github/workflows/release-plz.yml 'tool: cargo-semver-checks' "install the binary release-plz's semver check shells out to"
-require_line .github/workflows/release-plz.yml 'run: cargo-semver-checks --version' "prove the semver check can run before release-plz silently skips it"
+# A version probe passes on a tool that cannot build rustdoc at all — the exact
+# pairing this repo has, since cargo-semver-checks resolves dependencies afresh
+# and refuses a rustc below 1.93 while the workspace pins 1.86.0. Only running
+# the analysis proves the gate works, and only a self-baseline keeps that run
+# from deciding the release it is checking.
+require_line .github/workflows/release-plz.yml \
+  'run: cargo-semver-checks check-release --workspace --baseline-rev HEAD' \
+  "run the semver analysis itself, since a version probe passes on a tool that cannot build rustdoc"
+require_line .github/workflows/release-plz.yml 'RUSTUP_TOOLCHAIN=stable' \
+  "give cargo-semver-checks the toolchain it needs; the pinned channel cannot build its rustdoc"
 if grep -qE 'run: just (lint|lint-sh|test)$|run: bun run --cwd npm/oneharness-sdk (generate:check|build)$' .github/workflows/release.yml; then
   fail "release.yml must use just check/sdk-check instead of re-listing their stages"
 fi

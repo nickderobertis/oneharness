@@ -18,7 +18,9 @@
 use std::collections::BTreeSet;
 
 use clap::CommandFactory;
-use oneharness_core::domain::capability::{Capability, CAPABILITIES};
+use oneharness_core::domain::capability::{
+    Capability, FlagKind, OptionBinding, Suppression, UnlessResolution, CAPABILITIES,
+};
 
 /// Verbs that are deliberately not capabilities, with the reason.
 ///
@@ -190,13 +192,125 @@ fn a_suppressing_option_is_one_the_same_capability_binds() {
                 capability
                     .bindings
                     .iter()
-                    .any(|other| other.option == unless),
-                "`{}` suppresses `{}` on `{unless}`, which it does not bind",
+                    .any(|other| other.option == unless.option),
+                "`{}` suppresses `{}` on `{}`, which it does not bind",
                 capability.method,
                 binding.option,
+                unless.option,
             );
         }
     }
+}
+
+/// The resolutions both SDK argv builders implement.
+///
+/// A suppression cannot ship *unannotated* — `Suppression` carries its
+/// resolution, so omitting one does not compile — but it can ship annotated with
+/// a variant the generated clients have never heard of, which they would read as
+/// the safe default and silently under-refuse. Adding a variant means teaching
+/// `npm/oneharness-sdk/src/index.ts` and
+/// `python/oneharness-sdk/src/oneharness_sdk/_client.py` first, then this list —
+/// an order `a_listed_resolution_is_one_the_generated_surfaces_spell` enforces
+/// rather than asks for.
+const GENERATOR_RESOLUTIONS: &[&str] = &["refuse", "prefer"];
+
+/// The generated surfaces `GENERATOR_RESOLUTIONS` is a claim about: each SDK's
+/// argv builder, and the TypeScript union its generator writes beside them.
+const RESOLUTION_SOURCES: &[&str] = &[
+    "npm/oneharness-sdk/src/index.ts",
+    "npm/oneharness-sdk/src/generated/capabilities.ts",
+    "python/oneharness-sdk/src/oneharness_sdk/_client.py",
+];
+
+#[test]
+fn every_suppression_declares_a_resolution_the_generators_understand() {
+    for capability in CAPABILITIES {
+        for binding in capability.bindings {
+            let Some(unless) = binding.unless else {
+                continue;
+            };
+            let spelling = unless.resolution.wire_name();
+            assert!(
+                GENERATOR_RESOLUTIONS.contains(&spelling),
+                "`{}` resolves `{}` against `{}` as `{spelling}`, which no SDK argv builder \
+                 implements. Teach both clients the new resolution, then add it to \
+                 GENERATOR_RESOLUTIONS — a resolution only Rust knows is one the SDKs fall \
+                 back from, quietly, on the calls it was added to refuse.",
+                capability.method,
+                binding.option,
+                unless.option,
+            );
+        }
+    }
+}
+
+#[test]
+fn a_listed_resolution_is_one_the_generated_surfaces_spell() {
+    // Until something reads them, `GENERATOR_RESOLUTIONS` is a claim about three
+    // files this crate never opens — and the list's own doc comment describes
+    // the order it needs (clients first, list second) with nothing holding
+    // anyone to it. This is the reconciliation `check-sdk-coverage.sh` already
+    // does for capabilities: derive from each surface's own source rather than
+    // trust a list beside it. A resolution listed here but absent there is
+    // exactly the failure the list exists to prevent — the clients read it as
+    // the default and under-refuse the calls it was added to refuse.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for source in RESOLUTION_SOURCES {
+        let text = std::fs::read_to_string(root.join(source))
+            .unwrap_or_else(|error| panic!("cannot read `{source}`: {error}"));
+        for resolution in GENERATOR_RESOLUTIONS {
+            assert!(
+                text.contains(&format!("\"{resolution}\"")),
+                "`{source}` never spells the `{resolution}` resolution that \
+                 GENERATOR_RESOLUTIONS says the generated surfaces implement. Teach the \
+                 surface the resolution before listing it here.",
+            );
+        }
+    }
+}
+
+#[test]
+fn a_resolution_reaches_the_wire_and_an_unsuppressed_binding_stays_unchanged() {
+    // The manifest is what the SDKs generate from, so a resolution the
+    // serializer drops is a refusal that never happens. The other half is why
+    // the key is optional rather than always emitted: a binding with no
+    // suppression has nothing to resolve, and its four keys are the shape every
+    // released generator already reads.
+    let refusing = serde_json::to_value(OptionBinding {
+        option: "all",
+        kind: FlagKind::Switch("--all"),
+        unless: Some(Suppression {
+            option: "harnesses",
+            resolution: UnlessResolution::Refuse,
+        }),
+    })
+    .expect("a binding serializes");
+    assert_eq!(
+        refusing,
+        serde_json::json!({
+            "option": "all",
+            "flag": "--all",
+            "kind": "switch",
+            "unless": "harnesses",
+            "unless_resolution": "refuse",
+        })
+    );
+
+    let plain = serde_json::to_value(OptionBinding {
+        option: "exclude",
+        kind: FlagKind::Repeated("--exclude"),
+        unless: None,
+    })
+    .expect("a binding serializes");
+    assert_eq!(
+        plain,
+        serde_json::json!({
+            "option": "exclude",
+            "flag": "--exclude",
+            "kind": "repeated",
+            "unless": null,
+        })
+    );
 }
 
 // "A JSON capability names an output contract" was asserted here too. It is

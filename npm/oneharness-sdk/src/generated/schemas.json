@@ -49,7 +49,8 @@
           "option": "all",
           "flag": "--all",
           "kind": "switch",
-          "unless": "harnesses"
+          "unless": "harnesses",
+          "unless_resolution": "refuse"
         },
         {
           "option": "exclude",
@@ -73,7 +74,8 @@
           "option": "systemFile",
           "flag": "--system-file",
           "kind": "value",
-          "unless": "system"
+          "unless": "system",
+          "unless_resolution": "refuse"
         },
         {
           "option": "reasoning",
@@ -187,7 +189,8 @@
           "option": "config",
           "flag": "--config",
           "kind": "value",
-          "unless": "noConfig"
+          "unless": "noConfig",
+          "unless_resolution": "refuse"
         },
         {
           "option": "noConfig",
@@ -235,7 +238,8 @@
           "option": "history",
           "flag": "--history",
           "kind": "switch",
-          "unless": "noHistory"
+          "unless": "noHistory",
+          "unless_resolution": "refuse"
         },
         {
           "option": "noHistory",
@@ -332,7 +336,8 @@
           "option": "all",
           "flag": "--all",
           "kind": "switch",
-          "unless": "harnesses"
+          "unless": "harnesses",
+          "unless_resolution": "refuse"
         },
         {
           "option": "exclude",
@@ -356,7 +361,8 @@
           "option": "systemFile",
           "flag": "--system-file",
           "kind": "value",
-          "unless": "system"
+          "unless": "system",
+          "unless_resolution": "refuse"
         },
         {
           "option": "reasoning",
@@ -470,7 +476,8 @@
           "option": "config",
           "flag": "--config",
           "kind": "value",
-          "unless": "noConfig"
+          "unless": "noConfig",
+          "unless_resolution": "refuse"
         },
         {
           "option": "noConfig",
@@ -518,7 +525,8 @@
           "option": "history",
           "flag": "--history",
           "kind": "switch",
-          "unless": "noHistory"
+          "unless": "noHistory",
+          "unless_resolution": "refuse"
         },
         {
           "option": "noHistory",
@@ -606,7 +614,8 @@
           "option": "all",
           "flag": "--all",
           "kind": "switch",
-          "unless": "harnesses"
+          "unless": "harnesses",
+          "unless_resolution": "refuse"
         },
         {
           "option": "exclude",
@@ -624,7 +633,8 @@
           "option": "config",
           "flag": "--config",
           "kind": "value",
-          "unless": "noConfig"
+          "unless": "noConfig",
+          "unless_resolution": "refuse"
         },
         {
           "option": "noConfig",
@@ -665,7 +675,8 @@
           "option": "config",
           "flag": "--config",
           "kind": "value",
-          "unless": "noConfig"
+          "unless": "noConfig",
+          "unless_resolution": "refuse"
         },
         {
           "option": "noConfig",
@@ -718,7 +729,8 @@
           "option": "config",
           "flag": "--config",
           "kind": "value",
-          "unless": "noConfig"
+          "unless": "noConfig",
+          "unless_resolution": "refuse"
         },
         {
           "option": "noConfig",
@@ -780,7 +792,8 @@
           "option": "all",
           "flag": "--all",
           "kind": "switch",
-          "unless": "harnesses"
+          "unless": "harnesses",
+          "unless_resolution": "refuse"
         },
         {
           "option": "exclude",
@@ -810,7 +823,8 @@
           "option": "config",
           "flag": "--config",
           "kind": "value",
-          "unless": "noConfig"
+          "unless": "noConfig",
+          "unless_resolution": "refuse"
         },
         {
           "option": "noConfig",
@@ -952,7 +966,8 @@
           "option": "session",
           "flag": "",
           "kind": "positional",
-          "unless": "last"
+          "unless": "last",
+          "unless_resolution": "prefer"
         },
         {
           "option": "last",
@@ -970,7 +985,8 @@
           "option": "project",
           "flag": "--project",
           "kind": "value",
-          "unless": "allProjects"
+          "unless": "allProjects",
+          "unless_resolution": "refuse"
         },
         {
           "option": "allProjects",
@@ -988,7 +1004,8 @@
           "option": "config",
           "flag": "--config",
           "kind": "value",
-          "unless": "noConfig"
+          "unless": "noConfig",
+          "unless_resolution": "refuse"
         },
         {
           "option": "noConfig",
@@ -1029,7 +1046,8 @@
           "option": "project",
           "flag": "--project",
           "kind": "value",
-          "unless": "allProjects"
+          "unless": "allProjects",
+          "unless_resolution": "refuse"
         },
         {
           "option": "allProjects",
@@ -1047,7 +1065,8 @@
           "option": "config",
           "flag": "--config",
           "kind": "value",
-          "unless": "noConfig"
+          "unless": "noConfig",
+          "unless_resolution": "refuse"
         },
         {
           "option": "noConfig",
@@ -1101,7 +1120,8 @@
           "option": "project",
           "flag": "--project",
           "kind": "value",
-          "unless": "allProjects"
+          "unless": "allProjects",
+          "unless_resolution": "refuse"
         },
         {
           "option": "allProjects",
@@ -1125,7 +1145,8 @@
           "option": "config",
           "flag": "--config",
           "kind": "value",
-          "unless": "noConfig"
+          "unless": "noConfig",
+          "unless_resolution": "refuse"
         },
         {
           "option": "noConfig",
@@ -1155,7 +1176,8 @@
           "option": "project",
           "flag": "--project",
           "kind": "value",
-          "unless": "allProjects"
+          "unless": "allProjects",
+          "unless_resolution": "refuse"
         },
         {
           "option": "allProjects",
@@ -1179,7 +1201,8 @@
           "option": "config",
           "flag": "--config",
           "kind": "value",
-          "unless": "noConfig"
+          "unless": "noConfig",
+          "unless_resolution": "refuse"
         },
         {
           "option": "noConfig",
@@ -1215,7 +1238,8 @@
           "option": "config",
           "flag": "--config",
           "kind": "value",
-          "unless": "noConfig"
+          "unless": "noConfig",
+          "unless_resolution": "refuse"
         },
         {
           "option": "noConfig",

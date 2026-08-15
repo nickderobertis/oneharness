@@ -17,7 +17,8 @@
         "flag": "--config",
         "kind": "value",
         "option": "config",
-        "unless": "noConfig"
+        "unless": "noConfig",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--no-config",
@@ -52,7 +53,8 @@
         "flag": "--all",
         "kind": "switch",
         "option": "all",
-        "unless": "harnesses"
+        "unless": "harnesses",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--exclude",
@@ -70,7 +72,8 @@
         "flag": "--config",
         "kind": "value",
         "option": "config",
-        "unless": "noConfig"
+        "unless": "noConfig",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--no-config",
@@ -139,7 +142,8 @@
         "flag": "",
         "kind": "positional",
         "option": "session",
-        "unless": "last"
+        "unless": "last",
+        "unless_resolution": "prefer"
       },
       {
         "flag": "--last",
@@ -157,7 +161,8 @@
         "flag": "--project",
         "kind": "value",
         "option": "project",
-        "unless": "allProjects"
+        "unless": "allProjects",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--all-projects",
@@ -175,7 +180,8 @@
         "flag": "--config",
         "kind": "value",
         "option": "config",
-        "unless": "noConfig"
+        "unless": "noConfig",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--no-config",
@@ -210,7 +216,8 @@
         "flag": "--project",
         "kind": "value",
         "option": "project",
-        "unless": "allProjects"
+        "unless": "allProjects",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--all-projects",
@@ -234,7 +241,8 @@
         "flag": "--config",
         "kind": "value",
         "option": "config",
-        "unless": "noConfig"
+        "unless": "noConfig",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--no-config",
@@ -270,7 +278,8 @@
         "flag": "--project",
         "kind": "value",
         "option": "project",
-        "unless": "allProjects"
+        "unless": "allProjects",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--all-projects",
@@ -288,7 +297,8 @@
         "flag": "--config",
         "kind": "value",
         "option": "config",
-        "unless": "noConfig"
+        "unless": "noConfig",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--no-config",
@@ -329,7 +339,8 @@
         "flag": "--config",
         "kind": "value",
         "option": "config",
-        "unless": "noConfig"
+        "unless": "noConfig",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--no-config",
@@ -378,7 +389,8 @@
         "flag": "--project",
         "kind": "value",
         "option": "project",
-        "unless": "allProjects"
+        "unless": "allProjects",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--all-projects",
@@ -402,7 +414,8 @@
         "flag": "--config",
         "kind": "value",
         "option": "config",
-        "unless": "noConfig"
+        "unless": "noConfig",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--no-config",
@@ -579,7 +592,8 @@
         "flag": "--all",
         "kind": "switch",
         "option": "all",
-        "unless": "harnesses"
+        "unless": "harnesses",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--exclude",
@@ -603,7 +617,8 @@
         "flag": "--system-file",
         "kind": "value",
         "option": "systemFile",
-        "unless": "system"
+        "unless": "system",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--reasoning",
@@ -717,7 +732,8 @@
         "flag": "--config",
         "kind": "value",
         "option": "config",
-        "unless": "noConfig"
+        "unless": "noConfig",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--no-config",
@@ -765,7 +781,8 @@
         "flag": "--history",
         "kind": "switch",
         "option": "history",
-        "unless": "noHistory"
+        "unless": "noHistory",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--no-history",
@@ -862,7 +879,8 @@
         "flag": "--all",
         "kind": "switch",
         "option": "all",
-        "unless": "harnesses"
+        "unless": "harnesses",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--exclude",
@@ -886,7 +904,8 @@
         "flag": "--system-file",
         "kind": "value",
         "option": "systemFile",
-        "unless": "system"
+        "unless": "system",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--reasoning",
@@ -1000,7 +1019,8 @@
         "flag": "--config",
         "kind": "value",
         "option": "config",
-        "unless": "noConfig"
+        "unless": "noConfig",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--no-config",
@@ -1048,7 +1068,8 @@
         "flag": "--history",
         "kind": "switch",
         "option": "history",
-        "unless": "noHistory"
+        "unless": "noHistory",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--no-history",
@@ -1138,7 +1159,8 @@
         "flag": "--config",
         "kind": "value",
         "option": "config",
-        "unless": "noConfig"
+        "unless": "noConfig",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--no-config",
@@ -1173,7 +1195,8 @@
         "flag": "--all",
         "kind": "switch",
         "option": "all",
-        "unless": "harnesses"
+        "unless": "harnesses",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--exclude",
@@ -1203,7 +1226,8 @@
         "flag": "--config",
         "kind": "value",
         "option": "config",
-        "unless": "noConfig"
+        "unless": "noConfig",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--no-config",

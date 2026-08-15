@@ -71,6 +71,7 @@ export type {
 	FlagKind,
 	OptionBinding,
 	StdoutShape,
+	UnlessResolution,
 } from "./generated/capabilities.js";
 export { CAPABILITIES } from "./generated/capabilities.js";
 export type { ConfigOptions } from "./generated/config-options.js";
@@ -395,6 +396,23 @@ function rendersArgument(binding: OptionBinding, value: unknown): boolean {
 }
 
 /**
+ * Does this value assert something, or merely occupy the key?
+ *
+ * Suppression asks whether a binding renders; refusing asks something narrower,
+ * because a contradiction takes two positive answers. An empty value is not one.
+ * `{system: ""}` does render `--system ""` — which is why it still suppresses the
+ * `--system-file` clap refuses beside it — but an empty system prompt asks for
+ * nothing, so a file beside it is a defaulted key next to a real choice rather
+ * than a caller asking for two different things.
+ */
+function statesAChoice(binding: OptionBinding, value: unknown): boolean {
+	if (!rendersArgument(binding, value)) return false;
+	if (binding.kind === "value" || binding.kind === "positional")
+		return String(value) !== "";
+	return true;
+}
+
+/**
  * Render one capability's argv from its declared bindings.
  *
  * The client lists no flags of its own: `CAPABILITIES` says which option
@@ -426,8 +444,27 @@ function capabilityArguments(
 		// rather than a case to render through.
 		const suppressor =
 			binding.unless === null ? null : bound.get(binding.unless);
-		if (suppressor && rendersArgument(suppressor, input[suppressor.option]))
+		if (suppressor && rendersArgument(suppressor, input[suppressor.option])) {
+			// What both halves asserting means is the manifest's question, not this
+			// client's: `prefer` is a request with one meaning (`{session, last:
+			// true}` is "the most recent"), `refuse` is a caller who asked for two
+			// different things. Editing the second one out picks an answer silently,
+			// which is how a turn gets billed to a harness nobody selected. So
+			// `prefer` is the only waiver, and everything else refuses: an absent
+			// annotation (a manifest older than the key) and a resolution added after
+			// this client shipped both read as the recoverable half, because a
+			// refusal the manifest meant to resolve is a message the caller can act
+			// on and the reverse is not.
+			if (
+				(binding.unless_resolution ?? "refuse") !== "prefer" &&
+				statesAChoice(binding, input[binding.option]) &&
+				statesAChoice(suppressor, input[suppressor.option])
+			)
+				throw new Error(
+					`invalid oneharness ${capability.argv.join(" ")} options: \`${binding.option}\` and \`${suppressor.option}\` are mutually exclusive, and this call sets both to values the CLI would send. Pass only the one you mean — resolving it here would run the call as something you did not ask for.`,
+				);
 			continue;
+		}
 		const value = input[binding.option];
 		if (value === undefined || value === null) continue;
 		switch (binding.kind) {

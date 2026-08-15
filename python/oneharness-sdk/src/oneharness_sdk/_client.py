@@ -123,6 +123,53 @@ def _renders_argument(binding: Mapping[str, Any], value: Any) -> bool:
     return True
 
 
+def _states_a_choice(binding: Mapping[str, Any], value: Any) -> bool:
+    """Does this value assert something, or merely occupy the key?
+
+    Suppression asks whether a binding renders; refusing asks something narrower,
+    because a contradiction takes two positive answers. An empty value is not
+    one. ``{"system": ""}`` does render ``--system ""`` — which is why it still
+    suppresses the ``--system-file`` clap refuses beside it — but an empty system
+    prompt asks for nothing, so a file beside it is a defaulted key next to a
+    real choice rather than a caller asking for two different things.
+
+    Both parameters stay dynamic because both are deserialization boundaries:
+    ``binding`` is one row of ``capabilities.json`` exactly as it was read off
+    disk, and ``value`` is whatever the caller passed for that option — a
+    ``bool``, ``str``, ``list`` or ``dict`` depending on the row's own ``kind``,
+    which is the only thing that says which one to expect.
+    """
+    if not _renders_argument(binding, value):
+        return False
+    if binding["kind"] in ("value", "positional"):
+        return _text(value) != ""
+    return True
+
+
+def _caller_spelling(method: str, option: str) -> str:
+    """Name one bound option the way this SDK's caller wrote it.
+
+    The manifest binds camelCase and `_input` has already renamed the keys, so a
+    message built from it would name `system_file` as `systemFile` — an option
+    the Python caller cannot find in their own call.
+    """
+    root = _CAPABILITIES[method]["options"]
+    keys = _INPUT_KEYS.get(root, {}) if root else {}
+    return next((python for python, wire in keys.items() if wire == option), option)
+
+
+def _refuse_contradiction(method: str, option: str, unless: str) -> ContractError:
+    """Refuse a call that asked for both halves of a mutually exclusive pair."""
+    verb = " ".join(_CAPABILITIES[method]["argv"])
+    first, second = _caller_spelling(method, option), _caller_spelling(method, unless)
+    return ContractError(
+        f"invalid oneharness {verb} options: `{first}` and `{second}` are mutually "
+        f"exclusive, and this call sets both to values the CLI would send. Pass only "
+        f"the one you mean — resolving it here would run the call as something you "
+        f"did not ask for."
+    )
+
+
 def _capability_arguments(method: str, options: Mapping[str, Any]) -> list[str]:
     """Render one capability's argv from its declared bindings.
 
@@ -142,6 +189,21 @@ def _capability_arguments(method: str, options: Mapping[str, Any]) -> list[str]:
     for binding in capability["bindings"]:
         unless = binding["unless"]
         if unless is not None and _renders_argument(bound[unless], options.get(unless)):
+            # What both halves asserting means is the manifest's question, not
+            # this client's: `prefer` is a request with one meaning
+            # (`{session, last: True}` is "the most recent"), `refuse` is a caller
+            # who asked for two different things. Editing the second one out picks
+            # an answer silently, which is how a turn gets billed to a harness
+            # nobody selected. So `prefer` is the only waiver, and everything
+            # else refuses: an absent annotation (a manifest older than the key)
+            # and a resolution added after this client shipped both read as the
+            # recoverable half, because a refusal the manifest meant to resolve
+            # is a message the caller can act on and the reverse is not.
+            resolution = binding.get("unless_resolution", "refuse")
+            if resolution != "prefer" and _states_a_choice(
+                binding, options.get(binding["option"])
+            ) and _states_a_choice(bound[unless], options.get(unless)):
+                raise _refuse_contradiction(method, binding["option"], unless)
             continue
         value = options.get(binding["option"])
         if value is None:

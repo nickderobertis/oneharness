@@ -79,6 +79,74 @@ impl Serialize for FlagKind {
     }
 }
 
+/// What it means for both members of a suppressed pair to render an argument.
+///
+/// Suppression alone cannot say it. Every pair here is a clap conflict, but the
+/// two kinds of request that reach one are opposites: `{session, last: true}` is
+/// a lookup the union deliberately accepts and resolves to "the most recent",
+/// while `{all: true, harnesses: ["codex"]}` is a caller asking for every
+/// harness and for one harness in the same breath. Editing the conflict out of
+/// the second — which is what a bare suppression does — spends a paid turn on an
+/// identity the caller did not choose, and tells them only through behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnlessResolution {
+    /// Both rendering is a contradiction: the SDKs refuse the call, naming both
+    /// options, before anything is spawned.
+    Refuse,
+    /// Both rendering is deliberate precedence: the suppressor wins, quietly,
+    /// because the request still has one meaning.
+    Prefer,
+}
+
+impl UnlessResolution {
+    /// The discriminant the SDK argv builders switch on.
+    #[must_use]
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            UnlessResolution::Refuse => "refuse",
+            UnlessResolution::Prefer => "prefer",
+        }
+    }
+}
+
+impl Serialize for UnlessResolution {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.wire_name())
+    }
+}
+
+/// Another option that suppresses a binding *when it renders an argument*, and
+/// what the pair means when both do.
+///
+/// The one thing a flat binding list cannot say by itself: `history show` takes
+/// `--last` OR a session name and clap refuses both, so a lookup carrying
+/// `{session, last: true}` must render only `--last`. Declaring the suppression
+/// keeps that rule in the manifest instead of in each SDK.
+///
+/// The conflict being encoded is clap's, and clap conflicts on a flag being
+/// *present*, so the test each SDK applies is whether the named option renders
+/// anything — never the host language's truthiness. The two differ:
+/// `{all: true, harnesses: []}` — the shape a caller assembling options
+/// programmatically produces — sends no `--harness`, so it must keep `--all`,
+/// yet an empty array is truthy in JavaScript. Reading it as truth there dropped
+/// the only selection such a call carried.
+///
+/// [`UnlessResolution::Refuse`] asks something narrower still, because a
+/// contradiction takes two positive assertions: an empty value renders — and so
+/// suppresses — while asking for nothing, so `{system: "", systemFile: …}` is a
+/// defaulted key beside a real choice rather than a caller wanting two things.
+///
+/// The resolution lives here rather than beside `unless` so a suppression
+/// without one cannot be written at all — the accident this type exists to
+/// prevent is a new pair inheriting the old silent behavior by omission.
+#[derive(Debug, Clone, Copy)]
+pub struct Suppression {
+    /// The sibling option that suppresses this binding.
+    pub option: &'static str,
+    /// What both rendering means.
+    pub resolution: UnlessResolution,
+}
+
 /// One SDK option and the CLI flag it renders to.
 #[derive(Debug, Clone, Copy)]
 pub struct OptionBinding {
@@ -87,22 +155,9 @@ pub struct OptionBinding {
     pub option: &'static str,
     /// How it renders, including the flag when it has one.
     pub kind: FlagKind,
-    /// Another option that suppresses this one *when it renders an argument*.
-    ///
-    /// The one thing a flat binding list cannot say by itself: `history show`
-    /// takes `--last` OR a session name and clap refuses both, so a lookup
-    /// carrying `{session, last: true}` — which the union deliberately accepts,
-    /// resolving to "the most recent" — must render only `--last`. Declaring the
-    /// suppression keeps that rule in the manifest instead of in each SDK.
-    ///
-    /// The conflict being encoded is clap's, and clap conflicts on a flag being
-    /// *present*, so the test each SDK applies is whether the named option
-    /// renders anything — never the host language's truthiness. The two differ:
-    /// `{all: true, harnesses: []}` — the shape a caller assembling options
-    /// programmatically produces — sends no `--harness`, so it must keep
-    /// `--all`, yet an empty array is truthy in JavaScript. Reading it as truth
-    /// there dropped the only selection such a call carried.
-    pub unless: Option<&'static str>,
+    /// The sibling option that suppresses this one, and what both rendering
+    /// means. See [`Suppression`].
+    pub unless: Option<Suppression>,
 }
 
 impl OptionBinding {
@@ -122,13 +177,21 @@ impl Serialize for OptionBinding {
     /// the generators have always read `{option, flag, kind, unless}`, and
     /// making the invalid combinations unrepresentable in Rust is not a reason
     /// to reshape a contract two SDKs generate from.
+    ///
+    /// `unless_resolution` is additive for the same reason: it is a new optional
+    /// key beside the four, emitted only where there is a suppression to resolve,
+    /// so a binding without one serializes byte for byte as it always has.
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut out = serializer.serialize_struct("OptionBinding", 4)?;
+        let fields = 4 + usize::from(self.unless.is_some());
+        let mut out = serializer.serialize_struct("OptionBinding", fields)?;
         out.serialize_field("option", self.option)?;
         out.serialize_field("flag", self.flag())?;
         out.serialize_field("kind", &self.kind)?;
-        out.serialize_field("unless", &self.unless)?;
+        out.serialize_field("unless", &self.unless.map(|unless| unless.option))?;
+        if let Some(unless) = self.unless {
+            out.serialize_field("unless_resolution", &unless.resolution)?;
+        }
         out.end()
     }
 }
@@ -279,11 +342,52 @@ const fn bind(option: &'static str, kind: FlagKind) -> OptionBinding {
     }
 }
 
-const fn bind_unless(option: &'static str, kind: FlagKind, unless: &'static str) -> OptionBinding {
+// Every suppressed pair below, and why it resolves the way it does. The
+// question each answers is what a caller *meant* by rendering both, since one
+// meaning is a mistake to report and the other is a request to serve:
+//
+// * `all` / `harnesses` (run, runStream, detect, usage) — refuse. "Every
+//   harness" and "these harnesses" are different selections, and quietly
+//   keeping the narrower one bills a turn to an identity nobody chose.
+// * `systemFile` / `system` (run) — refuse. Two sources for one system prompt;
+//   dropping either sends the agent instructions the caller did not write.
+// * `config` / `noConfig` (every verb that layers config) — refuse. "Layer this
+//   file" and "layer nothing" cannot both hold, and the loser decides which
+//   model, mode and history store the run uses.
+// * `history` / `noHistory` (run, runStream) — refuse. Recording a run and not
+//   recording it are opposites; the quiet answer is a diagnosis read from a
+//   store that was never written.
+// * `project` / `allProjects` (history show, list, watch, clear) — refuse. One
+//   project's store or every project's; `historyClear` makes the wrong answer
+//   destructive, and the rest hand back records from a store nobody asked for.
+// * `session` / `last` (history show) — prefer. The lookup union deliberately
+//   accepts `{session, last: true}` and defines it as "the most recent", so the
+//   request has one meaning and `--last` is it. This is the pair the mechanism
+//   was built for, and the only one whose members are not rival answers.
+
+/// Bind an option whose sibling `unless` contradicts it: a call rendering both
+/// asked for two different things, and the SDKs refuse it rather than pick.
+const fn bind_refuse(option: &'static str, kind: FlagKind, unless: &'static str) -> OptionBinding {
     OptionBinding {
         option,
         kind,
-        unless: Some(unless),
+        unless: Some(Suppression {
+            option: unless,
+            resolution: UnlessResolution::Refuse,
+        }),
+    }
+}
+
+/// Bind an option its sibling `unless` deliberately outranks: rendering both is
+/// a request with one meaning, and the suppressor is it.
+const fn bind_prefer(option: &'static str, kind: FlagKind, unless: &'static str) -> OptionBinding {
+    OptionBinding {
+        option,
+        kind,
+        unless: Some(Suppression {
+            option: unless,
+            resolution: UnlessResolution::Prefer,
+        }),
     }
 }
 
@@ -304,11 +408,11 @@ const RUN_BINDINGS: &[OptionBinding] = &[
     bind("promptFiles", FlagKind::Repeated("--prompt-file")),
     bind("harnesses", FlagKind::Repeated("--harness")),
     bind("mockHarnesses", FlagKind::Repeated("--mock-harness")),
-    bind_unless("all", FlagKind::Switch("--all"), "harnesses"),
+    bind_refuse("all", FlagKind::Switch("--all"), "harnesses"),
     bind("exclude", FlagKind::Repeated("--exclude")),
     bind("models", FlagKind::Repeated("--model")),
     bind("system", FlagKind::Value("--system")),
-    bind_unless("systemFile", FlagKind::Value("--system-file"), "system"),
+    bind_refuse("systemFile", FlagKind::Value("--system-file"), "system"),
     bind("reasoning", FlagKind::Value("--reasoning")),
     bind("resume", FlagKind::Value("--resume")),
     bind("fork", FlagKind::Switch("--fork")),
@@ -327,7 +431,7 @@ const RUN_BINDINGS: &[OptionBinding] = &[
     bind("env", FlagKind::KeyValue("--env")),
     bind("mode", FlagKind::Value("--mode")),
     bind("permitPrompts", FlagKind::Switch("--permit-prompts")),
-    bind_unless("config", FlagKind::Value("--config"), "noConfig"),
+    bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
     bind("noConfig", FlagKind::Switch("--no-config")),
     bind("maxParallel", FlagKind::Value("--max-parallel")),
     bind("batchStrategy", FlagKind::Value("--batch-strategy")),
@@ -335,7 +439,7 @@ const RUN_BINDINGS: &[OptionBinding] = &[
     bind("printCommand", FlagKind::Switch("--print-command")),
     bind("bins", FlagKind::KeyValue("--bin")),
     bind("requireAvailable", FlagKind::Switch("--require-available")),
-    bind_unless("history", FlagKind::Switch("--history"), "noHistory"),
+    bind_refuse("history", FlagKind::Switch("--history"), "noHistory"),
     bind("noHistory", FlagKind::Switch("--no-history")),
     bind("historyDir", FlagKind::Value("--history-dir")),
     bind("historyName", FlagKind::Value("--history-name")),
@@ -418,10 +522,10 @@ pub const CAPABILITIES: &[Capability] = &[
         always: &["--compact"],
         bindings: &[
             bind("harnesses", FlagKind::Repeated("--harness")),
-            bind_unless("all", FlagKind::Switch("--all"), "harnesses"),
+            bind_refuse("all", FlagKind::Switch("--all"), "harnesses"),
             bind("exclude", FlagKind::Repeated("--exclude")),
             bind("bins", FlagKind::KeyValue("--bin")),
-            bind_unless("config", FlagKind::Value("--config"), "noConfig"),
+            bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
             bind("requireAvailable", FlagKind::Switch("--require-available")),
         ],
@@ -437,7 +541,7 @@ pub const CAPABILITIES: &[Capability] = &[
         always: &["--compact"],
         bindings: &[
             bind("cwd", FlagKind::Value("--cwd")),
-            bind_unless("config", FlagKind::Value("--config"), "noConfig"),
+            bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[],
@@ -455,7 +559,7 @@ pub const CAPABILITIES: &[Capability] = &[
             bind("harnesses", FlagKind::Repeated("--harness")),
             bind("check", FlagKind::Switch("--check")),
             bind("global", FlagKind::Switch("--global")),
-            bind_unless("config", FlagKind::Value("--config"), "noConfig"),
+            bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[],
@@ -484,12 +588,12 @@ pub const CAPABILITIES: &[Capability] = &[
         always: &["--compact"],
         bindings: &[
             bind("harnesses", FlagKind::Repeated("--harness")),
-            bind_unless("all", FlagKind::Switch("--all"), "harnesses"),
+            bind_refuse("all", FlagKind::Switch("--all"), "harnesses"),
             bind("exclude", FlagKind::Repeated("--exclude")),
             bind("bins", FlagKind::KeyValue("--bin")),
             bind("cwd", FlagKind::Value("--cwd")),
             bind("timeoutSeconds", FlagKind::Value("--timeout")),
-            bind_unless("config", FlagKind::Value("--config"), "noConfig"),
+            bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[skip("--format", TEXT_FORMAT)],
@@ -549,13 +653,13 @@ pub const CAPABILITIES: &[Capability] = &[
         rust: "oneharness_core::io::history::read_session",
         always: &["--compact"],
         bindings: &[
-            bind_unless("session", FlagKind::Positional, "last"),
+            bind_prefer("session", FlagKind::Positional, "last"),
             bind("last", FlagKind::Switch("--last")),
             bind("all", FlagKind::Switch("--all")),
-            bind_unless("project", FlagKind::Value("--project"), "allProjects"),
+            bind_refuse("project", FlagKind::Value("--project"), "allProjects"),
             bind("allProjects", FlagKind::Switch("--all-projects")),
             bind("historyDir", FlagKind::Value("--history-dir")),
-            bind_unless("config", FlagKind::Value("--config"), "noConfig"),
+            bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[skip("--format", TEXT_FORMAT)],
@@ -570,10 +674,10 @@ pub const CAPABILITIES: &[Capability] = &[
         always: &["--compact"],
         bindings: &[
             bind("variant", FlagKind::Value("--variant")),
-            bind_unless("project", FlagKind::Value("--project"), "allProjects"),
+            bind_refuse("project", FlagKind::Value("--project"), "allProjects"),
             bind("allProjects", FlagKind::Switch("--all-projects")),
             bind("historyDir", FlagKind::Value("--history-dir")),
-            bind_unless("config", FlagKind::Value("--config"), "noConfig"),
+            bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[skip("--format", TEXT_FORMAT)],
@@ -590,11 +694,11 @@ pub const CAPABILITIES: &[Capability] = &[
             bind("after", FlagKind::Value("--after")),
             bind("labels", FlagKind::KeyValue("--label")),
             bind("variant", FlagKind::Value("--variant")),
-            bind_unless("project", FlagKind::Value("--project"), "allProjects"),
+            bind_refuse("project", FlagKind::Value("--project"), "allProjects"),
             bind("allProjects", FlagKind::Switch("--all-projects")),
             bind("historyDir", FlagKind::Value("--history-dir")),
             bind("events", FlagKind::Switch("--events")),
-            bind_unless("config", FlagKind::Value("--config"), "noConfig"),
+            bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[],
@@ -608,11 +712,11 @@ pub const CAPABILITIES: &[Capability] = &[
         rust: "oneharness_core::io::history::remove_sessions",
         always: &["--compact"],
         bindings: &[
-            bind_unless("project", FlagKind::Value("--project"), "allProjects"),
+            bind_refuse("project", FlagKind::Value("--project"), "allProjects"),
             bind("allProjects", FlagKind::Switch("--all-projects")),
             bind("yes", FlagKind::Switch("--yes")),
             bind("historyDir", FlagKind::Value("--history-dir")),
-            bind_unless("config", FlagKind::Value("--config"), "noConfig"),
+            bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[],
@@ -627,7 +731,7 @@ pub const CAPABILITIES: &[Capability] = &[
         always: &["--compact"],
         bindings: &[
             bind("historyDir", FlagKind::Value("--history-dir")),
-            bind_unless("config", FlagKind::Value("--config"), "noConfig"),
+            bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[],

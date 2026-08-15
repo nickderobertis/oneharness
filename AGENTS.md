@@ -144,7 +144,15 @@ Use the `just` recipes; do not hand-roll equivalents.
   list — and `check-sdk-coverage-test.sh` holds that red in place, since a gate
   whose only job is to fail proves nothing unexercised. Every capability, flag
   and output field is tabulated per surface in `docs/sdk-parity.md`, which
-  `just parity-audit` regenerates and `check-parity-audit.sh` pins.
+  `just parity-audit` regenerates and `check-parity-audit.sh` pins. A binding
+  whose `unless` names a sibling also says what BOTH halves asserting means —
+  `refuse`, where the SDKs end the call naming both options, or `prefer`, where
+  the suppressor deliberately wins (`{session, last}` is "the most recent"). The
+  manifest has no third state: `Suppression` carries the resolution, so a new
+  pair cannot inherit the old silent edit by omission. Refusing asks a narrower
+  question than suppressing — a contradiction takes two positive assertions, and
+  an empty value asserts nothing, so `{system: "", systemFile: …}` still
+  suppresses rather than refusing.
 
 ## What this binary is
 

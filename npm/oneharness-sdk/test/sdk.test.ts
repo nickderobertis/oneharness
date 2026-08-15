@@ -1307,6 +1307,29 @@ describe("OneHarness", () => {
 			/invalid oneharness history list options: `project` and `allProjects` are mutually exclusive/,
 		);
 
+		// Not only the verbs that return a report: `detect` decides which binaries
+		// are probed, and the same pair means the same contradiction there.
+		await expect(
+			client.detect({ all: true, harnesses: ["codex"] }),
+		).rejects.toThrow(
+			/invalid oneharness detect options: `all` and `harnesses` are mutually exclusive/,
+		);
+
+		// `runStream` returns a lazy stream but refuses eagerly: it builds its argv
+		// in the method body rather than an `async function*`, so a contradiction
+		// throws where the call is written, not on the first `next()`. A caller who
+		// only ever `await`s the iteration would otherwise see the refusal arrive
+		// somewhere it cannot be caught alongside the call.
+		expect(() =>
+			client.runStream({
+				prompt: "never spawned",
+				all: true,
+				harnesses: ["codex"],
+			}),
+		).toThrow(
+			/invalid oneharness run options: `all` and `harnesses` are mutually exclusive/,
+		);
+
 		// The switch half is a value like any other: `false` renders nothing, so
 		// there is no second answer and the call proceeds on the one it has.
 		const one = await client.run({

@@ -1089,7 +1089,12 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
             let wiring = session_wiring
                 .as_ref()
                 .expect("validate_control refuses --control without --session");
-            let path = control::socket_path(&wiring.dir, &wiring.name);
+            // Before anything spawns, and loud: an address past this platform's
+            // `sun_path` budget is a run whose control channel could never have
+            // existed, and a supervisor told the lever is there must not find out
+            // by interrupting into nothing.
+            let path = control::socket_path(&wiring.dir, &wiring.name)
+                .map_err(|source| OneharnessError::ControlSocketAddress { source })?;
             Some(control_io::bind(&path, starts_on).map_err(|source| {
                 OneharnessError::ControlSocket {
                     path: path.display().to_string(),

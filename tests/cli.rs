@@ -20636,7 +20636,8 @@ fn a_redirection_refused_by_an_idle_run_is_not_reported_as_delivered() {
     let store = control_store_dir("redirect-idle");
     let store_arg = store.display().to_string();
     let listener = oneharness_core::io::control::bind(
-        &socket_path(&store, "idle"),
+        &socket_path(&store, "idle")
+            .expect("a short fixture name fits every platform's socket-address budget"),
         oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
     )
     .expect("bound an idle control socket");
@@ -20684,7 +20685,8 @@ fn a_previous_version_supervisor_is_refused_across_the_socket_rather_than_half_u
     use std::os::unix::net::UnixStream;
 
     let store = control_store_dir("old-client");
-    let path = socket_path(&store, "mixed");
+    let path = socket_path(&store, "mixed")
+        .expect("a short fixture name fits every platform's socket-address budget");
     let _listener = oneharness_core::io::control::bind(
         &path,
         oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
@@ -20773,6 +20775,68 @@ fn control_run_pins_the_message_stream_argv_and_leaves_the_prompt_off_it() {
 
     let _ = std::fs::remove_dir_all(&store);
     let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_socket_address_past_the_platform_budget_is_refused_before_anything_spawns() {
+    // `sockaddr_un.sun_path` holds 108 bytes on Linux and 104 on macOS, so an
+    // address past it cannot be bound at all. A run that discovered this by
+    // binding would still have started the harness and reported a control block
+    // for a channel no supervisor could ever reach — the silent degradation this
+    // refusal exists to prevent. It is a usage error, and it names the numbers.
+    let root = std::fs::canonicalize("/tmp").expect("/tmp must exist to root a control store");
+    // A store deep enough that no shortening of the session name can rescue it —
+    // the shape of a session dir nested inside a versioned worktree.
+    let store = root.join(format!("oh-deep-{}-{}", std::process::id(), "d".repeat(96)));
+    std::fs::create_dir_all(&store).unwrap();
+
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            // The shape a graph mints for a worker's session.
+            "node-scope-1786808430370-3422037-worker-skill",
+            "--session-dir",
+            &store.display().to_string(),
+            "--cwd",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a socket address this platform cannot bind is a usage error: {output:?}"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "a refused run must publish no report: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // The three numbers a reader needs to act: which address, how long it came
+    // out, and the budget it broke.
+    assert!(stderr.contains("control socket address"), "{stderr}");
+    assert!(stderr.contains(&store.display().to_string()), "{stderr}");
+    assert!(
+        stderr.contains(" bytes") && stderr.contains("unix-socket address limit"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("--session-dir"),
+        "the refusal must say what to change: {stderr}"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -21234,7 +21298,8 @@ fn interrupt_between_turns_reports_no_active_turn() {
     use oneharness_core::domain::control::socket_path;
     let store = control_store_dir("noturn");
     let listener = oneharness_core::io::control::bind(
-        &socket_path(&store, "idle"),
+        &socket_path(&store, "idle")
+            .expect("a short fixture name fits every platform's socket-address budget"),
         oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
     )
     .unwrap();
@@ -21993,7 +22058,8 @@ fn interrupt_defaults_to_the_platform_session_store_and_prints_readable_json() {
     let state = control_store_dir("default-store");
     let store = state.join("oneharness").join("sessions");
     let _listener = oneharness_core::io::control::bind(
-        &socket_path(&store, "defaulted"),
+        &socket_path(&store, "defaulted")
+            .expect("a short fixture name fits every platform's socket-address budget"),
         oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
     )
     .unwrap();

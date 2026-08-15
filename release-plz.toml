@@ -39,11 +39,17 @@ release_commits = "(?s)^(feat|fix|perf)(\\([^)]+\\))?!?:|BREAKING CHANGE:"
 # commits from opening a fresh release PR, so there is no auto-merge loop.
 release_always = true
 
-# API breaking-change detection (cargo-semver-checks) needs an extra tool and
-# would block releases on any surface change; rely on review and the
-# conventional-commit type instead (a `!` or `BREAKING CHANGE:` still bumps
-# major). Re-enable once the gate can be enforced in CI.
-semver_check = false
+# API breaking-change detection. `oneharness-core` is a published library with
+# real consumers, so a breaking change that ships as a patch — because a commit
+# subject said `fix` — breaks them silently; that has already happened once in
+# this workspace family. cargo-semver-checks reads the actual API surface, so the
+# bump follows the code rather than the subject line.
+#
+# release-plz shells out to a `cargo-semver-checks` BINARY and, when it is
+# missing, only warns and skips — so this setting is inert unless the tool is
+# installed. release-plz.yml installs it and verifies it runs before release-plz
+# starts, which is what keeps this from being a check that quietly does nothing.
+semver_check = true
 
 # Tag and name each release `vX.Y.Z`, matching v0.1.0..v0.2.0. Only the
 # `oneharness` binary is released (see the per-package block below); the

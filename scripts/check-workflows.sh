@@ -82,6 +82,22 @@ fi
 require_line justfile 'gate remote="origin" base="": check deps-check package-crates' \
   "verify packaging in the pre-push gate instead"
 require_line .github/workflows/ci.yml 'run: scripts/check-pr-title.sh' "validate the release-driving PR title"
+
+# `just` comes from this repo's own cached composite action. A third-party setup
+# action fetches from a service outside this repo on every run, and an outage
+# there takes a required check down for a reason unrelated to the change.
+if grep -rq 'setup-just@' .github/workflows/*.yml; then
+  fail "workflows must install just through ./.github/actions/setup-just, not a third-party setup-just action"
+fi
+require_line .github/workflows/ci.yml 'uses: ./.github/actions/setup-just' "install just from the repository-local cached action"
+[ -f .github/actions/setup-just/action.yml ] || fail ".github/actions/setup-just/action.yml must exist for the workflows that use it"
+
+# API breaking-change detection must be both ENABLED and RUNNABLE. release-plz
+# shells out to a `cargo-semver-checks` binary and merely warns when it is
+# missing, so the setting alone is a check that can silently do nothing.
+require_line release-plz.toml 'semver_check = true' "detect API breaking changes rather than trusting the commit subject"
+require_line .github/workflows/release-plz.yml 'tool: cargo-semver-checks' "install the binary release-plz's semver check shells out to"
+require_line .github/workflows/release-plz.yml 'run: cargo-semver-checks --version' "prove the semver check can run before release-plz silently skips it"
 if grep -qE 'run: just (lint|lint-sh|test)$|run: bun run --cwd npm/oneharness-sdk (generate:check|build)$' .github/workflows/release.yml; then
   fail "release.yml must use just check/sdk-check instead of re-listing their stages"
 fi

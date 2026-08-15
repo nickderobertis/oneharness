@@ -96,6 +96,16 @@ jobs:
       # Reads the pinned channel + components from rust-toolchain.toml.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
+      # `semver_check = true` in release-plz.toml is enforced through this
+      # binary: release-plz shells out to it and, when it is absent, logs a
+      # warning and skips the check — a gate that silently does nothing. The
+      # version probe below is what turns that into a loud failure instead.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+      - name: Verify cargo-semver-checks is runnable
+        run: cargo-semver-checks --version
+
       - name: Install release-plz
         run: |
           curl -fsSL "https://github.com/release-plz/release-plz/releases/download/release-plz-v${RELEASE_PLZ_VERSION}/release-plz-x86_64-unknown-linux-gnu.tar.gz" \

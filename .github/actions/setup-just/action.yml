@@ -10,24 +10,13 @@ description: Restore the pinned just binary, or build it from crates.io on a cac
 runs:
   using: composite
   steps:
-    # `.tool-versions` is the single pin (asdf/mise read it for a local clone),
-    # so CI cannot drift to a different `just` than a developer runs. It is also
-    # a FILE that becomes a cache key, a workflow output, and a `cargo install`
-    # argument, so it is validated as exactly one `x.y.z` before any of that —
-    # a version this action merely found non-empty could carry a shell
-    # metacharacter into the step below.
+    # Reading and validating the pin lives in a script so a test can drive it;
+    # its stdout IS this step's output line. `scripts/check-setup-just.sh` is
+    # that test, for this step and the install below.
     - name: Read the pinned version
       id: pin
       shell: bash
-      run: |
-        pins="$(awk '$1 == "just" { print $2 }' .tool-versions)"
-        count="$(printf '%s' "$pins" | grep -c . || true)"
-        version="$(printf '%s\n' "$pins" | head -n 1)"
-        if [ "$count" != "1" ] || ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-          echo "::error::.tool-versions must pin just as exactly one x.y.z version for the setup-just action to install (found ${count:-0}: '${pins//$'\n'/, }')" >&2
-          exit 1
-        fi
-        echo "version=$version" >> "$GITHUB_OUTPUT"
+      run: scripts/setup-just-pin.sh >>"$GITHUB_OUTPUT"
     # The version is part of the immutable key: once one run has built this exact
     # binary, a crates.io outage cannot take later required checks down. OS and
     # architecture keep native executables from crossing runner boundaries.

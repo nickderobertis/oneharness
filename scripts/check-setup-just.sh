@@ -122,7 +122,45 @@ fi
 grep -Fq 'but .tool-versions pins just 1.99.0' "$work/out" ||
   fail "the version mismatch lacked a diagnostic naming the pin: $(cat "$work/out")"
 
-# The action must actually go through the script, or none of the above covers it.
+# The pin the whole action is keyed on. asdf's format lets a tool carry several
+# versions on its line and appear on several lines, so "the version" is only
+# well defined once exactly one of each is proven — and the emitted line is the
+# step's output verbatim, so it is what the test reads.
+pin_case() {
+  printf '%s\n' "$2" >"$work/tool-versions"
+  scripts/setup-just-pin.sh "$work/tool-versions" >"$work/pin-out" 2>&1
+}
+
+if ! pin_case ok 'nodejs 22.0.0
+just 1.99.0
+python 3.12.0'; then
+  cat "$work/pin-out" >&2
+  fail "a single exact pin among other tools was refused"
+fi
+[ "$(cat "$work/pin-out")" = "version=1.99.0" ] ||
+  fail "the pin step emitted '$(cat "$work/pin-out")', not the workflow output line 'version=1.99.0'"
+
+# A second version on the line is the shape a field-two reader turns into a
+# confident, wrong pin — and then caches under a key claiming otherwise.
+for bad in 'just 1.99.0 2.0.0' 'just' 'just 1.99' 'just latest' 'nodejs 22.0.0' 'just 1.99.0
+just 2.0.0'; do
+  if pin_case bad "$bad"; then
+    fail "the pin '$bad' was accepted as 'exactly one x.y.z': $(cat "$work/pin-out")" \
+      "restore the whole-line validation in scripts/setup-just-pin.sh"
+  fi
+  grep -Fq 'must pin just as exactly one x.y.z version' "$work/pin-out" ||
+    fail "refusing '$bad' lacked the actionable diagnostic: $(cat "$work/pin-out")"
+done
+
+# The repo's own file must satisfy its own reader; otherwise every workflow using
+# the action fails at its first step.
+scripts/setup-just-pin.sh >"$work/pin-out" 2>&1 ||
+  fail "this repo's .tool-versions is not readable by its own pin step: $(cat "$work/pin-out")"
+
+# The action must actually go through both scripts, or none of the above covers it.
+grep -Fq 'run: scripts/setup-just-pin.sh' .github/actions/setup-just/action.yml ||
+  fail "the setup-just action no longer reads its pin through scripts/setup-just-pin.sh" \
+    "restore the delegation in .github/actions/setup-just/action.yml"
 grep -Fq 'run: scripts/setup-just-install.sh' .github/actions/setup-just/action.yml ||
   fail "the setup-just action no longer installs through scripts/setup-just-install.sh" \
     "restore the delegation in .github/actions/setup-just/action.yml"

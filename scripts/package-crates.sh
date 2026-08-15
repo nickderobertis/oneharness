@@ -39,16 +39,31 @@ reject() {
   exit 1
 }
 
-# Three registry shapes, and the first means the opposite of the other two. A
+# Four registry shapes, and the first means the opposite of the other three. A
 # version Cargo cannot select is a core release that has not reached crates.io
 # yet; a core it selected and then failed to compile — or whose published
-# FEATURES the binary's forwarding does not find — is a source drift that a bump
-# has to carry. Only the first may be waved through on the strength of a tag.
+# FEATURES the binary's forwarding does not find, or whose published API the
+# binary's own source calls for — is a source drift that a bump has to carry.
+# Only the first may be waved through on the strength of a tag.
 #
 # The feature arm is its own: the binary forwards `mock-harness` to
 # `oneharness-core/mock-harness`, and a published core without that feature
 # fails before any source is unpacked, worded "for `oneharness-core`" rather
 # than "for the requirement", so neither other arm sees it.
+#
+# The last arm is the commonest shape of a core API change and the one this
+# check missed: the core resolves and compiles, and the BINARY's own source
+# fails on the API only the unpublished core has. rustc names no registry path
+# there — the error is in `src/`, not in the dependency — so the arm above it
+# cannot see it. What ties it to the dependency is that the core Cargo compiled
+# came from the REGISTRY, which its `Compiling` line says by carrying no source
+# path; a path-resolved core means the workspace's own code broke.
+#
+# That signal cannot, on its own, tell this apart from a binary-only compile
+# error, and it is not asked to: like every other shape here it is waved through
+# only while a release-worthy core change is pending (below), and a binary that
+# does not compile against the WORKSPACE core is already red in `build`/`check`,
+# which run ahead of packaging in both `just gate` and ci.yml.
 core_version_unpublished=false
 registry_core_mismatch=false
 if grep -Eq "failed to select a version for the requirement \`oneharness-core" "$output_file" &&
@@ -62,6 +77,9 @@ elif grep -Eq 'oneharness-core-[0-9]+\.[0-9]+\.[0-9]+[/\\]' "$output_file" &&
   registry_core_mismatch=true
 elif grep -Eq "failed to select a version for \`oneharness-core\`" "$output_file" &&
   grep -Eq "depends on \`oneharness-core\`, with features:" "$output_file"; then
+  registry_core_mismatch=true
+elif grep -Eq '^[[:space:]]*Compiling oneharness-core v[0-9]+\.[0-9]+\.[0-9]+[[:space:]]*$' "$output_file" &&
+  grep -Eq "could not compile \`oneharness\`" "$output_file"; then
   registry_core_mismatch=true
 fi
 

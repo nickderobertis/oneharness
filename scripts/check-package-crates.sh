@@ -59,6 +59,27 @@ if [[ $* == *"Cargo.toml"* && $* != *"crates/oneharness-core/Cargo.toml"* && ${B
     echo 'candidate versions found which did not match: 0.6.11' >&2
     echo 'location searched: crates.io index' >&2
     echo 'required by package `oneharness v0.6.14`' >&2
+  elif [[ ${BINARY_FAILURE_KIND:-core-mismatch} == binary-source ]]; then
+    # Captured verbatim from a real `cargo package` on a tree whose core had
+    # gained an API the binary uses and the published version lacks. The core
+    # resolved and compiled fine; the BINARY's own source is what failed, so —
+    # unlike the core-mismatch shape — rustc names no registry path at all. The
+    # only thing tying the failure to the dependency is that the core Cargo
+    # compiled came from the registry, which its pathless `Compiling` line says.
+    echo '   Compiling oneharness-core v0.6.11' >&2
+    echo '   Compiling oneharness v0.6.14 (/repo/target/package/oneharness-0.6.14)' >&2
+    echo 'error[E0599]: no variant named `ControlSocketAddress` found for enum `OneharnessError`' >&2
+    echo '  --> src/commands/interrupt.rs:58:44' >&2
+    echo 'error: could not compile `oneharness` (lib) due to 2 previous errors' >&2
+  elif [[ ${BINARY_FAILURE_KIND:-core-mismatch} == workspace-source ]]; then
+    # The same compile failure with the core resolved from the WORKSPACE PATH —
+    # so the published dependency is not what broke, and the pathless-line
+    # signal above must not match it.
+    echo '   Compiling oneharness-core v0.6.11 (/repo/crates/oneharness-core)' >&2
+    echo '   Compiling oneharness v0.6.14 (/repo)' >&2
+    echo 'error[E0599]: cannot find value `typo` in this scope' >&2
+    echo '  --> src/commands/interrupt.rs:58:44' >&2
+    echo 'error: could not compile `oneharness` (lib) due to 1 previous error' >&2
   elif [[ ${BINARY_FAILURE_KIND:-core-mismatch} == core-mismatch ]]; then
     if [[ ${REGISTRY_PATH_KIND:-unix} == windows ]]; then
       echo '  --> C:\registry\src\oneharness-core-0.6.11\src\io\http_turn.rs:592:8' >&2
@@ -256,6 +277,30 @@ if run_case env BINARY_PACKAGE=fail BINARY_FAILURE_KIND=missing-feature just pac
   fail "a missing core feature with no pending core release unexpectedly passed"
 fi
 assert_contains "cannot be packaged against its published oneharness-core dependency" "$work/out"
+
+# A core change the BINARY uses fails in the binary's own source, naming no
+# registry path — the commonest shape of a core API change, and the one a
+# path-requiring detector misses. It is the same release transition.
+if ! run_case env BINARY_PACKAGE=fail BINARY_FAILURE_KIND=binary-source COMMIT_KIND=fix just package-crates >"$work/out" 2>&1; then
+  cat "$work/out" >&2
+  fail "a binary-source failure against the registry core did not permit the release-plz transition"
+fi
+assert_contains "awaits release-plz's core version bump" "$work/out"
+
+# ...and, like every other shape, only while a core release is actually pending.
+if run_case env BINARY_PACKAGE=fail BINARY_FAILURE_KIND=binary-source just package-crates >"$work/out" 2>&1; then
+  fail "a binary-source failure with no pending core release unexpectedly passed"
+fi
+assert_contains "cannot be packaged against its published oneharness-core dependency" "$work/out"
+
+# The discriminator is that the core Cargo compiled came from the REGISTRY. The
+# same compile failure with a path-resolved core is the binary's own bug, and a
+# pending core release must not excuse it — otherwise the arm above would wave
+# through any broken build that happens to touch core.
+if run_case env BINARY_PACKAGE=fail BINARY_FAILURE_KIND=workspace-source COMMIT_KIND=fix just package-crates >"$work/out" 2>&1; then
+  fail "a path-resolved core compile failure unexpectedly read as the registry transition"
+fi
+assert_contains "failed for a reason other than its registry-resolved oneharness-core transition" "$work/out"
 
 if ! run_case env BINARY_PACKAGE=fail REGISTRY_PATH_KIND=windows COMMIT_KIND=fix just package-crates >"$work/out" 2>&1; then
   cat "$work/out" >&2

@@ -2210,8 +2210,17 @@ fn a_precondition_refusal_falls_through_carrying_the_providers_own_cause() {
     // the verdict, since a supervisor reading only the fallback block is exactly
     // who has to act on it (shard the input, widen the trust list).
     let mock = mock_bin().display().to_string();
-    let served =
-        r#"{"type":"item.completed","item":{"type":"agent_message","text":"served-by-codex"}}"#;
+    // A whole codex turn, frames included, so the candidate that serves has the
+    // telemetry a history record needs — the run's history is read back below,
+    // and a winner recorded as an incomplete record would prove nothing about
+    // the version the refusal forces.
+    let served = serde_json::to_string(concat!(
+        "{\"type\":\"turn.started\"}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",",
+        "\"text\":\"served-by-codex\"}}\n",
+        "{\"type\":\"turn.completed\"}\n",
+    ))
+    .expect("a string always serializes");
     // Both refusals verbatim from real captures.
     let cases = [
         (
@@ -2247,12 +2256,27 @@ fn a_precondition_refusal_falls_through_carrying_the_providers_own_cause() {
 
             [harness.codex]
             bin = '{mock}'
-            env = {{ MOCK_EXIT = "0", MOCK_STDOUT = '{served}' }}
+            env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {served} }}
             "#
         );
         let fx = ConfigFixture::new(&format!("precondition-{tag}"), &project, "");
+        // History is on so the refusal's own record can be read back: both kinds
+        // are `failure_kind` values no v1.5 reader has, so a record carrying one
+        // is legible only to a v1.6 reader and must say so rather than offer a
+        // version whose enum would reject the value it is holding.
+        let history = hist_dir(&format!("precondition-{tag}"));
         let output = run_with_config(
-            &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+            &[
+                "run",
+                "--prompt",
+                "hi",
+                "--cwd",
+                &fx.cwd(),
+                "--history",
+                "--history-dir",
+                &history.display().to_string(),
+                "--compact",
+            ],
             &[],
             &fx.user_config(),
         );
@@ -2296,6 +2320,23 @@ fn a_precondition_refusal_falls_through_carrying_the_providers_own_cause() {
                 "{tag}: a refusal with no machine-readable cause must carry none"
             ),
         }
+
+        // The refusal's history record declares the version that first
+        // understood it — the whole run's history, read back through the store
+        // exactly as a consumer reads it.
+        let records =
+            materialized_history(Path::new(value["history_file"].as_str().expect("history file")));
+        let refused = &records[0];
+        assert_eq!(refused["harness_id"], "claude-code", "{tag}");
+        assert_eq!(refused["failure_kind"], kind, "{tag}");
+        assert_eq!(refused["schema_version"], "1.6", "{tag}");
+        // ...and only that record. The candidate that ran carries no gated kind,
+        // so a version bump must not sweep every record of the run forward with
+        // it — a reader that could have read this one would be turned away.
+        let served_record = &records[1];
+        assert_eq!(served_record["harness_id"], "codex", "{tag}");
+        assert!(served_record["failure_kind"].is_null(), "{tag}");
+        assert_eq!(served_record["schema_version"], "1.1", "{tag}");
     }
 }
 

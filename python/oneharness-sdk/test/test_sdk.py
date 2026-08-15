@@ -153,6 +153,10 @@ def _contradicts(bound: dict[str, Any], option: str) -> bool:
     Asked with the client's own predicate rather than a second copy of the rule:
     a table that decided contradictions differently from the code under test
     would drift into asserting nothing.
+
+    `bound` carries `Any` values because it holds rows of the generated
+    `capabilities.json` as they were deserialized — the same boundary
+    `_states_a_choice` reads them at, and this helper only forwards them there.
     """
     binding = bound.get(option)
     if binding is None or binding["unless"] is None:
@@ -663,6 +667,26 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
                     "prompt": "never spawned",
                     "all": True,
                     "harnesses": ["codex"],
+                    "mode": "bypass",
+                    "print_command": True,
+                }
+            )
+
+        # The same pair the empty-`system` suppression turns on, read from its
+        # other side: two non-empty system sources are two answers to "what
+        # instructs this turn", and suppression picks the file silently. Only the
+        # stated choice refuses — `system: ""` still suppresses, unchanged.
+        with self.assertRaisesRegex(
+            ContractError,
+            r"invalid oneharness run options: `system_file` and `system` are mutually "
+            r"exclusive",
+        ):
+            await client.run(
+                {
+                    "prompt": "never spawned",
+                    "harnesses": ["codex"],
+                    "system": "be terse",
+                    "system_file": str(Path(tempfile.gettempdir()) / "never-read.txt"),
                     "mode": "bypass",
                     "print_command": True,
                 }

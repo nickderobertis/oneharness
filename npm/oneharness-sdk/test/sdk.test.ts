@@ -1272,6 +1272,23 @@ describe("OneHarness", () => {
 			/invalid oneharness run options: `all` and `harnesses` are mutually exclusive/,
 		);
 
+		// The same pair the empty-`system` suppression above turns on, read from
+		// its other side: two non-empty system sources are two answers to "what
+		// instructs this turn", and suppression picks the file silently. Only the
+		// stated choice refuses — `system: ""` still suppresses, unchanged.
+		await expect(
+			client.run({
+				prompt: "never spawned",
+				harnesses: ["codex"],
+				system: "be terse",
+				systemFile: resolve(tmpdir(), "oneharness-sdk-never-read-system.txt"),
+				mode: "bypass",
+				printCommand: true,
+			}),
+		).rejects.toThrow(
+			/invalid oneharness run options: `systemFile` and `system` are mutually exclusive/,
+		);
+
 		// Every refuse pair, not just the selectors: two answers to "which config
 		// layers", "is this run recorded", "which project's store".
 		await expect(

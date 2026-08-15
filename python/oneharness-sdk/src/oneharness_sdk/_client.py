@@ -132,6 +132,12 @@ def _states_a_choice(binding: Mapping[str, Any], value: Any) -> bool:
     suppresses the ``--system-file`` clap refuses beside it — but an empty system
     prompt asks for nothing, so a file beside it is a defaulted key next to a
     real choice rather than a caller asking for two different things.
+
+    Both parameters stay dynamic because both are deserialization boundaries:
+    ``binding`` is one row of ``capabilities.json`` exactly as it was read off
+    disk, and ``value`` is whatever the caller passed for that option — a
+    ``bool``, ``str``, ``list`` or ``dict`` depending on the row's own ``kind``,
+    which is the only thing that says which one to expect.
     """
     if not _renders_argument(binding, value):
         return False

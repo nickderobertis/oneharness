@@ -12200,7 +12200,7 @@
         "properties": {
           "detail": {
             "default": null,
-            "description": "This candidate's own account of why it could not run \u2014 the provider's\nmachine-readable refusal verbatim when it named one (Codex's\n`{\"input_error_code\":\"input_too_large\",\u2026}`), else the run's normalized\n`error` text. `null` when the candidate said nothing beyond its status.\n\nThe `reason` above is oneharness's classification and stays a short,\nclosed token; this is the cause underneath it, carried up so a supervisor\nreading only the fallback block never has to re-parse a fallen-through\ncandidate's raw stdout to learn what the provider already said. Added in\nreport schema `0.8`.",
+            "description": "This candidate's own account of why it could not run: its\n[`RunResult::error`], copied \u2014 one value with one source, not a second\nrendering of it. `null` when the candidate said nothing beyond its status.\n\nSo when the provider named the cause in machine-readable terms, what\narrives here is the sentence naming the harness with that object **quoted\ninside it** (`\u2026 refused the request before running it:\n{\"input_error_code\":\"input_too_large\",\u2026}`) \u2014 the object verbatim, not the\nobject alone. A reader extracts it; nothing paraphrases it on the way.\n\nThe `reason` above is oneharness's classification and stays a short,\nclosed token; this is the cause underneath it, carried up so a supervisor\nreading only the fallback block never has to re-parse a fallen-through\ncandidate's raw stdout to learn what the provider already said. Added in\nreport schema `0.8`.",
             "type": [
               "string",
               "null"
@@ -13344,7 +13344,7 @@
         "properties": {
           "detail": {
             "default": null,
-            "description": "This candidate's own account of why it could not run \u2014 the provider's\nmachine-readable refusal verbatim when it named one (Codex's\n`{\"input_error_code\":\"input_too_large\",\u2026}`), else the run's normalized\n`error` text. `null` when the candidate said nothing beyond its status.\n\nThe `reason` above is oneharness's classification and stays a short,\nclosed token; this is the cause underneath it, carried up so a supervisor\nreading only the fallback block never has to re-parse a fallen-through\ncandidate's raw stdout to learn what the provider already said. Added in\nreport schema `0.8`.",
+            "description": "This candidate's own account of why it could not run: its\n[`RunResult::error`], copied \u2014 one value with one source, not a second\nrendering of it. `null` when the candidate said nothing beyond its status.\n\nSo when the provider named the cause in machine-readable terms, what\narrives here is the sentence naming the harness with that object **quoted\ninside it** (`\u2026 refused the request before running it:\n{\"input_error_code\":\"input_too_large\",\u2026}`) \u2014 the object verbatim, not the\nobject alone. A reader extracts it; nothing paraphrases it on the way.\n\nThe `reason` above is oneharness's classification and stays a short,\nclosed token; this is the cause underneath it, carried up so a supervisor\nreading only the fallback block never has to re-parse a fallen-through\ncandidate's raw stdout to learn what the provider already said. Added in\nreport schema `0.8`.",
             "type": [
               "string",
               "null"

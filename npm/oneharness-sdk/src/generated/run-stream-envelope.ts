@@ -405,10 +405,15 @@ export interface FallbackReport {
  */
 export interface FallThrough {
   /**
-   * This candidate's own account of why it could not run — the provider's
-   * machine-readable refusal verbatim when it named one (Codex's
-   * `{"input_error_code":"input_too_large",…}`), else the run's normalized
-   * `error` text. `null` when the candidate said nothing beyond its status.
+   * This candidate's own account of why it could not run: its
+   * [`RunResult::error`], copied — one value with one source, not a second
+   * rendering of it. `null` when the candidate said nothing beyond its status.
+   *
+   * So when the provider named the cause in machine-readable terms, what
+   * arrives here is the sentence naming the harness with that object **quoted
+   * inside it** (`… refused the request before running it:
+   * {"input_error_code":"input_too_large",…}`) — the object verbatim, not the
+   * object alone. A reader extracts it; nothing paraphrases it on the way.
    *
    * The `reason` above is oneharness's classification and stays a short,
    * closed token; this is the cause underneath it, carried up so a supervisor

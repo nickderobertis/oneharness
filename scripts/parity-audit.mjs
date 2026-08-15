@@ -117,8 +117,12 @@ function flagTables(declared) {
 				"key-value": "`--flag KEY=VALUE` per entry",
 				trailing: "appended verbatim",
 			}[binding.kind];
+			// A pair reads differently depending on what both halves mean: one is
+			// precedence a caller can rely on, the other a call the SDKs end.
 			const unless = binding.unless
-				? ` (suppressed by \`${binding.unless}\`)`
+				? (binding.unless_resolution ?? "refuse") === "refuse"
+					? ` (refused beside \`${binding.unless}\`)`
+					: ` (suppressed by \`${binding.unless}\`)`
 				: "";
 			out.push(`| ${flag} | \`${binding.option}\` | ${how}${unless} |`);
 		}

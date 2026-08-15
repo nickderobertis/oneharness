@@ -1021,6 +1021,10 @@ describe("OneHarness", () => {
 		// `last: true` selects the most recent session even though the lookup also
 		// carries an older name: `last` has priority, and the name rides along
 		// unselected. Dropping it to `false` is what asks for the name instead.
+		// This is the pair the manifest annotates `prefer`: the union defines
+		// `{session, last: true}` as "the most recent", so it is one request with
+		// one meaning, and refusing it the way a contradictory pair is refused
+		// would break the very lookup the suppression was written for.
 		expect((await client.history({ last: true, historyDir }))[0]?.name).toBe(
 			"newer-session",
 		);
@@ -1229,18 +1233,6 @@ describe("OneHarness", () => {
 			registry,
 		);
 
-		// The other direction, on the same pair: a suppressor that does render
-		// still suppresses, and it has to — `--all` beside `--harness` is the clap
-		// conflict this binding exists to avoid, so a miss here fails the call.
-		const one = await client.run({
-			prompt: "rendering suppressor drops --all",
-			all: true,
-			harnesses: ["codex"],
-			mode: "bypass",
-			printCommand: true,
-		});
-		expect(one.results.map((result) => result.harness)).toEqual(["codex"]);
-
 		// A `value` binding renders whatever it carries, `""` included: `--system ""`
 		// reaches the argv, so it suppresses the `--system-file` clap refuses beside
 		// it. Truthiness would call that empty string absent and send both.
@@ -1259,6 +1251,55 @@ describe("OneHarness", () => {
 			"--json",
 			"empty system still suppresses --system-file",
 		]);
+	});
+
+	test("refuses a contradiction rather than editing it out of the argv", async () => {
+		// `{all: true, harnesses: ["codex"]}` is a caller asking for every harness
+		// and for one harness at once. Suppression alone answers it by running
+		// `codex` — a paid turn on an identity nobody chose, reported as a success,
+		// with the disagreement visible only in the results. The manifest annotates
+		// the pair `refuse`, so the call ends before anything is spawned.
+		const client = sdk();
+		await expect(
+			client.run({
+				prompt: "never spawned",
+				all: true,
+				harnesses: ["codex"],
+				mode: "bypass",
+				printCommand: true,
+			}),
+		).rejects.toThrow(
+			/invalid oneharness run options: `all` and `harnesses` are mutually exclusive/,
+		);
+
+		// Every refuse pair, not just the selectors: two answers to "which config
+		// layers", "is this run recorded", "which project's store".
+		await expect(
+			client.run({
+				prompt: "never spawned",
+				config: "oneharness.toml",
+				noConfig: true,
+			}),
+		).rejects.toThrow(/`config` and `noConfig` are mutually exclusive/);
+		await expect(
+			client.run({ prompt: "never spawned", history: true, noHistory: true }),
+		).rejects.toThrow(/`history` and `noHistory` are mutually exclusive/);
+		await expect(
+			client.historyList({ project: "somewhere", allProjects: true }),
+		).rejects.toThrow(
+			/invalid oneharness history list options: `project` and `allProjects` are mutually exclusive/,
+		);
+
+		// The switch half is a value like any other: `false` renders nothing, so
+		// there is no second answer and the call proceeds on the one it has.
+		const one = await client.run({
+			prompt: "an unset switch contradicts nothing",
+			all: false,
+			harnesses: ["codex"],
+			mode: "bypass",
+			printCommand: true,
+		});
+		expect(one.results.map((result) => result.harness)).toEqual(["codex"]);
 	});
 
 	test("rejects an empty prompt before spawning", async () => {

@@ -276,6 +276,15 @@ export type FlagKind =
 	| "key-value"
 	| "trailing";
 
+/**
+ * What both members of a suppressed pair rendering an argument means.
+ *
+ * Absent — a manifest older than the annotation — is \`refuse\`, the safe half:
+ * a contradiction reported is recoverable, a contradiction edited out is a call
+ * that ran as something the caller never asked for.
+ */
+export type UnlessResolution = "refuse" | "prefer";
+
 /** One SDK option and the CLI flag it renders to. */
 export type OptionBinding = {
 	readonly option: string;
@@ -284,6 +293,8 @@ export type OptionBinding = {
 	readonly kind: FlagKind;
 	/** Another option that suppresses this one when it renders an argument. */
 	readonly unless: string | null;
+	/** Only present beside an \`unless\`, which it says how to resolve. */
+	readonly unless_resolution?: UnlessResolution;
 };
 
 /** How a verb's stdout reaches a caller. */

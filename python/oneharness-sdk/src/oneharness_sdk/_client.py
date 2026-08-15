@@ -194,10 +194,13 @@ def _capability_arguments(method: str, options: Mapping[str, Any]) -> list[str]:
             # (`{session, last: True}` is "the most recent"), `refuse` is a caller
             # who asked for two different things. Editing the second one out picks
             # an answer silently, which is how a turn gets billed to a harness
-            # nobody selected. An absent annotation reads as `refuse` — the
-            # recoverable half.
+            # nobody selected. So `prefer` is the only waiver, and everything
+            # else refuses: an absent annotation (a manifest older than the key)
+            # and a resolution added after this client shipped both read as the
+            # recoverable half, because a refusal the manifest meant to resolve
+            # is a message the caller can act on and the reverse is not.
             resolution = binding.get("unless_resolution", "refuse")
-            if resolution == "refuse" and _states_a_choice(
+            if resolution != "prefer" and _states_a_choice(
                 binding, options.get(binding["option"])
             ) and _states_a_choice(bound[unless], options.get(unless)):
                 raise _refuse_contradiction(method, binding["option"], unless)

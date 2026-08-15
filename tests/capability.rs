@@ -209,8 +209,18 @@ fn a_suppressing_option_is_one_the_same_capability_binds() {
 /// a variant the generated clients have never heard of, which they would read as
 /// the safe default and silently under-refuse. Adding a variant means teaching
 /// `npm/oneharness-sdk/src/index.ts` and
-/// `python/oneharness-sdk/src/oneharness_sdk/_client.py` first, then this list.
+/// `python/oneharness-sdk/src/oneharness_sdk/_client.py` first, then this list —
+/// an order `a_listed_resolution_is_one_the_generated_surfaces_spell` enforces
+/// rather than asks for.
 const GENERATOR_RESOLUTIONS: &[&str] = &["refuse", "prefer"];
+
+/// The generated surfaces `GENERATOR_RESOLUTIONS` is a claim about: each SDK's
+/// argv builder, and the TypeScript union its generator writes beside them.
+const RESOLUTION_SOURCES: &[&str] = &[
+    "npm/oneharness-sdk/src/index.ts",
+    "npm/oneharness-sdk/src/generated/capabilities.ts",
+    "python/oneharness-sdk/src/oneharness_sdk/_client.py",
+];
 
 #[test]
 fn every_suppression_declares_a_resolution_the_generators_understand() {
@@ -229,6 +239,31 @@ fn every_suppression_declares_a_resolution_the_generators_understand() {
                 capability.method,
                 binding.option,
                 unless.option,
+            );
+        }
+    }
+}
+
+#[test]
+fn a_listed_resolution_is_one_the_generated_surfaces_spell() {
+    // Until something reads them, `GENERATOR_RESOLUTIONS` is a claim about three
+    // files this crate never opens — and the list's own doc comment describes
+    // the order it needs (clients first, list second) with nothing holding
+    // anyone to it. This is the reconciliation `check-sdk-coverage.sh` already
+    // does for capabilities: derive from each surface's own source rather than
+    // trust a list beside it. A resolution listed here but absent there is
+    // exactly the failure the list exists to prevent — the clients read it as
+    // the default and under-refuse the calls it was added to refuse.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for source in RESOLUTION_SOURCES {
+        let text = std::fs::read_to_string(root.join(source))
+            .unwrap_or_else(|error| panic!("cannot read `{source}`: {error}"));
+        for resolution in GENERATOR_RESOLUTIONS {
+            assert!(
+                text.contains(&format!("\"{resolution}\"")),
+                "`{source}` never spells the `{resolution}` resolution that \
+                 GENERATOR_RESOLUTIONS says the generated surfaces implement. Teach the \
+                 surface the resolution before listing it here.",
             );
         }
     }

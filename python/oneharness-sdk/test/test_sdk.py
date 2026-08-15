@@ -161,7 +161,7 @@ def _contradicts(bound: dict[str, Any], option: str) -> bool:
     binding = bound.get(option)
     if binding is None or binding["unless"] is None:
         return False
-    if binding.get("unless_resolution", "refuse") != "refuse":
+    if binding.get("unless_resolution", "refuse") == "prefer":
         return False
     return _states_a_choice(binding, POPULATED.get(option)) and _states_a_choice(
         bound[binding["unless"]], POPULATED.get(binding["unless"])

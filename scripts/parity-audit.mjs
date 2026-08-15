@@ -119,8 +119,11 @@ function flagTables(declared) {
 			}[binding.kind];
 			// A pair reads differently depending on what both halves mean: one is
 			// precedence a caller can rely on, the other a call the SDKs end.
+			// `prefer` is the only spelling that documents precedence, matching
+			// the clients — a resolution this renderer has never heard of would
+			// otherwise be published as a guarantee the SDKs do not give.
 			const unless = binding.unless
-				? (binding.unless_resolution ?? "refuse") === "refuse"
+				? (binding.unless_resolution ?? "refuse") !== "prefer"
 					? ` (refused beside \`${binding.unless}\`)`
 					: ` (suppressed by \`${binding.unless}\`)`
 				: "";

@@ -449,10 +449,14 @@ function capabilityArguments(
 			// client's: `prefer` is a request with one meaning (`{session, last:
 			// true}` is "the most recent"), `refuse` is a caller who asked for two
 			// different things. Editing the second one out picks an answer silently,
-			// which is how a turn gets billed to a harness nobody selected. An
-			// absent annotation reads as `refuse` — the recoverable half.
+			// which is how a turn gets billed to a harness nobody selected. So
+			// `prefer` is the only waiver, and everything else refuses: an absent
+			// annotation (a manifest older than the key) and a resolution added after
+			// this client shipped both read as the recoverable half, because a
+			// refusal the manifest meant to resolve is a message the caller can act
+			// on and the reverse is not.
 			if (
-				(binding.unless_resolution ?? "refuse") === "refuse" &&
+				(binding.unless_resolution ?? "refuse") !== "prefer" &&
 				statesAChoice(binding, input[binding.option]) &&
 				statesAChoice(suppressor, input[suppressor.option])
 			)

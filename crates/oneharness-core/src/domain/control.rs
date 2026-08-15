@@ -1066,14 +1066,40 @@ const SOCKET_SUFFIX: &str = ".sock";
 /// A socket address that cannot be bound on this platform, with the numbers a
 /// reader needs to act: which address, how long it came out, and the budget it
 /// broke.
+///
+/// The length is **derived** from the path rather than stored beside it, and the
+/// limit is this platform's, so an error whose measurements contradict its own
+/// address cannot be built — the number a caller acts on is always the number of
+/// the address it is looking at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SocketAddressTooLong {
-    /// The shortest address that could be built for this store and session.
-    pub path: PathBuf,
-    /// Its length in bytes — what is compared against the limit.
-    pub bytes: usize,
-    /// This platform's `sun_path` budget ([`SOCKET_ADDRESS_MAX`]), NUL included.
-    pub limit: usize,
+    path: PathBuf,
+}
+
+impl SocketAddressTooLong {
+    fn new(path: PathBuf) -> Self {
+        SocketAddressTooLong { path }
+    }
+
+    /// The address that could not be bound — the shortest one that could be
+    /// built for this store and session.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Its length in bytes, terminating NUL included — what is compared against
+    /// [`Self::limit`].
+    #[must_use]
+    pub fn bytes(&self) -> usize {
+        self.path.as_os_str().len() + 1
+    }
+
+    /// This platform's `sun_path` budget ([`SOCKET_ADDRESS_MAX`]).
+    #[must_use]
+    pub fn limit(&self) -> usize {
+        SOCKET_ADDRESS_MAX
+    }
 }
 
 impl std::fmt::Display for SocketAddressTooLong {
@@ -1083,8 +1109,8 @@ impl std::fmt::Display for SocketAddressTooLong {
             "the control socket address `{}` is {} bytes, past this platform's {}-byte unix-socket \
              address limit (`sun_path`, terminating NUL included)",
             self.path.display(),
-            self.bytes,
-            self.limit
+            self.bytes(),
+            self.limit()
         )
     }
 }
@@ -1171,15 +1197,9 @@ pub fn socket_path(dir: &Path, name: &str) -> Result<PathBuf, SocketAddressTooLo
     let budget = (SOCKET_ADDRESS_MAX - 1).saturating_sub(prefix);
     match socket_file_name(name, budget) {
         Some(file) => Ok(control_dir.join(file)),
-        None => {
-            let path = control_dir.join(format!("{}{SOCKET_SUFFIX}", digest(&sanitize_name(name))));
-            let bytes = path.as_os_str().len() + 1;
-            Err(SocketAddressTooLong {
-                path,
-                bytes,
-                limit: SOCKET_ADDRESS_MAX,
-            })
-        }
+        None => Err(SocketAddressTooLong::new(
+            control_dir.join(format!("{}{SOCKET_SUFFIX}", digest(&sanitize_name(name)))),
+        )),
     }
 }
 
@@ -1187,15 +1207,14 @@ pub fn socket_path(dir: &Path, name: &str) -> Result<PathBuf, SocketAddressTooLo
 /// same budget [`socket_path`] builds against, checked against an address that
 /// has already been resolved (canonicalized) rather than one being built.
 pub fn socket_address_within_limit(path: &Path) -> Result<(), SocketAddressTooLong> {
-    let bytes = path.as_os_str().len() + 1;
-    if bytes <= SOCKET_ADDRESS_MAX {
+    // Measured through the error type, which derives both numbers from the path
+    // itself — so the check and the diagnostic can never disagree about what
+    // this address costs.
+    let measured = SocketAddressTooLong::new(path.to_path_buf());
+    if measured.bytes() <= measured.limit() {
         return Ok(());
     }
-    Err(SocketAddressTooLong {
-        path: path.to_path_buf(),
-        bytes,
-        limit: SOCKET_ADDRESS_MAX,
-    })
+    Err(measured)
 }
 
 /// The stdin line that delivers the user prompt for a control-enabled run, for
@@ -2231,6 +2250,29 @@ mod tests {
     // to overrun, and `SOCKET_ADDRESS_MAX` says so by being unbounded.
     #[cfg(unix)]
     #[test]
+    fn a_multibyte_session_name_is_still_measured_in_bytes() {
+        // The budget is BYTES and the abbreviation counts characters, so the two
+        // agree only because `sanitize_name` yields ASCII. That coupling is
+        // invisible at the call site, and a name of multibyte characters is
+        // where it would break: 120 of them are 360 bytes.
+        let store = PathBuf::from("/home/agent/.local/state/oneharness/sessions");
+        for name in ["日本語のセッション".repeat(20), "é".repeat(120)] {
+            let path = socket_path(&store, &name).expect("a multibyte name is addressable");
+            assert_eq!(
+                socket_address_within_limit(&path),
+                Ok(()),
+                "address `{}` must be within the byte budget",
+                path.display()
+            );
+            let file = path.file_name().and_then(|f| f.to_str()).expect("utf-8");
+            assert!(
+                file.is_ascii(),
+                "the socket file name must be ASCII: {file}"
+            );
+        }
+    }
+
+    #[test]
     fn a_store_past_the_budget_is_a_loud_error_naming_the_path_length_and_limit() {
         // A realistic deep store: a session dir inside a versioned worktree,
         // which no shortening of the session name can rescue.
@@ -2239,13 +2281,13 @@ mod tests {
         );
         let error = socket_path(&store, &graph_session_name())
             .expect_err("a store this deep cannot host a socket address");
-        assert_eq!(error.limit, SOCKET_ADDRESS_MAX);
-        assert_eq!(error.bytes, error.path.as_os_str().len() + 1);
-        assert!(error.bytes > error.limit);
+        assert_eq!(error.limit(), SOCKET_ADDRESS_MAX);
+        assert_eq!(error.bytes(), error.path().as_os_str().len() + 1);
+        assert!(error.bytes() > error.limit());
         let said = error.to_string();
-        assert!(said.contains(&error.path.display().to_string()), "{said}");
-        assert!(said.contains(&error.bytes.to_string()), "{said}");
-        assert!(said.contains(&error.limit.to_string()), "{said}");
+        assert!(said.contains(&error.path().display().to_string()), "{said}");
+        assert!(said.contains(&error.bytes().to_string()), "{said}");
+        assert!(said.contains(&error.limit().to_string()), "{said}");
     }
 
     // Unix-gated with the budget it exercises: off unix there is no `sun_path`
@@ -2257,8 +2299,8 @@ mod tests {
         assert_eq!(socket_address_within_limit(&short), Ok(()));
         let long = PathBuf::from(format!("/tmp/{}/control/flow.sock", "d".repeat(200)));
         let error = socket_address_within_limit(&long).expect_err("200 bytes of directory");
-        assert_eq!(error.bytes, long.as_os_str().len() + 1);
-        assert_eq!(error.limit, SOCKET_ADDRESS_MAX);
+        assert_eq!(error.bytes(), long.as_os_str().len() + 1);
+        assert_eq!(error.limit(), SOCKET_ADDRESS_MAX);
     }
 
     #[test]

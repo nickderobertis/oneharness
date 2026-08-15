@@ -83,9 +83,12 @@ require_line justfile 'gate remote="origin" base="": check deps-check package-cr
   "verify packaging in the pre-push gate instead"
 require_line .github/workflows/ci.yml 'run: scripts/check-pr-title.sh' "validate the release-driving PR title"
 
-# `just` comes from this repo's own cached composite action. A third-party setup
-# action fetches from a service outside this repo on every run, and an outage
-# there takes a required check down for a reason unrelated to the change.
+# No workflow may install `just` from a third-party setup-just action: that
+# fetches from a service outside this repo on every run, and an outage there
+# takes a required check down for a reason unrelated to the change. The
+# repository-local cached action is what replaced it. (Jobs that install a
+# whole tool BUNDLE through taiki-e/install-action are a separate, deliberate
+# choice and are not what this rule is about.)
 if grep -rq 'setup-just@' .github/workflows/*.yml; then
   fail "workflows must install just through ./.github/actions/setup-just, not a third-party setup-just action"
 fi

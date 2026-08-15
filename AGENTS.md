@@ -938,8 +938,8 @@ shape. When you add one:
   SDK contracts.
 - Everything else in `startup_failure_reason` follows one question — *could this
   candidate have run the task at all?* — never *what did the outcome look
-  like?*; classifying by outcome is the category error this module has now made
-  four times. The two **precondition** refusals (`untrusted_directory`,
+  like?*; classifying by outcome is this module's recurring category error. The
+  two **precondition** refusals (`untrusted_directory`,
   `input_too_large`) are that question answered by the harness's own pre-request
   check, which is why they fall through beside `auth`/`quota`. When a refusal
   names its cause in machine-readable terms, that text is carried up
@@ -1034,14 +1034,14 @@ shape. When you add one:
   (`oneharness-core`, then `oneharness`), attaches the checksummed cross-platform
   binaries + their Sigstore `.sigstore.json` bundles, and builds/publishes the
   PyPI wheels and npm packages. The bump is not the commit subject's word alone:
-  `semver_check = true` reads `oneharness-core`'s actual API surface, because a
-  breaking change spelled `fix` has already shipped as a patch in this workspace
-  family. release-plz shells out to a `cargo-semver-checks` BINARY and only
-  *warns* when it is absent, so release-plz.yml installs it and proves it runs —
-  a gate that can silently skip is the failure mode, not the check itself.
-  `just` comes from `.github/actions/setup-just`, this repo's own cached
-  composite action: a third-party setup action is an outage that reads as a
-  change failure. `scripts/check-workflows.sh` holds all of this in place.
+  `semver_check = true` reads `oneharness-core`'s actual API surface, so a
+  breaking change spelled `fix` cannot ship as a patch. release-plz shells out
+  to a `cargo-semver-checks` BINARY and only *warns* when it is absent, so
+  release-plz.yml installs it and proves it runs — a gate that can silently skip
+  is the failure mode, not the check itself. No workflow may install `just`
+  from a third-party setup-just action (an outage there reads as a change
+  failure); `.github/actions/setup-just` is this repo's own cached replacement.
+  `scripts/check-workflows.sh` holds both in place.
   So a release lands five ways: **PyPI** (`pip install oneharness-cli`), **npm**
   (`npm install -g oneharness-cli`), **crates.io**, the GitHub Release binaries,
   and `cargo install --git` (see the PyPI-wheels, npm-packages, and Sigstore

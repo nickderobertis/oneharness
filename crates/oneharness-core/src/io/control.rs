@@ -767,7 +767,8 @@ mod imp {
                 format!(
                     "resolving it produced an address of {} bytes, past this platform's {}-byte \
                      unix-socket address limit (`sun_path`, terminating NUL included)",
-                    too_long.bytes, too_long.limit
+                    too_long.bytes(),
+                    too_long.limit()
                 ),
             )
         })?;

@@ -30,11 +30,13 @@ node -e '
 ' "$workflow"
 
 if bash scripts/check-workflows.sh >"$work/stdout" 2>"$work/stderr"; then
-  echo 'check-workflows-e2e: missing release-tag validation unexpectedly passed' >&2
+  echo 'check-workflows-e2e: missing release-tag validation unexpectedly passed the gate' >&2
+  echo '  fix: restore the release-tag boundary check in scripts/check-workflows.sh' >&2
   exit 1
 fi
 grep -Fq 'release.yml must validate release-event tags before using them in paths' "$work/stderr" || {
   echo 'check-workflows-e2e: drift failure lacked the expected diagnostic' >&2
+  echo "  fix: restore the wording 'release.yml must validate release-event tags before using them in paths' in scripts/check-workflows.sh, or update this expectation to the new wording" >&2
   cat "$work/stderr" >&2
   exit 1
 }
@@ -45,11 +47,13 @@ cp "$work/release.yml" "$workflow"
 # mechanism — and it is exactly the drift that took required checks down.
 printf '      - uses: extractions/setup-just@v3\n' >>"$ci"
 if bash scripts/check-workflows.sh >"$work/stdout" 2>"$work/stderr"; then
-  echo 'check-workflows-e2e: a third-party setup-just unexpectedly passed' >&2
+  echo 'check-workflows-e2e: a third-party setup-just in ci.yml unexpectedly passed the gate' >&2
+  echo "  fix: restore the forbidden-pattern check for 'setup-just@' in scripts/check-workflows.sh" >&2
   exit 1
 fi
 grep -Fq 'workflows must install just through ./.github/actions/setup-just' "$work/stderr" || {
   echo 'check-workflows-e2e: the setup-just drift lacked the expected diagnostic' >&2
+  echo "  fix: restore the wording 'workflows must install just through ./.github/actions/setup-just' in scripts/check-workflows.sh, or update this expectation to the new wording" >&2
   cat "$work/stderr" >&2
   exit 1
 }

@@ -11,14 +11,20 @@ runs:
   using: composite
   steps:
     # `.tool-versions` is the single pin (asdf/mise read it for a local clone),
-    # so CI cannot drift to a different `just` than a developer runs.
+    # so CI cannot drift to a different `just` than a developer runs. It is also
+    # a FILE that becomes a cache key, a workflow output, and a `cargo install`
+    # argument, so it is validated as exactly one `x.y.z` before any of that —
+    # a version this action merely found non-empty could carry a shell
+    # metacharacter into the step below.
     - name: Read the pinned version
       id: pin
       shell: bash
       run: |
-        version="$(awk '$1 == "just" { print $2 }' .tool-versions)"
-        if [ -z "$version" ]; then
-          echo "::error::.tool-versions carries no 'just' pin for the setup-just action to install" >&2
+        pins="$(awk '$1 == "just" { print $2 }' .tool-versions)"
+        count="$(printf '%s' "$pins" | grep -c . || true)"
+        version="$(printf '%s\n' "$pins" | head -n 1)"
+        if [ "$count" != "1" ] || ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "::error::.tool-versions must pin just as exactly one x.y.z version for the setup-just action to install (found ${count:-0}: '${pins//$'\n'/, }')" >&2
           exit 1
         fi
         echo "version=$version" >> "$GITHUB_OUTPUT"

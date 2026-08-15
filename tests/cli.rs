@@ -15663,6 +15663,19 @@ fn fallback_falls_through_a_not_installed_harness() {
     assert_eq!(v["fallback"]["ran"], "codex");
     assert_eq!(v["fallback"]["fell_through"][0]["harness"], "claude-code");
     assert_eq!(v["fallback"]["fell_through"][0]["reason"], "not-installed");
+    // `detail` is every reason's, not just the precondition refusals': a
+    // candidate that was never installed says so there too, rather than making
+    // a supervisor cross-reference `results[]` for the diagnostic.
+    assert_eq!(
+        v["fallback"]["fell_through"][0]["detail"], v["results"][0]["error"],
+        "the fall-through record must carry the candidate's own account"
+    );
+    assert!(
+        v["fallback"]["fell_through"][0]["detail"]
+            .as_str()
+            .is_some_and(|detail| !detail.is_empty()),
+        "a missing binary has an account to give: {v}"
+    );
     assert!(v["batch"].is_null());
     // results carry every *attempted* harness in priority order: the skipped
     // one, then the one that ran. Candidates after it are never in the list.
@@ -20836,7 +20849,90 @@ fn a_control_socket_address_past_the_platform_budget_is_refused_before_anything_
         "the refusal must say what to change: {stderr}"
     );
 
+    // The other process that resolves this address refuses it identically. A
+    // supervisor that got `not_running` here would go looking for a dead run
+    // instead of at the store it pointed both processes at.
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "node-scope-1786808430370-3422037-worker-skill",
+            "--session-dir",
+            &store.display().to_string(),
+            "--cwd",
+            &store.display().to_string(),
+        ],
+        &[],
+    );
+    assert_eq!(
+        interrupt.status.code(),
+        Some(2),
+        "interrupt must refuse the same address: {interrupt:?}"
+    );
+    let interrupt_stderr = String::from_utf8_lossy(&interrupt.stderr);
+    assert!(
+        interrupt_stderr.contains("control socket address")
+            && interrupt_stderr.contains("unix-socket address limit"),
+        "{interrupt_stderr}"
+    );
+
     let _ = std::fs::remove_dir_all(&store);
+}
+
+/// A store whose own path fits but whose RESOLVED path does not: `bind`
+/// canonicalizes before binding (the address is handed to another process), and
+/// that can lengthen an address `socket_path` already cleared — macOS's `/tmp` →
+/// `/private/tmp` for free, a symlinked store anywhere. The run must say so in
+/// the same terms rather than surfacing the kernel's bare `ENAMETOOLONG`.
+#[cfg(unix)]
+#[test]
+fn an_address_that_only_canonicalization_makes_too_long_is_still_refused() {
+    let root = std::fs::canonicalize("/tmp").expect("/tmp must exist to root a control store");
+    let real = root.join(format!("oh-long-{}-{}", std::process::id(), "r".repeat(96)));
+    std::fs::create_dir_all(&real).unwrap();
+    let link = root.join(format!("oh-link-{}", std::process::id()));
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    // Short enough to build: `socket_path` measures the address it is given.
+    oneharness_core::domain::control::socket_path(&link, "watched")
+        .expect("the symlinked store is inside the budget before it is resolved");
+
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "watched",
+            "--session-dir",
+            &link.display().to_string(),
+            "--cwd",
+            &link.display().to_string(),
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a resolved address past the budget must abort the run: {output:?}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("could not open the control socket")
+            && stderr.contains("resolving it produced an address")
+            && stderr.contains("unix-socket address limit"),
+        "the refusal must name resolution as what broke the budget: {stderr}"
+    );
+
+    let _ = std::fs::remove_file(&link);
+    let _ = std::fs::remove_dir_all(&real);
 }
 
 #[cfg(unix)]

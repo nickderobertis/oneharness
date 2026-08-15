@@ -1365,9 +1365,13 @@ fn failure_kind_version_valid(schema_version: &str, failure_kind: Option<Failure
 /// The version a gated `failure_kind` arrived in, or `None` for a kind every
 /// readable version already had. One table so the runtime reader and the
 /// generated SDK schemas ([`crate::sdk_schema`]) enumerate the same gates —
-/// a second list is how the two validators drift apart.
+/// a second list is how the two validators drift apart. Crate-visible, since
+/// both of those readers are in this crate: a consumer reads the gate from the
+/// generated schema, not from this table.
 #[must_use]
-pub fn gated_failure_kind_version(failure_kind: Option<FailureKind>) -> Option<&'static str> {
+pub(crate) fn gated_failure_kind_version(
+    failure_kind: Option<FailureKind>,
+) -> Option<&'static str> {
     match failure_kind? {
         FailureKind::SessionNotFound => Some(FIRST_SESSION_NOT_FOUND_SCHEMA_VERSION),
         FailureKind::UntrustedDirectory | FailureKind::InputTooLarge => {

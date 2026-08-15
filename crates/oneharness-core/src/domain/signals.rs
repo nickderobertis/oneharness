@@ -498,16 +498,23 @@ const MAX_DETAIL_BYTES: usize = 512;
 /// from the brace before the key to the first brace after it. That assumes a
 /// **flat** object, which every observed payload is — and a nested one would
 /// end the span early, so the parse below rejects it and the caller gets `None`
-/// rather than a truncated claim. The span is validated as JSON and handed back
-/// as the provider wrote it, never re-serialized.
+/// rather than a truncated claim.
+///
+/// This is a harness's raw output, so the span is bounded, parsed, and required
+/// to be an object whose `input_error_code` is the very code that classified
+/// the refusal. Handing back text that merely *mentions* the key would let an
+/// unrelated (or differently-coded) object be reported as the cause of this
+/// one — and the caller acts on it. What survives all three is handed back as
+/// the provider wrote it, never re-serialized.
 fn provider_error_data(text: &str) -> Option<String> {
     let at = text.find("\"input_error_code\"")?;
     let start = text[..at].rfind('{')?;
     let rest = &text[start..];
     let end = rest.find('}')? + 1;
     let object = rest.get(..end).filter(|o| o.len() <= MAX_DETAIL_BYTES)?;
-    serde_json::from_str::<Value>(object).ok()?;
-    Some(object.to_string())
+    let parsed: Value = serde_json::from_str(object).ok()?;
+    (parsed.get("input_error_code").and_then(Value::as_str) == Some(INPUT_TOO_LARGE_CODE))
+        .then(|| object.to_string())
 }
 
 /// A harness's refusal to continue a session it cannot find — the
@@ -1197,16 +1204,19 @@ mod tests {
         .expect("the prose alone classifies");
         assert_eq!(got.kind, FailureKind::InputTooLarge);
         assert_eq!(got.detail, None);
-        // ...and a data object that is not parseable JSON yields no detail
-        // either, rather than a truncated span presented as the provider's.
-        let ragged = classify_harness_failure(
-            FailureDialect::Codex,
-            "",
+        // ...and neither a data object that is not parseable JSON, nor one whose
+        // code is some *other* refusal, yields a detail: the cause carried up is
+        // the one that classified this failure, never a span that merely sits
+        // near the key.
+        for text in [
             "data: {\"input_error_code\":\"input_too_large\", \"max_chars\": }",
-        )
-        .expect("the code alone classifies");
-        assert_eq!(ragged.kind, FailureKind::InputTooLarge);
-        assert_eq!(ragged.detail, None);
+            "Input exceeds the maximum length. data: {\"input_error_code\":\"input_unreadable\"}",
+        ] {
+            let ragged = classify_harness_failure(FailureDialect::Codex, "", text)
+                .unwrap_or_else(|| panic!("unclassified: {text}"));
+            assert_eq!(ragged.kind, FailureKind::InputTooLarge, "{text}");
+            assert_eq!(ragged.detail, None, "{text}");
+        }
     }
 
     #[test]

@@ -2324,8 +2324,9 @@ fn a_precondition_refusal_falls_through_carrying_the_providers_own_cause() {
         // The refusal's history record declares the version that first
         // understood it — the whole run's history, read back through the store
         // exactly as a consumer reads it.
-        let records =
-            materialized_history(Path::new(value["history_file"].as_str().expect("history file")));
+        let records = materialized_history(Path::new(
+            value["history_file"].as_str().expect("history file"),
+        ));
         let refused = &records[0];
         assert_eq!(refused["harness_id"], "claude-code", "{tag}");
         assert_eq!(refused["failure_kind"], kind, "{tag}");

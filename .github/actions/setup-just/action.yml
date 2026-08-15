@@ -39,12 +39,8 @@ runs:
           ~/.cargo/bin/just
           ~/.cargo/bin/just.exe
         key: just-${{ runner.os }}-${{ runner.arch }}-${{ steps.pin.outputs.version }}
-    - name: Install just from crates.io
-      if: steps.cache.outputs.cache-hit != 'true'
+    # Install-when-missing and verify-always live in a script so both paths can
+    # be driven by a test; `scripts/check-setup-just.sh` is that test.
+    - name: Install and verify just
       shell: bash
-      # A cache miss must replace whatever else put a `just` in Cargo's bin dir
-      # (rust-cache restores one), so the verified version below is this one.
-      run: cargo install just --locked --version "${{ steps.pin.outputs.version }}" --force
-    - name: Verify just is available
-      shell: bash
-      run: test "$(just --version)" = "just ${{ steps.pin.outputs.version }}"
+      run: scripts/setup-just-install.sh "${{ steps.pin.outputs.version }}" "${{ steps.cache.outputs.cache-hit }}"

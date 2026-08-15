@@ -1035,13 +1035,12 @@ shape. When you add one:
   binaries + their Sigstore `.sigstore.json` bundles, and builds/publishes the
   PyPI wheels and npm packages. The bump is not the commit subject's word alone:
   `semver_check = true` reads `oneharness-core`'s actual API surface, so a
-  breaking change spelled `fix` cannot ship as a patch. release-plz shells out
-  to a `cargo-semver-checks` BINARY and only *warns* when it is absent, so
-  release-plz.yml installs it and proves it runs — a gate that can silently skip
-  is the failure mode, not the check itself. No workflow may install `just`
-  from a third-party setup-just action (an outage there reads as a change
-  failure); `.github/actions/setup-just` is this repo's own cached replacement.
-  `scripts/check-workflows.sh` holds both in place.
+  breaking change spelled `fix` cannot ship as a patch. It needs a
+  `cargo-semver-checks` binary release-plz only *warns* about when absent, and a
+  toolchain newer than the pinned channel (it resolves dependencies afresh, so
+  the pin cannot build its rustdoc) — release-plz.yml supplies both and runs the
+  analysis against `HEAD` as its own baseline to prove it works without deciding
+  the release.
   So a release lands five ways: **PyPI** (`pip install oneharness-cli`), **npm**
   (`npm install -g oneharness-cli`), **crates.io**, the GitHub Release binaries,
   and `cargo install --git` (see the PyPI-wheels, npm-packages, and Sigstore

@@ -41,14 +41,10 @@ reject() {
 }
 
 # Classify against a copy stripped of terminal formatting, and report the
-# original. Cargo colours this capture whenever `CARGO_TERM_COLOR=always` — which
-# `actions-rust-lang/setup-rust-toolchain` exports, so CI is exactly where it
-# happens and a local run is exactly where it does not. A colour reset lands
-# between the leading spaces and the word, so an ANCHORED pattern below sees
-# `\e[1m\e[32m   Compiling\e[0m ...` and matches nothing: the arm that reads a
-# registry-resolved core wrote off a permitted release transition as a defect,
-# green locally and red in the only place it runs. The classifier reads text; the
-# escape sequences are for the human `cat` above, and they stay there.
+# original. Cargo colours this capture under `CARGO_TERM_COLOR=always`, which
+# `actions-rust-lang/setup-rust-toolchain` exports — so CI reads escapes a local
+# run never sees, and they land where the anchored pattern below expects the
+# status verb.
 esc=$'\033'
 sed -E "s/${esc}\[[0-9;]*[a-zA-Z]//g" "$output_file" >"$plain_output"
 
@@ -64,19 +60,15 @@ sed -E "s/${esc}\[[0-9;]*[a-zA-Z]//g" "$output_file" >"$plain_output"
 # fails before any source is unpacked, worded "for `oneharness-core`" rather
 # than "for the requirement", so neither other arm sees it.
 #
-# The last arm is the commonest shape of a core API change and the one this
-# check missed: the core resolves and compiles, and the BINARY's own source
-# fails on the API only the unpublished core has. rustc names no registry path
-# there — the error is in `src/`, not in the dependency — so the arm above it
-# cannot see it. What ties it to the dependency is that the core Cargo compiled
-# came from the REGISTRY, which its `Compiling` line says by carrying no source
-# path; a path-resolved core means the workspace's own code broke.
-#
-# That signal cannot, on its own, tell this apart from a binary-only compile
-# error, and it is not asked to: like every other shape here it is waved through
-# only while a release-worthy core change is pending (below), and a binary that
-# does not compile against the WORKSPACE core is already red in `build`/`check`,
-# which run ahead of packaging in both `just gate` and ci.yml.
+# The last arm catches a core API the BINARY's own source calls: rustc names no
+# registry path there, so the arm above cannot see it. Its signal is instead
+# that the core Cargo compiled came from the REGISTRY, which its `Compiling`
+# line says by carrying no source path — a path-resolved core means the
+# workspace's own code broke. That cannot alone tell this from a binary-only
+# compile error, and need not: every shape here is waved through only while a
+# release-worthy core change is pending, and a binary that fails against the
+# WORKSPACE core is already red in `build`/`check`, which run first in both
+# entry points.
 core_version_unpublished=false
 registry_core_mismatch=false
 if grep -Eq "failed to select a version for the requirement \`oneharness-core" "$plain_output" &&

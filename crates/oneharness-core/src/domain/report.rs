@@ -23,17 +23,13 @@ use crate::domain::usage::UtcInstant;
 /// `sync`, and `config` — so one number describes the whole surface; the history
 /// records carry their own (`domain::history::SCHEMA_VERSION`).
 ///
-/// `0.8` adds the two **precondition** [`FailureKind`]s — `untrusted_directory`
-/// and `input_too_large`, the refusals a harness reaches before it makes the
-/// request at all — with the `"untrusted-directory"` / `"input-too-large"`
-/// reasons a fallback run now reports for a candidate it routes around, and the
-/// `detail` on each [`FallThrough`]: the provider's own machine-readable account
-/// of why that candidate could not run (Codex's `input_error_code` object),
-/// carried up instead of left in the raw stdout for a consumer to rediscover.
-/// Purely additive: every 0.7 field keeps its name, type, and meaning, and
-/// `detail` is `null` for a candidate that said nothing. The new *enum values*
-/// are why the bump matters, since a consumer that exhaustively matches
-/// `failure_kind` learns from the version that two more now exist.
+/// `0.8` added the two precondition [`FailureKind`]s — `untrusted_directory` and
+/// `input_too_large` — with their `"untrusted-directory"` / `"input-too-large"`
+/// fall-through reasons, and `detail` on each [`FallThrough`] (the provider's own
+/// machine-readable account, `null` when it gave none). Purely additive: every
+/// 0.7 field keeps its name, type, and meaning. The new *enum values* are why the
+/// bump matters, since a consumer that exhaustively matches `failure_kind` learns
+/// from the version that two more now exist.
 ///
 /// `0.7` added the `session_not_found` [`FailureKind`] — the refusal a harness
 /// returns when asked to continue a session its identity has never seen — and,

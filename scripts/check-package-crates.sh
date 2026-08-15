@@ -34,62 +34,78 @@ cat >"$work/bin/cargo" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$CALL_LOG"
+
+# Cargo colours its diagnostics when CARGO_TERM_COLOR=always — which
+# actions-rust-lang/setup-rust-toolchain exports, so CI reads these bytes and a
+# developer's terminal-less shell does not. The status verb's escape lands
+# BEFORE the leading spaces, as captured from a real run, which is what an
+# anchored pattern in the classifier has to survive.
+colorize() {
+  if [[ ${CARGO_TERM_COLOR:-auto} == always ]]; then
+    sed -E $'s/^([[:space:]]*(Compiling|Packaging|Verifying|error(\\[[A-Za-z0-9]+\\])?))/\033[1m\033[32m\\1\033[0m/'
+  else
+    cat
+  fi
+}
+
 if [[ $* == *"crates/oneharness-core/Cargo.toml"* && ${CORE_PACKAGE:-ok} == fail ]]; then
   echo "simulated core package failure" >&2
   exit 101
 fi
 if [[ $* == *"Cargo.toml"* && $* != *"crates/oneharness-core/Cargo.toml"* && ${BINARY_PACKAGE:-ok} == fail ]]; then
-  if [[ ${BINARY_FAILURE_KIND:-core-mismatch} == missing-feature ]]; then
-    # Captured verbatim from a real `cargo package` on a tree whose core had
-    # gained the `mock-harness` feature the published version lacked. This
-    # failure happens during RESOLUTION, so — unlike every other case here —
-    # it names no registry source path; a detector requiring one misses it.
-    echo 'error: failed to prepare local package for uploading' >&2
-    echo '' >&2
-    echo 'Caused by:' >&2
-    echo '  failed to select a version for `oneharness-core`.' >&2
-    echo '      ... required by package `oneharness v0.6.13 (/repo)`' >&2
-    echo '  versions that meet the requirements `^0.6.11` are: 0.6.11' >&2
-    echo '' >&2
-    echo '  the package `oneharness` depends on `oneharness-core`, with features: `mock-harness` but `oneharness-core` does not have these features.' >&2
-    echo '' >&2
-    echo '  failed to select a version for `oneharness-core` which could resolve this conflict' >&2
-  elif [[ ${BINARY_FAILURE_KIND:-core-mismatch} == version-select ]]; then
-    echo 'error: failed to select a version for the requirement `oneharness-core = "^0.6.12"`' >&2
-    echo 'candidate versions found which did not match: 0.6.11' >&2
-    echo 'location searched: crates.io index' >&2
-    echo 'required by package `oneharness v0.6.14`' >&2
-  elif [[ ${BINARY_FAILURE_KIND:-core-mismatch} == binary-source ]]; then
-    # Captured verbatim from a real `cargo package` on a tree whose core had
-    # gained an API the binary uses and the published version lacks. The core
-    # resolved and compiled fine; the BINARY's own source is what failed, so —
-    # unlike the core-mismatch shape — rustc names no registry path at all. The
-    # only thing tying the failure to the dependency is that the core Cargo
-    # compiled came from the registry, which its pathless `Compiling` line says.
-    echo '   Compiling oneharness-core v0.6.11' >&2
-    echo '   Compiling oneharness v0.6.14 (/repo/target/package/oneharness-0.6.14)' >&2
-    echo 'error[E0599]: no variant named `ControlSocketAddress` found for enum `OneharnessError`' >&2
-    echo '  --> src/commands/interrupt.rs:58:44' >&2
-    echo 'error: could not compile `oneharness` (lib) due to 2 previous errors' >&2
-  elif [[ ${BINARY_FAILURE_KIND:-core-mismatch} == workspace-source ]]; then
-    # The same compile failure with the core resolved from the WORKSPACE PATH —
-    # so the published dependency is not what broke, and the pathless-line
-    # signal above must not match it.
-    echo '   Compiling oneharness-core v0.6.11 (/repo/crates/oneharness-core)' >&2
-    echo '   Compiling oneharness v0.6.14 (/repo)' >&2
-    echo 'error[E0599]: cannot find value `typo` in this scope' >&2
-    echo '  --> src/commands/interrupt.rs:58:44' >&2
-    echo 'error: could not compile `oneharness` (lib) due to 1 previous error' >&2
-  elif [[ ${BINARY_FAILURE_KIND:-core-mismatch} == core-mismatch ]]; then
-    if [[ ${REGISTRY_PATH_KIND:-unix} == windows ]]; then
-      echo '  --> C:\registry\src\oneharness-core-0.6.11\src\io\http_turn.rs:592:8' >&2
+  {
+    if [[ ${BINARY_FAILURE_KIND:-core-mismatch} == missing-feature ]]; then
+      # Captured verbatim from a real `cargo package` on a tree whose core had
+      # gained the `mock-harness` feature the published version lacked. This
+      # failure happens during RESOLUTION, so — unlike every other case here —
+      # it names no registry source path; a detector requiring one misses it.
+      echo 'error: failed to prepare local package for uploading'
+      echo ''
+      echo 'Caused by:'
+      echo '  failed to select a version for `oneharness-core`.'
+      echo '      ... required by package `oneharness v0.6.13 (/repo)`'
+      echo '  versions that meet the requirements `^0.6.11` are: 0.6.11'
+      echo ''
+      echo '  the package `oneharness` depends on `oneharness-core`, with features: `mock-harness` but `oneharness-core` does not have these features.'
+      echo ''
+      echo '  failed to select a version for `oneharness-core` which could resolve this conflict'
+    elif [[ ${BINARY_FAILURE_KIND:-core-mismatch} == version-select ]]; then
+      echo 'error: failed to select a version for the requirement `oneharness-core = "^0.6.12"`'
+      echo 'candidate versions found which did not match: 0.6.11'
+      echo 'location searched: crates.io index'
+      echo 'required by package `oneharness v0.6.14`'
+    elif [[ ${BINARY_FAILURE_KIND:-core-mismatch} == binary-source ]]; then
+      # Captured verbatim from a real `cargo package` on a tree whose core had
+      # gained an API the binary uses and the published version lacks. The core
+      # resolved and compiled fine; the BINARY's own source is what failed, so —
+      # unlike the core-mismatch shape — rustc names no registry path at all. The
+      # only thing tying the failure to the dependency is that the core Cargo
+      # compiled came from the registry, which its pathless `Compiling` line says.
+      echo '   Compiling oneharness-core v0.6.11'
+      echo '   Compiling oneharness v0.6.14 (/repo/target/package/oneharness-0.6.14)'
+      echo 'error[E0599]: no variant named `ControlSocketAddress` found for enum `OneharnessError`'
+      echo '  --> src/commands/interrupt.rs:58:44'
+      echo 'error: could not compile `oneharness` (lib) due to 2 previous errors'
+    elif [[ ${BINARY_FAILURE_KIND:-core-mismatch} == workspace-source ]]; then
+      # The same compile failure with the core resolved from the WORKSPACE PATH —
+      # so the published dependency is not what broke, and the pathless-line
+      # signal above must not match it.
+      echo '   Compiling oneharness-core v0.6.11 (/repo/crates/oneharness-core)'
+      echo '   Compiling oneharness v0.6.14 (/repo)'
+      echo 'error[E0599]: cannot find value `typo` in this scope'
+      echo '  --> src/commands/interrupt.rs:58:44'
+      echo 'error: could not compile `oneharness` (lib) due to 1 previous error'
+    elif [[ ${BINARY_FAILURE_KIND:-core-mismatch} == core-mismatch ]]; then
+      if [[ ${REGISTRY_PATH_KIND:-unix} == windows ]]; then
+        echo '  --> C:\registry\src\oneharness-core-0.6.11\src\io\http_turn.rs:592:8'
+      else
+        echo '  --> /registry/src/oneharness-core-0.6.11/src/io/http_turn.rs:592:8'
+      fi
+      echo 'error: could not compile `oneharness` (lib) due to previous error'
     else
-      echo '  --> /registry/src/oneharness-core-0.6.11/src/io/http_turn.rs:592:8' >&2
+      echo 'error: simulated unrelated binary package failure'
     fi
-    echo 'error: could not compile `oneharness` (lib) due to previous error' >&2
-  else
-    echo 'error: simulated unrelated binary package failure' >&2
-  fi
+  } | colorize >&2
   exit 101
 fi
 EOF
@@ -292,6 +308,27 @@ if run_case env BINARY_PACKAGE=fail BINARY_FAILURE_KIND=binary-source just packa
   fail "a binary-source failure with no pending core release unexpectedly passed"
 fi
 assert_contains "cannot be packaged against its published oneharness-core dependency" "$work/out"
+
+# The same transition as Cargo actually prints it in CI, where
+# `actions-rust-lang/setup-rust-toolchain` exports CARGO_TERM_COLOR=always: the
+# status verb arrives wrapped in escape sequences, so a classifier reading the
+# raw capture sees no `Compiling` at the start of any line and calls a permitted
+# release transition a defect. Green locally, red in the only place it runs.
+if ! run_case env BINARY_PACKAGE=fail BINARY_FAILURE_KIND=binary-source COMMIT_KIND=fix \
+  CARGO_TERM_COLOR=always just package-crates >"$work/out" 2>&1; then
+  cat "$work/out" >&2
+  fail "a coloured binary-source failure did not permit the release-plz transition" \
+    "restore the escape-stripping the classifier in scripts/package-crates.sh reads through"
+fi
+assert_contains "awaits release-plz's core version bump" "$work/out"
+
+# Stripping the escapes must not make the classifier less discriminating: the
+# path-resolved core is still the binary's own bug, coloured or not.
+if run_case env BINARY_PACKAGE=fail BINARY_FAILURE_KIND=workspace-source COMMIT_KIND=fix \
+  CARGO_TERM_COLOR=always just package-crates >"$work/out" 2>&1; then
+  fail "a coloured path-resolved core compile failure unexpectedly read as the registry transition"
+fi
+assert_contains "failed for a reason other than its registry-resolved oneharness-core transition" "$work/out"
 
 # The discriminator is that the core Cargo compiled came from the REGISTRY. The
 # same compile failure with a path-resolved core is the binary's own bug, and a

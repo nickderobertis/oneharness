@@ -17,8 +17,9 @@ cd "$(dirname "$0")/.."
 
 core_output="$(mktemp)"
 output_file="$(mktemp)"
+plain_output="$(mktemp)"
 fetch_output="$(mktemp)"
-trap 'rm -f "$core_output" "$output_file" "$fetch_output"' EXIT
+trap 'rm -f "$core_output" "$output_file" "$plain_output" "$fetch_output"' EXIT
 
 if ! cargo package --locked --allow-dirty --manifest-path crates/oneharness-core/Cargo.toml >"$core_output" 2>&1; then
   cat "$core_output" >&2
@@ -38,6 +39,18 @@ reject() {
   echo "package-crates: $1" >&2
   exit 1
 }
+
+# Classify against a copy stripped of terminal formatting, and report the
+# original. Cargo colours this capture whenever `CARGO_TERM_COLOR=always` — which
+# `actions-rust-lang/setup-rust-toolchain` exports, so CI is exactly where it
+# happens and a local run is exactly where it does not. A colour reset lands
+# between the leading spaces and the word, so an ANCHORED pattern below sees
+# `\e[1m\e[32m   Compiling\e[0m ...` and matches nothing: the arm that reads a
+# registry-resolved core wrote off a permitted release transition as a defect,
+# green locally and red in the only place it runs. The classifier reads text; the
+# escape sequences are for the human `cat` above, and they stay there.
+esc=$'\033'
+sed -E "s/${esc}\[[0-9;]*[a-zA-Z]//g" "$output_file" >"$plain_output"
 
 # Four registry shapes, and the first means the opposite of the other three. A
 # version Cargo cannot select is a core release that has not reached crates.io
@@ -66,20 +79,20 @@ reject() {
 # which run ahead of packaging in both `just gate` and ci.yml.
 core_version_unpublished=false
 registry_core_mismatch=false
-if grep -Eq "failed to select a version for the requirement \`oneharness-core" "$output_file" &&
-  grep -Eq 'candidate versions found which did(n.t| not) match:' "$output_file" &&
-  grep -Fq 'location searched: crates.io index' "$output_file" &&
-  grep -Eq 'required by package `oneharness v[0-9]+\.[0-9]+\.[0-9]+' "$output_file"; then
+if grep -Eq "failed to select a version for the requirement \`oneharness-core" "$plain_output" &&
+  grep -Eq 'candidate versions found which did(n.t| not) match:' "$plain_output" &&
+  grep -Fq 'location searched: crates.io index' "$plain_output" &&
+  grep -Eq 'required by package `oneharness v[0-9]+\.[0-9]+\.[0-9]+' "$plain_output"; then
   core_version_unpublished=true
   registry_core_mismatch=true
-elif grep -Eq 'oneharness-core-[0-9]+\.[0-9]+\.[0-9]+[/\\]' "$output_file" &&
-  grep -Eq "could not compile \`oneharness\`" "$output_file"; then
+elif grep -Eq 'oneharness-core-[0-9]+\.[0-9]+\.[0-9]+[/\\]' "$plain_output" &&
+  grep -Eq "could not compile \`oneharness\`" "$plain_output"; then
   registry_core_mismatch=true
-elif grep -Eq "failed to select a version for \`oneharness-core\`" "$output_file" &&
-  grep -Eq "depends on \`oneharness-core\`, with features:" "$output_file"; then
+elif grep -Eq "failed to select a version for \`oneharness-core\`" "$plain_output" &&
+  grep -Eq "depends on \`oneharness-core\`, with features:" "$plain_output"; then
   registry_core_mismatch=true
-elif grep -Eq '^[[:space:]]*Compiling oneharness-core v[0-9]+\.[0-9]+\.[0-9]+[[:space:]]*$' "$output_file" &&
-  grep -Eq "could not compile \`oneharness\`" "$output_file"; then
+elif grep -Eq '^[[:space:]]*Compiling oneharness-core v[0-9]+\.[0-9]+\.[0-9]+[[:space:]]*$' "$plain_output" &&
+  grep -Eq "could not compile \`oneharness\`" "$plain_output"; then
   registry_core_mismatch=true
 fi
 

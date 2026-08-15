@@ -37,7 +37,13 @@ use crate::domain::signals::{FailureKind, Usage};
 /// newer reader. That is what lets an additive field ship without rewriting the
 /// shape of every record — and what makes each version constant below the exact
 /// gate for the one field it introduced.
-pub const SCHEMA_VERSION: &str = "1.5";
+pub const SCHEMA_VERSION: &str = "1.6";
+/// v1.6 introduced the two precondition failure kinds — `untrusted_directory`
+/// and `input_too_large`, the refusals a harness reaches before it makes the
+/// request at all. A v1.5 reader's `failure_kind` enum has neither value, so it
+/// refuses such a record rather than misreading it. One constant for both
+/// because they arrived together; a kind added later needs its own.
+pub const FIRST_PRECONDITION_SCHEMA_VERSION: &str = "1.6";
 /// v1.5 introduced the `session_not_found` failure kind — the refusal a harness
 /// returns when asked to continue a session its identity has never seen. A v1.4
 /// reader's `failure_kind` enum has no such value, so it refuses the record
@@ -62,13 +68,14 @@ pub(crate) const FIRST_EVENT_SCHEMA_VERSION: &str = "1.0";
 /// Every event-sourced history version this build reads, oldest first. Order is
 /// the contract: a field introduced in version N is legible to N and everything
 /// after it, which is what [`version_at_least`] answers.
-pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 6] = [
+pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 7] = [
     FIRST_EVENT_SCHEMA_VERSION,
     PREVIOUS_CURRENT_SCHEMA_VERSION,
     OBSERVED_TIMING_SCHEMA_VERSION,
     FIRST_ERROR_SCHEMA_VERSION,
     FIRST_CANCELLED_SCHEMA_VERSION,
     FIRST_SESSION_NOT_FOUND_SCHEMA_VERSION,
+    FIRST_PRECONDITION_SCHEMA_VERSION,
 ];
 
 fn version_rank(version: &str) -> Option<usize> {
@@ -802,8 +809,8 @@ impl HistoryRecord {
         HistoryRecord {
             // The oldest reader that can understand this record: only the shape a
             // record actually carries forces its version forward.
-            schema_version: if r.failure_kind == Some(FailureKind::SessionNotFound) {
-                FIRST_SESSION_NOT_FOUND_SCHEMA_VERSION
+            schema_version: if let Some(introduced) = gated_failure_kind_version(r.failure_kind) {
+                introduced
             } else if r.status == Status::Cancelled {
                 FIRST_CANCELLED_SCHEMA_VERSION
             } else if error.is_some() {
@@ -1343,13 +1350,35 @@ fn status_version_valid(schema_version: &str, status: Status) -> bool {
 }
 
 /// The same promise for `failure_kind`: a kind introduced after `schema_version`
-/// is refused rather than read back at a version whose enum never had it. Only
-/// [`FailureKind::SessionNotFound`] is gated — every other kind predates the
-/// oldest readable version. Stated here because the generated SDK schemas gate
-/// the same value the same way — one rule, two validators.
+/// is refused rather than read back at a version whose enum never had it. Three
+/// kinds are gated — [`FailureKind::SessionNotFound`] at v1.5 and the two
+/// precondition refusals at v1.6; every other kind predates the oldest readable
+/// version. Stated here because the generated SDK schemas gate the same values
+/// the same way — one rule, two validators.
 fn failure_kind_version_valid(schema_version: &str, failure_kind: Option<FailureKind>) -> bool {
-    failure_kind != Some(FailureKind::SessionNotFound)
-        || version_at_least(schema_version, FIRST_SESSION_NOT_FOUND_SCHEMA_VERSION)
+    match gated_failure_kind_version(failure_kind) {
+        Some(introduced) => version_at_least(schema_version, introduced),
+        None => true,
+    }
+}
+
+/// The version a gated `failure_kind` arrived in, or `None` for a kind every
+/// readable version already had. One table so the runtime reader and the
+/// generated SDK schemas ([`crate::sdk_schema`]) enumerate the same gates —
+/// a second list is how the two validators drift apart.
+#[must_use]
+pub fn gated_failure_kind_version(failure_kind: Option<FailureKind>) -> Option<&'static str> {
+    match failure_kind? {
+        FailureKind::SessionNotFound => Some(FIRST_SESSION_NOT_FOUND_SCHEMA_VERSION),
+        FailureKind::UntrustedDirectory | FailureKind::InputTooLarge => {
+            Some(FIRST_PRECONDITION_SCHEMA_VERSION)
+        }
+        FailureKind::Auth
+        | FailureKind::RateLimit
+        | FailureKind::ModelNotFound
+        | FailureKind::Quota
+        | FailureKind::ToolDeferred => None,
+    }
 }
 
 /// Whether a record's failure text agrees with the rest of the record: the field

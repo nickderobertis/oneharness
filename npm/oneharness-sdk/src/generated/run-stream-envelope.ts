@@ -86,7 +86,15 @@ export type ControlVerb = "interrupt";
  * the report, history) one definition to share instead of scattered string
  * literals.
  */
-export type FailureKind = "auth" | "rate_limit" | "model_not_found" | "quota" | "session_not_found" | "tool_deferred";
+export type FailureKind =
+  | "auth"
+  | "rate_limit"
+  | "model_not_found"
+  | "quota"
+  | "session_not_found"
+  | "tool_deferred"
+  | "untrusted_directory"
+  | "input_too_large";
 /**
  * How a harness emits its result, which decides how `text` is extracted.
  *
@@ -360,7 +368,8 @@ export interface FallbackReport {
   /**
    * The candidates fallen through because they could not run the task at all,
    * in priority order, each with why (`not-installed`, `spawn-error`, `auth`,
-   * `quota`, and — on a model fan-out — `model-not-found` / `rate-limit`; see
+   * `quota`, `session-not-found`, `untrusted-directory`, `input-too-large`,
+   * and — on a model fan-out — `model-not-found` / `rate-limit`; see
    * [`crate::domain::fallback::startup_failure_reason`]).
    */
   fell_through: FallThrough[];
@@ -376,11 +385,25 @@ export interface FallbackReport {
  */
 export interface FallThrough {
   /**
+   * This candidate's own account of why it could not run — the provider's
+   * machine-readable refusal verbatim when it named one (Codex's
+   * `{"input_error_code":"input_too_large",…}`), else the run's normalized
+   * `error` text. `null` when the candidate said nothing beyond its status.
+   *
+   * The `reason` above is oneharness's classification and stays a short,
+   * closed token; this is the cause underneath it, carried up so a supervisor
+   * reading only the fallback block never has to re-parse a fallen-through
+   * candidate's raw stdout to learn what the provider already said. Added in
+   * report schema `0.8`.
+   */
+  detail: string | null;
+  /**
    * Canonical harness id.
    */
   harness: string;
   /**
    * Short reason token (`not-installed` / `spawn-error` / `auth` / `quota` /
+   * `session-not-found` / `untrusted-directory` / `input-too-large` /
    * `model-not-found` / `rate-limit`).
    */
   reason: string;

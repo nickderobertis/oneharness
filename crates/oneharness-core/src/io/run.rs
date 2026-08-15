@@ -3375,6 +3375,14 @@ fn run_fallback(
 /// through, or name it as the harness that ran. Returns whether the chain should
 /// try the next candidate.
 ///
+/// The record carries the candidate's own `error` alongside oneharness's reason
+/// token, so the cause travels with the classification: for a precondition
+/// refusal that is the provider's machine-readable object (see
+/// [`refusal_error`]), and for a missing binary or a spawn fault it is the
+/// diagnostic the result already holds. Copied from the finished result rather
+/// than re-read out of stdout — the layer above should never have to rediscover
+/// something this run already classified.
+///
 /// Both drivers call this — the buffered [`run_fallback`] and the streaming
 /// [`drive_plan_sequentially`] — on the same normalized [`RunResult`], so a streamed chain
 /// and a buffered chain cannot select different candidates.
@@ -3394,6 +3402,7 @@ fn fallback_step(
             fell_through.push(FallThrough {
                 harness: result.harness.clone(),
                 reason: reason.to_string(),
+                detail: result.error.clone(),
             });
             true
         }
@@ -3754,6 +3763,7 @@ fn executed_result(
         (Some(_), _, _) => Some(signals::FailureReading {
             kind: signals::FailureKind::ToolDeferred,
             source: "stdout".to_string(),
+            detail: None,
         }),
         (None, Some(failure), _) => Some(failure),
         (None, None, Status::Nonzero) => signals::classify_harness_failure(
@@ -3763,9 +3773,9 @@ fn executed_result(
         ),
         (None, None, _) => None,
     };
-    let (failure_kind, failure_kind_source) = match failure {
-        Some(f) => (Some(f.kind), Some(f.source)),
-        None => (None, None),
+    let (failure_kind, failure_kind_source, failure_detail) = match failure {
+        Some(f) => (Some(f.kind), Some(f.source), f.detail),
+        None => (None, None, None),
     };
     // A deferral produced no answer, so surface an actionable `error` in place of
     // the harness's (absent) one — even though the process exited 0.
@@ -3775,7 +3785,15 @@ fn executed_result(
             .error
             .as_ref()
             .map(|why| format!("harness `{}` hit its oneharness deadline: {why}", spec.id)),
-        None => capture.error.clone(),
+        // A refusal the provider stated in machine-readable terms says more than
+        // the exit code does, and a non-zero run has no oneharness-generated
+        // `error` of its own to displace. Carrying it here is what puts the cause
+        // in front of the caller — and, through the fallback block, in front of a
+        // supervisor — instead of leaving it in stdout to be rediscovered.
+        None => failure_detail
+            .as_ref()
+            .map(|detail| refusal_error(spec.id, detail))
+            .or_else(|| capture.error.clone()),
     };
     RunResult {
         harness: spec.id.to_string(),
@@ -3808,6 +3826,16 @@ fn executed_result(
         stderr: capture.stderr.clone(),
         error,
     }
+}
+
+/// The `error` for a refusal the provider stated in machine-readable terms:
+/// oneharness names the harness that refused, then quotes the provider's own
+/// object **verbatim** (`{"input_error_code":"input_too_large","max_chars":…}`).
+/// Quoted rather than paraphrased because a caller acts on the code and the
+/// numbers — shard the input to `max_chars`, pick a candidate with the room —
+/// and a rewording would be oneharness inventing a contract the provider owns.
+fn refusal_error(harness_id: &str, detail: &str) -> String {
+    format!("harness `{harness_id}` refused the request before running it: {detail}")
 }
 
 /// The actionable `error` for a deferred-tool dead-end (issue #1114): the harness

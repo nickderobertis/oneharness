@@ -23,7 +23,19 @@ use crate::domain::usage::UtcInstant;
 /// `sync`, and `config` — so one number describes the whole surface; the history
 /// records carry their own (`domain::history::SCHEMA_VERSION`).
 ///
-/// `0.7` adds the `session_not_found` [`FailureKind`] — the refusal a harness
+/// `0.8` adds the two **precondition** [`FailureKind`]s — `untrusted_directory`
+/// and `input_too_large`, the refusals a harness reaches before it makes the
+/// request at all — with the `"untrusted-directory"` / `"input-too-large"`
+/// reasons a fallback run now reports for a candidate it routes around, and the
+/// `detail` on each [`FallThrough`]: the provider's own machine-readable account
+/// of why that candidate could not run (Codex's `input_error_code` object),
+/// carried up instead of left in the raw stdout for a consumer to rediscover.
+/// Purely additive: every 0.7 field keeps its name, type, and meaning, and
+/// `detail` is `null` for a candidate that said nothing. The new *enum values*
+/// are why the bump matters, since a consumer that exhaustively matches
+/// `failure_kind` learns from the version that two more now exist.
+///
+/// `0.7` added the `session_not_found` [`FailureKind`] — the refusal a harness
 /// returns when asked to continue a session its identity has never seen — and,
 /// with it, the `"session-not-found"` reason a fallback run reports for a
 /// candidate it routed around. Purely additive: every 0.6 field keeps its name,
@@ -47,7 +59,7 @@ use crate::domain::usage::UtcInstant;
 ///
 /// `0.4` added the `config` report's `stream` field (the layered `--stream`
 /// value, with its provenance).
-pub const SCHEMA_VERSION: &str = "0.7";
+pub const SCHEMA_VERSION: &str = "0.8";
 
 /// How a harness emits its result, which decides how `text` is extracted.
 ///
@@ -604,7 +616,8 @@ pub struct FallbackReport {
     pub ran: Option<String>,
     /// The candidates fallen through because they could not run the task at all,
     /// in priority order, each with why (`not-installed`, `spawn-error`, `auth`,
-    /// `quota`, and — on a model fan-out — `model-not-found` / `rate-limit`; see
+    /// `quota`, `session-not-found`, `untrusted-directory`, `input-too-large`,
+    /// and — on a model fan-out — `model-not-found` / `rate-limit`; see
     /// [`crate::domain::fallback::startup_failure_reason`]).
     pub fell_through: Vec<FallThrough>,
 }
@@ -615,8 +628,21 @@ pub struct FallThrough {
     /// Canonical harness id.
     pub harness: String,
     /// Short reason token (`not-installed` / `spawn-error` / `auth` / `quota` /
+    /// `session-not-found` / `untrusted-directory` / `input-too-large` /
     /// `model-not-found` / `rate-limit`).
     pub reason: String,
+    /// This candidate's own account of why it could not run — the provider's
+    /// machine-readable refusal verbatim when it named one (Codex's
+    /// `{"input_error_code":"input_too_large",…}`), else the run's normalized
+    /// `error` text. `null` when the candidate said nothing beyond its status.
+    ///
+    /// The `reason` above is oneharness's classification and stays a short,
+    /// closed token; this is the cause underneath it, carried up so a supervisor
+    /// reading only the fallback block never has to re-parse a fallen-through
+    /// candidate's raw stdout to learn what the provider already said. Added in
+    /// report schema `0.8`.
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 /// Metadata for a same-prefix batch run (one harness, N prompts sharing a

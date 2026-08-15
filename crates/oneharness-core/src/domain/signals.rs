@@ -117,9 +117,39 @@ pub enum FailureKind {
     /// clean-exit run did no useful work (Claude Code bridge deployments; issue
     /// #1114). The only kind that can appear on a `status: ok` run.
     ToolDeferred,
+    /// The harness refused to operate in the directory it was pointed at
+    /// (Codex's `Not inside a trusted directory and --skip-git-repo-check was
+    /// not specified`, which exits within a few hundred milliseconds). A
+    /// **precondition** refusal like [`FailureKind::InputTooLarge`]: the check
+    /// runs before the request is, so nothing of the task was attempted and
+    /// another identity — one whose trust list covers the directory — can still
+    /// run it.
+    UntrustedDirectory,
+    /// The request exceeded the input size the provider accepts and was refused
+    /// before the model was called (Codex reports the machine-readable
+    /// `input_error_code: input_too_large` with `max_chars`/`actual_chars`). The
+    /// other precondition refusal: no tokens were spent, and a candidate with a
+    /// larger window can still run the task.
+    InputTooLarge,
 }
 
 impl FailureKind {
+    /// Every kind, for the callers that must reason over the closed set — the
+    /// history version gates and the schema generator that mirrors them. Pinned
+    /// against the enum's own generated schema (`sdk_schema`), so a kind added
+    /// without being listed here fails the gate rather than shipping an SDK that
+    /// accepts it at a version whose reader refuses it.
+    pub const ALL: [FailureKind; 8] = [
+        FailureKind::Auth,
+        FailureKind::RateLimit,
+        FailureKind::ModelNotFound,
+        FailureKind::Quota,
+        FailureKind::SessionNotFound,
+        FailureKind::ToolDeferred,
+        FailureKind::UntrustedDirectory,
+        FailureKind::InputTooLarge,
+    ];
+
     /// The snake_case token this kind serializes to — for the few call sites
     /// (stderr diagnostics, the fallback reason map) that need the raw string.
     pub fn as_str(self) -> &'static str {
@@ -130,15 +160,42 @@ impl FailureKind {
             FailureKind::Quota => "quota",
             FailureKind::SessionNotFound => "session_not_found",
             FailureKind::ToolDeferred => "tool_deferred",
+            FailureKind::UntrustedDirectory => "untrusted_directory",
+            FailureKind::InputTooLarge => "input_too_large",
         }
     }
 }
 
-/// A classified failure reason plus where it was read from (`stderr`/`stdout`).
+/// A classified failure reason plus where it was read from (`stderr`/`stdout`)
+/// and, when the harness stated one, the provider's own machine-readable
+/// account of it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FailureReading {
     pub kind: FailureKind,
     pub source: String,
+    /// The provider's own statement of the cause, verbatim — Codex's
+    /// `{"input_error_code":"input_too_large","max_chars":…,"actual_chars":…}`.
+    /// `None` for every reading whose text carried no machine-readable detail,
+    /// which is most of them. Never paraphrased: a caller that acts on the code
+    /// (shard the input, pick a larger window) needs the provider's spelling,
+    /// and one that only displays it loses nothing.
+    pub detail: Option<String>,
+}
+
+/// A classified refusal before it is tagged with the stream it was read from —
+/// what every text classifier below returns. Separate from [`FailureReading`]
+/// because the source is [`scan_failure`]'s to add, not each classifier's.
+#[derive(Debug, Clone, PartialEq)]
+struct Refusal {
+    kind: FailureKind,
+    detail: Option<String>,
+}
+
+impl Refusal {
+    /// A refusal read from prose alone, with nothing machine-readable in it.
+    fn plain(kind: FailureKind) -> Self {
+        Refusal { kind, detail: None }
+    }
 }
 
 /// Adapter-specific failure vocabulary understood by the signal classifier.
@@ -318,7 +375,9 @@ pub fn extract_session(stdout: &str) -> Option<String> {
 /// broken request (unknown model). It never changes exit-code semantics and is
 /// `None` when no known signal matches.
 pub fn classify_failure(stdout: &str, stderr: &str) -> Option<FailureReading> {
-    scan_failure(stdout, stderr, match_failure)
+    scan_failure(stdout, stderr, |text| {
+        match_failure(text).map(Refusal::plain)
+    })
 }
 
 /// The first reading `read` yields over stderr then stdout, tagged with the
@@ -328,14 +387,15 @@ pub fn classify_failure(stdout: &str, stderr: &str) -> Option<FailureReading> {
 fn scan_failure(
     stdout: &str,
     stderr: &str,
-    read: impl Fn(&str) -> Option<FailureKind>,
+    read: impl Fn(&str) -> Option<Refusal>,
 ) -> Option<FailureReading> {
     [("stderr", stderr), ("stdout", stdout)]
         .into_iter()
         .find_map(|(source, text)| {
-            read(text).map(|kind| FailureReading {
-                kind,
+            read(text).map(|refusal| FailureReading {
+                kind: refusal.kind,
                 source: source.to_string(),
+                detail: refusal.detail,
             })
         })
 }
@@ -353,9 +413,10 @@ fn scan_failure(
 ///
 /// The adapter signal is checked **before** the generic vocabulary — see
 /// [`harness_quota_failure`] for why that order is load-bearing — and the
-/// unknown-session refusal ([`unknown_session_rejection`]) sits between them, so
-/// a rejection that names a missing conversation is read as one rather than
-/// falling to a coarser match.
+/// precondition refusals ([`precondition_refusal`]) and the unknown-session one
+/// ([`unknown_session_rejection`]) sit between them, so a rejection that names
+/// exactly what it refused is read as that rather than falling to a coarser
+/// match.
 pub fn classify_harness_failure(
     dialect: FailureDialect,
     stdout: &str,
@@ -366,10 +427,87 @@ pub fn classify_harness_failure(
     // evidence has to come from the transcript, not from the matched text.
     let worked = stdout_reports_work(stdout);
     scan_failure(stdout, stderr, |text| {
-        harness_quota_failure(dialect, text, worked)
+        harness_quota_failure(dialect, text, worked).map(Refusal::plain)
     })
-    .or_else(|| scan_failure(stdout, stderr, unknown_session_rejection))
+    .or_else(|| scan_failure(stdout, stderr, precondition_refusal))
+    .or_else(|| {
+        scan_failure(stdout, stderr, |text| {
+            unknown_session_rejection(text).map(Refusal::plain)
+        })
+    })
     .or_else(|| classify_failure(stdout, stderr))
+}
+
+/// A refusal a harness reaches **before the request is made at all** — its own
+/// precondition check, failed. Two are recognized, both read from real captures:
+///
+/// - `Not inside a trusted directory and --skip-git-repo-check was not
+///   specified` — Codex declining to operate in the cwd it was pointed at. It
+///   exits within a few hundred milliseconds, having called no model.
+/// - `Input exceeds the maximum length of <n> characters` with the
+///   machine-readable `{"input_error_code":"input_too_large","max_chars":…,
+///   "actual_chars":…}` beside it — Codex refusing an over-long turn before the
+///   model is called.
+///
+/// Both satisfy [`startup_failure_reason`][sfr]'s own criterion — the candidate
+/// *could not run the task at all* — so both fall through to the next candidate,
+/// which may well have the room or the trust the refused one lacked. Left
+/// unclassified they were plain non-zero task failures that stopped the chain
+/// with healthy candidates untried.
+///
+/// Dialect-agnostic, on [`unknown_session_rejection`]'s reasoning: each phrase
+/// says only the thing it says, whichever CLI printed it, and no harness emits
+/// another's wording. Over-reading is bounded by the rule that bounds every
+/// fall-through kind — a candidate with work evidence never falls through
+/// ([`crate::domain::fallback::RunWork`]) — so an agent that merely *wrote* one
+/// of these sentences mid-run cannot hand its task on.
+///
+/// [sfr]: crate::domain::fallback::startup_failure_reason
+fn precondition_refusal(text: &str) -> Option<Refusal> {
+    let lower = text.to_lowercase();
+    if lower.contains("not inside a trusted directory") {
+        return Some(Refusal::plain(FailureKind::UntrustedDirectory));
+    }
+    // The provider's own code is the primary signal and the prose is the
+    // fallback, not the other way round: the sentence carries a formatted limit
+    // that will be reworded long before the code is renamed.
+    if lower.contains(INPUT_TOO_LARGE_CODE) || lower.contains("input exceeds the maximum length") {
+        return Some(Refusal {
+            kind: FailureKind::InputTooLarge,
+            detail: provider_error_data(text),
+        });
+    }
+    None
+}
+
+/// Codex's machine-readable input-size code, as it spells it.
+const INPUT_TOO_LARGE_CODE: &str = "input_too_large";
+
+/// The most of a provider's own error data that is carried into the report.
+/// The observed object is ~80 bytes; this is headroom, and it is a bound rather
+/// than a formality because the text it reads is a harness's raw output.
+const MAX_DETAIL_BYTES: usize = 512;
+
+/// The provider's machine-readable error object embedded in `text`, verbatim —
+/// the `{"input_error_code":"input_too_large","max_chars":1048576,
+/// "actual_chars":1168716}` Codex prints beside its refusal sentence. `None`
+/// when the text carries no such object.
+///
+/// It is not on a line of its own (the capture reads `… (code -32602), data:
+/// {…}`), so it cannot be recovered by [`json_candidates`]; the span is taken
+/// from the brace before the key to the first brace after it. That assumes a
+/// **flat** object, which every observed payload is — and a nested one would
+/// end the span early, so the parse below rejects it and the caller gets `None`
+/// rather than a truncated claim. The span is validated as JSON and handed back
+/// as the provider wrote it, never re-serialized.
+fn provider_error_data(text: &str) -> Option<String> {
+    let at = text.find("\"input_error_code\"")?;
+    let start = text[..at].rfind('{')?;
+    let rest = &text[start..];
+    let end = rest.find('}')? + 1;
+    let object = rest.get(..end).filter(|o| o.len() <= MAX_DETAIL_BYTES)?;
+    serde_json::from_str::<Value>(object).ok()?;
+    Some(object.to_string())
 }
 
 /// A harness's refusal to continue a session it cannot find — the
@@ -508,6 +646,7 @@ pub fn detect_harness_provider_failure(
         Some(FailureReading {
             kind,
             source: "stdout".to_string(),
+            detail: None,
         })
     })
 }
@@ -968,19 +1107,17 @@ mod tests {
     fn failure_kind_serializes_to_its_snake_case_token() {
         // The wire contract: the enum must serialize to exactly the strings a
         // consumer reads in `failure_kind`, and `as_str` must agree with serde.
-        for kind in [
-            FailureKind::Auth,
-            FailureKind::RateLimit,
-            FailureKind::ModelNotFound,
-            FailureKind::Quota,
-            FailureKind::SessionNotFound,
-            FailureKind::ToolDeferred,
-        ] {
+        for kind in FailureKind::ALL {
             let json = serde_json::to_string(&kind).unwrap();
             assert_eq!(json, format!("\"{}\"", kind.as_str()));
         }
         assert_eq!(FailureKind::ToolDeferred.as_str(), "tool_deferred");
         assert_eq!(FailureKind::SessionNotFound.as_str(), "session_not_found");
+        assert_eq!(
+            FailureKind::UntrustedDirectory.as_str(),
+            "untrusted_directory"
+        );
+        assert_eq!(FailureKind::InputTooLarge.as_str(), "input_too_large");
     }
 
     #[test]
@@ -1008,6 +1145,85 @@ mod tests {
                 .unwrap_or_else(|| panic!("unclassified: {stderr}"));
             assert_eq!(got.kind, FailureKind::SessionNotFound, "{stderr}");
             assert_eq!(got.source, "stderr", "{stderr}");
+        }
+    }
+
+    #[test]
+    fn a_precondition_refusal_is_classified_and_keeps_the_providers_own_code() {
+        // Both captures are verbatim from the real CLI. Codex refuses an
+        // untrusted cwd within a few hundred milliseconds and an over-long input
+        // before the model is called; each exits non-zero with an empty stdout,
+        // so the reading comes from stderr.
+        let trust = classify_harness_failure(
+            FailureDialect::Codex,
+            "",
+            "Not inside a trusted directory and --skip-git-repo-check was not specified",
+        )
+        .expect("the trust refusal must be classified");
+        assert_eq!(trust.kind, FailureKind::UntrustedDirectory);
+        assert_eq!(trust.source, "stderr");
+        // Prose only — nothing machine-readable is invented for it.
+        assert_eq!(trust.detail, None);
+
+        let over = classify_harness_failure(
+            FailureDialect::Codex,
+            "",
+            "turn/start failed: Input exceeds the maximum length of 1048576 characters. \
+             (code -32602), data: {\"input_error_code\":\"input_too_large\",\
+             \"max_chars\":1048576,\"actual_chars\":1168716}",
+        )
+        .expect("the input-size refusal must be classified");
+        assert_eq!(over.kind, FailureKind::InputTooLarge);
+        // The provider's object, exactly as it wrote it: a caller shards against
+        // `max_chars`, so a paraphrase would be oneharness inventing the numbers.
+        assert_eq!(
+            over.detail.as_deref(),
+            Some(
+                "{\"input_error_code\":\"input_too_large\",\"max_chars\":1048576,\
+                 \"actual_chars\":1168716}"
+            )
+        );
+    }
+
+    #[test]
+    fn an_input_size_refusal_without_a_data_object_is_still_classified() {
+        // The sentence alone still says the request was refused unmade; the
+        // detail is absent rather than guessed at.
+        let got = classify_harness_failure(
+            FailureDialect::Codex,
+            "",
+            "Error: Input exceeds the maximum length of 1048576 characters.",
+        )
+        .expect("the prose alone classifies");
+        assert_eq!(got.kind, FailureKind::InputTooLarge);
+        assert_eq!(got.detail, None);
+        // ...and a data object that is not parseable JSON yields no detail
+        // either, rather than a truncated span presented as the provider's.
+        let ragged = classify_harness_failure(
+            FailureDialect::Codex,
+            "",
+            "data: {\"input_error_code\":\"input_too_large\", \"max_chars\": }",
+        )
+        .expect("the code alone classifies");
+        assert_eq!(ragged.kind, FailureKind::InputTooLarge);
+        assert_eq!(ragged.detail, None);
+    }
+
+    #[test]
+    fn an_ordinary_failure_is_not_read_as_a_precondition_refusal() {
+        // The phrases are specific on purpose: a run that merely talks about
+        // directories or input size stays unclassified, so the chain stops at it
+        // as the real failure it is.
+        for stderr in [
+            "the directory is not writable",
+            "trusted certificate missing",
+            "input file too large for the editor",
+        ] {
+            assert_eq!(
+                classify_harness_failure(FailureDialect::Codex, "", stderr),
+                None,
+                "{stderr} must not read as a precondition refusal"
+            );
         }
     }
 

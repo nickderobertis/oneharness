@@ -127,6 +127,19 @@ impl RunWork {
 ///   would be behavior no harness can produce. It belongs with
 ///   `auth` and `quota` for the same reason: the *task* is fine and the next
 ///   candidate can still do it.
+/// - [`Status::Nonzero`] with `failure_kind == "untrusted_directory"` →
+///   `"untrusted-directory"`, and with `"input_too_large"` →
+///   `"input-too-large"`: the two **precondition** refusals
+///   ([`signals::precondition_refusal`][pre]), where the harness's own check
+///   failed before the request was made — no model was called, no tokens spent.
+///   Both meet this function's criterion exactly, and both are things another
+///   candidate may not fail: a different identity's trust list may cover the
+///   directory, and a different model's window may hold the input. Non-zero
+///   only, for [`FailureKind::SessionNotFound`]'s reason: both refusals were
+///   captured off a CLI that exited 1, and a clean-exit arm would be behavior no
+///   harness has been observed producing.
+///
+/// [pre]: crate::domain::signals
 ///
 /// Everything else is a **real run**, so `None`: a clean [`Status::Ok`]; a
 /// [`Status::Timeout`] (a genuine, if slow, run — falling through it would let a
@@ -167,6 +180,8 @@ pub fn startup_failure_reason(
             Some("quota")
         }
         (Status::Nonzero, Some(FailureKind::SessionNotFound)) => Some("session-not-found"),
+        (Status::Nonzero, Some(FailureKind::UntrustedDirectory)) => Some("untrusted-directory"),
+        (Status::Nonzero, Some(FailureKind::InputTooLarge)) => Some("input-too-large"),
         (Status::Skipped, _) => Some("not-installed"),
         (Status::SpawnError, _) => Some("spawn-error"),
         (Status::Nonzero, _) => match failure_kind {
@@ -298,6 +313,32 @@ mod tests {
             ),
             None
         );
+        // The precondition refusals: the harness's own check failed before the
+        // request was made, so the task is untouched and the next candidate —
+        // which may hold the trust, or the room — gets it.
+        for (kind, reason) in [
+            (FailureKind::UntrustedDirectory, "untrusted-directory"),
+            (FailureKind::InputTooLarge, "input-too-large"),
+        ] {
+            assert_eq!(
+                startup_failure_reason(Status::Nonzero, Some(kind), false, RunWork::None),
+                Some(reason)
+            );
+            assert!(is_startup_failure(
+                Status::Nonzero,
+                Some(kind),
+                false,
+                RunWork::None
+            ));
+            // Non-zero only, like `session_not_found`: both refusals were
+            // captured off a CLI that exited 1, and a clean-exit arm would be
+            // behavior no harness has been observed producing.
+            assert_eq!(
+                startup_failure_reason(Status::Ok, Some(kind), false, RunWork::None),
+                None,
+                "{kind:?} on a clean exit is not a refusal any CLI has produced"
+            );
+        }
     }
 
     #[test]
@@ -452,6 +493,12 @@ mod tests {
             (Status::Nonzero, Some(FailureKind::Quota), false),
             (Status::Ok, Some(FailureKind::Quota), false),
             (Status::Nonzero, Some(FailureKind::SessionNotFound), false),
+            (
+                Status::Nonzero,
+                Some(FailureKind::UntrustedDirectory),
+                false,
+            ),
+            (Status::Nonzero, Some(FailureKind::InputTooLarge), false),
             (Status::Nonzero, Some(FailureKind::RateLimit), true),
             (Status::Nonzero, Some(FailureKind::ModelNotFound), true),
             (Status::Skipped, None, false),

@@ -299,7 +299,7 @@ fn every_report_carries_the_shared_schema_version() {
     // so a consumer reads any of them with one number — and a bump must move
     // every surface at once. Pinned literally on purpose: asserting against the
     // constant would pass through a bump nobody intended.
-    let version = "0.7";
+    let version = "0.8";
     let printed = run(
         &[
             "run",
@@ -342,7 +342,7 @@ fn list_describes_every_harness() {
     let output = run(&["list"], &[]);
     assert!(output.status.success());
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.7");
+    assert_eq!(value["schema_version"], "0.8");
     let ids: Vec<&str> = value["harnesses"]
         .as_array()
         .unwrap()
@@ -2197,6 +2197,105 @@ fn every_sourced_unknown_session_refusal_falls_through_its_own_chain() {
         );
         assert_eq!(value["fallback"]["ran"], tail, "{first}");
         assert_eq!(value["results"][1]["text"], "served-by-codex", "{first}");
+    }
+}
+
+#[test]
+fn a_precondition_refusal_falls_through_carrying_the_providers_own_cause() {
+    // The two refusals a harness reaches BEFORE it makes the request: codex
+    // declining an untrusted directory (~150ms, no model call) and refusing an
+    // over-long input outright. Both are "could not run the task at all", so a
+    // chain must route around them to a candidate that may well have the trust
+    // or the room — and the provider's machine-readable cause must travel with
+    // the verdict, since a supervisor reading only the fallback block is exactly
+    // who has to act on it (shard the input, widen the trust list).
+    let mock = mock_bin().display().to_string();
+    let served =
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"served-by-codex"}}"#;
+    // Both refusals verbatim from real captures.
+    let cases = [
+        (
+            "untrusted",
+            "Not inside a trusted directory and --skip-git-repo-check was not specified",
+            "untrusted-directory",
+            "untrusted_directory",
+            None,
+        ),
+        (
+            "too-large",
+            "turn/start failed: Input exceeds the maximum length of 1048576 characters. \
+             (code -32602), data: {\"input_error_code\":\"input_too_large\",\
+             \"max_chars\":1048576,\"actual_chars\":1168716}",
+            "input-too-large",
+            "input_too_large",
+            Some(
+                "{\"input_error_code\":\"input_too_large\",\"max_chars\":1048576,\
+                 \"actual_chars\":1168716}",
+            ),
+        ),
+    ];
+
+    for (tag, refusal, reason, kind, detail) in cases {
+        let project = format!(
+            r#"
+            harnesses = ["claude-code", "codex"]
+            run_mode = "fallback"
+
+            [harness.claude-code]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "1", MOCK_STDERR = '{refusal}' }}
+
+            [harness.codex]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "0", MOCK_STDOUT = '{served}' }}
+            "#
+        );
+        let fx = ConfigFixture::new(&format!("precondition-{tag}"), &project, "");
+        let output = run_with_config(
+            &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+            &[],
+            &fx.user_config(),
+        );
+        assert!(
+            output.status.success(),
+            "{tag}: exit {:?}, stderr {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value = json_stdout(&output);
+        assert_eq!(value["results"][0]["failure_kind"], kind, "{tag}");
+        assert_eq!(
+            value["fallback"]["fell_through"][0]["reason"], reason,
+            "{tag}"
+        );
+        assert_eq!(value["fallback"]["ran"], "codex", "{tag}");
+        assert_eq!(value["results"][1]["text"], "served-by-codex", "{tag}");
+        match detail {
+            // The provider named the cause in machine-readable terms, so both the
+            // refused result and the fall-through record carry it verbatim.
+            Some(data) => {
+                let carried = value["fallback"]["fell_through"][0]["detail"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                assert!(
+                    carried.contains(data),
+                    "{tag}: fell through with `{carried}`"
+                );
+                assert!(
+                    value["results"][0]["error"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains(data),
+                    "{tag}: the refused result must state the cause too"
+                );
+            }
+            // Prose only: nothing is invented to fill the field.
+            None => assert!(
+                value["fallback"]["fell_through"][0]["detail"].is_null(),
+                "{tag}: a refusal with no machine-readable cause must carry none"
+            ),
+        }
     }
 }
 
@@ -5242,7 +5341,7 @@ fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
     // The report is still the contract: a cancelled run is a value a consumer
     // reads, not a process that vanished.
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.7");
+    assert_eq!(value["schema_version"], "0.8");
     let result = &value["results"][0];
     assert_eq!(result["status"], "cancelled");
     assert_eq!(result["exit_code"], Value::Null);
@@ -8027,7 +8126,7 @@ fn config_command_shows_values_with_sources() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.7");
+    assert_eq!(value["schema_version"], "0.8");
     assert_eq!(value["config_files"].as_array().unwrap().len(), 2);
 
     // The project file wins for model and is named as the source...
@@ -13803,7 +13902,7 @@ fn history_watch_streams_stdout_observed_event_at_the_current_version() {
     // Event lines are written by the current writer and read live, so they
     // always declare the current version (unlike a run record, whose version is
     // the oldest reader that can understand the fields it carries).
-    assert_eq!(envelope["line"]["schema_version"], "1.5");
+    assert_eq!(envelope["line"]["schema_version"], "1.6");
     assert_eq!(
         envelope["line"]["event"]["timing_source"],
         "stdout_observed"
@@ -20247,7 +20346,7 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
     let output = child.wait_with_output().expect("run did not finish");
     assert!(output.status.success(), "{output:?}");
     let report: Value = serde_json::from_slice(&output.stdout).expect("run report was not JSON");
-    assert_eq!(report["schema_version"], "0.7");
+    assert_eq!(report["schema_version"], "0.8");
     assert_eq!(report["control"]["mechanism"], "claude-control-request");
     assert_eq!(report["control"]["socket"], socket.display().to_string());
     let interrupts = report["control"]["interrupts"].as_array().unwrap();

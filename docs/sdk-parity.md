@@ -426,8 +426,8 @@ caller rather than being dropped.
 
 | Output | Fields on the document | All | Rust core | Python | TypeScript |
 | --- | --- | --- | --- | --- | --- |
-| `run_report` | `batch`, `bypass_permissions`, `config_files`, `control`, `dry_run`, `fallback`, `fork`, `history_file`, `mock_rules`, `model`, `models`, `oneharness_version`, `permission_mode`, `prompt`, `results`, `resume`, `schema`, `schema_max_retries`, `schema_version`, `session`, `spy_file` | 82 | yes | yes | yes |
-| `run_stream_envelope` | `event`, `report`, `type` | 85 | yes | yes | yes |
+| `run_report` | `batch`, `bypass_permissions`, `config_files`, `control`, `dry_run`, `fallback`, `fork`, `history_file`, `mock_rules`, `model`, `models`, `oneharness_version`, `permission_mode`, `prompt`, `results`, `resume`, `schema`, `schema_max_retries`, `schema_version`, `session`, `spy_file` | 83 | yes | yes | yes |
+| `run_stream_envelope` | `event`, `report`, `type` | 86 | yes | yes | yes |
 | `list_report` | `harnesses`, `schema_version` | 36 | yes | yes | yes |
 | `detect_report` | `detected`, `schema_version` | 7 | yes | yes | yes |
 | `config_report` | `all`, `allowed_tools`, `bypass`, `config_files`, `denied_tools`, `env`, `exclude`, `harness`, `harnesses`, `history`, `history_dir`, `history_labels`, `hooks`, `max_parallel`, `mode`, `model`, `models`, `output_format`, `reasoning`, `require_available`, `run_mode`, `schema_file`, `schema_max_retries`, `schema_version`, `stream`, `system`, `timeout` | 39 | yes | yes | yes |

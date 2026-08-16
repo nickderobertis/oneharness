@@ -17,8 +17,9 @@ cd "$(dirname "$0")/.."
 
 core_output="$(mktemp)"
 output_file="$(mktemp)"
+plain_output="$(mktemp)"
 fetch_output="$(mktemp)"
-trap 'rm -f "$core_output" "$output_file" "$fetch_output"' EXIT
+trap 'rm -f "$core_output" "$output_file" "$plain_output" "$fetch_output"' EXIT
 
 if ! cargo package --locked --allow-dirty --manifest-path crates/oneharness-core/Cargo.toml >"$core_output" 2>&1; then
   cat "$core_output" >&2
@@ -39,29 +40,51 @@ reject() {
   exit 1
 }
 
-# Three registry shapes, and the first means the opposite of the other two. A
+# Classify against a copy stripped of terminal formatting, and report the
+# original. Cargo colours this capture under `CARGO_TERM_COLOR=always`, which
+# `actions-rust-lang/setup-rust-toolchain` exports — so CI reads escapes a local
+# run never sees, and they land where the anchored pattern below expects the
+# status verb.
+esc=$'\033'
+sed -E "s/${esc}\[[0-9;]*[a-zA-Z]//g" "$output_file" >"$plain_output"
+
+# Four registry shapes, and the first means the opposite of the other three. A
 # version Cargo cannot select is a core release that has not reached crates.io
 # yet; a core it selected and then failed to compile — or whose published
-# FEATURES the binary's forwarding does not find — is a source drift that a bump
-# has to carry. Only the first may be waved through on the strength of a tag.
+# FEATURES the binary's forwarding does not find, or whose published API the
+# binary's own source calls for — is a source drift that a bump has to carry.
+# Only the first may be waved through on the strength of a tag.
 #
 # The feature arm is its own: the binary forwards `mock-harness` to
 # `oneharness-core/mock-harness`, and a published core without that feature
 # fails before any source is unpacked, worded "for `oneharness-core`" rather
 # than "for the requirement", so neither other arm sees it.
+#
+# The last arm catches a core API the BINARY's own source calls: rustc names no
+# registry path there, so the arm above cannot see it. Its signal is instead
+# that the core Cargo compiled came from the REGISTRY, which its `Compiling`
+# line says by carrying no source path — a path-resolved core means the
+# workspace's own code broke. That cannot alone tell this from a binary-only
+# compile error, and need not: every shape here is waved through only while a
+# release-worthy core change is pending, and a binary that fails against the
+# WORKSPACE core is already red in `build`/`check`, which run first in both
+# entry points.
 core_version_unpublished=false
 registry_core_mismatch=false
-if grep -Eq "failed to select a version for the requirement \`oneharness-core" "$output_file" &&
-  grep -Eq 'candidate versions found which did(n.t| not) match:' "$output_file" &&
-  grep -Fq 'location searched: crates.io index' "$output_file" &&
-  grep -Eq 'required by package `oneharness v[0-9]+\.[0-9]+\.[0-9]+' "$output_file"; then
+if grep -Eq "failed to select a version for the requirement \`oneharness-core" "$plain_output" &&
+  grep -Eq 'candidate versions found which did(n.t| not) match:' "$plain_output" &&
+  grep -Fq 'location searched: crates.io index' "$plain_output" &&
+  grep -Eq 'required by package `oneharness v[0-9]+\.[0-9]+\.[0-9]+' "$plain_output"; then
   core_version_unpublished=true
   registry_core_mismatch=true
-elif grep -Eq 'oneharness-core-[0-9]+\.[0-9]+\.[0-9]+[/\\]' "$output_file" &&
-  grep -Eq "could not compile \`oneharness\`" "$output_file"; then
+elif grep -Eq 'oneharness-core-[0-9]+\.[0-9]+\.[0-9]+[/\\]' "$plain_output" &&
+  grep -Eq "could not compile \`oneharness\`" "$plain_output"; then
   registry_core_mismatch=true
-elif grep -Eq "failed to select a version for \`oneharness-core\`" "$output_file" &&
-  grep -Eq "depends on \`oneharness-core\`, with features:" "$output_file"; then
+elif grep -Eq "failed to select a version for \`oneharness-core\`" "$plain_output" &&
+  grep -Eq "depends on \`oneharness-core\`, with features:" "$plain_output"; then
+  registry_core_mismatch=true
+elif grep -Eq '^[[:space:]]*Compiling oneharness-core v[0-9]+\.[0-9]+\.[0-9]+[[:space:]]*$' "$plain_output" &&
+  grep -Eq "could not compile \`oneharness\`" "$plain_output"; then
   registry_core_mismatch=true
 fi
 

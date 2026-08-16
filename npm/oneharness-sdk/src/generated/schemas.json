@@ -1827,6 +1827,16 @@
             "description": "The harness deferred a builtin tool call instead of executing it, so a\nclean-exit run did no useful work (Claude Code bridge deployments; issue\n#1114). The only kind that can appear on a `status: ok` run.",
             "type": "string",
             "const": "tool_deferred"
+          },
+          {
+            "description": "The harness refused to operate in the directory it was pointed at\n(Codex's `Not inside a trusted directory and --skip-git-repo-check was\nnot specified`, which exits within a few hundred milliseconds). A\n**precondition** refusal like [`FailureKind::InputTooLarge`]: the check\nruns before the request is, so nothing of the task was attempted and\nanother identity — one whose trust list covers the directory — can still\nrun it.",
+            "type": "string",
+            "const": "untrusted_directory"
+          },
+          {
+            "description": "The request exceeded the input size the provider accepts and was refused\nbefore the model was called (Codex reports the machine-readable\n`input_error_code: input_too_large` with `max_chars`/`actual_chars`). The\nother precondition refusal: no tokens were spent, and a candidate with a\nlarger window can still run the task.",
+            "type": "string",
+            "const": "input_too_large"
           }
         ]
       },
@@ -1834,18 +1844,76 @@
         "description": "One candidate a fallback run fell through, with the reason it could not run.",
         "type": "object",
         "properties": {
+          "detail": {
+            "description": "This candidate's own account of why it could not run: its\n[`RunResult::error`], copied — one value with one source, not a second\nrendering of it. `null` when the candidate said nothing beyond its status.\n\nSo when the provider named the cause in machine-readable terms, what\narrives here is the sentence naming the harness with that object **quoted\ninside it** (`… refused the request before running it:\n{\"input_error_code\":\"input_too_large\",…}`) — the object verbatim, not the\nobject alone. A reader extracts it; nothing paraphrases it on the way.\n\nThe `reason` above is oneharness's classification and stays a short,\nclosed token; this is the cause underneath it, carried up so a supervisor\nreading only the fallback block never has to re-parse a fallen-through\ncandidate's raw stdout to learn what the provider already said. Added in\nreport schema `0.8`.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
           "harness": {
             "description": "Canonical harness id.",
             "type": "string"
           },
           "reason": {
-            "description": "Short reason token (`not-installed` / `spawn-error` / `auth` / `quota` /\n`model-not-found` / `rate-limit`).",
-            "type": "string"
+            "$ref": "#/$defs/FallThroughReason"
           }
         },
         "required": [
           "harness",
-          "reason"
+          "reason",
+          "detail"
+        ]
+      },
+      "FallThroughReason": {
+        "description": "Why a candidate fell through — the closed set [`startup_failure_reason`]\ndecides and [`crate::domain::report::FallThrough`] reports.\n\nA type rather than a token, because the set is closed and every reader\ndownstream branches on it: a value no classifier produced cannot be built,\nand the JSON spelling below is the schema's rather than each call site's. A\nnew variant is a report `schema_version` bump like any other enum value, since\na consumer matching exhaustively learns of it only from the version.",
+        "oneOf": [
+          {
+            "description": "The binary was not on PATH.",
+            "type": "string",
+            "const": "not-installed"
+          },
+          {
+            "description": "It resolved but could not be executed.",
+            "type": "string",
+            "const": "spawn-error"
+          },
+          {
+            "description": "This identity is not authenticated.",
+            "type": "string",
+            "const": "auth"
+          },
+          {
+            "description": "This account is out of quota or credits.",
+            "type": "string",
+            "const": "quota"
+          },
+          {
+            "description": "The session asked for does not exist for this identity.",
+            "type": "string",
+            "const": "session-not-found"
+          },
+          {
+            "description": "The harness refused the working directory before making the request.",
+            "type": "string",
+            "const": "untrusted-directory"
+          },
+          {
+            "description": "The harness refused the input's size before making the request.",
+            "type": "string",
+            "const": "input-too-large"
+          },
+          {
+            "description": "This model is unavailable — only on a model fan-out.",
+            "type": "string",
+            "const": "model-not-found"
+          },
+          {
+            "description": "This model cannot serve the request right now — only on a model fan-out.",
+            "type": "string",
+            "const": "rate-limit"
+          }
         ]
       },
       "FallbackReport": {
@@ -1853,7 +1921,7 @@
         "type": "object",
         "properties": {
           "fell_through": {
-            "description": "The candidates fallen through because they could not run the task at all,\nin priority order, each with why (`not-installed`, `spawn-error`, `auth`,\n`quota`, and — on a model fan-out — `model-not-found` / `rate-limit`; see\n[`crate::domain::fallback::startup_failure_reason`]).",
+            "description": "The candidates fallen through because they could not run the task at all,\nin priority order, each with why (`not-installed`, `spawn-error`, `auth`,\n`quota`, `session-not-found`, `untrusted-directory`, `input-too-large`,\nand — on a model fan-out — `model-not-found` / `rate-limit`; see\n[`crate::domain::fallback::startup_failure_reason`]).",
             "type": "array",
             "items": {
               "$ref": "#/$defs/FallThrough"
@@ -2778,6 +2846,16 @@
             "description": "The harness deferred a builtin tool call instead of executing it, so a\nclean-exit run did no useful work (Claude Code bridge deployments; issue\n#1114). The only kind that can appear on a `status: ok` run.",
             "type": "string",
             "const": "tool_deferred"
+          },
+          {
+            "description": "The harness refused to operate in the directory it was pointed at\n(Codex's `Not inside a trusted directory and --skip-git-repo-check was\nnot specified`, which exits within a few hundred milliseconds). A\n**precondition** refusal like [`FailureKind::InputTooLarge`]: the check\nruns before the request is, so nothing of the task was attempted and\nanother identity — one whose trust list covers the directory — can still\nrun it.",
+            "type": "string",
+            "const": "untrusted_directory"
+          },
+          {
+            "description": "The request exceeded the input size the provider accepts and was refused\nbefore the model was called (Codex reports the machine-readable\n`input_error_code: input_too_large` with `max_chars`/`actual_chars`). The\nother precondition refusal: no tokens were spent, and a candidate with a\nlarger window can still run the task.",
+            "type": "string",
+            "const": "input_too_large"
           }
         ]
       },
@@ -2785,18 +2863,76 @@
         "description": "One candidate a fallback run fell through, with the reason it could not run.",
         "type": "object",
         "properties": {
+          "detail": {
+            "description": "This candidate's own account of why it could not run: its\n[`RunResult::error`], copied — one value with one source, not a second\nrendering of it. `null` when the candidate said nothing beyond its status.\n\nSo when the provider named the cause in machine-readable terms, what\narrives here is the sentence naming the harness with that object **quoted\ninside it** (`… refused the request before running it:\n{\"input_error_code\":\"input_too_large\",…}`) — the object verbatim, not the\nobject alone. A reader extracts it; nothing paraphrases it on the way.\n\nThe `reason` above is oneharness's classification and stays a short,\nclosed token; this is the cause underneath it, carried up so a supervisor\nreading only the fallback block never has to re-parse a fallen-through\ncandidate's raw stdout to learn what the provider already said. Added in\nreport schema `0.8`.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
           "harness": {
             "description": "Canonical harness id.",
             "type": "string"
           },
           "reason": {
-            "description": "Short reason token (`not-installed` / `spawn-error` / `auth` / `quota` /\n`model-not-found` / `rate-limit`).",
-            "type": "string"
+            "$ref": "#/$defs/FallThroughReason"
           }
         },
         "required": [
           "harness",
-          "reason"
+          "reason",
+          "detail"
+        ]
+      },
+      "FallThroughReason": {
+        "description": "Why a candidate fell through — the closed set [`startup_failure_reason`]\ndecides and [`crate::domain::report::FallThrough`] reports.\n\nA type rather than a token, because the set is closed and every reader\ndownstream branches on it: a value no classifier produced cannot be built,\nand the JSON spelling below is the schema's rather than each call site's. A\nnew variant is a report `schema_version` bump like any other enum value, since\na consumer matching exhaustively learns of it only from the version.",
+        "oneOf": [
+          {
+            "description": "The binary was not on PATH.",
+            "type": "string",
+            "const": "not-installed"
+          },
+          {
+            "description": "It resolved but could not be executed.",
+            "type": "string",
+            "const": "spawn-error"
+          },
+          {
+            "description": "This identity is not authenticated.",
+            "type": "string",
+            "const": "auth"
+          },
+          {
+            "description": "This account is out of quota or credits.",
+            "type": "string",
+            "const": "quota"
+          },
+          {
+            "description": "The session asked for does not exist for this identity.",
+            "type": "string",
+            "const": "session-not-found"
+          },
+          {
+            "description": "The harness refused the working directory before making the request.",
+            "type": "string",
+            "const": "untrusted-directory"
+          },
+          {
+            "description": "The harness refused the input's size before making the request.",
+            "type": "string",
+            "const": "input-too-large"
+          },
+          {
+            "description": "This model is unavailable — only on a model fan-out.",
+            "type": "string",
+            "const": "model-not-found"
+          },
+          {
+            "description": "This model cannot serve the request right now — only on a model fan-out.",
+            "type": "string",
+            "const": "rate-limit"
+          }
         ]
       },
       "FallbackReport": {
@@ -2804,7 +2940,7 @@
         "type": "object",
         "properties": {
           "fell_through": {
-            "description": "The candidates fallen through because they could not run the task at all,\nin priority order, each with why (`not-installed`, `spawn-error`, `auth`,\n`quota`, and — on a model fan-out — `model-not-found` / `rate-limit`; see\n[`crate::domain::fallback::startup_failure_reason`]).",
+            "description": "The candidates fallen through because they could not run the task at all,\nin priority order, each with why (`not-installed`, `spawn-error`, `auth`,\n`quota`, `session-not-found`, `untrusted-directory`, `input-too-large`,\nand — on a model fan-out — `model-not-found` / `rate-limit`; see\n[`crate::domain::fallback::startup_failure_reason`]).",
             "type": "array",
             "items": {
               "$ref": "#/$defs/FallThrough"
@@ -3969,7 +4105,8 @@
                           "1.2",
                           "1.3",
                           "1.4",
-                          "1.5"
+                          "1.5",
+                          "1.6"
                         ]
                       },
                       "type": {
@@ -4086,7 +4223,8 @@
                             "enum": [
                               "1.3",
                               "1.4",
-                              "1.5"
+                              "1.5",
+                              "1.6"
                             ]
                           }
                         },
@@ -4153,7 +4291,8 @@
                         "type": "string",
                         "enum": [
                           "1.4",
-                          "1.5"
+                          "1.5",
+                          "1.6"
                         ]
                       }
                     }
@@ -4161,32 +4300,70 @@
                 ]
               },
               {
-                "anyOf": [
+                "allOf": [
                   {
-                    "type": "object",
-                    "properties": {
-                      "failure_kind": {
-                        "enum": [
-                          "auth",
-                          "rate_limit",
-                          "model_not_found",
-                          "quota",
-                          "tool_deferred",
-                          null
-                        ]
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "failure_kind": {
+                            "enum": [
+                              "auth",
+                              "rate_limit",
+                              "model_not_found",
+                              "quota",
+                              "tool_deferred",
+                              "untrusted_directory",
+                              "input_too_large",
+                              null
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "schema_version": {
+                            "type": "string",
+                            "enum": [
+                              "1.5",
+                              "1.6"
+                            ]
+                          }
+                        }
                       }
-                    }
+                    ]
                   },
                   {
-                    "type": "object",
-                    "properties": {
-                      "schema_version": {
-                        "type": "string",
-                        "enum": [
-                          "1.5"
-                        ]
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "failure_kind": {
+                            "enum": [
+                              "auth",
+                              "rate_limit",
+                              "model_not_found",
+                              "quota",
+                              "session_not_found",
+                              "tool_deferred",
+                              null
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "schema_version": {
+                            "type": "string",
+                            "enum": [
+                              "1.6"
+                            ]
+                          }
+                        }
                       }
-                    }
+                    ]
                   }
                 ]
               }
@@ -4280,7 +4457,8 @@
                           "1.2",
                           "1.3",
                           "1.4",
-                          "1.5"
+                          "1.5",
+                          "1.6"
                         ]
                       },
                       "session": {
@@ -4463,7 +4641,8 @@
                           "1.2",
                           "1.3",
                           "1.4",
-                          "1.5"
+                          "1.5",
+                          "1.6"
                         ]
                       },
                       "session": {
@@ -4644,7 +4823,8 @@
                           "1.2",
                           "1.3",
                           "1.4",
-                          "1.5"
+                          "1.5",
+                          "1.6"
                         ]
                       },
                       "session": {
@@ -4806,7 +4986,8 @@
                           "1.2",
                           "1.3",
                           "1.4",
-                          "1.5"
+                          "1.5",
+                          "1.6"
                         ]
                       },
                       "session": {
@@ -4967,7 +5148,8 @@
                         "enum": [
                           "1.3",
                           "1.4",
-                          "1.5"
+                          "1.5",
+                          "1.6"
                         ]
                       },
                       "session": {
@@ -5145,7 +5327,8 @@
                           "1.2",
                           "1.3",
                           "1.4",
-                          "1.5"
+                          "1.5",
+                          "1.6"
                         ]
                       },
                       "session": {
@@ -5355,6 +5538,16 @@
             "description": "The harness deferred a builtin tool call instead of executing it, so a\nclean-exit run did no useful work (Claude Code bridge deployments; issue\n#1114). The only kind that can appear on a `status: ok` run.",
             "type": "string",
             "const": "tool_deferred"
+          },
+          {
+            "description": "The harness refused to operate in the directory it was pointed at\n(Codex's `Not inside a trusted directory and --skip-git-repo-check was\nnot specified`, which exits within a few hundred milliseconds). A\n**precondition** refusal like [`FailureKind::InputTooLarge`]: the check\nruns before the request is, so nothing of the task was attempted and\nanother identity — one whose trust list covers the directory — can still\nrun it.",
+            "type": "string",
+            "const": "untrusted_directory"
+          },
+          {
+            "description": "The request exceeded the input size the provider accepts and was refused\nbefore the model was called (Codex reports the machine-readable\n`input_error_code: input_too_large` with `max_chars`/`actual_chars`). The\nother precondition refusal: no tokens were spent, and a candidate with a\nlarger window can still run the task.",
+            "type": "string",
+            "const": "input_too_large"
           }
         ]
       },
@@ -5563,7 +5756,8 @@
                     "enum": [
                       "1.3",
                       "1.4",
-                      "1.5"
+                      "1.5",
+                      "1.6"
                     ]
                   }
                 },
@@ -5630,7 +5824,8 @@
                 "type": "string",
                 "enum": [
                   "1.4",
-                  "1.5"
+                  "1.5",
+                  "1.6"
                 ]
               }
             }
@@ -5638,32 +5833,70 @@
         ]
       },
       {
-        "anyOf": [
+        "allOf": [
           {
-            "type": "object",
-            "properties": {
-              "failure_kind": {
-                "enum": [
-                  "auth",
-                  "rate_limit",
-                  "model_not_found",
-                  "quota",
-                  "tool_deferred",
-                  null
-                ]
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "failure_kind": {
+                    "enum": [
+                      "auth",
+                      "rate_limit",
+                      "model_not_found",
+                      "quota",
+                      "tool_deferred",
+                      "untrusted_directory",
+                      "input_too_large",
+                      null
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "schema_version": {
+                    "type": "string",
+                    "enum": [
+                      "1.5",
+                      "1.6"
+                    ]
+                  }
+                }
               }
-            }
+            ]
           },
           {
-            "type": "object",
-            "properties": {
-              "schema_version": {
-                "type": "string",
-                "enum": [
-                  "1.5"
-                ]
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "failure_kind": {
+                    "enum": [
+                      "auth",
+                      "rate_limit",
+                      "model_not_found",
+                      "quota",
+                      "session_not_found",
+                      "tool_deferred",
+                      null
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "schema_version": {
+                    "type": "string",
+                    "enum": [
+                      "1.6"
+                    ]
+                  }
+                }
               }
-            }
+            ]
           }
         ]
       }
@@ -5938,7 +6171,8 @@
               "1.2",
               "1.3",
               "1.4",
-              "1.5"
+              "1.5",
+              "1.6"
             ]
           },
           "session": {
@@ -6539,7 +6773,8 @@
               "1.2",
               "1.3",
               "1.4",
-              "1.5"
+              "1.5",
+              "1.6"
             ]
           },
           "session": {
@@ -6715,7 +6950,8 @@
               "1.2",
               "1.3",
               "1.4",
-              "1.5"
+              "1.5",
+              "1.6"
             ]
           },
           "session": {
@@ -6889,7 +7125,8 @@
               "1.2",
               "1.3",
               "1.4",
-              "1.5"
+              "1.5",
+              "1.6"
             ]
           },
           "session": {
@@ -7064,7 +7301,8 @@
             "enum": [
               "1.3",
               "1.4",
-              "1.5"
+              "1.5",
+              "1.6"
             ]
           },
           "session": {
@@ -7938,6 +8176,16 @@
             "description": "The harness deferred a builtin tool call instead of executing it, so a\nclean-exit run did no useful work (Claude Code bridge deployments; issue\n#1114). The only kind that can appear on a `status: ok` run.",
             "type": "string",
             "const": "tool_deferred"
+          },
+          {
+            "description": "The harness refused to operate in the directory it was pointed at\n(Codex's `Not inside a trusted directory and --skip-git-repo-check was\nnot specified`, which exits within a few hundred milliseconds). A\n**precondition** refusal like [`FailureKind::InputTooLarge`]: the check\nruns before the request is, so nothing of the task was attempted and\nanother identity — one whose trust list covers the directory — can still\nrun it.",
+            "type": "string",
+            "const": "untrusted_directory"
+          },
+          {
+            "description": "The request exceeded the input size the provider accepts and was refused\nbefore the model was called (Codex reports the machine-readable\n`input_error_code: input_too_large` with `max_chars`/`actual_chars`). The\nother precondition refusal: no tokens were spent, and a candidate with a\nlarger window can still run the task.",
+            "type": "string",
+            "const": "input_too_large"
           }
         ]
       },
@@ -8287,6 +8535,16 @@
             "description": "The harness deferred a builtin tool call instead of executing it, so a\nclean-exit run did no useful work (Claude Code bridge deployments; issue\n#1114). The only kind that can appear on a `status: ok` run.",
             "type": "string",
             "const": "tool_deferred"
+          },
+          {
+            "description": "The harness refused to operate in the directory it was pointed at\n(Codex's `Not inside a trusted directory and --skip-git-repo-check was\nnot specified`, which exits within a few hundred milliseconds). A\n**precondition** refusal like [`FailureKind::InputTooLarge`]: the check\nruns before the request is, so nothing of the task was attempted and\nanother identity — one whose trust list covers the directory — can still\nrun it.",
+            "type": "string",
+            "const": "untrusted_directory"
+          },
+          {
+            "description": "The request exceeded the input size the provider accepts and was refused\nbefore the model was called (Codex reports the machine-readable\n`input_error_code: input_too_large` with `max_chars`/`actual_chars`). The\nother precondition refusal: no tokens were spent, and a candidate with a\nlarger window can still run the task.",
+            "type": "string",
+            "const": "input_too_large"
           }
         ]
       },
@@ -8322,7 +8580,8 @@
                       "1.2",
                       "1.3",
                       "1.4",
-                      "1.5"
+                      "1.5",
+                      "1.6"
                     ]
                   },
                   "variant": {
@@ -8445,7 +8704,8 @@
                         "enum": [
                           "1.3",
                           "1.4",
-                          "1.5"
+                          "1.5",
+                          "1.6"
                         ]
                       }
                     },
@@ -8512,7 +8772,8 @@
                     "type": "string",
                     "enum": [
                       "1.4",
-                      "1.5"
+                      "1.5",
+                      "1.6"
                     ]
                   }
                 }
@@ -8520,32 +8781,70 @@
             ]
           },
           {
-            "anyOf": [
+            "allOf": [
               {
-                "type": "object",
-                "properties": {
-                  "failure_kind": {
-                    "enum": [
-                      "auth",
-                      "rate_limit",
-                      "model_not_found",
-                      "quota",
-                      "tool_deferred",
-                      null
-                    ]
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "failure_kind": {
+                        "enum": [
+                          "auth",
+                          "rate_limit",
+                          "model_not_found",
+                          "quota",
+                          "tool_deferred",
+                          "untrusted_directory",
+                          "input_too_large",
+                          null
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "schema_version": {
+                        "type": "string",
+                        "enum": [
+                          "1.5",
+                          "1.6"
+                        ]
+                      }
+                    }
                   }
-                }
+                ]
               },
               {
-                "type": "object",
-                "properties": {
-                  "schema_version": {
-                    "type": "string",
-                    "enum": [
-                      "1.5"
-                    ]
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "failure_kind": {
+                        "enum": [
+                          "auth",
+                          "rate_limit",
+                          "model_not_found",
+                          "quota",
+                          "session_not_found",
+                          "tool_deferred",
+                          null
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "schema_version": {
+                        "type": "string",
+                        "enum": [
+                          "1.6"
+                        ]
+                      }
+                    }
                   }
-                }
+                ]
               }
             ]
           }
@@ -8820,7 +9119,8 @@
                   "1.2",
                   "1.3",
                   "1.4",
-                  "1.5"
+                  "1.5",
+                  "1.6"
                 ]
               },
               "session": {
@@ -9421,7 +9721,8 @@
                   "1.2",
                   "1.3",
                   "1.4",
-                  "1.5"
+                  "1.5",
+                  "1.6"
                 ]
               },
               "session": {
@@ -9597,7 +9898,8 @@
                   "1.2",
                   "1.3",
                   "1.4",
-                  "1.5"
+                  "1.5",
+                  "1.6"
                 ]
               },
               "session": {
@@ -9771,7 +10073,8 @@
                   "1.2",
                   "1.3",
                   "1.4",
-                  "1.5"
+                  "1.5",
+                  "1.6"
                 ]
               },
               "session": {
@@ -9946,7 +10249,8 @@
                 "enum": [
                   "1.3",
                   "1.4",
-                  "1.5"
+                  "1.5",
+                  "1.6"
                 ]
               },
               "session": {
@@ -10986,6 +11290,16 @@
             "description": "The harness deferred a builtin tool call instead of executing it, so a\nclean-exit run did no useful work (Claude Code bridge deployments; issue\n#1114). The only kind that can appear on a `status: ok` run.",
             "type": "string",
             "const": "tool_deferred"
+          },
+          {
+            "description": "The harness refused to operate in the directory it was pointed at\n(Codex's `Not inside a trusted directory and --skip-git-repo-check was\nnot specified`, which exits within a few hundred milliseconds). A\n**precondition** refusal like [`FailureKind::InputTooLarge`]: the check\nruns before the request is, so nothing of the task was attempted and\nanother identity — one whose trust list covers the directory — can still\nrun it.",
+            "type": "string",
+            "const": "untrusted_directory"
+          },
+          {
+            "description": "The request exceeded the input size the provider accepts and was refused\nbefore the model was called (Codex reports the machine-readable\n`input_error_code: input_too_large` with `max_chars`/`actual_chars`). The\nother precondition refusal: no tokens were spent, and a candidate with a\nlarger window can still run the task.",
+            "type": "string",
+            "const": "input_too_large"
           }
         ]
       },
@@ -11034,7 +11348,8 @@
                         "enum": [
                           "1.3",
                           "1.4",
-                          "1.5"
+                          "1.5",
+                          "1.6"
                         ]
                       }
                     },
@@ -11101,7 +11416,8 @@
                     "type": "string",
                     "enum": [
                       "1.4",
-                      "1.5"
+                      "1.5",
+                      "1.6"
                     ]
                   }
                 }
@@ -11109,32 +11425,70 @@
             ]
           },
           {
-            "anyOf": [
+            "allOf": [
               {
-                "type": "object",
-                "properties": {
-                  "failure_kind": {
-                    "enum": [
-                      "auth",
-                      "rate_limit",
-                      "model_not_found",
-                      "quota",
-                      "tool_deferred",
-                      null
-                    ]
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "failure_kind": {
+                        "enum": [
+                          "auth",
+                          "rate_limit",
+                          "model_not_found",
+                          "quota",
+                          "tool_deferred",
+                          "untrusted_directory",
+                          "input_too_large",
+                          null
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "schema_version": {
+                        "type": "string",
+                        "enum": [
+                          "1.5",
+                          "1.6"
+                        ]
+                      }
+                    }
                   }
-                }
+                ]
               },
               {
-                "type": "object",
-                "properties": {
-                  "schema_version": {
-                    "type": "string",
-                    "enum": [
-                      "1.5"
-                    ]
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "failure_kind": {
+                        "enum": [
+                          "auth",
+                          "rate_limit",
+                          "model_not_found",
+                          "quota",
+                          "session_not_found",
+                          "tool_deferred",
+                          null
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "schema_version": {
+                        "type": "string",
+                        "enum": [
+                          "1.6"
+                        ]
+                      }
+                    }
                   }
-                }
+                ]
               }
             ]
           }
@@ -11409,7 +11763,8 @@
                   "1.2",
                   "1.3",
                   "1.4",
-                  "1.5"
+                  "1.5",
+                  "1.6"
                 ]
               },
               "session": {
@@ -12010,7 +12365,8 @@
                   "1.2",
                   "1.3",
                   "1.4",
-                  "1.5"
+                  "1.5",
+                  "1.6"
                 ]
               },
               "session": {
@@ -12186,7 +12542,8 @@
                   "1.2",
                   "1.3",
                   "1.4",
-                  "1.5"
+                  "1.5",
+                  "1.6"
                 ]
               },
               "session": {
@@ -12360,7 +12717,8 @@
                   "1.2",
                   "1.3",
                   "1.4",
-                  "1.5"
+                  "1.5",
+                  "1.6"
                 ]
               },
               "session": {
@@ -12535,7 +12893,8 @@
                 "enum": [
                   "1.3",
                   "1.4",
-                  "1.5"
+                  "1.5",
+                  "1.6"
                 ]
               },
               "session": {

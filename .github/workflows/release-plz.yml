@@ -96,6 +96,43 @@ jobs:
       # Reads the pinned channel + components from rust-toolchain.toml.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
+      # `semver_check = true` in release-plz.toml is enforced through this
+      # binary: release-plz shells out to it and, when it is absent, logs a
+      # warning and skips the check — a gate that silently does nothing. The
+      # probe below is what turns that into a loud failure instead.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+
+      # cargo-semver-checks cannot run on this repo's pinned 1.86.0, for two
+      # independent reasons: the tool refuses a rustc below 1.93, and it resolves
+      # the dependency graph AFRESH rather than through Cargo.lock, so its build
+      # selects crates that themselves require 1.88 and rustdoc never gets built.
+      # Neither is fixed by pinning an older tool — the fresh resolve breaks any
+      # version of it. Its job is ANALYSIS, reading the published API and this
+      # one, so it gets a toolchain of its own through this shim while everything
+      # release-plz builds and publishes below stays on the pinned channel.
+      - name: Give cargo-semver-checks a toolchain that can build rustdoc
+        run: |
+          rustup toolchain install stable --profile minimal
+          shim="${RUNNER_TEMP}/semver-shim"
+          mkdir -p "$shim"
+          printf '#!/usr/bin/env bash\nexec env RUSTUP_TOOLCHAIN=stable %q "$@"\n' \
+            "$(command -v cargo-semver-checks)" >"$shim/cargo-semver-checks"
+          chmod +x "$shim/cargo-semver-checks"
+          echo "$shim" >>"$GITHUB_PATH"
+
+      # Run the real analysis against this commit as its own baseline. A version
+      # probe passes on a tool that cannot build rustdoc at all, which is exactly
+      # the pairing that broke here; this exercises the whole path — shim,
+      # toolchain, rustdoc, baseline checkout — and its verdict is deterministic
+      # (a commit never breaks itself), so it reports the gate's runnability
+      # WITHOUT deciding the release. The real comparison is release-plz's to
+      # make: only it knows the version being proposed, and a pre-flight that
+      # failed on "needs a bigger bump" would block the very bump that fixes it.
+      - name: Verify the semver gate can actually run
+        run: cargo-semver-checks check-release --workspace --baseline-rev HEAD
+
       - name: Install release-plz
         run: |
           curl -fsSL "https://github.com/release-plz/release-plz/releases/download/release-plz-v${RELEASE_PLZ_VERSION}/release-plz-x86_64-unknown-linux-gnu.tar.gz" \

@@ -82,6 +82,34 @@ fi
 require_line justfile 'gate remote="origin" base="": check deps-check package-crates' \
   "verify packaging in the pre-push gate instead"
 require_line .github/workflows/ci.yml 'run: scripts/check-pr-title.sh' "validate the release-driving PR title"
+
+# No workflow may install `just` from a third-party setup-just action: that
+# fetches from a service outside this repo on every run, and an outage there
+# takes a required check down for a reason unrelated to the change. The
+# repository-local cached action is what replaced it. (Jobs that install a
+# whole tool BUNDLE through taiki-e/install-action are a separate, deliberate
+# choice and are not what this rule is about.)
+if grep -rq 'setup-just@' .github/workflows/*.yml; then
+  fail "workflows must install just through ./.github/actions/setup-just, not a third-party setup-just action"
+fi
+require_line .github/workflows/ci.yml 'uses: ./.github/actions/setup-just' "install just from the repository-local cached action"
+[ -f .github/actions/setup-just/action.yml ] || fail ".github/actions/setup-just/action.yml must exist for the workflows that use it"
+
+# API breaking-change detection must be both ENABLED and RUNNABLE. release-plz
+# shells out to a `cargo-semver-checks` binary and merely warns when it is
+# missing, so the setting alone is a check that can silently do nothing.
+require_line release-plz.toml 'semver_check = true' "detect API breaking changes rather than trusting the commit subject"
+require_line .github/workflows/release-plz.yml 'tool: cargo-semver-checks' "install the binary release-plz's semver check shells out to"
+# A version probe passes on a tool that cannot build rustdoc at all — the exact
+# pairing this repo has, since cargo-semver-checks resolves dependencies afresh
+# and refuses a rustc below 1.93 while the workspace pins 1.86.0. Only running
+# the analysis proves the gate works, and only a self-baseline keeps that run
+# from deciding the release it is checking.
+require_line .github/workflows/release-plz.yml \
+  'run: cargo-semver-checks check-release --workspace --baseline-rev HEAD' \
+  "run the semver analysis itself, since a version probe passes on a tool that cannot build rustdoc"
+require_line .github/workflows/release-plz.yml 'RUSTUP_TOOLCHAIN=stable' \
+  "give cargo-semver-checks the toolchain it needs; the pinned channel cannot build its rustdoc"
 if grep -qE 'run: just (lint|lint-sh|test)$|run: bun run --cwd npm/oneharness-sdk (generate:check|build)$' .github/workflows/release.yml; then
   fail "release.yml must use just check/sdk-check instead of re-listing their stages"
 fi

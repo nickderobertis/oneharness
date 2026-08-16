@@ -12,7 +12,7 @@ export type HistoryRecord = (
     }
   | ({
       error: string;
-      schema_version?: "1.3" | "1.4" | "1.5" | undefined;
+      schema_version?: "1.3" | "1.4" | "1.5" | "1.6" | undefined;
       [k: string]: unknown;
     } & (
       | {
@@ -31,20 +31,39 @@ export type HistoryRecord = (
         [k: string]: unknown;
       }
     | {
-        schema_version?: "1.4" | "1.5" | undefined;
+        schema_version?: "1.4" | "1.5" | "1.6" | undefined;
         [k: string]: unknown;
       }
   ) &
-  (
+  ((
     | {
-        failure_kind?: "auth" | "rate_limit" | "model_not_found" | "quota" | "tool_deferred" | null | undefined;
+        failure_kind?:
+          | "auth"
+          | "rate_limit"
+          | "model_not_found"
+          | "quota"
+          | "tool_deferred"
+          | "untrusted_directory"
+          | "input_too_large"
+          | null;
         [k: string]: unknown;
       }
     | {
-        schema_version?: "1.5" | undefined;
+        schema_version?: "1.5" | "1.6" | undefined;
         [k: string]: unknown;
       }
   ) &
+    (
+      | {
+          failure_kind?:
+            "auth" | "rate_limit" | "model_not_found" | "quota" | "session_not_found" | "tool_deferred" | null;
+          [k: string]: unknown;
+        }
+      | {
+          schema_version?: "1.6" | undefined;
+          [k: string]: unknown;
+        }
+    )) &
   (
     | {
         duration_ms: number;
@@ -149,7 +168,7 @@ export type HistoryRecord = (
          * run's single prompt).
          */
         prompt: string;
-        schema_version: "1.2" | "1.3" | "1.4" | "1.5";
+        schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6";
         /**
          * The oneharness session id this run belongs to (the history file's stem).
          */
@@ -391,7 +410,7 @@ export type HistoryRecord = (
          * run's single prompt).
          */
         prompt: string;
-        schema_version: "1.2" | "1.3" | "1.4" | "1.5";
+        schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6";
         /**
          * The oneharness session id this run belongs to (the history file's stem).
          */
@@ -484,7 +503,7 @@ export type HistoryRecord = (
          * run's single prompt).
          */
         prompt: string;
-        schema_version: "1.2" | "1.3" | "1.4" | "1.5";
+        schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6";
         /**
          * The oneharness session id this run belongs to (the history file's stem).
          */
@@ -577,7 +596,7 @@ export type HistoryRecord = (
          * run's single prompt).
          */
         prompt: string;
-        schema_version: "1.2" | "1.3" | "1.4" | "1.5";
+        schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6";
         /**
          * The oneharness session id this run belongs to (the history file's stem).
          */
@@ -670,7 +689,7 @@ export type HistoryRecord = (
          * run's single prompt).
          */
         prompt: string;
-        schema_version: "1.3" | "1.4" | "1.5";
+        schema_version: "1.3" | "1.4" | "1.5" | "1.6";
         /**
          * The oneharness session id this run belongs to (the history file's stem).
          */
@@ -1032,7 +1051,15 @@ export type TimingSource = "provider_measured" | "stdout_observed";
  * the report, history) one definition to share instead of scattered string
  * literals.
  */
-export type FailureKind = "auth" | "rate_limit" | "model_not_found" | "quota" | "session_not_found" | "tool_deferred";
+export type FailureKind =
+  | "auth"
+  | "rate_limit"
+  | "model_not_found"
+  | "quota"
+  | "session_not_found"
+  | "tool_deferred"
+  | "untrusted_directory"
+  | "input_too_large";
 /**
  * The outcome of attempting to run one harness.
  */

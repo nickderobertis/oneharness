@@ -51,6 +51,26 @@ export type ControlReason = "unsupported" | "no_active_turn" | "not_running";
  * frame's `v` is what leaves room for `steer` later.
  */
 export type ControlVerb = "interrupt";
+/**
+ * Why a candidate fell through — the closed set [`startup_failure_reason`]
+ * decides and [`crate::domain::report::FallThrough`] reports.
+ *
+ * A type rather than a token, because the set is closed and every reader
+ * downstream branches on it: a value no classifier produced cannot be built,
+ * and the JSON spelling below is the schema's rather than each call site's. A
+ * new variant is a report `schema_version` bump like any other enum value, since
+ * a consumer matching exhaustively learns of it only from the version.
+ */
+export type FallThroughReason =
+  | "not-installed"
+  | "spawn-error"
+  | "auth"
+  | "quota"
+  | "session-not-found"
+  | "untrusted-directory"
+  | "input-too-large"
+  | "model-not-found"
+  | "rate-limit";
 export type ToolCallStatus = "completed" | "failed" | "timeout" | "interrupted";
 /**
  * How a normalized tool interval was obtained.
@@ -67,7 +87,15 @@ export type TimingSource = "provider_measured" | "stdout_observed";
  * the report, history) one definition to share instead of scattered string
  * literals.
  */
-export type FailureKind = "auth" | "rate_limit" | "model_not_found" | "quota" | "session_not_found" | "tool_deferred";
+export type FailureKind =
+  | "auth"
+  | "rate_limit"
+  | "model_not_found"
+  | "quota"
+  | "session_not_found"
+  | "tool_deferred"
+  | "untrusted_directory"
+  | "input_too_large";
 /**
  * How a harness emits its result, which decides how `text` is extracted.
  *
@@ -284,7 +312,8 @@ export interface FallbackReport {
   /**
    * The candidates fallen through because they could not run the task at all,
    * in priority order, each with why (`not-installed`, `spawn-error`, `auth`,
-   * `quota`, and — on a model fan-out — `model-not-found` / `rate-limit`; see
+   * `quota`, `session-not-found`, `untrusted-directory`, `input-too-large`,
+   * and — on a model fan-out — `model-not-found` / `rate-limit`; see
    * [`crate::domain::fallback::startup_failure_reason`]).
    */
   fell_through: FallThrough[];
@@ -300,14 +329,28 @@ export interface FallbackReport {
  */
 export interface FallThrough {
   /**
+   * This candidate's own account of why it could not run: its
+   * [`RunResult::error`], copied — one value with one source, not a second
+   * rendering of it. `null` when the candidate said nothing beyond its status.
+   *
+   * So when the provider named the cause in machine-readable terms, what
+   * arrives here is the sentence naming the harness with that object **quoted
+   * inside it** (`… refused the request before running it:
+   * {"input_error_code":"input_too_large",…}`) — the object verbatim, not the
+   * object alone. A reader extracts it; nothing paraphrases it on the way.
+   *
+   * The `reason` above is oneharness's classification and stays a short,
+   * closed token; this is the cause underneath it, carried up so a supervisor
+   * reading only the fallback block never has to re-parse a fallen-through
+   * candidate's raw stdout to learn what the provider already said. Added in
+   * report schema `0.8`.
+   */
+  detail: string | null;
+  /**
    * Canonical harness id.
    */
   harness: string;
-  /**
-   * Short reason token (`not-installed` / `spawn-error` / `auth` / `quota` /
-   * `model-not-found` / `rate-limit`).
-   */
-  reason: string;
+  reason: FallThroughReason;
   [k: string]: unknown;
 }
 /**

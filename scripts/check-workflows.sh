@@ -79,8 +79,17 @@ fi
 if grep -qE '^check:.*\bpackage-crates\b' justfile; then
   fail "justfile 'check' must not depend on package-crates; release.yml runs check at the tag, where it cannot pass"
 fi
-require_line justfile 'gate remote="origin" base="": check deps-check package-crates' \
-  "verify packaging in the pre-push gate instead"
+require_line justfile 'gate remote="origin" base="": check deps-check package-crates semver-check' \
+  "verify packaging and published-API compatibility in the pre-push gate instead"
+# The conventional-commit type is what release-plz bumps from, so an undeclared
+# API break would ship as a patch or minor. `semver_check` in release-plz.toml
+# stays off (it cannot tell a declared break from a defect); this is the gate it
+# defers to, and it belongs to the PR tier for the same reason packaging does.
+require_line .github/workflows/ci.yml 'run: just semver-check' "detect an undeclared API break from the PR gate"
+require_line .github/workflows/ci.yml 'OH_SEMVER_NO_SKIP: "1"' "make absent cargo-semver-checks tooling red in CI rather than a silent skip"
+if grep -q 'semver-check' .github/workflows/release.yml; then
+  fail "release.yml must not run semver-check; the PR before a release proves it, and nothing may sit between a published Release and its publish jobs"
+fi
 require_line .github/workflows/ci.yml 'run: scripts/check-pr-title.sh' "validate the release-driving PR title"
 if grep -qE 'run: just (lint|lint-sh|test)$|run: bun run --cwd npm/oneharness-sdk (generate:check|build)$' .github/workflows/release.yml; then
   fail "release.yml must use just check/sdk-check instead of re-listing their stages"

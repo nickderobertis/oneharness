@@ -71,6 +71,38 @@ jobs:
           tool: just
       - run: just package-crates
 
+  # Detect an API break the release-driving subject does not declare. Its own job
+  # for the same reasons `package` is — a network-resolved baseline and the
+  # release tags — plus one of its own: cargo-semver-checks needs a newer rustc
+  # than rust-toolchain.toml pins, so this is the one job that installs `stable`
+  # rather than the product's channel. Absent from release.yml deliberately: the
+  # PR that precedes a release already proved it, and nothing here may sit
+  # between a published Release and its publish jobs.
+  semver:
+    runs-on: ubuntu-latest
+    env:
+      # A missing tool is a skip on a developer's box and a failure here: the
+      # tier that is meant to enforce this must not quietly prove nothing.
+      OH_SEMVER_NO_SKIP: "1"
+      # release-plz reads the squash subject, which is the PR title, so that is
+      # what declares a break on a pull request. Empty on push, where the merged
+      # commit carries it instead.
+      PR_TITLE: ${{ github.event.pull_request.title }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # "Since the last release" is a per-crate tag, and a depth-1 checkout
+          # carries none of them.
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-semver-checks
+      - run: just semver-check
+
   # Advisory + license audit, on its own because it needs a network advisory DB.
   deny:
     runs-on: ubuntu-latest

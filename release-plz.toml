@@ -39,10 +39,13 @@ release_commits = "(?s)^(feat|fix|perf)(\\([^)]+\\))?!?:|BREAKING CHANGE:"
 # commits from opening a fresh release PR, so there is no auto-merge loop.
 release_always = true
 
-# API breaking-change detection (cargo-semver-checks) needs an extra tool and
-# would block releases on any surface change; rely on review and the
-# conventional-commit type instead (a `!` or `BREAKING CHANGE:` still bumps
-# major). Re-enable once the gate can be enforced in CI.
+# API breaking-change detection stays OFF *here* and is enforced one tier
+# earlier instead, by `just semver-check` (scripts/semver-check.sh) in the PR
+# gate and ci.yml's `semver` job. release-plz would run cargo-semver-checks
+# against a release it is in the middle of making and block every legitimately
+# breaking one; the PR gate can tell the two apart, because there the
+# conventional-commit subject that drives the bump either declares the break or
+# does not — and an undeclared break is exactly the defect worth stopping.
 semver_check = false
 
 # Tag and name each release `vX.Y.Z`, matching v0.1.0..v0.2.0. Only the

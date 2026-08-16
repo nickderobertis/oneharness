@@ -89,6 +89,12 @@ pub struct NextRun {
 ///   direct child (TERM, a grace, then KILL) and reaping the rest of that tree
 ///   is yours to do.
 ///
+///   That second `setpgid` really does take effect, despite oneharness having
+///   already made the child a group leader: POSIX refuses the call only for a
+///   **session** leader, and a group leader may join another group in its own
+///   session. `tests/library.rs` does not take that on trust — it asks the OS
+///   for the child's group afterwards, on every Unix platform in the matrix.
+///
 /// Windows needs no such division: a job assignment nests, so the child stays
 /// in oneharness's job as well as yours and either side's teardown ends it.
 ///

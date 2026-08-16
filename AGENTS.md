@@ -90,24 +90,14 @@ Use the `just` recipes; do not hand-roll equivalents.
 - `just deps-check` — advisory/license audit (`cargo deny`); separate from the
   core gate because it needs a network-fetched advisory DB.
 - `just semver-check` — refuse an API break the release-driving subject does not
-  declare. release-plz bumps from the commit type alone, so an undeclared break
-  ships as a patch or a minor; `cargo semver-checks check-release` finds it
-  against the published baseline. The finding is not the verdict, though: the
-  working tree always carries the last published version (release-plz bumps only
-  inside its own release PR), so EVERY breaking change reads as "requires new
-  major" here — legitimate ones included. What decides is whether the subject
-  release-plz will actually read declares it: the PR title on a pull request
-  (`PR_TITLE`, the squash subject `check-pr-title.sh` already validates), the
-  commits themselves everywhere else. This is the gate `release-plz.toml`'s
-  `semver_check = false` defers to; release-plz cannot make that distinction and
-  would block every breaking release. Outside `check` like `deps-check` (network
-  baseline) and, uniquely, on a newer toolchain than `rust-toolchain.toml` pins —
-  cargo-semver-checks needs one to read rustdoc JSON, so the script names
-  `stable` rather than moving the product's pin for a lint. Absent tooling skips
-  locally and is RED in CI (`OH_SEMVER_NO_SKIP=1`, the same split the live e2e
-  suites use). `check-semver-check.sh` (in `lint-workflows`) drives every arm
-  against stubs, since a gate whose only job is to reject proves nothing until
-  its rejection is exercised.
+  declare, which is the gate `release-plz.toml`'s `semver_check = false` defers
+  to. A `cargo semver-checks` finding is NOT the verdict: the tree always carries
+  the last published version, so every breaking change reads as "requires new
+  major" — what decides is whether the subject release-plz will read declares it
+  (the PR title via `PR_TITLE` on a pull request, the commits elsewhere) in one
+  of the types that actually release. Outside `check` like `deps-check`, and the
+  one command needing a newer toolchain than `rust-toolchain.toml` pins. Absent
+  tooling skips locally and is RED in CI (`OH_SEMVER_NO_SKIP=1`).
 - `just package-crates` — package both crates as Cargo verifies them at publish
   time. Deliberately NOT in `check`: `release.yml` runs `check` at the tag, and
   there the binary already pins the core version that same run publishes, so
@@ -199,28 +189,25 @@ Use the `just` recipes; do not hand-roll equivalents.
   reaches a harness tree, since each harness leads its own process group), and
   whether oneharness may take over the host's SIGINT/SIGTERM disposition
   (`signal_cancel`, which the CLI sets and an embedder leaves off, cancelling
-  its own token instead). The fourth is that hop's *grouping*, which an embedder
-  otherwise loses silently: a watchdog reads a busy subtree as idle, and the
-  caller's kill leaves paid harness processes billing. It arrives as a
-  `ProcessSupervisor` on `run_supervised`, NOT as a fifth `RunControls` field —
-  every field there is public and the struct exhaustively constructible, so a
-  field breaks every literal a consumer has written and turns an additive
-  capability into a major release (`just semver-check` says so). A new side
-  channel takes a new entry point; `SpawnControls`, its runner-level carrier, is
-  `#[non_exhaustive]` from birth so the next one needn't. Where the hooks SIT is
-  the contract — `spawning` after `io::process`'s own `Tree::prepare`, so a
-  caller's `pre_exec` runs last and wins, and `spawned` before any wait or pipe
-  read — and teardown then follows the group the child is REALLY in, asked of
-  the OS: a group the caller re-parented it into is one oneharness must NOT
-  signal (it can hold the caller's own processes), so it ends the direct child
-  and the caller owns the rest. Warnings still go to the host's stderr, so an
-  embedder inherits them. `tests/library.rs` is that surface's drift alarm, one
-  test per property: report-back-without-printing (an fd-1 redirect across the
-  call), an event observed while the run is demonstrably still streaming, a
-  cancel that stops the harness's own descendant — proven from outside the tree
-  — and, for the supervisor, both halves of that teardown split plus a
-  hand-over from EVERY execution model, since a hook dropped at one spawn site
-  is how the grouping goes missing for the run that needed it.
+  its own token instead). The fourth is that hop's *grouping*, lost silently
+  otherwise: a watchdog reads a busy subtree as idle and the caller's kill leaves
+  paid harness processes billing. It is a `ProcessSupervisor` on
+  `run_supervised`, never a fifth `RunControls` field — that struct is
+  exhaustively constructible, so a field would break every literal already
+  written and make an additive capability a major release. Any further side
+  channel takes its own entry point for the same reason. Where the hooks SIT is
+  the contract: `spawning` after `io::process`'s own `Tree::prepare` (a caller's
+  `pre_exec` must run last to win), `spawned` before any wait or pipe read.
+  Teardown then follows the group the child is REALLY in, asked of the OS: a
+  group the caller re-parented it into is one oneharness must NOT signal, so it
+  ends the direct child and the caller owns the rest. Warnings still go to the
+  host's stderr, so an embedder inherits them. `tests/library.rs` is that
+  surface's drift alarm, one test per property: report-back-without-printing (an
+  fd-1 redirect across the call), an event observed while the run is
+  demonstrably still streaming, a cancel that stops the harness's own descendant
+  — proven from outside the tree — and, for the supervisor, both halves of that
+  teardown split plus a hand-over from EVERY execution model, since a hook
+  dropped at one spawn site is how the grouping goes missing.
 - `run` spawns the selected harnesses **in parallel**, each as a subprocess with
   a timeout, and emits one JSON report. `io::process` owns each launcher's whole
   tree (Unix process group; Windows kill-on-close Job Object assigned while the

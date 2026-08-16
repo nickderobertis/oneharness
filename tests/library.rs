@@ -573,6 +573,12 @@ fn an_observing_supervisor_leaves_the_descendant_teardown_to_oneharness() {
 /// A supervisor that does what the two downstream consumers asked for: it moves
 /// each harness child into a process group the **caller** owns, so one watchdog
 /// sees the whole subtree and one `kill(-group)` reaps it.
+///
+/// The move lands even though oneharness has already made the child a group
+/// leader — POSIX refuses `setpgid` for a **session** leader, not a group one —
+/// and `a_caller_can_take_the_harness_child_into_its_own_process_group` proves
+/// it the only way that claim can be proven: by asking the OS which group the
+/// child ended up in.
 #[cfg(unix)]
 struct AdoptIntoCallerGroup {
     group: libc::pid_t,
@@ -586,12 +592,8 @@ impl ProcessSupervisor for AdoptIntoCallerGroup {
         use std::os::unix::process::CommandExt;
         let group = self.group;
         // Registered after oneharness's own `setpgid(0, 0)`, so this runs second
-        // and is the assignment the child keeps. Moving a *process-group* leader
-        // into another group is permitted — POSIX bars only a **session** leader
-        // from changing its group, and this child is not one — which is what
-        // makes the second call meaningful rather than an error the spawn would
-        // report. `a_caller_can_take_the_harness_child_into_its_own_process_group`
-        // asks the OS afterwards rather than taking that on trust.
+        // and is the assignment the child keeps: an error here would fail the
+        // spawn, and the group the OS reports afterwards is the caller's.
         //
         // SAFETY: `pre_exec` runs after fork in the child, before exec. The
         // closure calls only async-signal-safe `setpgid`, captures one integer,

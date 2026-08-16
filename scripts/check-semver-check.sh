@@ -27,8 +27,16 @@ assert_contains() {
   }
 }
 
-# These values duplicate release-plz's contract; pin the copy so an automation
-# edit cannot silently make this gate disagree about what declares a release.
+# release-plz.toml is the one source for what releases and how each crate is
+# tagged; this script and semver-check.sh both hold copies of it. Reconcile every
+# copy against that source here, the subject grammar included — two release
+# decisions that disagree are worse than either alone.
+grep -Fq 'release_commits = "(?s)^(feat|fix|perf)' release-plz.toml ||
+  fail "release-worthy commit contract drifted from release-plz.toml"
+grep -Fq "breaking_subject_re='^(feat|fix|perf)(\\([^)]+\\))?!:'" scripts/semver-check.sh ||
+  fail "semver script breaking-subject grammar drifted from release-plz.toml's release_commits"
+grep -Fq "release_subject_re='^(feat|fix|perf)" scripts/package-crates.sh ||
+  fail "the two release-gate scripts disagree about which subjects release"
 grep -Fq 'git_tag_name = "oneharness-core-v{{ version }}"' release-plz.toml ||
   fail "core tag namespace drifted from release-plz.toml"
 grep -Fq -- "'oneharness-core-v*'" scripts/semver-check.sh ||
@@ -99,6 +107,7 @@ case "$1" in
         none) echo 'test: no release' ;;
         additive) echo 'feat: add an entry point' ;;
         breaking | othercrate) echo 'feat!: change the API' ;;
+        nonreleasing) echo 'docs!: change the API' ;;
         body) echo 'feat: change the API' ;;
         *) echo 'invalid COMMIT_KIND' >&2; exit 2 ;;
       esac
@@ -183,6 +192,12 @@ assert_contains 'breaks its published API and nothing declares it' "$work/out"
 # A non-breaking commit type does not declare anything either.
 if run_case env SEMVER_RESULT=major COMMIT_KIND=additive just semver-check >"$work/out" 2>&1; then
   fail "a breaking change under a plain 'feat:' passed"
+fi
+
+# Nor does a `!` on a type release-plz never releases: it opens no release PR, so
+# it bumps nothing and the break would ship on someone else's commit.
+if run_case env SEMVER_RESULT=major COMMIT_KIND=nonreleasing just semver-check >"$work/out" 2>&1; then
+  fail "a breaking change under a non-releasing type passed"
 fi
 
 # Neither does a break in the BINARY crate, whose own tag namespace is `v*`.

@@ -46,7 +46,12 @@ fi
 # pull request that is the squash subject — the PR title, which
 # `scripts/check-pr-title.sh` already holds to Conventional Commits — and
 # everywhere else it is the commits themselves.
-breaking_subject_re='^(feat|fix|perf|refactor|docs|test|chore|ci|build|style|revert)(\([^)]+\))?!:'
+#
+# The types are release-plz.toml's `release_commits`, not the wider set a valid
+# subject may use: a `docs!:` break opens no release PR at all, so it declares
+# nothing that would bump anything. Same copy `scripts/package-crates.sh` keeps,
+# and `scripts/check-semver-check.sh` pins both against that one source.
+breaking_subject_re='^(feat|fix|perf)(\([^)]+\))?!:'
 
 declared_in_title() {
   [ -n "${PR_TITLE:-}" ] && [[ "$PR_TITLE" =~ $breaking_subject_re ]]

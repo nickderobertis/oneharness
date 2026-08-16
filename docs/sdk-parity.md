@@ -165,11 +165,11 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--prompt-file` | `promptFiles` | `--flag VALUE` per element |
 | `--harness` | `harnesses` | `--flag VALUE` per element |
 | `--mock-harness` | `mockHarnesses` | `--flag VALUE` per element |
-| `--all` | `all` | `--flag` when true (suppressed by `harnesses`) |
+| `--all` | `all` | `--flag` when true (refused beside `harnesses`) |
 | `--exclude` | `exclude` | `--flag VALUE` per element |
 | `--model` | `models` | `--flag VALUE` per element |
 | `--system` | `system` | `--flag VALUE` |
-| `--system-file` | `systemFile` | `--flag VALUE` (suppressed by `system`) |
+| `--system-file` | `systemFile` | `--flag VALUE` (refused beside `system`) |
 | `--reasoning` | `reasoning` | `--flag VALUE` |
 | `--resume` | `resume` | `--flag VALUE` |
 | `--fork` | `fork` | `--flag` when true |
@@ -188,7 +188,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--env` | `env` | `--flag KEY=VALUE` per entry |
 | `--mode` | `mode` | `--flag VALUE` |
 | `--permit-prompts` | `permitPrompts` | `--flag` when true |
-| `--config` | `config` | `--flag VALUE` (suppressed by `noConfig`) |
+| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 | `--max-parallel` | `maxParallel` | `--flag VALUE` |
 | `--batch-strategy` | `batchStrategy` | `--flag VALUE` |
@@ -196,7 +196,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--print-command` | `printCommand` | `--flag` when true |
 | `--bin` | `bins` | `--flag KEY=VALUE` per entry |
 | `--require-available` | `requireAvailable` | `--flag` when true |
-| `--history` | `history` | `--flag` when true (suppressed by `noHistory`) |
+| `--history` | `history` | `--flag` when true (refused beside `noHistory`) |
 | `--no-history` | `noHistory` | `--flag` when true |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
 | `--history-name` | `historyName` | `--flag VALUE` |
@@ -217,11 +217,11 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--prompt-file` | `promptFiles` | `--flag VALUE` per element |
 | `--harness` | `harnesses` | `--flag VALUE` per element |
 | `--mock-harness` | `mockHarnesses` | `--flag VALUE` per element |
-| `--all` | `all` | `--flag` when true (suppressed by `harnesses`) |
+| `--all` | `all` | `--flag` when true (refused beside `harnesses`) |
 | `--exclude` | `exclude` | `--flag VALUE` per element |
 | `--model` | `models` | `--flag VALUE` per element |
 | `--system` | `system` | `--flag VALUE` |
-| `--system-file` | `systemFile` | `--flag VALUE` (suppressed by `system`) |
+| `--system-file` | `systemFile` | `--flag VALUE` (refused beside `system`) |
 | `--reasoning` | `reasoning` | `--flag VALUE` |
 | `--resume` | `resume` | `--flag VALUE` |
 | `--fork` | `fork` | `--flag` when true |
@@ -240,7 +240,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--env` | `env` | `--flag KEY=VALUE` per entry |
 | `--mode` | `mode` | `--flag VALUE` |
 | `--permit-prompts` | `permitPrompts` | `--flag` when true |
-| `--config` | `config` | `--flag VALUE` (suppressed by `noConfig`) |
+| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 | `--max-parallel` | `maxParallel` | `--flag VALUE` |
 | `--batch-strategy` | `batchStrategy` | `--flag VALUE` |
@@ -248,7 +248,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--print-command` | `printCommand` | `--flag` when true |
 | `--bin` | `bins` | `--flag KEY=VALUE` per entry |
 | `--require-available` | `requireAvailable` | `--flag` when true |
-| `--history` | `history` | `--flag` when true (suppressed by `noHistory`) |
+| `--history` | `history` | `--flag` when true (refused beside `noHistory`) |
 | `--no-history` | `noHistory` | `--flag` when true |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
 | `--history-name` | `historyName` | `--flag VALUE` |
@@ -270,10 +270,10 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | --- | --- | --- |
 | `--compact` | _(always sent)_ | fixed |
 | `--harness` | `harnesses` | `--flag VALUE` per element |
-| `--all` | `all` | `--flag` when true (suppressed by `harnesses`) |
+| `--all` | `all` | `--flag` when true (refused beside `harnesses`) |
 | `--exclude` | `exclude` | `--flag VALUE` per element |
 | `--bin` | `bins` | `--flag KEY=VALUE` per entry |
-| `--config` | `config` | `--flag VALUE` (suppressed by `noConfig`) |
+| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 | `--require-available` | `requireAvailable` | `--flag` when true |
 
@@ -283,7 +283,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | --- | --- | --- |
 | `--compact` | _(always sent)_ | fixed |
 | `--cwd` | `cwd` | `--flag VALUE` |
-| `--config` | `config` | `--flag VALUE` (suppressed by `noConfig`) |
+| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 
 #### `sync` — `oneharness sync`
@@ -295,7 +295,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--harness` | `harnesses` | `--flag VALUE` per element |
 | `--check` | `check` | `--flag` when true |
 | `--global` | `global` | `--flag` when true |
-| `--config` | `config` | `--flag VALUE` (suppressed by `noConfig`) |
+| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 
 #### `init` — `oneharness init`
@@ -311,12 +311,12 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | --- | --- | --- |
 | `--compact` | _(always sent)_ | fixed |
 | `--harness` | `harnesses` | `--flag VALUE` per element |
-| `--all` | `all` | `--flag` when true (suppressed by `harnesses`) |
+| `--all` | `all` | `--flag` when true (refused beside `harnesses`) |
 | `--exclude` | `exclude` | `--flag VALUE` per element |
 | `--bin` | `bins` | `--flag KEY=VALUE` per entry |
 | `--cwd` | `cwd` | `--flag VALUE` |
 | `--timeout` | `timeoutSeconds` | `--flag VALUE` |
-| `--config` | `config` | `--flag VALUE` (suppressed by `noConfig`) |
+| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 | `--format` | **deliberately none** | the SDKs consume the JSON contract; `--format text` is the human-readable view of the same data, carrying nothing the JSON does not |
 
@@ -354,10 +354,10 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | _(positional)_ | `session` | positional argument (suppressed by `last`) |
 | `--last` | `last` | `--flag` when true |
 | `--all` | `all` | `--flag` when true |
-| `--project` | `project` | `--flag VALUE` (suppressed by `allProjects`) |
+| `--project` | `project` | `--flag VALUE` (refused beside `allProjects`) |
 | `--all-projects` | `allProjects` | `--flag` when true |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
-| `--config` | `config` | `--flag VALUE` (suppressed by `noConfig`) |
+| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 | `--format` | **deliberately none** | the SDKs consume the JSON contract; `--format text` is the human-readable view of the same data, carrying nothing the JSON does not |
 
@@ -367,10 +367,10 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | --- | --- | --- |
 | `--compact` | _(always sent)_ | fixed |
 | `--variant` | `variant` | `--flag VALUE` |
-| `--project` | `project` | `--flag VALUE` (suppressed by `allProjects`) |
+| `--project` | `project` | `--flag VALUE` (refused beside `allProjects`) |
 | `--all-projects` | `allProjects` | `--flag` when true |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
-| `--config` | `config` | `--flag VALUE` (suppressed by `noConfig`) |
+| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 | `--format` | **deliberately none** | the SDKs consume the JSON contract; `--format text` is the human-readable view of the same data, carrying nothing the JSON does not |
 
@@ -382,11 +382,11 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--after` | `after` | `--flag VALUE` |
 | `--label` | `labels` | `--flag KEY=VALUE` per entry |
 | `--variant` | `variant` | `--flag VALUE` |
-| `--project` | `project` | `--flag VALUE` (suppressed by `allProjects`) |
+| `--project` | `project` | `--flag VALUE` (refused beside `allProjects`) |
 | `--all-projects` | `allProjects` | `--flag` when true |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
 | `--events` | `events` | `--flag` when true |
-| `--config` | `config` | `--flag VALUE` (suppressed by `noConfig`) |
+| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 
 #### `historyClear` — `oneharness history clear`
@@ -394,11 +394,11 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | CLI flag | SDK option | How it is sent |
 | --- | --- | --- |
 | `--compact` | _(always sent)_ | fixed |
-| `--project` | `project` | `--flag VALUE` (suppressed by `allProjects`) |
+| `--project` | `project` | `--flag VALUE` (refused beside `allProjects`) |
 | `--all-projects` | `allProjects` | `--flag` when true |
 | `--yes` | `yes` | `--flag` when true |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
-| `--config` | `config` | `--flag VALUE` (suppressed by `noConfig`) |
+| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 
 #### `historyMigrate` — `oneharness history migrate`
@@ -407,7 +407,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | --- | --- | --- |
 | `--compact` | _(always sent)_ | fixed |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
-| `--config` | `config` | `--flag VALUE` (suppressed by `noConfig`) |
+| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 
 ### Output contracts, field by field

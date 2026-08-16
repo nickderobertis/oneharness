@@ -24,6 +24,7 @@ from oneharness_sdk._client import (
     _CAPABILITIES,
     _capability_arguments,
     _input,
+    _states_a_choice,
     _validate,
 )
 from oneharness_sdk._client import (
@@ -144,6 +145,27 @@ POPULATED: dict[str, Any] = {
     "variant": "claude-code:work",
     "yes": True,
 }
+
+
+def _contradicts(bound: dict[str, Any], option: str) -> bool:
+    """Would populating this option and its suppressor be a refused pair?
+
+    Asked with the client's own predicate rather than a second copy of the rule:
+    a table that decided contradictions differently from the code under test
+    would drift into asserting nothing.
+
+    `bound` carries `Any` values because it holds rows of the generated
+    `capabilities.json` as they were deserialized — the same boundary
+    `_states_a_choice` reads them at, and this helper only forwards them there.
+    """
+    binding = bound.get(option)
+    if binding is None or binding["unless"] is None:
+        return False
+    if binding.get("unless_resolution", "refuse") == "prefer":
+        return False
+    return _states_a_choice(binding, POPULATED.get(option)) and _states_a_choice(
+        bound[binding["unless"]], POPULATED.get(binding["unless"])
+    )
 
 
 def python_input(root: str, value: Any) -> Any:
@@ -598,20 +620,6 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             sorted(result["harness"] for result in everything["results"]), registry
         )
 
-        # The other direction, on the same pair: a suppressor that does render
-        # still suppresses, and it has to — `--all` beside `--harness` is the
-        # clap conflict this binding exists to avoid, so a miss fails the call.
-        one = await client.run(
-            {
-                "prompt": "rendering suppressor drops --all",
-                "all": True,
-                "harnesses": ["codex"],
-                "mode": "bypass",
-                "print_command": True,
-            }
-        )
-        self.assertEqual([result["harness"] for result in one["results"]], ["codex"])
-
         prompt = "empty system still suppresses --system-file"
         empty_system = await client.run(
             {
@@ -627,6 +635,95 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             empty_system["results"][0]["command"],
             ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--json", prompt],
         )
+
+    def test_a_preferred_pair_still_resolves_instead_of_refusing(self) -> None:
+        """`{session, last}` is one request, and `--last` is what it means.
+
+        The lookup union deliberately accepts both halves and defines them as
+        "the most recent", so this is the pair the manifest annotates `prefer`.
+        Refusing it the way a contradiction is refused would break the very
+        lookup the suppression mechanism was written for.
+        """
+        parsed = _input("history_lookup", {"session": "older", "last": True}, "lookup")
+        rendered = _capability_arguments("history", parsed)
+        self.assertIn("--last", rendered)
+        self.assertNotIn("older", rendered)
+
+    async def test_a_contradiction_is_refused_rather_than_edited_out(self) -> None:
+        """A caller who asked for two different things is told, not answered.
+
+        `{"all": True, "harnesses": ["codex"]}` asks for every harness and for
+        one harness at once. Suppression alone answers it by running `codex` — a
+        paid turn on an identity nobody chose, reported as a success — so the
+        manifest annotates the pair `refuse` and the call ends before a spawn.
+        """
+        client = self.client()
+        with self.assertRaisesRegex(
+            ContractError,
+            r"invalid oneharness run options: `all` and `harnesses` are mutually exclusive",
+        ):
+            await client.run(
+                {
+                    "prompt": "never spawned",
+                    "all": True,
+                    "harnesses": ["codex"],
+                    "mode": "bypass",
+                    "print_command": True,
+                }
+            )
+
+        # The same pair the empty-`system` suppression turns on, read from its
+        # other side: two non-empty system sources are two answers to "what
+        # instructs this turn", and suppression picks the file silently. Only the
+        # stated choice refuses — `system: ""` still suppresses, unchanged.
+        with self.assertRaisesRegex(
+            ContractError,
+            r"invalid oneharness run options: `system_file` and `system` are mutually "
+            r"exclusive",
+        ):
+            await client.run(
+                {
+                    "prompt": "never spawned",
+                    "harnesses": ["codex"],
+                    "system": "be terse",
+                    "system_file": str(Path(tempfile.gettempdir()) / "never-read.txt"),
+                    "mode": "bypass",
+                    "print_command": True,
+                }
+            )
+
+        # Every refuse pair, not just the selectors: two answers to "which config
+        # layers", "is this run recorded", "which project's store". The Python
+        # spelling is the caller's own, not the manifest's camelCase.
+        with self.assertRaisesRegex(
+            ContractError, r"`config` and `no_config` are mutually exclusive"
+        ):
+            await client.run(
+                {"prompt": "never spawned", "config": "oneharness.toml", "no_config": True}
+            )
+        with self.assertRaisesRegex(
+            ContractError, r"`history` and `no_history` are mutually exclusive"
+        ):
+            await client.run({"prompt": "never spawned", "history": True, "no_history": True})
+        with self.assertRaisesRegex(
+            ContractError,
+            r"invalid oneharness history list options: `project` and `all_projects` are "
+            r"mutually exclusive",
+        ):
+            await client.history_list({"project": "somewhere", "all_projects": True})
+
+        # The switch half is a value like any other: `False` renders nothing, so
+        # there is no second answer and the call proceeds on the one it has.
+        one = await client.run(
+            {
+                "prompt": "an unset switch contradicts nothing",
+                "all": False,
+                "harnesses": ["codex"],
+                "mode": "bypass",
+                "print_command": True,
+            }
+        )
+        self.assertEqual([result["harness"] for result in one["results"]], ["codex"])
 
     async def test_init_scaffolds_a_config_and_refuses_to_clobber_it(self) -> None:
         """Write a starter file, then treat an existing one as a refusal."""
@@ -792,9 +889,21 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             names = {binding["option"] for binding in capability["bindings"]}
             names.update(INPUT_KEYS[root][key] for key in SCHEMAS[root].get("required", []))
             populated = {inverse.get(name, name): POPULATED[name] for name in names}
+            # Every option at once is a legal *document* but not a legal *call*:
+            # the manifest annotates mutually exclusive pairs `refuse`, and a
+            # caller setting both halves is the contradiction the client now
+            # rejects. So the contract is still walked over everything, while the
+            # argv walk drops the suppressed half of each refusing pair — the
+            # request the CLI itself would accept.
+            bound = {binding["option"]: binding for binding in capability["bindings"]}
+            renderable = {
+                inverse.get(name, name): POPULATED[name]
+                for name in names
+                if not _contradicts(bound, name)
+            }
             with self.subTest(method=method):
                 self.assertEqual(_validate(root, populated, "populated options"), populated)
-                rendered = _capability_arguments(method, _input(root, populated, "populated"))
+                rendered = _capability_arguments(method, _input(root, renderable, "populated"))
                 self.assertEqual(rendered[: len(capability["argv"])], capability["argv"])
 
     async def test_additive_output_fields_are_preserved(self) -> None:

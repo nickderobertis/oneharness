@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.1](https://github.com/nickderobertis/oneharness/compare/v0.10.0...v0.10.1) - 2026-08-16
+
+### Added
+
+- let an embedder own the harness child a run spawns ([#1260](https://github.com/nickderobertis/oneharness/pull/1260))
+
 ## [0.10.0](https://github.com/nickderobertis/oneharness/compare/v0.9.0...v0.10.0) - 2026-08-16
 
 ### Added

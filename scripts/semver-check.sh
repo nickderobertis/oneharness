@@ -63,7 +63,6 @@ last_release_tag() {
   git tag --merged HEAD --list "$1" --sort=-version:refname | head -n 1
 }
 
-# Every commit since that tag.
 declared_in_commits() {
   local last_tag="$1" path="$2" subject body
   while IFS= read -r commit; do

@@ -189,25 +189,20 @@ Use the `just` recipes; do not hand-roll equivalents.
   reaches a harness tree, since each harness leads its own process group), and
   whether oneharness may take over the host's SIGINT/SIGTERM disposition
   (`signal_cancel`, which the CLI sets and an embedder leaves off, cancelling
-  its own token instead). The fourth is that hop's *grouping*, lost silently
-  otherwise: a watchdog reads a busy subtree as idle and the caller's kill leaves
-  paid harness processes billing. It is a `ProcessSupervisor` on
-  `run_supervised`, never a fifth `RunControls` field — that struct is
-  exhaustively constructible, so a field would break every literal already
-  written and make an additive capability a major release. Any further side
-  channel takes its own entry point for the same reason. Where the hooks SIT is
-  the contract: `spawning` after `io::process`'s own `Tree::prepare` (a caller's
-  `pre_exec` must run last to win), `spawned` before any wait or pipe read.
-  Teardown then follows the group the child is REALLY in, asked of the OS: a
-  group the caller re-parented it into is one oneharness must NOT signal, so it
-  ends the direct child and the caller owns the rest. Warnings still go to the
-  host's stderr, so an embedder inherits them. `tests/library.rs` is that
-  surface's drift alarm, one test per property: report-back-without-printing (an
-  fd-1 redirect across the call), an event observed while the run is
-  demonstrably still streaming, a cancel that stops the harness's own descendant
-  — proven from outside the tree — and, for the supervisor, both halves of that
-  teardown split plus a hand-over from EVERY execution model, since a hook
-  dropped at one spawn site is how the grouping goes missing.
+  its own token instead). The fourth is that hop's *grouping*, and it is a
+  `ProcessSupervisor` on `run_supervised` rather than a fifth `RunControls`
+  field: that struct is exhaustively constructible, so a field would break every
+  literal already written — as any further side channel would, which is why each
+  takes its own entry point. A caller's `pre_exec` must run last to win, and
+  teardown follows the group the child is REALLY in, asked of the OS: one the
+  caller re-parented it into is the caller's to reap, and oneharness ends only
+  the direct child. Warnings still go to the host's stderr, so an embedder
+  inherits them. `tests/library.rs` is that surface's drift alarm, one test per
+  property: report-back-without-printing (an fd-1 redirect across the call), an
+  event observed while the run is demonstrably still streaming, a cancel that
+  stops the harness's own descendant — proven from outside the tree — and, for
+  the supervisor, both teardown halves and a hand-over from every execution
+  model.
 - `run` spawns the selected harnesses **in parallel**, each as a subprocess with
   a timeout, and emits one JSON report. `io::process` owns each launcher's whole
   tree (Unix process group; Windows kill-on-close Job Object assigned while the

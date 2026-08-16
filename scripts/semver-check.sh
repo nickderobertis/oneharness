@@ -87,6 +87,9 @@ uncommitted() {
 output="$(mktemp)"
 trap 'rm -f "$output"' EXIT
 
+# Crates whose break is declared, named in the single success line.
+declared=()
+
 check_crate() {
   local package="$1" tag_glob="$2" path="$3"
   if cargo "+$toolchain" semver-checks check-release --package "$package" >"$output" 2>&1; then
@@ -101,7 +104,8 @@ check_crate() {
     exit 1
   fi
   if declared_in_title || declared_in_commits "$tag_glob" "$path" || uncommitted "$path"; then
-    echo "semver-check: \`$package\` has a DECLARED breaking change; release-plz will bump its major" >&2
+    # Worth saying, but not worth a second success line: it rides the one below.
+    declared+=("$package")
     return 0
   fi
   cat "$output" >&2
@@ -114,4 +118,8 @@ check_crate() {
 check_crate oneharness-core 'oneharness-core-v*' crates/oneharness-core
 check_crate oneharness 'v*' src
 
-echo "semver-check: ok"
+if [ ${#declared[@]} -gt 0 ]; then
+  echo "semver-check: ok (declared breaking change in ${declared[*]}; release-plz will bump the major)"
+else
+  echo "semver-check: ok"
+fi

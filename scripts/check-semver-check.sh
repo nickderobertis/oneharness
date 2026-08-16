@@ -168,13 +168,16 @@ for declaration in breaking body; do
     cat "$work/out" >&2
     fail "a breaking change declared by commit ($declaration) was rejected"
   fi
-  assert_contains 'has a DECLARED breaking change' "$work/out"
+  assert_contains 'ok (declared breaking change in oneharness-core' "$work/out"
 done
 if ! run_case env SEMVER_RESULT=major PR_TITLE='feat!: change the API' just semver-check >"$work/out" 2>&1; then
   cat "$work/out" >&2
   fail "a breaking change declared by the squash subject was rejected"
 fi
-assert_contains 'has a DECLARED breaking change' "$work/out"
+# Recipes are quiet on success: a declared break is said IN that one line, never
+# as a second.
+[[ $(wc -l <"$work/out") -eq 1 ]] || fail "a passing run said more than its one line"
+assert_contains 'ok (declared breaking change in oneharness-core' "$work/out"
 
 # A developer has to be able to run the gate before committing the declaration.
 if ! run_case env SEMVER_RESULT=major GIT_DIFF_MODE=dirty just semver-check >"$work/out" 2>&1; then

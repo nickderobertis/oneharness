@@ -57,14 +57,15 @@ declared_in_title() {
   [ -n "${PR_TITLE:-}" ] && [[ "$PR_TITLE" =~ $breaking_subject_re ]]
 }
 
-# Every commit since this crate's own release tag, since "the last release" is a
-# different commit per crate (see release-plz.toml's tag namespaces).
+# "The last release" is a different commit per crate: release-plz.toml gives each
+# its own tag namespace.
+last_release_tag() {
+  git tag --merged HEAD --list "$1" --sort=-version:refname | head -n 1
+}
+
+# Every commit since that tag.
 declared_in_commits() {
-  local tag_glob="$1" path="$2" last_tag subject body
-  last_tag="$(git tag --merged HEAD --list "$tag_glob" --sort=-version:refname | head -n 1)"
-  if [ -z "$last_tag" ]; then
-    return 1
-  fi
+  local last_tag="$1" path="$2" subject body
   while IFS= read -r commit; do
     subject="$(git show -s --format=%s "$commit")"
     body="$(git show -s --format=%b "$commit")"
@@ -103,8 +104,24 @@ check_crate() {
     echo "semver-check: cargo-semver-checks could not judge \`$package\`; fix the diagnostics above and rerun 'just semver-check'" >&2
     exit 1
   fi
-  if declared_in_title || declared_in_commits "$tag_glob" "$path" || uncommitted "$path"; then
+  # Neither of these needs the release history, so a checkout without it can
+  # still say yes.
+  if declared_in_title || uncommitted "$path"; then
     # Worth saying, but not worth a second success line: it rides the one below.
+    declared+=("$package")
+    return 0
+  fi
+  local last_tag
+  last_tag="$(last_release_tag "$tag_glob")"
+  if [ -z "$last_tag" ]; then
+    # An absent release history is not "nothing declared it": the commits that
+    # would say so cannot even be enumerated. Reporting it as undeclared would
+    # send the reader to rewrite a subject when the fix is the checkout.
+    cat "$output" >&2
+    echo "semver-check: \`$package\` breaks its published API and no \`$tag_glob\` release tag is visible to say whether a commit declares it; a shallow or tagless checkout carries none (\`git fetch --tags --force\`, or fetch-depth: 0 + fetch-tags in CI), then rerun 'just semver-check'" >&2
+    exit 1
+  fi
+  if declared_in_commits "$last_tag" "$path"; then
     declared+=("$package")
     return 0
   fi

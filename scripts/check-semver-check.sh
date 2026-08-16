@@ -212,6 +212,20 @@ fi
 # shellcheck disable=SC2016
 assert_contains '`oneharness` breaks its published API' "$work/out"
 
+# An absent release history is its own answer, not "nothing declares it": the
+# commits that would declare it cannot be enumerated at all, so the diagnostic
+# has to name the checkout rather than send the reader to rewrite a subject.
+if run_case env SEMVER_RESULT=major NO_TAG=1 just semver-check >"$work/out" 2>&1; then
+  fail "a break judged against no release history passed as undeclared"
+fi
+assert_contains 'release tag is visible to say whether a commit declares it' "$work/out"
+assert_contains 'fetch-depth: 0' "$work/out"
+# The declarations that need no history still stand there.
+if ! run_case env SEMVER_RESULT=major NO_TAG=1 PR_TITLE='feat!: change the API' just semver-check >"$work/out" 2>&1; then
+  cat "$work/out" >&2
+  fail "a squash subject declaring the break was rejected for want of release tags"
+fi
+
 # A tool that could not judge at all is never a pass: its diagnostics are the
 # finding, and no declaration excuses them.
 if run_case env SEMVER_RESULT=offline COMMIT_KIND=breaking just semver-check >"$work/out" 2>&1; then

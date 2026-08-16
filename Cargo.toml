@@ -53,6 +53,18 @@ serde_json = "1"
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
 
+# The other half of the same proof: a `RunControls::supervisor` puts each harness
+# child into the caller's own process group on Unix and its own Job Object here,
+# and `tests/library.rs` asserts that membership from the caller's side —
+# `IsProcessInJob` is the only thing that can answer it. Already in the tree via
+# `oneharness-core`'s Windows dependency, so it costs no extra download.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+] }
+
 [profile.release]
 strip = true
 lto = "thin"

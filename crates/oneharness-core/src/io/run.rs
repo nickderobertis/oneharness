@@ -8,8 +8,8 @@
 //! process's stdout; the `oneharness` binary is the thin shell that prints what
 //! it gets back, and an in-process caller reads the same value.
 //!
-//! Three things a caller supplies through [`RunControls`] that a subprocess hop
-//! used to give for free:
+//! Four things a caller supplies that a subprocess hop used to give for free —
+//! three through [`RunControls`], the fourth through [`run_supervised`]:
 //!
 //! * an [`EventSink`], so normalized events arrive **as they occur** rather than
 //!   when the run ends (the CLI's sink is the one that writes the NDJSON stream
@@ -19,7 +19,11 @@
 //!   own process-group leader, so nothing the caller signals reaches it;
 //! * whether oneharness may own the host's SIGINT/SIGTERM disposition
 //!   ([`RunControls::signal_cancel`]), which the CLI wants and an embedder with
-//!   its own signal handling does not.
+//!   its own signal handling does not;
+//! * a [`ProcessSupervisor`] ([`run_supervised`]), so the caller can put each
+//!   harness child into the process group / job object it supervises — the
+//!   grouping the subprocess hop provided, without which a watchdog cannot see
+//!   the harness subtree as one unit and the caller's own kill does not reap it.
 //!
 //! Diagnostics still go to the host's stderr (`eprintln!`), exactly as the CLI
 //! emitted them, so a warning a run produces is never silently dropped.
@@ -60,7 +64,7 @@ use crate::io::http_turn;
 use crate::io::identity::{
     variant_environment, variant_unprovisioned_identity, UnprovisionedIdentity,
 };
-use crate::io::runner::{self, Job, NextRun, Outcome};
+use crate::io::runner::{self, Job, NextRun, Outcome, ProcessSupervisor, SpawnControls};
 use crate::io::server_pool;
 use crate::io::session as session_io;
 use std::path::PathBuf;
@@ -103,6 +107,13 @@ pub trait EventSink {
 ///
 /// [`Default`] is the embedder's baseline — no sink, a fresh token, the host's
 /// own signal handling left alone, and the engine's version on the report.
+///
+/// Every field is public and the struct is exhaustively constructible, which is
+/// exactly why a *new* side channel does not arrive here: adding a field breaks
+/// every literal a consumer has already written, so a capability that is purely
+/// additive would ship as a major bump. New ones take their own entry point
+/// instead — [`run_supervised`] is the first, and this struct passes through it
+/// unchanged.
 #[derive(Default)]
 pub struct RunControls<'a> {
     /// Receives each normalized event of a **streaming** run
@@ -435,12 +446,67 @@ fn plan_large_input(
 /// # Ok::<(), oneharness_core::errors::OneharnessError>(())
 /// ```
 pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, OneharnessError> {
+    run_supervised(args, controls, None)
+}
+
+/// [`run`], with the caller's own claim on every harness child it spawns.
+///
+/// `supervisor` puts each one into the **process group (POSIX) or job object
+/// (Windows) the caller supervises** — the grouping a consumer had for free
+/// while it drove the `oneharness` binary as a subprocess, and which calling the
+/// engine in-process otherwise takes away: without it an activity watchdog
+/// cannot see a harness subtree as one unit (a busy member reads as idle), and a
+/// kill the caller issues does not reap the tree, leaving paid harness processes
+/// running. `None` is [`run`] exactly.
+///
+/// oneharness still owns and tears down every tree it spawns; only a `spawning`
+/// hook that re-parents the child's process group moves that responsibility, and
+/// then only for the part it took. [`ProcessSupervisor`] states the division and
+/// where each hook sits.
+///
+/// It is a second entry point rather than a field on [`RunControls`] because
+/// that struct is exhaustively constructible by every embedder: a field there
+/// would break the literals consumers have already written, turning an
+/// otherwise additive capability into a major release. Pass the same
+/// [`RunControls`] through here.
+///
+/// ```no_run
+/// use std::process::Child;
+/// use oneharness_core::io::run::{run_supervised, RunControls, RunRequest};
+/// use oneharness_core::io::runner::ProcessSupervisor;
+///
+/// struct Watchdog;
+/// impl ProcessSupervisor for Watchdog {
+///     fn spawned(&self, child: &Child) {
+///         // The harness leads its own process group, so this pid is the pgid a
+///         // watchdog can poll and a kill can reap.
+///         eprintln!("harness pid {}", child.id());
+///     }
+/// }
+///
+/// let request = RunRequest::default();
+/// let outcome = run_supervised(&request, RunControls::default(), Some(&Watchdog))?;
+/// # let _ = outcome;
+/// # Ok::<(), oneharness_core::errors::OneharnessError>(())
+/// ```
+pub fn run_supervised(
+    args: &RunRequest,
+    controls: RunControls<'_>,
+    supervisor: Option<&dyn ProcessSupervisor>,
+) -> Result<RunOutcome, OneharnessError> {
     let RunControls {
         events: mut event_sink,
         cancel,
         signal_cancel,
         version,
     } = controls;
+    // The two side channels every spawn in this run answers to, resolved once so
+    // each driver hands the runner the same pair: the token that tears a harness
+    // tree down, and the caller that may also own it.
+    let spawn = SpawnControls {
+        cancel: &cancel,
+        supervisor,
+    };
     // Project config is discovered from where the harnesses will run (--cwd,
     // else the current directory): the project being operated on is the one
     // whose config should apply.
@@ -1133,7 +1199,7 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
             &unit_ids,
             controlled.as_ref(),
             &mut event_sink,
-            &cancel,
+            spawn,
         );
         streamed_history = streamed.history;
         // A driven turn's signals are applied per candidate, inside the driver:
@@ -1188,12 +1254,9 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
             handle: chain.handle,
             prompt,
         };
-        let capture = runner::run_job_streaming_controlled_cancellable(
-            &jobs[0],
-            Some(&input),
-            &cancel,
-            |_| runner::StreamStep::Continue,
-        );
+        let capture = runner::run_job_streaming_supervised(&jobs[0], Some(&input), spawn, |_| {
+            runner::StreamStep::Continue
+        });
         let results = plan
             .into_iter()
             .map(|entry| match entry {
@@ -1238,7 +1301,7 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
             schema.as_ref(),
             max_retries,
             multi_model,
-            &cancel,
+            spawn,
         );
         (results, Some(fb))
     } else {
@@ -1282,7 +1345,7 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
                 schema.as_ref(),
                 max_retries,
                 max_parallel,
-                &cancel,
+                spawn,
             );
             // The fan-out actually forked iff the warm-up exposed a session to
             // branch (run_fork_batch sets the fan-out plans' `resume` only then).
@@ -1303,7 +1366,7 @@ pub fn run(args: &RunRequest, controls: RunControls<'_>) -> Result<RunOutcome, O
                 max_retries,
                 max_parallel,
                 &waves,
-                &cancel,
+                spawn,
             )
         };
 
@@ -2247,7 +2310,7 @@ fn drive_plan_sequentially(
     unit_ids: &[&str],
     controlled: Option<&ControlledRun<'_>>,
     sink: &mut Option<&mut dyn EventSink>,
-    cancel: &CancelToken,
+    spawn: SpawnControls<'_>,
 ) -> StreamedPlan {
     let mut results: Vec<RunResult> = Vec::new();
     let mut history: Vec<StreamedHistory> = Vec::new();
@@ -2288,11 +2351,9 @@ fn drive_plan_sequentially(
                         index,
                         history_writer.zip(run_id),
                         sink,
-                        cancel,
+                        spawn,
                     ),
-                    None => {
-                        stream_one_harness(unit, history_writer.zip(run_id), None, sink, cancel)
-                    }
+                    None => stream_one_harness(unit, history_writer.zip(run_id), None, sink, spawn),
                 }
             }
         };
@@ -2333,7 +2394,7 @@ fn drive_controlled_candidate(
     index: usize,
     history: Option<(&HistoryWriter, crate::domain::history::HistoryId)>,
     sink: &mut Option<&mut dyn EventSink>,
-    cancel: &CancelToken,
+    spawn: SpawnControls<'_>,
 ) -> StreamedHarness {
     let spec = unit.spec;
     let shape = spec
@@ -2373,7 +2434,7 @@ fn drive_controlled_candidate(
             prompt,
         }),
         sink,
-        cancel,
+        spawn,
     );
     // Read off the conversation before it is released: the session id and the
     // answer a driven turn produced are knowable only from its protocol frames,
@@ -2417,7 +2478,7 @@ fn stream_one_harness(
     history: Option<(&HistoryWriter, crate::domain::history::HistoryId)>,
     controlled: Option<&runner::ControlledInput>,
     sink: &mut Option<&mut dyn EventSink>,
-    cancel: &CancelToken,
+    spawn: SpawnControls<'_>,
 ) -> StreamedHarness {
     use crate::io::runner::StreamStep;
     use serde_json::Value;
@@ -2425,51 +2486,46 @@ fn stream_one_harness(
     let harness_id = unit.harness_id;
     let mut next_index = 0usize;
     let mut persisted_event_indexes = BTreeSet::new();
-    let capture = runner::run_job_streaming_controlled_cancellable(
-        unit.job,
-        controlled,
-        cancel,
-        |line| {
-            let Ok(value) = serde_json::from_str::<Value>(line) else {
-                return StreamStep::Continue;
-            };
-            let evs = events::events_from_value(&value, next_index);
-            if evs.is_empty() {
-                return StreamStep::Continue;
-            }
-            next_index += evs.len();
-            for ev in &evs {
-                if let Some((writer, run_id)) = history {
-                    match writer.append_event_tracked(run_id, harness_id, ev.clone()) {
-                        Ok(outcome) => {
-                            persisted_event_indexes.insert(ev.index);
-                            if let Some(err) = outcome.index_error {
-                                eprintln!(
+    let capture = runner::run_job_streaming_supervised(unit.job, controlled, spawn, |line| {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            return StreamStep::Continue;
+        };
+        let evs = events::events_from_value(&value, next_index);
+        if evs.is_empty() {
+            return StreamStep::Continue;
+        }
+        next_index += evs.len();
+        for ev in &evs {
+            if let Some((writer, run_id)) = history {
+                match writer.append_event_tracked(run_id, harness_id, ev.clone()) {
+                    Ok(outcome) => {
+                        persisted_event_indexes.insert(ev.index);
+                        if let Some(err) = outcome.index_error {
+                            eprintln!(
                                 "oneharness: warning: could not index history event for `{}`: {err}",
                                 harness_id
                             );
-                            }
-                        }
-                        Err(err) => {
-                            eprintln!(
-                                "oneharness: warning: could not write history event for `{}`: {err}",
-                                harness_id
-                            );
                         }
                     }
-                }
-                // A sink that cannot take the event (the CLI's stdout pipe broke:
-                // the consumer short-circuited and left) is the stop signal —
-                // stop reading and tear the child down.
-                if let Some(sink) = sink.as_mut() {
-                    if sink.event(harness_id, ev) == SinkStep::Stop {
-                        return StreamStep::Stop;
+                    Err(err) => {
+                        eprintln!(
+                            "oneharness: warning: could not write history event for `{}`: {err}",
+                            harness_id
+                        );
                     }
                 }
             }
-            StreamStep::Continue
-        },
-    );
+            // A sink that cannot take the event (the CLI's stdout pipe broke:
+            // the consumer short-circuited and left) is the stop signal —
+            // stop reading and tear the child down.
+            if let Some(sink) = sink.as_mut() {
+                if sink.event(harness_id, ev) == SinkStep::Stop {
+                    return StreamStep::Stop;
+                }
+            }
+        }
+        StreamStep::Continue
+    });
     let result = executed_result(
         unit.spec,
         unit.bin.to_string(),
@@ -3120,7 +3176,7 @@ fn run_in_waves(
     max_retries: u32,
     max_parallel: usize,
     waves: &[Vec<usize>],
-    cancel: &CancelToken,
+    spawn: SpawnControls<'_>,
 ) -> Vec<Outcome> {
     let mut slots: Vec<Option<Outcome>> = (0..jobs.len()).map(|_| None).collect();
     for wave in waves {
@@ -3129,15 +3185,15 @@ fn run_in_waves(
             // Structured output: after each run, validate and (if it failed and
             // retries remain) re-run with a feedback prompt. The closure is pure
             // domain validation; the runner owns the spawning.
-            Some(sch) => runner::run_jobs_with_cancel(
+            Some(sch) => runner::run_jobs_supervised(
                 &wave_jobs,
                 max_parallel,
-                cancel,
+                spawn,
                 |k, attempt, capture| {
                     retry_decision(&job_plans[wave[k]], sch, attempt, max_retries, capture)
                 },
             ),
-            None => runner::run_jobs_with_cancel(&wave_jobs, max_parallel, cancel, |_, _, _| None),
+            None => runner::run_jobs_supervised(&wave_jobs, max_parallel, spawn, |_, _, _| None),
         };
         for (k, out) in outs.into_iter().enumerate() {
             slots[wave[k]] = Some(out);
@@ -3165,11 +3221,11 @@ fn run_fork_batch(
     schema: Option<&Schema>,
     max_retries: u32,
     max_parallel: usize,
-    cancel: &CancelToken,
+    spawn: SpawnControls<'_>,
 ) -> Vec<Outcome> {
     let n = jobs.len();
     // Warm-up: job 0 alone (its own wave).
-    let warm = runner::run_jobs_with_cancel(&jobs[0..1], 1, cancel, |_, attempt, capture| {
+    let warm = runner::run_jobs_supervised(&jobs[0..1], 1, spawn, |_, attempt, capture| {
         schema.and_then(|s| retry_decision(&job_plans[0], s, attempt, max_retries, capture))
     })
     .into_iter()
@@ -3203,7 +3259,7 @@ fn run_fork_batch(
     }
     // Fan-out: jobs 1..n concurrently (local index k → job 1 + k).
     let fan =
-        runner::run_jobs_with_cancel(&jobs[1..n], max_parallel, cancel, |k, attempt, capture| {
+        runner::run_jobs_supervised(&jobs[1..n], max_parallel, spawn, |k, attempt, capture| {
             schema.and_then(|s| retry_decision(&job_plans[1 + k], s, attempt, max_retries, capture))
         });
     let mut outcomes = Vec::with_capacity(n);
@@ -3297,14 +3353,14 @@ fn run_one_job(
     plan: &HarnessPlan,
     schema: Option<&Schema>,
     max_retries: u32,
-    cancel: &CancelToken,
+    spawn: SpawnControls<'_>,
 ) -> Outcome {
     let jobs = std::slice::from_ref(job);
     let outs = match schema {
-        Some(sch) => runner::run_jobs_with_cancel(jobs, 1, cancel, |_, attempt, capture| {
+        Some(sch) => runner::run_jobs_supervised(jobs, 1, spawn, |_, attempt, capture| {
             retry_decision(plan, sch, attempt, max_retries, capture)
         }),
-        None => runner::run_jobs_with_cancel(jobs, 1, cancel, |_, _, _| None),
+        None => runner::run_jobs_supervised(jobs, 1, spawn, |_, _, _| None),
     };
     outs.into_iter().next().expect("one job, one outcome")
 }
@@ -3325,7 +3381,7 @@ fn run_fallback(
     schema: Option<&Schema>,
     max_retries: u32,
     multi_model: bool,
-    cancel: &CancelToken,
+    spawn: SpawnControls<'_>,
 ) -> (Vec<RunResult>, FallbackReport) {
     let mut results: Vec<RunResult> = Vec::new();
     let mut fell_through: Vec<FallThrough> = Vec::new();
@@ -3346,7 +3402,7 @@ fn run_fallback(
                     &job_plans[job_index],
                     schema,
                     max_retries,
-                    cancel,
+                    spawn,
                 );
                 let command = jobs[job_index].argv.clone();
                 executed_result(

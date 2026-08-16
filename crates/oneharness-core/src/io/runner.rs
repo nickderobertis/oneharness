@@ -5,7 +5,7 @@
 //! drained on their own threads so a chatty harness can never deadlock the wait.
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -48,6 +48,135 @@ pub struct Job {
 pub struct NextRun {
     pub argv: Vec<String>,
     pub stdin: Option<String>,
+}
+
+/// The caller's own claim on every harness child a run spawns: the seam for
+/// putting each one into the **process group (POSIX) or job object (Windows)
+/// the embedder already supervises**.
+///
+/// A consumer that drove the `oneharness` binary as a subprocess got that
+/// grouping from the OS for free — the whole harness tree hung under one child
+/// it owned. Calling [`crate::io::run::run`] in-process removes that hop, and
+/// with it the two things the group bought: an activity watchdog can no longer
+/// see the harness subtree as one unit (a busy member reads as idle and is
+/// condemned), and the caller's own kill no longer reaps the tree (a killed run
+/// leaves paid harness processes running and billing). These two hooks give
+/// both back. They are not general-purpose spawn callbacks: grouping and
+/// teardown are what they exist for.
+///
+/// Both methods default to doing nothing, so an implementation writes only the
+/// half it needs, and a run driven through plain [`crate::io::run::run`] — which
+/// passes no supervisor — behaves exactly as it did before this existed. The
+/// trait is [`Sync`] because
+/// a parallel run spawns its harnesses from several threads at once, sharing
+/// one supervisor across them.
+///
+/// # Which side owns teardown
+///
+/// oneharness contains every child it spawns in a tree of its own and tears
+/// that tree down on a timeout, a consumer stop, or a
+/// [`crate::io::cancel::CancelToken`]. Setting a hook does not switch that off:
+///
+/// * **Observing hooks** — recording the pid and its group, adding the child to
+///   a Windows job object of your own — leave the child leading the group
+///   oneharness created, so oneharness's teardown still ends the whole
+///   descendant tree, exactly as with no supervisor at all.
+/// * **A `spawning` hook that re-parents the child's process group** (a
+///   `pre_exec` `setpgid` into a group of yours) makes that group yours, and
+///   with it the descendants that inherit it. oneharness will not signal a
+///   process group it did not create — yours can hold your own processes,
+///   including the caller itself — so its teardown confines itself to the
+///   direct child (TERM, a grace, then KILL) and reaping the rest of that tree
+///   is yours to do.
+///
+/// Windows needs no such division: a job assignment nests, so the child stays
+/// in oneharness's job as well as yours and either side's teardown ends it.
+///
+/// Hand one to a run through [`crate::io::run::run_supervised`].
+///
+/// ```no_run
+/// use std::process::Child;
+/// use oneharness_core::io::runner::ProcessSupervisor;
+///
+/// struct Watchdog;
+/// impl ProcessSupervisor for Watchdog {
+///     fn spawned(&self, child: &Child) {
+///         // The harness leads its own process group, so this pid is also the
+///         // pgid a watchdog can poll and a kill can reap.
+///         eprintln!("harness pid {}", child.id());
+///     }
+/// }
+/// ```
+pub trait ProcessSupervisor: Sync {
+    /// The last look at the [`Command`] before it is spawned — and it is the
+    /// exact one that is spawned, program, argv, working directory and
+    /// environment included, so a `pre_exec` (Unix) or `creation_flags`
+    /// (Windows) registered here takes effect on the harness process itself.
+    ///
+    /// oneharness has already prepared its own containment on this `Command`
+    /// when the hook runs: a `pre_exec` that makes the child a process-group
+    /// leader on Unix, `CREATE_SUSPENDED` on Windows. A `pre_exec` added here
+    /// therefore runs *after* oneharness's, which is exactly what lets a
+    /// `setpgid` into the caller's own group win — and hands the caller that
+    /// tree's teardown, as described above. On Windows, `creation_flags`
+    /// *replaces* the flags rather than adding to them, so a hook that sets any
+    /// must include `CREATE_SUSPENDED` or the job assignment loses the window
+    /// that keeps a fast launcher's descendant from escaping.
+    fn spawning(&self, _command: &mut Command) {}
+
+    /// The spawned child, before the run waits on it, reads a byte of its
+    /// output, or can otherwise observe it exiting — so what the hook adopts is
+    /// a live process rather than a pid that may already have been reused. On
+    /// Windows the child is still **suspended** (oneharness resumes it once
+    /// this returns), so a job object assigned here cannot miss a descendant;
+    /// for that same reason a hook must not block waiting for the child to
+    /// produce anything.
+    ///
+    /// A shared reference on purpose: the run owns the child's lifetime, and
+    /// waiting on or killing it here would reap the process out from under the
+    /// capture. Read `child.id()` — or its `AsRawHandle`/`AsRawFd` — and
+    /// return; tear the tree down through your own group or job object.
+    fn spawned(&self, _child: &Child) {}
+}
+
+/// The caller-owned side channels of a spawn: the token that tears the harness
+/// tree down, and the [`ProcessSupervisor`] that may also own it.
+///
+/// This is process supervision, not the turn control `run --control` performs —
+/// that is [`ControlledInput`], and the two are independent.
+///
+/// `#[non_exhaustive]` from birth, and built through [`SpawnControls::new`]
+/// rather than a literal, so the *next* side channel can be added without
+/// breaking a caller — the trap `RunControls` is already in, and the reason
+/// [`crate::io::run::run_supervised`] exists as its own entry point.
+#[derive(Clone, Copy)]
+#[non_exhaustive]
+pub struct SpawnControls<'a> {
+    /// Cancels the run: every in-flight tree is terminated through the same
+    /// [`Finish::Terminate`] path a timeout uses, and queued jobs go unspawned.
+    pub cancel: &'a CancelToken,
+    /// The caller's claim on each child, or `None` for the historical behavior:
+    /// oneharness alone owns every harness tree it spawns.
+    pub supervisor: Option<&'a dyn ProcessSupervisor>,
+}
+
+impl<'a> SpawnControls<'a> {
+    /// Cancellation only — what the entry points that predate the supervisor
+    /// pass, and byte for byte the behavior they have always had.
+    pub fn new(cancel: &'a CancelToken) -> Self {
+        Self {
+            cancel,
+            supervisor: None,
+        }
+    }
+
+    /// Hand each spawned child to `supervisor` as well, so the caller can take
+    /// it into the process group / job object it owns.
+    #[must_use]
+    pub fn with_supervisor(mut self, supervisor: &'a dyn ProcessSupervisor) -> Self {
+        self.supervisor = Some(supervisor);
+        self
+    }
 }
 
 /// One job's final result plus how many times it was invoked. `attempts` is 1
@@ -129,6 +258,23 @@ pub fn run_jobs_with_cancel<F>(
 where
     F: Fn(usize, u32, &Capture) -> Option<NextRun> + Sync,
 {
+    run_jobs_supervised(jobs, max_parallel, SpawnControls::new(cancel), retry)
+}
+
+/// [`run_jobs_with_cancel`] with the caller's own claim on each spawned child
+/// ([`SpawnControls::supervisor`]) — the entry point an embedder that groups the
+/// harness processes itself calls. A `None` supervisor is byte for byte
+/// [`run_jobs_with_cancel`].
+pub fn run_jobs_supervised<F>(
+    jobs: &[Job],
+    max_parallel: usize,
+    controls: SpawnControls<'_>,
+    retry: F,
+) -> Vec<Outcome>
+where
+    F: Fn(usize, u32, &Capture) -> Option<NextRun> + Sync,
+{
+    let cancel = controls.cancel;
     let n = jobs.len();
     if n == 0 {
         return Vec::new();
@@ -151,7 +297,7 @@ where
                         attempts: 0,
                     }
                 } else {
-                    run_job_with_retry(&jobs[i], i, cancel, retry)
+                    run_job_with_retry(&jobs[i], i, controls, retry)
                 };
                 *slots[i].lock().expect("slot mutex poisoned") = Some(outcome);
             });
@@ -171,11 +317,12 @@ where
 /// Run one job, then loop while `retry` asks for another attempt with a new argv.
 /// A cancellation ends the loop: re-prompting a run the caller has abandoned
 /// would spend another turn on an answer nobody is waiting for.
-fn run_job_with_retry<F>(job: &Job, index: usize, cancel: &CancelToken, retry: &F) -> Outcome
+fn run_job_with_retry<F>(job: &Job, index: usize, controls: SpawnControls<'_>, retry: &F) -> Outcome
 where
     F: Fn(usize, u32, &Capture) -> Option<NextRun>,
 {
-    let mut capture = run_job_cancellable(job, cancel);
+    let cancel = controls.cancel;
+    let mut capture = run_job_supervised(job, controls);
     let mut attempts = 1u32;
     while !cancellation_requested(cancel) {
         let Some(next) = retry(index, attempts, &capture) else {
@@ -189,7 +336,7 @@ where
             timeout: job.timeout,
             stdin: next.stdin,
         };
-        capture = run_job_cancellable(&next, cancel);
+        capture = run_job_supervised(&next, controls);
         attempts += 1;
     }
     Outcome { capture, attempts }
@@ -282,6 +429,13 @@ pub fn run_job(job: &Job) -> Capture {
 /// timeout uses, and the run comes back as [`Status::Cancelled`] with whatever
 /// output had already been captured.
 pub fn run_job_cancellable(job: &Job, cancel: &CancelToken) -> Capture {
+    run_job_supervised(job, SpawnControls::new(cancel))
+}
+
+/// The one buffered implementation, under both caller-owned side channels: the
+/// cancel token and the optional [`ProcessSupervisor`].
+fn run_job_supervised(job: &Job, controls: SpawnControls<'_>) -> Capture {
+    let cancel = controls.cancel;
     let start = Instant::now();
     let start_epoch_ms = epoch_millis();
     let started_at = crate::domain::history::format_rfc3339_millis(start_epoch_ms);
@@ -317,7 +471,7 @@ pub fn run_job_cancellable(job: &Job, cancel: &CancelToken) -> Capture {
         command.env_remove(key);
     }
 
-    let mut process = match Process::spawn(command) {
+    let mut process = match Process::spawn_supervised(command, controls.supervisor) {
         Ok(process) => process,
         Err(err) => {
             return Capture {
@@ -426,7 +580,7 @@ pub fn run_job_streaming_cancellable<F>(job: &Job, cancel: &CancelToken, on_line
 where
     F: FnMut(&str) -> StreamStep,
 {
-    stream_job(job, None, cancel, on_line)
+    stream_job(job, None, SpawnControls::new(cancel), on_line)
 }
 
 /// Everything the runner needs to keep a run's stdin open for out-of-band turn
@@ -463,7 +617,12 @@ pub fn run_job_streaming_controlled<F>(
 where
     F: FnMut(&str) -> StreamStep,
 {
-    stream_job(job, control, &CancelToken::new(), on_line)
+    stream_job(
+        job,
+        control,
+        SpawnControls::new(&CancelToken::new()),
+        on_line,
+    )
 }
 
 /// [`run_job_streaming_controlled`] under a caller-owned [`CancelToken`] — the
@@ -482,7 +641,23 @@ pub fn run_job_streaming_controlled_cancellable<F>(
 where
     F: FnMut(&str) -> StreamStep,
 {
-    stream_job(job, control, cancel, on_line)
+    stream_job(job, control, SpawnControls::new(cancel), on_line)
+}
+
+/// [`run_job_streaming_controlled_cancellable`] with the caller's own claim on
+/// the spawned child ([`SpawnControls::supervisor`]) — the streaming
+/// counterpart to [`run_jobs_supervised`]. A `None` supervisor is byte for byte
+/// the entry point above.
+pub fn run_job_streaming_supervised<F>(
+    job: &Job,
+    control: Option<&ControlledInput>,
+    controls: SpawnControls<'_>,
+    on_line: F,
+) -> Capture
+where
+    F: FnMut(&str) -> StreamStep,
+{
+    stream_job(job, control, controls, on_line)
 }
 
 /// The one streaming implementation both public entry points delegate to:
@@ -490,12 +665,13 @@ where
 fn stream_job<F>(
     job: &Job,
     control: Option<&ControlledInput>,
-    cancel: &CancelToken,
+    controls: SpawnControls<'_>,
     mut on_line: F,
 ) -> Capture
 where
     F: FnMut(&str) -> StreamStep,
 {
+    let cancel = controls.cancel;
     let start = Instant::now();
     let start_epoch_ms = epoch_millis();
     let started_at = crate::domain::history::format_rfc3339_millis(start_epoch_ms);
@@ -531,7 +707,7 @@ where
         command.env_remove(key);
     }
 
-    let mut process = match Process::spawn(command) {
+    let mut process = match Process::spawn_supervised(command, controls.supervisor) {
         Ok(process) => process,
         Err(err) => {
             return Capture {

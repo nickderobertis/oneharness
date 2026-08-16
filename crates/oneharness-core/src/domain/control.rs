@@ -1018,17 +1018,203 @@ pub fn parse_request(line: &str) -> Result<ControlRequest, String> {
     })
 }
 
-/// The socket file name backing session `name` (`<sanitized name>.sock`).
+/// The most bytes a unix-domain socket **address** may occupy, the terminating
+/// NUL included: `sockaddr_un.sun_path` is 104 bytes on the BSD/macOS lineage
+/// and 108 on Linux, and `bind` past it fails with `ENAMETOOLONG`.
+///
+/// It is a property of the address, not of the filesystem: a path the OS opens
+/// happily as a file is unbindable as a socket at 108 bytes, which is how a
+/// session name one byte too long turned every controlled dispatch on a host
+/// into an unreachable run. Named here so [`socket_path`] can keep the address
+/// inside it by construction and say so loudly when it cannot.
+///
+/// `usize::MAX` off unix, where there is no `sun_path` to overflow — control is
+/// refused on those platforms before a socket is ever addressed, and imposing a
+/// unix budget there would refuse an ordinary deep path for a reason that does
+/// not exist on it.
+pub const SOCKET_ADDRESS_MAX: usize = if !cfg!(unix) {
+    usize::MAX
+} else if cfg!(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+)) {
+    104
+} else {
+    108
+};
+
+/// The digest, in hex characters, that stands in for a session name too long to
+/// spell in a socket address. 64 bits of FNV-1a truncated to 48: the names it
+/// separates all live in one run's `control/` directory, and a collision there
+/// would have to be two live sessions whose sanitized names agree.
+const DIGEST_CHARS: usize = 12;
+
+/// The shortest file name [`socket_path`] will build: digest plus suffix, with
+/// nothing of the session name left. Below this the address cannot be made to
+/// fit by shortening at all, and the store directory is what has to change.
+///
+/// Crate-visible so the socket tests can build a store sitting exactly at the
+/// budget rather than restating the arithmetic they are checking.
+pub(crate) const MIN_FILE_NAME: usize = DIGEST_CHARS + SOCKET_SUFFIX.len();
+
+const SOCKET_SUFFIX: &str = ".sock";
+
+/// A socket address that cannot be bound on this platform, with the numbers a
+/// reader needs to act: which address, how long it came out, and the budget it
+/// broke.
+///
+/// The length is **derived** from the path rather than stored beside it, and the
+/// limit is this platform's, so an error whose measurements contradict its own
+/// address cannot be built — the number a caller acts on is always the number of
+/// the address it is looking at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SocketAddressTooLong {
+    path: PathBuf,
+}
+
+impl SocketAddressTooLong {
+    fn new(path: PathBuf) -> Self {
+        SocketAddressTooLong { path }
+    }
+
+    /// The address that could not be bound — the shortest one that could be
+    /// built for this store and session.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Its length in bytes, terminating NUL included — what is compared against
+    /// [`Self::limit`].
+    #[must_use]
+    pub fn bytes(&self) -> usize {
+        self.path.as_os_str().len() + 1
+    }
+
+    /// This platform's `sun_path` budget ([`SOCKET_ADDRESS_MAX`]).
+    #[must_use]
+    pub fn limit(&self) -> usize {
+        SOCKET_ADDRESS_MAX
+    }
+}
+
+impl std::fmt::Display for SocketAddressTooLong {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the control socket address `{}` is {} bytes, past this platform's {}-byte unix-socket \
+             address limit (`sun_path`, terminating NUL included)",
+            self.path.display(),
+            self.bytes(),
+            self.limit()
+        )
+    }
+}
+
+impl std::error::Error for SocketAddressTooLong {}
+
+/// The socket file name backing session `name` (`<sanitized name>.sock`), or a
+/// digest-suffixed abbreviation of it when the full name would not fit in
+/// `budget` bytes. `None` when even [`MIN_FILE_NAME`] exceeds the budget.
+///
+/// The abbreviation keeps as much of the readable name as fits and ends in a
+/// digest of the whole sanitized name, so two long names that share a prefix
+/// still address different sockets. It is a pure function of the name and the
+/// budget, which is what lets `oneharness interrupt` — a different process —
+/// derive the same address without being told it.
 #[must_use]
-pub fn socket_file_name(name: &str) -> String {
-    format!("{}.sock", sanitize_name(name))
+pub fn socket_file_name(name: &str, budget: usize) -> Option<String> {
+    let sanitized = sanitize_name(name);
+    let full = format!("{sanitized}{SOCKET_SUFFIX}");
+    if full.len() <= budget {
+        return Some(full);
+    }
+    if budget < MIN_FILE_NAME {
+        return None;
+    }
+    let digest = digest(&sanitized);
+    // One byte of the budget goes to the `-` joining name to digest, so a budget
+    // of exactly `MIN_FILE_NAME` keeps nothing of the name.
+    let kept: String = sanitized
+        .chars()
+        .take(budget.saturating_sub(MIN_FILE_NAME + 1))
+        .collect::<String>()
+        .trim_end_matches('-')
+        .to_string();
+    Some(if kept.is_empty() {
+        format!("{digest}{SOCKET_SUFFIX}")
+    } else {
+        format!("{kept}-{digest}{SOCKET_SUFFIX}")
+    })
+}
+
+/// FNV-1a over `text`, rendered as [`DIGEST_CHARS`] hex characters.
+///
+/// Spelled out rather than taken from `DefaultHasher`, whose output std
+/// explicitly does not promise to be stable across releases: this digest is
+/// half of an *address* two processes resolve independently, so a run and the
+/// `oneharness interrupt` that reaches it must agree on it forever, not merely
+/// within one toolchain.
+fn digest(text: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")[..DIGEST_CHARS].to_string()
 }
 
 /// The socket backing session `name` under the session store `dir`:
 /// `<dir>/control/<name>.sock`. Pure path arithmetic; touches no disk.
-#[must_use]
-pub fn socket_path(dir: &Path, name: &str) -> PathBuf {
-    dir.join(CONTROL_DIR).join(socket_file_name(name))
+///
+/// The address is kept inside [`SOCKET_ADDRESS_MAX`] **by construction** — a
+/// session name that would not fit is abbreviated to a digest-suffixed one (see
+/// [`socket_file_name`]), deterministically, so the separate `oneharness
+/// interrupt` process resolves the same address from the same `(dir, name)`.
+/// Names of the length a graph mints (`node-scope-<millis>-<pid>-worker-skill`)
+/// therefore bind with room to spare instead of failing at the last byte.
+///
+/// When even the shortest file name does not fit, the store directory itself is
+/// past the budget and nothing here can rescue it: that is a
+/// [`SocketAddressTooLong`] the caller reports before anything spawns, rather
+/// than a control channel that silently is not there. Two callers, one rule —
+/// the run that binds and the `interrupt` that connects.
+///
+/// A caller that later *canonicalizes* the address can still lengthen it past
+/// the budget (a symlinked store, macOS's `/tmp` → `/private/tmp`);
+/// [`socket_address_within_limit`] is that check, applied where the resolved
+/// address is known.
+pub fn socket_path(dir: &Path, name: &str) -> Result<PathBuf, SocketAddressTooLong> {
+    let control_dir = dir.join(CONTROL_DIR);
+    // The prefix the file name is measured against, taken from a real join so a
+    // separator this platform adds (or does not, at a root) is counted rather
+    // than assumed.
+    let prefix = control_dir.join("x").as_os_str().len() - 1;
+    let budget = (SOCKET_ADDRESS_MAX - 1).saturating_sub(prefix);
+    match socket_file_name(name, budget) {
+        Some(file) => Ok(control_dir.join(file)),
+        None => Err(SocketAddressTooLong::new(
+            control_dir.join(format!("{}{SOCKET_SUFFIX}", digest(&sanitize_name(name)))),
+        )),
+    }
+}
+
+/// Whether `path` can be bound as a unix-socket address on this platform — the
+/// same budget [`socket_path`] builds against, checked against an address that
+/// has already been resolved (canonicalized) rather than one being built.
+pub fn socket_address_within_limit(path: &Path) -> Result<(), SocketAddressTooLong> {
+    // Measured through the error type, which derives both numbers from the path
+    // itself — so the check and the diagnostic can never disagree about what
+    // this address costs.
+    let measured = SocketAddressTooLong::new(path.to_path_buf());
+    if measured.bytes() <= measured.limit() {
+        return Ok(());
+    }
+    Err(measured)
 }
 
 /// The stdin line that delivers the user prompt for a control-enabled run, for
@@ -2009,9 +2195,132 @@ mod tests {
     #[test]
     fn socket_path_sanitizes_the_name_under_the_control_dir() {
         assert_eq!(
-            socket_path(Path::new("/store"), "Greet Flow"),
+            socket_path(Path::new("/store"), "Greet Flow").expect("a short name fits any budget"),
             PathBuf::from("/store/control/greet-flow.sock")
         );
+    }
+
+    /// The shape a graph mints for a worker's session — the name that put the
+    /// address one byte past `sun_path` on a real host, with every dispatch
+    /// reporting an unreachable control channel.
+    fn graph_session_name() -> String {
+        "node-scope-1786808430370-3422037-worker-skill".to_string()
+    }
+
+    #[test]
+    fn a_graph_minted_name_addresses_within_the_budget_under_a_default_length_store() {
+        // The store this failed under: `$HOME/.local/state/oneharness/sessions`.
+        let store = PathBuf::from("/home/nick.guest/.local/state/oneharness/sessions");
+        let path = socket_path(&store, &graph_session_name())
+            .expect("a default-length store must leave room for a session name");
+        assert_eq!(
+            socket_address_within_limit(&path),
+            Ok(()),
+            "address `{}` must be bindable on this platform",
+            path.display()
+        );
+        assert!(path.starts_with(store.join(CONTROL_DIR)));
+    }
+
+    #[test]
+    fn a_name_too_long_to_spell_is_abbreviated_stably_and_distinctly() {
+        // Long enough that the full name cannot fit under any store: the
+        // abbreviation is what has to stay addressable.
+        let store = PathBuf::from("/home/agent/.local/state/oneharness/sessions");
+        let long = format!("{}-alpha", "x".repeat(120));
+        let sibling = format!("{}-beta", "x".repeat(120));
+        let path = socket_path(&store, &long).expect("shortening keeps this store addressable");
+        assert_eq!(socket_address_within_limit(&path), Ok(()));
+        // Two processes derive the address independently, so it must be a pure
+        // function of `(dir, name)` — and two sessions must never collide on it.
+        assert_eq!(
+            path,
+            socket_path(&store, &long).expect("shortening is deterministic")
+        );
+        assert_ne!(
+            path,
+            socket_path(&store, &sibling).expect("a sibling name is addressable too"),
+            "names sharing a 120-character prefix must not share a socket"
+        );
+        let file = path.file_name().and_then(|f| f.to_str()).expect("utf-8");
+        assert!(file.starts_with("xxx") && file.ends_with(".sock"), "{file}");
+    }
+
+    // Unix-gated with the budget it exercises: off unix there is no `sun_path`
+    // to overrun, and `SOCKET_ADDRESS_MAX` says so by being unbounded.
+    #[cfg(unix)]
+    #[test]
+    fn a_multibyte_session_name_is_still_measured_in_bytes() {
+        // The budget is BYTES and the abbreviation counts characters, so the two
+        // agree only because `sanitize_name` yields ASCII. That coupling is
+        // invisible at the call site, and a name of multibyte characters is
+        // where it would break: 120 of them are 360 bytes.
+        let store = PathBuf::from("/home/agent/.local/state/oneharness/sessions");
+        for name in ["日本語のセッション".repeat(20), "é".repeat(120)] {
+            let path = socket_path(&store, &name).expect("a multibyte name is addressable");
+            assert_eq!(
+                socket_address_within_limit(&path),
+                Ok(()),
+                "address `{}` must be within the byte budget",
+                path.display()
+            );
+            let file = path.file_name().and_then(|f| f.to_str()).expect("utf-8");
+            assert!(
+                file.is_ascii(),
+                "the socket file name must be ASCII: {file}"
+            );
+        }
+    }
+
+    // Unix-gated with the budget it exercises: off unix there is no `sun_path`
+    // to overrun, and `SOCKET_ADDRESS_MAX` says so by being unbounded — so no
+    // store is ever past it and this refusal has nothing to refuse.
+    #[cfg(unix)]
+    #[test]
+    fn a_store_past_the_budget_is_a_loud_error_naming_the_path_length_and_limit() {
+        // A realistic deep store: a session dir inside a versioned worktree,
+        // which no shortening of the session name can rescue.
+        let store = PathBuf::from(
+            "/home/nick.guest/.onevcs/workspaces/github.com-nickderobertis-oneharness-e6efbed8d311/runs/s-3b0f64620cdc/worktree/.oneharness/sessions",
+        );
+        let error = socket_path(&store, &graph_session_name())
+            .expect_err("a store this deep cannot host a socket address");
+        assert_eq!(error.limit(), SOCKET_ADDRESS_MAX);
+        assert_eq!(error.bytes(), error.path().as_os_str().len() + 1);
+        assert!(error.bytes() > error.limit());
+        let said = error.to_string();
+        assert!(said.contains(&error.path().display().to_string()), "{said}");
+        assert!(said.contains(&error.bytes().to_string()), "{said}");
+        assert!(said.contains(&error.limit().to_string()), "{said}");
+    }
+
+    /// The other side of that gate. A refusal borrowed from a platform whose
+    /// limit does not apply is its own silent breakage — a control channel
+    /// declined for a `sun_path` the host has no notion of — so the store the
+    /// unix test cannot address must still be addressable here.
+    #[cfg(not(unix))]
+    #[test]
+    fn a_deep_store_is_addressable_where_there_is_no_sun_path_to_overrun() {
+        let store = PathBuf::from(
+            "/home/nick.guest/.onevcs/workspaces/github.com-nickderobertis-oneharness-e6efbed8d311/runs/s-3b0f64620cdc/worktree/.oneharness/sessions",
+        );
+        let path = socket_path(&store, &graph_session_name())
+            .expect("no budget off unix means no store is past it");
+        assert_eq!(socket_address_within_limit(&path), Ok(()));
+        assert!(path.starts_with(store.join(CONTROL_DIR)));
+    }
+
+    // Unix-gated with the budget it exercises: off unix there is no `sun_path`
+    // to overrun, and `SOCKET_ADDRESS_MAX` says so by being unbounded.
+    #[cfg(unix)]
+    #[test]
+    fn an_already_resolved_address_is_checked_against_the_same_budget() {
+        let short = PathBuf::from("/tmp/store/control/flow.sock");
+        assert_eq!(socket_address_within_limit(&short), Ok(()));
+        let long = PathBuf::from(format!("/tmp/{}/control/flow.sock", "d".repeat(200)));
+        let error = socket_address_within_limit(&long).expect_err("200 bytes of directory");
+        assert_eq!(error.bytes(), long.as_os_str().len() + 1);
+        assert_eq!(error.limit(), SOCKET_ADDRESS_MAX);
     }
 
     #[test]

@@ -7,13 +7,13 @@
 use schemars::{schema_for, Schema};
 use serde::Serialize;
 
-use crate::domain::history::{requires_provider_finish, run_failed, versions_from};
 use crate::domain::history::{
-    HistoryLine, HistoryRecord, HistoryStreamEnvelope, FIRST_CANCELLED_SCHEMA_VERSION,
-    FIRST_ERROR_SCHEMA_VERSION, FIRST_EVENT_SCHEMA_VERSION, FIRST_PARTIAL_TIMING_SCHEMA_VERSION,
-    FIRST_SESSION_NOT_FOUND_SCHEMA_VERSION, OBSERVED_TIMING_SCHEMA_VERSION,
+    gated_failure_kind_version, HistoryLine, HistoryRecord, HistoryStreamEnvelope,
+    FIRST_CANCELLED_SCHEMA_VERSION, FIRST_ERROR_SCHEMA_VERSION, FIRST_EVENT_SCHEMA_VERSION,
+    FIRST_PARTIAL_TIMING_SCHEMA_VERSION, OBSERVED_TIMING_SCHEMA_VERSION,
     PREVIOUS_CURRENT_SCHEMA_VERSION, PRE_LIFECYCLE_RECORD_VERSIONS,
 };
+use crate::domain::history::{requires_provider_finish, run_failed, versions_from};
 use crate::domain::report::{RunReport, RunStreamEnvelope, Status};
 use crate::domain::sdk::{
     schema_for_serialize, ConfigOptions, DetectOptions, GateOptions, HistoryClearOptions,
@@ -516,39 +516,71 @@ fn cancelled_version_gate() -> serde_json::Value {
     })
 }
 
-/// The `session_not_found` failure kind is legible only to a reader at or after
-/// the version that introduced it — the same promise [`cancelled_version_gate`]
-/// makes for the `cancelled` status, on the other gated enum. Stated as its own
-/// gate so every timing branch inherits it once.
+/// A failure kind introduced after a record's version is legible only to a
+/// reader at or after the version that introduced it — the same promise
+/// [`cancelled_version_gate`] makes for the `cancelled` status, on the other
+/// gated enum. Stated as its own gate so every timing branch inherits it once.
 ///
-/// The allowed list carries `null` alongside the other kinds because
-/// `failure_kind` is optional: an unclassified record must satisfy this branch
-/// without having to fall back on the version one.
+/// One sub-gate per introducing version, `allOf`-composed, and both the versions
+/// and their kinds come from [`gated_failure_kind_version`] — the table the
+/// runtime reader gates on. That is the whole point: a kind whose gate moves, or
+/// a kind added with one, changes both validators from one edit rather than
+/// leaving the SDK a version looser than the reader it describes.
+///
+/// Each sub-gate's allowed list carries `null` alongside the kinds it does not
+/// gate, because `failure_kind` is optional: an unclassified record must satisfy
+/// that branch without having to fall back on the version one.
 fn failure_kind_version_gate() -> serde_json::Value {
-    // llmlint: ignore[no_panics_on_recoverable_errors] Schema generation is a build-time codegen boundary like every sibling transformation here; a `FailureKind` that no longer serializes to its wire token is a generator invariant, and emitting a gate that accepts the value at any version would ship an SDK looser than the reader it describes.
-    let gated = serde_json::to_value(FailureKind::SessionNotFound)
-        .expect("FailureKind serializes to its wire token");
-    let mut others: Vec<_> = failure_kind_values()
-        .into_iter()
-        .filter(|value| *value != gated)
-        .collect();
-    others.push(serde_json::Value::Null);
-    serde_json::json!({
-        "anyOf": [
-            {
-                "type": "object",
-                "properties": {"failure_kind": {"enum": others}}
-            },
-            {
-                "type": "object",
-                "properties": {
-                    "schema_version": versions_schema(
-                        &versions_from(FIRST_SESSION_NOT_FOUND_SCHEMA_VERSION)
-                    )
+    let mut gates: Vec<serde_json::Value> = Vec::new();
+    for version in gated_versions() {
+        let gated: Vec<serde_json::Value> = FailureKind::ALL
+            .into_iter()
+            .filter(|kind| gated_failure_kind_version(Some(*kind)) == Some(version))
+            .map(failure_kind_value)
+            .collect();
+        let mut others: Vec<_> = failure_kind_values()
+            .into_iter()
+            .filter(|value| !gated.contains(value))
+            .collect();
+        others.push(serde_json::Value::Null);
+        gates.push(serde_json::json!({
+            "anyOf": [
+                {
+                    "type": "object",
+                    "properties": {"failure_kind": {"enum": others}}
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "schema_version": versions_schema(&versions_from(version))
+                    }
                 }
-            }
-        ]
-    })
+            ]
+        }));
+    }
+    serde_json::json!({"allOf": gates})
+}
+
+/// Every version that introduced a gated failure kind, oldest first and each
+/// named once — read off [`FailureKind::ALL`] so the list cannot drift from the
+/// gates themselves.
+fn gated_versions() -> Vec<&'static str> {
+    let gated: Vec<&'static str> = FailureKind::ALL
+        .into_iter()
+        .filter_map(|kind| gated_failure_kind_version(Some(kind)))
+        .collect();
+    // Every readable version, oldest first, kept only where a kind arrived —
+    // so the order is the history contract's own and each version appears once.
+    versions_from(FIRST_EVENT_SCHEMA_VERSION)
+        .into_iter()
+        .filter(|version| gated.contains(version))
+        .collect()
+}
+
+/// One kind as its serialized wire token.
+fn failure_kind_value(kind: FailureKind) -> serde_json::Value {
+    // llmlint: ignore[no_panics_on_recoverable_errors] Schema generation is a build-time codegen boundary like every sibling transformation here; a `FailureKind` that no longer serializes to its wire token is a generator invariant, and emitting a gate that accepts the value at any version would ship an SDK looser than the reader it describes.
+    serde_json::to_value(kind).expect("FailureKind serializes to its wire token")
 }
 
 /// Every [`FailureKind`] as its serialized wire token, read out of the enum's own

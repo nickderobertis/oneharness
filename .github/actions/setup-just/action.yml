@@ -1,0 +1,35 @@
+name: Set up just
+description: Restore the pinned just binary, or build it from crates.io on a cache miss
+
+# Repository-local on purpose. A third-party setup action is a network fetch on
+# every run against a service this repo does not control, and an outage there
+# takes a required check down for a reason that has nothing to do with the
+# change under test. Here the binary is restored from this repo's own cache, and
+# only a cold cache reaches the network at all.
+
+runs:
+  using: composite
+  steps:
+    # Reading and validating the pin lives in a script so a test can drive it;
+    # its stdout IS this step's output line. `scripts/check-setup-just.sh` is
+    # that test, for this step and the install below.
+    - name: Read the pinned version
+      id: pin
+      shell: bash
+      run: scripts/setup-just-pin.sh >>"$GITHUB_OUTPUT"
+    # The version is part of the immutable key: once one run has built this exact
+    # binary, a crates.io outage cannot take later required checks down. OS and
+    # architecture keep native executables from crossing runner boundaries.
+    - name: Restore just
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/just
+          ~/.cargo/bin/just.exe
+        key: just-${{ runner.os }}-${{ runner.arch }}-${{ steps.pin.outputs.version }}
+    # Install-when-missing and verify-always live in a script so both paths can
+    # be driven by a test; `scripts/check-setup-just.sh` is that test.
+    - name: Install and verify just
+      shell: bash
+      run: scripts/setup-just-install.sh "${{ steps.pin.outputs.version }}" "${{ steps.cache.outputs.cache-hit }}"

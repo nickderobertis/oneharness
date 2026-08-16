@@ -334,6 +334,17 @@ pub enum OneharnessError {
         selected: String,
     },
 
+    /// The address for this run's control socket cannot be bound on this
+    /// platform. A usage/config error rather than a degraded capability: the
+    /// channel would not exist, and `--control` promises a supervisor it does.
+    #[error(
+        "{source}, and the session name is already as short as it can be made. Point the session store somewhere shorter (--session-dir, or `session_dir` in config): the socket lives in its `control/` directory"
+    )]
+    ControlSocketAddress {
+        #[source]
+        source: crate::domain::control::SocketAddressTooLong,
+    },
+
     #[error("could not open the control socket `{path}`: {source}")]
     ControlSocket {
         // llmlint: ignore[invalid_states_unrepresentable] The failed socket path is retained in display form for a terminal diagnostic and never reused for I/O.

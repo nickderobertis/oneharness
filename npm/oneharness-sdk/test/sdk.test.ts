@@ -336,11 +336,25 @@ describe("OneHarness", () => {
 		).toEqual({ forked: false, prompt_count: 1, strategy: "speed" });
 		expect(
 			FallbackReportSchema.parse({
-				fell_through: [{ harness: "codex", reason: "auth" }],
+				fell_through: [
+					{
+						detail:
+							'harness `codex` refused the request before running it: {"input_error_code":"input_too_large"}',
+						harness: "codex",
+						reason: "input-too-large",
+					},
+				],
 				ran: null,
 			}),
 		).toEqual({
-			fell_through: [{ harness: "codex", reason: "auth" }],
+			fell_through: [
+				{
+					detail:
+						'harness `codex` refused the request before running it: {"input_error_code":"input_too_large"}',
+					harness: "codex",
+					reason: "input-too-large",
+				},
+			],
 			ran: null,
 		});
 		expect(

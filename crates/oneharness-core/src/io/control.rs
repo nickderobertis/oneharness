@@ -754,6 +754,24 @@ mod imp {
             }
             None => path.to_path_buf(),
         };
+        // Canonicalizing can *lengthen* the address the caller checked (a
+        // symlinked store, macOS's `/tmp` -> `/private/tmp`), so the budget is
+        // re-checked on what will actually be bound. Said in the same words as
+        // the pre-spawn refusal rather than as the kernel's bare
+        // `ENAMETOOLONG`, which names no limit and suggests no remedy.
+        crate::domain::control::socket_address_within_limit(path).map_err(|too_long| {
+            // The caller's diagnostic already names the path, so this states only
+            // what resolving it changed: the budget, and the length that broke it.
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "resolving it produced an address of {} bytes, past this platform's {}-byte \
+                     unix-socket address limit (`sun_path`, terminating NUL included)",
+                    too_long.bytes(),
+                    too_long.limit()
+                ),
+            )
+        })?;
         if let Some(parent) = path.parent() {
             // The directory holds addressable levers over running agents, so
             // owner-only is a requirement, not a preference: failing to narrow it
@@ -1028,7 +1046,8 @@ mod tests {
     fn socket_is_created_owner_only_and_removed_on_drop() {
         use std::os::unix::fs::PermissionsExt;
         let dir = temp_dir("lifecycle");
-        let path = socket_path(&dir, "flow");
+        let path = socket_path(&dir, "flow")
+            .expect("a short fixture name fits every platform's socket-address budget");
         {
             let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
             assert!(path.exists(), "socket should exist while the run is alive");
@@ -1040,10 +1059,62 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A graph-minted worker session name, the shape whose address overran
+    /// `sun_path` on a real host and left every dispatch uninterruptible.
+    const GRAPH_SESSION: &str = "node-scope-1786808430370-3422037-worker-skill";
+
+    #[test]
+    fn a_graph_minted_session_name_binds_under_a_default_length_store() {
+        // The real default store root — `$HOME/.local/state/oneharness/sessions`
+        // — is where this failed, so it is what the address is measured against.
+        // Measured, not bound: a test must not open sockets in the developer's
+        // own state directory. The bind below is done at a store DEEPER than any
+        // default root, so it proves the harder case.
+        let default_root =
+            crate::io::session::resolve_dir(None).expect("a platform state dir to root the store");
+        socket_path(&default_root, GRAPH_SESSION)
+            .expect("the default store root must leave room for a session name");
+
+        // The tightest store that can still be addressed at all: one whose own
+        // path spends every byte the shortest possible socket file name does not
+        // need. Binding here proves the abbreviation is not merely short enough
+        // on paper but is the address a listener actually takes.
+        let root = std::fs::canonicalize("/tmp").expect("/tmp must exist to root a control socket");
+        let unique = format!("oh-tight-{}", std::process::id());
+        let used = root.join(&unique).join("control").as_os_str().len() + 1;
+        let slack = crate::domain::control::SOCKET_ADDRESS_MAX
+            - 1
+            - used
+            - (crate::domain::control::MIN_FILE_NAME);
+        let dir = root.join(format!("{unique}{}", "p".repeat(slack)));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let path =
+            socket_path(&dir, GRAPH_SESSION).expect("the tightest store is still addressable");
+        assert_eq!(
+            path.as_os_str().len() + 1,
+            crate::domain::control::SOCKET_ADDRESS_MAX,
+            "the fixture must sit exactly at the budget, or it proves a looser case"
+        );
+        let _listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        assert!(path.exists(), "the abbreviated address must be bindable");
+        // What a separate `oneharness interrupt` process does: derive the same
+        // address from the same `(dir, name)` and reach the run on it.
+        let dialed = socket_path(&dir, GRAPH_SESSION).expect("addressable from the other side too");
+        let response = send(&dialed, &ControlRequest::interrupt());
+        assert_eq!(
+            response.reason(),
+            Some(ControlReason::NoActiveTurn),
+            "the client reached the listener (an unbound run answers `not_running`)"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn interrupt_without_an_active_turn_is_refused_with_no_active_turn() {
         let dir = temp_dir("noturn");
-        let path = socket_path(&dir, "idle");
+        let path = socket_path(&dir, "idle")
+            .expect("a short fixture name fits every platform's socket-address budget");
         let _listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         let response = send(&path, &ControlRequest::interrupt());
         assert!(!response.is_ok());
@@ -1054,7 +1125,8 @@ mod tests {
     #[test]
     fn interrupt_against_a_missing_socket_is_not_running() {
         let dir = temp_dir("missing");
-        let path = socket_path(&dir, "gone");
+        let path = socket_path(&dir, "gone")
+            .expect("a short fixture name fits every platform's socket-address budget");
         let response = send(&path, &ControlRequest::interrupt());
         assert!(!response.is_ok());
         assert_eq!(response.reason(), Some(ControlReason::NotRunning));
@@ -1064,7 +1136,8 @@ mod tests {
     #[test]
     fn a_stale_socket_file_is_reclaimed_by_the_next_run() {
         let dir = temp_dir("stale");
-        let path = socket_path(&dir, "stale");
+        let path = socket_path(&dir, "stale")
+            .expect("a short fixture name fits every platform's socket-address budget");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"").unwrap();
         let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
@@ -1079,7 +1152,8 @@ mod tests {
     fn a_served_interrupt_is_recorded_and_reaches_the_child_stdin() {
         use std::io::Read;
         let dir = temp_dir("served");
-        let path = socket_path(&dir, "live");
+        let path = socket_path(&dir, "live")
+            .expect("a short fixture name fits every platform's socket-address budget");
         let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         let handle = listener.handle();
 
@@ -1140,7 +1214,8 @@ mod tests {
         // avoid — and reaching back to the candidate that just finished would
         // write at a mechanism nobody is on.
         let dir = temp_dir("fall-through");
-        let path = socket_path(&dir, "chain");
+        let path = socket_path(&dir, "chain")
+            .expect("a short fixture name fits every platform's socket-address budget");
         let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         let handle = listener.handle();
 
@@ -1223,7 +1298,8 @@ mod tests {
         // a handle that still offered the previous candidate's frames, session
         // id or answer would attribute one candidate's turn to another.
         let dir = temp_dir("unbound");
-        let path = socket_path(&dir, "idle");
+        let path = socket_path(&dir, "idle")
+            .expect("a short fixture name fits every platform's socket-address budget");
         let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         let handle = listener.handle_ref();
         // There is no turn to open, and a line belongs to no turn — so the
@@ -1248,7 +1324,8 @@ mod tests {
         // supervisor asked of a turn that no longer exists, on a harness they
         // never saw start.
         let dir = temp_dir("redirect-dropped");
-        let path = socket_path(&dir, "live");
+        let path = socket_path(&dir, "live")
+            .expect("a short fixture name fits every platform's socket-address budget");
         let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         let handle = listener.handle();
         let mut child = std::process::Command::new("cat")
@@ -1295,7 +1372,8 @@ mod tests {
         // consumer reading the report concludes something different from the
         // supervisor who held the socket.
         let dir = temp_dir("reported");
-        let path = socket_path(&dir, "moves");
+        let path = socket_path(&dir, "moves")
+            .expect("a short fixture name fits every platform's socket-address budget");
         let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         let handle = listener.handle();
         // Before any candidate binds, the report names the one the chain would
@@ -1333,7 +1411,8 @@ mod tests {
         // the binding — a channel still naming the chain's first mechanism would
         // hand a supervisor an address that answers for a different candidate.
         let dir = temp_dir("pooled-binding");
-        let path = socket_path(&dir, "named");
+        let path = socket_path(&dir, "named")
+            .expect("a short fixture name fits every platform's socket-address budget");
         let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         let handle = listener.handle();
         assert_eq!(handle.shape(), ControlShape::ClaudeControlRequest);
@@ -1358,7 +1437,8 @@ mod tests {
         // survive. So the run takes the message at interrupt time and writes it
         // itself, at the one moment the harness will accept it.
         let dir = temp_dir("redirect");
-        let path = socket_path(&dir, "live");
+        let path = socket_path(&dir, "live")
+            .expect("a short fixture name fits every platform's socket-address budget");
         let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         let handle = listener.handle();
 
@@ -1434,7 +1514,8 @@ mod tests {
         // Nothing was stopped, so nothing may be queued behind it: a supervisor
         // reading a refusal still owns its message and can send it elsewhere.
         let dir = temp_dir("redirect-refused");
-        let path = socket_path(&dir, "idle");
+        let path = socket_path(&dir, "idle")
+            .expect("a short fixture name fits every platform's socket-address budget");
         let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         let response = send(
             &path,
@@ -1458,7 +1539,8 @@ mod tests {
         // typing — and answers, rather than holding the connection until its
         // read timeout expires.
         let dir = temp_dir("unbounded");
-        let path = socket_path(&dir, "flood");
+        let path = socket_path(&dir, "flood")
+            .expect("a short fixture name fits every platform's socket-address budget");
         let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         let mut stream = UnixStream::connect(&path).unwrap();
         stream
@@ -1497,7 +1579,8 @@ mod tests {
         // — otherwise a wedged or hostile listener decides how much memory the
         // supervisor's process spends before anything is parsed.
         let dir = temp_dir("flood-reply");
-        let path = socket_path(&dir, "loud");
+        let path = socket_path(&dir, "loud")
+            .expect("a short fixture name fits every platform's socket-address budget");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let listener = UnixListener::bind(&path).unwrap();
         let written = Arc::new(Mutex::new(0usize));
@@ -1548,7 +1631,8 @@ mod tests {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixStream;
         let dir = temp_dir("malformed");
-        let path = socket_path(&dir, "bad");
+        let path = socket_path(&dir, "bad")
+            .expect("a short fixture name fits every platform's socket-address budget");
         let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         let mut stream = UnixStream::connect(&path).unwrap();
         stream
@@ -1577,7 +1661,8 @@ mod tests {
         // macOS is always in, and without it the run answers "could not read"
         // and the interrupt is lost.
         let dir = temp_dir("pieces");
-        let path = socket_path(&dir, "split");
+        let path = socket_path(&dir, "split")
+            .expect("a short fixture name fits every platform's socket-address budget");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let listener = UnixListener::bind(&path).unwrap();
 

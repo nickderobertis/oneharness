@@ -964,11 +964,20 @@ invalidating earlier ones):
   same loud usage error the flag does — turn it off for that call with
   `--no-stream`.
 - `failure_kind` / `failure_kind_source` — on a non-zero run, a coarse reason
-  (`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`) so a
+  (`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,
+  `untrusted_directory`, `input_too_large`) so a
   caller can tell a retryable condition from a broken request. `session_not_found`
   is the harness refusing to continue a session its identity has never seen — a
   resumed token belongs to exactly one identity's session store, so it is a
-  provisioning miss like `auth`, not a task failure. This is **distinct from `status`**,
+  provisioning miss like `auth`, not a task failure. `untrusted_directory` and
+  `input_too_large` are **precondition** refusals: the harness's own check failed
+  before it made the request at all (Codex declining a directory it does not
+  trust, or an input past the provider's character cap), so no model was called
+  and no tokens were spent. When the provider states the cause in machine-readable
+  terms — Codex's `{"input_error_code":"input_too_large","max_chars":…,
+  "actual_chars":…}` — that object is quoted **verbatim** into the result's
+  `error` and into the fallback block's `detail`, so a caller can shard against
+  the real cap instead of re-parsing raw stdout. This is **distinct from `status`**,
   which only records oneharness's relationship to the process. One kind,
   `tool_deferred`, is reported even on a `status: ok` run: the harness exited
   cleanly but only **deferred** a builtin tool call (`Read`, `Bash`, …) instead
@@ -1486,6 +1495,8 @@ chain, so a long, genuine run can never be mistaken for "try the next one".
 | Ran, exited non-zero, classified `auth`, no work done | ✅ fall through — `auth` |
 | Ran, exited non-zero, classified `quota` (no credit), no work done | ✅ fall through — `quota` |
 | Refused a resume it cannot resolve, classified `session_not_found`, no work done | ✅ fall through — `session-not-found` |
+| Refused the directory it was pointed at, classified `untrusted_directory`, no work done | ✅ fall through — `untrusted-directory` |
+| Refused the input as too large, classified `input_too_large`, no work done | ✅ fall through — `input-too-large` |
 | Ran and succeeded (`ok`) | ⛔ stop — this is the answer |
 | Ran and failed the task (`nonzero`, incl. `rate_limit` / `model_not_found`) | ⛔ stop¹ |
 | Timed out (`timeout`) — a slow but genuine run | ⛔ stop |
@@ -1566,11 +1577,14 @@ through: absent accounting is not evidence of work.
 > exists for — are unaffected.
 
 The report gains a `fallback` block, `{ "ran", "fell_through": [{ "harness",
-"reason" }] }`: `ran` is the harness that executed (or `null` when every
+"reason", "detail" }] }`: `ran` is the harness that executed (or `null` when every
 candidate failed to start), and `results` holds only the harnesses **attempted**
 — the fallen-through ones in priority order, then the one that ran. Priority
 order is the `--harness` / config `harnesses` order (registry order under
-`--all`). Under `--print-command` nothing executes, so the block is `null` and
+`--all`). Each fallen-through entry's `detail` is that candidate's own account of
+why it could not run — the provider's machine-readable refusal verbatim when it
+named one, else the result's `error` text, and `null` when it said nothing — so a
+supervisor reading only this block never has to re-derive the cause from stdout. Under `--print-command` nothing executes, so the block is `null` and
 every candidate's command is printed in priority order.
 
 **The command must be valid for the whole set.** Every listed harness is
@@ -1826,7 +1840,8 @@ produce. It and partial timing both arrived in history schema **v1.3**;
 a record's `schema_version` names the oldest reader that can understand it, so a
 record carrying either declares `1.3` while a provider-measured success still declares `1.1`.
 The same rule versions the enums a reader has to know: a `cancelled` run declares
-**v1.4**, and one classified `session_not_found` declares **v1.5**.
+**v1.4**, one classified `session_not_found` declares **v1.5**, and one classified
+`untrusted_directory` or `input_too_large` declares **v1.6**.
 
 It is **off by default** and opt-in three ways, layered like every other setting
 (CLI > env > project file > user file):

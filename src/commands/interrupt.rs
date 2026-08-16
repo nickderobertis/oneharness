@@ -50,8 +50,14 @@ pub fn run(args: &InterruptArgs) -> Result<i32, OneharnessError> {
     };
     let dir = session_io::resolve_dir(configured).ok_or(OneharnessError::ControlNoSessionDir)?;
 
+    // The same address the run built, from the same `(dir, name)`. An address
+    // this platform cannot bind is a usage error here too: no run could be
+    // listening on it, and reporting `not_running` would blame the run for the
+    // store's depth.
+    let path = socket_path(&dir, &args.session)
+        .map_err(|source| OneharnessError::ControlSocketAddress { source })?;
     let response = refuse_unsupported(&dir, &cwd, &args.session)
-        .unwrap_or_else(|| control::send(&socket_path(&dir, &args.session), &request));
+        .unwrap_or_else(|| control::send(&path, &request));
 
     // Through the shared writer, not `println!`: a supervisor piping this into
     // `head`, or dying between the interrupt and reading its answer, closes

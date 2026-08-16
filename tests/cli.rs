@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use oneharness_core::domain::events::{ActionEvent, TimingSource, ToolCallStatus};
+use oneharness_core::domain::fallback::FallThroughReason;
 use oneharness_core::domain::history::{HistoryLabels, HistoryLine, HistoryStreamEnvelope};
 use oneharness_core::domain::report::{RunStreamEnvelope, Status};
 use oneharness_core::domain::session;
@@ -299,7 +300,7 @@ fn every_report_carries_the_shared_schema_version() {
     // so a consumer reads any of them with one number — and a bump must move
     // every surface at once. Pinned literally on purpose: asserting against the
     // constant would pass through a bump nobody intended.
-    let version = "0.7";
+    let version = "0.8";
     let printed = run(
         &[
             "run",
@@ -342,7 +343,7 @@ fn list_describes_every_harness() {
     let output = run(&["list"], &[]);
     assert!(output.status.success());
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.7");
+    assert_eq!(value["schema_version"], "0.8");
     let ids: Vec<&str> = value["harnesses"]
         .as_array()
         .unwrap()
@@ -2197,6 +2198,147 @@ fn every_sourced_unknown_session_refusal_falls_through_its_own_chain() {
         );
         assert_eq!(value["fallback"]["ran"], tail, "{first}");
         assert_eq!(value["results"][1]["text"], "served-by-codex", "{first}");
+    }
+}
+
+#[test]
+fn a_precondition_refusal_falls_through_carrying_the_providers_own_cause() {
+    // The two refusals a harness reaches BEFORE it makes the request: codex
+    // declining an untrusted directory (~150ms, no model call) and refusing an
+    // over-long input outright. Both are "could not run the task at all", so a
+    // chain must route around them to a candidate that may well have the trust
+    // or the room — and the provider's machine-readable cause must travel with
+    // the verdict, since a supervisor reading only the fallback block is exactly
+    // who has to act on it (shard the input, widen the trust list).
+    let mock = mock_bin().display().to_string();
+    // A whole codex turn, frames included, so the candidate that serves has the
+    // telemetry a history record needs — the run's history is read back below,
+    // and a winner recorded as an incomplete record would prove nothing about
+    // the version the refusal forces.
+    let served = serde_json::to_string(concat!(
+        "{\"type\":\"turn.started\"}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",",
+        "\"text\":\"served-by-codex\"}}\n",
+        "{\"type\":\"turn.completed\"}\n",
+    ))
+    .expect("a string always serializes");
+    // Both refusals verbatim from real captures.
+    let cases = [
+        (
+            "untrusted",
+            "Not inside a trusted directory and --skip-git-repo-check was not specified",
+            "untrusted-directory",
+            "untrusted_directory",
+            None,
+        ),
+        (
+            "too-large",
+            "turn/start failed: Input exceeds the maximum length of 1048576 characters. \
+             (code -32602), data: {\"input_error_code\":\"input_too_large\",\
+             \"max_chars\":1048576,\"actual_chars\":1168716}",
+            "input-too-large",
+            "input_too_large",
+            Some(
+                "{\"input_error_code\":\"input_too_large\",\"max_chars\":1048576,\
+                 \"actual_chars\":1168716}",
+            ),
+        ),
+    ];
+
+    for (tag, refusal, reason, kind, detail) in cases {
+        let project = format!(
+            r#"
+            harnesses = ["claude-code", "codex"]
+            run_mode = "fallback"
+
+            [harness.claude-code]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "1", MOCK_STDERR = '{refusal}' }}
+
+            [harness.codex]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {served} }}
+            "#
+        );
+        let fx = ConfigFixture::new(&format!("precondition-{tag}"), &project, "");
+        // History is on so the refusal's own record can be read back: both kinds
+        // are `failure_kind` values no v1.5 reader has, so a record carrying one
+        // is legible only to a v1.6 reader and must say so rather than offer a
+        // version whose enum would reject the value it is holding.
+        let history = hist_dir(&format!("precondition-{tag}"));
+        let output = run_with_config(
+            &[
+                "run",
+                "--prompt",
+                "hi",
+                "--cwd",
+                &fx.cwd(),
+                "--history",
+                "--history-dir",
+                &history.display().to_string(),
+                "--compact",
+            ],
+            &[],
+            &fx.user_config(),
+        );
+        assert!(
+            output.status.success(),
+            "{tag}: exit {:?}, stderr {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value = json_stdout(&output);
+        assert_eq!(value["results"][0]["failure_kind"], kind, "{tag}");
+        assert_eq!(
+            value["fallback"]["fell_through"][0]["reason"], reason,
+            "{tag}"
+        );
+        assert_eq!(value["fallback"]["ran"], "codex", "{tag}");
+        assert_eq!(value["results"][1]["text"], "served-by-codex", "{tag}");
+        match detail {
+            // The provider named the cause in machine-readable terms, so both the
+            // refused result and the fall-through record carry it verbatim.
+            Some(data) => {
+                let carried = value["fallback"]["fell_through"][0]["detail"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                assert!(
+                    carried.contains(data),
+                    "{tag}: fell through with `{carried}`"
+                );
+                assert!(
+                    value["results"][0]["error"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains(data),
+                    "{tag}: the refused result must state the cause too"
+                );
+            }
+            // Prose only: nothing is invented to fill the field.
+            None => assert!(
+                value["fallback"]["fell_through"][0]["detail"].is_null(),
+                "{tag}: a refusal with no machine-readable cause must carry none"
+            ),
+        }
+
+        // The refusal's history record declares the version that first
+        // understood it — the whole run's history, read back through the store
+        // exactly as a consumer reads it.
+        let records = materialized_history(Path::new(
+            value["history_file"].as_str().expect("history file"),
+        ));
+        let refused = &records[0];
+        assert_eq!(refused["harness_id"], "claude-code", "{tag}");
+        assert_eq!(refused["failure_kind"], kind, "{tag}");
+        assert_eq!(refused["schema_version"], "1.6", "{tag}");
+        // ...and only that record. The candidate that ran carries no gated kind,
+        // so a version bump must not sweep every record of the run forward with
+        // it — a reader that could have read this one would be turned away.
+        let served_record = &records[1];
+        assert_eq!(served_record["harness_id"], "codex", "{tag}");
+        assert!(served_record["failure_kind"].is_null(), "{tag}");
+        assert_eq!(served_record["schema_version"], "1.1", "{tag}");
     }
 }
 
@@ -5242,7 +5384,7 @@ fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
     // The report is still the contract: a cancelled run is a value a consumer
     // reads, not a process that vanished.
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.7");
+    assert_eq!(value["schema_version"], "0.8");
     let result = &value["results"][0];
     assert_eq!(result["status"], "cancelled");
     assert_eq!(result["exit_code"], Value::Null);
@@ -6899,7 +7041,7 @@ CLAUDE_CONFIG_DIR = "OH_TEST_EMPTY_HOME"
             let fallback = report.fallback.as_ref().expect("a fallback report");
             assert_eq!(fallback.ran.as_deref(), Some("claude-code:empty"));
             assert_eq!(fallback.fell_through[0].harness, "claude-code:absent");
-            assert_eq!(fallback.fell_through[0].reason, "auth");
+            assert_eq!(fallback.fell_through[0].reason, FallThroughReason::Auth);
             assert_eq!(report.results[0].status, Status::Skipped);
             assert_eq!(report.results[0].failure_kind, Some(FailureKind::Auth));
         }
@@ -8027,7 +8169,7 @@ fn config_command_shows_values_with_sources() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.7");
+    assert_eq!(value["schema_version"], "0.8");
     assert_eq!(value["config_files"].as_array().unwrap().len(), 2);
 
     // The project file wins for model and is named as the source...
@@ -13803,7 +13945,7 @@ fn history_watch_streams_stdout_observed_event_at_the_current_version() {
     // Event lines are written by the current writer and read live, so they
     // always declare the current version (unlike a run record, whose version is
     // the oldest reader that can understand the fields it carries).
-    assert_eq!(envelope["line"]["schema_version"], "1.5");
+    assert_eq!(envelope["line"]["schema_version"], "1.6");
     assert_eq!(
         envelope["line"]["event"]["timing_source"],
         "stdout_observed"
@@ -15564,6 +15706,19 @@ fn fallback_falls_through_a_not_installed_harness() {
     assert_eq!(v["fallback"]["ran"], "codex");
     assert_eq!(v["fallback"]["fell_through"][0]["harness"], "claude-code");
     assert_eq!(v["fallback"]["fell_through"][0]["reason"], "not-installed");
+    // `detail` is every reason's, not just the precondition refusals': a
+    // candidate that was never installed says so there too, rather than making
+    // a supervisor cross-reference `results[]` for the diagnostic.
+    assert_eq!(
+        v["fallback"]["fell_through"][0]["detail"], v["results"][0]["error"],
+        "the fall-through record must carry the candidate's own account"
+    );
+    assert!(
+        v["fallback"]["fell_through"][0]["detail"]
+            .as_str()
+            .is_some_and(|detail| !detail.is_empty()),
+        "a missing binary has an account to give: {v}"
+    );
     assert!(v["batch"].is_null());
     // results carry every *attempted* harness in priority order: the skipped
     // one, then the one that ran. Candidates after it are never in the list.
@@ -20247,7 +20402,7 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
     let output = child.wait_with_output().expect("run did not finish");
     assert!(output.status.success(), "{output:?}");
     let report: Value = serde_json::from_slice(&output.stdout).expect("run report was not JSON");
-    assert_eq!(report["schema_version"], "0.7");
+    assert_eq!(report["schema_version"], "0.8");
     assert_eq!(report["control"]["mechanism"], "claude-control-request");
     assert_eq!(report["control"]["socket"], socket.display().to_string());
     let interrupts = report["control"]["interrupts"].as_array().unwrap();
@@ -20537,7 +20692,8 @@ fn a_redirection_refused_by_an_idle_run_is_not_reported_as_delivered() {
     let store = control_store_dir("redirect-idle");
     let store_arg = store.display().to_string();
     let listener = oneharness_core::io::control::bind(
-        &socket_path(&store, "idle"),
+        &socket_path(&store, "idle")
+            .expect("a short fixture name fits every platform's socket-address budget"),
         oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
     )
     .expect("bound an idle control socket");
@@ -20585,7 +20741,8 @@ fn a_previous_version_supervisor_is_refused_across_the_socket_rather_than_half_u
     use std::os::unix::net::UnixStream;
 
     let store = control_store_dir("old-client");
-    let path = socket_path(&store, "mixed");
+    let path = socket_path(&store, "mixed")
+        .expect("a short fixture name fits every platform's socket-address budget");
     let _listener = oneharness_core::io::control::bind(
         &path,
         oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
@@ -20674,6 +20831,151 @@ fn control_run_pins_the_message_stream_argv_and_leaves_the_prompt_off_it() {
 
     let _ = std::fs::remove_dir_all(&store);
     let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_socket_address_past_the_platform_budget_is_refused_before_anything_spawns() {
+    // `sockaddr_un.sun_path` holds 108 bytes on Linux and 104 on macOS, so an
+    // address past it cannot be bound at all. A run that discovered this by
+    // binding would still have started the harness and reported a control block
+    // for a channel no supervisor could ever reach — the silent degradation this
+    // refusal exists to prevent. It is a usage error, and it names the numbers.
+    let root = std::fs::canonicalize("/tmp").expect("/tmp must exist to root a control store");
+    // A store deep enough that no shortening of the session name can rescue it —
+    // the shape of a session dir nested inside a versioned worktree.
+    let store = root.join(format!("oh-deep-{}-{}", std::process::id(), "d".repeat(96)));
+    std::fs::create_dir_all(&store).unwrap();
+
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            // The shape a graph mints for a worker's session.
+            "node-scope-1786808430370-3422037-worker-skill",
+            "--session-dir",
+            &store.display().to_string(),
+            "--cwd",
+            &store.display().to_string(),
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a socket address this platform cannot bind is a usage error: {output:?}"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "a refused run must publish no report: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // The three numbers a reader needs to act: which address, how long it came
+    // out, and the budget it broke.
+    assert!(stderr.contains("control socket address"), "{stderr}");
+    assert!(stderr.contains(&store.display().to_string()), "{stderr}");
+    assert!(
+        stderr.contains(" bytes") && stderr.contains("unix-socket address limit"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("--session-dir"),
+        "the refusal must say what to change: {stderr}"
+    );
+
+    // The other process that resolves this address refuses it identically. A
+    // supervisor that got `not_running` here would go looking for a dead run
+    // instead of at the store it pointed both processes at.
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "node-scope-1786808430370-3422037-worker-skill",
+            "--session-dir",
+            &store.display().to_string(),
+            "--cwd",
+            &store.display().to_string(),
+        ],
+        &[],
+    );
+    assert_eq!(
+        interrupt.status.code(),
+        Some(2),
+        "interrupt must refuse the same address: {interrupt:?}"
+    );
+    let interrupt_stderr = String::from_utf8_lossy(&interrupt.stderr);
+    assert!(
+        interrupt_stderr.contains("control socket address")
+            && interrupt_stderr.contains("unix-socket address limit"),
+        "{interrupt_stderr}"
+    );
+
+    let _ = std::fs::remove_dir_all(&store);
+}
+
+/// A store whose own path fits but whose RESOLVED path does not: `bind`
+/// canonicalizes before binding (the address is handed to another process), and
+/// that can lengthen an address `socket_path` already cleared — macOS's `/tmp` →
+/// `/private/tmp` for free, a symlinked store anywhere. The run must say so in
+/// the same terms rather than surfacing the kernel's bare `ENAMETOOLONG`.
+#[cfg(unix)]
+#[test]
+fn an_address_that_only_canonicalization_makes_too_long_is_still_refused() {
+    let root = std::fs::canonicalize("/tmp").expect("/tmp must exist to root a control store");
+    let real = root.join(format!("oh-long-{}-{}", std::process::id(), "r".repeat(96)));
+    std::fs::create_dir_all(&real).unwrap();
+    let link = root.join(format!("oh-link-{}", std::process::id()));
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    // Short enough to build: `socket_path` measures the address it is given.
+    oneharness_core::domain::control::socket_path(&link, "watched")
+        .expect("the symlinked store is inside the budget before it is resolved");
+
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "watched",
+            "--session-dir",
+            &link.display().to_string(),
+            "--cwd",
+            &link.display().to_string(),
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a resolved address past the budget must abort the run: {output:?}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("could not open the control socket")
+            && stderr.contains("resolving it produced an address")
+            && stderr.contains("unix-socket address limit"),
+        "the refusal must name resolution as what broke the budget: {stderr}"
+    );
+
+    let _ = std::fs::remove_file(&link);
+    let _ = std::fs::remove_dir_all(&real);
 }
 
 #[cfg(unix)]
@@ -21135,7 +21437,8 @@ fn interrupt_between_turns_reports_no_active_turn() {
     use oneharness_core::domain::control::socket_path;
     let store = control_store_dir("noturn");
     let listener = oneharness_core::io::control::bind(
-        &socket_path(&store, "idle"),
+        &socket_path(&store, "idle")
+            .expect("a short fixture name fits every platform's socket-address budget"),
         oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
     )
     .unwrap();
@@ -21894,7 +22197,8 @@ fn interrupt_defaults_to_the_platform_session_store_and_prints_readable_json() {
     let state = control_store_dir("default-store");
     let store = state.join("oneharness").join("sessions");
     let _listener = oneharness_core::io::control::bind(
-        &socket_path(&store, "defaulted"),
+        &socket_path(&store, "defaulted")
+            .expect("a short fixture name fits every platform's socket-address budget"),
         oneharness_core::domain::control::ControlShape::ClaudeControlRequest,
     )
     .unwrap();

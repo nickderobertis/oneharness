@@ -10,10 +10,11 @@
 # major for. A break nobody declared is the defect this catches — it would
 # otherwise ship as a patch or a minor and break consumers at `cargo update`.
 #
-# This is the gate `release-plz.toml` defers to. release-plz's own `semver_check`
-# stays off because it cannot tell those two apart and would block every
-# breaking release; here the conventional-commit type decides, exactly as that
-# file says it should.
+# release-plz's own `semver_check` is a different question at a later tier: it
+# reads the API to settle the VERSION at release time, and would raise the bump
+# silently on a subject that declared nothing. This tier is where the subject
+# still costs one edit to fix, and it is what keeps the changelog from omitting
+# a break the version alone announced.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

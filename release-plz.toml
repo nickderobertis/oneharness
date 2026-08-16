@@ -39,14 +39,22 @@ release_commits = "(?s)^(feat|fix|perf)(\\([^)]+\\))?!?:|BREAKING CHANGE:"
 # commits from opening a fresh release PR, so there is no auto-merge loop.
 release_always = true
 
-# API breaking-change detection stays OFF *here* and is enforced one tier
-# earlier instead, by `just semver-check` (scripts/semver-check.sh) in the PR
-# gate and ci.yml's `semver` job. release-plz would run cargo-semver-checks
-# against a release it is in the middle of making and block every legitimately
-# breaking one; the PR gate can tell the two apart, because there the
-# conventional-commit subject that drives the bump either declares the break or
-# does not — and an undeclared break is exactly the defect worth stopping.
-semver_check = false
+# API breaking-change detection. `oneharness-core` is a published library with
+# real consumers, so a breaking change that ships as a patch — because a commit
+# subject said `fix` — breaks them silently; that has already happened once in
+# this workspace family. cargo-semver-checks reads the actual API surface, so the
+# bump follows the code rather than the subject line.
+#
+# release-plz shells out to a `cargo-semver-checks` BINARY and, when it is
+# missing, only warns and skips — so this setting is inert unless the tool is
+# installed. release-plz.yml installs it and verifies it runs before release-plz
+# starts, which is what keeps this from being a check that quietly does nothing.
+#
+# It decides the VERSION, at release time. What the subject line said is a
+# separate question, and a tier earlier: `just semver-check` refuses a break the
+# release-driving subject never declared, so the changelog a consumer reads is
+# not silent about one release-plz quietly bumped the major for.
+semver_check = true
 
 # Tag and name each release `vX.Y.Z`, matching v0.1.0..v0.2.0. Only the
 # `oneharness` binary is released (see the per-package block below); the

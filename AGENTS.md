@@ -90,8 +90,10 @@ Use the `just` recipes; do not hand-roll equivalents.
 - `just deps-check` — advisory/license audit (`cargo deny`); separate from the
   core gate because it needs a network-fetched advisory DB.
 - `just semver-check` — refuse an API break the release-driving subject does not
-  declare, which is the gate `release-plz.toml`'s `semver_check = false` defers
-  to. A `cargo semver-checks` finding is NOT the verdict: the tree always carries
+  declare. `release-plz.toml`'s `semver_check` is the later, separate half: it
+  settles the VERSION at release time and would raise the bump on a subject that
+  announced nothing, leaving the changelog silent about the break.
+  A `cargo semver-checks` finding is NOT the verdict: the tree always carries
   the last published version, so every breaking change reads as "requires new
   major" — what decides is whether the subject release-plz will read declares it
   (the PR title via `PR_TITLE` on a pull request, the commits elsewhere) in one
@@ -322,6 +324,15 @@ Use the `just` recipes; do not hand-roll equivalents.
   `CURSOR_API_KEY` from its child: passing it authenticates rather than selects,
   a hazard any future Cursor dispatch also hits.
   <!-- llmlint: ignore-end[agents_md_durable_and_terse, no_redundant_instruction_pointers, comments_earn_their_place] -->
+  A control socket ADDRESS is bounded, not merely a path: `sun_path` holds 108
+  bytes on Linux and 104 on macOS, so `domain::control::socket_path` abbreviates
+  a session name that would not fit (deterministically — `interrupt` is a
+  different process resolving the same address) and refuses a store directory
+  past the budget as a loud usage error before anything spawns, naming path,
+  length and limit. A run whose channel cannot exist must never start; a
+  graph-minted name one byte over made every dispatch on a host silently
+  uninterruptible. `io::control::bind` re-checks after canonicalizing, which can
+  lengthen an address the caller already cleared.
   `run --control` requires `--session` and one live TURN — exactly one harness in
   `parallel`, or a fallback chain of any length (it starts candidates one at a
   time), whose candidates may declare DIFFERENT mechanisms. The mechanism is
@@ -953,6 +964,23 @@ shape. When you add one:
   on what it reads). `sdk_schema::bundle` is the single Rust
   generation source for that envelope, `HistoryStreamEnvelope`, and the shared
   SDK contracts.
+- Everything else in `startup_failure_reason` follows one question — *could this
+  candidate have run the task at all?* — never *what did the outcome look
+  like?*; classifying by outcome is this module's recurring category error. The
+  two **precondition** refusals (`untrusted_directory`,
+  `input_too_large`) are that question answered by the harness's own pre-request
+  check, which is why they fall through beside `auth`/`quota`. When a refusal
+  names its cause in machine-readable terms, that text is carried up
+  **verbatim** (`FailureReading::detail` → the result's `error` → the
+  `fell_through` entry's `detail`), never paraphrased: a caller shards against
+  codex's own `max_chars`, and a consumer three retries downstream reporting a
+  schema-validation symptom is what the discarded cause cost. Adding a
+  `FailureKind` is three edits in lockstep — the variant (and
+  `FailureKind::ALL`), the history version gate
+  (`history::gated_failure_kind_version`, which `sdk_schema` builds the SDK
+  gates from so the two validators cannot disagree), and a
+  `tests/fixtures/sdk-contract-matrix.json` case at the introducing version and
+  the one before it.
 
 ## Scripts and output are context
 
@@ -1033,7 +1061,14 @@ shape. When you add one:
   complete gate, idempotently publishes both crates in dependency order
   (`oneharness-core`, then `oneharness`), attaches the checksummed cross-platform
   binaries + their Sigstore `.sigstore.json` bundles, and builds/publishes the
-  PyPI wheels and npm packages.
+  PyPI wheels and npm packages. The bump is not the commit subject's word alone:
+  `semver_check = true` reads `oneharness-core`'s actual API surface, so a
+  breaking change spelled `fix` cannot ship as a patch. It needs a
+  `cargo-semver-checks` binary release-plz only *warns* about when absent, and a
+  toolchain newer than the pinned channel (it resolves dependencies afresh, so
+  the pin cannot build its rustdoc) — release-plz.yml supplies both and runs the
+  analysis against `HEAD` as its own baseline to prove it works without deciding
+  the release.
   So a release lands five ways: **PyPI** (`pip install oneharness-cli`), **npm**
   (`npm install -g oneharness-cli`), **crates.io**, the GitHub Release binaries,
   and `cargo install --git` (see the PyPI-wheels, npm-packages, and Sigstore

@@ -17,7 +17,9 @@
 //!   events to a caller-supplied [`io::run::EventSink`] as they occur and
 //!   tearing the harness tree down on a caller-owned
 //!   [`io::cancel::CancelToken`]. Nothing on that path writes to the process's
-//!   stdout, so an embedder whose own stdout is a contract can use it.
+//!   stdout, so an embedder whose own stdout is a contract can use it, and
+//!   [`io::run::run_supervised`] puts each harness child into the process group
+//!   / job object that embedder supervises.
 //! - **Install a hook.** Build a [`domain::hooks::HookSpec`] and call
 //!   [`io::hooks::install`] to write a pre-tool hook into any harness in that
 //!   harness's native shape (a shared config file, a dedicated hooks file, or a

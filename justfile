@@ -41,9 +41,10 @@ bootstrap:
 check: fmt-check lint lint-sh lint-workflows sdk-check python-sdk-check test coverage build smoke
     @echo "check: ok"
 
-# Complete pre-push gate: deterministic product/dependency checks, followed by
-# llmlint validation and its changed-file LLM judge when local credentials exist.
-gate remote="origin" base="": check deps-check package-crates
+# Complete pre-push gate: deterministic product/dependency/API checks, followed
+# by llmlint validation and its changed-file LLM judge when local credentials
+# exist.
+gate remote="origin" base="": check deps-check package-crates semver-check
     @comparison=$(scripts/comparison-base.sh "{{remote}}" "{{base}}"); just lint-llm-local "$comparison"
 
 # Verify formatting without modifying files.
@@ -96,6 +97,7 @@ lint-workflows: build build-mock-harness
     @bash scripts/check-setup-just.sh >/dev/null
     @bash scripts/check-publish-crates.sh >/dev/null
     @bash scripts/check-package-crates.sh >/dev/null
+    @bash scripts/check-semver-check.sh >/dev/null
     @bash scripts/check-smoke-env.sh >/dev/null
     @bash scripts/check-publish-npm.sh >/dev/null
     @bash scripts/check-local-gate.sh >/dev/null
@@ -187,6 +189,14 @@ deps-check:
     if ! command -v cargo-machete >/dev/null 2>&1; then echo "cargo-machete not installed: cargo install cargo-machete --locked" >&2; exit 1; fi
     cargo deny check
     cargo machete
+
+# Refuse an API break the release-driving commit subject does not declare.
+# Separate from `check` for the same reasons `deps-check` is: it resolves the
+# published baseline over the network, and it needs a newer rustc than
+# rust-toolchain.toml pins (so it names one; set SEMVER_TOOLCHAIN to override).
+# Absent tooling skips locally and is red in CI (OH_SEMVER_NO_SKIP=1).
+semver-check:
+    @bash scripts/semver-check.sh
 
 # Upgrade dependencies, then re-run the full gate.
 upgrade:

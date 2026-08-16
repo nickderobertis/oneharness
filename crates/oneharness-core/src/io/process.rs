@@ -6,6 +6,12 @@
 //! close Job Object on Windows). Timeout and streaming teardown terminate that
 //! whole tree, reap the direct child, and bound pipe draining so an escaped
 //! descendant can never hold the caller forever.
+//!
+//! An embedder can claim the same child through a [`ProcessSupervisor`], which
+//! is the one thing that changes what teardown may signal: a caller that
+//! re-parents the child's process group owns the tree from then on, so this
+//! layer confines itself to the direct child rather than signalling a group it
+//! did not create.
 
 use std::io::{self, Read};
 use std::process::{Child, ChildStdin, Command, ExitStatus};
@@ -13,6 +19,8 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use wait_timeout::ChildExt;
+
+use crate::io::runner::ProcessSupervisor;
 
 const TERM_GRACE: Duration = Duration::from_millis(100);
 const PIPE_CLOSE_GRACE: Duration = Duration::from_millis(100);
@@ -84,10 +92,38 @@ impl Process {
     /// already-piped stdout/stderr. Windows starts suspended, assigns the process
     /// to its Job Object, and only then resumes it, so a fast launcher cannot
     /// create an unowned descendant in the assignment race.
-    pub(crate) fn spawn(mut command: Command) -> io::Result<Self> {
+    pub(crate) fn spawn(command: Command) -> io::Result<Self> {
+        Self::spawn_supervised(command, None)
+    }
+
+    /// [`Process::spawn`] with the caller's own claim on the child
+    /// ([`ProcessSupervisor`]). `None` is byte for byte [`Process::spawn`].
+    ///
+    /// Where the two hooks sit is the whole of what they promise. `spawning`
+    /// runs *after* this layer has prepared its own containment and immediately
+    /// before `Command::spawn`, so the `Command` it receives is the one actually
+    /// spawned and a `pre_exec` it registers runs after ours (which is what lets
+    /// a caller's `setpgid` win). `spawned` runs before the first wait or pipe
+    /// read — and on Windows while the child is still suspended — so the caller
+    /// adopts a process that is certainly still there, and on Windows one that
+    /// cannot yet have created a descendant outside the caller's job.
+    pub(crate) fn spawn_supervised(
+        mut command: Command,
+        supervisor: Option<&dyn ProcessSupervisor>,
+    ) -> io::Result<Self> {
         let mut tree = platform::Tree::prepare(&mut command)?;
+        if let Some(supervisor) = supervisor {
+            supervisor.spawning(&mut command);
+        }
         let mut child = command.spawn()?;
-        if let Err(error) = tree.attach_and_start(&mut child) {
+        if let Err(error) = tree.attach(&mut child) {
+            tree.terminate(&mut child, TERM_GRACE);
+            return Err(error);
+        }
+        if let Some(supervisor) = supervisor {
+            supervisor.spawned(&child);
+        }
+        if let Err(error) = tree.start(&mut child) {
             tree.terminate(&mut child, TERM_GRACE);
             return Err(error);
         }
@@ -348,7 +384,19 @@ mod platform {
     use wait_timeout::ChildExt;
 
     pub(super) struct Tree {
-        process_group: Option<libc::pid_t>,
+        owned: Option<Owned>,
+    }
+
+    /// What this run may signal when it tears the child down.
+    enum Owned {
+        /// The child leads the process group `prepare` asked for, so the group
+        /// holds exactly this run's harness and its descendants: signal it whole.
+        Group(libc::pid_t),
+        /// A `spawning` hook moved the child into a process group this run did
+        /// not create. That group is the caller's and may hold the caller's own
+        /// processes, so signalling it is not ours to do — only the direct child
+        /// is. The caller owns the rest of the tree it took responsibility for.
+        DirectChild(libc::pid_t),
     }
 
     impl Tree {
@@ -366,27 +414,54 @@ mod platform {
                     }
                 });
             }
-            Ok(Self {
-                process_group: None,
-            })
+            Ok(Self { owned: None })
         }
 
-        pub(super) fn attach_and_start(&mut self, child: &mut Child) -> io::Result<()> {
-            self.process_group = Some(child.id().try_into().map_err(|_| {
+        pub(super) fn attach(&mut self, child: &mut Child) -> io::Result<()> {
+            let pid: libc::pid_t = child.id().try_into().map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidData, "child PID does not fit pid_t")
-            })?);
+            })?;
+            // Read the group the child is really in rather than assuming the
+            // `prepare` above had the last word: a caller's `spawning` hook can
+            // register its own `setpgid`, which runs after ours. `spawn` has
+            // already returned, so both closures are done and this answer is
+            // final. A query failure means a pid that no longer exists, which an
+            // unreaped child is not — keep the group we asked for there, since
+            // the alternative silently drops descendant teardown.
+            // SAFETY: `getpgid` only reads the process table for `pid`.
+            let group = unsafe { libc::getpgid(pid) };
+            self.owned = Some(if group == pid || group == -1 {
+                Owned::Group(pid)
+            } else {
+                Owned::DirectChild(pid)
+            });
+            Ok(())
+        }
+
+        pub(super) fn start(&mut self, _child: &mut Child) -> io::Result<()> {
+            // The child was never suspended: `pre_exec` grouping needs no window.
             Ok(())
         }
 
         pub(super) fn terminate(&mut self, child: &mut Child, grace: Duration) {
-            if let Some(group) = self.process_group {
-                signal_group(group, libc::SIGTERM);
-                let _ = child.wait_timeout(grace);
-                // Always follow with KILL: the direct child may have honored TERM
-                // while a descendant ignored it and retained the output pipes.
-                signal_group(group, libc::SIGKILL);
-            } else {
-                let _ = child.kill();
+            match self.owned {
+                Some(Owned::Group(group)) => {
+                    signal_group(group, libc::SIGTERM);
+                    let _ = child.wait_timeout(grace);
+                    // Always follow with KILL: the direct child may have honored
+                    // TERM while a descendant ignored it and retained the pipes.
+                    signal_group(group, libc::SIGKILL);
+                }
+                Some(Owned::DirectChild(pid)) => {
+                    // SAFETY: a positive PID addresses only that one process.
+                    // ESRCH (it already exited) is expected and best-effort.
+                    unsafe { libc::kill(pid, libc::SIGTERM) };
+                    let _ = child.wait_timeout(grace);
+                    let _ = child.kill();
+                }
+                None => {
+                    let _ = child.kill();
+                }
             }
             let _ = child.wait();
         }
@@ -462,12 +537,21 @@ mod platform {
             Ok(Self { job })
         }
 
-        pub(super) fn attach_and_start(&mut self, child: &mut Child) -> io::Result<()> {
+        pub(super) fn attach(&mut self, child: &mut Child) -> io::Result<()> {
             let process = child.as_raw_handle() as HANDLE;
             // SAFETY: both handles are live; the process is still suspended.
             if unsafe { AssignProcessToJobObject(self.job, process) } == 0 {
                 return Err(io::Error::last_os_error());
             }
+            Ok(())
+        }
+
+        /// Resume the child, once it is in this run's Job Object and any
+        /// caller-owned one a `spawned` hook added it to. Splitting this from
+        /// [`Tree::attach`] is what gives that hook the suspended window: a job
+        /// assigned after the first instruction runs can already have missed a
+        /// descendant.
+        pub(super) fn start(&mut self, child: &mut Child) -> io::Result<()> {
             resume_primary_thread(child.id())
         }
 
@@ -551,7 +635,11 @@ mod platform {
             Ok(Self)
         }
 
-        pub(super) fn attach_and_start(&mut self, _child: &mut Child) -> io::Result<()> {
+        pub(super) fn attach(&mut self, _child: &mut Child) -> io::Result<()> {
+            Ok(())
+        }
+
+        pub(super) fn start(&mut self, _child: &mut Child) -> io::Result<()> {
             Ok(())
         }
 

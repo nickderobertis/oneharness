@@ -1,6 +1,15 @@
 [workspace]
 members = ["crates/oneharness-core"]
 
+# The single source for the one dependency both crates take. The binary crate's
+# `windows-sys` dev-dependency rides for free on the engine's own Windows
+# dependency only while the two resolve to one version, and cargo answers a
+# divergence with a second copy rather than a complaint. Inheriting is what keeps
+# that from rotting: the requirement lives here alone — a member restating it is
+# ignored — so a bump moves both. Each still names only the features it uses.
+[workspace.dependencies]
+windows-sys = "0.61"
+
 [package]
 name = "oneharness"
 version = "0.10.0"
@@ -52,6 +61,19 @@ serde_json = "1"
 # `oneharness-core`, so it costs no extra download.
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
+
+# The other half of the same proof: a `RunControls::supervisor` puts each harness
+# child into the caller's own process group on Unix and its own Job Object here,
+# and `tests/library.rs` asserts that membership from the caller's side —
+# `IsProcessInJob` is the only thing that can answer it. The version is the
+# workspace's, the one `oneharness-core` inherits too, so it costs no extra
+# download.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+] }
 
 [profile.release]
 strip = true

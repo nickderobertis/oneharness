@@ -2146,7 +2146,8 @@ would have returned, whether the run streamed, and the one-line failure summary
 the CLI prints to stderr. `Err` means the *request* was refused before anything
 spawned — a harness's own failure is always a `RunResult`, never an error.
 
-Three things the CLI does for itself, which an in-process caller now chooses:
+Four things the CLI does for itself, which an in-process caller now chooses
+(three on `RunControls`, the fourth through `run_supervised`):
 
 - **Where events go.** Set `stream: Some(true)` and pass an `EventSink`; its `event`
   method is called as each normalized event arrives, and returning
@@ -2157,6 +2158,19 @@ Three things the CLI does for itself, which an in-process caller now chooses:
   handle that does, tearing the whole tree down and still returning a report with
   `"status": "cancelled"`. Cancel and then *wait for the call to return* — killing
   your own process instead orphans a live, billing harness.
+- **Who else owns the harness processes.** `run_supervised(&request, controls,
+  Some(&supervisor))` takes a `ProcessSupervisor`, whose `spawning(&mut Command)`
+  / `spawned(&Child)` hooks put each harness child into the process group (POSIX)
+  or job object (Windows) **you** supervise — the grouping the subprocess hop
+  used to provide, without which your activity watchdog cannot see the harness
+  subtree as one unit and your own kill does not reap it. Observing hooks change
+  nothing else: oneharness still tears the whole descendant tree down. A
+  `spawning` hook that re-parents the child's process group takes that tree over
+  — oneharness will not signal a group it did not create, since yours may hold
+  your own processes, so it then confines its teardown to the direct child. (Its
+  own entry point rather than a `RunControls` field: that struct is exhaustively
+  constructible, so a field would break every literal already written for a
+  capability that is otherwise purely additive.)
 - **Whose signals apply.** `RunControls::signal_cancel` is off by default, so the
   engine never takes over your `SIGINT`/`SIGTERM` disposition; the CLI sets it.
 

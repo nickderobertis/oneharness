@@ -67,8 +67,8 @@ Use the `just` recipes; do not hand-roll equivalents.
 - `just check` — full gate: format check, clippy (`-D warnings`), tests, line
   coverage (hard-gated at 95%), build, smoke. Must pass before any commit or PR.
 - `just gate` — pre-push superset: `check`, dependency/license audit, crate
-  packaging, llmlint validation, and its merge-base diff judge (skipped locally
-  without Codex/key).
+  packaging, published-API compatibility, llmlint validation, and its merge-base
+  diff judge (skipped locally without Codex/key).
   The judge is non-deterministic, so its greens are recorded and **replayed**:
   one workspace content plus one resolved base commit plus one judge config is
   judged exactly once, and `pre-push` replays what the working tree's own gate
@@ -89,6 +89,17 @@ Use the `just` recipes; do not hand-roll equivalents.
 - `just upgrade` — update dependencies, then re-run `just check`.
 - `just deps-check` — advisory/license audit (`cargo deny`); separate from the
   core gate because it needs a network-fetched advisory DB.
+- `just semver-check` — refuse an API break the release-driving subject does not
+  declare. `release-plz.toml`'s `semver_check` is the later, separate half: it
+  settles the VERSION at release time and would raise the bump on a subject that
+  announced nothing, leaving the changelog silent about the break.
+  A `cargo semver-checks` finding is NOT the verdict: the tree always carries
+  the last published version, so every breaking change reads as "requires new
+  major" — what decides is whether the subject release-plz will read declares it
+  (the PR title via `PR_TITLE` on a pull request, the commits elsewhere) in one
+  of the types that actually release. Outside `check` like `deps-check`, and the
+  one command needing a newer toolchain than `rust-toolchain.toml` pins. Absent
+  tooling skips locally and is RED in CI (`OH_SEMVER_NO_SKIP=1`).
 - `just package-crates` — package both crates as Cargo verifies them at publish
   time. Deliberately NOT in `check`: `release.yml` runs `check` at the tag, and
   there the binary already pins the core version that same run publishes, so
@@ -175,16 +186,25 @@ Use the `just` recipes; do not hand-roll equivalents.
   value they resolve to (`stream`/`history` as `Option<bool>`, `--bypass` folded
   into `mode`, `--fork` inside the `Resume` it is meaningless without), because
   a library caller has no clap to make the conflicting state unreachable.
-  `RunControls` carries the three things a subprocess hop gave a consumer for
-  free — the event sink, a `CancelToken` (the only handle that reaches a harness
-  tree, since each harness leads its own process group), and whether oneharness
-  may take over the host's SIGINT/SIGTERM disposition (`signal_cancel`, which
-  the CLI sets and an embedder leaves off, cancelling its own token instead).
-  Warnings still go to the host's stderr, so an embedder inherits them.
-  `tests/library.rs` is that surface's drift alarm, one test per property:
-  report-back-without-printing (an fd-1 redirect across the call), an event
-  observed while the run is demonstrably still streaming, and a cancel that
-  stops the harness's own descendant — proven from outside the tree.
+  `RunControls` carries three of the four things a subprocess hop gave a
+  consumer for free — the event sink, a `CancelToken` (the only handle that
+  reaches a harness tree, since each harness leads its own process group), and
+  whether oneharness may take over the host's SIGINT/SIGTERM disposition
+  (`signal_cancel`, which the CLI sets and an embedder leaves off, cancelling
+  its own token instead). The fourth is that hop's *grouping*, and it is a
+  `ProcessSupervisor` on `run_supervised` rather than a fifth `RunControls`
+  field: that struct is exhaustively constructible, so a field would break every
+  literal already written — as any further side channel would, which is why each
+  takes its own entry point. A caller's `pre_exec` must run last to win, and
+  teardown follows the group the child is REALLY in, asked of the OS: one the
+  caller re-parented it into is the caller's to reap, and oneharness ends only
+  the direct child. Warnings still go to the host's stderr, so an embedder
+  inherits them. `tests/library.rs` is that surface's drift alarm, one test per
+  property: report-back-without-printing (an fd-1 redirect across the call), an
+  event observed while the run is demonstrably still streaming, a cancel that
+  stops the harness's own descendant — proven from outside the tree — and, for
+  the supervisor, both teardown halves and a hand-over from every execution
+  model.
 - `run` spawns the selected harnesses **in parallel**, each as a subprocess with
   a timeout, and emits one JSON report. `io::process` owns each launcher's whole
   tree (Unix process group; Windows kill-on-close Job Object assigned while the
@@ -1043,12 +1063,7 @@ shape. When you add one:
   binaries + their Sigstore `.sigstore.json` bundles, and builds/publishes the
   PyPI wheels and npm packages. The bump is not the commit subject's word alone:
   `semver_check = true` reads `oneharness-core`'s actual API surface, so a
-  breaking change spelled `fix` cannot ship as a patch. It needs a
-  `cargo-semver-checks` binary release-plz only *warns* about when absent, and a
-  toolchain newer than the pinned channel (it resolves dependencies afresh, so
-  the pin cannot build its rustdoc) — release-plz.yml supplies both and runs the
-  analysis against `HEAD` as its own baseline to prove it works without deciding
-  the release.
+  breaking change spelled `fix` cannot ship as a patch.
   So a release lands five ways: **PyPI** (`pip install oneharness-cli`), **npm**
   (`npm install -g oneharness-cli`), **crates.io**, the GitHub Release binaries,
   and `cargo install --git` (see the PyPI-wheels, npm-packages, and Sigstore

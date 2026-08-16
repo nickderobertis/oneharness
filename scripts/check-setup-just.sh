@@ -7,8 +7,14 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# This check drives three files, so the remediation `fail` falls back to names
+# whichever one the failing case ran: every case goes through a driver below, and
+# each driver claims the file it drives. A failure pointing at the wrong one
+# costs the reader exactly the debugging time this check exists to save.
+subject=
+
 fail() {
-  echo "check-setup-just: $1; ${2:-fix scripts/setup-just-install.sh and rerun 'bash scripts/check-setup-just.sh'}" >&2
+  echo "check-setup-just: $1; ${2:-fix $subject and rerun 'bash scripts/check-setup-just.sh'}" >&2
   exit 1
 }
 
@@ -39,6 +45,7 @@ EOF
 chmod +x "$work/bin/just" "$work/bin/cargo"
 
 run_case() {
+  subject=scripts/setup-just-install.sh
   : >"$work/cargo-calls"
   env PATH="$work/bin:$PATH" JUST_VERSION_FILE="$work/just-version" \
     CARGO_LOG="$work/cargo-calls" CARGO_INSTALLS_VERSION="${3:-1.99.0}" \
@@ -126,12 +133,17 @@ grep -Fq 'but .tool-versions pins just 1.99.0' "$work/out" ||
 # versions on its line and appear on several lines, so "the version" is only
 # well defined once exactly one of each is proven — and the emitted line is the
 # step's output verbatim, so it is what the test reads.
-pin_case() {
-  printf '%s\n' "$2" >"$work/tool-versions"
-  scripts/setup-just-pin.sh "$work/tool-versions" >"$work/pin-out" 2>&1
+read_pin() {
+  subject=scripts/setup-just-pin.sh
+  scripts/setup-just-pin.sh "$@" >"$work/pin-out" 2>&1
 }
 
-if ! pin_case ok 'nodejs 22.0.0
+pin_case() {
+  printf '%s\n' "$1" >"$work/tool-versions"
+  read_pin "$work/tool-versions"
+}
+
+if ! pin_case 'nodejs 22.0.0
 just 1.99.0
 python 3.12.0'; then
   cat "$work/pin-out" >&2
@@ -144,7 +156,7 @@ fi
 # confident, wrong pin — and then caches under a key claiming otherwise.
 for bad in 'just 1.99.0 2.0.0' 'just' 'just 1.99' 'just latest' 'nodejs 22.0.0' 'just 1.99.0
 just 2.0.0'; do
-  if pin_case bad "$bad"; then
+  if pin_case "$bad"; then
     fail "the pin '$bad' was accepted as 'exactly one x.y.z': $(cat "$work/pin-out")" \
       "restore the whole-line validation in scripts/setup-just-pin.sh"
   fi
@@ -154,14 +166,19 @@ done
 
 # The repo's own file must satisfy its own reader; otherwise every workflow using
 # the action fails at its first step.
-scripts/setup-just-pin.sh >"$work/pin-out" 2>&1 ||
+read_pin ||
   fail "this repo's .tool-versions is not readable by its own pin step: $(cat "$work/pin-out")"
 
 # The action must actually go through both scripts, or none of the above covers it.
-grep -Fq 'run: scripts/setup-just-pin.sh' .github/actions/setup-just/action.yml ||
+delegates_to() {
+  subject=.github/actions/setup-just/action.yml
+  grep -Fq "run: $1" .github/actions/setup-just/action.yml
+}
+
+delegates_to scripts/setup-just-pin.sh ||
   fail "the setup-just action no longer reads its pin through scripts/setup-just-pin.sh" \
     "restore the delegation in .github/actions/setup-just/action.yml"
-grep -Fq 'run: scripts/setup-just-install.sh' .github/actions/setup-just/action.yml ||
+delegates_to scripts/setup-just-install.sh ||
   fail "the setup-just action no longer installs through scripts/setup-just-install.sh" \
     "restore the delegation in .github/actions/setup-just/action.yml"
 

@@ -118,7 +118,7 @@ lint-workflows: build build-mock-harness
 # integration tests; prefers nextest, falls back to cargo test), then refuse a
 # run that left a scratch directory behind in the host temp directory.
 test:
-    @FEATURES={{FEATURES}} bash scripts/check-temp-leaks.sh bash scripts/run-tests.sh
+    @bash scripts/check-temp-leaks.sh bash -c 'if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --workspace --features {{FEATURES}} --locked; else cargo test --workspace --features {{FEATURES}} --locked; fi'
 
 # Run the workspace suite under instrumentation and FAIL if line coverage drops
 # below {{COVERAGE_MIN}}%. This is the coverage gate (part of `just check` and

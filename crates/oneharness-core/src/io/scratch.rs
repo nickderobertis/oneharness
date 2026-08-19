@@ -1,7 +1,15 @@
 //! A temp directory that removes itself.
 
+use std::io;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+
+/// The prefix every scratch directory's name carries.
+///
+/// Minted here rather than spelled by each caller, so the leak gate that sweeps
+/// for abandoned scratch space (`scripts/check-temp-leaks.sh`) has one source
+/// for the name it looks for and a new caller cannot drift out of its reach.
+pub const PREFIX: &str = "oneharness-";
 
 /// A directory under the host temp directory, owned by the value that made it
 /// and **removed when that value is dropped** — including when the scope
@@ -17,52 +25,71 @@ use std::path::{Path, PathBuf};
 /// It is public, and always compiled, because there is no one compilation unit
 /// that could hold it otherwise: the engine's own unit tests, the binary crate's
 /// unit tests, and the integration-test binaries are three separate builds, and
-/// a `#[cfg(test)]` item reaches only the first of them.
+/// a `#[cfg(test)]` item reaches only the first.
 #[derive(Debug)]
 pub struct ScratchDir {
     path: PathBuf,
 }
 
 impl ScratchDir {
-    /// A scratch directory named `name` directly under [`std::env::temp_dir`].
+    /// A scratch directory for `tag` directly under [`std::env::temp_dir`].
     ///
-    /// `name` is the whole directory name rather than a stem this decorates,
-    /// because a scratch directory is shared with other processes and other
-    /// threads: what makes it private is the caller's own tag plus whatever
-    /// process/thread identity that caller already spells into it, and inventing
-    /// a second scheme here would only make the two disagree.
+    /// # Errors
     ///
-    /// # Panics
-    ///
-    /// If the directory cannot be created. A test that cannot get scratch space
-    /// has nothing to assert, so this is loud rather than deferred to the first
-    /// confusing write failure inside it.
-    #[must_use]
-    pub fn new(name: &str) -> ScratchDir {
-        ScratchDir::under(&std::env::temp_dir(), name)
+    /// [`io::ErrorKind::InvalidInput`] for a `tag` carrying a path separator,
+    /// and whatever creating the directory failed with otherwise.
+    pub fn new(tag: &str) -> io::Result<ScratchDir> {
+        ScratchDir::under(&std::env::temp_dir(), tag)
     }
 
     /// The same, under an explicit `root` — for a caller whose path is also an
     /// address it has to budget (a unix socket under `/tmp`), rather than just a
-    /// place to put files.
+    /// place to put files. Pair it with [`ScratchDir::name`], which is what that
+    /// caller measures before asking for the directory.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// If the directory cannot be created, as [`ScratchDir::new`] does.
-    #[must_use]
-    pub fn under(root: &Path, name: &str) -> ScratchDir {
-        let path = root.join(name);
+    /// As [`ScratchDir::new`].
+    pub fn under(root: &Path, tag: &str) -> io::Result<ScratchDir> {
+        let path = root.join(checked_name(tag)?);
         let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path)
-            .unwrap_or_else(|err| panic!("could not create the scratch directory {path:?}: {err}"));
-        ScratchDir { path }
+        std::fs::create_dir_all(&path)?;
+        Ok(ScratchDir { path })
     }
 
-    /// The directory itself.
+    /// The directory name `tag` resolves to: [`PREFIX`], the tag, and the
+    /// process that asked — so two processes running the same test do not share
+    /// scratch space. A caller needing more separation than that (one thread per
+    /// case, say) spells it into the tag.
+    #[must_use]
+    pub fn name(tag: &str) -> String {
+        format!("{PREFIX}{tag}-{}", std::process::id())
+    }
+
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+/// [`ScratchDir::name`], refusing a tag that would make the result more than one
+/// path component.
+///
+/// A separator is the whole attack surface here, and it matters because the
+/// directory is recursively **removed**: `../..` as a tag would delete a
+/// directory the caller never named. Nothing else can escape, because the name
+/// is built by prepending [`PREFIX`] — so it is never absolute, never `.` and
+/// never `..`, whatever the tag says.
+fn checked_name(tag: &str) -> io::Result<String> {
+    if tag.contains(['/', '\\']) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "a scratch tag names one directory, so it cannot contain a path separator: {tag:?}"
+            ),
+        ));
+    }
+    Ok(ScratchDir::name(tag))
 }
 
 impl Deref for ScratchDir {
@@ -93,14 +120,14 @@ impl Drop for ScratchDir {
 mod tests {
     use super::*;
 
+    fn tag(what: &str) -> String {
+        format!("scratch-{what}-{:?}", std::thread::current().id())
+    }
+
     #[test]
     fn the_directory_exists_while_it_is_held_and_is_gone_after() {
         let path = {
-            let scratch = ScratchDir::new(&format!(
-                "oneharness-scratch-drop-{}-{:?}",
-                std::process::id(),
-                std::thread::current().id()
-            ));
+            let scratch = ScratchDir::new(&tag("drop")).unwrap();
             std::fs::write(scratch.join("inside.txt"), "content").unwrap();
             assert!(scratch.path().is_dir());
             scratch.path().to_path_buf()
@@ -115,14 +142,10 @@ mod tests {
     fn a_panicking_scope_still_removes_its_directory() {
         // The case the old shape could never cover: a failing test unwinds, and
         // cleanup that lives at the end of the test body never runs.
-        let name = format!(
-            "oneharness-scratch-panic-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        );
-        let path = std::env::temp_dir().join(&name);
+        let tag = tag("panic");
+        let path = std::env::temp_dir().join(ScratchDir::name(&tag));
         let panicked = std::panic::catch_unwind(|| {
-            let scratch = ScratchDir::new(&name);
+            let scratch = ScratchDir::new(&tag).unwrap();
             std::fs::write(scratch.join("inside.txt"), "content").unwrap();
             panic!("the test this stands in for failed");
         });
@@ -137,30 +160,57 @@ mod tests {
     fn an_existing_directory_is_cleared_on_the_way_in() {
         // A rerun (or a crashed predecessor) must not leak state into the next
         // one, which is the one property of the old shape worth keeping.
-        let name = format!(
-            "oneharness-scratch-reuse-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        );
-        let stale = ScratchDir::new(&name);
+        let tag = tag("reuse");
+        let stale = ScratchDir::new(&tag).unwrap();
         std::fs::write(stale.join("stale.txt"), "from a previous run").unwrap();
-        let fresh = ScratchDir::new(&name);
+        let fresh = ScratchDir::new(&tag).unwrap();
         assert!(!fresh.join("stale.txt").exists());
         assert!(fresh.path().is_dir());
     }
 
     #[test]
+    fn the_name_carries_the_prefix_the_leak_gate_sweeps_for() {
+        let name = ScratchDir::name("anything");
+        assert!(name.starts_with(PREFIX), "{name}");
+        let scratch = ScratchDir::new(&tag("prefix")).unwrap();
+        assert!(scratch
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with(PREFIX));
+    }
+
+    #[test]
+    fn a_tag_cannot_escape_the_directory_it_names() {
+        // The directory is recursively removed, so a tag that walked out of it
+        // would delete something the caller never named. Refused, not sanitized.
+        for escape in ["../..", "nested/inside", "back\\slash"] {
+            let err = ScratchDir::new(escape).expect_err(escape);
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{escape}");
+        }
+        // The prefix is what makes everything else unrepresentable: a tag of
+        // `..` still names a directory inside the root.
+        let dots = ScratchDir::new("..").unwrap();
+        assert_eq!(dots.parent().unwrap(), std::env::temp_dir());
+    }
+
+    #[test]
     fn an_explicit_root_is_honoured() {
-        let outer = ScratchDir::new(&format!(
-            "oneharness-scratch-root-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let inner = ScratchDir::under(outer.path(), "nested");
-        assert_eq!(inner.path(), outer.join("nested"));
+        let outer = ScratchDir::new(&tag("root")).unwrap();
+        let inner = ScratchDir::under(outer.path(), "nested").unwrap();
+        assert_eq!(inner.path(), outer.join(ScratchDir::name("nested")));
         assert!(inner.path().is_dir());
         // `AsRef<Path>` and `Deref` both address the same directory, so a caller
         // passes the guard itself wherever a path is wanted.
         assert!(std::fs::metadata(&inner).unwrap().is_dir());
+    }
+
+    #[test]
+    fn an_unusable_root_is_an_error_rather_than_a_panic() {
+        let outer = ScratchDir::new(&tag("unusable")).unwrap();
+        let file = outer.join("a-file");
+        std::fs::write(&file, "not a directory").unwrap();
+        assert!(ScratchDir::under(&file, "under-a-file").is_err());
     }
 }

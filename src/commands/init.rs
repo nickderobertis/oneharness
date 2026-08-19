@@ -37,7 +37,7 @@ mod tests {
     use oneharness_core::io::scratch::ScratchDir;
 
     fn temp_dir(tag: &str) -> ScratchDir {
-        ScratchDir::new(&format!("oneharness-init-{tag}-{}", std::process::id()))
+        ScratchDir::new(&format!("init-{tag}")).unwrap()
     }
 
     #[test]

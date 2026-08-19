@@ -1035,13 +1035,9 @@ mod tests {
         let root = std::fs::canonicalize("/tmp").expect("/tmp must exist to root a control socket");
         ScratchDir::under(
             &root,
-            &format!(
-                "oh-control-{}-{}-{:?}",
-                tag,
-                std::process::id(),
-                std::thread::current().id()
-            ),
+            &format!("control-{tag}-{:?}", std::thread::current().id()),
         )
+        .unwrap()
     }
 
     #[test]

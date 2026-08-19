@@ -152,7 +152,7 @@ struct ConfigFixture {
 
 impl ConfigFixture {
     fn new(tag: &str, project_toml: &str, user_toml: &str) -> Self {
-        let dir = ScratchDir::new(&format!("oneharness-cfgtest-{tag}-{}", std::process::id()));
+        let dir = ScratchDir::new(&format!("cfgtest-{tag}")).unwrap();
         std::fs::write(dir.join("oneharness.toml"), project_toml).unwrap();
         std::fs::write(dir.join("user-config.toml"), user_toml).unwrap();
         Self { dir }
@@ -1414,11 +1414,7 @@ fn resume_maps_to_resume_flag_and_echoes_session() {
 /// A private, per-test session-store directory, so the uniform-handle tests
 /// never collide with each other or a real store. Removed when the test ends.
 fn session_store_dir(tag: &str) -> ScratchDir {
-    ScratchDir::new(&format!(
-        "oh-session-{tag}-{}-{}",
-        std::process::id(),
-        tag.len()
-    ))
+    ScratchDir::new(&format!("session-{tag}")).unwrap()
 }
 
 #[test]
@@ -4582,7 +4578,7 @@ fn stream_with_multiple_harnesses_is_a_usage_error() {
 #[test]
 fn stream_with_schema_is_a_usage_error() {
     // A schema file is needed to reach the --stream/--schema conflict check.
-    let dir = ScratchDir::new(&format!("oh-stream-schema-{}", std::process::id()));
+    let dir = ScratchDir::new("stream-schema").unwrap();
     let schema_path = dir.join("s.json");
     std::fs::write(&schema_path, r#"{"type":"object"}"#).unwrap();
     let output = run(
@@ -4797,7 +4793,7 @@ fn passthrough_args_are_appended_verbatim() {
 
 #[test]
 fn output_dir_writes_raw_streams_to_files() {
-    let dir = ScratchDir::new(&format!("oneharness-od-{}", std::process::id()));
+    let dir = ScratchDir::new("od").unwrap();
 
     let output = run(
         &[
@@ -4831,7 +4827,7 @@ fn cwd_sets_pwd_env_for_the_child() {
     // `cd`), not just chdir() and leave the inherited $PWD stale: Bun-based CLIs
     // such as OpenCode trust $PWD to locate the project, so a stale value sends
     // their gate to the wrong directory. Regression test for that.
-    let dir = ScratchDir::new(&format!("oneharness-pwd-{}", std::process::id()));
+    let dir = ScratchDir::new("pwd").unwrap();
 
     let output = run(
         &[
@@ -5963,7 +5959,7 @@ fn cmd_shim_spawns_with_a_multiline_argument() {
     // through it, and assert it spawned cleanly AND the multi-line value reached
     // the child intact. The hermetic suite's other harnesses are real `.exe`s, so
     // only this `.cmd`-shim path exercises the rewrite end to end.
-    let dir = ScratchDir::new(&format!("oneharness-cmdshim-{}", std::process::id()));
+    let dir = ScratchDir::new("cmdshim").unwrap();
     let cmd_path = dir.join("claude.cmd");
     // npm-style shim: name the interpreter via `_prog`, invoke it with a `%dp0%`
     // script ahead of the forwarded `%*`. Here `_prog` is the mock exe and the
@@ -6023,7 +6019,7 @@ fn native_exe_cmd_shim_spawns_with_a_multiline_argument() {
     // Stand in a `%dp0%`-rooted exe shim pointing at a colocated copy of the mock
     // harness, drive a multi-line `--system`, and assert it spawns and the value
     // arrives intact — the end-to-end proof of the native-exe rewrite branch.
-    let dir = ScratchDir::new(&format!("oneharness-exeshim-{}", std::process::id()));
+    let dir = ScratchDir::new("exeshim").unwrap();
     // Colocate the target exe beside the shim so `%dp0%\claude.exe` resolves.
     let exe_path = dir.join("claude.exe");
     std::fs::copy(mock_bin(), &exe_path).unwrap();
@@ -8999,7 +8995,7 @@ fn gate_unknown_harness_is_a_usage_error() {
 
 #[test]
 fn init_scaffolds_and_refuses_overwrite() {
-    let dir = ScratchDir::new(&format!("oneharness-inittest-{}", std::process::id()));
+    let dir = ScratchDir::new("inittest").unwrap();
     let path = dir.join("oneharness.judge.toml");
     let path_str = path.display().to_string();
 
@@ -9026,7 +9022,7 @@ fn init_scaffolds_and_refuses_overwrite() {
 /// standard ruleset the tests share: rule 0 denies `git push`, rule 1 rewrites
 /// `git status` to a stub that prints canned output.
 fn mock_fixture(tag: &str) -> (ScratchDir, std::path::PathBuf) {
-    let dir = ScratchDir::new(&format!("oneharness-mock-{tag}-{}", std::process::id()));
+    let dir = ScratchDir::new(&format!("mock-{tag}")).unwrap();
     let rules = dir.join("rules.json");
     std::fs::write(
         &rules,
@@ -9232,7 +9228,7 @@ fn mock_spy_log_records_every_event_including_fall_throughs() {
 /// the same hook command; the report records both.
 #[test]
 fn run_mock_rules_layers_onto_existing_config_and_restores_it() {
-    let dir = ScratchDir::new(&format!("oneharness-mockrun-{}", std::process::id()));
+    let dir = ScratchDir::new("mockrun").unwrap();
     // A real project: crush config with unrelated keys AND an existing hook.
     let config = dir.join(".crush.json");
     let original =
@@ -9300,7 +9296,7 @@ fn run_mock_rules_layers_onto_existing_config_and_restores_it() {
 /// a workspace that had no `.codex`).
 #[test]
 fn run_mock_rules_codex_appends_opt_in_flags_and_removes_created_files() {
-    let dir = ScratchDir::new(&format!("oneharness-mockcodex-{}", std::process::id()));
+    let dir = ScratchDir::new("mockcodex").unwrap();
     let rules = dir.join("rules.json");
     std::fs::write(
         &rules,
@@ -9355,7 +9351,7 @@ fn run_mock_rules_codex_appends_opt_in_flags_and_removes_created_files() {
 /// file the argv names), and the temp file is deleted afterwards.
 #[test]
 fn run_mock_rules_claude_rides_settings_flag_with_no_workspace_files() {
-    let dir = ScratchDir::new(&format!("oneharness-mockclaude-{}", std::process::id()));
+    let dir = ScratchDir::new("mockclaude").unwrap();
     let rules = dir.join("rules.json");
     std::fs::write(
         &rules,
@@ -9415,7 +9411,7 @@ fn run_mock_rules_claude_rides_settings_flag_with_no_workspace_files() {
 /// spy-without-rules.
 #[test]
 fn run_spy_file_alone_installs_a_pure_observer() {
-    let dir = ScratchDir::new(&format!("oneharness-spyonly-{}", std::process::id()));
+    let dir = ScratchDir::new("spyonly").unwrap();
     let spy = dir.join("spy.jsonl");
     let out = run(
         &[
@@ -9457,7 +9453,7 @@ fn run_spy_file_alone_installs_a_pure_observer() {
 /// harness can't express, and print-command combination (clap).
 #[test]
 fn run_mock_rules_refusals_are_loud_and_touch_nothing() {
-    let dir = ScratchDir::new(&format!("oneharness-mockrefuse-{}", std::process::id()));
+    let dir = ScratchDir::new("mockrefuse").unwrap();
     let rules = dir.join("rules.json");
     std::fs::write(
         &rules,
@@ -9519,7 +9515,7 @@ fn run_mock_rules_refusals_are_loud_and_touch_nothing() {
 /// safely-quoted printf rewrite itself (nothing user-authored executes).
 #[test]
 fn mock_stub_action_compiles_to_a_safe_printf_rewrite() {
-    let dir = ScratchDir::new(&format!("oneharness-stub-{}", std::process::id()));
+    let dir = ScratchDir::new("stub").unwrap();
     let rules = dir.join("rules.json");
     std::fs::write(
         &rules,
@@ -9585,7 +9581,7 @@ fn mock_stub_action_compiles_to_a_safe_printf_rewrite() {
 /// file and its directory are gone afterwards.
 #[test]
 fn run_stream_with_mock_rules_restores_on_the_streaming_path() {
-    let dir = ScratchDir::new(&format!("oneharness-mockstream-{}", std::process::id()));
+    let dir = ScratchDir::new("mockstream").unwrap();
     let rules = dir.join("rules.json");
     std::fs::write(
         &rules,
@@ -9638,7 +9634,7 @@ fn run_stream_with_mock_rules_restores_on_the_streaming_path() {
 /// created file and directory are removed.
 #[test]
 fn run_mock_rules_multi_harness_restores_each_config_independently() {
-    let dir = ScratchDir::new(&format!("oneharness-mockmulti-{}", std::process::id()));
+    let dir = ScratchDir::new("mockmulti").unwrap();
     let crush_config = dir.join("crush.json");
     let original = r#"{"mine":{"keep":1}}"#;
     std::fs::write(&crush_config, original).unwrap();
@@ -9683,7 +9679,7 @@ fn run_mock_rules_multi_harness_restores_each_config_independently() {
 /// applies the hook args to every fanned-out job, and restores afterwards.
 #[test]
 fn run_mock_rules_works_with_a_batch_and_restores_once() {
-    let dir = ScratchDir::new(&format!("oneharness-mockbatch-{}", std::process::id()));
+    let dir = ScratchDir::new("mockbatch").unwrap();
     let rules = dir.join("rules.json");
     std::fs::write(
         &rules,
@@ -9818,7 +9814,7 @@ fn mock_startup_faults_are_loud_usage_errors() {
 /// (resolved from the injected HOME / XDG_CONFIG_HOME), not the project.
 #[test]
 fn sync_global_installs_hooks_at_user_locations() {
-    let dir = ScratchDir::new(&format!("oneharness-global-{}", std::process::id()));
+    let dir = ScratchDir::new("global").unwrap();
     let cfg = dir.join("oh.toml");
     std::fs::write(
         &cfg,
@@ -9870,7 +9866,7 @@ fn sync_global_installs_hooks_at_user_locations() {
 
 #[test]
 fn sync_global_refuses_project_only_settings() {
-    let dir = ScratchDir::new(&format!("oneharness-global-bad-{}", std::process::id()));
+    let dir = ScratchDir::new("global-bad").unwrap();
     let cfg = dir.join("oh.toml");
     std::fs::write(
         &cfg,
@@ -9924,7 +9920,7 @@ fn config_command_attributes_settings_tables() {
 fn prompt_file_reads_the_prompt_from_a_file() {
     // `--prompt-file PATH` is the file-backed alternative to `--prompt`; the file
     // contents become the prompt verbatim and reach the harness argv.
-    let dir = ScratchDir::new(&format!("oneharness-pf-{}", std::process::id()));
+    let dir = ScratchDir::new("pf").unwrap();
     let file = dir.join("prompt.txt");
     std::fs::write(&file, "prompt-from-a-file").unwrap();
 
@@ -10011,7 +10007,7 @@ fn system_file_reads_the_system_prompt_from_a_file() {
     // `--system-file PATH` is the file-backed alternative to `--system` (the
     // argv-limit escape hatch, mirroring `--prompt-file`): the file contents
     // become the system prompt and reach the harness argv identically.
-    let dir = ScratchDir::new(&format!("oneharness-sf-{}", std::process::id()));
+    let dir = ScratchDir::new("sf").unwrap();
     let file = dir.join("system.txt");
     std::fs::write(&file, "be terse").unwrap();
 
@@ -10045,7 +10041,7 @@ fn system_file_value_reaches_a_spawned_harness_intact() {
     // actually SPAWNS (the mock harness via --bin) and asserts the file-sourced
     // system prompt arrives at the child argv byte-identically — the runtime proof
     // that `--system-file` behaves exactly like `--system`, not just in print.
-    let dir = ScratchDir::new(&format!("oneharness-sfspawn-{}", std::process::id()));
+    let dir = ScratchDir::new("sfspawn").unwrap();
     let file = dir.join("system.txt");
     // A leading `---` (YAML front matter) that would be misparsed as a flag on
     // argv is safe here because it comes from the file, not the command line.
@@ -10195,7 +10191,7 @@ fn large_system_file_avoids_the_argv_limit() {
     // oneharness with E2BIG if passed via `--system`. Delivered as a file path,
     // oneharness's own argv stays small and it reads the whole prompt — proven
     // here with a >128 KiB body that round-trips into the built command.
-    let dir = ScratchDir::new(&format!("oneharness-sfbig-{}", std::process::id()));
+    let dir = ScratchDir::new("sfbig").unwrap();
     let file = dir.join("big-system.txt");
     let marker = "SYSTEM-MARKER-42";
     let big = format!("{marker}\n{}", "x".repeat(200 * 1024));
@@ -10747,7 +10743,7 @@ fn single_prompt_run_is_not_a_batch() {
 
 #[test]
 fn batch_combines_prompt_and_prompt_file_in_order() {
-    let dir = ScratchDir::new(&format!("oneharness-batchpf-{}", std::process::id()));
+    let dir = ScratchDir::new("batchpf").unwrap();
     let file = dir.join("p.txt");
     std::fs::write(&file, "from-file").unwrap();
 
@@ -10825,7 +10821,7 @@ fn batch_with_resume_is_a_usage_error() {
 
 #[test]
 fn batch_output_dir_disambiguates_same_harness_results() {
-    let dir = ScratchDir::new(&format!("oneharness-batchout-{}", std::process::id()));
+    let dir = ScratchDir::new("batchout").unwrap();
     let output = run(
         &[
             "run",
@@ -10900,7 +10896,7 @@ fn batch_repeated_stdin_prompt_file_is_a_usage_error() {
 fn batch_applies_the_schema_to_every_prompt() {
     // Structured output composes with batch: each prompt is validated
     // independently, so every result reports schema_valid.
-    let dir = ScratchDir::new(&format!("oneharness-batchschema-{}", std::process::id()));
+    let dir = ScratchDir::new("batchschema").unwrap();
     let schema = dir.join("s.json");
     std::fs::write(&schema, r#"{"type":"object","required":["a"]}"#).unwrap();
 
@@ -11102,7 +11098,7 @@ impl AsRef<Path> for HistDir {
 }
 
 fn hist_dir(tag: &str) -> HistDir {
-    let scratch = ScratchDir::new(&format!("oneharness-histtest-{tag}-{}", std::process::id()));
+    let scratch = ScratchDir::new(&format!("histtest-{tag}")).unwrap();
     let store = scratch.join("store");
     HistDir {
         _scratch: scratch,
@@ -14229,8 +14225,8 @@ fn history_watch_filters_and_resumes_as_jsonl() {
 fn history_watch_scopes_to_explicit_and_current_project() {
     let dir = hist_dir("watch-project");
     let ds = dir.display().to_string();
-    let pa = ScratchDir::new(&format!("oh-watch-a-{}", std::process::id()));
-    let pb = ScratchDir::new(&format!("oh-watch-b-{}", std::process::id()));
+    let pa = ScratchDir::new("watch-a").unwrap();
+    let pb = ScratchDir::new("watch-b").unwrap();
 
     let record = |project: &Path, prompt: &str| {
         let out = run(
@@ -14453,8 +14449,8 @@ fn history_records_a_failed_run_and_shows_by_id() {
 fn history_list_scopes_by_project() {
     let dir = hist_dir("scope");
     let ds = dir.display().to_string();
-    let pa = ScratchDir::new(&format!("oh-projA-{}", std::process::id()));
-    let pb = ScratchDir::new(&format!("oh-projB-{}", std::process::id()));
+    let pa = ScratchDir::new("projA").unwrap();
+    let pb = ScratchDir::new("projB").unwrap();
     for p in [&pa, &pb] {
         run(
             &[
@@ -14805,10 +14801,7 @@ fn missing_bin(id: &str) -> String {
 /// when the run under test spawns, so the caller owns the guard for as long as
 /// it needs the override.
 fn unspawnable_bin(id: &str) -> (ScratchDir, String) {
-    let dir = ScratchDir::new(&format!(
-        "oneharness-unspawnable-{id}-{}",
-        std::process::id()
-    ));
+    let dir = ScratchDir::new(&format!("unspawnable-{id}")).unwrap();
     #[cfg(windows)]
     let path = {
         let path = dir.join(format!("{id}.exe"));
@@ -15437,7 +15430,7 @@ fn multiple_models_history_records_each_pair_model() {
 fn multiple_models_output_dir_disambiguates_the_same_harness() {
     // One harness fanned over two models writes two same-harness results, so the
     // output-dir stems are indexed (neither overwrites the other).
-    let dir = ScratchDir::new(&format!("oneharness-modelsout-{}", std::process::id()));
+    let dir = ScratchDir::new("modelsout").unwrap();
     let output = run(
         &[
             "run",
@@ -16678,49 +16671,74 @@ fn fallback_falls_through_a_codex_usage_limit_to_the_alternate_account() {
 #[test]
 fn fallback_falls_through_a_codex_app_server_usage_limit_to_the_alternate_account() {
     let mock = mock_bin().display().to_string();
-    let capture =
-        serde_json::to_string(include_str!("fixtures/codex-app-server-usage-limit.jsonl").trim())
-            .unwrap();
+    let captured = include_str!("fixtures/codex-app-server-usage-limit.jsonl").trim();
+    let frames: Vec<&str> = captured.lines().collect();
     let alternate =
         r#"{"type":"item.completed","item":{"type":"agent_message","text":"served-by-alternate"}}"#;
-    let project = format!(
-        r#"
-        harnesses = ["codex", "codex:alternate"]
-        run_mode = "fallback"
+    // The frame with no `codexErrorInfo`, where the phrasing is the whole signal.
+    let uncoded = r#"{"method":"error","params":{"error":{"message":"You've hit your usage limit. Try again at Dec 31st, 2027 6:00 AM."}}}"#;
 
-        [harness.codex]
-        bin = '{mock}'
-        env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {capture} }}
+    // Every shape a real transcript ends up carrying, each driven end to end:
+    // both frames as captured, then each one alone — a run that kept only the
+    // terminal `turn/completed` still has to fall through — and the uncoded one.
+    for (tag, transcript) in [
+        ("both", captured),
+        ("error-frame", frames[0]),
+        ("turn-completed", frames[1]),
+        ("uncoded", uncoded),
+    ] {
+        let capture = serde_json::to_string(transcript).unwrap();
+        let project = format!(
+            r#"
+            harnesses = ["codex", "codex:alternate"]
+            run_mode = "fallback"
 
-        [harness.codex.variant.alternate]
-        bin = '{mock}'
+            [harness.codex]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {capture} }}
 
-        [harness.codex.variant.alternate.env]
-        MOCK_EXIT = "0"
-        MOCK_STDOUT = '{alternate}'
-        "#
-    );
-    let fx = ConfigFixture::new("fallback-codex-app-server-limit", &project, "");
-    let output = run_with_config(
-        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
-        &[],
-        &fx.user_config(),
-    );
-    assert!(
-        output.status.success(),
-        "status {:?}, stderr {}",
-        output.status.code(),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let value = json_stdout(&output);
-    assert_eq!(value["fallback"]["ran"], "codex:alternate");
-    assert_eq!(value["fallback"]["fell_through"][0]["harness"], "codex");
-    assert_eq!(value["fallback"]["fell_through"][0]["reason"], "quota");
-    assert_eq!(value["results"][0]["failure_kind"], "quota");
-    assert_eq!(value["results"][0]["failure_kind_source"], "stdout");
-    assert_eq!(value["results"][1]["harness_id"], "codex:alternate");
-    assert_eq!(value["results"][1]["status"], "ok");
-    assert_eq!(value["results"][1]["text"], "served-by-alternate");
+            [harness.codex.variant.alternate]
+            bin = '{mock}'
+
+            [harness.codex.variant.alternate.env]
+            MOCK_EXIT = "0"
+            MOCK_STDOUT = '{alternate}'
+            "#
+        );
+        let fx = ConfigFixture::new(&format!("fallback-app-server-{tag}"), &project, "");
+        let output = run_with_config(
+            &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+            &[],
+            &fx.user_config(),
+        );
+        assert!(
+            output.status.success(),
+            "{tag}: status {:?}, stderr {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value = json_stdout(&output);
+        assert_eq!(value["fallback"]["ran"], "codex:alternate", "{tag}");
+        assert_eq!(
+            value["fallback"]["fell_through"][0]["harness"], "codex",
+            "{tag}"
+        );
+        assert_eq!(
+            value["fallback"]["fell_through"][0]["reason"], "quota",
+            "{tag}"
+        );
+        assert_eq!(value["results"][0]["failure_kind"], "quota", "{tag}");
+        assert_eq!(
+            value["results"][0]["failure_kind_source"], "stdout",
+            "{tag}"
+        );
+        assert_eq!(
+            value["results"][1]["harness_id"], "codex:alternate",
+            "{tag}"
+        );
+        assert_eq!(value["results"][1]["status"], "ok", "{tag}");
+        assert_eq!(value["results"][1]["text"], "served-by-alternate", "{tag}");
+    }
 }
 
 #[test]
@@ -18156,11 +18174,7 @@ fn usage_probes_a_harness_installed_under_a_bare_name_on_path() {
     // Windows that reported `probe_failed: program not found` for a harness every
     // other verb drove fine — headroom that was readable the whole time, filed as
     // unknown. The staged install below is that exact shape.
-    let dir = ScratchDir::new(&format!(
-        "oneharness-usage-path-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
+    let dir = ScratchDir::new(&format!("usage-path-{:?}", std::thread::current().id())).unwrap();
     let path = stage_harness_on_path(&dir, "oneharness-staged-codex");
 
     let output = run(
@@ -18202,7 +18216,7 @@ fn usage_runs_each_probe_in_the_requested_working_directory() {
     //
     // The mock reads a *relative* path here, so it can only answer at all from
     // inside the requested directory — which is the observation.
-    let dir = ScratchDir::new(&format!("oneharness-usage-cwd-{}", std::process::id()));
+    let dir = ScratchDir::new("usage-cwd").unwrap();
     std::fs::write(
         dir.join("payload.jsonl"),
         format!("{}\n", claude_usage_response()),
@@ -19522,7 +19536,7 @@ fn usage_reports_a_rejected_copilot_token_as_not_logged_in() {
 #[cfg(unix)]
 #[test]
 fn usage_reports_an_absent_curl_as_a_probe_failure_naming_it() {
-    let empty = ScratchDir::new(&format!("oneharness-no-curl-{}", std::process::id()));
+    let empty = ScratchDir::new("no-curl").unwrap();
 
     let output = run_copilot_usage(
         &["usage", "--harness", "copilot", "--compact"],
@@ -20166,8 +20180,8 @@ fn interrupt_reports_a_failed_stdout_write_instead_of_panicking() {
 /// A private, per-test session store (which is also where the run's control
 /// socket lives, at `<dir>/control/<name>.sock`).
 fn control_store_dir(tag: &str) -> ScratchDir {
-    let name = format!("oh-control-{tag}-{}-{}", std::process::id(), tag.len());
-    ScratchDir::under(&control_store_root(tag, &name), &name)
+    let name = ScratchDir::name(tag);
+    ScratchDir::under(&control_store_root(tag, &name), tag).unwrap()
 }
 
 /// The root a control store goes under.

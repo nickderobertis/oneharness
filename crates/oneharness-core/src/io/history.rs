@@ -1336,11 +1336,7 @@ mod tests {
     use crate::io::scratch::ScratchDir;
 
     fn temp_dir(tag: &str) -> ScratchDir {
-        ScratchDir::new(&format!(
-            "oneharness-hist-{tag}-{}-{}",
-            std::process::id(),
-            now_epoch_secs()
-        ))
+        ScratchDir::new(&format!("hist-{tag}-{}", now_epoch_secs())).unwrap()
     }
 
     fn result(harness: &str) -> RunResult {

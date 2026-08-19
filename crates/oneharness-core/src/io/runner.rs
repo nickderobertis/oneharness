@@ -1423,7 +1423,7 @@ mod tests {
 
         // A minimal npm-style `.cmd` shim written to a real temp file, so the
         // plan reads it the way `run_job` would.
-        let dir = ScratchDir::new(&format!("oh-shim-{}", std::process::id()));
+        let dir = ScratchDir::new("shim").unwrap();
         let cmd_path = dir.join("claude.cmd");
         let mut f = std::fs::File::create(&cmd_path).unwrap();
         write!(

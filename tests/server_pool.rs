@@ -21,7 +21,7 @@ use oneharness_core::io::server_pool::{
 };
 
 fn pool_root(tag: &str) -> ScratchDir {
-    ScratchDir::new(&format!("oh-pool-e2e-{tag}-{}", std::process::id()))
+    ScratchDir::new(&format!("pool-e2e-{tag}")).unwrap()
 }
 
 /// A stand-in server: a real, long-lived process. The pool only ever asks the OS

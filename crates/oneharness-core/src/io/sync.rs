@@ -379,7 +379,7 @@ mod tests {
     use serde_json::json;
 
     fn temp_project(tag: &str) -> ScratchDir {
-        ScratchDir::new(&format!("oneharness-sync-{tag}-{}", std::process::id()))
+        ScratchDir::new(&format!("sync-{tag}")).unwrap()
     }
 
     const SPEC: SyncSpec = SyncSpec {

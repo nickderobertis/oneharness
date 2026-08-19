@@ -43,11 +43,12 @@ grep -q "oneharness-leaked" "$work/out" ||
   fail "the gate failed but did not name the directory that was left behind"
 rm -rf "$work/oneharness-leaked"
 
-# The `oh-` prefix the socket-bound control tests use is watched too.
-if bash "$gate" bash -c "mkdir -p '$work/oh-leaked'" >"$work/out" 2>&1; then
-  fail "a leaked oh-* scratch directory should have failed"
+# A directory some other tool left is not a scratch directory: the sweep is
+# keyed on the prefix `io::scratch` mints, not on anything in the temp dir.
+if ! bash "$gate" bash -c "mkdir -p '$work/some-other-tool'" >"$work/out" 2>&1; then
+  fail "a directory outside the scratch prefix must not be reported"
 fi
-rm -rf "$work/oh-leaked"
+rm -rf "$work/some-other-tool"
 
 # A directory that was already there is not this run's leak.
 mkdir -p "$work/oneharness-pre-existing"

@@ -10,12 +10,21 @@
 # them and stopped every program on it, twice. So the suite's own run is the
 # check.
 #
-# Directories only, and only the two prefixes the suites use. Files are excluded
-# on purpose: the temp directory is shared with every other process on the host,
-# including real `oneharness` runs, which write (and clean up) temp *files* of
-# their own — reading one of those as this suite's leak would fail the gate on
-# someone else's work. No part of the product creates a temp *directory*, so a
-# new one is always a test's.
+# The prefix below is `io::scratch::PREFIX`, which the guard mints rather than
+# each caller spelling its own — so a guarded directory is always in reach of
+# this sweep and an unguarded one is what gets reported.
+#
+# It wraps `just test` — the Rust suite. The Node and Python SDK suites leak
+# scratch directories of their own (`oneharness-sdk-*`, `oneharness-python-*`,
+# from `mkdtemp`/`mkdtempSync` calls with no teardown); they need the same
+# treatment in their own idiom before `sdk-check`/`python-sdk-check` can run
+# under this too.
+#
+# Directories only. Files are excluded on purpose: the temp directory is shared
+# with every other process on the host, including real `oneharness` runs, which
+# write (and clean up) temp *files* of their own — reading one of those as this
+# suite's leak would fail the gate on someone else's work. No part of the
+# product creates a temp *directory*, so a new one is always a test's.
 #
 # Quiet on success. On failure it names every directory left behind and what to
 # do about it. The command's own exit status wins when it fails.
@@ -37,7 +46,7 @@ snapshot() {
   local dir
   for dir in "${scratch_roots[@]}"; do
     if [ -z "$dir" ] || [ ! -d "$dir" ]; then continue; fi
-    find "$dir" -maxdepth 1 -type d \( -name 'oneharness-*' -o -name 'oh-*' \) 2>/dev/null || true
+    find "$dir" -maxdepth 1 -type d -name 'oneharness-*' 2>/dev/null || true
   done | sort -u
 }
 

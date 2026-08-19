@@ -884,12 +884,7 @@ mod tests {
     }
 
     fn temp_root(tag: &str) -> ScratchDir {
-        ScratchDir::new(&format!(
-            "oh-pool-{}-{}-{}",
-            tag,
-            std::process::id(),
-            epoch_secs()
-        ))
+        ScratchDir::new(&format!("pool-{tag}-{}", epoch_secs())).unwrap()
     }
 
     /// A stand-in server: a real, long-lived child process. The pool only ever

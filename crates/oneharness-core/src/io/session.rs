@@ -121,12 +121,7 @@ mod tests {
     use crate::io::scratch::ScratchDir;
 
     fn temp_dir(tag: &str) -> ScratchDir {
-        ScratchDir::new(&format!(
-            "oh-session-{}-{}-{}",
-            tag,
-            std::process::id(),
-            now_epoch_secs()
-        ))
+        ScratchDir::new(&format!("session-{tag}-{}", now_epoch_secs())).unwrap()
     }
 
     #[test]

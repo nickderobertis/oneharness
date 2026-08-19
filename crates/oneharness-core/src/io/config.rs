@@ -189,7 +189,7 @@ mod tests {
     use crate::io::scratch::ScratchDir;
 
     fn temp_dir(tag: &str) -> ScratchDir {
-        ScratchDir::new(&format!("oneharness-cfg-{tag}-{}", std::process::id()))
+        ScratchDir::new(&format!("cfg-{tag}")).unwrap()
     }
 
     #[test]

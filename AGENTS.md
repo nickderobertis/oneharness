@@ -1047,19 +1047,12 @@ shape. When you add one:
   the contract and fails if any workflow diverges (no `push` trigger;
   claude/codex cross-platform, the rest Linux-only on PR). Add a new harness to
   its `CROSS_PLATFORM`/`LINUX_ONLY` list when you wire its workflow.
-- **Scratch space is owned, never left.** A test that needs a directory under the
-  host temp directory takes it from `io::scratch::ScratchDir`, which clears it on
-  the way in and removes it on drop — so a failing or panicking test cleans up
-  like a passing one. The shape it replaces removed the directory only at the end
-  of the test body: one host accumulated 108,234 of them and filled its root
-  filesystem, taking every program on it down twice. `just test` runs the suite
-  under `scripts/check-temp-leaks.sh`, which fails on any scratch directory the
-  run left behind (directories only — the temp *files* a real `oneharness` run
-  writes are not this suite's to judge). The guard is public, and always
-  compiled, because the engine's tests, the binary's tests and the
-  integration-test binaries are three separate builds and a `#[cfg(test)]` item
-  reaches only the first. A path that is also a socket *address* takes
-  `ScratchDir::under` with its own root, since `sun_path` is budgeted.
+- **Scratch space is owned, never left.** A test directory under the host temp
+  dir comes from `io::scratch::ScratchDir`, never a hand-rolled `create_dir_all`:
+  the guard removes it on drop, so a test that panics cleans up like one that
+  passes, and it mints the name so `scripts/check-temp-leaks.sh` (which `just
+  test` runs the suite under) can sweep for what escaped. Leaving them full is
+  how one host reached 108,234 of them and filled its root filesystem.
 - A user-visible change ships with a test that fails without it.
 
 ## Releasing

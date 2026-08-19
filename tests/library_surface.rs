@@ -35,10 +35,7 @@ mod fixture;
 /// A private directory for one test's files, cleared on the way in so a rerun
 /// starts clean and removed when the test ends.
 fn scratch(tag: &str) -> ScratchDir {
-    ScratchDir::new(&format!(
-        "oneharness-library-surface-{tag}-{}",
-        std::process::id()
-    ))
+    ScratchDir::new(&format!("library-surface-{tag}")).unwrap()
 }
 
 /// Make this test process hermetic for the calls that DO read configuration.

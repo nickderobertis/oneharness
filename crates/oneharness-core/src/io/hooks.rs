@@ -452,11 +452,7 @@ mod tests {
     }
 
     fn temp_project(tag: &str) -> ScratchDir {
-        ScratchDir::new(&format!(
-            "oneharness-hooks-{tag}-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ))
+        ScratchDir::new(&format!("hooks-{tag}-{:?}", std::thread::current().id())).unwrap()
     }
 
     fn install_one(dir: &Path, id: &str, hook: &HookSpec) -> Vec<HookWrite> {

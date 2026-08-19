@@ -9,27 +9,57 @@ afterEach(removeScratch);
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-test("a failing test still gives back the scratch directory it took", () => {
-	// Driven as a real `bun test` subprocess, because the teardown that matters
-	// runs after a test body has already thrown: nothing inside a passing test
-	// can watch that happen. This is the regression guard for the shape that
-	// leaked one directory per case, every run, onto the host.
-	const fixture = resolve(here, "scratch-failure.fixture.ts");
-	const run = spawnSync("bun", ["test", fixture], {
+/**
+ * Everything one fixture said while failing as its own `bun test` subprocess.
+ *
+ * Driven as a real subprocess, because the teardown that matters runs after a
+ * test body has already thrown: nothing inside a passing test can watch that
+ * happen.
+ */
+function runFixture(name: string): string {
+	const run = spawnSync("bun", ["test", resolve(here, name)], {
 		cwd: resolve(here, ".."),
 		encoding: "utf8",
 	});
-
 	expect(run.status).not.toBe(0);
-	const directory = /scratch-fixture-directory (.+)/.exec(
-		`${run.stdout}${run.stderr}`,
-	)?.[1];
+	return `${run.stdout}${run.stderr}`;
+}
+
+/**
+ * The scratch directory a fixture printed, or a failure quoting what it said
+ * instead.
+ *
+ * A fixture that stops printing its directory would otherwise hand `undefined`
+ * to the caller's existsSync assertion, which then passes for the wrong reason —
+ * so the absence is named here rather than narrowed away with a cast.
+ */
+function scratchDirectoryFrom(output: string): string {
+	const directory = /scratch-fixture-directory (.+)/.exec(output)?.[1];
 	if (!directory) {
-		throw new Error(
-			`fixture never printed its scratch directory:\n${run.stdout}${run.stderr}`,
-		);
+		throw new Error(`fixture never printed its scratch directory:\n${output}`);
 	}
-	expect(existsSync(directory.trim())).toBe(false);
+	return directory.trim();
+}
+
+test("a failing test still gives back the scratch directory it took", () => {
+	// This is the regression guard for the shape that leaked one directory per
+	// case, every run, onto the host.
+	const output = runFixture("scratch-failure.fixture.ts");
+	expect(existsSync(scratchDirectoryFrom(output))).toBe(false);
+});
+
+test("a fixture that prints no scratch directory is reported, not assumed gone", () => {
+	// The guard above is the whole difference between proving the directory was
+	// removed and proving nothing at all, so it gets a fixture of its own: one
+	// that fails without printing. Its complaint has to quote the real output,
+	// which is the only thing that says why the marker was missing.
+	const output = runFixture("scratch-silent.fixture.ts");
+	expect(() => scratchDirectoryFrom(output)).toThrow(
+		/never printed its scratch directory/,
+	);
+	expect(() => scratchDirectoryFrom(output)).toThrow(
+		/the silent failure this stands in for/,
+	);
 });
 
 test("scratch names carry the prefix the leak gate sweeps for", async () => {

@@ -24,8 +24,12 @@ test("a failing test still gives back the scratch directory it took", () => {
 	const directory = /scratch-fixture-directory (.+)/.exec(
 		`${run.stdout}${run.stderr}`,
 	)?.[1];
-	expect(directory).toBeTruthy();
-	expect(existsSync((directory as string).trim())).toBe(false);
+	if (!directory) {
+		throw new Error(
+			`fixture never printed its scratch directory:\n${run.stdout}${run.stderr}`,
+		);
+	}
+	expect(existsSync(directory.trim())).toBe(false);
 });
 
 test("scratch names carry the prefix the leak gate sweeps for", async () => {

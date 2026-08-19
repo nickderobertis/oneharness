@@ -15,11 +15,10 @@
 # reach of this sweep — and reading the declaration is what keeps that true the
 # day the constant changes.
 #
-# It wraps `just test` — the Rust suite. The Node and Python SDK suites leak
-# scratch directories of their own (`oneharness-sdk-*`, `oneharness-python-*`,
-# from `mkdtemp`/`mkdtempSync` calls with no teardown); they need the same
-# treatment in their own idiom before `sdk-check`/`python-sdk-check` can run
-# under this too.
+# It wraps every suite that takes scratch space — `just test`, and the Node and
+# Python halves of `sdk-check`/`python-sdk-check`, whose own guards spell the
+# same prefix in their own idiom (`scripts/check-scratch-prefixes.sh` keeps all
+# three in step).
 #
 # Directories only. Files are excluded on purpose: the temp directory is shared
 # with every other process on the host, including real `oneharness` runs, which

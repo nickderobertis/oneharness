@@ -46,7 +46,19 @@ fixture="$tmp/checkout"
 mkdir -p "$fixture/scripts" "$fixture/npm/oneharness-sdk"
 cp "$root/justfile" "$fixture/justfile"
 cp "$root/scripts/setup-llmlint.sh" "$fixture/scripts/setup-llmlint.sh"
+# `sdk-check` runs its test steps under the scratch-leak gate, which reads the
+# prefix out of the Rust guard — so the fixture carries both, real, rather than
+# stubbing a step of the recipe this gate exists to run for real.
+mkdir -p "$fixture/crates/oneharness-core/src/io"
+cp "$root/scripts/check-temp-leaks.sh" "$fixture/scripts/check-temp-leaks.sh"
+cp "$root/crates/oneharness-core/src/io/scratch.rs" \
+    "$fixture/crates/oneharness-core/src/io/scratch.rs"
 git -C "$fixture" init -q
+
+# The leak gate watches this instead of the host's temp directory, so a real
+# `oneharness` run happening elsewhere on the machine cannot fail this harness.
+scratch_root="$tmp/scratch"
+mkdir -p "$scratch_root"
 
 bin="$tmp/bin"
 mkdir -p "$bin"
@@ -70,6 +82,7 @@ run_recipe() {
     local log="$tmp/$recipe.calls"
     : >"$log"
     CALL_LOG="$log" PATH="$bin:/usr/bin:/bin" HOME="$tmp/home" \
+        OH_SCRATCH_ROOTS="$scratch_root" \
         just --justfile "$fixture/justfile" --working-directory "$fixture" "$recipe" \
         >"$tmp/$recipe.out" 2>"$tmp/$recipe.err" || {
         cat "$tmp/$recipe.err" >&2

@@ -70,6 +70,7 @@ snapshot() {
 before=$(snapshot)
 
 status=0
+# llmlint: ignore[tool_output_is_signal] Buffering the child here would be worse than the noise it removes, and there is no noise left to remove. Every caller is already quiet on success by its own means — `test` through nextest's `--status-level fail`, `sdk-check` and `python-sdk-check` by capturing this invocation and replaying it only on failure — because a caller can add buffering to a transparent wrapper and cannot take it out of an opaque one. Swallowing output here would also leave a hung 130-second suite showing nothing at all, and would double-buffer what two of the three callers already captured.
 "$@" || status=$?
 
 leaked=$(comm -13 <(printf '%s\n' "$before") <(snapshot))

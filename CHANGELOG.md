@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.2](https://github.com/nickderobertis/oneharness/compare/v0.10.1...v0.10.2) - 2026-08-19
+
+### Added
+
+- *(core)* own every test scratch directory with a self-removing ScratchDir ([#1264](https://github.com/nickderobertis/oneharness/pull/1264))
+
 ## [0.10.1](https://github.com/nickderobertis/oneharness/compare/v0.10.0...v0.10.1) - 2026-08-16
 
 ### Added

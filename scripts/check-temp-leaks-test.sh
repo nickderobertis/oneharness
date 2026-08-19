@@ -105,6 +105,24 @@ grep -qF "$chatter_out" "$work/stderr" ||
 grep -qF "$chatter_err" "$work/stderr" ||
   fail "a failing command's stderr must be replayed"
 
+# A command that fails without printing anything leaves a bare exit code from a
+# step the caller did not run itself, so the gate accounts for it.
+status=$(run_gate "exit 4")
+[ "$status" -eq 4 ] || fail "a silent failing command must keep its status; got $status"
+grep -q "exited 4 without printing anything" "$work/stderr" ||
+  fail "a silent failure must be reported rather than left as a bare exit code"
+grep -q "run that command directly" "$work/stderr" ||
+  fail "the silent-failure report must say what to do next"
+[ ! -s "$work/stdout" ] ||
+  fail "the gate's own diagnostics belong on stderr; stdout carried: $(cat "$work/stdout")"
+
+# ...and a command that failed *and* spoke is accounted for by its own output,
+# not by that stand-in.
+status=$(run_gate "$chatter; exit 4")
+[ "$status" -eq 4 ] || fail "a chatty failing command must keep its status; got $status"
+grep -q "without printing anything" "$work/stderr" &&
+  fail "a command that printed must not be reported as silent"
+
 # A leak is the other way of going red, and it replays just as much: on a clean
 # exit the command's own output is the only account of what it was doing when it
 # abandoned the directory.

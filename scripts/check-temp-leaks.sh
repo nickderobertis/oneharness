@@ -68,6 +68,15 @@ if [ "$status" -ne 0 ] || [ -n "$leaked" ]; then
   cat "$transcript" >&2
 fi
 
+# A command that failed without saying anything leaves the caller a bare exit
+# code from a step it did not run itself, so the gate says what it ran and what
+# came back. Only when the failure is the command's: a leak after a clean exit
+# has its own account below.
+if [ "$status" -ne 0 ] && [ ! -s "$transcript" ]; then
+  echo "check-temp-leaks: '$*' exited $status without printing anything." >&2
+  echo "  fix: run that command directly — this gate captured its output and there was none to replay." >&2
+fi
+
 if [ -n "$leaked" ]; then
   echo "check-temp-leaks: '$1' left scratch directories behind:" >&2
   printf '%s\n' "$leaked" | sed 's/^/  /' >&2

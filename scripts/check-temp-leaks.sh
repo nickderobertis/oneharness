@@ -2,40 +2,21 @@
 #
 # Run a command and refuse it if it left scratch directories behind.
 #
-# Every scratch directory this repository's suites make is owned by an
-# `io::scratch::ScratchDir` guard that removes it on the way out, panic or not.
-# Nothing enforces that at the type level, though — a new test can still
-# hand-roll a `create_dir_all` in the host temp directory — and the failure is
-# invisible until a host's root filesystem is full: one accumulated 108,234 of
-# them and stopped every program on it, twice. So the suite's own run is the
-# check.
+# Nothing enforces the suites' scratch guards at the type level — a new test can
+# still hand-roll a `create_dir_all` — and an abandoned directory is invisible
+# until a host's root filesystem is full. So the suite's own run is the check.
 #
-# The prefix is read from `io::scratch::PREFIX`, not copied: the guard mints it
-# rather than each caller spelling its own, so a guarded directory is always in
-# reach of this sweep — and reading the declaration is what keeps that true the
-# day the constant changes.
+# The prefix is read from `io::scratch::PREFIX` rather than copied, so the sweep
+# still matches the day that constant changes.
 #
-# It wraps every suite that takes scratch space — `just test`, and the Node and
-# Python halves of `sdk-check`/`python-sdk-check`, whose own guards spell the
-# same prefix in their own idiom (`scripts/check-scratch-prefixes.sh` keeps all
-# three in step).
+# Directories only. The temp directory is shared with every other process on the
+# host, including real `oneharness` runs, which write and clean up temp *files*
+# of their own; reading one of those as a leak would fail the gate on someone
+# else's work. No part of the product creates a temp *directory*.
 #
-# Directories only. Files are excluded on purpose: the temp directory is shared
-# with every other process on the host, including real `oneharness` runs, which
-# write (and clean up) temp *files* of their own — reading one of those as this
-# suite's leak would fail the gate on someone else's work. No part of the
-# product creates a temp *directory*, so a new one is always a test's.
-#
-# Silent on success, and complete on failure: the wrapped command's output is
-# captured and replayed only when that command fails or when it left scratch
-# behind. A gate that echoed a clean 1,187-test run would bury the one run that
-# matters, and one that dropped the output would take the exact error with it,
-# so it keeps both — nothing on the way past, everything on the way out.
-#
-# On a leak it also names every directory left behind and what to do about that,
-# after the command's own output, so the actionable line is the last one read. A
-# command that failed keeps its own exit status, because the failure explains
-# more than the scratch abandoned on the way to it.
+# Silent on success: the wrapped command's output is captured and replayed only
+# when that command fails or when it left scratch behind — where it is the only
+# account of what the suite was doing at the time.
 #
 # Usage: scripts/check-temp-leaks.sh <command> [args...]
 #   OH_SCRATCH_ROOTS  colon-separated roots to watch (default: "$TMPDIR:/tmp").

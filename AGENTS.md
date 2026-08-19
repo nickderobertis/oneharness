@@ -1048,11 +1048,8 @@ shape. When you add one:
   claude/codex cross-platform, the rest Linux-only on PR). Add a new harness to
   its `CROSS_PLATFORM`/`LINUX_ONLY` list when you wire its workflow.
 - **Scratch space is owned, never left.** A test directory under the host temp
-  dir comes from its suite's guard, never a hand-rolled `mkdir`:
-  `io::scratch::ScratchDir` in Rust, `test/scratch.mjs` under bun's `afterEach`,
-  `test/scratch.py` under unittest's `addCleanup`. Each gives the directory back
-  however the test ends, and `scripts/check-temp-leaks.sh` fails a run that
-  abandoned one.
+  dir comes from its suite's own scratch guard, never a hand-rolled `mkdir`, so
+  a test that fails gives it back like one that passes.
 - A user-visible change ships with a test that fails without it.
 
 ## Releasing

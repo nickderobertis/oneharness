@@ -7,25 +7,21 @@ use std::path::{Path, PathBuf};
 /// The prefix every scratch directory's name carries.
 ///
 /// Minted here rather than spelled by each caller, so the leak gate that sweeps
-/// for abandoned scratch space (`scripts/check-temp-leaks.sh`) has one source
-/// for the name it looks for and a new caller cannot drift out of its reach.
+/// for abandoned scratch space (`scripts/check-temp-leaks.sh`) reads one source
+/// and no caller can drift out of its reach.
 pub const PREFIX: &str = "oneharness-";
 
 /// A directory under the host temp directory, owned by the value that made it
 /// and **removed when that value is dropped** — including when the scope
 /// unwinds, so a failing or panicking test cleans up exactly like a passing one.
 ///
-/// Every scratch directory in this workspace's suites goes through here. The
-/// shape it replaces created the directory and cleared it on the way *in*, which
-/// meant each tagged helper in each process left one behind for good: a single
-/// host accumulated 108,234 of them and filled its root filesystem, taking every
-/// program on it down with the suite. Clearing on entry is kept — a rerun still
-/// starts from a known-empty directory — and the removal is what is new.
+/// It is also cleared on the way in, so a rerun starts from a known-empty
+/// directory.
 ///
-/// It is public, and always compiled, because there is no one compilation unit
-/// that could hold it otherwise: the engine's own unit tests, the binary crate's
-/// unit tests, and the integration-test binaries are three separate builds, and
-/// a `#[cfg(test)]` item reaches only the first.
+/// Public, and always compiled, because there is no one compilation unit that
+/// could hold it otherwise: the engine's own unit tests, the binary crate's unit
+/// tests, and the integration-test binaries are three separate builds, and a
+/// `#[cfg(test)]` item reaches only the first.
 #[derive(Debug)]
 pub struct ScratchDir {
     path: PathBuf,

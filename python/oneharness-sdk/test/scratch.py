@@ -1,9 +1,5 @@
 """Scratch directories that the test framework removes, however a test ends.
 
-The shape this replaces took a :func:`tempfile.mkdtemp` and never gave it back,
-so every run of this suite left one directory per case on the host for good.
-Enough of them fill a root filesystem and take every program on it down.
-
 :meth:`unittest.TestCase.addCleanup` is what makes it failure-safe: it runs after
 a test that errored or failed exactly as it does after one that passed, which a
 ``finally`` written out at each call site has to earn again every time.

@@ -233,11 +233,9 @@ sdk-install:
 
 # Strict Node SDK gate, including the Rust->TypeScript drift check and real CLI e2e.
 #
-# The two steps that take scratch space run under `check-temp-leaks.sh`, the same
-# gate `test` uses: this suite abandoned one directory per case on the host until
-# its cases started giving them back. The gate is what makes those two quiet on
-# success — bun prints a coverage table and a per-file summary otherwise — and it
-# replays every line of them when either fails.
+# The two steps that take scratch space run under `check-temp-leaks.sh`, which
+# also makes them quiet on success — bun prints a coverage table and a per-file
+# summary otherwise — and replays every line when either fails.
 sdk-check: build build-mock-harness sdk-install
     bun run --cwd npm/oneharness-sdk generate:check
     bun run --cwd npm/oneharness-sdk format:check
@@ -273,8 +271,7 @@ python-sdk-check:
         "${run[@]}" mypy --config-file python/oneharness-sdk/pyproject.toml python/oneharness-sdk/src python/oneharness-sdk/scripts python/oneharness-sdk/test
         rm -f target/python-sdk.coverage
         # The two steps that take scratch space run under check-temp-leaks.sh,
-        # the same gate `test` uses: this suite abandoned one directory per case
-        # on the host until its cases started giving them back.
+        # the same gate `test` uses.
         COVERAGE_FILE=target/python-sdk.coverage PYTHONPATH=python/oneharness-sdk/src bash scripts/check-temp-leaks.sh "${run[@]}" coverage run --rcfile=python/oneharness-sdk/pyproject.toml -m unittest discover -s python/oneharness-sdk/test -p 'test_*.py'
         COVERAGE_FILE=target/python-sdk.coverage "${run[@]}" coverage report --rcfile=python/oneharness-sdk/pyproject.toml
         bash scripts/check-temp-leaks.sh "${run[@]}" python python/oneharness-sdk/test/package_e2e.py

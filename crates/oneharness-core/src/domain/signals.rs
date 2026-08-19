@@ -718,20 +718,15 @@ fn is_provider_failure_envelope(value: &Value) -> bool {
 
 /// Codex reports an exhausted account inside its stdout stream — never on
 /// stderr — and the process can still exit zero. Only an error the harness
-/// itself attached to a *failed turn* is read, and only when it carries the
-/// usage-limit signature: an ordinary failed turn is a real task failure, and
-/// classifying it here would let a fallback chain silently re-run the task on
-/// another account. The turn started, but no work was done, so the rejection is
-/// a provisioning failure like `auth` — the event ordering is a reporting detail
-/// of the Codex CLI.
+/// itself attached to a turn that will not complete is read, and only when it
+/// carries the usage-limit signature: classifying an ordinary failed turn here
+/// would let a fallback chain silently re-run the task on another account. The
+/// turn started but did no work, so the rejection is a provisioning failure like
+/// `auth`.
 ///
-/// Codex states that failure in **two** transports and both are read, because a
-/// run picks the transport rather than the caller: an ordinary dispatch runs
-/// `codex exec` and gets its event stream ([`codex_exec_turn_error`]), while a
-/// `--control` dispatch drives the `codex app-server` JSON-RPC protocol and gets
-/// that instead ([`codex_app_server_turn_error`]). Reading only the first left
-/// every controlled run unclassified, so a fallback chain never advanced past an
-/// exhausted identity — the whole point of configuring one.
+/// Both transports are read because the *run* picks one, not the caller: an
+/// ordinary dispatch gets `codex exec`'s event stream, a `--control` dispatch
+/// gets the `codex app-server` protocol.
 fn codex_turn_failure(dialect: FailureDialect, value: &Value) -> Option<FailureKind> {
     (dialect == FailureDialect::Codex).then_some(())?;
     let error = codex_exec_turn_error(value).or_else(|| codex_app_server_turn_error(value))?;
@@ -745,33 +740,19 @@ fn codex_exec_turn_error(value: &Value) -> Option<&Value> {
 }
 
 /// The error object a `codex app-server` frame attaches to a turn that is not
-/// going to complete.
+/// going to complete — either frame that carries one, since a transcript may
+/// have kept only one of them. Both shapes are verbatim from a controlled run
+/// against an exhausted account
+/// (`tests/fixtures/codex-app-server-usage-limit.jsonl`).
 ///
-/// Two frames carry it, captured verbatim from a controlled run against an
-/// exhausted account (`tests/fixtures/codex-app-server-usage-limit.jsonl`) —
-/// both are read because either may be the one a transcript kept:
-///
-/// - the `error` **notification**, whose `params.error` states the cause and
-///   whose `params.willRetry` says whether the server means to try again;
-/// - the terminal `turn/completed`, whose `params.turn.error` restates it beside
-///   `params.turn.status: "failed"`.
-///
-/// Both are read for the same question — *is this turn over?* — because
-/// answering it wrongly is how a caller ends up with the opposite of what it
-/// asked for:
-///
-/// - **`willRetry: true` is not a refusal.** The server said it was going to
-///   try again, so the turn may well succeed; the caller's whole transcript
-///   would then carry a `quota` verdict for a run that worked. Only a positive
-///   `true` disqualifies the frame — an absent field states no intention, and
-///   inventing one from silence is the guess this module does not make.
-/// - **`turn/completed` is emitted for a turn that succeeded too**, so its
-///   status is read rather than assumed. A retry that then failed on the limit
-///   lands here and still classifies, which is what keeps the rule above from
-///   costing a real refusal its fall-through.
-///
-/// This is JSON-RPC, so nothing here overlaps the event stream above: the frame
-/// is keyed by `method` (not `type`), and its payload hangs off `params`.
+/// Two conditions are not visible in the shapes themselves.
+/// **`willRetry: true` is not a refusal**: the server said it would try again,
+/// so the turn may still succeed, and a `quota` verdict for a run that worked is
+/// the opposite of what the caller asked for. Only a positive `true`
+/// disqualifies the frame, because an absent field states no intention.
+/// **`turn/completed` is emitted for a turn that succeeded too**, so its status
+/// is read rather than assumed — which is also what lets a retry that then
+/// failed on the limit still classify.
 fn codex_app_server_turn_error(value: &Value) -> Option<&Value> {
     let params = value.get("params")?;
     match value.get("method").and_then(Value::as_str)? {

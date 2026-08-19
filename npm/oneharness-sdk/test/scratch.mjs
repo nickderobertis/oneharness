@@ -1,12 +1,8 @@
 // Scratch directories that the test framework removes, however a test ends.
 //
-// The shape this replaces took a `mkdtemp` and never gave it back, so every run
-// of this suite left one directory per case on the host for good. Enough of them
-// fill a root filesystem and take every program on it down.
-//
 // `removeScratch` is what each suite registers with `afterEach`, so a test that
-// throws cleans up exactly like one that passes — the guarantee a `finally` per
-// call site has to be rewritten for every time.
+// throws cleans up exactly like one that passes — which a `finally` per call
+// site has to earn again every time.
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";

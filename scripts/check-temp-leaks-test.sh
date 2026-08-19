@@ -25,6 +25,7 @@ export OH_SCRATCH_ROOTS="$work"
 fail() {
   echo "check-temp-leaks-test: $1" >&2
   [ -s "$work/out" ] && cat "$work/out" >&2
+  echo "  fix: make scripts/check-temp-leaks.sh satisfy the case above, then rerun 'bash scripts/check-temp-leaks-test.sh'." >&2
   exit 1
 }
 
@@ -35,7 +36,9 @@ if ! bash "$gate" bash -c "mkdir -p '$work/oneharness-tidy' && rmdir '$work/oneh
   fail "a command that removed its own scratch directory should have passed"
 fi
 
-# A command that leaves one behind is red, and the gate names it.
+# A command that leaves one behind is red, and the gate names it. The prefix here
+# is written out rather than read from `io::scratch::PREFIX` on purpose: the gate
+# reads that constant, so a literal is what notices the two drifting apart.
 if bash "$gate" bash -c "mkdir -p '$work/oneharness-leaked'" >"$work/out" 2>&1; then
   fail "a command that left a scratch directory behind should have failed"
 fi
@@ -69,5 +72,23 @@ rm -f "$work/oneharness-left.txt"
 status=0
 bash "$gate" bash -c "exit 3" >"$work/out" 2>&1 || status=$?
 [ "$status" -eq 3 ] || fail "the command's exit status must survive the gate; got $status"
+
+# ...including when it also leaked: the leak is still named, but the failure
+# that probably caused it is what the caller is sent to first.
+status=0
+bash "$gate" bash -c "mkdir -p '$work/oneharness-failed-and-leaked'; exit 3" >"$work/out" 2>&1 || status=$?
+[ "$status" -eq 3 ] ||
+  fail "a command that failed AND leaked must keep its own status; got $status"
+grep -q "oneharness-failed-and-leaked" "$work/out" ||
+  fail "the leak must still be named even when the command's status wins"
+rm -rf "$work/oneharness-failed-and-leaked"
+
+# Asked to watch nothing at all, the gate says what to pass rather than
+# reporting a vacuous pass.
+status=0
+bash "$gate" >"$work/out" 2>&1 || status=$?
+[ "$status" -eq 2 ] || fail "a gate with no command must be a usage error; got $status"
+grep -q "no command to run" "$work/out" ||
+  fail "the usage error must say what is missing"
 
 echo "check-temp-leaks-test: the scratch-leak gate goes red for a leaked directory and green otherwise"

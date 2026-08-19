@@ -83,8 +83,8 @@ Use the `just` recipes; do not hand-roll equivalents.
   own gate had just recorded. A stored verdict replays only as a complete record
   naming the key and base commit it was recorded for; anything less judges again.
 - `just test` / `just lint` / `just format` — individual gate steps. `test` runs
-  the suite under `scripts/check-temp-leaks.sh` (see "Tests are context
-  engineering").
+  the suite under `scripts/check-temp-leaks.sh`, which fails a run that abandoned
+  scratch space.
 - `just coverage` — run the workspace suite under `cargo llvm-cov` and fail below
   95% line coverage (the `COVERAGE_MIN` gate, also part of `just check` and CI).
   `just coverage-html` writes a browsable report to find uncovered lines.
@@ -1051,8 +1051,8 @@ shape. When you add one:
   dir comes from `io::scratch::ScratchDir`, never a hand-rolled `create_dir_all`:
   the guard removes it on drop, so a test that panics cleans up like one that
   passes, and it mints the name so `scripts/check-temp-leaks.sh` (which `just
-  test` runs the suite under) can sweep for what escaped. Leaving them full is
-  how one host reached 108,234 of them and filled its root filesystem.
+  test` runs the suite under) can sweep for what escaped. Enough abandoned
+  directories fill a host's root filesystem and take every program on it down.
 - A user-visible change ships with a test that fails without it.
 
 ## Releasing

@@ -117,8 +117,12 @@ lint-workflows: build build-mock-harness
 # Run the test suite across the workspace (core unit tests + binary unit and
 # integration tests; prefers nextest, falls back to cargo test), then refuse a
 # run that left a scratch directory behind in the host temp directory.
+#
+# Reduced to failures plus the summary line: a passing test says nothing the
+# summary does not, and a per-test transcript is what buries the ones that
+# didn't. Both runners still report every failure in full.
 test:
-    @bash scripts/check-temp-leaks.sh bash -c 'if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --workspace --features {{FEATURES}} --locked; else cargo test --workspace --features {{FEATURES}} --locked; fi'
+    @bash scripts/check-temp-leaks.sh bash -c 'if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --workspace --features {{FEATURES}} --locked --status-level fail --final-status-level fail; else cargo test --workspace --features {{FEATURES}} --locked --quiet; fi'
 
 # Run the workspace suite under instrumentation and FAIL if line coverage drops
 # below {{COVERAGE_MIN}}%. This is the coverage gate (part of `just check` and

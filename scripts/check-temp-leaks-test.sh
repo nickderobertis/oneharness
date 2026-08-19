@@ -8,6 +8,10 @@
 # asserted to stay green, and against a failing command to prove the command's
 # own status still wins.
 #
+# Its output contract is exercised from both ends too, because the two halves
+# pull against each other: a clean run must say nothing at all, and each way of
+# going red must still carry every line the wrapped command wrote.
+#
 # Quiet on success, one line. On failure it prints what the gate said.
 set -euo pipefail
 
@@ -27,6 +31,21 @@ fail() {
   [ -s "$work/out" ] && cat "$work/out" >&2
   echo "  fix: make scripts/check-temp-leaks.sh satisfy the case above, then rerun 'bash scripts/check-temp-leaks-test.sh'." >&2
   exit 1
+}
+
+# What a wrapped command writes, on both streams, so a replay can be told apart
+# from a gate that merely happens to print something.
+chatter_out="a line the wrapped command wrote to stdout"
+chatter_err="a line the wrapped command wrote to stderr"
+chatter="printf '%s\\n' \"$chatter_out\"; printf '%s\\n' \"$chatter_err\" >&2"
+
+# Run the gate with the streams kept apart, leaving the combined text in
+# `$work/out` for the diagnostics `fail` prints.
+run_gate() {
+  local status=0
+  bash "$gate" bash -c "$1" >"$work/stdout" 2>"$work/stderr" || status=$?
+  cat "$work/stdout" "$work/stderr" >"$work/out"
+  printf '%s' "$status"
 }
 
 # A command that cleans up after itself is green, and its own exit status is
@@ -67,11 +86,37 @@ if ! bash "$gate" bash -c "touch '$work/oneharness-left.txt'" >"$work/out" 2>&1;
 fi
 rm -f "$work/oneharness-left.txt"
 
+# A clean run says nothing at all — not the command's output, not the gate's.
+# A gate that echoed a passing 1,187-test suite would bury the run that failed.
+status=$(run_gate "$chatter")
+[ "$status" -eq 0 ] || fail "a chatty command that did not leak should have passed; got $status"
+[ ! -s "$work/stdout" ] ||
+  fail "a successful run must leave stdout empty; it carried: $(cat "$work/stdout")"
+[ ! -s "$work/stderr" ] ||
+  fail "a successful run must leave stderr empty; it carried: $(cat "$work/stderr")"
+
 # A failing command keeps its own status, so the gate never turns a red suite
-# green (or reports a leak in place of the failure that caused it).
-status=0
-bash "$gate" bash -c "exit 3" >"$work/out" 2>&1 || status=$?
+# green (or reports a leak in place of the failure that caused it) — and every
+# line it wrote comes back, on stderr, which is where a gate's diagnostics go.
+status=$(run_gate "$chatter; exit 3")
 [ "$status" -eq 3 ] || fail "the command's exit status must survive the gate; got $status"
+grep -qF "$chatter_out" "$work/stderr" ||
+  fail "a failing command's stdout must be replayed"
+grep -qF "$chatter_err" "$work/stderr" ||
+  fail "a failing command's stderr must be replayed"
+
+# A leak is the other way of going red, and it replays just as much: on a clean
+# exit the command's own output is the only account of what it was doing when it
+# abandoned the directory.
+status=$(run_gate "$chatter; mkdir -p '$work/oneharness-chatty-leak'")
+[ "$status" -eq 1 ] || fail "a command that leaked should have failed; got $status"
+grep -qF "$chatter_out" "$work/stderr" ||
+  fail "a leaking command's stdout must be replayed"
+grep -qF "$chatter_err" "$work/stderr" ||
+  fail "a leaking command's stderr must be replayed"
+grep -q "oneharness-chatty-leak" "$work/stderr" ||
+  fail "the leak diagnostic must survive alongside the replayed output"
+rm -rf "$work/oneharness-chatty-leak"
 
 # ...including when it also leaked: the leak is still named, but the failure
 # that probably caused it is what the caller is sent to first.

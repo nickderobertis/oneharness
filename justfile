@@ -122,9 +122,11 @@ lint-workflows: build build-mock-harness
 #
 # Reduced to failures plus the summary line: a passing test says nothing the
 # summary does not, and a per-test transcript is what buries the ones that
-# didn't. Both runners still report every failure in full.
+# didn't. Both runners still report every failure in full — the gate holds all of
+# it back until one of them does. The recipe line is left echoed (no `@`) so this
+# minutes-long step still says what it is running before it goes quiet.
 test:
-    @bash scripts/check-temp-leaks.sh bash -c 'if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --workspace --features {{FEATURES}} --locked --status-level fail --final-status-level fail; else cargo test --workspace --features {{FEATURES}} --locked --quiet; fi'
+    bash scripts/check-temp-leaks.sh bash -c 'if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --workspace --features {{FEATURES}} --locked --status-level fail --final-status-level fail; else cargo test --workspace --features {{FEATURES}} --locked --quiet; fi'
 
 # Run the workspace suite under instrumentation and FAIL if line coverage drops
 # below {{COVERAGE_MIN}}%. This is the coverage gate (part of `just check` and
@@ -233,17 +235,17 @@ sdk-install:
 #
 # The two steps that take scratch space run under `check-temp-leaks.sh`, the same
 # gate `test` uses: this suite abandoned one directory per case on the host until
-# its cases started giving them back. Both are also the chatty ones — bun prints
-# a coverage table and a per-file summary on a clean run — so they are captured
-# and replayed only on failure, the shape `sdk-install` below already uses.
+# its cases started giving them back. The gate is what makes those two quiet on
+# success — bun prints a coverage table and a per-file summary otherwise — and it
+# replays every line of them when either fails.
 sdk-check: build build-mock-harness sdk-install
     bun run --cwd npm/oneharness-sdk generate:check
     bun run --cwd npm/oneharness-sdk format:check
     bun run --cwd npm/oneharness-sdk lint
     bun run --cwd npm/oneharness-sdk typecheck
-    @out=$(bash scripts/check-temp-leaks.sh bun run --cwd npm/oneharness-sdk test 2>&1) || { printf '%s\n' "$out" >&2; exit 1; }
+    bash scripts/check-temp-leaks.sh bun run --cwd npm/oneharness-sdk test
     bun run --cwd npm/oneharness-sdk build
-    @out=$(bash scripts/check-temp-leaks.sh bun run --cwd npm/oneharness-sdk test:package 2>&1) || { printf '%s\n' "$out" >&2; exit 1; }
+    bash scripts/check-temp-leaks.sh bun run --cwd npm/oneharness-sdk test:package
 
 # Regenerate Python declarations and runtime schemas from Rust wire types.
 python-sdk-generate:

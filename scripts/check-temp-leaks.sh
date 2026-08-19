@@ -26,13 +26,14 @@
 # suite's leak would fail the gate on someone else's work. No part of the
 # product creates a temp *directory*, so a new one is always a test's.
 #
-# Quiet of its own accord, and transparent about the command's: what the wrapped
-# command prints goes straight through, because that output IS the exact error a
-# failing gate has to preserve, and nothing here diagnosed it well enough to add
-# a next action to it. A caller that wants a quiet success captures this
-# invocation and replays it on failure, as `sdk-check` does.
+# Silent on success, and complete on failure: the wrapped command's output is
+# captured and replayed only when that command fails or when it left scratch
+# behind. A gate that echoed a clean 1,187-test run would bury the one run that
+# matters, and one that dropped the output would take the exact error with it,
+# so it keeps both — nothing on the way past, everything on the way out.
 #
-# On a leak it names every directory left behind and what to do about that. A
+# On a leak it also names every directory left behind and what to do about that,
+# after the command's own output, so the actionable line is the last one read. A
 # command that failed keeps its own exit status, because the failure explains
 # more than the scratch abandoned on the way to it.
 #
@@ -69,11 +70,23 @@ snapshot() {
 
 before=$(snapshot)
 
+# Both streams into one file, so a replay preserves the order the command wrote
+# them in rather than the order two buffers happened to flush.
+transcript=$(mktemp)
+trap 'rm -f "$transcript"' EXIT
+
 status=0
-# llmlint: ignore[tool_output_is_signal] Buffering the child here would be worse than the noise it removes, and there is no noise left to remove. Every caller is already quiet on success by its own means — `test` through nextest's `--status-level fail`, `sdk-check` and `python-sdk-check` by capturing this invocation and replaying it only on failure — because a caller can add buffering to a transparent wrapper and cannot take it out of an opaque one. Swallowing output here would also leave a hung 130-second suite showing nothing at all, and would double-buffer what two of the three callers already captured.
-"$@" || status=$?
+"$@" >"$transcript" 2>&1 || status=$?
 
 leaked=$(comm -13 <(printf '%s\n' "$before") <(snapshot))
+
+# Everything the command said, verbatim, the moment anything is wrong with the
+# run — including a leak after a clean exit, where it is the only account of
+# what the suite was doing when it abandoned the directory.
+if [ "$status" -ne 0 ] || [ -n "$leaked" ]; then
+  cat "$transcript" >&2
+fi
+
 if [ -n "$leaked" ]; then
   echo "check-temp-leaks: '$1' left scratch directories behind:" >&2
   printf '%s\n' "$leaked" | sed 's/^/  /' >&2

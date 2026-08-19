@@ -82,7 +82,9 @@ Use the `just` recipes; do not hand-roll equivalents.
   why a publication that wraps oneharness re-rolled the green the working tree's
   own gate had just recorded. A stored verdict replays only as a complete record
   naming the key and base commit it was recorded for; anything less judges again.
-- `just test` / `just lint` / `just format` — individual gate steps.
+- `just test` / `just lint` / `just format` — individual gate steps. `test` runs
+  the suite under `scripts/check-temp-leaks.sh`, which fails a run that abandoned
+  scratch space.
 - `just coverage` — run the workspace suite under `cargo llvm-cov` and fail below
   95% line coverage (the `COVERAGE_MIN` gate, also part of `just check` and CI).
   `just coverage-html` writes a browsable report to find uncovered lines.
@@ -1045,6 +1047,9 @@ shape. When you add one:
   the contract and fails if any workflow diverges (no `push` trigger;
   claude/codex cross-platform, the rest Linux-only on PR). Add a new harness to
   its `CROSS_PLATFORM`/`LINUX_ONLY` list when you wire its workflow.
+- **Scratch space is owned, never left.** A test directory under the host temp
+  dir comes from its suite's own scratch guard, never a hand-rolled `mkdir`, so
+  a test that fails gives it back like one that passes.
 - A user-visible change ships with a test that fails without it.
 
 ## Releasing

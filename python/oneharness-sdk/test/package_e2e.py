@@ -8,9 +8,26 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+from contextlib import ExitStack
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
+
+# Must begin with `oneharness_core::io::scratch::PREFIX`, the prefix
+# `scripts/check-temp-leaks.sh` sweeps for; `scripts/check-scratch-prefixes.sh`
+# holds the two in step. Spelled here rather than imported from `test.scratch`
+# because this file runs as a script, which has no package to import from.
+PREFIX = "oneharness-python-"
+
+
+def scratch_dir(stack: ExitStack, tag: str) -> Path:
+    """Return a scratch directory `stack` removes, including when main() raises.
+
+    There is no test framework here to hang a teardown on, so the caller's
+    :class:`contextlib.ExitStack` is the hook — it unwinds on the way out of a
+    failed run exactly as it does on a clean one.
+    """
+    return Path(stack.enter_context(tempfile.TemporaryDirectory(prefix=f"{PREFIX}{tag}-")))
 
 
 def cargo_version() -> str:
@@ -24,7 +41,7 @@ def cargo_version() -> str:
     raise AssertionError("Cargo.toml has no root package version")
 
 
-def main() -> None:
+def main(stack: ExitStack) -> None:
     """Build, inspect, install offline, and consume the release-stamped wheels."""
     version = cargo_version()
     staged = subprocess.run(
@@ -34,7 +51,7 @@ def main() -> None:
         capture_output=True,
         text=True,
     ).stdout.strip()
-    wheel_dir = Path(tempfile.mkdtemp(prefix="oneharness-python-wheelhouse-"))
+    wheel_dir = scratch_dir(stack, "wheelhouse")
     subprocess.run(
         ["uv", "build", "--wheel", "--out-dir", str(wheel_dir), staged],
         cwd=ROOT,
@@ -66,7 +83,7 @@ def main() -> None:
     assert metadata["Requires-Python"] == ">=3.9"
     assert f"oneharness-cli=={version}" in metadata.get_all("Requires-Dist", [])
 
-    environment = Path(tempfile.mkdtemp(prefix="oneharness-python-installed-")) / "venv"
+    environment = scratch_dir(stack, "installed") / "venv"
     subprocess.run(
         [
             "uv",
@@ -128,4 +145,5 @@ asyncio.run(main())
 
 
 if __name__ == "__main__":
-    main()
+    with ExitStack() as scratch_stack:
+        main(scratch_stack)

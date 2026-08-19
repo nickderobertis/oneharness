@@ -873,6 +873,7 @@ impl Drop for EntryLock {
 mod tests {
     use super::*;
     use crate::domain::control::ServerTransport;
+    use crate::io::scratch::ScratchDir;
 
     /// Unix-gated with the lifecycle tests that use it: every acquire/sweep test
     /// drives a real long-lived child through [`sleeper_plan`], so this key has
@@ -882,15 +883,8 @@ mod tests {
         crate::domain::control::pool_key("test", &[], &[])
     }
 
-    fn temp_root(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "oh-pool-{}-{}-{}",
-            tag,
-            std::process::id(),
-            epoch_secs()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp_root(tag: &str) -> ScratchDir {
+        ScratchDir::new(&format!("pool-{tag}-{}", epoch_secs())).unwrap()
     }
 
     /// A stand-in server: a real, long-lived child process. The pool only ever

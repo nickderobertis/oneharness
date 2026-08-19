@@ -31,6 +31,8 @@ from oneharness_sdk._client import (
     _SCHEMAS as SCHEMAS,
 )
 
+from .scratch import scratch
+
 
 @contextmanager
 def without_ambient_overrides() -> Iterator[None]:
@@ -221,7 +223,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_list_detect_and_history_cross_the_cli_boundary(self) -> None:
         """Cover every bounded method with observable real CLI behavior."""
-        history_dir = tempfile.mkdtemp(prefix="oneharness-python-history-")
+        history_dir = str(scratch(self, "history"))
         client = self.client()
         report = await client.run(
             {
@@ -339,7 +341,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_stream_cancellation_terminates_the_subprocess(self) -> None:
         """Closing early prevents the provider fixture from completing its stream."""
-        directory = Path(tempfile.mkdtemp(prefix="oneharness-python-cancel-"))
+        directory = scratch(self, "cancel")
         log = directory / "mock.log"
         stream = self.client().run_stream(
             {
@@ -368,7 +370,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_history_watch_filters_records_and_closes(self) -> None:
         """Resume after one record and filter later records without duplication."""
-        history_dir = tempfile.mkdtemp(prefix="oneharness-python-watch-")
+        history_dir = str(scratch(self, "watch"))
         client = self.client()
         records: list[Any] = []
         for name, prompt, graph in (
@@ -406,7 +408,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_history_label_precedence_crosses_the_cli_boundary(self) -> None:
         """Apply CLI labels over environment and project configuration."""
-        directory = Path(tempfile.mkdtemp(prefix="oneharness-python-labels-"))
+        directory = scratch(self, "labels")
         project = directory / "project"
         project.mkdir()
         (project / "oneharness.toml").write_text(
@@ -451,7 +453,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_history_raises_the_typed_error(self) -> None:
         """Map both bounded lookups and missing watch cursors to one error type."""
-        history_dir = tempfile.mkdtemp(prefix="oneharness-python-missing-")
+        history_dir = str(scratch(self, "missing"))
         client = self.client()
         with self.assertRaises(HistoryNotFoundError):
             await client.history({"session": "missing", "history_dir": history_dir})
@@ -516,7 +518,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_default_executable_is_resolved_from_path(self) -> None:
         """The package default executes an installed oneharness command."""
-        directory = Path(tempfile.mkdtemp(prefix="oneharness-python-path-"))
+        directory = scratch(self, "path")
         installed = directory / f"oneharness{SUFFIX}"
         try:
             installed.symlink_to(BINARY)
@@ -549,7 +551,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_config_reports_the_layered_values_and_their_sources(self) -> None:
         """Attribute a project-file value to the file it came from."""
-        project = Path(tempfile.mkdtemp(prefix="oneharness-python-config-"))
+        project = scratch(self, "config")
         (project / "oneharness.toml").write_text(
             'harnesses = ["codex"]\nmode = "bypass"\n', encoding="utf-8"
         )
@@ -561,7 +563,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_sync_plans_then_writes_a_harness_policy_file(self) -> None:
         """Report what a check would change, write it, then change nothing."""
-        project = Path(tempfile.mkdtemp(prefix="oneharness-python-sync-"))
+        project = scratch(self, "sync")
         (project / "oneharness.toml").write_text(
             'allowed_tools = ["Bash(echo:*)"]\n', encoding="utf-8"
         )
@@ -616,9 +618,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         self.assertTrue(everything["dry_run"])
-        self.assertEqual(
-            sorted(result["harness"] for result in everything["results"]), registry
-        )
+        self.assertEqual(sorted(result["harness"] for result in everything["results"]), registry)
 
         prompt = "empty system still suppresses --system-file"
         empty_system = await client.run(
@@ -727,7 +727,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_init_scaffolds_a_config_and_refuses_to_clobber_it(self) -> None:
         """Write a starter file, then treat an existing one as a refusal."""
-        project = Path(tempfile.mkdtemp(prefix="oneharness-python-init-"))
+        project = scratch(self, "init")
         path = str(project / "oneharness.toml")
         client = self.client()
         self.assertEqual(await client.init({"path": path}), path)
@@ -783,7 +783,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_mock_applies_a_ruleset_and_spies_the_original_call(self) -> None:
         """Deny through a rules file while recording the call as observed."""
-        directory = Path(tempfile.mkdtemp(prefix="oneharness-python-mock-"))
+        directory = scratch(self, "mock")
         rules = directory / "rules.json"
         spy = directory / "spy.jsonl"
         rules.write_text(
@@ -814,7 +814,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_interrupt_refuses_a_session_no_run_is_serving(self) -> None:
         """Return the refusal frame instead of raising on a non-zero exit."""
-        session_dir = tempfile.mkdtemp(prefix="oneharness-python-interrupt-")
+        session_dir = str(scratch(self, "interrupt"))
         response = await self.client().interrupt(
             {"session": "no-such-session", "session_dir": session_dir}
         )
@@ -823,7 +823,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_history_clear_is_a_dry_run_until_confirmed(self) -> None:
         """Migrate, report what a clear would remove, then remove it."""
-        history_dir = tempfile.mkdtemp(prefix="oneharness-python-clear-")
+        history_dir = str(scratch(self, "clear"))
         client = self.client()
         await client.run(
             {

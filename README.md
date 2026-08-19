@@ -1522,8 +1522,13 @@ one identity that could never serve it.
 A **subscription/usage-limit** rejection classifies as `quota` and falls through
 whichever way its CLI reports it: Claude Code's session or weekly limit, and
 Codex's usage limit — the latter arriving as a `turn.failed` event on stdout
-after the turn started, so it falls through on a clean exit too. Only the limit
-message does; an ordinary failed turn is a real run and stops the chain.
+after the turn started, so it falls through on a clean exit too. A turn driven
+under [`--control`](#turn-control-interrupt-a-running-turn) is read as well,
+where the same refusal arrives over the `codex app-server` protocol instead: an
+`error` notification and a `turn/completed` frame reporting `status: "failed"`,
+both carrying `codexErrorInfo: "usageLimitExceeded"`. Only the limit does; an
+ordinary failed turn is a real run and stops the chain, whichever transport it
+came over.
 
 That holds however the harness dresses the rejection up. Claude Code reports a
 session limit in a terminal record that may say `subtype: "success"` with no

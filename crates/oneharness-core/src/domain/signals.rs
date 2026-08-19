@@ -716,20 +716,79 @@ fn is_provider_failure_envelope(value: &Value) -> bool {
         || value.get("api_error_status").is_some_and(Value::is_number)
 }
 
-/// Codex reports an exhausted account as a `turn.failed` event inside its stdout
-/// event stream — after `turn.started`, never on stderr — and the process can
-/// still exit zero. Only a message carrying the usage-limit signature is a quota
-/// rejection: an ordinary `turn.failed` is a real task failure, and classifying
-/// it here would let a fallback chain silently re-run the task on another
-/// account. The turn started, but no work was done, so the rejection is a
-/// provisioning failure like `auth` — the event ordering is a reporting detail
-/// of the Codex CLI.
+/// Codex reports an exhausted account inside its stdout stream — never on
+/// stderr — and the process can still exit zero. Only an error the harness
+/// itself attached to a turn that will not complete is read, and only when it
+/// carries the usage-limit signature: classifying an ordinary failed turn here
+/// would let a fallback chain silently re-run the task on another account. The
+/// turn started but did no work, so the rejection is a provisioning failure like
+/// `auth`.
+///
+/// Both transports are read because the *run* picks one, not the caller: an
+/// ordinary dispatch gets `codex exec`'s event stream, a `--control` dispatch
+/// gets the `codex app-server` protocol.
 fn codex_turn_failure(dialect: FailureDialect, value: &Value) -> Option<FailureKind> {
     (dialect == FailureDialect::Codex).then_some(())?;
-    (value.get("type").and_then(Value::as_str) == Some("turn.failed")).then_some(())?;
-    let message = value.get("error")?.get("message").and_then(Value::as_str)?;
-    codex_usage_limit(message).then_some(FailureKind::Quota)
+    let error = codex_exec_turn_error(value).or_else(|| codex_app_server_turn_error(value))?;
+    codex_usage_limit_error(error).then_some(FailureKind::Quota)
 }
+
+/// The error object `codex exec` attaches to its `turn.failed` stream event.
+fn codex_exec_turn_error(value: &Value) -> Option<&Value> {
+    (value.get("type").and_then(Value::as_str) == Some("turn.failed")).then_some(())?;
+    value.get("error")
+}
+
+/// The error object a `codex app-server` frame attaches to a turn that is not
+/// going to complete — either frame that carries one, since a transcript may
+/// have kept only one of them. Both shapes are verbatim from a controlled run
+/// against an exhausted account
+/// (`tests/fixtures/codex-app-server-usage-limit.jsonl`).
+///
+/// Two conditions are not visible in the shapes themselves.
+/// **`willRetry: true` is not a refusal**: the server said it would try again,
+/// so the turn may still succeed, and a `quota` verdict for a run that worked is
+/// the opposite of what the caller asked for. Only a positive `true`
+/// disqualifies the frame, because an absent field states no intention.
+/// **`turn/completed` is emitted for a turn that succeeded too**, so its status
+/// is read rather than assumed — which is also what lets a retry that then
+/// failed on the limit still classify.
+fn codex_app_server_turn_error(value: &Value) -> Option<&Value> {
+    let params = value.get("params")?;
+    match value.get("method").and_then(Value::as_str)? {
+        "error" => {
+            (params.get("willRetry").and_then(Value::as_bool) != Some(true)).then_some(())?;
+            params.get("error")
+        }
+        "turn/completed" => {
+            let turn = params.get("turn")?;
+            (turn.get("status").and_then(Value::as_str) == Some("failed")).then_some(())?;
+            turn.get("error")
+        }
+        _ => None,
+    }
+}
+
+/// Whether a codex error object says the account is out of usage.
+///
+/// The machine-readable [`CODEX_USAGE_LIMIT_INFO`] code is the signal wherever
+/// the frame carries it, and it is matched **exactly**: a false positive here
+/// silently re-runs a paid task on another account, so a frame that names some
+/// *other* cause is not a rejection this chain may fall through, whatever prose
+/// it happens to quote. The phrasing is read only where there is no code to
+/// read — the one reading `codex exec`'s own `turn.failed` offers.
+fn codex_usage_limit_error(error: &Value) -> bool {
+    match error.get("codexErrorInfo").and_then(Value::as_str) {
+        Some(info) => info == CODEX_USAGE_LIMIT_INFO,
+        None => error
+            .get("message")
+            .and_then(Value::as_str)
+            .is_some_and(codex_usage_limit),
+    }
+}
+
+/// Codex's machine-readable exhausted-usage code, as its app-server spells it.
+const CODEX_USAGE_LIMIT_INFO: &str = "usageLimitExceeded";
 
 /// Codex's usage-limit signature, matched on the stable phrasing only: the reset
 /// date and the purchase URL in the real message both vary.
@@ -1644,6 +1703,82 @@ mod tests {
             r#"{"type":"item.completed","item":{"type":"agent_message","text":"You've hit your usage limit"}}"#
         )
         .is_none());
+    }
+
+    #[test]
+    fn codex_app_server_usage_limit_capture_classifies_as_quota() {
+        // The real capture from a `--control` turn: the app-server states the
+        // limit twice — once as an `error` notification, once inside the
+        // terminal `turn/completed` — and neither is the `codex exec` event
+        // shape, so both frames have to be read here.
+        let captured =
+            include_str!("../../../../tests/fixtures/codex-app-server-usage-limit.jsonl");
+        let got = detect_harness_provider_failure(FailureDialect::Codex, captured).unwrap();
+        assert_eq!(got.kind, FailureKind::Quota);
+        assert_eq!(got.source, "stdout");
+        // Each frame classifies on its own: a transcript truncated to either one
+        // still says the identity is exhausted.
+        for frame in captured.lines() {
+            assert_eq!(
+                detect_harness_provider_failure(FailureDialect::Codex, frame)
+                    .unwrap_or_else(|| panic!("unclassified: {frame}"))
+                    .kind,
+                FailureKind::Quota,
+                "{frame}"
+            );
+        }
+        // The phrasing alone still reads as exhausted where the frame carries no
+        // machine-readable code, exactly as the `codex exec` stream does.
+        let uncoded = r#"{"method":"error","params":{"error":{"message":"You've hit your usage limit. Try again at Dec 31st, 2027 6:00 AM."}}}"#;
+        assert_eq!(
+            detect_harness_provider_failure(FailureDialect::Codex, uncoded)
+                .unwrap()
+                .kind,
+            FailureKind::Quota
+        );
+    }
+
+    #[test]
+    fn codex_app_server_ordinary_failure_is_never_a_quota_rejection() {
+        // An app-server turn that failed for some other reason is a real task
+        // failure: falling through it would re-run a paid task on another
+        // account. The code is matched exactly, so its prose cannot promote it.
+        let other = r#"{"method":"error","params":{"error":{"message":"You've hit your usage limit, the model said. Stream disconnected before completion.","codexErrorInfo":"streamDisconnected","additionalDetails":null},"willRetry":false}}"#;
+        assert!(detect_harness_provider_failure(FailureDialect::Codex, other).is_none());
+        let failed_turn = r#"{"method":"turn/completed","params":{"turn":{"id":"t1","items":[],"status":"failed","error":{"message":"sandbox denied the write","codexErrorInfo":"sandboxDenied"}}}}"#;
+        assert!(detect_harness_provider_failure(FailureDialect::Codex, failed_turn).is_none());
+        // A turn that SUCCEEDED is not a rejection either, however its answer
+        // was worded — the status is read, never assumed from the frame name.
+        let succeeded = r#"{"method":"turn/completed","params":{"turn":{"id":"t1","items":[],"status":"completed","error":{"message":"You've hit your usage limit","codexErrorInfo":"usageLimitExceeded"}}}}"#;
+        assert!(detect_harness_provider_failure(FailureDialect::Codex, succeeded).is_none());
+        // A limit the server says it is going to retry is not a refusal either:
+        // the turn may still complete, and reporting `quota` for a run that
+        // worked is the opposite of what the caller asked for. Only a positive
+        // `willRetry` disqualifies it — an absent field states no intention.
+        let retrying = r#"{"method":"error","params":{"error":{"message":"You've hit your usage limit","codexErrorInfo":"usageLimitExceeded"},"willRetry":true}}"#;
+        assert!(detect_harness_provider_failure(FailureDialect::Codex, retrying).is_none());
+        // ...but the retry that then failed on the same limit still classifies,
+        // so the rule above costs a real refusal nothing.
+        let retried_then_failed = format!(
+            "{retrying}\n{}",
+            r#"{"method":"turn/completed","params":{"turn":{"id":"t1","items":[],"status":"failed","error":{"message":"You've hit your usage limit","codexErrorInfo":"usageLimitExceeded"}}}}"#
+        );
+        assert_eq!(
+            detect_harness_provider_failure(FailureDialect::Codex, &retried_then_failed)
+                .unwrap()
+                .kind,
+            FailureKind::Quota
+        );
+        // ...and an agent that merely quotes the wording mid-turn is not the
+        // harness declaring anything: the app-server streams its text as a
+        // delta, which carries no error object at all.
+        let quoted = r#"{"method":"item/agentMessage/delta","params":{"itemId":"i1","delta":"You've hit your usage limit"}}"#;
+        assert!(detect_harness_provider_failure(FailureDialect::Codex, quoted).is_none());
+        assert!(classify_harness_failure(FailureDialect::Codex, quoted, "").is_none());
+        // The frames stay adapter-scoped, like every codex reading here.
+        let captured =
+            include_str!("../../../../tests/fixtures/codex-app-server-usage-limit.jsonl");
+        assert!(detect_harness_provider_failure(FailureDialect::Generic, captured).is_none());
     }
 
     #[test]

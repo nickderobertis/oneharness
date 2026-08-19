@@ -375,14 +375,11 @@ pub fn sync(request: &SyncRequest) -> Result<SyncReport, OneharnessError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::scratch::ScratchDir;
     use serde_json::json;
 
-    fn temp_project(tag: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("oneharness-sync-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp_project(tag: &str) -> ScratchDir {
+        ScratchDir::new(&format!("sync-{tag}")).unwrap()
     }
 
     const SPEC: SyncSpec = SyncSpec {

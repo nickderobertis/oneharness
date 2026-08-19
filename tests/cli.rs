@@ -17,6 +17,7 @@ use oneharness_core::domain::session;
 use oneharness_core::domain::signals::FailureKind;
 use oneharness_core::domain::usage::{UsageProbe, UsageSupport};
 use oneharness_core::io::history::HistoryWriter;
+use oneharness_core::io::scratch::ScratchDir;
 use serde_json::Value;
 
 const ALL_IDS: &[&str] = &[
@@ -146,15 +147,12 @@ fn run_with_config(args: &[&str], envs: &[(&str, &str)], user_config: &std::path
 /// A unique temp dir holding a project `oneharness.toml` plus an (empty unless
 /// stated) user-level config to pin ONEHARNESS_CONFIG to.
 struct ConfigFixture {
-    dir: PathBuf,
+    dir: ScratchDir,
 }
 
 impl ConfigFixture {
     fn new(tag: &str, project_toml: &str, user_toml: &str) -> Self {
-        let dir =
-            std::env::temp_dir().join(format!("oneharness-cfgtest-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = ScratchDir::new(&format!("cfgtest-{tag}")).unwrap();
         std::fs::write(dir.join("oneharness.toml"), project_toml).unwrap();
         std::fs::write(dir.join("user-config.toml"), user_toml).unwrap();
         Self { dir }
@@ -166,12 +164,6 @@ impl ConfigFixture {
 
     fn user_config(&self) -> PathBuf {
         self.dir.join("user-config.toml")
-    }
-}
-
-impl Drop for ConfigFixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -1419,17 +1411,10 @@ fn resume_maps_to_resume_flag_and_echoes_session() {
     );
 }
 
-/// A private, per-test session-store directory (removed and recreated), so the
-/// uniform-handle tests never collide with each other or a real store.
-fn session_store_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "oh-session-{tag}-{}-{}",
-        std::process::id(),
-        tag.len()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+/// A private, per-test session-store directory, so the uniform-handle tests
+/// never collide with each other or a real store. Removed when the test ends.
+fn session_store_dir(tag: &str) -> ScratchDir {
+    ScratchDir::new(&format!("session-{tag}")).unwrap()
 }
 
 #[test]
@@ -1523,9 +1508,6 @@ fn session_create_then_continue_round_trips_via_the_store() {
             .any(|w| w == ["--resume", "sess-1"]),
         "continue should resume the stored token: {argv2:?}"
     );
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -1555,7 +1537,6 @@ fn session_on_an_unsupported_harness_is_a_usage_error() {
         stderr.contains("does not support --session"),
         "stderr: {stderr}"
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -1588,7 +1569,6 @@ fn session_rejects_an_explicit_format_that_cannot_emit_an_id() {
                 && stderr.contains("session id"),
             "{id}: stderr was {stderr}"
         );
-        let _ = std::fs::remove_dir_all(&store);
     }
 }
 
@@ -1617,7 +1597,6 @@ fn session_needs_exactly_one_harness() {
         stderr.contains("--session needs exactly one harness"),
         "stderr: {stderr}"
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -1677,9 +1656,6 @@ fn session_bound_to_one_harness_rejects_a_different_one() {
         stderr.contains("bound to one harness") || stderr.contains("created on harness"),
         "stderr: {stderr}"
     );
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -1751,9 +1727,6 @@ fn qwen_session_without_events_captures_and_resumes() {
             .any(|pair| pair == ["--resume", "q-1"]),
         "qwen session continue must resume q-1: {second_argv:?}"
     );
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -1784,7 +1757,6 @@ fn session_cannot_combine_with_a_batch() {
         stderr.contains("--session cannot be combined with a batch"),
         "stderr: {stderr}"
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -1862,9 +1834,6 @@ fn session_in_fallback_mode_anchors_to_the_first_session_capable_harness() {
     assert_eq!(v2["fallback"]["ran"], "codex");
     assert_eq!(v2["session"]["phase"], "continue");
     assert_eq!(v2["session"]["token"], "th-1");
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 /// The stored record for a named session, read back off the report's own
@@ -1961,8 +1930,6 @@ fn session_binds_to_the_variant_that_ran_not_the_one_that_fell_through() {
         record["harness"], "claude-code:alternate",
         "the record binds to the identity whose namespace holds the token"
     );
-
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -2120,8 +2087,6 @@ fn a_resume_the_identity_cannot_resolve_falls_through_to_the_next_candidate() {
 
     let _ = std::fs::remove_file(&alternate_argv);
     let _ = std::fs::remove_file(&argv_file);
-    let _ = std::fs::remove_dir_all(&history);
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -2402,8 +2367,6 @@ fn a_named_session_refuses_to_migrate_between_identities_of_one_harness() {
         stderr.contains("claude-code:primary") && stderr.contains("claude-code:alternate"),
         "the error must name both identities: {stderr}"
     );
-
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -2485,7 +2448,6 @@ fn a_sibling_variant_is_never_handed_the_anchors_resume_token() {
     );
 
     let _ = std::fs::remove_file(&alternate_argv);
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -2579,7 +2541,6 @@ fn a_healthy_leading_candidate_takes_the_turn_from_the_stored_identity_and_says_
     );
 
     let _ = std::fs::remove_file(&primary_argv);
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -2637,8 +2598,6 @@ fn a_lossy_output_format_is_refused_by_the_variant_qualified_identity() {
         0,
         "a refused run must leave the store untouched"
     );
-
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -2709,8 +2668,6 @@ fn a_legacy_session_record_starts_fresh_instead_of_resuming_a_guessed_identity()
     assert_eq!(record["harness"], "claude-code");
 
     let _ = std::fs::remove_file(&argv_file);
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -2788,8 +2745,6 @@ fn a_record_bound_to_an_unrunnable_identity_starts_fresh_rather_than_failing() {
     assert_eq!(record["harness"], "claude-code");
 
     let _ = std::fs::remove_file(&argv_file);
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -2827,8 +2782,6 @@ fn session_print_command_reports_the_handle_without_writing_the_store() {
         0,
         "print-command must not write the store"
     );
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -2867,8 +2820,6 @@ fn session_create_without_a_session_id_warns_and_stores_nothing() {
     assert!(stderr.contains("exposed no session id"), "stderr: {stderr}");
     // Best-effort: nothing written when there is no token to persist.
     assert_eq!(std::fs::read_dir(&store).unwrap().count(), 0);
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -2937,9 +2888,6 @@ fn session_continue_persists_a_rotated_token() {
     assert_eq!(record["token"], "sess-2");
     // The original creation time is preserved across the rotation.
     assert_eq!(record["created"], created);
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -2981,7 +2929,6 @@ fn session_survives_an_unwritable_store() {
         "stderr: {stderr}"
     );
     let _ = std::fs::remove_file(&file);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -3055,8 +3002,6 @@ fn session_composes_with_structured_output() {
     assert_eq!(v["results"][0]["structured"]["name"], "Ada");
     assert_eq!(v["session"]["phase"], "create");
     assert_eq!(v["session"]["token"], "sess-1");
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -3098,9 +3043,6 @@ fn session_composes_with_history() {
     // Both stores landed on disk.
     assert!(std::fs::read_dir(&store).unwrap().count() > 0);
     assert!(std::fs::read_dir(&hist).unwrap().count() > 0);
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&hist);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -3143,8 +3085,6 @@ fn session_composes_with_mock_rules() {
     let v = json_stdout(&output);
     assert_eq!(v["session"]["token"], "sess-1");
     assert!(!v["mock_rules"].is_null(), "mock rules should be echoed");
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -3198,9 +3138,6 @@ fn session_works_with_streaming() {
     .unwrap();
     assert_eq!(record["token"], "ses_stream");
     assert_eq!(record["harness"], "opencode");
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -3259,9 +3196,6 @@ fn session_works_with_streaming_in_fallback_mode() {
     )
     .unwrap();
     assert_eq!(record["harness"], "codex");
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 /// Build a `--print-command` argv for one harness with the given extra args, and
@@ -3815,7 +3749,6 @@ fn codex_usage_and_known_model_cost_flow_into_history_while_unknown_cost_is_omit
         let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
         assert_eq!(record["schema_version"], "1.1");
         assert_eq!(record["usage"]["cost_usd"].is_number(), expect_cost);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -3963,7 +3896,6 @@ fn codex_collaboration_and_web_search_events_flow_through_stream_and_history() {
     assert_eq!(record["events"][2]["name"], "web_search");
     assert_eq!(record["events"][3]["name"], "web_search");
     assert_eq!(record["usage"]["input_tokens"], 8);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -4646,8 +4578,7 @@ fn stream_with_multiple_harnesses_is_a_usage_error() {
 #[test]
 fn stream_with_schema_is_a_usage_error() {
     // A schema file is needed to reach the --stream/--schema conflict check.
-    let dir = std::env::temp_dir().join(format!("oh-stream-schema-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("stream-schema").unwrap();
     let schema_path = dir.join("s.json");
     std::fs::write(&schema_path, r#"{"type":"object"}"#).unwrap();
     let output = run(
@@ -4862,8 +4793,7 @@ fn passthrough_args_are_appended_verbatim() {
 
 #[test]
 fn output_dir_writes_raw_streams_to_files() {
-    let dir = std::env::temp_dir().join(format!("oneharness-od-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = ScratchDir::new("od").unwrap();
 
     let output = run(
         &[
@@ -4887,7 +4817,6 @@ fn output_dir_writes_raw_streams_to_files() {
 
     let out = std::fs::read_to_string(dir.join("claude-code.stdout")).unwrap();
     let err = std::fs::read_to_string(dir.join("claude-code.stderr")).unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(out, "raw-stdout-bytes");
     assert_eq!(err, "raw-stderr-bytes");
 }
@@ -4898,8 +4827,7 @@ fn cwd_sets_pwd_env_for_the_child() {
     // `cd`), not just chdir() and leave the inherited $PWD stale: Bun-based CLIs
     // such as OpenCode trust $PWD to locate the project, so a stale value sends
     // their gate to the wrong directory. Regression test for that.
-    let dir = std::env::temp_dir().join(format!("oneharness-pwd-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("pwd").unwrap();
 
     let output = run(
         &[
@@ -4919,7 +4847,6 @@ fn cwd_sets_pwd_env_for_the_child() {
     assert!(output.status.success());
     let report = json_stdout(&output);
     let stdout = report["results"][0]["stdout"].as_str().unwrap_or("");
-    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(
         stdout,
         format!("PWD={}", dir.display()),
@@ -5304,7 +5231,6 @@ fn timeout_preserves_partial_telemetry_in_report_and_history() {
     assert_native_descendant_stopped(&ticks);
 
     let _ = std::fs::remove_file(ticks);
-    let _ = std::fs::remove_dir_all(history);
 }
 
 #[cfg(unix)]
@@ -5400,7 +5326,6 @@ fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
 
     assert_native_descendant_stopped(&ticks);
     let _ = std::fs::remove_file(ticks);
-    let _ = std::fs::remove_dir_all(history);
 }
 
 #[cfg(unix)]
@@ -5538,7 +5463,6 @@ fn a_cancelled_batch_claims_no_invocation_for_its_queued_prompts() {
     }
 
     let _ = std::fs::remove_file(log);
-    let _ = std::fs::remove_dir_all(history);
 }
 
 #[cfg(unix)]
@@ -5630,7 +5554,6 @@ fn a_cancelled_run_keeps_the_output_it_had_already_produced() {
 
     assert_native_descendant_stopped(&ticks);
     let _ = std::fs::remove_file(ticks);
-    let _ = std::fs::remove_dir_all(history);
 }
 
 #[cfg(unix)]
@@ -6036,9 +5959,7 @@ fn cmd_shim_spawns_with_a_multiline_argument() {
     // through it, and assert it spawned cleanly AND the multi-line value reached
     // the child intact. The hermetic suite's other harnesses are real `.exe`s, so
     // only this `.cmd`-shim path exercises the rewrite end to end.
-    let dir = std::env::temp_dir().join(format!("oneharness-cmdshim-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("cmdshim").unwrap();
     let cmd_path = dir.join("claude.cmd");
     // npm-style shim: name the interpreter via `_prog`, invoke it with a `%dp0%`
     // script ahead of the forwarded `%*`. Here `_prog` is the mock exe and the
@@ -6079,7 +6000,6 @@ fn cmd_shim_spawns_with_a_multiline_argument() {
 
     let received =
         std::fs::read_to_string(&argv_file).expect("mock recorded no argv — the spawn failed");
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         received.contains("--append-system-prompt"),
         "argv: {received:?}"
@@ -6099,9 +6019,7 @@ fn native_exe_cmd_shim_spawns_with_a_multiline_argument() {
     // Stand in a `%dp0%`-rooted exe shim pointing at a colocated copy of the mock
     // harness, drive a multi-line `--system`, and assert it spawns and the value
     // arrives intact — the end-to-end proof of the native-exe rewrite branch.
-    let dir = std::env::temp_dir().join(format!("oneharness-exeshim-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("exeshim").unwrap();
     // Colocate the target exe beside the shim so `%dp0%\claude.exe` resolves.
     let exe_path = dir.join("claude.exe");
     std::fs::copy(mock_bin(), &exe_path).unwrap();
@@ -6142,7 +6060,6 @@ fn native_exe_cmd_shim_spawns_with_a_multiline_argument() {
 
     let received =
         std::fs::read_to_string(&argv_file).expect("mock recorded no argv — the spawn failed");
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         received.contains(system),
         "the multi-line --system value must reach the child intact: {received:?}"
@@ -9078,9 +8995,7 @@ fn gate_unknown_harness_is_a_usage_error() {
 
 #[test]
 fn init_scaffolds_and_refuses_overwrite() {
-    let dir = std::env::temp_dir().join(format!("oneharness-inittest-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("inittest").unwrap();
     let path = dir.join("oneharness.judge.toml");
     let path_str = path.display().to_string();
 
@@ -9101,17 +9016,13 @@ fn init_scaffolds_and_refuses_overwrite() {
     // With --force: overwrites and succeeds.
     let out = run(&["init", &path_str, "--force"], &[]);
     assert_eq!(out.status.code(), Some(0));
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A throwaway directory for the mock responder's rules/spy files, plus the
+/// A self-removing directory for the mock responder's rules/spy files, plus the
 /// standard ruleset the tests share: rule 0 denies `git push`, rule 1 rewrites
 /// `git status` to a stub that prints canned output.
-fn mock_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("oneharness-mock-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn mock_fixture(tag: &str) -> (ScratchDir, std::path::PathBuf) {
+    let dir = ScratchDir::new(&format!("mock-{tag}")).unwrap();
     let rules = dir.join("rules.json");
     std::fs::write(
         &rules,
@@ -9128,7 +9039,7 @@ fn mock_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
 
 #[test]
 fn mock_rewrites_denies_and_falls_through() {
-    let (dir, rules) = mock_fixture("verbs");
+    let (_dir, rules) = mock_fixture("verbs");
     let rules = rules.to_str().unwrap();
 
     // A matched rewrite emits the harness's native allow+updatedInput verdict.
@@ -9178,12 +9089,11 @@ fn mock_rewrites_denies_and_falls_through() {
     // No rules at all -> spy-only responder: everything falls through.
     let out = run_with_stdin(&["mock", "claude-code"], r#"{"tool_name":"Bash"}"#);
     assert!(out.status.success() && out.stdout.is_empty());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn mock_renders_each_harness_rewrite_shape() {
-    let (dir, rules) = mock_fixture("shapes");
+    let (_dir, rules) = mock_fixture("shapes");
     let rules = rules.to_str().unwrap();
     let event = r#"{"tool_name":"bash","tool_input":{"command":"git status"}}"#;
     let rewrite = |id: &str| json_stdout(&run_with_stdin(&["mock", id, "--rules", rules], event));
@@ -9221,7 +9131,6 @@ fn mock_renders_each_harness_rewrite_shape() {
         v,
         serde_json::json!({"permission": "allow", "updated_input": {"command": "printf clean"}})
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -9310,7 +9219,6 @@ fn mock_spy_log_records_every_event_including_fall_throughs() {
     let log = std::fs::read_to_string(&env_spy).unwrap();
     let line: serde_json::Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
     assert_eq!(line["action"], "allow");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `run --mock-rules` in an "original" workspace: the hook is layered onto a
@@ -9320,9 +9228,7 @@ fn mock_spy_log_records_every_event_including_fall_throughs() {
 /// the same hook command; the report records both.
 #[test]
 fn run_mock_rules_layers_onto_existing_config_and_restores_it() {
-    let dir = std::env::temp_dir().join(format!("oneharness-mockrun-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("mockrun").unwrap();
     // A real project: crush config with unrelated keys AND an existing hook.
     let config = dir.join(".crush.json");
     let original =
@@ -9382,7 +9288,6 @@ fn run_mock_rules_layers_onto_existing_config_and_restores_it() {
         "m"
     );
     assert!(report["spy_file"].as_str().unwrap().ends_with("spy.jsonl"));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Codex delivery: the hooks file is created in a fresh `.codex/`, its
@@ -9391,9 +9296,7 @@ fn run_mock_rules_layers_onto_existing_config_and_restores_it() {
 /// a workspace that had no `.codex`).
 #[test]
 fn run_mock_rules_codex_appends_opt_in_flags_and_removes_created_files() {
-    let dir = std::env::temp_dir().join(format!("oneharness-mockcodex-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("mockcodex").unwrap();
     let rules = dir.join("rules.json");
     std::fs::write(
         &rules,
@@ -9441,7 +9344,6 @@ fn run_mock_rules_codex_appends_opt_in_flags_and_removes_created_files() {
     // ...and afterwards both the created file and its created dir are gone.
     assert!(!dir.join(".codex/hooks.json").exists());
     assert!(!dir.join(".codex").exists(), "created dir must be pruned");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Claude Code delivery: zero workspace mutation — the hook rides a per-run
@@ -9449,9 +9351,7 @@ fn run_mock_rules_codex_appends_opt_in_flags_and_removes_created_files() {
 /// file the argv names), and the temp file is deleted afterwards.
 #[test]
 fn run_mock_rules_claude_rides_settings_flag_with_no_workspace_files() {
-    let dir = std::env::temp_dir().join(format!("oneharness-mockclaude-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("mockclaude").unwrap();
     let rules = dir.join("rules.json");
     std::fs::write(
         &rules,
@@ -9504,7 +9404,6 @@ fn run_mock_rules_claude_rides_settings_flag_with_no_workspace_files() {
     );
     // No config files were created in the workspace.
     assert!(!dir.join(".claude").exists());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Spy-only mode: `--spy-file` without `--mock-rules` installs a pure
@@ -9512,9 +9411,7 @@ fn run_mock_rules_claude_rides_settings_flag_with_no_workspace_files() {
 /// spy-without-rules.
 #[test]
 fn run_spy_file_alone_installs_a_pure_observer() {
-    let dir = std::env::temp_dir().join(format!("oneharness-spyonly-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("spyonly").unwrap();
     let spy = dir.join("spy.jsonl");
     let out = run(
         &[
@@ -9549,7 +9446,6 @@ fn run_spy_file_alone_installs_a_pure_observer() {
     assert!(report["spy_file"].as_str().is_some());
     // The created config file is removed afterwards (fresh workspace).
     assert!(!dir.join("crush.json").exists());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Everything refusable is refused loudly BEFORE any file is touched or
@@ -9557,9 +9453,7 @@ fn run_spy_file_alone_installs_a_pure_observer() {
 /// harness can't express, and print-command combination (clap).
 #[test]
 fn run_mock_rules_refusals_are_loud_and_touch_nothing() {
-    let dir = std::env::temp_dir().join(format!("oneharness-mockrefuse-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("mockrefuse").unwrap();
     let rules = dir.join("rules.json");
     std::fs::write(
         &rules,
@@ -9615,16 +9509,13 @@ fn run_mock_rules_refusals_are_loud_and_touch_nothing() {
         &[],
     );
     assert_eq!(out.status.code(), Some(2));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The `stub` action: declare only the output; oneharness generates the
 /// safely-quoted printf rewrite itself (nothing user-authored executes).
 #[test]
 fn mock_stub_action_compiles_to_a_safe_printf_rewrite() {
-    let dir = std::env::temp_dir().join(format!("oneharness-stub-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("stub").unwrap();
     let rules = dir.join("rules.json");
     std::fs::write(
         &rules,
@@ -9682,7 +9573,6 @@ fn mock_stub_action_compiles_to_a_safe_printf_rewrite() {
     let out = run_with_stdin(&["mock", "goose", "--rules", rules], "{}");
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("cannot express the mock action `stub`"));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `--stream` + `--mock-rules`: the ephemeral hook is delivered, the stream
@@ -9691,9 +9581,7 @@ fn mock_stub_action_compiles_to_a_safe_printf_rewrite() {
 /// file and its directory are gone afterwards.
 #[test]
 fn run_stream_with_mock_rules_restores_on_the_streaming_path() {
-    let dir = std::env::temp_dir().join(format!("oneharness-mockstream-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("mockstream").unwrap();
     let rules = dir.join("rules.json");
     std::fs::write(
         &rules,
@@ -9738,7 +9626,6 @@ fn run_stream_with_mock_rules_restores_on_the_streaming_path() {
         !dir.join(".opencode").exists(),
         "restore must run after a stream"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A multi-harness mocked run delivers per harness and restores per harness:
@@ -9747,9 +9634,7 @@ fn run_stream_with_mock_rules_restores_on_the_streaming_path() {
 /// created file and directory are removed.
 #[test]
 fn run_mock_rules_multi_harness_restores_each_config_independently() {
-    let dir = std::env::temp_dir().join(format!("oneharness-mockmulti-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("mockmulti").unwrap();
     let crush_config = dir.join("crush.json");
     let original = r#"{"mine":{"keep":1}}"#;
     std::fs::write(&crush_config, original).unwrap();
@@ -9788,16 +9673,13 @@ fn run_mock_rules_multi_harness_restores_each_config_independently() {
     // Pre-existing config restored byte-identically; fresh one fully removed.
     assert_eq!(std::fs::read_to_string(&crush_config).unwrap(), original);
     assert!(!dir.join(".codex").exists());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A batch run (one harness, N prompts) under --mock-rules installs once,
 /// applies the hook args to every fanned-out job, and restores afterwards.
 #[test]
 fn run_mock_rules_works_with_a_batch_and_restores_once() {
-    let dir = std::env::temp_dir().join(format!("oneharness-mockbatch-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("mockbatch").unwrap();
     let rules = dir.join("rules.json");
     std::fs::write(
         &rules,
@@ -9834,7 +9716,6 @@ fn run_mock_rules_works_with_a_batch_and_restores_once() {
     assert!(!report["mock_rules"].is_null());
     // The (created) config file is gone after the batch completes.
     assert!(!dir.join("crush.json").exists());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Regex + per-field input matching through the real `mock` binary: a rule
@@ -9883,7 +9764,6 @@ fn mock_regex_and_input_matching_end_to_end() {
     );
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("invalid mock rules"));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -9928,16 +9808,13 @@ fn mock_startup_faults_are_loud_usage_errors() {
         stderr.contains("cannot express the mock action `rewrite`"),
         "{stderr}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `sync --global` installs `[[hooks]]` at each harness's user-global location
 /// (resolved from the injected HOME / XDG_CONFIG_HOME), not the project.
 #[test]
 fn sync_global_installs_hooks_at_user_locations() {
-    let dir = std::env::temp_dir().join(format!("oneharness-global-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("global").unwrap();
     let cfg = dir.join("oh.toml");
     std::fs::write(
         &cfg,
@@ -9985,14 +9862,11 @@ fn sync_global_installs_hooks_at_user_locations() {
     );
     // Nothing leaked into the project directory.
     assert!(!dir.join(".claude").exists(), "project must be untouched");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn sync_global_refuses_project_only_settings() {
-    let dir = std::env::temp_dir().join(format!("oneharness-global-bad-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("global-bad").unwrap();
     let cfg = dir.join("oh.toml");
     std::fs::write(
         &cfg,
@@ -10019,7 +9893,6 @@ fn sync_global_refuses_project_only_settings() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -10047,8 +9920,7 @@ fn config_command_attributes_settings_tables() {
 fn prompt_file_reads_the_prompt_from_a_file() {
     // `--prompt-file PATH` is the file-backed alternative to `--prompt`; the file
     // contents become the prompt verbatim and reach the harness argv.
-    let dir = std::env::temp_dir().join(format!("oneharness-pf-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("pf").unwrap();
     let file = dir.join("prompt.txt");
     std::fs::write(&file, "prompt-from-a-file").unwrap();
 
@@ -10064,7 +9936,6 @@ fn prompt_file_reads_the_prompt_from_a_file() {
         ],
         &[],
     );
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(output.status.success(), "exit {:?}", output.status.code());
     let value = json_stdout(&output);
     let command: Vec<String> = value["results"][0]["command"]
@@ -10136,8 +10007,7 @@ fn system_file_reads_the_system_prompt_from_a_file() {
     // `--system-file PATH` is the file-backed alternative to `--system` (the
     // argv-limit escape hatch, mirroring `--prompt-file`): the file contents
     // become the system prompt and reach the harness argv identically.
-    let dir = std::env::temp_dir().join(format!("oneharness-sf-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("sf").unwrap();
     let file = dir.join("system.txt");
     std::fs::write(&file, "be terse").unwrap();
 
@@ -10155,7 +10025,6 @@ fn system_file_reads_the_system_prompt_from_a_file() {
         ],
         &[],
     );
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(output.status.success(), "exit {:?}", output.status.code());
     let command = command_of(&json_stdout(&output), 0);
     assert!(
@@ -10172,8 +10041,7 @@ fn system_file_value_reaches_a_spawned_harness_intact() {
     // actually SPAWNS (the mock harness via --bin) and asserts the file-sourced
     // system prompt arrives at the child argv byte-identically — the runtime proof
     // that `--system-file` behaves exactly like `--system`, not just in print.
-    let dir = std::env::temp_dir().join(format!("oneharness-sfspawn-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("sfspawn").unwrap();
     let file = dir.join("system.txt");
     // A leading `---` (YAML front matter) that would be misparsed as a flag on
     // argv is safe here because it comes from the file, not the command line.
@@ -10206,7 +10074,6 @@ fn system_file_value_reaches_a_spawned_harness_intact() {
     assert_eq!(json_stdout(&output)["results"][0]["status"], "ok");
     let received =
         std::fs::read_to_string(&argv_file).expect("mock recorded no argv — the spawn failed");
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         received.contains("--append-system-prompt"),
         "argv: {received:?}"
@@ -10324,8 +10191,7 @@ fn large_system_file_avoids_the_argv_limit() {
     // oneharness with E2BIG if passed via `--system`. Delivered as a file path,
     // oneharness's own argv stays small and it reads the whole prompt — proven
     // here with a >128 KiB body that round-trips into the built command.
-    let dir = std::env::temp_dir().join(format!("oneharness-sfbig-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("sfbig").unwrap();
     let file = dir.join("big-system.txt");
     let marker = "SYSTEM-MARKER-42";
     let big = format!("{marker}\n{}", "x".repeat(200 * 1024));
@@ -10345,7 +10211,6 @@ fn large_system_file_avoids_the_argv_limit() {
         ],
         &[],
     );
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(output.status.success(), "exit {:?}", output.status.code());
     let command = command_of(&json_stdout(&output), 0);
     assert!(
@@ -10878,9 +10743,7 @@ fn single_prompt_run_is_not_a_batch() {
 
 #[test]
 fn batch_combines_prompt_and_prompt_file_in_order() {
-    let dir = std::env::temp_dir().join(format!("oneharness-batchpf-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("batchpf").unwrap();
     let file = dir.join("p.txt");
     std::fs::write(&file, "from-file").unwrap();
 
@@ -10906,7 +10769,6 @@ fn batch_combines_prompt_and_prompt_file_in_order() {
     // --prompt values come first, then --prompt-file contents (read whole).
     assert_eq!(results[0]["prompt"], "from-flag");
     assert_eq!(results[1]["prompt"], "from-file");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -10959,8 +10821,7 @@ fn batch_with_resume_is_a_usage_error() {
 
 #[test]
 fn batch_output_dir_disambiguates_same_harness_results() {
-    let dir = std::env::temp_dir().join(format!("oneharness-batchout-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = ScratchDir::new("batchout").unwrap();
     let output = run(
         &[
             "run",
@@ -10982,7 +10843,6 @@ fn batch_output_dir_disambiguates_same_harness_results() {
     // Same harness twice → indexed file stems, so neither overwrites the other.
     assert!(dir.join("claude-code-0.stdout").exists());
     assert!(dir.join("claude-code-1.stdout").exists());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -11036,9 +10896,7 @@ fn batch_repeated_stdin_prompt_file_is_a_usage_error() {
 fn batch_applies_the_schema_to_every_prompt() {
     // Structured output composes with batch: each prompt is validated
     // independently, so every result reports schema_valid.
-    let dir = std::env::temp_dir().join(format!("oneharness-batchschema-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ScratchDir::new("batchschema").unwrap();
     let schema = dir.join("s.json");
     std::fs::write(&schema, r#"{"type":"object","required":["a"]}"#).unwrap();
 
@@ -11067,7 +10925,6 @@ fn batch_applies_the_schema_to_every_prompt() {
     for r in results {
         assert_eq!(r["schema_valid"], true, "result: {r}");
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -11214,13 +11071,39 @@ fn batch_min_tokens_without_a_cache_reusing_fork_warns_and_does_not_fork() {
 // History: opt-in, streamed, standardized run history + the `history` verb.
 // ---------------------------------------------------------------------------
 
-/// A unique, absent temp history dir for one test (removed on entry and by the
-/// caller at the end).
-fn hist_dir(tag: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("oneharness-histtest-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    dir
+/// A history store for one test, inside a scratch directory that removes itself
+/// however the test ends.
+///
+/// The store path itself is deliberately left **absent**: history is off by
+/// default, and the tests below prove that by asserting oneharness never created
+/// the directory it was pointed at. So the guard owns the parent and the store
+/// is a name inside it that only a run brings into existence.
+struct HistDir {
+    _scratch: ScratchDir,
+    store: PathBuf,
+}
+
+impl std::ops::Deref for HistDir {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.store
+    }
+}
+
+impl AsRef<Path> for HistDir {
+    fn as_ref(&self) -> &Path {
+        &self.store
+    }
+}
+
+fn hist_dir(tag: &str) -> HistDir {
+    let scratch = ScratchDir::new(&format!("histtest-{tag}")).unwrap();
+    let store = scratch.join("store");
+    HistDir {
+        _scratch: scratch,
+        store,
+    }
 }
 
 fn materialized_history(path: &Path) -> Vec<Value> {
@@ -11300,7 +11183,6 @@ fn history_records_a_run_and_reports_the_file() {
     // Normalized only — no raw stdout/stderr leaks into history.
     assert!(rec.get("stdout").is_none());
     let _ = std::fs::remove_file(argv_file);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -11341,7 +11223,6 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
             "{name}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     let unsupported_dir = hist_dir("plain");
@@ -11379,7 +11260,6 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
         );
     }
     assert!(record["finished_at"].is_null());
-    let _ = std::fs::remove_dir_all(&unsupported_dir);
 
     // Real Anthropic-style CLI envelopes expose init, assistant content/tool
     // blocks, and terminal result aggregation, but no provider-request start.
@@ -11462,7 +11342,6 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
             report["results"][0]["telemetry"]["tool_ms"], record["observed_tool_ms"],
             "{id}: report and history must agree on one measurement"
         );
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     let dir = hist_dir("claude-incomplete-observed-tool");
@@ -11502,7 +11381,6 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
     assert!(call["duration_ms"].is_null());
     assert!(record["observed_tool_ms"].as_u64().is_some());
     assert!(record.get("model_ms").is_none());
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A telemetry/history-recording shortfall must never fail a run whose harness
@@ -11554,7 +11432,6 @@ fn incomplete_history_telemetry_warns_but_preserves_a_successful_run() {
     assert_eq!(report["results"][0]["text"], "the answer is 42");
     // No partial/corrupt history record was written.
     assert!(!Path::new(report["history_file"].as_str().unwrap()).exists());
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A run that fails before the provider produces an answer has no measured
@@ -11687,7 +11564,6 @@ fn history_records_a_failure_whose_telemetry_could_not_be_measured() {
         assert_eq!(shown[0]["history_id"], record["history_id"], "{tag}");
         assert_eq!(shown[0]["failure_kind"], "quota", "{tag}");
         assert_eq!(shown[0]["error"], record["error"], "{tag}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -11754,7 +11630,6 @@ fn history_records_the_failure_text_of_a_clean_exit_dead_end() {
         &[],
     ));
     assert_eq!(shown[0]["error"], record["error"]);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A run can fail silently: a non-zero exit with nothing on stderr and no
@@ -11817,7 +11692,6 @@ fn a_silent_failure_records_partial_timing_without_inventing_failure_text() {
     ));
     assert_eq!(shown[0]["started_at"], record["started_at"]);
     assert!(shown[0].get("error").is_none());
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A harness that floods stderr must not flood history with it. The bound is a
@@ -11876,7 +11750,6 @@ fn a_flooding_failure_is_recorded_within_the_documented_bound() {
         &[],
     ));
     assert_eq!(shown[0]["error"], record["error"]);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// The README states the failure text's bound and the version that introduced it
@@ -11959,7 +11832,6 @@ fn a_successful_run_records_no_failure_text() {
         "an absent failure text is omitted, not written as null or empty: {record}"
     );
     assert_eq!(record["schema_version"], "1.1");
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// The carve-out is keyed on the run having failed, not on how it failed. A hang
@@ -11973,6 +11845,7 @@ fn history_records_every_shape_of_run_that_never_produced_output() {
     // the only account of what happened. `bounds` says which of the two honest
     // timing shapes to expect: a run that was spawned leaves the invocation start
     // the runner watched, a harness that was never spawned leaves nothing at all.
+    let unspawnable = unspawnable_bin("codex");
     for (tag, bin, extra, envs, status, exit, error_needle, bounds) in [
         (
             "timeout",
@@ -11986,7 +11859,7 @@ fn history_records_every_shape_of_run_that_never_produced_output() {
         ),
         (
             "spawn-error",
-            unspawnable_bin("codex"),
+            unspawnable.1.clone(),
             vec![],
             vec![],
             "spawn-error",
@@ -12063,7 +11936,6 @@ fn history_records_every_shape_of_run_that_never_produced_output() {
             &[],
         ));
         assert_eq!(shown[0]["status"], status, "{tag}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -12104,7 +11976,6 @@ fn history_accepts_each_advertised_provider_trace_shape() {
             assert_eq!(record["usage"]["input_tokens"], 7, "{id}");
             assert_eq!(record["usage"]["output_tokens"], 2, "{id}");
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -12202,9 +12073,6 @@ fn history_preserves_format_contracts_and_composes_with_resume() {
     assert_eq!(telemetry["tool_ms"], record["tool_ms"]);
 
     let _ = std::fs::remove_file(schema);
-    let _ = std::fs::remove_dir_all(explicit_dir);
-    let _ = std::fs::remove_dir_all(native_dir);
-    let _ = std::fs::remove_dir_all(resume_dir);
 }
 
 #[test]
@@ -12243,7 +12111,6 @@ fn history_excludes_harness_startup_from_provider_model_time() {
         model < duration,
         "startup leaked into model time: {model}/{duration}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -12320,7 +12187,6 @@ fn history_measures_overlapping_tool_intervals_from_provider_events() {
         record["model_ms"].as_u64().unwrap() + union <= record["duration_ms"].as_u64().unwrap()
     );
     assert_ne!(calls[0]["started_at"], calls[1]["started_at"]);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -12357,7 +12223,6 @@ fn history_uses_codex_reasoning_for_first_and_last_model_boundaries() {
     assert!(ttft > 0, "reasoning TTFT: {ttft}");
     assert!(model > ttft, "reasoning through answer: {model}");
     assert!(model < record["duration_ms"].as_u64().unwrap());
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -12442,8 +12307,6 @@ fn history_normalizes_codex_mcp_failure_and_interruption() {
     assert_eq!(call["status"], "timeout");
     assert!(call["finished_at"].is_null());
     assert!(call["duration_ms"].is_null());
-    let _ = std::fs::remove_dir_all(failed_dir);
-    let _ = std::fs::remove_dir_all(interrupted_dir);
 }
 
 #[test]
@@ -12491,7 +12354,6 @@ fn history_validates_codex_terminal_tool_states_without_guessing() {
         let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
         assert_eq!(record["events"][0]["status"], expected, "{tag}");
         assert!(record["events"][0]["duration_ms"].as_u64().unwrap() > 0);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     for (tag, tool_records) in [
@@ -12526,7 +12388,6 @@ fn history_validates_codex_terminal_tool_states_without_guessing() {
             "{tag}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let _ = std::fs::remove_dir_all(dir);
     }
 }
 
@@ -12596,7 +12457,6 @@ fn history_measures_codex_file_change_with_start_and_completion() {
     assert!(file_change["started_at"].is_string());
     assert!(file_change["finished_at"].is_string());
     assert!(file_change["duration_ms"].is_u64());
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -12640,7 +12500,6 @@ fn history_preserves_an_unfinished_tool_interval_without_fabricating_an_end() {
     assert_eq!(call["status"], "interrupted");
     assert!(call["finished_at"].is_null());
     assert!(call["duration_ms"].is_null());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -12681,7 +12540,6 @@ fn history_collapses_opencode_running_and_completed_call_updates() {
     assert_eq!(calls[0]["status"], "completed");
     assert_eq!(calls[0]["output"], "/repo\n");
     assert!(calls[0]["duration_ms"].as_u64().unwrap() > 0);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -12778,7 +12636,6 @@ fn history_name_overrides_the_prompt_derived_default() {
     assert!(hf.contains("my-release-v2-"), "{hf}");
     let rec = first_history_run(Path::new(hf));
     assert_eq!(rec["name"], "my-release-v2");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -12961,8 +12818,6 @@ fn history_list_show_and_clear_round_trip() {
         &[],
     );
     assert_eq!(missing.status.code(), Some(1));
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -12995,7 +12850,6 @@ fn history_readers_skip_unmigrated_files_with_a_migration_notice() {
         "{stderr}"
     );
     assert!(stderr.contains("oneharness history migrate"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -13080,7 +12934,6 @@ fn history_migrate_converts_every_legacy_store_and_is_idempotent() {
         assert_eq!(file["records_migrated"], 0);
         assert_eq!(file["already_current"], 2);
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -13155,7 +13008,6 @@ fn history_enabled_via_config_records_the_run() {
         1,
         "history list should resolve history_dir from config"
     );
-    let _ = std::fs::remove_dir_all(&hdir);
 }
 
 #[test]
@@ -13218,7 +13070,6 @@ fn history_records_every_harness_in_one_session() {
         list[0]["harnesses"],
         serde_json::json!(["codex", "opencode"])
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -13263,7 +13114,6 @@ fn history_batch_records_one_record_per_prompt() {
         ["first prompt", "second prompt"],
         "each batch prompt is its own record"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -13304,7 +13154,6 @@ fn history_records_a_streamed_run() {
     assert_eq!(list.as_array().unwrap().len(), 1);
     assert_eq!(list[0]["record_count"], 1);
     assert_eq!(list[0]["harnesses"][0], "codex");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -13386,8 +13235,6 @@ fn history_cli_reads_v1_0_records_without_variant_identity_fields() {
     assert_eq!(record["harness"], "codex");
     assert_eq!(record["harness_id"], "codex");
     assert!(record["variant"].is_null());
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&legacy_dir);
 }
 
 #[test]
@@ -13441,7 +13288,6 @@ fn history_cli_rejects_mixed_provider_and_observed_timing() {
         &[],
     ));
     assert!(listed.as_array().unwrap().is_empty());
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -13499,7 +13345,6 @@ fn streamed_variant_history_events_keep_the_composed_identity() {
     assert_eq!(event["harness"], "opencode");
     assert_eq!(event["variant"], "work");
     assert_eq!(event["harness_id"], "opencode:work");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -13590,7 +13435,6 @@ fn history_cli_rejects_inconsistent_variant_identities_in_run_and_event_lines() 
     let records = json_stdout(&shown);
     assert!(records.as_array().unwrap().is_empty());
 
-    let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&bad_run_dir);
     let _ = std::fs::remove_dir_all(&bad_event_dir);
 }
@@ -13754,7 +13598,6 @@ fn interrupted_stream_preserves_events_without_a_closing_run() {
         displayed[0]["events"].as_array().unwrap().len(),
         persisted.len()
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -13895,7 +13738,6 @@ fn history_watch_event_mode_observes_event_before_stream_finishes() {
     );
     assert!(trigger.status.success());
     assert!(watcher.wait().unwrap().success());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -13954,7 +13796,6 @@ fn history_watch_streams_stdout_observed_event_at_the_current_version() {
     drop(reader);
     writer.append_event(run_id, "claude-code", event).unwrap();
     assert!(watcher.wait().unwrap().success());
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -13994,7 +13835,6 @@ fn history_enabled_and_dir_via_environment() {
         Path::new(&hf).starts_with(&canonical_dir),
         "ONEHARNESS_HISTORY_DIR should place the store: {hf}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -14066,7 +13906,6 @@ fn history_labels_layer_cli_over_environment_over_config_and_validate() {
     );
     assert_eq!(invalid.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&invalid.stderr).contains("invalid history label"));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -14123,8 +13962,6 @@ fn history_canonicalizes_relative_cwd_for_project_lookup() {
             .display()
             .to_string()
     );
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -14218,7 +14055,6 @@ fn history_watch_variant_filters_nonmatching_event_envelopes() {
     drop(reader);
     record("work", "close watcher");
     assert!(watcher.wait().unwrap().success());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -14383,17 +14219,14 @@ fn history_watch_filters_and_resumes_as_jsonl() {
     );
     assert_eq!(exact_missing.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&exact_missing.stderr).contains("was not found"));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn history_watch_scopes_to_explicit_and_current_project() {
     let dir = hist_dir("watch-project");
     let ds = dir.display().to_string();
-    let pa = std::env::temp_dir().join(format!("oh-watch-a-{}", std::process::id()));
-    let pb = std::env::temp_dir().join(format!("oh-watch-b-{}", std::process::id()));
-    std::fs::create_dir_all(&pa).unwrap();
-    std::fs::create_dir_all(&pb).unwrap();
+    let pa = ScratchDir::new("watch-a").unwrap();
+    let pb = ScratchDir::new("watch-b").unwrap();
 
     let record = |project: &Path, prompt: &str| {
         let out = run(
@@ -14472,10 +14305,6 @@ fn history_watch_scopes_to_explicit_and_current_project() {
         let status = child.wait().unwrap();
         assert!(status.success(), "watch exit: {status:?}");
     }
-
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&pa);
-    let _ = std::fs::remove_dir_all(&pb);
 }
 
 #[test]
@@ -14533,7 +14362,6 @@ fn concurrent_processes_append_complete_history_index_lines() {
         .map(|line| line["record"]["history_id"].as_str().unwrap())
         .collect();
     assert_eq!(ids.len(), 8);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -14615,17 +14443,14 @@ fn history_records_a_failed_run_and_shows_by_id() {
     ));
     assert_eq!(exact.as_array().unwrap().len(), 1);
     assert_eq!(exact[0]["history_id"], history_id);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn history_list_scopes_by_project() {
     let dir = hist_dir("scope");
     let ds = dir.display().to_string();
-    let pa = std::env::temp_dir().join(format!("oh-projA-{}", std::process::id()));
-    let pb = std::env::temp_dir().join(format!("oh-projB-{}", std::process::id()));
-    std::fs::create_dir_all(&pa).unwrap();
-    std::fs::create_dir_all(&pb).unwrap();
+    let pa = ScratchDir::new("projA").unwrap();
+    let pb = ScratchDir::new("projB").unwrap();
     for p in [&pa, &pb] {
         run(
             &[
@@ -14682,9 +14507,6 @@ fn history_list_scopes_by_project() {
         just_a[0]["project"],
         std::fs::canonicalize(&pa).unwrap().display().to_string()
     );
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&pa);
-    let _ = std::fs::remove_dir_all(&pb);
 }
 
 // --- large prompts / system (issue #1115): off-argv delivery ----------------
@@ -14975,9 +14797,11 @@ fn missing_bin(id: &str) -> String {
 /// which is what separates `spawn-error` from `not-installed`. Unix: an
 /// executable file naming an interpreter that does not exist. Windows: a
 /// zero-byte `.exe`, which `CreateProcess` rejects as a bad image format.
-fn unspawnable_bin(id: &str) -> String {
-    let dir = std::env::temp_dir().join(format!("oneharness-unspawnable-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("the staging directory");
+/// The staging directory comes back with it: the program has to still be there
+/// when the run under test spawns, so the caller owns the guard for as long as
+/// it needs the override.
+fn unspawnable_bin(id: &str) -> (ScratchDir, String) {
+    let dir = ScratchDir::new(&format!("unspawnable-{id}")).unwrap();
     #[cfg(windows)]
     let path = {
         let path = dir.join(format!("{id}.exe"));
@@ -14994,7 +14818,8 @@ fn unspawnable_bin(id: &str) -> String {
             .expect("mark it executable so `which` resolves it");
         path
     };
-    format!("{id}={}", path.display())
+    let arg = format!("{id}={}", path.display());
+    (dir, arg)
 }
 
 #[test]
@@ -15599,16 +15424,13 @@ fn multiple_models_history_records_each_pair_model() {
         })
         .collect();
     assert_eq!(models, vec!["opus".to_string(), "sonnet".to_string()]);
-    let _ = std::fs::remove_dir_all(&hist);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
 fn multiple_models_output_dir_disambiguates_the_same_harness() {
     // One harness fanned over two models writes two same-harness results, so the
     // output-dir stems are indexed (neither overwrites the other).
-    let dir = std::env::temp_dir().join(format!("oneharness-modelsout-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = ScratchDir::new("modelsout").unwrap();
     let output = run(
         &[
             "run",
@@ -15631,7 +15453,6 @@ fn multiple_models_output_dir_disambiguates_the_same_harness() {
     assert!(output.status.success());
     assert!(dir.join("claude-code-0.stdout").exists());
     assert!(dir.join("claude-code-1.stdout").exists());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -16842,6 +16663,176 @@ fn fallback_falls_through_a_codex_usage_limit_to_the_alternate_account() {
     }
 }
 
+/// The same chain, refused over the **app-server** protocol a `--control` turn
+/// drives instead of `codex exec`. The frames differ completely (`method`, not
+/// `type`; the payload under `params`), and reading only the event stream left
+/// every controlled run unclassified — so a monitor's chain sat on an exhausted
+/// identity for a day without ever reaching its second candidate.
+#[test]
+fn fallback_falls_through_a_codex_app_server_usage_limit_to_the_alternate_account() {
+    let mock = mock_bin().display().to_string();
+    let captured = include_str!("fixtures/codex-app-server-usage-limit.jsonl").trim();
+    let frames: Vec<&str> = captured.lines().collect();
+    let alternate =
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"served-by-alternate"}}"#;
+    // The frame with no `codexErrorInfo`, where the phrasing is the whole signal.
+    let uncoded = r#"{"method":"error","params":{"error":{"message":"You've hit your usage limit. Try again at Dec 31st, 2027 6:00 AM."}}}"#;
+
+    // Every shape a real transcript ends up carrying, each driven end to end:
+    // both frames as captured, then each one alone — a run that kept only the
+    // terminal `turn/completed` still has to fall through — and the uncoded one.
+    for (tag, transcript) in [
+        ("both", captured),
+        ("error-frame", frames[0]),
+        ("turn-completed", frames[1]),
+        ("uncoded", uncoded),
+    ] {
+        let capture = serde_json::to_string(transcript).unwrap();
+        let project = format!(
+            r#"
+            harnesses = ["codex", "codex:alternate"]
+            run_mode = "fallback"
+
+            [harness.codex]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {capture} }}
+
+            [harness.codex.variant.alternate]
+            bin = '{mock}'
+
+            [harness.codex.variant.alternate.env]
+            MOCK_EXIT = "0"
+            MOCK_STDOUT = '{alternate}'
+            "#
+        );
+        let fx = ConfigFixture::new(&format!("fallback-app-server-{tag}"), &project, "");
+        let output = run_with_config(
+            &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+            &[],
+            &fx.user_config(),
+        );
+        assert!(
+            output.status.success(),
+            "{tag}: status {:?}, stderr {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value = json_stdout(&output);
+        assert_eq!(value["fallback"]["ran"], "codex:alternate", "{tag}");
+        assert_eq!(
+            value["fallback"]["fell_through"][0]["harness"], "codex",
+            "{tag}"
+        );
+        assert_eq!(
+            value["fallback"]["fell_through"][0]["reason"], "quota",
+            "{tag}"
+        );
+        assert_eq!(value["results"][0]["failure_kind"], "quota", "{tag}");
+        assert_eq!(
+            value["results"][0]["failure_kind_source"], "stdout",
+            "{tag}"
+        );
+        assert_eq!(
+            value["results"][1]["harness_id"], "codex:alternate",
+            "{tag}"
+        );
+        assert_eq!(value["results"][1]["status"], "ok", "{tag}");
+        assert_eq!(value["results"][1]["text"], "served-by-alternate", "{tag}");
+    }
+}
+
+/// The other half of that chain: a limit the server says it is going to **retry**
+/// is not a refusal, because the turn may still complete — reporting `quota` for
+/// a run that then worked hands a paid task to another account for nothing.
+#[test]
+fn fallback_stops_at_an_app_server_limit_the_server_will_retry() {
+    let mock = mock_bin().display().to_string();
+    let retrying = serde_json::to_string(
+        r#"{"method":"error","params":{"error":{"message":"You've hit your usage limit","codexErrorInfo":"usageLimitExceeded"},"willRetry":true}}"#,
+    )
+    .unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["codex", "codex:alternate"]
+        run_mode = "fallback"
+
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {retrying} }}
+
+        [harness.codex.variant.alternate]
+        bin = '{mock}'
+        "#
+    );
+    let fx = ConfigFixture::new("fallback-app-server-retrying", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let value = json_stdout(&output);
+    assert_eq!(value["fallback"]["ran"], "codex");
+    assert!(value["fallback"]["fell_through"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        value["results"].as_array().unwrap().len(),
+        1,
+        "the alternate account must never be tried"
+    );
+    assert!(value["results"][0]["failure_kind"].is_null());
+}
+
+#[test]
+fn fallback_stops_at_an_app_server_failure_that_is_not_a_usage_limit() {
+    // The regression guard for the fall-through above: an app-server turn that
+    // failed for any other reason is a real task failure, so the chain must stop
+    // rather than silently re-run the paid task on the alternate account.
+    let mock = mock_bin().display().to_string();
+    let failed = serde_json::to_string(concat!(
+        r#"{"method":"error","params":{"error":{"message":"stream disconnected before completion","codexErrorInfo":"streamDisconnected","additionalDetails":null},"willRetry":false}}"#,
+        "\n",
+        r#"{"method":"turn/completed","params":{"turn":{"id":"t1","items":[],"status":"failed","error":{"message":"stream disconnected before completion","codexErrorInfo":"streamDisconnected"}}}}"#
+    ))
+    .unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["codex", "codex:alternate"]
+        run_mode = "fallback"
+
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {failed} }}
+
+        [harness.codex.variant.alternate]
+        bin = '{mock}'
+        "#
+    );
+    let fx = ConfigFixture::new("fallback-codex-app-server-other", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let value = json_stdout(&output);
+    assert_eq!(value["fallback"]["ran"], "codex");
+    assert!(value["fallback"]["fell_through"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let results = value["results"].as_array().unwrap();
+    assert_eq!(
+        results.len(),
+        1,
+        "the alternate account must never be tried"
+    );
+    assert_eq!(results[0]["status"], "nonzero");
+    assert!(results[0]["failure_kind"].is_null());
+}
+
 #[test]
 fn fallback_stops_at_a_codex_turn_failure_and_does_not_fall_through() {
     // The regression guard for the fall-through above: an ordinary `turn.failed`
@@ -17099,7 +17090,6 @@ fn stream_under_fallback_publishes_only_the_candidate_that_runs() {
     let events: Vec<&Value> = lines.iter().filter(|l| l["type"] == "event").collect();
     assert_eq!(events.len(), 2);
     assert!(events.iter().all(|e| e["harness"] == "qwen"));
-    let _ = std::fs::remove_dir_all(&history);
 }
 
 #[test]
@@ -17189,7 +17179,6 @@ fn stream_under_fallback_publishes_only_the_model_that_runs() {
     let events: Vec<&Value> = lines.iter().filter(|l| l["type"] == "event").collect();
     assert_eq!(events.len(), 2);
     assert!(events.iter().all(|e| e["harness"] == "claude-code"));
-    let _ = std::fs::remove_dir_all(&history);
 }
 
 /// The fallback block reduced to a value two runs of the same chain can be
@@ -17268,6 +17257,7 @@ fn streamed_and_buffered_fallback_select_the_same_candidate() {
         expected_kind: Option<&'static str>,
     }
 
+    let unspawnable = unspawnable_bin("claude-code");
     let cases = vec![
         Case {
             // The real zero-work Claude 429 (issue #1211): rejected before doing
@@ -17388,7 +17378,7 @@ fn streamed_and_buffered_fallback_select_the_same_candidate() {
             // has no signals at all to reason about.
             tag: "spawn-error",
             first_env: String::from("{ }"),
-            extra: vec!["--bin".into(), unspawnable_bin("claude-code")],
+            extra: vec!["--bin".into(), unspawnable.1.clone()],
             expected_ran: "qwen",
             expected_fell: vec![("claude-code", "spawn-error")],
             expected_exit: 0,
@@ -18228,12 +18218,7 @@ fn usage_probes_a_harness_installed_under_a_bare_name_on_path() {
     // Windows that reported `probe_failed: program not found` for a harness every
     // other verb drove fine — headroom that was readable the whole time, filed as
     // unknown. The staged install below is that exact shape.
-    let dir = std::env::temp_dir().join(format!(
-        "oneharness-usage-path-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = ScratchDir::new(&format!("usage-path-{:?}", std::thread::current().id())).unwrap();
     let path = stage_harness_on_path(&dir, "oneharness-staged-codex");
 
     let output = run(
@@ -18251,7 +18236,6 @@ fn usage_probes_a_harness_installed_under_a_bare_name_on_path() {
             ("MOCK_STDOUT", &codex_usage_response()),
         ],
     );
-    let _ = std::fs::remove_dir_all(&dir);
 
     assert!(output.status.success(), "exit {:?}", output.status.code());
     let codex = usage_identity(&json_stdout(&output), "codex");
@@ -18276,9 +18260,7 @@ fn usage_runs_each_probe_in_the_requested_working_directory() {
     //
     // The mock reads a *relative* path here, so it can only answer at all from
     // inside the requested directory — which is the observation.
-    let dir = std::env::temp_dir().join(format!("oneharness-usage-cwd-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("the probe's working directory");
+    let dir = ScratchDir::new("usage-cwd").unwrap();
     std::fs::write(
         dir.join("payload.jsonl"),
         format!("{}\n", claude_usage_response()),
@@ -18327,8 +18309,6 @@ fn usage_runs_each_probe_in_the_requested_working_directory() {
         unreached["availability"]["state"], "unknown",
         "the same relative payload must be unreachable from anywhere else: {unreached}"
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -19600,8 +19580,7 @@ fn usage_reports_a_rejected_copilot_token_as_not_logged_in() {
 #[cfg(unix)]
 #[test]
 fn usage_reports_an_absent_curl_as_a_probe_failure_naming_it() {
-    let empty = std::env::temp_dir().join(format!("oneharness-no-curl-{}", std::process::id()));
-    std::fs::create_dir_all(&empty).expect("an empty PATH directory");
+    let empty = ScratchDir::new("no-curl").unwrap();
 
     let output = run_copilot_usage(
         &["usage", "--harness", "copilot", "--compact"],
@@ -19613,7 +19592,6 @@ fn usage_reports_an_absent_curl_as_a_probe_failure_naming_it() {
             ("ONEHARNESS_COPILOT_API_BASE", "http://127.0.0.1:1"),
         ],
     );
-    let _ = std::fs::remove_dir_all(&empty);
 
     assert!(
         output.status.success(),
@@ -20239,19 +20217,15 @@ fn interrupt_reports_a_failed_stdout_write_instead_of_panicking() {
         !stderr.contains("panicked"),
         "interrupt panicked on a closed stdout:\n{stderr}"
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 // --- out-of-band turn control (`run --control` + `oneharness interrupt`) ------
 
 /// A private, per-test session store (which is also where the run's control
 /// socket lives, at `<dir>/control/<name>.sock`).
-fn control_store_dir(tag: &str) -> PathBuf {
-    let name = format!("oh-control-{tag}-{}-{}", std::process::id(), tag.len());
-    let dir = control_store_root(tag, &name).join(&name);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn control_store_dir(tag: &str) -> ScratchDir {
+    let name = ScratchDir::name(tag);
+    ScratchDir::under(&control_store_root(tag, &name), tag).unwrap()
 }
 
 /// The root a control store goes under.
@@ -20425,9 +20399,6 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
     assert_eq!(report["results"][0]["status"], "ok");
     assert_eq!(report["session"]["name"], "watched");
     assert_eq!(report["session"]["token"], "sess-ctl");
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[cfg(unix)]
@@ -20474,8 +20445,6 @@ fn a_controlled_turn_with_an_omitted_timeout_outlives_the_former_default() {
     assert_eq!(report["results"][0]["text"], "mock turn", "{report}");
     let log = std::fs::read_to_string(&turn_log).expect("controlled turn log");
     assert!(log.contains("finish the supervised turn"), "{log}");
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[cfg(unix)]
@@ -20522,8 +20491,6 @@ fn the_control_mock_refuses_an_invalid_result_delay() {
         "{report}"
     );
     assert_eq!(report["results"][0]["status"], "nonzero", "{report}");
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[cfg(unix)]
@@ -20643,9 +20610,6 @@ fn control_interrupt_redirects_the_turn_with_a_message_in_one_operation() {
     assert!(!socket.exists());
     assert_eq!(report["results"][0]["status"], "ok");
     assert_eq!(report["session"]["token"], "sess-redirect");
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -20724,7 +20688,6 @@ fn a_redirection_refused_by_an_idle_run_is_not_reported_as_delivered() {
     assert!(!listener.handle_ref().has_pending_redirect());
 
     drop(listener);
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -20765,8 +20728,6 @@ fn a_previous_version_supervisor_is_refused_across_the_socket_rather_than_half_u
             "the refusal must name both versions: {reply}"
         );
     }
-
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -20828,9 +20789,6 @@ fn control_run_pins_the_message_stream_argv_and_leaves_the_prompt_off_it() {
     // It reached the harness over stdin instead.
     let log = std::fs::read_to_string(&turn_log).unwrap();
     assert!(log.contains("secret-prompt-text"), "turn log:\n{log}");
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[cfg(unix)]
@@ -21030,8 +20988,6 @@ fn a_controlled_run_reports_the_resolved_socket_address_not_the_one_passed_in() 
             .to_string(),
         "the report must name the bound address, not the symlink it was given"
     );
-
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(not(unix))]
@@ -21063,7 +21019,6 @@ fn control_on_a_platform_without_unix_sockets_is_a_usage_error() {
         stderr.contains("--control needs a unix domain socket"),
         "stderr:\n{stderr}"
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -21117,7 +21072,6 @@ fn control_on_a_harness_without_a_mechanism_is_a_usage_error() {
         stderr.contains("has no out-of-band turn control"),
         "stderr:\n{stderr}"
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -21182,7 +21136,6 @@ fn a_controlled_copilot_run_carries_the_modes_own_permission_flags() {
         !command.contains(&"dry-run-prompt".to_string()),
         "the prompt is negotiated on the ACP wire, not the argv: {command:?}"
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -21235,7 +21188,6 @@ fn a_controlled_run_refuses_a_mode_only_its_servers_environment_could_carry() {
         !store.join("control").exists(),
         "a refused control run must open no socket"
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -21287,7 +21239,6 @@ fn a_controlled_servers_pool_key_leaves_the_approval_mode_out() {
         // The session is refused, so each run is synchronous and leaves its
         // pool entry behind without needing a turn.
         assert_eq!(out.status.code(), Some(1), "{out:?}");
-        let _ = std::fs::remove_dir_all(&cwd);
         std::fs::read_dir(pool.join("oneharness").join("servers"))
             .map(|dir| {
                 dir.filter_map(Result::ok)
@@ -21303,8 +21254,6 @@ fn a_controlled_servers_pool_key_leaves_the_approval_mode_out() {
         after_bypass, after_default,
         "the approval mode is not delivered to the server, so it must not split the pool: {after_bypass:?}"
     );
-
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -21339,7 +21288,6 @@ fn control_still_accepts_edit_mode_where_the_argv_carries_it() {
         stdout.contains("acceptEdits"),
         "claude-code must still deliver `edit` on its argv; stdout:\n{stdout}"
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -21369,7 +21317,6 @@ fn control_needs_exactly_one_harness() {
         stderr.contains("needs exactly one harness"),
         "stderr:\n{stderr}"
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -21401,7 +21348,6 @@ fn control_rejects_an_output_format_the_mechanism_cannot_use() {
         stderr.contains("needs output format `stream-json` for --control"),
         "stderr:\n{stderr}"
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -21423,7 +21369,6 @@ fn interrupt_against_a_run_that_is_not_running_reports_not_running() {
     let frame = json_stdout(&output);
     assert_eq!(frame["ok"], false);
     assert_eq!(frame["reason"], "not_running");
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -21466,8 +21411,6 @@ fn interrupt_between_turns_reports_no_active_turn() {
         events[0].reason(),
         Some(oneharness_core::domain::control::ControlReason::NoActiveTurn)
     );
-
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -21508,9 +21451,6 @@ fn interrupt_on_a_harness_without_a_mechanism_reports_unsupported() {
     assert_eq!(frame["ok"], false);
     assert_eq!(frame["reason"], "unsupported");
     assert!(frame["error"].as_str().unwrap().contains("cursor"));
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -21568,9 +21508,6 @@ fn interrupt_resolves_a_variant_qualified_record_to_its_harness() {
     let frame = interrupt("live");
     assert_eq!(frame["ok"], false);
     assert_eq!(frame["reason"], "not_running", "{frame}");
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -21626,9 +21563,6 @@ fn a_run_without_control_opens_no_socket_and_keeps_its_argv() {
         !argv.lines().any(|l| l == "stream-json"),
         "the ordinary argv must be unchanged:\n{argv}"
     );
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[cfg(unix)]
@@ -21729,9 +21663,6 @@ fn a_host_signal_cancels_a_controlled_run_and_takes_its_socket_with_it() {
         !socket.exists(),
         "the socket must be removed when a cancelled run exits"
     );
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[cfg(unix)]
@@ -21823,9 +21754,6 @@ fn control_works_alongside_streaming_so_a_supervisor_can_watch_and_interrupt() {
     );
     assert_eq!(control.interrupts.len(), 1);
     assert!(control.interrupts[0].is_served());
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -21861,7 +21789,6 @@ fn control_with_a_schema_is_a_usage_error() {
         stderr.contains("--control cannot be combined with --schema"),
         "stderr:\n{stderr}"
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 /// Every row of the README's control support matrix: the harness id and the
@@ -22001,7 +21928,6 @@ fn control_under_print_command_shows_the_control_argv_and_opens_nothing() {
         !store.join("control").exists(),
         "a dry run must create no control directory"
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -22100,9 +22026,6 @@ fn a_second_controlled_run_cannot_steal_a_live_sessions_socket() {
     assert!(interrupt.status.success(), "{interrupt:?}");
     let output = child.wait_with_output().expect("first run did not finish");
     assert!(output.status.success(), "{output:?}");
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
@@ -22135,7 +22058,6 @@ fn control_with_more_than_one_prompt_is_a_usage_error() {
         stderr.contains("--control drives one live turn") && stderr.contains("batch run"),
         "stderr:\n{stderr}"
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -22215,8 +22137,6 @@ fn interrupt_defaults_to_the_platform_session_store_and_prints_readable_json() {
     );
     let frame: Value = serde_json::from_str(&text).expect("pretty output is still JSON");
     assert_eq!(frame["reason"], "no_active_turn");
-
-    let _ = std::fs::remove_dir_all(&state);
 }
 
 #[cfg(unix)]
@@ -22391,9 +22311,6 @@ fn an_acp_controlled_run_answers_permission_and_records_a_cancel_the_harness_cal
         report["results"][0]["text_source"],
         "jsonrpc:acp-session-update"
     );
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[cfg(unix)]
@@ -22499,9 +22416,6 @@ fn a_codex_controlled_run_drives_its_thread_and_interrupts_the_live_turn() {
         report["results"][0]["text_source"],
         "jsonrpc:codex-app-server"
     );
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[cfg(unix)]
@@ -22585,9 +22499,6 @@ fn a_restrictive_controlled_run_declines_the_permission_it_is_asked_for() {
     assert!(interrupt.status.success(), "{interrupt:?}");
     let output = child.wait_with_output().expect("run did not finish");
     assert!(output.status.success(), "{output:?}");
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[cfg(unix)]
@@ -22689,9 +22600,6 @@ fn a_streamed_controlled_run_publishes_the_protocol_turns_own_signals() {
         report["results"][0]["text"],
         "Info: Operation cancelled by user"
     );
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[cfg(unix)]
@@ -22807,9 +22715,6 @@ fn an_http_controlled_run_carries_its_redirection_into_the_next_turn() {
             .is_some_and(|text| text.contains("redirected")),
         "the redirected turn's answer is the run's: {report}"
     );
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[cfg(unix)]
@@ -22902,8 +22807,6 @@ fn a_refused_redirection_is_reported_rather_than_leaving_a_run_that_did_nothing(
     );
 
     wait_for_pooled_server_to_exit(&pool);
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[cfg(unix)]
@@ -22994,9 +22897,6 @@ fn a_redirection_the_harness_is_no_longer_there_for_ends_the_run_rather_than_han
     // a process that has stopped reading is accepted by the kernel — so the run
     // either warns or discovers the loss at EOF. Both end the run without the
     // message being done, which is what this pins.
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[cfg(unix)]
@@ -23046,9 +22946,6 @@ fn a_controlled_opencode_model_that_names_no_provider_is_refused_before_a_server
     assert!(error.contains("anthropic/claude-haiku-4-5"), "{error}");
     // Nothing was brought up for a turn that could never have run.
     assert!(!pool.exists(), "a refused model must not start a server");
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[cfg(unix)]
@@ -23188,9 +23085,6 @@ fn an_http_controlled_run_submits_the_turn_to_a_server_and_interrupts_it_there()
         wait_for_pooled_server_to_exit(&pool),
         "the pool recorded the server it started"
     );
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 /// Drive one controlled opencode run through a pooled server under `pool`,
@@ -23473,8 +23367,6 @@ fn the_control_server_fixture_refuses_a_body_length_it_will_not_reserve_room_for
         ),
     );
     assert!(served.starts_with("HTTP/1.1 200"), "{served}");
-
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -23590,8 +23482,6 @@ fn a_control_server_that_redirects_the_interrupt_is_not_reported_as_having_serve
     );
 
     wait_for_pooled_server_to_exit(&pool);
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 /// Wait for the server the pool under `pool` started to be gone, reporting
@@ -23682,8 +23572,6 @@ fn http_control_run_with_fault(tag: &str, fault: &str, timeout: &str) -> (Output
     let report = json_stdout(&output);
     wait_for_pooled_server_to_exit(&pool);
     let served = std::fs::read_to_string(store.join("server.log")).unwrap_or_default();
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
     (output, report, served)
 }
 
@@ -23862,8 +23750,6 @@ fn a_control_server_that_lost_its_reserved_port_is_relaunched_rather_than_report
     );
 
     wait_for_pooled_server_to_exit(&pool);
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[cfg(unix)]
@@ -24108,8 +23994,6 @@ fn a_server_submitted_controlled_run_skips_a_harness_whose_binary_is_missing() {
         .unwrap()
         .is_empty());
     assert!(!store.join("control").join("gone.sock").exists());
-
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -24181,7 +24065,6 @@ fn a_dry_run_of_a_server_submitted_controlled_turn_shows_the_server_it_would_lau
         command.iter().any(|arg| arg == "--input-format"),
         "{command:?}"
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -24238,7 +24121,6 @@ fn streaming_a_server_submitted_controlled_turn_is_a_usage_error() {
         &[],
     );
     assert!(ok.status.success(), "{ok:?}");
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -24333,7 +24215,6 @@ fn streaming_is_refused_for_a_server_submitted_candidate_anywhere_in_the_chain()
         ok.status.code(),
         String::from_utf8_lossy(&ok.stderr)
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 /// A chain whose head is fine and whose reserve is not, planned but never run.
@@ -24378,7 +24259,6 @@ fn later_candidate_refusal(tag: &str, harnesses: &str, extra: &[&str]) -> (Outpu
     args.extend_from_slice(extra);
     let output = run_with_config(&args, &[("MOCK_LOG_FILE", &spawned_arg)], &fx.user_config());
     let ran = spawned.exists();
-    let _ = std::fs::remove_dir_all(&store);
     (output, ran)
 }
 
@@ -24459,7 +24339,6 @@ fn control_with_a_model_fan_out_is_a_usage_error() {
         stderr.contains("incompatible with --control"),
         "stderr:\n{stderr}"
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -24504,7 +24383,6 @@ fn control_accepts_a_five_identity_fallback_chain() {
     assert_eq!(report["results"].as_array().unwrap().len(), 1);
     assert_eq!(report["results"][0]["status"], "ok");
     assert!(report["control"]["socket"].is_string());
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -24617,7 +24495,6 @@ fn controlled_fallback_carries_control_to_the_candidate_that_served() {
         !stderr.contains("without control"),
         "a fall-through no longer costs the run its lever: {stderr}"
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -24761,7 +24638,6 @@ fn a_redirection_its_candidate_never_delivered_is_said_and_dropped_at_the_fall_t
     // Nor did it reach the head after its own turn had ended.
     let head = std::fs::read_to_string(&head_log).unwrap();
     assert!(!head.contains("do X instead"), "head turn log:\n{head}");
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -24857,8 +24733,6 @@ fn controlled_fallback_records_its_streamed_history_under_the_live_run() {
             .all(|event| event["run_id"] == ran["history_id"]),
         "events belong to the run that closed them: {lines:#?}"
     );
-    let _ = std::fs::remove_dir_all(&history);
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -24931,7 +24805,6 @@ fn control_on_a_fallback_chain_prints_the_planned_commands() {
         assert!(command.contains(&"--input-format"), "{id}: {command:?}");
         assert!(!command.contains(&"hi"), "{id}: {command:?}");
     }
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -25038,7 +24911,6 @@ fn controlled_fallback_binds_control_to_a_later_anchor_the_session_moved_to() {
     );
     assert_eq!(second["fallback"]["ran"], "claude-code:reserve");
     assert!(second["control"]["socket"].is_string());
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -25119,7 +24991,6 @@ fn a_controlled_fallback_chain_streams_its_anchors_turn() {
     assert!(command.contains(&"--input-format"), "{command:?}");
     assert!(!command.contains(&"hi"), "{command:?}");
     assert!(report["control"]["socket"].is_string(), "{report}");
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -25178,7 +25049,6 @@ fn control_accepts_a_fallback_chain_whose_candidates_control_differently() {
     assert_eq!(results[1]["harness_id"], "codex");
     assert!(codex.contains(&"app-server".to_string()), "{codex:?}");
     assert!(!codex.contains(&"hi".to_string()), "{codex:?}");
-    let _ = std::fs::remove_dir_all(&store);
 
     // The narrower rule that remains: a candidate with NO mechanism is still
     // refused, because it could serve the turn and then there would be no lever
@@ -25299,8 +25169,6 @@ fn a_controlled_fallback_chain_drives_a_shared_mechanism_across_harnesses() {
         log.lines().any(|line| line.contains("session/cancel")),
         "the interrupt reached the anchor's dialogue: {log}"
     );
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[cfg(unix)]
@@ -25403,7 +25271,6 @@ fn a_controlled_fallback_chain_of_one_still_submits_its_turn_to_a_pooled_server(
             .any(|line| line.starts_with("POST /api/session/ses_mock/interrupt")),
         "{served}"
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -25552,7 +25419,6 @@ fn a_chain_that_falls_through_to_a_pooled_server_candidate_runs_it_on_its_own_mo
         wait_for_pooled_server_to_exit(&pool),
         "the pooled candidate's server outlived the turn it served"
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -25680,7 +25546,6 @@ fn a_resumed_sessions_output_format_is_judged_by_its_anchors_own_mechanism() {
         resumed.status.code(),
         String::from_utf8_lossy(&resumed.stderr)
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -25797,7 +25662,6 @@ fn each_candidate_in_a_chain_opens_its_turn_with_its_own_assembled_prompt() {
         .unwrap_or_else(|| panic!("no turn reached the serving candidate:\n{served}"));
     assert!(start.contains("PLAN MODE"), "{start}");
     assert!(start.contains("tidy the parser"), "{start}");
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -25898,7 +25762,6 @@ fn a_redirection_a_dead_conversation_still_held_is_reported_rather_than_lost() {
     let served = std::fs::read_to_string(&log).unwrap();
     assert!(served.contains("DIED_AFTER_INTERRUPT"), "{served}");
     assert!(!served.contains("do X instead"), "{served}");
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -26037,7 +25900,6 @@ fn a_chain_of_two_pooled_server_candidates_leases_them_one_at_a_time() {
         wait_for_pooled_server_to_exit(&pool),
         "the serving candidate's server outlived the turn it served"
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -26127,7 +25989,6 @@ fn a_pooled_server_candidate_that_never_comes_up_falls_through_to_the_next() {
         "the reserve never took the turn:\n{frames}"
     );
     wait_for_pooled_server_to_exit(&pool);
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[cfg(unix)]
@@ -26266,7 +26127,6 @@ fn an_interrupt_after_a_fall_through_reaches_the_mechanism_that_served() {
         !served.contains("INTERRUPT_MISADDRESSED"),
         "the app-server rejected the interrupt's coordinates:\n{served}"
     );
-    let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
@@ -26329,5 +26189,4 @@ fn control_accepts_a_server_backed_chain_of_more_than_one_candidate() {
             "{id} plans its own server launch: {command:?}"
         );
     }
-    let _ = std::fs::remove_dir_all(&store);
 }

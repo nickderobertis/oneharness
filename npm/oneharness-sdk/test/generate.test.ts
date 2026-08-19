@@ -1,10 +1,9 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
 	copyFileSync,
 	existsSync,
 	mkdirSync,
-	mkdtempSync,
 	readFileSync,
 	rmSync,
 	symlinkSync,
@@ -23,6 +22,10 @@ import {
 	SDK_SCHEMA_ALIASES,
 	SDK_SCHEMA_ROOTS,
 } from "../scripts/zod-generator.mjs";
+import { removeScratch, scratchSync } from "./scratch.mjs";
+
+// Whatever a test does with its scratch checkout, the framework takes it back.
+afterEach(removeScratch);
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../../..");
@@ -31,7 +34,7 @@ const generatedDirectory = `${sdkDirectory}/src/generated`;
 const lfSdkFile = /\.(?:m?js|ts|json)$/u;
 
 test("SDK inputs stay LF under Windows checkout semantics", () => {
-	const checkout = mkdtempSync(resolve(tmpdir(), "oneharness-sdk-checkout-"));
+	const checkout = scratchSync("checkout");
 	const checkoutInputs = execFileSync("git", ["ls-files", "--", sdkDirectory], {
 		cwd: root,
 		encoding: "utf8",
@@ -46,31 +49,27 @@ test("SDK inputs stay LF under Windows checkout semantics", () => {
 		(path) => !path.startsWith(`${generatedDirectory}/`),
 	);
 
-	try {
-		execFileSync(
-			"git",
-			[
-				"-c",
-				"core.autocrlf=true",
-				"-c",
-				"core.eol=crlf",
-				"checkout-index",
-				`--prefix=${checkout.replaceAll("\\", "/")}/`,
-				"--",
-				...checkoutInputs,
-			],
-			{ cwd: root },
-		);
+	execFileSync(
+		"git",
+		[
+			"-c",
+			"core.autocrlf=true",
+			"-c",
+			"core.eol=crlf",
+			"checkout-index",
+			`--prefix=${checkout.replaceAll("\\", "/")}/`,
+			"--",
+			...checkoutInputs,
+		],
+		{ cwd: root },
+	);
 
-		expect(generated.length).toBeGreaterThan(0);
-		expect(authored.length).toBeGreaterThan(0);
-		for (const path of checkoutInputs) {
-			const content = readFileSync(resolve(checkout, path));
-			expect(content.includes(Buffer.from("\r\n"))).toBe(false);
-			expect(content.at(-1)).toBe("\n".charCodeAt(0));
-		}
-	} finally {
-		rmSync(checkout, { recursive: true, force: true });
+	expect(generated.length).toBeGreaterThan(0);
+	expect(authored.length).toBeGreaterThan(0);
+	for (const path of checkoutInputs) {
+		const content = readFileSync(resolve(checkout, path));
+		expect(content.includes(Buffer.from("\r\n"))).toBe(false);
+		expect(content.at(-1)).toBe("\n".charCodeAt(0));
 	}
 });
 
@@ -401,48 +400,44 @@ test("Zod generation validates every supported schema boundary", () => {
 });
 
 test("generator check reports a missing generated contract as stale", () => {
-	const checkout = mkdtempSync(resolve(tmpdir(), "oneharness-sdk-generate-"));
+	const checkout = scratchSync("generate");
 
-	try {
-		execFileSync(
-			"git",
-			["checkout-index", `--prefix=${checkout.replaceAll("\\", "/")}/`, "-a"],
-			{ cwd: root },
-		);
-		symlinkSync(
-			resolve(root, sdkDirectory, "node_modules"),
-			resolve(checkout, sdkDirectory, "node_modules"),
-			process.platform === "win32" ? "junction" : "dir",
-		);
+	execFileSync(
+		"git",
+		["checkout-index", `--prefix=${checkout.replaceAll("\\", "/")}/`, "-a"],
+		{ cwd: root },
+	);
+	symlinkSync(
+		resolve(root, sdkDirectory, "node_modules"),
+		resolve(checkout, sdkDirectory, "node_modules"),
+		process.platform === "win32" ? "junction" : "dir",
+	);
 
-		const missing = resolve(checkout, generatedDirectory, "zod.ts");
-		copyFileSync(resolve(root, generatedDirectory, "zod.ts"), missing);
-		rmSync(missing);
-		const result = spawnSync(
-			"node",
-			[`${sdkDirectory}/scripts/generate.mjs`, "--check"],
-			{
-				cwd: checkout,
-				encoding: "utf8",
-				env: { ...process.env, CARGO_TARGET_DIR: resolve(root, "target") },
-			},
-		);
+	const missing = resolve(checkout, generatedDirectory, "zod.ts");
+	copyFileSync(resolve(root, generatedDirectory, "zod.ts"), missing);
+	rmSync(missing);
+	const result = spawnSync(
+		"node",
+		[`${sdkDirectory}/scripts/generate.mjs`, "--check"],
+		{
+			cwd: checkout,
+			encoding: "utf8",
+			env: { ...process.env, CARGO_TARGET_DIR: resolve(root, "target") },
+		},
+	);
 
-		expect(result.status).toBe(1);
-		expect(result.stderr.trim()).toBe(
-			"generated SDK contracts are stale; run just sdk-generate",
-		);
-		expect(existsSync(missing)).toBe(false);
-	} finally {
-		rmSync(checkout, { recursive: true, force: true });
-	}
+	expect(result.status).toBe(1);
+	expect(result.stderr.trim()).toBe(
+		"generated SDK contracts are stale; run just sdk-generate",
+	);
+	expect(existsSync(missing)).toBe(false);
 	// The copied checkout has a different source path, so Cargo must rebuild the
 	// workspace crates even though it shares the root target directory. Keep this
 	// as a real generator invocation and allow for a cold compile on busy CI hosts.
 }, 120_000);
 
 test("SDK packing reports a missing Cargo version without a stack trace", () => {
-	const checkout = mkdtempSync(resolve(tmpdir(), "oneharness-sdk-pack-"));
+	const checkout = scratchSync("pack");
 	mkdirSync(resolve(checkout, "scripts"));
 	copyFileSync(
 		resolve(root, "scripts/sdk-pack.mjs"),
@@ -465,7 +460,5 @@ test("SDK packing reports a missing Cargo version without a stack trace", () => 
 		expect(stderr).toContain("Cargo.toml has no [package] version");
 		expect(stderr).toContain("restore the root manifest");
 		expect(stderr).not.toContain("at file:");
-	} finally {
-		rmSync(checkout, { recursive: true, force: true });
 	}
 });

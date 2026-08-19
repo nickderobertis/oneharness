@@ -103,6 +103,9 @@ lint-workflows: build build-mock-harness
     @bash scripts/check-local-gate.sh >/dev/null
     @bash scripts/check-sdk-install.sh >/dev/null
     @bash scripts/check-build-mock-harness.sh >/dev/null
+    @bash scripts/check-temp-leaks-test.sh >/dev/null
+    @bash scripts/check-scratch-prefixes.sh >/dev/null
+    @bash scripts/check-scratch-prefixes-test.sh >/dev/null
     @bash scripts/check-codex-usage-schema.sh >/dev/null
     @bash scripts/check-codex-usage-schema-test.sh >/dev/null
     @bash scripts/check-usage-enforce.sh >/dev/null
@@ -114,9 +117,16 @@ lint-workflows: build build-mock-harness
     @echo 'lint-workflows: ok'
 
 # Run the test suite across the workspace (core unit tests + binary unit and
-# integration tests; prefers nextest, falls back to cargo test).
+# integration tests; prefers nextest, falls back to cargo test), then refuse a
+# run that left a scratch directory behind in the host temp directory.
+#
+# Reduced to failures plus the summary line: a passing test says nothing the
+# summary does not, and a per-test transcript is what buries the ones that
+# didn't. Both runners still report every failure in full — the gate holds all of
+# it back until one of them does. The recipe line is left echoed (no `@`) so this
+# minutes-long step still says what it is running before it goes quiet.
 test:
-    if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --workspace --features {{FEATURES}} --locked; else cargo test --workspace --features {{FEATURES}} --locked; fi
+    bash scripts/check-temp-leaks.sh bash -c 'if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --workspace --features {{FEATURES}} --locked --status-level fail --final-status-level fail; else cargo test --workspace --features {{FEATURES}} --locked --quiet; fi'
 
 # Run the workspace suite under instrumentation and FAIL if line coverage drops
 # below {{COVERAGE_MIN}}%. This is the coverage gate (part of `just check` and
@@ -222,14 +232,18 @@ sdk-install:
     @out=$(bun install --cwd npm/oneharness-sdk --frozen-lockfile 2>&1) || { printf '%s\n' "$out" >&2; echo "Node SDK dependency install failed; the bun output above says why. If npm/oneharness-sdk/package.json changed, refresh the lockfile with 'bun install --cwd npm/oneharness-sdk'; otherwise check network access to the npm registry and rerun 'just sdk-install'." >&2; exit 1; }
 
 # Strict Node SDK gate, including the Rust->TypeScript drift check and real CLI e2e.
+#
+# The two steps that take scratch space run under `check-temp-leaks.sh`, which
+# also makes them quiet on success — bun prints a coverage table and a per-file
+# summary otherwise — and replays every line when either fails.
 sdk-check: build build-mock-harness sdk-install
     bun run --cwd npm/oneharness-sdk generate:check
     bun run --cwd npm/oneharness-sdk format:check
     bun run --cwd npm/oneharness-sdk lint
     bun run --cwd npm/oneharness-sdk typecheck
-    bun run --cwd npm/oneharness-sdk test
+    bash scripts/check-temp-leaks.sh bun run --cwd npm/oneharness-sdk test
     bun run --cwd npm/oneharness-sdk build
-    bun run --cwd npm/oneharness-sdk test:package
+    bash scripts/check-temp-leaks.sh bun run --cwd npm/oneharness-sdk test:package
 
 # Regenerate Python declarations and runtime schemas from Rust wire types.
 python-sdk-generate:
@@ -256,9 +270,11 @@ python-sdk-check:
         "${run[@]}" ruff check python/oneharness-sdk
         "${run[@]}" mypy --config-file python/oneharness-sdk/pyproject.toml python/oneharness-sdk/src python/oneharness-sdk/scripts python/oneharness-sdk/test
         rm -f target/python-sdk.coverage
-        COVERAGE_FILE=target/python-sdk.coverage PYTHONPATH=python/oneharness-sdk/src "${run[@]}" coverage run --rcfile=python/oneharness-sdk/pyproject.toml -m unittest discover -s python/oneharness-sdk/test -p 'test_*.py'
+        # The two steps that take scratch space run under check-temp-leaks.sh,
+        # the same gate `test` uses.
+        COVERAGE_FILE=target/python-sdk.coverage PYTHONPATH=python/oneharness-sdk/src bash scripts/check-temp-leaks.sh "${run[@]}" coverage run --rcfile=python/oneharness-sdk/pyproject.toml -m unittest discover -s python/oneharness-sdk/test -p 'test_*.py'
         COVERAGE_FILE=target/python-sdk.coverage "${run[@]}" coverage report --rcfile=python/oneharness-sdk/pyproject.toml
-        "${run[@]}" python python/oneharness-sdk/test/package_e2e.py
+        bash scripts/check-temp-leaks.sh "${run[@]}" python python/oneharness-sdk/test/package_e2e.py
     ) >"$log" 2>&1; then
         cat "$log" >&2
         exit 1

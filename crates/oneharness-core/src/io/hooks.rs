@@ -436,6 +436,7 @@ fn write_text(target: &Path, content: &str, check: bool) -> Result<HookWrite, On
 mod tests {
     use super::*;
     use crate::domain::harness;
+    use crate::io::scratch::ScratchDir;
     use serde_json::json;
 
     #[test]
@@ -450,15 +451,8 @@ mod tests {
         }
     }
 
-    fn temp_project(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "oneharness-hooks-{tag}-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp_project(tag: &str) -> ScratchDir {
+        ScratchDir::new(&format!("hooks-{tag}-{:?}", std::thread::current().id())).unwrap()
     }
 
     fn install_one(dir: &Path, id: &str, hook: &HookSpec) -> Vec<HookWrite> {
@@ -742,7 +736,7 @@ mod tests {
             };
             install_one(&dir, id, &hook);
             let second = install(
-                Scope::Project(dir.as_path()),
+                Scope::Project(dir.path()),
                 harness::by_id(id).unwrap(),
                 &hook,
                 false,

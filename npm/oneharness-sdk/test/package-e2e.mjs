@@ -2,18 +2,21 @@
 import { execFileSync } from "node:child_process";
 import {
 	existsSync,
-	mkdtempSync,
 	readFileSync,
 	realpathSync,
 	renameSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { delimiter, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { removeScratch, scratchSync } from "./scratch.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const install = mkdtempSync(resolve(tmpdir(), "oneharness-sdk-package-"));
+// No test framework here to hang a teardown on, so the process's own exit is
+// the hook: it runs after a thrown top-level error too, which is the way this
+// script ends when an assertion below fails.
+process.on("exit", removeScratch);
+const install = scratchSync("package");
 const executableSuffix = process.platform === "win32" ? ".exe" : "";
 const target = {
 	"darwin-arm64": "aarch64-apple-darwin",

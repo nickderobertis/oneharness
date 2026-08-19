@@ -6,9 +6,10 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
+
+from .scratch import scratch
 
 ROOT = Path(__file__).resolve().parents[3]
 SDK = ROOT / "python" / "oneharness-sdk"
@@ -27,41 +28,38 @@ class GenerationTests(unittest.TestCase):
 
     def test_missing_generated_file_is_reported_as_stale(self) -> None:
         """A clean checkout missing one artifact must fail without recreating it."""
-        checkout = Path(tempfile.mkdtemp(prefix="oneharness-python-generate-"))
-        try:
-            subprocess.run(
-                ["git", "checkout-index", f"--prefix={checkout.as_posix()}/", "-a"],
-                cwd=ROOT,
-                check=True,
-            )
-            shutil.copytree(SDK, checkout / "python" / "oneharness-sdk", dirs_exist_ok=True)
-            missing = (
-                checkout
-                / "python"
-                / "oneharness-sdk"
-                / "src"
-                / "oneharness_sdk"
-                / "_generated"
-                / "schemas.json"
-            )
-            missing.unlink()
-            completed = subprocess.run(
-                [
-                    sys.executable,
-                    str(checkout / "python" / "oneharness-sdk" / "scripts" / "generate.py"),
-                    "--check",
-                ],
-                cwd=checkout,
-                check=False,
-                capture_output=True,
-                text=True,
-                env={**dict(os.environ), "CARGO_TARGET_DIR": str(ROOT / "target")},
-            )
-            self.assertEqual(completed.returncode, 1)
-            self.assertIn("generated Python SDK contracts are stale", completed.stdout)
-            self.assertFalse(missing.exists())
-        finally:
-            shutil.rmtree(checkout)
+        checkout = scratch(self, "generate")
+        subprocess.run(
+            ["git", "checkout-index", f"--prefix={checkout.as_posix()}/", "-a"],
+            cwd=ROOT,
+            check=True,
+        )
+        shutil.copytree(SDK, checkout / "python" / "oneharness-sdk", dirs_exist_ok=True)
+        missing = (
+            checkout
+            / "python"
+            / "oneharness-sdk"
+            / "src"
+            / "oneharness_sdk"
+            / "_generated"
+            / "schemas.json"
+        )
+        missing.unlink()
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(checkout / "python" / "oneharness-sdk" / "scripts" / "generate.py"),
+                "--check",
+            ],
+            cwd=checkout,
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**dict(os.environ), "CARGO_TARGET_DIR": str(ROOT / "target")},
+        )
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("generated Python SDK contracts are stale", completed.stdout)
+        self.assertFalse(missing.exists())
 
 
 if __name__ == "__main__":

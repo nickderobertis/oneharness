@@ -1014,8 +1014,9 @@ impl Drop for ControlListener {
 mod tests {
     use super::*;
     use crate::domain::control::socket_path;
+    use crate::io::scratch::ScratchDir;
 
-    /// A private directory for one test's socket.
+    /// A private, self-removing directory for one test's socket.
     ///
     /// Rooted at `/tmp` rather than `std::env::temp_dir()` because this path
     /// becomes a socket *address*, not just a place to put files:
@@ -1030,16 +1031,13 @@ mod tests {
     /// asked for `/tmp/…` reports `/private/tmp/…`. Rooting the tests at the
     /// unresolved path still binds and still interrupts, but no longer matches
     /// the address the listener names.
-    fn temp_dir(tag: &str) -> PathBuf {
+    fn temp_dir(tag: &str) -> ScratchDir {
         let root = std::fs::canonicalize("/tmp").expect("/tmp must exist to root a control socket");
-        let dir = root.join(format!(
-            "oh-control-{}-{}-{:?}",
-            tag,
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        ScratchDir::under(
+            &root,
+            &format!("control-{tag}-{:?}", std::thread::current().id()),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1384,7 +1382,7 @@ mod tests {
             ControlShape::CodexAppServer,
             DialogueConfig {
                 prompt: "keep working".to_string(),
-                cwd: AbsolutePath::new(&dir).unwrap(),
+                cwd: AbsolutePath::new(dir.path()).unwrap(),
                 model: None,
                 mode: PermissionMode::Bypass,
                 posture: ApprovalPosture::Unattended,

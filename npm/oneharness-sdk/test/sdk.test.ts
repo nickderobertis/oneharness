@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,6 +60,7 @@ import {
 	UsageOptionsSchema,
 	UsageSchema,
 } from "../src/index.js";
+import { removeScratch, scratch } from "./scratch.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const binary = resolve(here, "../../../target/debug/oneharness");
@@ -293,6 +294,10 @@ function layered(): OneHarness {
 }
 
 describe("OneHarness", () => {
+	// Whatever a test does with its scratch directory, the framework takes it
+	// back: a case that throws cleans up exactly like one that passes.
+	afterEach(removeScratch);
+
 	test("generated validators match the shared SDK acceptance matrix", () => {
 		const schemas = {
 			run_options: RunOptionsSchema,
@@ -515,9 +520,7 @@ describe("OneHarness", () => {
 	});
 
 	test("terminates a streaming subprocess when the iterator closes early", async () => {
-		const directory = await mkdtemp(
-			resolve(tmpdir(), "oneharness-sdk-cancel-"),
-		);
+		const directory = await scratch("cancel");
 		const log = resolve(directory, "mock.log");
 		const stream = sdk().runStream({
 			prompt: "stop after the first action",
@@ -746,7 +749,7 @@ describe("OneHarness", () => {
 	}, 30_000);
 
 	test("looks up standardized history created across the CLI boundary", async () => {
-		const historyDir = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-"));
+		const historyDir = await scratch("history");
 		const client = sdk();
 		await client.run({
 			prompt: "history sdk",
@@ -894,9 +897,7 @@ describe("OneHarness", () => {
 	});
 
 	test("watches history after a cursor without duplicates and filters labels", async () => {
-		const historyDir = await mkdtemp(
-			resolve(tmpdir(), "oneharness-sdk-watch-"),
-		);
+		const historyDir = await scratch("watch");
 		const client = sdk();
 		const records: HistoryRecord[] = [];
 		const fixtures: Array<[name: string, prompt: string, graph: string]> = [
@@ -954,9 +955,7 @@ describe("OneHarness", () => {
 	});
 
 	test("applies CLI history labels over environment and project labels", async () => {
-		const directory = await mkdtemp(
-			resolve(tmpdir(), "oneharness-sdk-label-precedence-"),
-		);
+		const directory = await scratch("label-precedence");
 		const project = resolve(directory, "project");
 		const userConfig = resolve(directory, "user.toml");
 		await mkdir(project);
@@ -1000,7 +999,7 @@ describe("OneHarness", () => {
 	});
 
 	test("gives last priority over a named session across the CLI boundary", async () => {
-		const historyDir = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-last-"));
+		const historyDir = await scratch("last");
 		const client = sdk();
 		const older = await client.run({
 			prompt: "the older session",
@@ -1084,10 +1083,7 @@ describe("OneHarness", () => {
 	});
 
 	test("continues a native session with the new user message", async () => {
-		const argvFile = resolve(
-			await mkdtemp(resolve(tmpdir(), "oneharness-sdk-resume-")),
-			"argv",
-		);
+		const argvFile = resolve(await scratch("resume"), "argv");
 		const client = sdk();
 		const first = await client.run({
 			prompt: "first user message",
@@ -1119,9 +1115,7 @@ describe("OneHarness", () => {
 	});
 
 	test("surfaces missing history and unsupported continuation selections", async () => {
-		const historyDir = await mkdtemp(
-			resolve(tmpdir(), "oneharness-sdk-missing-"),
-		);
+		const historyDir = await scratch("missing");
 		const client = sdk();
 		await expect(
 			client.history({ session: "does-not-exist", historyDir }),
@@ -1202,10 +1196,7 @@ describe("OneHarness", () => {
 	});
 
 	test("forwards optional reasoning without confusing thinking with actions", async () => {
-		const argvFile = resolve(
-			await mkdtemp(resolve(tmpdir(), "oneharness-sdk-reasoning-")),
-			"argv",
-		);
+		const argvFile = resolve(await scratch("reasoning"), "argv");
 		const report = await sdk().run({
 			prompt: "think then act",
 			harnesses: ["claude-code"],
@@ -1340,10 +1331,7 @@ describe("OneHarness", () => {
 	});
 
 	test("surfaces an executable spawn failure", async () => {
-		const missing = resolve(
-			await mkdtemp(resolve(tmpdir(), "oneharness-sdk-no-bin-")),
-			"missing-oneharness",
-		);
+		const missing = resolve(await scratch("no-bin"), "missing-oneharness");
 		await expect(
 			new OneHarness({ executable: missing }).list(),
 		).rejects.toThrow("missing-oneharness");
@@ -1401,7 +1389,7 @@ describe("OneHarness", () => {
 		);
 	});
 	test("reads the layered configuration and its provenance", async () => {
-		const project = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-config-"));
+		const project = await scratch("config");
 		await writeFile(
 			resolve(project, "oneharness.toml"),
 			'harnesses = ["codex"]\nmode = "bypass"\n',
@@ -1415,7 +1403,7 @@ describe("OneHarness", () => {
 	}, 30_000);
 
 	test("reports what a sync would change without writing it", async () => {
-		const project = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-sync-"));
+		const project = await scratch("sync");
 		await writeFile(
 			resolve(project, "oneharness.toml"),
 			'allowed_tools = ["Bash(echo:*)"]\n',
@@ -1453,7 +1441,7 @@ describe("OneHarness", () => {
 	}, 30_000);
 
 	test("scaffolds a starter config and refuses to clobber it", async () => {
-		const project = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-init-"));
+		const project = await scratch("init");
 		const path = resolve(project, "oneharness.toml");
 		expect(await sdk().init({ path })).toBe(path);
 		expect(await readFile(path, "utf8")).toContain("run_mode");
@@ -1516,7 +1504,7 @@ describe("OneHarness", () => {
 	}, 30_000);
 
 	test("applies a mock ruleset to a hook event and records the original", async () => {
-		const dir = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-mock-"));
+		const dir = await scratch("mock");
 		const rules = resolve(dir, "rules.json");
 		const spyFile = resolve(dir, "spy.jsonl");
 		await writeFile(
@@ -1548,7 +1536,7 @@ describe("OneHarness", () => {
 	}, 30_000);
 
 	test("answers an interrupt for a session no run is serving", async () => {
-		const sessionDir = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-int-"));
+		const sessionDir = await scratch("int");
 		// A refusal is the answer, not a throw: the CLI exits non-zero and the
 		// frame says which of the refusal reasons applies, which is what a
 		// supervisor branches on.
@@ -1561,7 +1549,7 @@ describe("OneHarness", () => {
 	}, 30_000);
 
 	test("clears and migrates a history store through typed methods", async () => {
-		const historyDir = await mkdtemp(resolve(tmpdir(), "oneharness-sdk-hist-"));
+		const historyDir = await scratch("hist");
 		const client = sdk();
 		await client.run({
 			prompt: "history clear sdk",

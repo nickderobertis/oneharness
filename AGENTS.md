@@ -1049,16 +1049,10 @@ shape. When you add one:
   its `CROSS_PLATFORM`/`LINUX_ONLY` list when you wire its workflow.
 - **Scratch space is owned, never left.** A test directory under the host temp
   dir comes from its suite's guard, never a hand-rolled `mkdir`:
-  `io::scratch::ScratchDir` in Rust, `test/scratch.mjs`'s `scratch` under bun's
-  `afterEach`, `test/scratch.py`'s `scratch` under unittest's `addCleanup`. Each
-  gives the directory back however the test ends, so one that fails cleans up
-  like one that passes, and each mints a name inside `io::scratch::PREFIX` so
-  `scripts/check-temp-leaks.sh` — which wraps `test`, `sdk-check` and
-  `python-sdk-check` — can sweep for what escaped. Those prefixes are three
-  spellings of one contract, so `check-scratch-prefixes.sh` holds them to the
-  Rust constant: a prefix outside the sweep leaves the gate silently passing.
-  Enough abandoned directories fill a host's root filesystem and take every
-  program on it down.
+  `io::scratch::ScratchDir` in Rust, `test/scratch.mjs` under bun's `afterEach`,
+  `test/scratch.py` under unittest's `addCleanup`. Each gives the directory back
+  however the test ends, and `scripts/check-temp-leaks.sh` fails a run that
+  abandoned one.
 - A user-visible change ships with a test that fails without it.
 
 ## Releasing

@@ -186,12 +186,10 @@ fn parse_at(path: &Path, text: &str) -> Result<FileConfig, OneharnessError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::scratch::ScratchDir;
 
-    fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("oneharness-cfg-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp_dir(tag: &str) -> ScratchDir {
+        ScratchDir::new(&format!("oneharness-cfg-{tag}-{}", std::process::id()))
     }
 
     #[test]

@@ -962,6 +962,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    use crate::io::scratch::ScratchDir;
 
     fn job(argv: &[&str]) -> Job {
         Job {
@@ -1421,8 +1423,7 @@ mod tests {
 
         // A minimal npm-style `.cmd` shim written to a real temp file, so the
         // plan reads it the way `run_job` would.
-        let dir = std::env::temp_dir().join(format!("oh-shim-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = ScratchDir::new(&format!("oh-shim-{}", std::process::id()));
         let cmd_path = dir.join("claude.cmd");
         let mut f = std::fs::File::create(&cmd_path).unwrap();
         write!(

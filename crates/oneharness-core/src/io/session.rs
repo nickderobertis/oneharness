@@ -118,16 +118,15 @@ pub fn write(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::scratch::ScratchDir;
 
-    fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
+    fn temp_dir(tag: &str) -> ScratchDir {
+        ScratchDir::new(&format!(
             "oh-session-{}-{}-{}",
             tag,
             std::process::id(),
             now_epoch_secs()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        dir
+        ))
     }
 
     #[test]

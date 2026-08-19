@@ -1333,16 +1333,14 @@ mod tests {
     use super::*;
     use crate::domain::report::{ExecutionTelemetry, OutputFormat, Status};
     use crate::domain::signals::Usage;
+    use crate::io::scratch::ScratchDir;
 
-    fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
+    fn temp_dir(tag: &str) -> ScratchDir {
+        ScratchDir::new(&format!(
             "oneharness-hist-{tag}-{}-{}",
             std::process::id(),
             now_epoch_secs()
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+        ))
     }
 
     fn result(harness: &str) -> RunResult {
@@ -1768,8 +1766,8 @@ mod tests {
         let project = temp_dir("concurrent-project");
         let mut threads = Vec::new();
         for index in 0..12 {
-            let dir = dir.clone();
-            let project = project.clone();
+            let dir = dir.to_path_buf();
+            let project = project.to_path_buf();
             threads.push(std::thread::spawn(move || {
                 let writer = HistoryWriter::open(
                     &dir,

@@ -15,15 +15,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use oneharness_core::domain::control::{ServerAddress, ServerSpec, ServerTransport};
+use oneharness_core::io::scratch::ScratchDir;
 use oneharness_core::io::server_pool::{
     self, LaunchArgv, LaunchPlan, LeaseHolder, Pid, ProcessIdentity, ServerRecord,
 };
 
-fn pool_root(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("oh-pool-e2e-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn pool_root(tag: &str) -> ScratchDir {
+    ScratchDir::new(&format!("oh-pool-e2e-{tag}-{}", std::process::id()))
 }
 
 /// A stand-in server: a real, long-lived process. The pool only ever asks the OS

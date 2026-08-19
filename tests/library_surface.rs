@@ -25,22 +25,20 @@ use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::detect::{self, DetectRequest};
 use oneharness_core::io::init::{self, InitRequest};
 use oneharness_core::io::registry::{self, ListRequest};
+use oneharness_core::io::scratch::ScratchDir;
 use oneharness_core::io::sync::{self, SyncRequest, SyncStatus};
 use oneharness_core::io::usage::{self, UsageRequest};
 
 #[path = "support/library_fixture.rs"]
 mod fixture;
 
-/// A private directory for one test's files, removed and recreated so a rerun
-/// starts clean.
-fn scratch(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
+/// A private directory for one test's files, cleared on the way in so a rerun
+/// starts clean and removed when the test ends.
+fn scratch(tag: &str) -> ScratchDir {
+    ScratchDir::new(&format!(
         "oneharness-library-surface-{tag}-{}",
         std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    ))
 }
 
 /// Make this test process hermetic for the calls that DO read configuration.
@@ -63,7 +61,12 @@ fn hermetic_environment() {
                 std::env::remove_var(name);
             }
         }
-        let empty = scratch("user-layer").join("user.toml");
+        // The one file here that cannot be owned by a scope: it has to outlive
+        // every test in this process, so it goes in Cargo's per-target temp
+        // directory rather than the host's, where nothing would ever remove it.
+        let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("library-surface");
+        std::fs::create_dir_all(&root).expect("a place for the user layer");
+        let empty = root.join("user.toml");
         std::fs::write(&empty, "").expect("an empty user layer");
         std::env::set_var("ONEHARNESS_CONFIG", empty);
     });
@@ -71,7 +74,7 @@ fn hermetic_environment() {
 
 /// A scratch project carrying `contents` as its `oneharness.toml`, discovered
 /// upward from the returned directory exactly as a run from there would.
-fn project(tag: &str, contents: &str) -> PathBuf {
+fn project(tag: &str, contents: &str) -> ScratchDir {
     hermetic_environment();
     let dir = scratch(tag);
     std::fs::write(dir.join("oneharness.toml"), contents).expect("project config");
@@ -159,7 +162,7 @@ fn a_configured_variant_reaches_the_consumer_as_a_described_identity() {
         "[harness.claude-code.variant.work]\nmodel = \"claude-opus-4-8\"\n",
     );
     let report = registry::list(&ListRequest {
-        cwd: Some(dir.clone()),
+        cwd: Some(dir.to_path_buf()),
         ..ListRequest::default()
     })
     .expect("a project config with a variant describes cleanly");
@@ -245,7 +248,7 @@ fn a_configured_binary_is_probed_without_the_caller_naming_it() {
 
     let report = detect::detect(&DetectRequest {
         harness: vec!["opencode".to_string()],
-        cwd: Some(dir.clone()),
+        cwd: Some(dir.to_path_buf()),
         ..DetectRequest::default()
     })
     .expect("a project config selects the binary to probe");
@@ -327,7 +330,7 @@ fn a_consumer_syncs_a_policy_into_a_harness_config_and_re_syncs_idempotently() {
     // the second call reports `unchanged` and rewrites nothing.
     let dir = project("sync-apply", "allowed_tools = [\"Bash(echo *)\"]\n");
     let request = SyncRequest {
-        cwd: Some(dir.clone()),
+        cwd: Some(dir.to_path_buf()),
         harness: vec!["claude-code".to_string()],
         ..SyncRequest::default()
     };
@@ -360,7 +363,7 @@ fn a_check_only_sync_writes_nothing_and_says_a_change_is_pending() {
     // "out of sync" without the call having fixed it.
     let dir = project("sync-check", "allowed_tools = [\"Bash(echo *)\"]\n");
     let report = sync::sync(&SyncRequest {
-        cwd: Some(dir.clone()),
+        cwd: Some(dir.to_path_buf()),
         harness: vec!["claude-code".to_string()],
         check: true,
         ..SyncRequest::default()

@@ -34,13 +34,10 @@ mod tests {
     use super::*;
     use oneharness_core::domain::config;
     use oneharness_core::domain::fallback::RunMode;
+    use oneharness_core::io::scratch::ScratchDir;
 
-    fn temp_dir(tag: &str) -> std::path::PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("oneharness-init-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp_dir(tag: &str) -> ScratchDir {
+        ScratchDir::new(&format!("oneharness-init-{tag}-{}", std::process::id()))
     }
 
     #[test]

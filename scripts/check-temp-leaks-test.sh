@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+#
+# Behavioral test of the scratch-leak gate.
+#
+# A gate nobody has watched fail is not known to work — and this one's whole job
+# is to fail. So it is driven against a command that leaks a scratch directory
+# and asserted to go red naming it, against one that cleans up after itself and
+# asserted to stay green, and against a failing command to prove the command's
+# own status still wins.
+#
+# Quiet on success, one line. On failure it prints what the gate said.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+gate="scripts/check-temp-leaks.sh"
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+# Watch only this test's own scratch root, so a real `oneharness` run happening
+# elsewhere on the host cannot decide the verdict.
+export OH_SCRATCH_ROOTS="$work"
+
+fail() {
+  echo "check-temp-leaks-test: $1" >&2
+  [ -s "$work/out" ] && cat "$work/out" >&2
+  exit 1
+}
+
+# A command that cleans up after itself is green, and its own exit status is
+# what comes back. Anchoring on this first means a later red is the leak rather
+# than a gate that rejects everything.
+if ! bash "$gate" bash -c "mkdir -p '$work/oneharness-tidy' && rmdir '$work/oneharness-tidy'" >"$work/out" 2>&1; then
+  fail "a command that removed its own scratch directory should have passed"
+fi
+
+# A command that leaves one behind is red, and the gate names it.
+if bash "$gate" bash -c "mkdir -p '$work/oneharness-leaked'" >"$work/out" 2>&1; then
+  fail "a command that left a scratch directory behind should have failed"
+fi
+grep -q "oneharness-leaked" "$work/out" ||
+  fail "the gate failed but did not name the directory that was left behind"
+rm -rf "$work/oneharness-leaked"
+
+# The `oh-` prefix the socket-bound control tests use is watched too.
+if bash "$gate" bash -c "mkdir -p '$work/oh-leaked'" >"$work/out" 2>&1; then
+  fail "a leaked oh-* scratch directory should have failed"
+fi
+rm -rf "$work/oh-leaked"
+
+# A directory that was already there is not this run's leak.
+mkdir -p "$work/oneharness-pre-existing"
+if ! bash "$gate" true >"$work/out" 2>&1; then
+  fail "a directory that predates the run must not be reported as its leak"
+fi
+rm -rf "$work/oneharness-pre-existing"
+
+# A temp *file* is not a leak: the temp directory is shared with real
+# `oneharness` runs, which write and clean up files of their own.
+if ! bash "$gate" bash -c "touch '$work/oneharness-left.txt'" >"$work/out" 2>&1; then
+  fail "a temp file must not be read as a leaked scratch directory"
+fi
+rm -f "$work/oneharness-left.txt"
+
+# A failing command keeps its own status, so the gate never turns a red suite
+# green (or reports a leak in place of the failure that caused it).
+status=0
+bash "$gate" bash -c "exit 3" >"$work/out" 2>&1 || status=$?
+[ "$status" -eq 3 ] || fail "the command's exit status must survive the gate; got $status"
+
+echo "check-temp-leaks-test: the scratch-leak gate goes red for a leaked directory and green otherwise"

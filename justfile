@@ -233,15 +233,17 @@ sdk-install:
 #
 # The two steps that take scratch space run under `check-temp-leaks.sh`, the same
 # gate `test` uses: this suite abandoned one directory per case on the host until
-# its cases started giving them back.
+# its cases started giving them back. Both are also the chatty ones — bun prints
+# a coverage table and a per-file summary on a clean run — so they are captured
+# and replayed only on failure, the shape `sdk-install` below already uses.
 sdk-check: build build-mock-harness sdk-install
     bun run --cwd npm/oneharness-sdk generate:check
     bun run --cwd npm/oneharness-sdk format:check
     bun run --cwd npm/oneharness-sdk lint
     bun run --cwd npm/oneharness-sdk typecheck
-    bash scripts/check-temp-leaks.sh bun run --cwd npm/oneharness-sdk test
+    @out=$(bash scripts/check-temp-leaks.sh bun run --cwd npm/oneharness-sdk test 2>&1) || { printf '%s\n' "$out" >&2; exit 1; }
     bun run --cwd npm/oneharness-sdk build
-    bash scripts/check-temp-leaks.sh bun run --cwd npm/oneharness-sdk test:package
+    @out=$(bash scripts/check-temp-leaks.sh bun run --cwd npm/oneharness-sdk test:package 2>&1) || { printf '%s\n' "$out" >&2; exit 1; }
 
 # Regenerate Python declarations and runtime schemas from Rust wire types.
 python-sdk-generate:

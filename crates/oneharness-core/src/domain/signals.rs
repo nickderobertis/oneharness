@@ -744,27 +744,41 @@ fn codex_exec_turn_error(value: &Value) -> Option<&Value> {
     value.get("error")
 }
 
-/// The error object a `codex app-server` frame attaches to a failed turn.
+/// The error object a `codex app-server` frame attaches to a turn that is not
+/// going to complete.
 ///
 /// Two frames carry it, captured verbatim from a controlled run against an
 /// exhausted account (`tests/fixtures/codex-app-server-usage-limit.jsonl`) —
 /// both are read because either may be the one a transcript kept:
 ///
-/// - the `error` **notification**, whose `params.error` states the cause while
-///   `params.willRetry` says whether the server intends to try again;
+/// - the `error` **notification**, whose `params.error` states the cause and
+///   whose `params.willRetry` says whether the server means to try again;
 /// - the terminal `turn/completed`, whose `params.turn.error` restates it beside
 ///   `params.turn.status: "failed"`.
 ///
-/// The status is checked rather than assumed: `turn/completed` is emitted for a
-/// turn that *succeeded* too, and an agent that merely wrote about a usage limit
-/// must not hand its task to the next candidate.
+/// Both are read for the same question — *is this turn over?* — because
+/// answering it wrongly is how a caller ends up with the opposite of what it
+/// asked for:
+///
+/// - **`willRetry: true` is not a refusal.** The server said it was going to
+///   try again, so the turn may well succeed; the caller's whole transcript
+///   would then carry a `quota` verdict for a run that worked. Only a positive
+///   `true` disqualifies the frame — an absent field states no intention, and
+///   inventing one from silence is the guess this module does not make.
+/// - **`turn/completed` is emitted for a turn that succeeded too**, so its
+///   status is read rather than assumed. A retry that then failed on the limit
+///   lands here and still classifies, which is what keeps the rule above from
+///   costing a real refusal its fall-through.
 ///
 /// This is JSON-RPC, so nothing here overlaps the event stream above: the frame
 /// is keyed by `method` (not `type`), and its payload hangs off `params`.
 fn codex_app_server_turn_error(value: &Value) -> Option<&Value> {
     let params = value.get("params")?;
     match value.get("method").and_then(Value::as_str)? {
-        "error" => params.get("error"),
+        "error" => {
+            (params.get("willRetry").and_then(Value::as_bool) != Some(true)).then_some(())?;
+            params.get("error")
+        }
         "turn/completed" => {
             let turn = params.get("turn")?;
             (turn.get("status").and_then(Value::as_str) == Some("failed")).then_some(())?;
@@ -1756,6 +1770,24 @@ mod tests {
         // was worded — the status is read, never assumed from the frame name.
         let succeeded = r#"{"method":"turn/completed","params":{"turn":{"id":"t1","items":[],"status":"completed","error":{"message":"You've hit your usage limit","codexErrorInfo":"usageLimitExceeded"}}}}"#;
         assert!(detect_harness_provider_failure(FailureDialect::Codex, succeeded).is_none());
+        // A limit the server says it is going to retry is not a refusal either:
+        // the turn may still complete, and reporting `quota` for a run that
+        // worked is the opposite of what the caller asked for. Only a positive
+        // `willRetry` disqualifies it — an absent field states no intention.
+        let retrying = r#"{"method":"error","params":{"error":{"message":"You've hit your usage limit","codexErrorInfo":"usageLimitExceeded"},"willRetry":true}}"#;
+        assert!(detect_harness_provider_failure(FailureDialect::Codex, retrying).is_none());
+        // ...but the retry that then failed on the same limit still classifies,
+        // so the rule above costs a real refusal nothing.
+        let retried_then_failed = format!(
+            "{retrying}\n{}",
+            r#"{"method":"turn/completed","params":{"turn":{"id":"t1","items":[],"status":"failed","error":{"message":"You've hit your usage limit","codexErrorInfo":"usageLimitExceeded"}}}}"#
+        );
+        assert_eq!(
+            detect_harness_provider_failure(FailureDialect::Codex, &retried_then_failed)
+                .unwrap()
+                .kind,
+            FailureKind::Quota
+        );
         // ...and an agent that merely quotes the wording mid-turn is not the
         // harness declaring anything: the app-server streams its text as a
         // delta, which carries no error object at all.

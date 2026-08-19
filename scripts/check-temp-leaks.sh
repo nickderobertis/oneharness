@@ -26,9 +26,15 @@
 # suite's leak would fail the gate on someone else's work. No part of the
 # product creates a temp *directory*, so a new one is always a test's.
 #
-# Quiet on success. On failure it names every directory left behind and what to
-# do about it. A command that failed keeps its own exit status, because the
-# failure explains more than the scratch abandoned on the way to it.
+# Quiet of its own accord, and transparent about the command's: what the wrapped
+# command prints goes straight through, because that output IS the exact error a
+# failing gate has to preserve, and nothing here diagnosed it well enough to add
+# a next action to it. A caller that wants a quiet success captures this
+# invocation and replays it on failure, as `sdk-check` does.
+#
+# On a leak it names every directory left behind and what to do about that. A
+# command that failed keeps its own exit status, because the failure explains
+# more than the scratch abandoned on the way to it.
 #
 # Usage: scripts/check-temp-leaks.sh <command> [args...]
 #   OH_SCRATCH_ROOTS  colon-separated roots to watch (default: "$TMPDIR:/tmp").

@@ -16741,6 +16741,50 @@ fn fallback_falls_through_a_codex_app_server_usage_limit_to_the_alternate_accoun
     }
 }
 
+/// The other half of that chain: a limit the server says it is going to **retry**
+/// is not a refusal, because the turn may still complete — reporting `quota` for
+/// a run that then worked hands a paid task to another account for nothing.
+#[test]
+fn fallback_stops_at_an_app_server_limit_the_server_will_retry() {
+    let mock = mock_bin().display().to_string();
+    let retrying = serde_json::to_string(
+        r#"{"method":"error","params":{"error":{"message":"You've hit your usage limit","codexErrorInfo":"usageLimitExceeded"},"willRetry":true}}"#,
+    )
+    .unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["codex", "codex:alternate"]
+        run_mode = "fallback"
+
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {retrying} }}
+
+        [harness.codex.variant.alternate]
+        bin = '{mock}'
+        "#
+    );
+    let fx = ConfigFixture::new("fallback-app-server-retrying", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let value = json_stdout(&output);
+    assert_eq!(value["fallback"]["ran"], "codex");
+    assert!(value["fallback"]["fell_through"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        value["results"].as_array().unwrap().len(),
+        1,
+        "the alternate account must never be tried"
+    );
+    assert!(value["results"][0]["failure_kind"].is_null());
+}
+
 #[test]
 fn fallback_stops_at_an_app_server_failure_that_is_not_a_usage_limit() {
     // The regression guard for the fall-through above: an app-server turn that
